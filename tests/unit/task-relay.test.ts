@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { encodedJsonBytes, isJsonValue, RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
 import type { RelayEnvelope } from "../../src/task-relay/domain.ts";
 import { TaskRelayGateway } from "../../src/task-relay/gateway.ts";
-import { MalformedRelayStoreError, TaskRelayStore } from "../../src/task-relay/store.ts";
+import { MalformedRelayStoreError, RelayStoreConflictError, TaskRelayStore } from "../../src/task-relay/store.ts";
 import type { PeerOutboxItem } from "../../src/task-relay/store.ts";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
@@ -550,24 +550,94 @@ describe("pi tasks relay v2", () => {
     }
   });
 
-  test("flushes zero pending outbox work without iterating retained terminal history", async () => {
+  test("uses real persisted pending indexes without terminal-history work after warmup", async () => {
     const directory = root();
-    let iterations = 0;
-    const terminalHistory = Array.from({ length: 1_000 }, (_, index) => ({ envelope: { envelopeId: `terminal-${index}` } }));
-    Object.defineProperty(terminalHistory, Symbol.iterator, {
-      value: function* () { for (let index = 0; index < terminalHistory.length; index += 1) { iterations += 1; yield terminalHistory[index]; } },
+    const path = join(directory, "relay-state.json");
+    let peerRequests = 0;
+    const terminals = Array.from({ length: 1_000 }, () => ({ ...VALID_OUTBOX_ITEM, forwardedAt: NOW.toISOString() }));
+    writeFileSync(path, JSON.stringify({ version: 2, registrations: [], envelopes: [], mailbox: [], mailboxCursors: [], peerRoutes: [VALID_PEER_ROUTE], outbox: terminals }));
+    const gateway = new TaskRelayGateway({
+      root: directory,
+      inspectSession: session("sender"),
+      now: () => NOW,
+      peerFetch: async () => { peerRequests += 1; return Response.json({ ok: true }); },
     });
-    const pendingSpy = jest.spyOn(TaskRelayStore.prototype, "pendingOutbox").mockResolvedValue([]);
-    const outboxSpy = jest.spyOn(TaskRelayStore.prototype, "outbox").mockResolvedValue(terminalHistory as never);
-    const gateway = new TaskRelayGateway({ root: directory, inspectSession: session("sender"), now: () => NOW });
     try {
+      // The first call validates and indexes the persisted fixture. The second
+      // warm call must only inspect metadata and its frozen empty projection.
       await expect(gateway.flushPeerOutbox()).resolves.toEqual({ forwarded: 0, pending: 0 });
-      expect(outboxSpy).not.toHaveBeenCalled();
-      expect(iterations).toBe(0);
+      const readSpy = jest.spyOn(fs, "readFileSync");
+      const writeSpy = jest.spyOn(fs, "writeFileSync");
+      try {
+        await expect(gateway.flushPeerOutbox()).resolves.toEqual({ forwarded: 0, pending: 0 });
+        expect(readSpy).not.toHaveBeenCalled();
+        expect(writeSpy).not.toHaveBeenCalled();
+      } finally {
+        readSpy.mockRestore();
+        writeSpy.mockRestore();
+      }
+      expect(peerRequests).toBe(0);
     } finally {
       gateway.close();
-      pendingSpy.mockRestore();
-      outboxSpy.mockRestore();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps the actual pending projection immutable and coherent through transitions and replacement", async () => {
+    const directory = root();
+    const path = join(directory, "relay-state.json");
+    try {
+      const store = new TaskRelayStore(directory);
+      const route = await store.peerRoute(PEER_ORIGIN);
+      const queue = async (envelopeId: string) => store.queuePeer({
+        envelope: { ...REMOTE_ENVELOPE, envelopeId, target: { relay: route.id, id: RECEIVER_ID } },
+        peerOrigin: PEER_ORIGIN, queuedAt: NOW.toISOString(), attempts: 0,
+        lastAttemptAt: undefined, forwardedAt: undefined, exhaustedAt: undefined, lastError: undefined,
+      });
+      await queue("pending-frozen");
+      const pending = await store.pendingOutbox();
+      expect(Object.isFrozen(pending)).toBe(true);
+      expect(() => { (pending as PeerOutboxItem[]).pop(); }).toThrow();
+      expect(await store.pendingOutboxCount()).toBe(1);
+      await store.updateOutbox("pending-frozen", item => ({ ...item, forwardedAt: NOW.toISOString() }));
+      await expect(store.pendingOutbox()).resolves.toEqual([]);
+      expect(await store.pendingOutboxCount()).toBe(0);
+      await queue("pending-exhausted");
+      await store.updateOutbox("pending-exhausted", item => ({ ...item, exhaustedAt: NOW.toISOString() }));
+      await expect(store.pendingOutbox()).resolves.toEqual([]);
+      expect(await store.pendingOutboxCount()).toBe(0);
+      await queue("pending-cleanup");
+      await expect(store.cleanup(new Date(NOW.getTime() + 1))).resolves.toBeGreaterThan(0);
+      expect(await store.pendingOutboxCount()).toBe(0);
+      writeFileSync(`${path}.replacement`, JSON.stringify({ version: 2, registrations: [], envelopes: [], mailbox: [], mailboxCursors: [], peerRoutes: [], outbox: [] }));
+      renameSync(`${path}.replacement`, path);
+      await expect(store.pendingOutbox()).resolves.toEqual([]);
+      expect(await store.pendingOutboxCount()).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("forwards only real persisted pending rows and retains coherent counts", async () => {
+    const directory = root();
+    const path = join(directory, "relay-state.json");
+    let peerRequests = 0;
+    const terminals = Array.from({ length: 1_000 }, () => ({ ...VALID_OUTBOX_ITEM, forwardedAt: NOW.toISOString() }));
+    const pending = { ...VALID_OUTBOX_ITEM };
+    writeFileSync(path, JSON.stringify({ version: 2, registrations: [], envelopes: [], mailbox: [], mailboxCursors: [], peerRoutes: [VALID_PEER_ROUTE], outbox: [pending, ...terminals] }));
+    const gateway = new TaskRelayGateway({
+      root: directory, inspectSession: session("sender"), now: () => NOW,
+      peerOrigin: "https://sender.example.ts.net",
+      peerFetch: async () => { peerRequests += 1; return Response.json({ ok: true }); },
+    });
+    try {
+      await expect(gateway.flushPeerOutbox(true)).resolves.toEqual({ forwarded: 1, pending: 0 });
+      expect(peerRequests).toBe(1);
+      const store = new TaskRelayStore(directory);
+      await expect(store.pendingOutbox()).resolves.toEqual([]);
+      expect(await store.pendingOutboxCount()).toBe(0);
+    } finally {
+      gateway.close();
       rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -863,7 +933,7 @@ describe("pi tasks relay v2", () => {
     }
   });
 
-  test("does not publish own write bytes under an atomically replaced file identity", async () => {
+  test("does not report a displaced registration mutation as durable success", async () => {
     const directory = root();
     const path = join(directory, "relay-state.json");
     const replacement = `${path}.replacement`;
@@ -880,14 +950,74 @@ describe("pi tasks relay v2", () => {
         if (fsyncCalls === 2) renameSync(replacement, path);
       });
       try {
-        const registered = await store.register({ ...VALID_REGISTRATION, leaseExpiresAt: "2026-08-09T00:02:00.000Z" });
-        expect(registered.leaseExpiresAt).toBe("2026-08-09T00:03:00.000Z");
+        await expect(store.register({ ...VALID_REGISTRATION, leaseExpiresAt: "2026-08-09T00:02:00.000Z" })).rejects.toBeInstanceOf(RelayStoreConflictError);
       } finally {
         fsyncSpy.mockRestore();
       }
       await expect(store.registrationForSession("sender", new Date("2026-08-09T00:02:30.000Z"))).resolves.toMatchObject({
         leaseExpiresAt: "2026-08-09T00:03:00.000Z",
       });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed when an atomic replacement displaces a mutation candidate", async () => {
+    const directory = root();
+    const path = join(directory, "relay-state.json");
+    const empty = JSON.stringify({ version: 2, registrations: [], envelopes: [], mailbox: [], mailboxCursors: [], peerRoutes: [], outbox: [] });
+    try {
+      const store = new TaskRelayStore(directory);
+      const displace = async (operation: () => Promise<unknown>, replacementState = empty) => {
+        const replacement = `${path}.replacement`;
+        writeFileSync(replacement, replacementState);
+        let fsyncCalls = 0;
+        const fsyncSpy = jest.spyOn(fs, "fsyncSync").mockImplementation((_descriptor: number) => {
+          fsyncCalls += 1;
+          if (fsyncCalls === 2) renameSync(replacement, path);
+        });
+        try {
+          await expect(operation()).rejects.toBeInstanceOf(RelayStoreConflictError);
+        } finally {
+          fsyncSpy.mockRestore();
+        }
+        expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(JSON.parse(replacementState));
+      };
+
+      await displace(() => store.accept({ ...LOCAL_ENVELOPE, envelopeId: "displaced-accept" }, NOW.toISOString()));
+      await expect(store.inbox(RECEIVER_ID, "0")).resolves.toEqual({ items: [], hasMore: false });
+      await displace(() => store.register(VALID_REGISTRATION));
+      await displace(() => store.peerRoute(PEER_ORIGIN));
+
+      const route = await store.peerRoute(PEER_ORIGIN);
+      await displace(() => store.queuePeer({
+        envelope: { ...REMOTE_ENVELOPE, target: { relay: route.id, id: RECEIVER_ID } },
+        peerOrigin: PEER_ORIGIN, queuedAt: NOW.toISOString(), attempts: 0,
+        lastAttemptAt: undefined, forwardedAt: undefined, exhaustedAt: undefined, lastError: undefined,
+      }));
+
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "displaced-ack" }, NOW.toISOString());
+      await displace(() => store.acknowledge(RECEIVER_ID, "displaced-ack", NOW.toISOString()));
+
+      const updateRoute = await store.peerRoute(PEER_ORIGIN);
+      await store.queuePeer({
+        envelope: { ...REMOTE_ENVELOPE, target: { relay: updateRoute.id, id: RECEIVER_ID } },
+        peerOrigin: PEER_ORIGIN, queuedAt: NOW.toISOString(), attempts: 0,
+        lastAttemptAt: undefined, forwardedAt: undefined, exhaustedAt: undefined, lastError: undefined,
+      });
+      await displace(() => store.updateOutbox(REMOTE_ENVELOPE.envelopeId, item => ({ ...item, attempts: 1, lastAttemptAt: NOW.toISOString() })));
+
+      await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "displaced-cleanup" }, NOW.toISOString());
+      await displace(
+        () => store.cleanup(new Date(NOW.getTime() + 1)),
+        JSON.stringify({ version: 2, registrations: [VALID_REGISTRATION], envelopes: [], mailbox: [], mailboxCursors: [], peerRoutes: [], outbox: [] }),
+      );
+
+      // A detected displacement rejects, but a later retry against the observed
+      // authority is ordinary new work and has one durable acceptance/cursor.
+      const retried = await store.accept({ ...LOCAL_ENVELOPE, envelopeId: "displaced-retry" }, NOW.toISOString());
+      expect(retried.kind).toBe("accepted");
+      expect((await store.inbox(RECEIVER_ID, "0")).items).toHaveLength(1);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

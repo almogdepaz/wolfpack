@@ -298,6 +298,14 @@ export class MalformedRelayStoreError extends TypeError {
   }
 }
 
+/** A concurrent atomic replacement displaced the state this mutation persisted. */
+export class RelayStoreConflictError extends Error {
+  constructor() {
+    super("relay store changed after mutation persistence");
+    this.name = "RelayStoreConflictError";
+  }
+}
+
 function atomicWrite(path: string, source: string): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomUUID()}.tmp`;
@@ -384,6 +392,7 @@ function snapshot(state: RelayState, version: FileVersion | undefined): RelaySna
     mailboxByEndpoint.set(item.endpointId, mailbox);
   }
   for (const mailbox of mailboxByEndpoint.values()) mailbox.sort((left, right) => BigInt(left.cursor) < BigInt(right.cursor) ? -1 : 1);
+  const pendingOutbox = Object.freeze(state.outbox.filter(item => item.forwardedAt === undefined && item.exhaustedAt === undefined));
   return {
     state,
     version,
@@ -393,8 +402,8 @@ function snapshot(state: RelayState, version: FileVersion | undefined): RelaySna
     envelopeById,
     mailboxByEndpoint,
     outboxByEnvelopeId: firstBy(state.outbox, item => item.envelope.envelopeId),
-    pendingOutbox: state.outbox.filter(item => item.forwardedAt === undefined && item.exhaustedAt === undefined),
-    pendingOutboxCount: state.outbox.filter(item => item.forwardedAt === undefined && item.exhaustedAt === undefined).length,
+    pendingOutbox,
+    pendingOutboxCount: pendingOutbox.length,
   };
 }
 
@@ -434,8 +443,10 @@ export class TaskRelayStore {
         && state.registrations.filter(item => item.sessionId === ownedInput.sessionId).length === 1) return { state, value: existing };
       return { state: { ...state, registrations: [...state.registrations.filter((item) => item.sessionId !== ownedInput.sessionId), registration] }, value: registration };
     });
-    // Return the owned, persisted snapshot rather than an input alias.
-    return this.#read().registrationsBySession.get(registered.sessionId)?.[0] ?? immutableCopy(registered);
+    // #mutate has verified this value's candidate state against the descriptor-
+    // reloaded authority. Do not reread here: a later independent mutation may
+    // legitimately supersede this completed registration.
+    return immutableCopy(registered);
   }
 
   async registrationForSession(sessionId: string, now: Date): Promise<RelayRegistration | undefined> {
@@ -711,7 +722,13 @@ export class TaskRelayStore {
     return serialized(this.path, async () => {
       const previous = this.#read();
       const { state, value } = operation(previous.state);
-      if (state !== previous.state) this.#write(state);
+      if (state !== previous.state) {
+        const authoritative = this.#write(state);
+        // The post-write descriptor reload may have observed another atomic
+        // replacement. Never report identities/results calculated from our
+        // displaced candidate as durable authority.
+        if (canonicalJson(authoritative.state) !== canonicalJson(state)) throw new RelayStoreConflictError();
+      }
       return value;
     });
   }
