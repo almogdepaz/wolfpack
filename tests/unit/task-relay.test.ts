@@ -1005,6 +1005,68 @@ describe("pi tasks relay v2", () => {
     }
   });
 
+  test("keeps first-match indexes and update-all semantics for accepted duplicate persisted IDs", async () => {
+    const directory = root();
+    const path = join(directory, "relay-state.json");
+    const secondOrigin = "https://other.example.ts.net";
+    try {
+      writeFileSync(path, JSON.stringify({
+        ...VALID_RELAY_STATE,
+        registrations: [
+          VALID_REGISTRATION,
+          { ...VALID_REGISTRATION, endpoint: { relay: RELAY_ID, id: RECEIVER_ID } },
+        ],
+        peerRoutes: [VALID_PEER_ROUTE, { ...VALID_PEER_ROUTE, origin: secondOrigin }],
+        outbox: [
+          { ...VALID_OUTBOX_ITEM, peerOrigin: secondOrigin },
+          { ...VALID_OUTBOX_ITEM, peerOrigin: secondOrigin, attempts: 2 },
+        ],
+      }));
+      const store = new TaskRelayStore(directory);
+      await expect(store.registrationForSession("sender", NOW)).resolves.toMatchObject({ endpoint: { id: SENDER_ID } });
+      await expect(store.peerOrigin(ROUTE_ID)).resolves.toBe(PEER_ORIGIN);
+      await expect(store.outboxItem(REMOTE_ENVELOPE.envelopeId)).resolves.toMatchObject({ attempts: 1 });
+      await store.updateOutbox(REMOTE_ENVELOPE.envelopeId, item => ({ ...item, attempts: item.attempts + 1 }));
+      await expect(store.outbox()).resolves.toEqual([
+        expect.objectContaining({ attempts: 2 }),
+        expect.objectContaining({ attempts: 3 }),
+      ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("revalidates an external replacement that wins a v1 reset race", async () => {
+    const directory = root();
+    const path = join(directory, "relay-state.json");
+    const replacement = `${path}.replacement`;
+    try {
+      writeFileSync(path, JSON.stringify({ version: 1, discarded: true }));
+      writeFileSync(replacement, JSON.stringify({
+        version: 2,
+        registrations: [VALID_REGISTRATION],
+        envelopes: [],
+        mailbox: [],
+        mailboxCursors: [],
+        peerRoutes: [],
+        outbox: [],
+      }));
+      let fsyncCalls = 0;
+      const fsyncSpy = jest.spyOn(fs, "fsyncSync").mockImplementation((_descriptor: number) => {
+        fsyncCalls += 1;
+        if (fsyncCalls === 2) renameSync(replacement, path);
+      });
+      try {
+        await expect(new TaskRelayStore(directory).outbox()).resolves.toEqual([]);
+      } finally {
+        fsyncSpy.mockRestore();
+      }
+      await expect(new TaskRelayStore(directory).registrationForSession("sender", NOW)).resolves.toMatchObject(VALID_REGISTRATION);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("rejects representative malformed persisted relay records on reads and mutations", async () => {
     const malformedStates = [
       { label: "invalid JSON", contents: "{" },

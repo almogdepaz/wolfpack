@@ -338,11 +338,23 @@ function immutableCopy<T>(value: T): T {
   return copy;
 }
 
+function firstBy<T>(values: readonly T[], key: (value: T) => string): Map<string, T> {
+  const index = new Map<string, T>();
+  for (const value of values) {
+    const id = key(value);
+    if (!index.has(id)) index.set(id, value);
+  }
+  return index;
+}
+
 function snapshot(state: RelayState, version: FileVersion | undefined): RelaySnapshot {
   freeze(state);
-  const registrationBySession = new Map(state.registrations.map(item => [item.sessionId, item]));
-  const registrationByEndpoint = new Map(state.registrations.map(item => [item.endpoint.id, item]));
-  const peerOriginByRoute = new Map(state.peerRoutes.map(item => [item.id, item.origin]));
+  // Persisted validation permits duplicate registrations, routes, and outbox
+  // IDs. Array callers historically use find(), so indexes deliberately retain
+  // the first entry instead of introducing last-write-wins behavior.
+  const registrationBySession = firstBy(state.registrations, item => item.sessionId);
+  const registrationByEndpoint = firstBy(state.registrations, item => item.endpoint.id);
+  const peerOriginByRoute = new Map([...firstBy(state.peerRoutes, item => item.id)].map(([id, route]) => [id, route.origin]));
   const envelopeById = new Map(state.envelopes.map(item => [item.envelope.envelopeId, item]));
   const mailboxByEndpoint = new Map<string, StoredMailboxItem[]>();
   for (const item of state.mailbox) {
@@ -359,7 +371,7 @@ function snapshot(state: RelayState, version: FileVersion | undefined): RelaySna
     peerOriginByRoute,
     envelopeById,
     mailboxByEndpoint,
-    outboxByEnvelopeId: new Map(state.outbox.map(item => [item.envelope.envelopeId, item])),
+    outboxByEnvelopeId: firstBy(state.outbox, item => item.envelope.envelopeId),
     pendingOutboxCount: state.outbox.filter(item => item.forwardedAt === undefined && item.exhaustedAt === undefined).length,
   };
 }
@@ -532,14 +544,15 @@ export class TaskRelayStore {
 
   async updateOutbox(envelopeId: string, update: (item: PeerOutboxItem) => PeerOutboxItem): Promise<void> {
     await this.#mutate((state) => {
-      const index = state.outbox.findIndex(item => item.envelope.envelopeId === envelopeId);
-      if (index === -1) return { state, value: undefined };
-      const previous = state.outbox[index]!;
-      const next = update(previous);
-      if (next === previous || canonicalJson(next) === canonicalJson(previous)) return { state, value: undefined };
-      const outbox = [...state.outbox];
-      outbox[index] = next;
-      return { state: { ...state, outbox }, value: undefined };
+      let changed = false;
+      const outbox = state.outbox.map((item) => {
+        if (item.envelope.envelopeId !== envelopeId) return item;
+        const next = update(item);
+        if (next === item || canonicalJson(next) === canonicalJson(item)) return item;
+        changed = true;
+        return next;
+      });
+      return { state: changed ? { ...state, outbox } : state, value: undefined };
     });
   }
 
