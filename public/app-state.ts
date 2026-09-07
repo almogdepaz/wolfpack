@@ -19,6 +19,7 @@ import {
 import { authenticatedFetchWithTimeout } from "./browser-auth";
 import { SESSION_CARD_VIEW } from "./app-action-controller";
 import type { SessionCardView } from "./app-action-controller";
+import type { SessionInspectorTarget } from "./session-inspector";
 
 export { esc, escAttr } from "../src/html-escape";
 
@@ -399,6 +400,7 @@ export const state = {
   quickCmds: loadQuickCmds(),
   // desktop/grid terminal state
   terminalController: null,
+  termTarget: null as SessionInspectorTarget | null,
   desktopResizeHandler: null,
   desktopResizeTimer: null,
   _touchCleanup: null,

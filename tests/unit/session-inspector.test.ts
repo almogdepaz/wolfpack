@@ -3,7 +3,9 @@ import { createSessionInspector, type SessionSnapshot } from "../../public/sessi
 
 class FakeElement extends EventTarget {
   textContent = "";
-  focus(): void {}
+  isConnected = true;
+  focusCalls = 0;
+  focus(): void { this.focusCalls++; }
 }
 
 class FakeDialog extends FakeElement {
@@ -132,6 +134,20 @@ afterEach(() => {
   else delete (globalThis as { HTMLElement?: unknown }).HTMLElement;
   if (priorSetTimeout) Object.defineProperty(globalThis, "setTimeout", priorSetTimeout);
   if (priorClearTimeout) Object.defineProperty(globalThis, "clearTimeout", priorClearTimeout);
+});
+
+test("does not restore focus to an inspection control removed with its conflict overlay", async () => {
+  const dom = installDom();
+  const inspector = createSessionInspector({
+    isMachineReady: () => true,
+    requestSnapshot: async () => snapshot(),
+  });
+  const removedInvoker = dom.retry as unknown as FakeElement;
+  inspector.open(target, removedInvoker as unknown as HTMLElement);
+  await Promise.resolve();
+  removedInvoker.isConnected = false;
+  dom.close.dispatchEvent(new Event("click"));
+  expect(removedInvoker.focusCalls).toBe(0);
 });
 
 test("marks retained output unavailable when the stable peer loses readiness, then resumes only that same identity", async () => {

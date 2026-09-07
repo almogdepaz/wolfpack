@@ -16,7 +16,7 @@ import {
   backFromSettings, addToGrid, removeFromGrid, exitGridMode,
   hideGridCellsForTransition, revealGridCellsWithoutResize,
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
-  canOpenMultiTerminalGrid, disposeDelegationGrid,
+  canOpenMultiTerminalGrid, disposeDelegationGrid, gridInspectionTarget,
   renderDelegationGridCells, setDelegationGridMembers, suspendDelegationGridTerminals,
 } from "./app-grid";
 import type { DelegationGridMember } from "./app-grid";
@@ -70,6 +70,7 @@ import {
   SESSION_CONTROL_CREATE_URL,
 } from "../src/documentation-links";
 import { sessionRuntimeState, sessionRuntimeUi } from "../src/agent-runtime-ui";
+import type { SessionInspectorTarget } from "./session-inspector";
 import {
   delegationChildSummaryText,
   delegationGridMembers,
@@ -804,14 +805,23 @@ function setMobileGhosttyKeyboardOpen(open: boolean): boolean {
   return true;
 }
 
-function createConflictOverlay(message, buttonLabel, onClick) {
+interface ConflictInspectionAction {
+  readonly label: string;
+  readonly onClick: (event: Event) => void;
+}
+
+function createConflictOverlay(message, buttonLabel, onClick, inspection?: ConflictInspectionAction) {
   const overlay = document.createElement("div");
   overlay.className = "viewer-conflict-overlay";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
   overlay.setAttribute("aria-label", message);
-  overlay.innerHTML = '<div class="conflict-msg">' + esc(message) + '</div><button class="conflict-btn" type="button">' + esc(buttonLabel) + "</button>";
-  overlay.querySelector(".conflict-btn").addEventListener("click", onClick);
+  const inspectButton = inspection
+    ? '<button class="conflict-btn conflict-inspect-btn" type="button" aria-label="' + escAttr(inspection.label) + '">' + esc(inspection.label) + "</button>"
+    : "";
+  overlay.innerHTML = '<div class="conflict-msg">' + esc(message) + '</div><div class="conflict-actions"><button class="conflict-btn conflict-take-control-btn" type="button">' + esc(buttonLabel) + "</button>" + inspectButton + "</div>";
+  overlay.querySelector(".conflict-take-control-btn")?.addEventListener("click", onClick);
+  if (inspection) overlay.querySelector(".conflict-inspect-btn")?.addEventListener("click", inspection.onClick);
   overlay.addEventListener("click", (e) => e.stopPropagation());
   return overlay;
 }
@@ -1177,6 +1187,13 @@ function inspectSession(session: string, sessionId: string, machine: string | un
   sessionInspector.open({ session, sessionId, machine }, invoker);
 }
 
+function pinnedSessionInspectionTarget(session: string, machine: string): SessionInspectorTarget | null {
+  const group = state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === machine);
+  const selected = group?.sessions.find(candidate => candidate.name === session);
+  const sessionId = selected && sessionIdentityId(selected);
+  return sessionId ? { session, sessionId, machine } : null;
+}
+
 // set by swipe engine so showView() skips animation after gesture already handled it
 
 // navigation hierarchy — higher depth = "deeper" (forward = left, back = right)
@@ -1208,13 +1225,13 @@ function teardownTerminalForViewChange(previousView: string, nextView: string): 
   if (previousView !== "terminal" || nextView === "terminal") return;
   closeTerminalTranscript();
   if (state.activeDelegationRoot) {
-    destroyTerminal();
+    destroyTerminal(nextView === "settings");
     teardownDelegationWorkspace();
     if (isGridActive()) suspendGridMode();
   } else if (isGridActive()) {
     suspendGridMode();
   } else {
-    destroyTerminal();
+    destroyTerminal(nextView === "settings");
   }
 }
 
@@ -1706,10 +1723,6 @@ function renderMachineGroupHtml(g, multiMachine) {
           const anim = state.firstLoad ? "animate-in" : "";
           const grouping = delegationCardAttributes(row);
           const ordering = sessionOrderCardHtml(row, machineKey);
-          const sessionId = sessionIdentityId(s);
-          const inspectButton = sessionId
-            ? `<button type="button" class="inspect-btn" data-action="inspect-session" data-session="${escAttr(s.name)}" data-session-id="${escAttr(sessionId)}" data-machine="${mUrlAttr}" aria-label="Inspect ${escAttr(s.name)}" title="Read visible screen">Inspect</button>`
-            : "";
           return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
             <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
             <div class="dot ${ui.dot}" title="${ui.title}"></div>
@@ -1720,7 +1733,6 @@ function renderMachineGroupHtml(g, multiMachine) {
               <div class="card-preview">${esc(lastLine)}</div>
               ${activityHtml(s)}
             </div>
-            ${inspectButton}
             <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
           </div>`;
       }).join("");
@@ -1756,6 +1768,7 @@ function delegationGridMember(row: DelegationSessionRow<DelegationSessionLike>, 
   const idle = sessionRuntimeState(row.session) === AGENT_STATUS_STATE.IDLE;
   return {
     session: row.session.name,
+    sessionId: sessionIdentityId(row.session),
     machine,
     role: row.role === "root" ? "root" : "child",
     statusClass: ui.badge,
@@ -1847,9 +1860,10 @@ function openDelegationGrid(rootSession: string, machineUrl = ""): void {
   if (isGridActive()) suspendGridMode();
   const context = prepareDelegationWorkspace(rootSession, machineUrl);
   if (!context) return;
-  if (state.terminalController) destroyTerminal();
+  destroyTerminal();
   collapseAutoExpandedSidebarImmediately();
   setState({
+    termTarget: gridInspectionTarget(state.delegationGridSessions[0]),
     focusedDelegationSession: null,
     currentSession: context.root.name,
     currentMachine: machineUrl,
@@ -1863,8 +1877,13 @@ function openDelegationGrid(rootSession: string, machineUrl = ""): void {
 function focusDelegationSession(sessionName: string, machineUrl = ""): void {
   if (isGridActive()) suspendGridMode();
   const context = prepareDelegationWorkspace(sessionName, machineUrl);
-  if (!context || !context.members.some(row => row.session.name === sessionName)) return;
+  const focusedMember = context?.members.find(row => row.session.name === sessionName);
+  if (!focusedMember) return;
+  const sessionId = sessionIdentityId(focusedMember.session);
   if (state.terminalController) destroyTerminal();
+  state.termTarget = sessionId
+    ? { session: focusedMember.session.name, sessionId, machine: machineUrl }
+    : null;
   suspendDelegationGridTerminals();
   collapseAutoExpandedSidebarImmediately();
   setState({
@@ -2137,6 +2156,7 @@ async function openSession(name, machineUrl) {
       return;
     }
   }
+  const inspectionTarget = pinnedSessionInspectionTarget(name, targetMachine);
   const trace = __wfTraceStart(name, targetMachine, { mode: "single" });
   __wfTraceEvent(trace, "openSession.start");
   if (state.activeDelegationRoot) {
@@ -2179,6 +2199,7 @@ async function openSession(name, machineUrl) {
     return;
   }
   destroyTerminal();
+  state.termTarget = inspectionTarget;
   setState({ currentSession: name, currentMachine: machineUrl || "" });
   recordRecent(state.currentMachine, name);
   wpMetrics.reset();
@@ -2949,7 +2970,7 @@ function startDesktopTakeControlFallback(): void {
   });
 }
 
-function showDesktopConflictOverlay() {
+function showDesktopConflictOverlay(inspectionTarget: SessionInspectorTarget | null): void {
   const container = document.getElementById("desktop-terminal-container");
   if (!container) return;
   revealTerminalConflict(container, state.terminalController?.hydration);
@@ -2965,7 +2986,19 @@ function showDesktopConflictOverlay() {
       state.terminalController.reconnect({ takeControl: true });
     }
     // Don't remove overlay here — wait for control_granted to confirm
-  });
+  }, inspectionTarget ? {
+    label: `Inspect ${inspectionTarget.session}`,
+    onClick: (event) => {
+      const invoker = event.currentTarget;
+      if (!(invoker instanceof HTMLElement)) return;
+      inspectSession(
+        inspectionTarget.session,
+        inspectionTarget.sessionId,
+        inspectionTarget.machine,
+        invoker,
+      );
+    },
+  } : undefined);
   overlay.id = "desktop-conflict-overlay";
   container.appendChild(overlay);
 }
@@ -2995,6 +3028,7 @@ type TerminalSlowLoadIndicator = ReturnType<typeof createTerminalSlowPathIndicat
 
 interface TerminalControllerBootstrapOptions {
   readonly container: HTMLElement;
+  readonly inspectionTarget: SessionInspectorTarget | null;
   readonly isMobile: boolean;
   readonly prefillMode: TerminalPrefillMode;
   readonly slowLoad: TerminalSlowLoadIndicator;
@@ -3061,6 +3095,7 @@ function handleTerminalSubSessionOpened(parentSession: string, session: string):
 function handleTerminalViewerConflict(
   container: HTMLElement,
   slowLoad: TerminalSlowLoadIndicator,
+  inspectionTarget: SessionInspectorTarget | null,
 ): void {
   const result = handleViewerConflict(_tcState);
   _tcState = result.newState;
@@ -3069,7 +3104,7 @@ function handleTerminalViewerConflict(
   if (result.action === "auto-take-control") {
     state.terminalController.sendTakeControl();
   } else {
-    showDesktopConflictOverlay();
+    showDesktopConflictOverlay(inspectionTarget);
   }
 }
 
@@ -3089,6 +3124,7 @@ function handleTerminalControlGranted(
 function handleTerminalDisconnected(
   container: HTMLElement,
   slowLoad: TerminalSlowLoadIndicator,
+  inspectionTarget: SessionInspectorTarget | null,
   code: number,
   reason: string,
 ): void {
@@ -3098,7 +3134,7 @@ function handleTerminalDisconnected(
     _tcState = handleDisplaced(_tcState);
     slowLoad.stop();
     setTerminalLoadVisualState(container, "displaced");
-    showDesktopConflictOverlay();
+    showDesktopConflictOverlay(inspectionTarget);
     return;
   }
   if (action === "session-ended") {
@@ -3160,7 +3196,7 @@ function handleTerminalHydrationStart(
 function createTerminalBootstrapController(
   options: TerminalControllerBootstrapOptions,
 ): PtyTerminalController {
-  const { container, isMobile, liveGate, prefillMode, slowLoad } = options;
+  const { container, inspectionTarget, isMobile, liveGate, prefillMode, slowLoad } = options;
   const session = state.currentSession;
   const machine = state.currentMachine || "";
   let acknowledgementAttempted = false;
@@ -3185,9 +3221,9 @@ function createTerminalBootstrapController(
     onPtyReady: handleTerminalPtyReady,
     onOutput: handleTerminalOutput,
     onSubSessionOpened: handleTerminalSubSessionOpened,
-    onViewerConflict: () => handleTerminalViewerConflict(container, slowLoad),
+    onViewerConflict: () => handleTerminalViewerConflict(container, slowLoad, inspectionTarget),
     onControlGranted: () => handleTerminalControlGranted(container, slowLoad, isMobile),
-    onDisconnected: (code, reason) => handleTerminalDisconnected(container, slowLoad, code, reason),
+    onDisconnected: (code, reason) => handleTerminalDisconnected(container, slowLoad, inspectionTarget, code, reason),
     onReconnecting: () => handleTerminalReconnecting(container, slowLoad),
     onReconnectExhausted: () => handleTerminalReconnectExhausted(container, slowLoad),
     onRouteUnavailable: () => handleTerminalRouteUnavailable(container, slowLoad),
@@ -3250,8 +3286,12 @@ function setupMobileTerminalViewport(): void {
   vvHandler();
 }
 
-async function initTerminal(prefillModeOverride?: TerminalPrefillMode): Promise<void> {
+async function initTerminal(
+  prefillModeOverride?: TerminalPrefillMode,
+  inspectionTargetOverride?: SessionInspectorTarget | null,
+): Promise<void> {
   if (state.terminalController) return;
+  if (inspectionTargetOverride !== undefined) state.termTarget = inspectionTargetOverride;
   const isMobile = !isDesktop();
   const container = document.getElementById("desktop-terminal-container");
   const slowLoad = prepareTerminalBootstrapView(container);
@@ -3268,6 +3308,7 @@ async function initTerminal(prefillModeOverride?: TerminalPrefillMode): Promise<
   _tcState = { displaced: false, autoTakeControl: false };
   state.terminalController = createTerminalBootstrapController({
     container,
+    inspectionTarget: state.termTarget,
     isMobile,
     prefillMode: terminalPrefillMode,
     slowLoad,
@@ -3312,7 +3353,8 @@ function hideTerminalCanvasForTeardown(): void {
   void container.offsetHeight;
 }
 
-function destroyTerminal() {
+function destroyTerminal(preserveTarget = false) {
+  if (!preserveTarget) state.termTarget = null;
   hideTerminalCanvasForTeardown();
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
   if (!isDesktop()) setMobileGhosttyKeyboardOpen(false);
@@ -3774,14 +3816,19 @@ async function switchSession(val) {
     return;
   }
   if (name === state.currentSession && machineUrl === state.currentMachine) {
-    // Same session — reconnect or reinitialize if the terminal is not active.
+    // The mounted controller owns its exact target through reconnect/conflict.
     if (state.terminalController) {
       if (!state.terminalController.isConnected) connectDesktopWs();
     } else if (state.currentView === "terminal") {
-      initTerminal();
+      const currentTarget = state.termTarget;
+      state.termTarget = currentTarget?.session === name && currentTarget.machine === machineUrl
+        ? currentTarget
+        : pinnedSessionInspectionTarget(name, machineUrl);
+      void initTerminal();
     }
     return;
   }
+  const inspectionTarget = pinnedSessionInspectionTarget(name, machineUrl);
   hideTerminalCanvasForTeardown();
   await waitForTerminalSwitchPaint();
   closeDrawer(true);
@@ -3789,6 +3836,7 @@ async function switchSession(val) {
   if (isGridActive()) exitGridMode();
   // Suspend the current terminal before mounting the selected session.
   destroyTerminal();
+  state.termTarget = inspectionTarget;
   setState({ currentSession: name, currentMachine: machineUrl });
   recordRecent(machineUrl, name);
   restoreDraft();
@@ -4747,10 +4795,6 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${gridIcon}</button>`;
   const grouping = delegationCardAttributes(row);
   const ordering = sessionOrderCardHtml(row, machineUrl);
-  const sessionId = sessionIdentityId(s);
-  const inspectButton = sessionId
-    ? `<button type="button" class="inspect-btn" data-action="inspect-session" data-session="${escAttr(s.name)}" data-session-id="${escAttr(sessionId)}" data-machine="${machineUrlAttr}" aria-label="Inspect ${escAttr(s.name)}" title="Read visible screen">Inspect</button>`
-    : "";
   return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
@@ -4762,7 +4806,6 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       ${activityHtml(s)}
     </div>
     ${gridBtn}
-    ${inspectButton}
     <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
   </div>`;
 }
@@ -5081,7 +5124,6 @@ function bindHtmlEventListeners(): void {
     delegationToggle: toggleSidebarDelegationChildren,
     newSession: machine => { void showProjectPicker(machine); },
     openSession: (session, machine) => { void openSession(session, machine); },
-    inspectSession,
     killSession: (session, event, machine) => { void killSession(session, event, machine); },
     retryMachine,
     selectProject,
@@ -5211,6 +5253,9 @@ initGridDeps({
   showView, openSession, destroyTerminal, initTerminal,
   backToSessions, renderSidebar,
   createPtyTerminalController, createConflictOverlay,
+  sessionIdFor: (session, machine) => pinnedSessionInspectionTarget(session, machine)?.sessionId ?? null,
+  termTarget: () => state.termTarget,
+  inspectSession,
   showNotice: (title, message) => { void showAppDialog({ title, message, confirmLabel: "Close", cancelLabel: null }); },
   canUseWasmTerminal,
   isGhosttyRendererReady: () => ghosttyRendererReady,

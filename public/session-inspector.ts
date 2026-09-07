@@ -80,7 +80,7 @@ export function createSessionInspector(options: SessionInspectorOptions): Sessio
     const invoker = returnFocus;
     returnFocus = null;
     if (dialog.open) dialog.close();
-    invoker?.focus({ preventScroll: true });
+    if (invoker?.isConnected) invoker.focus({ preventScroll: true });
   };
   const renderSnapshot = (snapshot: SessionSnapshot): void => {
     title.textContent = `Inspect ${snapshot.session}`;
