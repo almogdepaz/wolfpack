@@ -34,3 +34,5 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
+# Test-only virtual-time support for deterministic registry expiry coverage.
+tokio = { version = "1", features = ["test-util"] }
