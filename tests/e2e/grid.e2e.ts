@@ -538,7 +538,27 @@ test("new grid cells hide canvas until hydration completes", async ({ page }) =>
   }
 });
 
-test("grid viewer conflict exits hydration without becoming live", async ({ page }) => {
+test("grid viewer conflict offers passive inspect without changing PTY authority", async ({ page }) => {
+  let anotherProjectAttaches = 0;
+  let snapshotRequests = 0;
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    snapshotRequests++;
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("mock:another-project");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        session: "another-project",
+        sessionId,
+        text: "passive grid snapshot",
+        capturedAt: new Date().toISOString(),
+        cols: 80,
+        rows: 24,
+        truncated: false,
+        freshness: "fresh",
+      }),
+    });
+  });
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
     const session = new URL(ws.url()).searchParams.get("session");
     ws.onMessage((message) => {
@@ -546,6 +566,7 @@ test("grid viewer conflict exits hydration without becoming live", async ({ page
       const parsed = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
       if (parsed.type !== "attach") return;
       if (session === "another-project") {
+        anotherProjectAttaches++;
         ws.send(JSON.stringify({ type: "viewer_conflict" }));
         return;
       }
@@ -561,7 +582,18 @@ test("grid viewer conflict exits hydration without becoming live", async ({ page
   await toggleSessionGridFromUi(page, "another-project", "");
 
   const cell = page.locator('#desktop-grid-container .grid-cell[data-session="another-project"]');
-  await expect(cell.locator(".viewer-conflict-overlay")).toBeVisible();
+  const conflict = cell.locator(".viewer-conflict-overlay");
+  await expect(conflict).toBeVisible();
+  const inspect = conflict.getByRole("button", { name: "Inspect another-project", exact: true });
+  await inspect.click();
+  const dialog = page.getByRole("dialog", { name: "Inspect another-project", exact: true });
+  await expect(dialog).toContainText("passive grid snapshot");
+  expect(snapshotRequests).toBe(1);
+  expect(anotherProjectAttaches).toBe(1);
+  await dialog.getByRole("button", { name: "Close inspection", exact: true }).click();
+  await expect(conflict).toBeVisible();
+  await expect(inspect).toBeFocused();
+
   const settledState = await cell.evaluate(async (element) => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     return {
@@ -570,6 +602,144 @@ test("grid viewer conflict exits hydration without becoming live", async ({ page
     };
   });
   expect(settledState).toEqual({ hydrating: false, loadState: "viewer-conflict" });
+});
+
+test("simultaneous grid conflicts retain separate captured inspect targets", async ({ page }) => {
+  const snapshotIds: string[] = [];
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId") ?? "";
+    snapshotIds.push(sessionId);
+    const session = sessionId === "mock:test-project" ? "test-project" : "another-project";
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      session, sessionId, text: `${session} snapshot`, capturedAt: new Date().toISOString(),
+      cols: 80, rows: 24, truncated: false, freshness: "fresh",
+    }) });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (frame.type !== "attach") return;
+      if (frame.prefillMode === "viewport") {
+        ws.send(JSON.stringify({ type: "viewer_conflict" }));
+        return;
+      }
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await loadApp(page);
+  await openTerminal(page, "test-project");
+  await toggleSessionGridFromUi(page, "another-project", "");
+  const grid = page.locator("#desktop-grid-container");
+  const testProjectInspect = grid.locator('[data-session="test-project"]').getByRole("button", { name: "Inspect test-project", exact: true });
+  const anotherProjectInspect = grid.locator('[data-session="another-project"]').getByRole("button", { name: "Inspect another-project", exact: true });
+  await expect(testProjectInspect).toBeVisible();
+  await expect(anotherProjectInspect).toBeVisible();
+  await testProjectInspect.click();
+  await page.getByRole("dialog", { name: "Inspect test-project", exact: true }).getByRole("button", { name: "Close inspection" }).click();
+  await anotherProjectInspect.click();
+  await expect(page.getByRole("dialog", { name: "Inspect another-project", exact: true })).toContainText("another-project snapshot");
+  expect(snapshotIds).toEqual(["mock:test-project", "mock:another-project"]);
+});
+
+test("single-to-grid transfer retains the mounted terminal UUID after a same-name refresh", async ({ page }) => {
+  let replacement = false;
+  let testProjectAttaches = 0;
+  await page.route("**/api/sessions", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json() as { readonly sessions: ReadonlyArray<Record<string, unknown>> };
+    await route.fulfill({ response, json: { sessions: body.sessions.map((session) =>
+      session.name === "test-project" && replacement
+        ? { ...session, identity: { ...(session.identity as Record<string, unknown>), wolfpackSessionId: "replacement-test-project-id" } }
+        : session) } });
+  });
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("mock:test-project");
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      session: "test-project", sessionId, text: "transferred original snapshot", capturedAt: new Date().toISOString(),
+      cols: 80, rows: 24, truncated: false, freshness: "fresh",
+    }) });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (frame.type !== "attach") return;
+      if (session === "test-project" && ++testProjectAttaches === 2) {
+        ws.send(JSON.stringify({ type: "viewer_conflict" }));
+        return;
+      }
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      if (frame.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await loadApp(page);
+  await openTerminal(page, "test-project");
+  replacement = true;
+  await page.waitForTimeout(5_200);
+  await toggleSessionGridFromUi(page, "another-project", "");
+  const inspect = page.locator('#desktop-grid-container .grid-cell[data-session="test-project"]')
+    .getByRole("button", { name: "Inspect test-project", exact: true });
+  await expect(inspect).toBeVisible();
+  await inspect.click();
+  await expect(page.getByRole("dialog", { name: "Inspect test-project", exact: true })).toContainText("transferred original snapshot");
+});
+
+test("conflicted grid survivor transfers its exact target into the restored single terminal", async ({ page }) => {
+  let snapshotRequests = 0;
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    snapshotRequests++;
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("mock:another-project");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        session: "another-project",
+        sessionId,
+        text: "survivor-pinned snapshot",
+        capturedAt: new Date().toISOString(),
+        cols: 80,
+        rows: 24,
+        truncated: false,
+        freshness: "fresh",
+      }),
+    });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (frame.type !== "attach") return;
+      if (session === "another-project") {
+        ws.send(JSON.stringify({ type: "viewer_conflict" }));
+        return;
+      }
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      if (frame.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await loadApp(page);
+  await openTerminal(page, "test-project");
+  await toggleSessionGridFromUi(page, "another-project", "");
+  await expect(page.locator('#desktop-grid-container .grid-cell[data-session="another-project"] .viewer-conflict-overlay')).toBeVisible();
+  await toggleSessionGridFromUi(page, "test-project", "");
+
+  const conflict = page.locator("#desktop-conflict-overlay");
+  const inspect = conflict.getByRole("button", { name: "Inspect another-project", exact: true });
+  await expect(inspect).toBeVisible();
+  await inspect.click();
+  await expect(page.getByRole("dialog", { name: "Inspect another-project", exact: true })).toContainText("survivor-pinned snapshot");
+  expect(snapshotRequests).toBe(1);
 });
 
 test("grid manual retry hides stale content until replacement viewport prefill completes", async ({ page }) => {
@@ -603,7 +773,7 @@ test("grid manual retry hides stale content until replacement viewport prefill c
   await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 5000 });
 
   await viewportSockets[0].close({ code: CLOSE_CODE_DISPLACED, reason: WS_CLOSE_REASONS.DISPLACED });
-  await page.locator("#desktop-grid-container .grid-cell").first().locator(".viewer-conflict-overlay .conflict-btn").click();
+  await page.locator("#desktop-grid-container .grid-cell").first().getByRole("button", { name: "Take Control", exact: true }).click();
   await expect.poll(() => attachCount).toBe(3);
 
   const replacementState = await page.locator("#desktop-grid-container .grid-cell").first().evaluate((cell) => {
@@ -729,8 +899,8 @@ test("removing a conflicted grid cell prevents its scheduled takeover fallback",
   await expect(removedCell.locator(".viewer-conflict-overlay")).toBeVisible({ timeout: 5000 });
 
   const controlCountsBeforeTakeControl = protocol.counts(controlSession);
-  await controlCell.locator(".viewer-conflict-overlay .conflict-btn").click();
-  await removedCell.locator(".viewer-conflict-overlay .conflict-btn").click();
+  await controlCell.getByRole("button", { name: "Take Control", exact: true }).click();
+  await removedCell.getByRole("button", { name: "Take Control", exact: true }).click();
   await expect.poll(() => protocol.counts(controlSession).takeControls).toBe(1);
   await expect.poll(() => protocol.counts(removedSession).takeControls).toBe(1);
 

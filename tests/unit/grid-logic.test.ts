@@ -201,6 +201,17 @@ describe("suspendGridState", () => {
     expect(result.sessions).not.toBe(grid);
   });
 
+  test("preserves pinned session IDs across suspension", () => {
+    const result = suspendGridState([
+      { session: "reusable-name", machine: "stable-machine", sessionId: "original-session-id" },
+    ], 0);
+    expect(result.focusedSession).toEqual({
+      session: "reusable-name",
+      machine: "stable-machine",
+      sessionId: "original-session-id",
+    });
+  });
+
   test("clamps out-of-range focus to the last session", () => {
     const result = suspendGridState([
       { session: "a", machine: "" },

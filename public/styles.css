@@ -1289,23 +1289,6 @@ body.no-animations, body.no-animations * {
   align-items: center;
   justify-content: center;
 }
-.inspect-btn {
-  min-width: 44px;
-  min-height: 36px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 6px 8px;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  font: 600 10px/1 var(--font-ui);
-  cursor: pointer;
-}
-.inspect-btn:hover,
-.inspect-btn:focus-visible {
-  border-color: var(--accent-border);
-  color: var(--accent);
-  outline: none;
-}
 .kill-btn:hover {
   color: var(--danger-bright);
   border-color: rgba(255,68,68,0.28);
@@ -1971,6 +1954,12 @@ body.no-animations, body.no-animations * {
   text-transform: uppercase;
   color: var(--conflict-accent);
 }
+.viewer-conflict-overlay .conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
 .viewer-conflict-overlay .conflict-btn {
   padding: 6px 16px;
   border: 1px solid var(--conflict-accent);
@@ -2463,23 +2452,13 @@ body.no-animations, body.no-animations * {
   .sidebar-sessions .idle-session-empty h2 { font-size: 12px; }
   .sidebar-sessions .idle-session-empty p { font-size: 10px; line-height: 1.45; }
 
-  /* Keep sidebar details and their open target above the secondary actions. */
+  /* Sidebar cards — denser than mobile */
   .sidebar-sessions .card {
-    display: grid;
-    grid-template:
-      "dot info info info" auto
-      ". grid inspect stop" auto / 7px minmax(0, 1fr) auto auto;
     padding: 8px;
     min-height: 0;
     margin-bottom: 6px;
     border-left-width: 2px;
   }
-  .sidebar-sessions .card-open { grid-area: 1 / 1 / 2 / -1; }
-  .sidebar-sessions .dot { grid-area: dot; }
-  .sidebar-sessions .card-info { grid-area: info; }
-  .sidebar-sessions .grid-btn { grid-area: grid; justify-self: end; }
-  .sidebar-sessions .inspect-btn { grid-area: inspect; }
-  .sidebar-sessions .kill-btn { grid-area: stop; }
   .sidebar-sessions .card-name {
     font-size: 11px;
     letter-spacing: -0.2px;

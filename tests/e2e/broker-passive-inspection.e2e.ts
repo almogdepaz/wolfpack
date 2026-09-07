@@ -158,8 +158,13 @@ test("passive inspect is exact-ID, bounded, and leaves the active browser in con
     const beforeInspection = await brokerSessionGeometry(broker, sessionId);
 
     await inspector.goto(server!.baseUrl);
-    const inspect = inspector.getByRole("button", { name: `Inspect ${SESSION_NAME}` });
+    await expect(inspector.getByRole("button", { name: `Inspect ${SESSION_NAME}` })).toHaveCount(0);
+    await openSessionFromUi(inspector, SESSION_NAME);
+    const inspectorConflict = inspector.locator("#desktop-conflict-overlay");
+    await expect(inspectorConflict).toBeVisible();
+    const inspect = inspectorConflict.getByRole("button", { name: `Inspect ${SESSION_NAME}` });
     await expect(inspect).toBeVisible();
+    const connectionsBeforeInspection = inspectorPtyConnections;
     await inspect.click();
 
     const dialog = inspector.getByRole("dialog", { name: `Inspect ${SESSION_NAME}` });
@@ -167,7 +172,7 @@ test("passive inspect is exact-ID, bounded, and leaves the active browser in con
     await expect(dialog).toContainText(firstMarker);
     await expect(dialog).toContainText("Snapshot");
     await expect(dialog).toContainText(`${beforeInspection.cols} × ${beforeInspection.rows}`);
-    expect(inspectorPtyConnections, "inspection must not mount a PTY websocket").toBe(0);
+    expect(inspectorPtyConnections, "inspection must not mount another PTY websocket").toBe(connectionsBeforeInspection);
     expect(await brokerSessionGeometry(broker, sessionId)).toEqual(beforeInspection);
 
     await inspector.setViewportSize({ width: 390, height: 844 });
@@ -178,7 +183,7 @@ test("passive inspect is exact-ID, bounded, and leaves the active browser in con
     await waitForSnapshotText(broker, sessionId, secondMarker);
     await expect(dialog).toContainText(secondMarker, { timeout: REFRESH_INTERVAL_MS + 3_000 });
     expect(await brokerSessionGeometry(broker, sessionId), "mobile inspector must not resize the broker PTY").toEqual(beforeInspection);
-    expect(inspectorPtyConnections).toBe(0);
+    expect(inspectorPtyConnections).toBe(connectionsBeforeInspection);
 
     const rowMarker = `PASSIVE_ROW_${Math.random().toString(36).slice(2)}`;
     await controller.locator("#desktop-terminal-container textarea").focus();
@@ -196,11 +201,10 @@ test("passive inspect is exact-ID, bounded, and leaves the active browser in con
 
     await dialog.getByRole("button", { name: "Close inspection" }).click();
     await expect(dialog).toBeHidden();
-    expect(inspectorPtyConnections).toBe(0);
-
-    await openSessionFromUi(inspector, SESSION_NAME);
-    const inspectorConflict = inspector.locator("#desktop-conflict-overlay");
     await expect(inspectorConflict).toBeVisible();
+    await expect(inspect).toBeFocused();
+    expect(inspectorPtyConnections).toBe(connectionsBeforeInspection);
+
     await inspectorConflict.getByRole("button", { name: "Take Control" }).click();
     await expect(inspector.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 5_000 });
     await expect(controller.locator("#desktop-conflict-overlay")).toBeVisible({ timeout: 5_000 });
@@ -222,13 +226,20 @@ test("inspector modal blocks desktop shortcuts and restores focus on Escape", as
     body: JSON.stringify({ project: PROJECT_NAME, cmd: "shell", sessionName }),
   });
   expect(create.status).toBe(200);
+  const ownerContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   try {
+    const owner = await ownerContext.newPage();
+    await owner.goto(server!.baseUrl);
+    await openSessionFromUi(owner, sessionName);
+    await expect(owner.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 5_000 });
+
     const page = await context.newPage();
     await page.goto(server!.baseUrl);
     await openSessionFromUi(page, sessionName);
-    await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 5_000 });
-    const inspect = page.getByRole("button", { name: `Inspect ${sessionName}` });
+    const conflict = page.locator("#desktop-conflict-overlay");
+    await expect(conflict).toBeVisible();
+    const inspect = conflict.getByRole("button", { name: `Inspect ${sessionName}` });
     await inspect.click();
     const dialog = page.getByRole("dialog", { name: `Inspect ${sessionName}` });
     await expect(dialog).toBeVisible();
@@ -256,6 +267,7 @@ test("inspector modal blocks desktop shortcuts and restores focus on Escape", as
     await expect(inspect).toBeFocused();
   } finally {
     await context.close();
+    await ownerContext.close();
   }
 });
 

@@ -257,6 +257,25 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions }) });
   });
   await page.goto(srv.baseUrl);
+  let delegationSnapshotRequests = 0;
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    delegationSnapshotRequests++;
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("attention-child-id");
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        session: "attention-child",
+        sessionId,
+        text: "delegation conflict snapshot",
+        capturedAt: new Date().toISOString(),
+        cols: 80,
+        rows: 24,
+        truncated: false,
+        freshness: "fresh",
+      }),
+    });
+  });
   await openSessionFromUi(page, "manual-one");
   await expect.poll(() => sockets.has("manual-one")).toBe(true);
   await page.locator("#sidebar-hover-edge").dispatchEvent("mouseenter");
@@ -372,6 +391,21 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     "attention-child",
     "idle-child",
   ], { timeout: 7_000 });
+
+  const attentionSocket = sockets.get("attention-child");
+  if (!attentionSocket) throw new Error("missing delegation child socket");
+  attentionSocket.send(JSON.stringify({ type: "viewer_conflict" }));
+  const attentionCell = page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]');
+  const conflict = attentionCell.locator(".viewer-conflict-overlay");
+  await expect(conflict).toBeVisible();
+  const inspect = conflict.getByRole("button", { name: "Inspect attention-child", exact: true });
+  await inspect.click();
+  const dialog = page.getByRole("dialog", { name: "Inspect attention-child", exact: true });
+  await expect(dialog).toContainText("delegation conflict snapshot");
+  expect(delegationSnapshotRequests).toBe(1);
+  await dialog.getByRole("button", { name: "Close inspection", exact: true }).click();
+  await expect(conflict).toBeVisible();
+  await expect(inspect).toBeFocused();
 
 });
 
@@ -502,6 +536,135 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
 
   await expect(page.locator("#delegation-grid-shell")).not.toBeVisible();
   await expect(page.getByRole("dialog", { name: "Grid mode unavailable" })).toContainText("Grid mode is disabled");
+});
+
+test("delegation root selection replaces a suspended single inspection target", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation-grid Settings lifecycle");
+  const root = { id: "root-id", name: "root" };
+  let rootAttaches = 0;
+  const snapshotSessionIds: string[] = [];
+  await page.route("**/api/sessions", async (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions: [
+    { name: "solo", triage: "idle", runtimeState: { state: "idle" }, identity: identity("solo-id", "solo") },
+    { name: root.name, triage: "working", runtimeState: { state: "working" }, identity: identity(root.id, root.name) },
+    { name: "child", triage: "idle", runtimeState: { state: "idle" }, identity: identity("child-id", "child", root) },
+  ] }) }));
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId") ?? "";
+    snapshotSessionIds.push(sessionId);
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      session: sessionId === root.id ? root.name : "solo",
+      sessionId,
+      text: sessionId === root.id ? "root Settings snapshot" : "solo Settings snapshot",
+      capturedAt: new Date().toISOString(),
+      cols: 80,
+      rows: 24,
+      truncated: false,
+      freshness: "fresh",
+    }) });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session");
+    ws.onMessage((message) => {
+      if (typeof message !== "string" || JSON.parse(message).type !== "attach") return;
+      if (session === root.name && ++rootAttaches > 1) return void ws.send(JSON.stringify({ type: "viewer_conflict" }));
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await page.goto(srv.baseUrl);
+  await openSessionFromUi(page, "solo");
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await openSettingsFromUi(page);
+  await expect(page.locator("#settings-view")).toHaveClass(/visible/);
+  await page.locator("#sidebar-session-list").getByRole("button", { name: "Open root", exact: true }).press("Enter");
+  await expect(page.locator("#delegation-grid-shell")).toBeVisible();
+  await expect.poll(() => rootAttaches).toBe(1);
+  await openSettingsFromUi(page);
+  await page.locator("#settings-back-btn").click();
+  const inspect = page.locator("#desktop-conflict-overlay").getByRole("button", { name: "Inspect root", exact: true });
+  await expect(inspect).toBeVisible();
+  await inspect.click();
+  await expect(page.getByRole("dialog", { name: "Inspect root", exact: true })).toContainText("root Settings snapshot");
+  expect(snapshotSessionIds).toEqual([root.id]);
+});
+
+test("focused delegation Settings Back retains the child inspection target", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop focused-delegation Settings lifecycle");
+  const parent = { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent" };
+  let childAttaches = 0;
+  await page.route("**/api/sessions", async (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions: [
+    { name: "parent", triage: "idle", runtimeState: { state: "idle" }, identity: parent },
+    { name: "child", triage: "working", runtimeState: { state: "working" }, identity: { wolfpackSessionId: "child-id", wolfpackSessionName: "child", parentSession: parent } },
+  ] }) }));
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("child-id");
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ session: "child", sessionId, text: "delegation Settings snapshot", capturedAt: new Date().toISOString(), cols: 80, rows: 24, truncated: false, freshness: "fresh" }) });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session");
+    ws.onMessage((message) => {
+      if (typeof message !== "string" || JSON.parse(message).type !== "attach") return;
+      if (session === "child" && ++childAttaches > 1) return void ws.send(JSON.stringify({ type: "viewer_conflict" }));
+      ws.send(JSON.stringify({ type: "attach_ack" })); ws.send(JSON.stringify({ type: "prefill_done" })); ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await page.goto(srv.baseUrl);
+  const sidebar = page.locator("#sidebar-session-list");
+  await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
+  await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await openSettingsFromUi(page);
+  await expect(page.locator("#settings-view")).toHaveClass(/visible/);
+  expect(childAttaches).toBe(1);
+  await page.locator("#settings-back-btn").click();
+  const inspect = page.locator("#desktop-conflict-overlay").getByRole("button", { name: "Inspect child", exact: true });
+  await expect(inspect).toBeVisible();
+  await inspect.click();
+  await expect(page.getByRole("dialog", { name: "Inspect child", exact: true })).toContainText("delegation Settings snapshot");
+});
+
+test("focused delegation terminal captures its child UUID for conflict inspection", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation focus inspection");
+  const parent = { wolfpackSessionId: "parent-id", wolfpackSessionName: "parent" };
+  await page.route("**/api/sessions", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ sessions: [
+        { name: "parent", triage: "idle", runtimeState: { state: "idle" }, identity: parent },
+        { name: "child", triage: "working", runtimeState: { state: "working" }, identity: { wolfpackSessionId: "child-id", wolfpackSessionName: "child", parentSession: parent } },
+      ] }),
+    });
+  });
+  await page.route("**/api/session-control/snapshot?**", async (route) => {
+    const sessionId = new URL(route.request().url()).searchParams.get("sessionId");
+    expect(sessionId).toBe("child-id");
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      session: "child", sessionId, text: "delegation-pinned snapshot", capturedAt: new Date().toISOString(),
+      cols: 80, rows: 24, truncated: false, freshness: "fresh",
+    }) });
+  });
+  await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session");
+    ws.onMessage((message) => {
+      if (typeof message !== "string" || JSON.parse(message).type !== "attach") return;
+      if (session === "child") ws.send(JSON.stringify({ type: "viewer_conflict" }));
+      else {
+        ws.send(JSON.stringify({ type: "attach_ack" }));
+        ws.send(JSON.stringify({ type: "prefill_done" }));
+        ws.send(JSON.stringify({ type: "pty_ready" }));
+      }
+    });
+  });
+  await page.goto(srv.baseUrl);
+  const sidebar = page.locator("#sidebar-session-list");
+  await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
+  await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
+  const inspect = page.locator("#desktop-conflict-overlay").getByRole("button", { name: "Inspect child", exact: true });
+  await expect(inspect).toBeVisible();
+  await inspect.click();
+  await expect(page.getByRole("dialog", { name: "Inspect child", exact: true })).toContainText("delegation-pinned snapshot");
 });
 
 test("desktop opens a child terminal with a return to its parent delegation grid", async ({ page }, testInfo) => {
