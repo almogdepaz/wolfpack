@@ -532,21 +532,61 @@ mod tests {
     }
 
     #[test]
+    fn tombstone_deadline_retains_before_and_removes_at_the_inclusive_boundary() {
+        let reg = Registry::new(test_events());
+        let session = reg
+            .create(create_opts(Some("deadline-source"), &["sleep", "30"]))
+            .expect("create");
+        let id = Uuid::new_v4();
+        let expires_at = Instant::now() + Duration::from_secs(1);
+        let mut inner = reg.inner.lock().expect("registry poisoned");
+        inner.tombstones.insert(
+            id,
+            Tombstone {
+                session: Arc::clone(&session),
+                expires_at,
+            },
+        );
+        assert!(inner
+            .purge_expired_tombstones_at(expires_at - Duration::from_millis(1))
+            .is_empty());
+        assert!(
+            inner.tombstones.contains_key(&id),
+            "must retain immediately before its deadline"
+        );
+        assert_eq!(inner.purge_expired_tombstones_at(expires_at).len(), 1);
+        assert!(
+            !inner.tombstones.contains_key(&id),
+            "must remove exactly at its deadline"
+        );
+        drop(inner);
+        cleanup(&session);
+    }
+
+    #[test]
     fn tombstone_cap_evicts_the_oldest_without_touching_live_sessions() {
-        let events = test_events();
-        let reg = Registry::new(events);
+        let reg = Registry::new(test_events());
         let session = reg
             .create(create_opts(Some("cap-source"), &["sleep", "30"]))
             .expect("create");
         let now = Instant::now();
+        let oldest = Uuid::new_v4();
+        let newer: Vec<Uuid> = (0..MAX_EXITED_TOMBSTONES).map(|_| Uuid::new_v4()).collect();
         let released = {
             let mut inner = reg.inner.lock().expect("registry poisoned");
-            for offset in 0..=MAX_EXITED_TOMBSTONES {
+            inner.tombstones.insert(
+                oldest,
+                Tombstone {
+                    session: Arc::clone(&session),
+                    expires_at: now + Duration::from_secs(1),
+                },
+            );
+            for (offset, id) in newer.iter().enumerate() {
                 inner.tombstones.insert(
-                    Uuid::new_v4(),
+                    *id,
                     Tombstone {
                         session: Arc::clone(&session),
-                        expires_at: now + Duration::from_secs(offset as u64 + 1),
+                        expires_at: now + Duration::from_secs(offset as u64 + 2),
                     },
                 );
             }
@@ -562,14 +602,17 @@ mod tests {
             1,
             "cap maintenance must not scan or remove live sessions"
         );
-        assert_eq!(
-            reg.inner
-                .lock()
-                .expect("registry poisoned")
-                .tombstones
-                .len(),
-            MAX_EXITED_TOMBSTONES
+        let inner = reg.inner.lock().expect("registry poisoned");
+        assert!(
+            !inner.tombstones.contains_key(&oldest),
+            "the earliest deadline must be evicted"
         );
+        assert!(
+            newer.iter().all(|id| inner.tombstones.contains_key(id)),
+            "newer tombstones remain"
+        );
+        assert_eq!(inner.tombstones.len(), MAX_EXITED_TOMBSTONES);
+        drop(inner);
         drop(released);
         cleanup(&session);
     }
@@ -577,8 +620,14 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn periodic_maintenance_releases_an_idle_expired_tombstone_without_lazy_access() {
         let events = test_events();
+        // Keep this sender alive after Registry drop so the join proves Weak
+        // lifecycle termination from a maintenance wake, not RecvError::Closed.
+        let external_events = events.clone();
         let reg = Arc::new(Registry::new(events));
         let reaper = spawn_exit_reaper(&reg);
+        // Spawn is not synchronously polled. Establish the interval at virtual
+        // time zero before constructing the deadline-sensitive fixture.
+        tokio::task::yield_now().await;
         let session = reg
             .create(create_opts(Some("idle-tombstone"), &["sleep", "30"]))
             .expect("create");
@@ -598,26 +647,59 @@ mod tests {
 
         // Do not call get/list/count/reap after advancing: only the reaper's
         // timer may release the registry-owned Arc. Tokio's virtual Instant is
-        // shared by tombstone deadlines and the maintenance interval.
+        // shared by tombstone deadlines and the established interval.
         tokio::time::advance(EXITED_TOMBSTONE_TTL - Duration::from_millis(1)).await;
         tokio::task::yield_now().await;
         assert!(
             weak_session.upgrade().is_some(),
             "must retain immediately before the TTL boundary"
         );
-        tokio::time::advance(Duration::from_millis(1)).await;
+        // The maintenance guarantee is TTL plus one cadence, rather than an
+        // exact wall-clock deletion point. The direct helper test covers the
+        // inclusive exact deadline separately.
+        tokio::time::advance(TOMBSTONE_MAINTENANCE_INTERVAL).await;
         tokio::task::yield_now().await;
         assert!(
             weak_session.upgrade().is_none(),
-            "timer must release an idle expired tombstone"
+            "timer must release an idle expired tombstone within one cadence"
         );
 
         drop(reg);
         tokio::time::advance(TOMBSTONE_MAINTENANCE_INTERVAL).await;
-        reaper.await.expect("reaper exits after registry drop");
+        tokio::time::timeout(Duration::from_secs(1), reaper)
+            .await
+            .expect("reaper must stop after the next maintenance wake")
+            .expect("reaper task must not panic");
+        drop(external_events);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(start_paused = true)]
+    async fn due_maintenance_tick_precedes_ready_event_traffic() {
+        let events = test_events();
+        let reg = Arc::new(Registry::new(events.clone()));
+        let _reaper = spawn_exit_reaper(&reg);
+        tokio::task::yield_now().await;
+        let session = reg
+            .create(create_opts(Some("priority-tombstone"), &["sleep", "30"]))
+            .expect("create");
+        cleanup(&session);
+        reg.reap(session.id());
+        let weak_session = Arc::downgrade(&session);
+        drop(session);
+        // Make receive ready before the tombstone deadline becomes due. One
+        // reaper poll after advance must select the biased timer branch first.
+        let _ = events.send(Event::SnapshotInvalidated {
+            session_id: Uuid::nil(),
+        });
+        tokio::time::advance(EXITED_TOMBSTONE_TTL).await;
+        tokio::task::yield_now().await;
+        assert!(
+            weak_session.upgrade().is_none(),
+            "due maintenance cannot be starved by a ready event"
+        );
+    }
+
+    #[tokio::test]
     async fn lagged_exit_events_still_sweep_dead_sessions() {
         let (events, _) = broadcast::channel::<Event>(1);
         let reg = Arc::new(Registry::new(events.clone()));
@@ -630,23 +712,29 @@ mod tests {
             "child must exit"
         );
         drop(session);
+        // On the default current-thread runtime, spawn subscribes synchronously
+        // but cannot poll until this test yields. A probe with the same timing
+        // proves the receiver backlog is truly Lagged before yielding reaper.
         let _reaper = spawn_exit_reaper(&reg);
-        // Fill the tiny broadcast channel before the task is polled. Its first
-        // receive is Lagged, so the authoritative alive=false sweep must reap
-        // the already-exited session even though its original event was lost.
+        let mut lag_probe = events.subscribe();
         for _ in 0..4 {
             let _ = events.send(Event::SnapshotInvalidated {
                 session_id: Uuid::nil(),
             });
         }
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while reg.count() != 0 {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "lag recovery did not reap exited session"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(
+            matches!(
+                lag_probe.try_recv(),
+                Err(broadcast::error::TryRecvError::Lagged(_))
+            ),
+            "fixture must force broadcast lag"
+        );
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
         }
+        // The pre-subscription exit event was unavailable, so only the proven
+        // Lagged branch's authoritative alive=false sweep can remove it.
+        assert_eq!(reg.count(), 0, "lag sweep must reap the exited live entry");
         assert!(
             reg.get(id).is_some(),
             "lag sweep preserves the replay tombstone"
