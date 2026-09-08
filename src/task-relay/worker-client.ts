@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { types as utilTypes } from "node:util";
 import { TaskRelayStore } from "./store.ts";
 import { getBackend } from "../server/backend.ts";
 import { createLogger } from "../log.ts";
@@ -10,7 +11,37 @@ import {
 } from "./worker-protocol.ts";
 
 const log = createLogger("task-relay");
-const owners = new Set<string>();
+const owners = new Map<string, symbol>();
+type WorkerGatewayOptions = GatewayOptions & { requestTimeoutMs?: number };
+const optionNames = new Set(["root", "now", "peerOrigin", "peerFetch", "inspectSession", "retryIntervalMs", "retentionMs", "cleanupIntervalMs", "requestTimeoutMs"]);
+
+/** Inspect original descriptors before any option read/spread can execute caller code. */
+function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
+  if (!input || typeof input !== "object" || utilTypes.isProxy(input)) throw new TypeError("invalid relay worker options");
+  const prototype = Object.getPrototypeOf(input);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError("invalid relay worker options");
+  const scalars: Record<string, unknown> = { root: undefined };
+  const callbacks: Record<string, unknown> = Object.create(null);
+  for (const key of Reflect.ownKeys(input)) {
+    if (typeof key !== "string" || !optionNames.has(key)) throw new TypeError("unknown relay worker option");
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) throw new TypeError("relay worker options require enumerable data properties");
+    const value: unknown = descriptor.value;
+    if (key === "inspectSession" || key === "peerFetch") {
+      if (value !== undefined && (typeof value !== "function" || utilTypes.isProxy(value))) throw new TypeError("invalid relay worker callback");
+      callbacks[key] = value; // Main-thread callbacks are deliberately not transferred.
+    } else {
+      if (value !== undefined) {
+        if (key === "now") throw new TypeError("worker relay uses the process wall clock");
+        if (key === "root" || key === "peerOrigin") {
+          if (typeof value !== "string") throw new TypeError("invalid relay worker string option");
+        } else if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("invalid relay worker numeric option");
+      }
+      scalars[key] = value;
+    }
+  }
+  return Object.freeze(Object.assign(captureRelayWire(scalars, LIMIT.requestBytes).value, callbacks)) as unknown as WorkerGatewayOptions;
+}
 class WorkerUnavailable extends Error {}
 class InvalidWorkerRequest extends Error {}
 type ResultMethod = "connect" | "disconnect" | "resolve" | "send" | "receive" | "acknowledgeDelivery" | "receivePeer" | "resolvePeerEndpoint";
@@ -25,6 +56,8 @@ interface Pending {
 /** One server-owned relay worker. This is isolation, not a new security boundary or cache. */
 export class WorkerRelayGateway implements RelayGateway {
   readonly root: string;
+  readonly #ownedRoot: string;
+  readonly #owner = Symbol("relay worker owner");
   readonly #worker: Worker;
   readonly #options: GatewayOptions;
   readonly #requestMs: number;
@@ -40,12 +73,14 @@ export class WorkerRelayGateway implements RelayGateway {
   #regularBytes = 0;
   #peerBytes = 0;
 
-  constructor(options: GatewayOptions & { requestTimeoutMs?: number } = { root: undefined }) {
+  constructor(suppliedOptions: WorkerGatewayOptions = { root: undefined }) {
+    const options = captureOptions(suppliedOptions);
     this.#requestMs = options.requestTimeoutMs ?? LIMIT.requestMs;
     if (!Number.isInteger(this.#requestMs) || this.#requestMs < 1 || this.#requestMs > LIMIT.requestMs) throw new TypeError("invalid relay worker request timeout");
     if (options.now) throw new TypeError("worker relay uses the process wall clock");
-    this.#options = { ...options };
+    this.#options = options;
     this.root = new TaskRelayStore(options.root).root;
+    this.#ownedRoot = this.root;
     if (owners.has(this.root)) throw new Error("relay root already has a worker owner; await close before replacement");
     this.#ready = new Promise((resolve, reject) => { this.#resolveReady = resolve; this.#rejectReady = reject; });
     void this.#ready.catch(() => undefined);
@@ -55,13 +90,26 @@ export class WorkerRelayGateway implements RelayGateway {
       retentionMs: options.retentionMs, cleanupIntervalMs: options.cleanupIntervalMs,
       proxyPeerFetch: options.peerFetch !== undefined,
     }, LIMIT.requestBytes);
-    this.#worker = new Worker(new URL("./worker-entry.js", import.meta.url), { workerData: configuration.value });
-    owners.add(this.root);
-    this.#startupTimer = setTimeout(() => this.#fail("relay worker startup timed out"), LIMIT.startupMs);
-    this.#worker.on("message", (message: WorkerMessage) => this.#message(message));
-    this.#worker.on("error", () => this.#fail("relay worker failed"));
-    this.#worker.on("exit", () => { if (!this.#closed) this.#fail("relay worker exited unexpectedly"); });
-    this.#worker.unref();
+    // Reserve before constructing a worker. Release only this owner's token, and
+    // only after termination if construction/setup got far enough to start one.
+    owners.set(this.#ownedRoot, this.#owner);
+    let worker: Worker | undefined;
+    try {
+      this.#worker = worker = new Worker(new URL("./worker-entry.js", import.meta.url), { workerData: configuration.value });
+      this.#startupTimer = setTimeout(() => this.#fail("relay worker startup timed out"), LIMIT.startupMs);
+      this.#worker.on("message", (message: WorkerMessage) => this.#message(message));
+      this.#worker.on("error", () => this.#fail("relay worker failed"));
+      this.#worker.on("exit", () => { if (!this.#closed) this.#fail("relay worker exited unexpectedly"); });
+      this.#worker.unref();
+    } catch (error) {
+      if (worker) void this.close();
+      else this.#releaseOwner();
+      throw error;
+    }
+  }
+
+  #releaseOwner(): void {
+    if (owners.get(this.#ownedRoot) === this.#owner) owners.delete(this.#ownedRoot);
   }
 
   #message(message: WorkerMessage): void {
@@ -128,7 +176,7 @@ export class WorkerRelayGateway implements RelayGateway {
       for (const item of this.#pending.values()) { clearTimeout(item.timer); item.reject(error); }
       this.#pending.clear(); this.#peerBytes = 0; this.#regularBytes = 0;
       // Never start a replacement before the old worker has actually exited.
-      this.#stopping = this.#worker.terminate().then(() => { owners.delete(this.root); }, () => {
+      this.#stopping = this.#worker.terminate().then(() => { this.#releaseOwner(); }, () => {
         // Keep the ownership reservation if termination cannot be confirmed.
         log.warn("relay worker termination unconfirmed; root remains reserved");
       });
