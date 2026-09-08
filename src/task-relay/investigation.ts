@@ -240,7 +240,7 @@ export class RotatingRelayInvestigationWriter implements RelayInvestigationWrite
   }
 
   #path(slot: number): string { return join(this.#directory, `relay-investigation-${String(slot).padStart(2, "0")}.jsonl`); }
-  #privateRegular(stat: { isFile(): boolean; mode: number; uid: number }): void {
-    if (!stat.isFile() || (stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid())) throw new Error("investigation segment must be a private owned regular file");
+  #privateRegular(stat: { isFile(): boolean; mode: number; uid: number; nlink: number }): void {
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || (process.getuid && stat.uid !== process.getuid())) throw new Error("investigation segment must be a private unshared owned regular file");
   }
 }

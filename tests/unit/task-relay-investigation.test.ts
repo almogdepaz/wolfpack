@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BoundedRelayInvestigation, RotatingRelayInvestigationWriter } from "../../src/task-relay/investigation.ts";
@@ -150,13 +150,16 @@ describe("private fixed-slot investigation rotation", () => {
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 
-  test("symlinks and world-readable outputs fail closed in logging, not in relay delivery", async () => {
+  test("symlinks, hardlinks and world-readable outputs fail closed in logging, not in relay delivery", async () => {
     const home = root(), logs = join(home, "logs"), outside = join(home, "outside");
     mkdirSync(logs, { mode: 0o700 }); writeFileSync(outside, "untouched", { mode: 0o600 });
     const slot = join(logs, "relay-investigation-00.jsonl");
     symlinkSync(outside, slot);
     try {
       const writer = new RotatingRelayInvestigationWriter(logs, { slots: 1 });
+      await expect(writer.append("{}\n")).rejects.toThrow();
+      expect(readFileSync(outside, "utf8")).toBe("untouched");
+      rmSync(slot); linkSync(outside, slot);
       await expect(writer.append("{}\n")).rejects.toThrow();
       expect(readFileSync(outside, "utf8")).toBe("untouched");
       rmSync(slot); writeFileSync(slot, "private", { mode: 0o600 }); chmodSync(slot, 0o644);

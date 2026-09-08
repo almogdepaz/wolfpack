@@ -249,6 +249,23 @@ live-process reset handling and upstream immutable timestamp/terminal-error
 handling must land together before changing production behavior. No benchmark or
 release-readiness claim follows from this isolated engine slice.
 
+### Initial engine validation and remaining failures
+
+At `4d5b3f971f60953902f33372fe647fa1f3022ec6`, typecheck passed and the
+full unit suite reported **1,698 pass, 1 skip, 0 fail**. Three private mutants
+were rejected by their focused regressions: retained ACKed payload/mailbox rows,
+exhaustion disguised as pending, and a stranded logger completion wake.
+
+The full integration suite reported **427 pass, 22 broker-dependent skips,
+1 fail**. The unchanged `control-api-schema-temp-cleanup.test.ts` child hit its
+3-second timeout (exit 137). The same failure reproduced in a clean worktree at
+merged base `175861b49045e5c5e7859261f081aa8d912d0a4c`; that isolated probe was
+also marked incomplete because the executor terminated lingering descendants.
+No timing bound or unrelated test was weakened. The temporary baseline worktree
+was removed after preserving evidence. This is **not** an all-green integration
+or native validation result. Subsequent hardlink rejection in the investigation
+writer is additional source hardening, not a fix for that baseline failure.
+
 ### Compatibility reproduction
 
 `scripts/relay-memory-compat-audit.ts` accepts an explicit absolute adapter source
