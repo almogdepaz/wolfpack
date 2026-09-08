@@ -2,10 +2,10 @@ import { Worker } from "node:worker_threads";
 import { TaskRelayStore } from "./store.ts";
 import { getBackend } from "../server/backend.ts";
 import { createLogger } from "../log.ts";
-import { RELAY_ERROR, isRelayEnvelope, relayFailure } from "./domain.ts";
+import { RELAY_ERROR, relayFailure } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
 import {
-  RELAY_WORKER_LIMITS as LIMIT, relayWireBytes,
+  RELAY_WORKER_LIMITS as LIMIT, captureRelayWire, RelayWireBudgetError,
   type RelayGateway, type RelayWorkerMethod, type WorkerMessage, type CallbackRequest,
 } from "./worker-protocol.ts";
 
@@ -103,9 +103,8 @@ export class WorkerRelayGateway implements RelayGateway {
         });
         value = { status: response.status, body: await response.text() };
       }
-      const copy = structuredClone(value);
-      if (relayWireBytes(copy) > LIMIT.responseBytes) throw new Error("callback result too large");
-      if (!this.#closed) this.#worker.postMessage({ kind: "callback", id: message.id, value: copy });
+      const captured = captureRelayWire(value, LIMIT.responseBytes);
+      if (!this.#closed) this.#worker.postMessage({ kind: "callback", id: message.id, value: captured.value });
     } catch {
       if (!this.#closed) {
         try { this.#worker.postMessage({ kind: "callback", id: message.id, error: "relay host callback unavailable" }); }
@@ -143,17 +142,13 @@ export class WorkerRelayGateway implements RelayGateway {
     if (count >= (peer ? LIMIT.peerRequests : LIMIT.regularRequests)) return Promise.reject(new WorkerUnavailable("relay queue is full"));
     let args: unknown[], bytes: number;
     try {
-      // Clone strips custom object prototypes. Reject non-JSON envelopes before that
-      // transformation; the worker still owns protocol, lease and caller validation.
-      if (method === "send" || method === "receivePeer") {
-        const value = input[0] as { envelope?: unknown } | null | undefined;
-        if (!isRelayEnvelope(value?.envelope)) throw new InvalidWorkerRequest("invalid relay envelope");
-      }
-      args = structuredClone(input); bytes = relayWireBytes(args);
-    }
-    catch { return Promise.reject(new InvalidWorkerRequest("relay request is not transferable")); }
-    if (bytes > LIMIT.requestBytes || bytes + (peer ? this.#peerBytes : this.#regularBytes) > (peer ? LIMIT.peerBytes : LIMIT.regularBytes)) {
-      return Promise.reject(new WorkerUnavailable("relay request byte budget exceeded"));
+      const remaining = (peer ? LIMIT.peerBytes : LIMIT.regularBytes) - (peer ? this.#peerBytes : this.#regularBytes);
+      const captured = captureRelayWire(input, Math.min(LIMIT.requestBytes, remaining));
+      args = captured.value; bytes = captured.bytes;
+    } catch (error) {
+      return Promise.reject(error instanceof RelayWireBudgetError
+        ? new WorkerUnavailable("relay request byte budget exceeded")
+        : new InvalidWorkerRequest("relay request is not transferable"));
     }
     const id = this.#nextId++;
     if (peer) this.#peerBytes += bytes; else this.#regularBytes += bytes;

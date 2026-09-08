@@ -1,7 +1,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { TaskRelayGateway } from "./gateway.ts";
 import {
-  RELAY_WORKER_LIMITS as LIMIT, RELAY_WORKER_METHODS, relayWireBytes,
+  RELAY_WORKER_LIMITS as LIMIT, RELAY_WORKER_METHODS, captureRelayWire,
   type WorkerOptions, type WorkerRequest, type ParentMessage, type CallbackValue,
 } from "./worker-protocol.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
@@ -42,8 +42,8 @@ function pump(): void {
         try {
           const method = gateway[request.method] as (...args: unknown[]) => Promise<unknown>;
           const value = await method.apply(gateway, request.args);
-          if (relayWireBytes(value) > LIMIT.responseBytes) throw new Error("relay result byte budget exceeded");
-          port.postMessage({ kind: "result", id: request.id, value });
+          const captured = captureRelayWire(value, LIMIT.responseBytes, true);
+          port.postMessage({ kind: "result", id: request.id, value: captured.value });
         } catch {
           // The parent returns STORE_UNAVAILABLE, not a fabricated acceptance or leaked file path.
           port.postMessage({ kind: "result", id: request.id, error: "relay operation unavailable" });
@@ -69,11 +69,12 @@ port.on("message", (message: ParentMessage) => {
     || !methods.has(message.method) || !Array.isArray(message.args) || requests.has(message.id)) throw new Error("invalid relay worker request");
   const peer = message.method === "receivePeer";
   const existing = [...requests.values()].filter(item => item.peer === peer);
-  const bytes = relayWireBytes(message.args);
+  const captured = captureRelayWire(message.args, LIMIT.requestBytes);
+  const bytes = captured.bytes;
   if (bytes > LIMIT.requestBytes || existing.length >= (peer ? LIMIT.peerRequests : LIMIT.regularRequests)
     || existing.reduce((sum, item) => sum + item.bytes, bytes) > (peer ? LIMIT.peerBytes : LIMIT.regularBytes)) throw new Error("relay worker admission budget exceeded");
   requests.set(message.id, { peer, bytes });
-  (peer ? peers : regular).push(message);
+  (peer ? peers : regular).push({ ...message, args: captured.value });
   pump();
 });
 port.on("close", () => gateway.close());
