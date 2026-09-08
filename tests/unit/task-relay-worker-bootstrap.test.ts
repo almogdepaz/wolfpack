@@ -82,8 +82,11 @@ test("captured plain options retain the selected callback and release the origin
 
 test("partially started worker is terminated and its reservation released on constructor setup failure", async () => {
   const root = directory(); let started: Worker | undefined, gateway: WorkerRelayGateway | undefined;
+  let exited = false;
+  let exit!: Promise<void>;
   const unref = spyOn(Worker.prototype, "unref").mockImplementationOnce(function(this: Worker) {
     started = this;
+    exit = new Promise(resolve => this.once("exit", () => { exited = true; resolve(); }));
     throw new Error("injected worker setup failure");
   });
   try {
@@ -91,11 +94,12 @@ test("partially started worker is terminated and its reservation released on con
     unref.mockRestore();
     expect(started).toBeDefined();
     expect(() => new WorkerRelayGateway({ root, inspectSession })).toThrow("already has a worker owner");
-    await started!.terminate();
+    // Observe the gateway's termination, rather than issuing a second competing terminate().
+    await exit;
     await new Promise(resolve => setTimeout(resolve, 10));
     gateway = new WorkerRelayGateway({ root, inspectSession });
     expect(await gateway.connect(registration)).toMatchObject({ ok: true });
-  } finally { unref.mockRestore(); await started?.terminate(); await gateway?.close(); rmSync(root, { recursive: true, force: true }); }
+  } finally { unref.mockRestore(); if (!exited) void started?.terminate(); await gateway?.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("asynchronous startup failure permits reuse only after confirmed close", async () => {
