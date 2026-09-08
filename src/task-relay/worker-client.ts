@@ -50,11 +50,12 @@ export class WorkerRelayGateway implements RelayGateway {
     this.#ready = new Promise((resolve, reject) => { this.#resolveReady = resolve; this.#rejectReady = reject; });
     void this.#ready.catch(() => undefined);
     // .js resolves to .ts in Bun source runs; build.ts embeds this named entry for compiled runs.
-    this.#worker = new Worker(new URL("./worker-entry.js", import.meta.url), { workerData: {
+    const configuration = captureRelayWire({
       root: this.root, peerOrigin: options.peerOrigin, retryIntervalMs: options.retryIntervalMs,
       retentionMs: options.retentionMs, cleanupIntervalMs: options.cleanupIntervalMs,
       proxyPeerFetch: options.peerFetch !== undefined,
-    } });
+    }, LIMIT.requestBytes);
+    this.#worker = new Worker(new URL("./worker-entry.js", import.meta.url), { workerData: configuration.value });
     owners.add(this.root);
     this.#startupTimer = setTimeout(() => this.#fail("relay worker startup timed out"), LIMIT.startupMs);
     this.#worker.on("message", (message: WorkerMessage) => this.#message(message));

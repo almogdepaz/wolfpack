@@ -85,6 +85,16 @@ test("review reproduction: ignored 4 MiB request and callback buffers fail close
   } finally { await gateway.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("bootstrap options reject hidden clone payloads without reserving the root", async () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-wire-bootstrap-"));
+  let gateway: WorkerRelayGateway | undefined;
+  try {
+    expect(() => new WorkerRelayGateway({ root, peerOrigin: new ArrayBuffer(4 * 1024 * 1024) as unknown as string })).toThrow();
+    gateway = new WorkerRelayGateway({ root, inspectSession: async () => inspection });
+    expect(await gateway.connect(registration)).toMatchObject({ ok: true });
+  } finally { await gateway?.close(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("aggregate byte credits reject before count saturation and recover after completion", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-wire-credits-"));
   let release!: () => void;
