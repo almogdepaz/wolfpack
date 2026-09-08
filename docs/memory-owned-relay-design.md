@@ -1,9 +1,10 @@
 # Memory-owned relay: proposed contract (#351)
 
-Status: **design/compatibility gate, not implemented or approved for cutover**.
+Status: **defaults approved; implementation in progress, no production cutover**.
 Based on merged #359 (`175861b49045e5c5e7859261f081aa8d912d0a4c`).
-This document proposes the decisions needed before replacing the operational
-store. Neither existing installations nor historical files are changed.
+The user approved destination-mailbox-confirmed acceptance, bounded retries/hard
+pre-admission limits, and best-effort private investigation logging on 2026-09-08.
+Neither existing installations nor historical files are changed.
 
 ## Scope and ownership
 
@@ -174,8 +175,9 @@ authorized coordination.
 
 ## 5. Verification and implementation sequence
 
-1. Resolve the acceptance/no-rearm, logging-loss and compatibility-cutover choices
-   above. Record final field/error/expiry contracts in Wolfpack and adapter docs.
+1. Acceptance/no-rearm, hard bounds and logging-loss defaults are approved.
+   Finish the coordinated wire field/error/expiry and compatibility-cutover
+   contracts in Wolfpack and adapter docs; do not silently cut over old clients.
 2. Add behavior tests for a bounded, instance-owned engine: atomic multi-budget
    admission, credit recovery, ownership, opaque keys, genuine content conflicts,
    strict leases, cursor gaps, duplicate ACKs, expired receipts and bounded expiry
@@ -198,6 +200,54 @@ authorized coordination.
    process RSS including workers and accounting high-water marks. Publish commands,
    input hashes, hardware, latency budgets, failures and regressions. Archive size
    must not change operational parse/scan/write work; this is not live-fleet proof.
+
+### First implementation slice (not connected to production)
+
+- `src/task-relay/memory-store.ts`: instance-owned epoch, registration/generation
+  and route indexes, owned encoded active envelopes, per-mailbox monotonic decimal
+  cursors, atomic multi-budget admission, ACK release, compact receipts, and
+  token-owned forwarding attempts. No root/path, filesystem, network or timers.
+- `src/task-relay/expiry-index.ts`: indexed min-heap with exactly one node per
+  expiring owner. Renewals replace nodes; maintenance processes a bounded batch.
+- `src/task-relay/investigation.ts`: data-only capture into an independently
+  bounded async queue. Queue accounting includes the in-flight write. A fixed-slot
+  private writer rotates before overflow; partial historical records are never
+  appended into on restart. A coalesced cleanup request uses the same writer queue
+  to avoid races and permit idle retention cleanup. Gateway timer wiring remains.
+- `tests/unit/task-relay-memory.test.ts` and
+  `tests/unit/task-relay-investigation.test.ts`: budget/ownership/expiry/cursor,
+  retry and log-failure tests, including two independent engine instances with
+  a lost peer response and 5,000 completed payloads. These are **not** real HTTP,
+  worker packaging, actual adapter, two-host, or performance measurements.
+
+The engine keeps routes stable for its lifetime rather than silently evicting
+aliases. Expired registrations remain pinned by obligations/receipts. Its current
+retry policy uses the immutable wire creation timestamp with 30 seconds of clock
+skew allowance, a two-minute admission/attempt-start horizon, and the agreed
+15-minute terminal receipt window. No new network attempt starts after deadline;
+a still-owned bounded in-flight call may subsequently confirm acceptance.
+The gateway must enforce network deadlines; worker loss instead loses its epoch.
+
+Receipt byte reservations are conservative upper bounds for retained metadata,
+not native allocation measurements. Registration and receipt counts also bound
+secondary indexes. The byte ceiling can bind before the count ceiling; the
+receipt window limits sustained admission rate and must be benchmarked/tuned
+rather than advertised as unlimited throughput.
+
+The writer retains at most 16 × 16 MiB fixed segments. Age is measured from
+segment creation, never refreshed by appends. Unknown filesystem creation times
+expire conservatively. Cleanup requires the gateway timer while running and
+rechecks old slots on next startup; no cleanup service runs while Wolfpack is
+stopped. Investigation health exposes dropped/invalid records, dropped bytes,
+write/maintenance failures and bounded error categories, without raw exception
+messages. Exporting health and rate-limited warnings at the gateway remains.
+
+`TaskRelayGateway`, its worker entry, HTTP routes and the installed adapter still
+use the existing contract. The new engine is deliberately not a drop-in store
+facade: negotiation, broker-authorized gateway integration, explicit cursors,
+live-process reset handling and upstream immutable timestamp/terminal-error
+handling must land together before changing production behavior. No benchmark or
+release-readiness claim follows from this isolated engine slice.
 
 ### Compatibility reproduction
 
