@@ -96,6 +96,20 @@ import {
   bindSessionOrderEvents,
   type SessionOrderCardReference,
 } from "./session-order-ui";
+import {
+  loadMachineGroupPreferences,
+  moveMachineRelative,
+  orderMachineGroups,
+  reconcileMachineOrder,
+  saveMachineGroupPreferences,
+  setMachineGroupCollapsed,
+  type MachineGroupSurface,
+} from "./machine-group-preferences";
+import {
+  bindMachineGroupEvents,
+  type MachineGroupEventController,
+  type MachineGroupReference,
+} from "./machine-group-ui";
 import { AGENT_STATUS_STATE } from "../src/agent-status-contract";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
@@ -163,6 +177,8 @@ function safeLocalStorage(): Storage | null {
 
 let sessionOrder = loadSessionOrder(safeLocalStorage());
 const manuallyOrderedMachines = new Set(sessionOrder.map(identity => identity.machineUrl));
+let machineGroupPreferences = loadMachineGroupPreferences(safeLocalStorage());
+let machineGroupEventController: MachineGroupEventController | null = null;
 
 interface GhosttyPrewarmDebugEvent {
   readonly t: number;
@@ -1575,10 +1591,15 @@ function renderSessionListFromState(): void {
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
   const multiMachine = getWorkspaceMachines().length > 0;
+  const groups = machineGroupsInPresentationOrder(state.lastSessionGroups);
+  const canonicalLocalGroup = state.lastSessionGroups.find(group => group.machine.url === "");
   const html = multiMachine
-    ? state.lastSessionGroups.map(group => renderMachineGroupHtml(group, true)).join("")
-    : renderMachineGroupHtml(state.lastSessionGroups[0], false);
+    ? groups.map((group, index) => renderMachineGroupHtml(group, true, "main", index)).join("")
+    : canonicalLocalGroup
+      ? renderMachineGroupHtml(canonicalLocalGroup, false, "main", 0)
+      : "";
   if (html !== state.lastSessionsHtml) {
+    machineGroupEventController?.cancel();
     el.innerHTML = html;
     state.lastSessionsHtml = html;
   }
@@ -1663,6 +1684,53 @@ function machineAddButtonHtml(machineUrl: string, machineName: string, disabled:
   return `<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(machineUrl)}" aria-label="Start a session on ${escAttr(machineName)}" title="New session"${disabled ? " disabled" : ""}>${NEW_SESSION_CONTENT}</button>`;
 }
 
+function machineGroupIdentity(group): string {
+  return group.machine.url || LOCAL_MACHINE_IDENTITY;
+}
+
+function machineGroupsInPresentationOrder(groups) {
+  const nextOrder = reconcileMachineOrder(
+    machineGroupPreferences.order,
+    groups.map(machineGroupIdentity),
+  );
+  machineGroupPreferences = { ...machineGroupPreferences, order: nextOrder };
+  return orderMachineGroups(groups, nextOrder, machineGroupIdentity);
+}
+
+function machineGroupIsCollapsed(group, surface: MachineGroupSurface): boolean {
+  return machineGroupPreferences.collapsed[surface].includes(machineGroupIdentity(group));
+}
+
+function machineGroupBodyId(surface: MachineGroupSurface, index: number): string {
+  return `${surface}-machine-group-body-${index}`;
+}
+
+function machineHeaderHtml(
+  group,
+  surface: MachineGroupSurface,
+  bodyId: string,
+  multiMachine: boolean,
+  collapsed: boolean,
+  statusDot: string,
+  statusTitle: string,
+  versionWarning: string,
+): string {
+  const machineUrl = multiMachine ? group.machine.url || "" : "";
+  const compactCreateButton = group.online && group.sessions.length === 0 && !collapsed && surface !== "sidebar"
+    ? ""
+    : machineAddButtonHtml(machineUrl, group.machine.name, multiMachine && !group.online);
+  const retryButton = multiMachine && !group.online && !group.pending
+    ? `<button type="button" class="machine-retry-btn" data-action="retry-machine" aria-label="Retry ${escAttr(group.machine.name)}">Retry</button>`
+    : "";
+  const status = group.pending
+    ? '<span class="machine-header-status">Connecting…</span>'
+    : !group.online && multiMachine
+      ? `<span class="machine-header-status">${esc(machineFailureLabel(group.failure || "unknown"))}</span>`
+      : "";
+  const action = collapsed ? "Expand" : "Collapse";
+  return `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div><button type="button" class="machine-collapse-toggle" data-action="machine-collapse" data-machine-surface="${surface}" data-machine-control="collapse" aria-expanded="${collapsed ? "false" : "true"}" aria-controls="${bodyId}" aria-label="${action} ${escAttr(group.machine.name)}" title="${action} ${escAttr(group.machine.name)}"><span class="machine-collapse-chevron" aria-hidden="true"></span>${machineHeaderNameHtml(group.machine.name)}</button>${versionWarning}${status}<div class="machine-header-btns"><button type="button" class="machine-order-handle" data-machine-control="order-handle" aria-label="Reorder ${escAttr(group.machine.name)}" title="Drag to reorder ${escAttr(group.machine.name)}" aria-describedby="machine-order-instructions" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"><span aria-hidden="true">⠿</span></button><button type="button" class="machine-order-move" data-action="machine-move" data-machine-offset="-1" data-machine-control="move-up" aria-label="Move ${escAttr(group.machine.name)} up" title="Move up">↑</button><button type="button" class="machine-order-move" data-action="machine-move" data-machine-offset="1" data-machine-control="move-down" aria-label="Move ${escAttr(group.machine.name)} down" title="Move down">↓</button>${retryButton}${sessionOrderResetButtonHtml(machineUrl)}${compactCreateButton}</div></div>`;
+}
+
 function idleSessionEmptyHtml(): string {
   return `<section class="idle-session-empty" aria-label="No idle sessions">
     <h2>No sessions are currently idle</h2>
@@ -1689,7 +1757,7 @@ function zeroSessionOnboardingHtml(machineUrl: string): string {
 }
 
 // Shared session groups cache for switcher reuse
-function renderMachineGroupHtml(g, multiMachine) {
+function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, index: number) {
   const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
   const statusDot = !multiMachine ? "green" : g.online ? "green" : (g.pending ? "gray" : "red");
   const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
@@ -1699,52 +1767,49 @@ function renderMachineGroupHtml(g, multiMachine) {
   const versionWarning = multiMachine && outdated ? `<span class="version-warning" title="Running v${escAttr(g.machine.version || "?")} — newer version available on another machine">⚠ UPDATE</span>` : "";
   const offlineClass = multiMachine && !g.online && !g.pending ? " offline" : "";
   const failureAttribute = g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
-  let html = multiMachine ? `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}"${failureAttribute}>` : `<div class="machine-group">`;
   const machineKey = multiMachine ? g.machine.url || "" : "";
-  const compactCreateButton = g.online && g.sessions.length === 0
-    ? ""
-    : machineAddButtonHtml(machineKey, g.machine.name, multiMachine && !g.online);
-  html += `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${machineHeaderNameHtml(g.machine.name)}${versionWarning}<div class="machine-header-btns">${sessionOrderResetButtonHtml(machineKey)}${compactCreateButton}</div></div>`;
+  const bodyId = machineGroupBodyId(surface, index);
+  const collapsed = machineGroupIsCollapsed(g, surface);
+  let bodyHtml = "";
   if (multiMachine && g.pending) {
-    html += `<div class="group-status">Connecting...</div>`;
+    bodyHtml += '<div class="group-status">Connecting...</div>';
   } else if (g.online) {
     const presentation = sessionCardGroupPresentation(g.sessions, machineKey);
     if (presentation.empty === "idle") {
-      html += idleSessionEmptyHtml();
+      bodyHtml += idleSessionEmptyHtml();
     } else if (presentation.rows.length) {
       const useCollapsibleSessionCards = !isDesktop();
       const rows = useCollapsibleSessionCards
         ? visibleDelegationRows(presentation.rows, machineKey)
         : presentation.rows;
-      html += rows.map((row, i) => {
-          const s = row.session;
-          const lastLine = s.lastLine || "";
-          const ui = sessionRuntimeUi(s);
-          const anim = state.firstLoad ? "animate-in" : "";
-          const grouping = delegationCardAttributes(row);
-          const ordering = sessionOrderCardHtml(row, machineKey);
-          return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + i * 30 + 'ms' : ''}">
-            <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
-            <div class="dot ${ui.dot}" title="${ui.title}"></div>
-            <div class="card-info">
-              <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
-              ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
-              ${delegationParentMissingHtml(row)}
-              <div class="card-preview">${esc(lastLine)}</div>
-              ${activityHtml(s)}
-            </div>
-            <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
-          </div>`;
+      bodyHtml += rows.map((row, rowIndex) => {
+        const s = row.session;
+        const lastLine = s.lastLine || "";
+        const ui = sessionRuntimeUi(s);
+        const anim = state.firstLoad ? "animate-in" : "";
+        const grouping = delegationCardAttributes(row);
+        const ordering = sessionOrderCardHtml(row, machineKey);
+        return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + rowIndex * 30 + 'ms' : ''}">
+          <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
+          <div class="dot ${ui.dot}" title="${ui.title}"></div>
+          <div class="card-info">
+            <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
+            ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
+            ${delegationParentMissingHtml(row)}
+            <div class="card-preview">${esc(lastLine)}</div>
+            ${activityHtml(s)}
+          </div>
+          <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
+        </div>`;
       }).join("");
     } else {
-      html += zeroSessionOnboardingHtml(multiMachine ? g.machine.url || "" : "");
+      bodyHtml += zeroSessionOnboardingHtml(multiMachine ? g.machine.url || "" : "");
     }
   } else if (multiMachine) {
     const failure = machineFailureLabel(g.failure || "unknown");
-    html += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect. <button type="button" class="machine-retry-btn" data-action="retry-machine" data-machine="${mUrlAttr}" aria-label="Retry ${escAttr(g.machine.name)}">Retry</button></div>`;
+    bodyHtml += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect.</div>`;
   }
-  html += `</div>`;
-  return html;
+  return `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}" data-machine-surface="${surface}"${failureAttribute}>${machineHeaderHtml(g, surface, bodyId, multiMachine, collapsed, statusDot, statusTitle, versionWarning)}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
 }
 
 interface DelegationWorkspaceContext {
@@ -1975,8 +2040,12 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
     if (!isCurrentLoad()) return; // stale call, discard
     state.lastSessionGroups = [g];
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
-    const html = renderMachineGroupHtml(g, false);
-    if (html !== state.lastSessionsHtml) { el.innerHTML = html; state.lastSessionsHtml = html; }
+    const html = renderMachineGroupHtml(g, false, "main", 0);
+    if (html !== state.lastSessionsHtml) {
+      machineGroupEventController?.cancel();
+      el.innerHTML = html;
+      state.lastSessionsHtml = html;
+    }
     syncDelegationWorkspace();
     checkStateTransitions([g]);
     state.firstLoad = false;
@@ -2016,8 +2085,10 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
   const renderVisibleGroups = () => {
     const visible = visibleGroupsInOrder();
     state.lastSessionGroups = visible;
-    const html = visible.map(group => renderMachineGroupHtml(group, true)).join("");
+    const presentationGroups = machineGroupsInPresentationOrder(visible);
+    const html = presentationGroups.map((group, index) => renderMachineGroupHtml(group, true, "main", index)).join("");
     if (html !== state.lastSessionsHtml) {
+      machineGroupEventController?.cancel();
       el.innerHTML = html;
       state.lastSessionsHtml = html;
     }
@@ -4678,6 +4749,7 @@ if (!isDesktop()) {
 
 let sidebarAutoCollapseTimer = null;
 let sidebarSessionOrderDragActive = false;
+let sidebarMachineGroupDragActive = false;
 let sidebarLayoutTransitionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 let sidebarLayoutTransitionId = 0;
 let sidebarLayoutSettlementTransitionId: number | null = null;
@@ -4722,12 +4794,13 @@ function _renderSidebarNow() {
   if (!el) return;
   if (!syncSessionChooserOwnership()) {
     if (_lastSidebarHtml) {
+      machineGroupEventController?.cancel();
       _lastSidebarHtml = "";
       el.replaceChildren();
     }
     return;
   }
-  const groups = state.lastSessionGroups;
+  const groups = machineGroupsInPresentationOrder(state.lastSessionGroups);
   // Don't wipe sidebar with empty content if sessions haven't loaded yet
   if (!groups.length && sidebarInitialRender) return;
   if (groups.length) sidebarInitialRender = true;
@@ -4736,46 +4809,48 @@ function _renderSidebarNow() {
 
   let html = sessionCardViewControlsHtml();
   if (!multiMachine) {
-    // Single machine — simple list with + New
-    const g = groups[0];
-    const sidebarBtns = `<div class="sidebar-top-btns"><button type="button" class="new-btn" data-action="new-session" data-machine="" aria-label="Start a session on this machine">${NEW_SESSION_CONTENT}</button>${sessionOrderResetButtonHtml("")}</div>`;
-    if (g && g.online) {
-      const presentation = sessionCardGroupPresentation(g.sessions, "");
-      html += sidebarBtns;
-      html += presentation.rows.length
-        ? visibleDelegationRows(presentation.rows, "").map(row => sidebarCardHtml(row, "")).join("")
-        : presentation.empty === "idle"
-          ? idleSessionEmptyHtml()
-          : '<div class="sidebar-no-sessions">No active sessions</div>';
-    } else {
-      html += sidebarBtns;
-      html += '<div class="sidebar-no-sessions">No active sessions</div>';
+    const g = state.lastSessionGroups.find(group => group.machine.url === "");
+    if (g) {
+      const bodyId = machineGroupBodyId("sidebar", 0);
+      const collapsed = machineGroupIsCollapsed(g, "sidebar");
+      let bodyHtml = '<div class="sidebar-no-sessions">No active sessions</div>';
+      if (g.online) {
+        const presentation = sessionCardGroupPresentation(g.sessions, "");
+        bodyHtml = presentation.rows.length
+          ? visibleDelegationRows(presentation.rows, "").map(row => sidebarCardHtml(row, "")).join("")
+          : presentation.empty === "idle"
+            ? idleSessionEmptyHtml()
+            : '<div class="sidebar-no-sessions">No active sessions</div>';
+      }
+      html += `<div class="machine-group" data-machine="" data-machine-surface="sidebar">${machineHeaderHtml(g, "sidebar", bodyId, false, collapsed, "green", "online", "")}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
     }
   } else {
-    // Multi-machine
-    for (const g of groups) {
+    for (const [index, g] of groups.entries()) {
       const mUrl = escAttr(g.machine.url);
       const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
+      const statusTitle = g.online ? "online" : (g.pending ? "connecting" : "offline");
       const offlineClass = !g.online && !g.pending ? " offline" : "";
-      html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}">`;
-      html += `<div class="machine-header"><div class="dot ${statusDot}"></div>${machineHeaderNameHtml(g.machine.name)}<div class="machine-header-btns">${sessionOrderResetButtonHtml(g.machine.url)}${machineAddButtonHtml(g.machine.url, g.machine.name, !g.online)}</div></div>`;
+      const bodyId = machineGroupBodyId("sidebar", index);
+      const collapsed = machineGroupIsCollapsed(g, "sidebar");
+      let bodyHtml = "";
       if (g.online) {
         const presentation = sessionCardGroupPresentation(g.sessions, g.machine.url);
         if (presentation.rows.length) {
-          html += visibleDelegationRows(presentation.rows, g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
+          bodyHtml = visibleDelegationRows(presentation.rows, g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
         } else if (presentation.empty === "idle") {
-          html += idleSessionEmptyHtml();
+          bodyHtml = idleSessionEmptyHtml();
         }
       } else if (g.pending) {
-        html += '<div class="sidebar-conn-status">Connecting...</div>';
-      } else if (!g.online) {
-        html += `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))} <button type="button" class="machine-retry-btn" data-action="retry-machine" data-machine="${mUrl}" aria-label="Retry ${escAttr(g.machine.name)}">Retry</button></div>`;
+        bodyHtml = '<div class="sidebar-conn-status">Connecting...</div>';
+      } else {
+        bodyHtml = `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))}</div>`;
       }
-      html += '</div>';
+      html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}" data-machine-surface="sidebar">${machineHeaderHtml(g, "sidebar", bodyId, true, collapsed, statusDot, statusTitle, "")}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
     }
   }
   // Skip DOM update if nothing changed
   if (html === _lastSidebarHtml) return;
+  machineGroupEventController?.cancel();
   _lastSidebarHtml = html;
   el.innerHTML = html;
 }
@@ -4859,6 +4934,71 @@ function announceSessionOrder(message: string): void {
 function renderSessionOrderViews(): void {
   renderSessionListFromState();
   renderSidebar();
+}
+
+function machinePreferenceIdentity(machine: string): string {
+  return machine || LOCAL_MACHINE_IDENTITY;
+}
+
+function focusMachineGroupControl(machine: string, surface: MachineGroupSurface, control: string): void {
+  requestAnimationFrame(() => {
+    const list = document.getElementById(surface === "main" ? "session-list" : "sidebar-session-list");
+    const group = Array.from(list?.querySelectorAll<HTMLElement>(".machine-group") ?? [])
+      .find(candidate => (candidate.dataset.machine ?? "") === machine);
+    group?.querySelector<HTMLElement>(`[data-machine-control="${control}"]`)?.focus();
+  });
+}
+
+function renderMachineGroupViews(
+  focus: { readonly machine: string; readonly surface: MachineGroupSurface; readonly control: string } | null = null,
+): void {
+  machineGroupEventController?.cancel();
+  state.lastSessionsHtml = "";
+  _lastSidebarHtml = "";
+  renderSessionListFromState();
+  renderSidebar();
+  if (focus) focusMachineGroupControl(focus.machine, focus.surface, focus.control);
+}
+
+function updateMachineGroupCollapse(machine: string, surface: MachineGroupSurface): void {
+  const identity = machinePreferenceIdentity(machine);
+  const collapsed = machineGroupPreferences.collapsed[surface].includes(identity);
+  machineGroupPreferences = setMachineGroupCollapsed(machineGroupPreferences, surface, identity, !collapsed);
+  const persisted = saveMachineGroupPreferences(safeLocalStorage(), machineGroupPreferences);
+  renderMachineGroupViews({ machine, surface, control: "collapse" });
+  announceSessionOrder(`${collapsed ? "Machine expanded" : "Machine collapsed"}${persisted ? "" : "; preference could not be saved"}`);
+}
+
+function moveMachineGroupRelative(
+  moving: MachineGroupReference,
+  target: MachineGroupReference,
+  placement: "before" | "after",
+): boolean {
+  const groups = machineGroupsInPresentationOrder(state.lastSessionGroups);
+  const movingIdentity = machinePreferenceIdentity(moving.machine);
+  const targetIdentity = machinePreferenceIdentity(target.machine);
+  if (!groups.some(group => machineGroupIdentity(group) === movingIdentity)
+    || !groups.some(group => machineGroupIdentity(group) === targetIdentity)) return false;
+  const nextOrder = moveMachineRelative(machineGroupPreferences.order, movingIdentity, targetIdentity, placement);
+  if (nextOrder.every((identity, index) => identity === machineGroupPreferences.order[index])) return false;
+  machineGroupPreferences = { ...machineGroupPreferences, order: nextOrder };
+  const persisted = saveMachineGroupPreferences(safeLocalStorage(), machineGroupPreferences);
+  renderMachineGroupViews({ machine: moving.machine, surface: moving.surface, control: "order-handle" });
+  announceSessionOrder(`${moving.name} moved${persisted ? "" : "; order could not be saved"}`);
+  return true;
+}
+
+function moveMachineGroupByOffset(moving: MachineGroupReference, offset: -1 | 1): boolean {
+  const groups = machineGroupsInPresentationOrder(state.lastSessionGroups);
+  const movingIdentity = machinePreferenceIdentity(moving.machine);
+  const index = groups.findIndex(group => machineGroupIdentity(group) === movingIdentity);
+  const target = groups[index + offset];
+  if (!target) return false;
+  return moveMachineGroupRelative(moving, {
+    machine: target.machine.url || "",
+    surface: moving.surface,
+    name: target.machine.name,
+  }, offset < 0 ? "before" : "after");
 }
 
 function moveSessionCard(
@@ -5063,7 +5203,7 @@ function initSidebar() {
   sidebar.addEventListener("mouseleave", () => {
     if (state.sidebarAutoExpanded && !state.sidebarPinned) {
       sidebarAutoCollapseTimer = setTimeout(() => {
-        if (state.sidebarAutoExpanded && !sidebarSessionOrderDragActive) {
+        if (state.sidebarAutoExpanded && !sidebarSessionOrderDragActive && !sidebarMachineGroupDragActive) {
           state.sidebarTransitionIsHover = true;
           sidebar.classList.add("collapsed");
           state.sidebarCollapsed = true;
@@ -5132,6 +5272,15 @@ function bindHtmlEventListeners(): void {
     agentToggle: (command, enabled) => { void toggleAgentEnabled(command, enabled); },
     toggleGrid,
     setSessionCardView,
+    machineGroupCollapse: updateMachineGroupCollapse,
+    machineGroupMove: (machine, surface, offset) => {
+      const group = state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === machine);
+      moveMachineGroupByOffset({
+        machine,
+        surface,
+        name: group?.machine.name ?? "Machine",
+      }, offset);
+    },
   });
 
   // Header
@@ -5142,6 +5291,11 @@ function bindHtmlEventListeners(): void {
     moveByOffset: moveSessionCardByOffset,
     reset: resetSessionCardOrder,
     setDragActive: active => { sidebarSessionOrderDragActive = active; },
+  });
+  machineGroupEventController = bindMachineGroupEvents({
+    move: moveMachineGroupRelative,
+    moveByOffset: moveMachineGroupByOffset,
+    setDragActive: active => { sidebarMachineGroupDragActive = active; },
   });
 
   // Delegation workspace

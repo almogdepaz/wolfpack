@@ -13,4 +13,5 @@ Automated axe scans cover the active sessions view, settings, and modal dialogs.
 
 - Repeat session drawer navigation and verify current/pressed states are announced.
 - Explore settings by touch and confirm every toggle and icon button has an accessible name and at least a 44 px target.
+- In the sessions view, confirm machine collapse announces expanded/collapsed state, the reorder handle announces its Alt+Up/Down shortcut, and move buttons remain reachable without dragging.
 - Confirm reduced-motion mode avoids non-essential view and loading animation.

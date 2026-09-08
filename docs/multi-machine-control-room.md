@@ -23,6 +23,10 @@ Tailnet node IDs, Wolfpack installation IDs, stable machine identities, transien
 
 This separation is intentional: friendly names are presentation data, while verified stable identities are authority data. Never replace the readiness lookup with a URL or identity taken from browser storage or markup.
 
+## Local display preferences
+
+The dashboard and desktop sidebar each remember whether a machine group is collapsed in this browser profile. Machine order is shared between those surfaces; it is local storage only, never a Tailnet setting or routing input. The visible chevron toggles the body without hiding the header or available machine actions. Use the separate reorder handle to drag a machine, its up/down buttons without dragging, or Alt+Up/Down while the handle is focused. Missing peers retain their stored rank; a newly ready peer appends after saved entries. Preferences never create a peer, keep an ineligible peer visible, or authorize a machine action.
+
 ## When a peer is missing
 
 A missing generic or offline Tailnet device is expected. For a Wolfpack peer that should be visible:
