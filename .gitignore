@@ -1,5 +1,6 @@
 .DS_Store
-node_modules/
+# Ignore dependency directories and read-only dependency symlinks in worktrees.
+node_modules
 package-lock.json
 bridge-settings.json
 STATUS.md

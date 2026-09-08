@@ -50,6 +50,7 @@
     "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/ && bunx tsc --noEmit -p public/tsconfig.strict.json",
     "postinstall": "node bin/install.cjs",
     "check:bundle-budgets": "bun run scripts/check-bundle-budgets.ts",
+    "check:context": "bun run scripts/check-context-links.ts",
     "smoke:release": "bun run scripts/smoke-release-artifacts.ts"
   },
   "optionalDependencies": {

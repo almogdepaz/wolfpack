@@ -2,10 +2,7 @@
   "schemaVersion": 2,
   "edcVersion": "2.0.0",
   "repoContextFile": "edc-context/index.md",
-  "reports": {
-    "issues": "edc-context/reports/issues.md",
-    "complexity": "edc-context/reports/complexity.md"
-  },
+  "reports": {},
   "build": {
     "buildInfoFile": "edc-context/build/build.json"
   },
