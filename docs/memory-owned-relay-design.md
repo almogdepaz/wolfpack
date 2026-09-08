@@ -266,6 +266,18 @@ was removed after preserving evidence. This is **not** an all-green integration
 or native validation result. Subsequent hardlink rejection in the investigation
 writer is additional source hardening, not a fix for that baseline failure.
 
+The cleanup regression is now isolated from the operator's login-shell startup
+and installed provider CLIs: its child has private shell/executable-probe/Pi
+fixtures, while still executing the real schema HTTP suite and provider version
+probe. The original 3-second child and 4.5-second outer deadlines are unchanged.
+Instrumentation established that the stdin gate completed; server login-shell
+initialization followed by real `/api/providers` probes consumed the deadline.
+Merely setting the inherited PATH was insufficient because server import restores
+the login-shell PATH. The fixed test additionally checks unchanged sentinel
+contents and that the owned provider was actually probed. A private unsafe-cleanup
+mutant completed the eight schema tests but failed on the deleted sentinel,
+confirming this is not a weakened or vacuous cleanup regression.
+
 ### Compatibility reproduction
 
 `scripts/relay-memory-compat-audit.ts` accepts an explicit absolute adapter source
