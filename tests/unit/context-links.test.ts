@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { checkContextLinks } from "../../scripts/check-context-links";
 
 let root: string;
@@ -36,6 +36,21 @@ test("dangling index route fails even if no longer in manifest", () => {
   writeFileSync(join(root, "edc-context/index.md"), "`modules/tests.md` and [docs](modules/docs.md#overview)");
   const errors = checkContextLinks(root);
   expect(errors.filter((e) => e.includes("index module link"))).toHaveLength(2);
+});
+test.each([
+  ["./modules/unlisted.md", "edc-context/modules/unlisted.md"],
+  ["edc-context/modules/runtime.md", "edc-context/edc-context/modules/runtime.md"],
+])("markdown module href %s resolves relative to the index", (href, documentPath) => {
+  const document = join(root, documentPath);
+  mkdirSync(dirname(document), { recursive: true });
+  writeFileSync(document, "# Linked module\n");
+  writeFileSync(join(root, "edc-context/index.md"), `[docs](${href})`);
+  expect(checkContextLinks(root)).toEqual([]);
+
+  rmSync(document);
+  const errors = checkContextLinks(root);
+  expect(errors).toHaveLength(1);
+  expect(errors[0]).toContain("index module link");
 });
 test("rejects malformed manifests rather than vacuous success", () => {
   for (const value of [null, [], {}, { repoContextFile: 3, modules: [], reports: [] }, { ...manifest, modules: [null] }]) {

@@ -2,7 +2,7 @@
 
 ## Dev Setup
 
-Requires [Bun](https://bun.sh/) (v1.2+) and a [Rust toolchain](https://rustup.rs/) for the broker.
+Requires [Bun](https://bun.sh/) (v1.3.9+, matching CI and providing the native Markdown parser used by `check:context`) and a [Rust toolchain](https://rustup.rs/) for the broker.
 Source builds of `wolfpack-broker` also need Wolfpack's pinned Zig toolchain to prebuild the verified Ghostty VT static archive. Release installs already include this in the prebuilt broker binary; users installing releases do not need Zig or Ghostty installed.
 
 ```bash

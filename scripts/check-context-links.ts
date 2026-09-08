@@ -1,5 +1,6 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Check declared navigation targets, not generated coverage or semantic freshness. */
 export function checkContextLinks(root: string): string[] {
@@ -47,11 +48,29 @@ export function checkContextLinks(root: string): string[] {
   if (index) {
     const markdown = readFileSync(index, "utf8");
     const refs = new Set<string>();
-    for (const match of markdown.matchAll(/(?:`|\]\()((?:edc-context\/)?modules\/[^`\s)#]+\.md)(?:#[^`)\s]+)?(?:`|\))/g)) refs.add(match[1]!);
-    for (const ref of refs) {
-      const path = ref.startsWith("edc-context/") ? ref : relative(root, resolve(dirname(index), ref));
-      target(path, "index module link");
-    }
+    const indexUrl = pathToFileURL(index);
+    const addModuleReference = (reference: string, path: string): void => {
+      const route = reference.split(/[?#]/, 1)[0] ?? "";
+      if (route.split("/").includes("modules") && path.endsWith(".md")) refs.add(relative(root, path));
+    };
+    Bun.markdown.render(markdown, {
+      codespan: (reference) => {
+        const path = reference.split("#", 1)[0] ?? "";
+        if (path.startsWith("modules/") || path.startsWith("edc-context/modules/")) {
+          const base = path.startsWith("edc-context/") ? root : dirname(index);
+          addModuleReference(path, resolve(base, path));
+        }
+        return "";
+      },
+      link: (_text, { href }) => {
+        // Only document-relative hrefs belong to this checkout.
+        if (!isAbsolute(href) && !URL.canParse(href)) {
+          addModuleReference(href, fileURLToPath(new URL(href, indexUrl)));
+        }
+        return "";
+      },
+    });
+    for (const ref of refs) target(ref, "index module link");
   }
   return errors;
 }
