@@ -39,6 +39,10 @@ test("all ignored fields must be inert wire data, not JSON-invisible clone paylo
     expect(() => captureRelayWire({ ...registration, padding }, LIMIT.requestBytes)).toThrow();
     expect(() => relayWireBytes({ ...inspection, padding })).toThrow();
   }
+  let trapCalls = 0;
+  const proxy = new Proxy({}, { getPrototypeOf() { trapCalls++; return Object.prototype; }, ownKeys() { trapCalls++; return []; } });
+  expect(() => captureRelayWire(proxy, LIMIT.requestBytes)).toThrow();
+  expect(trapCalls).toBe(0);
   let getterCalls = 0;
   const getter = { get padding() { getterCalls++; return buffer; } };
   expect(() => captureRelayWire(getter, LIMIT.requestBytes)).toThrow();

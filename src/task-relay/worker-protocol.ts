@@ -1,3 +1,4 @@
+import { types as utilTypes } from "node:util";
 import type { TaskRelayGateway } from "./gateway.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 
@@ -65,7 +66,8 @@ export function captureRelayWire<T>(input: T, limit: number, allowMaps = false):
       case "object": break;
       default: return invalid();
     }
-    if (ancestors.has(value)) return invalid();
+    // Proxy reflection traps are executable and could re-enter admission mid-capture.
+    if (utilTypes.isProxy(value) || ancestors.has(value)) return invalid();
     ancestors.add(value);
     try {
       const prototype = Object.getPrototypeOf(value);
