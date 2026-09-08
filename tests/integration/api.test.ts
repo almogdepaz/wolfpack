@@ -63,7 +63,7 @@ process.env.WOLFPACK_SETTINGS_PATH = TEST_SETTINGS_PATH;
 process.env.WOLFPACK_TASK_RELAY_ROOT = TEST_TASK_RELAY_ROOT;
 
 const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/task-relay/gateway.ts");
-__resetTaskRelayGatewayForTests();
+await __resetTaskRelayGatewayForTests();
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
 const { __setTestBackend, DuplicateSessionError } = await import("../../src/server/backend.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
@@ -165,9 +165,9 @@ beforeEach(() => {
   __resetSessionObservationForTests();
 });
 
-afterAll(() => {
+afterAll(async () => {
   (server as Server).close();
-  __resetTaskRelayGatewayForTests();
+  await __resetTaskRelayGatewayForTests();
   if (PRIOR_WOLFPACK_TASK_RELAY_ROOT === undefined) delete process.env.WOLFPACK_TASK_RELAY_ROOT;
   else process.env.WOLFPACK_TASK_RELAY_ROOT = PRIOR_WOLFPACK_TASK_RELAY_ROOT;
   for (const root of externalTempRoots) rmSync(root, { recursive: true, force: true });
@@ -2257,9 +2257,8 @@ describe("session-control relay lookup batching", () => {
       protocolVersions: [RELAY_PROTOCOL_VERSION], leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
     }));
     for (const registration of registrations) await store.register(registration);
-    const previousGateway = getTaskRelayGateway();
     const gateway = new TaskRelayGateway({ root: relayRoot, now: () => now });
-    __setTaskRelayGatewayForTests(gateway);
+    await __setTaskRelayGatewayForTests(gateway);
     __setTestBackend(backend);
     const read = spyOn(fs, "readFileSync");
     const relayReads = () => read.mock.calls.filter(([path]) => path === store.path).length;
@@ -2289,7 +2288,8 @@ describe("session-control relay lookup batching", () => {
       expect(relayReads()).toBe(0);
     } finally {
       read.mockRestore();
-      __setTaskRelayGatewayForTests(previousGateway);
+      // A closed worker is terminal: restore through the default factory, not a dead instance.
+      await __resetTaskRelayGatewayForTests();
       __setTestBackend(mockBackend);
       rmSync(relayRoot, { recursive: true, force: true });
     }

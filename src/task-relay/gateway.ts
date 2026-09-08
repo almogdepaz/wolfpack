@@ -17,6 +17,8 @@ import {
 } from "./domain.ts";
 import type { RelayEndpoint, RelayEnvelope, RelayRegistration, RelayResult } from "./domain.ts";
 import { TaskRelayStore, newOpaqueEndpoint } from "./store.ts";
+import { WorkerRelayGateway } from "./worker-client.ts";
+import type { RelayGateway } from "./worker-protocol.ts";
 import type { PeerOutboxItem } from "./store.ts";
 
 type PeerFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -26,7 +28,7 @@ type IntervalTimer = ReturnType<typeof setInterval>;
 const RETENTION_ENV = "WOLFPACK_TASK_RELAY_RETENTION_MS";
 const log = createLogger("task-relay");
 
-interface GatewayOptions {
+export interface GatewayOptions {
   readonly root: string | undefined;
   readonly now?: () => Date;
   readonly peerOrigin?: string;
@@ -79,6 +81,7 @@ export class TaskRelayGateway {
   #retryTimer: IntervalTimer | undefined;
   #cleanupTimer: IntervalTimer | undefined;
   #initialization: Promise<void> | undefined;
+  #maintenance: Promise<unknown> | undefined;
   readonly #forwarding = new Map<string, Promise<boolean>>();
 
   constructor(options: GatewayOptions = { root: undefined }) {
@@ -110,7 +113,9 @@ export class TaskRelayGateway {
         await this.flushPeerOutbox(true);
       } finally {
         this.#retryTimer ??= setInterval(() => {
-          void this.flushPeerOutbox().catch(() => undefined);
+          // A slow peer must not retain another history-sized scan on every timer tick.
+          if (this.#maintenance) return;
+          this.#maintenance = this.flushPeerOutbox().catch(() => undefined).finally(() => { this.#maintenance = undefined; });
         }, this.#retryIntervalMs);
         this.#retryTimer.unref?.();
         this.#cleanupTimer ??= setInterval(() => {
@@ -406,25 +411,26 @@ export class TaskRelayGateway {
   }
 }
 
-let singleton: TaskRelayGateway | undefined;
+let singleton: RelayGateway | undefined;
 
-export function getTaskRelayGateway(): TaskRelayGateway {
+export function getTaskRelayGateway(): RelayGateway {
   const config = loadConfig();
-  singleton ??= new TaskRelayGateway({
+  singleton ??= new WorkerRelayGateway({
     root: process.env.WOLFPACK_TASK_RELAY_ROOT,
     peerOrigin: config ? remoteUrl(config) ?? undefined : undefined,
   });
   return singleton;
 }
 
-export function __setTaskRelayGatewayForTests(gateway: TaskRelayGateway): void {
+export async function __setTaskRelayGatewayForTests(gateway: RelayGateway): Promise<void> {
   if (!process.env.WOLFPACK_TEST) throw new Error("task relay gateway setup is test-only");
-  singleton?.close();
+  if (singleton === gateway) return;
+  await singleton?.close();
   singleton = gateway;
 }
 
-export function __resetTaskRelayGatewayForTests(): void {
+export async function __resetTaskRelayGatewayForTests(): Promise<void> {
   if (!process.env.WOLFPACK_TEST) throw new Error("task relay gateway reset is test-only");
-  singleton?.close();
+  await singleton?.close();
   singleton = undefined;
 }

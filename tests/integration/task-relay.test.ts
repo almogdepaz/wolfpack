@@ -13,7 +13,6 @@ mkdirSync(join(root, "project"), { recursive: true });
 const { __setTestBackend } = await import("../../src/server/backend.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const {
-  TaskRelayGateway,
   __resetTaskRelayGatewayForTests,
   __setTaskRelayGatewayForTests,
   getTaskRelayGateway,
@@ -32,7 +31,8 @@ class PiBackend extends MockBackend {
 }
 
 __setTestBackend(new PiBackend({ sessions: ["sender", "receiver"] }));
-__setTaskRelayGatewayForTests(new TaskRelayGateway({
+const { WorkerRelayGateway } = await import("../../src/task-relay/worker-client.ts");
+await __setTaskRelayGatewayForTests(new WorkerRelayGateway({
   root: join(root, "relay"),
   peerOrigin: "https://sender.example.ts.net",
   peerFetch: (input, init) => globalThis.fetch(input, init),
@@ -53,7 +53,7 @@ afterAll(async () => {
       (server as Server).close((error) => error ? reject(error) : resolve());
     });
   } finally {
-    __resetTaskRelayGatewayForTests();
+    await __resetTaskRelayGatewayForTests();
     rmSync(root, { recursive: true, force: true });
     if (originalTestMode === undefined) delete process.env.WOLFPACK_TEST;
     else process.env.WOLFPACK_TEST = originalTestMode;

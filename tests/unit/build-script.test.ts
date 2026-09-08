@@ -151,6 +151,12 @@ describe("scripts/build.ts modes", () => {
     const commands = runBuild(fixture, "server-only");
 
     expect(commands).not.toContain("cargo ");
+    const compiles = commands.split("\n").filter(command => command.startsWith("bun build --compile"));
+    expect(compiles).toHaveLength(4);
+    for (const command of compiles) {
+      expect(command).toContain("--entry-naming [name].js");
+      expect(command).toContain(join(fixture.root, "src", "task-relay", "worker-entry.ts"));
+    }
     expect(existsSync(join(fixture.root, "dist", "broker"))).toBe(false);
     expect(existsSync(join(fixture.root, "dist", "npm"))).toBe(false);
     expect(existsSync(join(fixture.root, "bin", "wolfpack"))).toBe(true);

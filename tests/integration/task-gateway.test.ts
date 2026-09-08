@@ -101,6 +101,7 @@ interface PeerServer {
   readonly process: ChildProcess;
   readonly base: string;
   readonly taskRoot: string;
+  readonly stdout: { value: string };
   readonly stderr: { value: string };
 }
 
@@ -188,9 +189,10 @@ async function spawnPeerServer(options: PeerServerOptions): Promise<PeerServer> 
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
-  const stderr = { value: "" };
+  const stdout = { value: "" }, stderr = { value: "" };
+  child.stdout?.on("data", (chunk: Buffer) => { stdout.value += chunk.toString(); });
   await waitForPeerReady(child, options.port, stderr);
-  return { process: child, base: `http://127.0.0.1:${options.port}`, taskRoot: options.taskRoot, stderr };
+  return { process: child, base: `http://127.0.0.1:${options.port}`, taskRoot: options.taskRoot, stdout, stderr };
 }
 
 async function stopPeerServer(peer: PeerServer | undefined): Promise<void> {
@@ -738,6 +740,12 @@ describe("cross-process peer task gateway", () => {
     try {
       receiver = await spawnPeerServer(peerServerOptions(fixture, "receiver"));
       sender = await spawnPeerServer(peerServerOptions(fixture, "sender", [], true, undefined, TASK_EVENT_TYPE.INFORMATION));
+      // Fast-retry timers must not trigger failures in an unrelated relay worker during startup.
+      const readyMessage = `READY:${new URL(sender.base).port}`;
+      const startupLogs: unknown[] = sender.stdout.value.trim().split("\n")
+        .filter(line => line !== readyMessage)
+        .map(line => JSON.parse(line));
+      expect(startupLogs).not.toContainEqual(expect.objectContaining({ component: "task-relay", level: "warn" }));
       const sent = await peerRequest(sender.base, "/api/tasks/v1/send", {
         callerSession: "parent", to: { machine: fixture.receiverOrigin, sessionId: "receiver-id" }, task: "recover a pending canonical sender event",
       });
