@@ -24,6 +24,9 @@ Control messages and stdin bytes share the transport but never share a frame.
   connections; each connection is its own subscription scope.
 - The broker does not perform authentication on the socket — the socket's
   filesystem permissions (0600 + per-user runtime dir) are the auth boundary.
+- A custom/existing socket parent must be euid-owned and not group- or
+  other-writable; its permissions are preserved, while missing parents are
+  created private (0700).
 
 The transport is byte-oriented. The protocol layer on top is framed.
 
@@ -144,7 +147,9 @@ Spawns a new PTY session under the broker.
 
 #### `kill_session`
 
-Sends a signal to the session's leader process. Default signal is `SIGHUP`.
+Sends a nonzero signal to the session's leader process. Omitting `signal` defaults
+it to `SIGTERM`; `signal: 0` returns `invalid_request`. Unknown session IDs still
+return `unknown_session`.
 
 - params:
   ```json
