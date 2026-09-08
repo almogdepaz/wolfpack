@@ -211,3 +211,18 @@ broker, installed-package modification or service restart is involved.
 
 The audit exits nonzero when it reproduces compatibility defects. This is a
 pre-change diagnostic, not a passing regression proving the redesign works.
+
+Recorded on audit revision `43dc7af3ca74c1ad452eb6cd155d609a0d07f475`, using
+installed `@sgtbeatdown/pi-tasks` 0.1.7 (adapter source SHA-256
+`42380e582702b59071f26323c6fd1fec41b198954f289379317f8e5dd0b2605d`):
+
+- Injected lost response produced `RELAY_UNAVAILABLE`; retrying the same logical
+  envelope produced **`ENVELOPE_CONFLICT`** because wire `createdAt` changed.
+- The real gateway accepted the original only once; exact-wire retry returned
+  `duplicate`, and genuinely changed payload still returned `ENVELOPE_CONFLICT`.
+- Simulated removal of cursor 1 exposed a real second-page envelope at cursor 2;
+  the installed adapter assigned it **cursor 1**, confirming incompatibility with
+  pending-only pages, not demonstrating a current retained-row paging failure.
+- Audit exit **1** (defects reproduced). Typecheck and diff checks passed on that
+  revision. No production behavior was changed; neither bug is fixed by this
+  design/audit commit. This is not an end-to-end task-core or live-network test.
