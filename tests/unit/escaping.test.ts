@@ -54,19 +54,19 @@ describe("esc html text", () => {
   });
 });
 
-describe("escAttr JavaScript-string attribute", () => {
+describe("escAttr html attribute", () => {
   test.each([
-    ["single quote", "it's", "it\\'s"],
-    ["double quote", 'say "hi"', 'say \\"hi\\"'],
-    ["backslash", "a\\b", "a\\\\b"],
-    ["less-than", "<script", "\\x3cscript"],
-    ["greater-than", "script>", "script\\x3e"],
-    ["ampersand", "a&b", "a\\x26b"],
-    ["newline", "line1\nline2", "line1\\nline2"],
-    ["carriage return", "line1\rline2", "line1\\rline2"],
-    ["tab", "a\tb", "a\\tb"],
-    ["combined hostile payload", `"><script>alert('xss')</script>`, `\\"\\x3e\\x3cscript\\x3ealert(\\'xss\\')\\x3c/script\\x3e`],
-    ["repeated angle/ampersand/quote/slash tokens", `<<&&''""\\\\>>`, `\\x3c\\x3c\\x26\\x26\\'\\'\\"\\"\\\\\\\\\\x3e\\x3e`],
+    ["single quote", "it's", "it&#39;s"],
+    ["double quote", 'say "hi"', "say &quot;hi&quot;"],
+    ["backslash", "a\\b", "a\\b"],
+    ["less-than", "<script", "&lt;script"],
+    ["greater-than", "script>", "script&gt;"],
+    ["ampersand", "a&b", "a&amp;b"],
+    ["newline", "line1\nline2", "line1\nline2"],
+    ["carriage return", "line1\rline2", "line1\rline2"],
+    ["tab", "a\tb", "a\tb"],
+    ["combined hostile payload", `"><script>alert('xss')</script>`, "&quot;&gt;&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;"],
+    ["repeated angle/ampersand/quote/slash tokens", `<<&&''""\\\\>>`, "&lt;&lt;&amp;&amp;&#39;&#39;&quot;&quot;\\\\&gt;&gt;"],
     ["clean", "hello", "hello"],
     ["empty", "", ""],
     ["null", null, ""],

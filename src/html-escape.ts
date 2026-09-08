@@ -1,5 +1,5 @@
 /**
- * Escape text inserted into HTML and JavaScript-string attribute contexts.
+ * Escape text inserted into HTML text and quoted attribute contexts.
  * These functions are shared by browser rendering code and unit tests.
  */
 export function esc(value: unknown): string {
@@ -13,15 +13,5 @@ export function esc(value: unknown): string {
 }
 
 export function escAttr(value: unknown): string {
-  if (value == null) return "";
-  return String(value)
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "\\'")
-    .replace(/"/g, '\\"')
-    .replace(/</g, "\\x3c")
-    .replace(/>/g, "\\x3e")
-    .replace(/&/g, "\\x26")
-    .replace(/\n/g, "\\n")
-    .replace(/\r/g, "\\r")
-    .replace(/\t/g, "\\t");
+  return esc(value);
 }

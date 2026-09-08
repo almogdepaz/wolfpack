@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -35,6 +35,8 @@ const CONTROL_QUEUE_CAPACITY: usize =
 const MAX_CONNECTIONS: usize = 128;
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 32;
 const OWNER_ONLY_SOCKET_UMASK: libc::mode_t = 0o077;
+const OWNER_ONLY_SOCKET_DIR_MODE: u32 = 0o700;
+const GROUP_OR_OTHER_WRITE_BITS: u32 = 0o022;
 static SOCKET_BIND_UMASK_MUTEX: Mutex<()> = Mutex::new(());
 static CONTROL_QUEUE_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
 static OUTPUT_QUEUE_HIGH_WATER: AtomicUsize = AtomicUsize::new(0);
@@ -168,13 +170,7 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
 
     if let Some(parent) = socket_path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-            // Harden the parent dir so a new socket created there before chmod
-            // runs is not reachable by other local users. XDG_RUNTIME_DIR is
-            // already 0o700 per spec, but for all other paths (e.g. ~/.wolfpack
-            // or any custom path) we set it explicitly. This is belt-and-suspenders
-            // alongside the umask below.
-            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            prepare_socket_parent(parent)?;
         }
     }
     prepare_socket_path(&socket_path).await?;
@@ -206,6 +202,27 @@ pub async fn start(config: ServerConfig) -> io::Result<Server> {
         shutdown_tx,
         accept_task,
     })
+}
+
+fn prepare_socket_parent(parent: &Path) -> io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(OWNER_ONLY_SOCKET_DIR_MODE)
+        .create(parent)?;
+
+    let metadata = std::fs::metadata(parent)?;
+    let euid = unsafe { libc::geteuid() };
+    if metadata.uid() != euid || metadata.permissions().mode() & GROUP_OR_OTHER_WRITE_BITS != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing insecure socket parent {}: expected effective uid {euid} and no group/other write permission",
+                parent.display()
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 async fn prepare_socket_path(socket_path: &Path) -> io::Result<()> {

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdirSync, readFileSync, rmSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CONTROL_API_SCHEMA_ARTIFACT } from "../../src/control-api/schema.ts";
@@ -25,8 +25,7 @@ const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir
 process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 
-const rawTmpDir = join(tmpdir(), `wolfpack-schema-contract-${process.pid}`);
-mkdirSync(rawTmpDir, { recursive: true });
+const rawTmpDir = mkdtempSync(join(tmpdir(), "wolfpack-schema-contract-"));
 const TEST_DEV_DIR = realpathSync(rawTmpDir);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
 process.env.WOLFPACK_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
@@ -129,7 +128,7 @@ afterAll(() => {
   (server as Server).close();
   __globalRateLimiter._map.clear();
   __pollRateLimiter._map.clear();
-  rmSync(TEST_DEV_DIR, { recursive: true, force: true });
+  rmSync(rawTmpDir, { recursive: true, force: true });
   __resetBackend();
   __setDevDir(PRIOR_CACHED_DEV_DIR);
   for (const [key, value] of Object.entries(PRIOR_ENV)) {

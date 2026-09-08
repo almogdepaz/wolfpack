@@ -46,13 +46,21 @@ await Promise.race([connected, wait(2000)]);
 
 // Belt-and-braces: ping until broker answers
 const pingDeadline = Date.now() + 5000;
+let brokerReady = false;
 while (Date.now() < pingDeadline) {
   try {
     const resp = await brokerClient.request("list_sessions", {});
-    if (resp.status === "ok") break;
+    if (resp.status === "ok") {
+      brokerReady = true;
+      break;
+    }
   } catch {
     await wait(50);
   }
+}
+if (!brokerReady) {
+  brokerClient.close();
+  throw new Error("broker readiness failed: list_sessions did not return ok");
 }
 
 const backend = new BrokerBackend(brokerClient);

@@ -1,4 +1,4 @@
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -296,6 +296,70 @@ async fn kill_session_transitions_alive_flag_to_false() {
     }
 
     wait_until_dead(&mut stream, created.id).await;
+
+    drop(stream);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn kill_session_rejects_zero_signal_without_terminating_session() {
+    let h = Harness::boot().await;
+    let mut stream = connect(&h.socket_path).await;
+
+    let unknown = round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 1,
+            method: methods::KILL_SESSION.into(),
+            params: json!({ "session_id": Uuid::nil(), "signal": 0 }),
+        },
+    )
+    .await;
+
+    let resp = round_trip(
+        &mut stream,
+        create_request(2, Some("zero-signal-target"), &["sleep", "30"]),
+    )
+    .await;
+    let created = match resp.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session,
+        other => panic!("unexpected: {other:?}"),
+    };
+
+    let zero_signal = round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 3,
+            method: methods::KILL_SESSION.into(),
+            params: json!({ "session_id": created.id, "signal": 0 }),
+        },
+    )
+    .await;
+    let target_alive = poll_session_alive(&mut stream, created.id).await;
+
+    let cleanup = round_trip(
+        &mut stream,
+        ControlRequest {
+            id: 4,
+            method: methods::KILL_SESSION.into(),
+            params: json!({ "session_id": created.id, "signal": libc::SIGKILL }),
+        },
+    )
+    .await;
+    wait_until_dead(&mut stream, created.id).await;
+
+    assert_eq!(unknown.status, Status::Error);
+    assert_eq!(
+        unknown.error.expect("unknown error").code,
+        ErrorCode::UnknownSession
+    );
+    assert_eq!(zero_signal.status, Status::Error);
+    assert_eq!(
+        zero_signal.error.expect("zero signal error").code,
+        ErrorCode::InvalidRequest
+    );
+    assert!(target_alive, "signal zero must not terminate the target");
+    assert_eq!(cleanup.status, Status::Ok);
 
     drop(stream);
     h.shutdown().await;
@@ -1491,6 +1555,103 @@ async fn socket_file_has_mode_0600() {
     );
 
     h.shutdown().await;
+}
+
+/// A pre-existing parent must retain its permissions through both successful
+/// startup and a later startup error. The whole fixture is test-owned.
+#[tokio::test]
+async fn startup_preserves_existing_socket_parent_permissions() {
+    let dir = tempdir().expect("tempdir");
+    let parent = dir.path().join("existing-parent");
+    std::fs::create_dir(&parent).expect("create parent");
+    let expected_parent_mode = 0o755;
+    std::fs::set_permissions(
+        &parent,
+        std::fs::Permissions::from_mode(expected_parent_mode),
+    )
+    .expect("set parent mode");
+    assert_eq!(
+        std::fs::metadata(&parent).expect("stat parent").uid(),
+        unsafe { libc::geteuid() },
+        "safe parent fixture must be owned by the test process"
+    );
+    let socket_path = parent.join("broker.sock");
+
+    let server = start(test_server_config(socket_path.clone()))
+        .await
+        .expect("start with existing parent");
+    server.shutdown().await;
+    assert_eq!(
+        std::fs::metadata(&parent)
+            .expect("stat parent after successful startup")
+            .permissions()
+            .mode()
+            & 0o777,
+        expected_parent_mode,
+        "successful startup must not change an existing parent directory"
+    );
+
+    std::fs::write(&socket_path, b"keep me").expect("write sentinel");
+    let error = match start(test_server_config(socket_path.clone())).await {
+        Ok(server) => {
+            server.shutdown().await;
+            panic!("server replaced a non-socket path");
+        }
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        std::fs::read(&socket_path).expect("read sentinel"),
+        b"keep me"
+    );
+    assert_eq!(
+        std::fs::metadata(&parent)
+            .expect("stat parent after failed startup")
+            .permissions()
+            .mode()
+            & 0o777,
+        expected_parent_mode,
+        "failed startup must not change an existing parent directory"
+    );
+}
+
+/// An existing group- or other-writable parent is unsuitable for a broker
+/// socket. Startup must reject it without changing its mode or creating a socket.
+#[tokio::test]
+async fn startup_refuses_unsafe_existing_socket_parent_without_mutation() {
+    for (label, expected_parent_mode) in [("group-writable", 0o775), ("other-writable", 0o707)] {
+        let dir = tempdir().expect("tempdir");
+        let parent = dir.path().join(label);
+        std::fs::create_dir(&parent).expect("create parent");
+        std::fs::set_permissions(
+            &parent,
+            std::fs::Permissions::from_mode(expected_parent_mode),
+        )
+        .expect("set parent mode");
+        let socket_path = parent.join("broker.sock");
+
+        let error = match start(test_server_config(socket_path.clone())).await {
+            Ok(server) => {
+                server.shutdown().await;
+                panic!("server accepted unsafe existing parent {label}");
+            }
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            !socket_path.exists(),
+            "startup must not create a socket in unsafe parent {label}"
+        );
+        assert_eq!(
+            std::fs::metadata(&parent)
+                .expect("stat parent after rejected startup")
+                .permissions()
+                .mode()
+                & 0o777,
+            expected_parent_mode,
+            "rejected startup must not change unsafe parent {label}"
+        );
+    }
 }
 
 /// Using a custom socket path (not ~/.wolfpack) must also produce a 0o600

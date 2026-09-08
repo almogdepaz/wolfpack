@@ -45,6 +45,7 @@ const MIN_TERMINAL_COLS: u16 = 20;
 const MAX_TERMINAL_COLS: u16 = 300;
 const MIN_TERMINAL_ROWS: u16 = 5;
 const MAX_TERMINAL_ROWS: u16 = 100;
+const SIGNAL_ZERO: i32 = 0;
 
 pub struct SessionRouter {
     registry: Arc<Registry>,
@@ -171,6 +172,12 @@ impl SessionRouter {
             Some(s) => s,
             None => return unknown_session(id, p.session_id),
         };
+        if p.signal == Some(SIGNAL_ZERO) {
+            return invalid_request(
+                id,
+                "kill_session params: signal must not be zero".to_string(),
+            );
+        }
         let signal = p.signal.unwrap_or(libc::SIGTERM);
         match sess.kill(signal) {
             Ok(KillOutcome::Killed) => {
