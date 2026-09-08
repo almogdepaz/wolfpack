@@ -70,11 +70,20 @@ port.on("message", (message: ParentMessage) => {
   const peer = message.method === "receivePeer";
   const existing = [...requests.values()].filter(item => item.peer === peer);
   const captured = captureRelayWire(message.args, LIMIT.requestBytes);
+  let args = captured.value;
+  if (message.method === "cleanup") {
+    const [beforeMs] = args;
+    const before = typeof beforeMs === "number" ? new Date(beforeMs) : undefined;
+    if (args.length !== 1 || !Number.isFinite(beforeMs) || before === undefined || Number.isNaN(before.getTime())) {
+      throw new Error("invalid relay cleanup cutoff");
+    }
+    args = [before];
+  }
   const bytes = captured.bytes;
   if (bytes > LIMIT.requestBytes || existing.length >= (peer ? LIMIT.peerRequests : LIMIT.regularRequests)
     || existing.reduce((sum, item) => sum + item.bytes, bytes) > (peer ? LIMIT.peerBytes : LIMIT.regularBytes)) throw new Error("relay worker admission budget exceeded");
   requests.set(message.id, { peer, bytes });
-  (peer ? peers : regular).push({ ...message, args: captured.value });
+  (peer ? peers : regular).push({ ...message, args });
   pump();
 });
 port.on("close", () => gateway.close());

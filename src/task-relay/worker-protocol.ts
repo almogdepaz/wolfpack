@@ -3,6 +3,12 @@ import type { TaskRelayGateway } from "./gateway.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 
 export type RelayGateway = Pick<TaskRelayGateway, keyof TaskRelayGateway>;
+
+/** Wire arguments differ from the public gateway only for the cleanup Date cutoff. */
+export interface RelayWorkerGateway extends Omit<RelayGateway, "cleanup"> {
+  cleanup(beforeMs: number): Promise<number>;
+}
+
 export const RELAY_WORKER_METHODS = [
   "initialize", "peerRelay", "resolvePeerEndpoint", "connect", "endpointForSession", "endpointsForSessions",
   "disconnect", "resolve", "send", "receive", "acknowledgeDelivery", "receivePeer", "flushPeerOutbox", "cleanup",

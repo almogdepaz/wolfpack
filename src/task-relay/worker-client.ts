@@ -7,7 +7,7 @@ import { RELAY_ERROR, relayFailure } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
 import {
   RELAY_WORKER_LIMITS as LIMIT, captureRelayWire, RelayWireBudgetError,
-  type RelayGateway, type RelayWorkerMethod, type WorkerMessage, type CallbackRequest,
+  type RelayGateway, type RelayWorkerGateway, type RelayWorkerMethod, type WorkerMessage, type CallbackRequest,
 } from "./worker-protocol.ts";
 
 const log = createLogger("task-relay");
@@ -184,7 +184,7 @@ export class WorkerRelayGateway implements RelayGateway {
     await this.#stopping;
   }
 
-  #call<M extends RelayWorkerMethod>(method: M, ...input: Parameters<RelayGateway[M]>): Promise<Awaited<ReturnType<RelayGateway[M]>>> {
+  #call<M extends RelayWorkerMethod>(method: M, ...input: Parameters<RelayWorkerGateway[M]>): Promise<Awaited<ReturnType<RelayGateway[M]>>> {
     if (this.#closed) return Promise.reject(new WorkerUnavailable("relay worker is closed"));
     const peer = method === "receivePeer";
     const count = [...this.#pending.values()].filter(p => p.peer === peer).length;
@@ -211,7 +211,7 @@ export class WorkerRelayGateway implements RelayGateway {
     });
   }
 
-  async #result<M extends ResultMethod>(method: M, ...args: Parameters<RelayGateway[M]>): Promise<Awaited<ReturnType<RelayGateway[M]>>> {
+  async #result<M extends ResultMethod>(method: M, ...args: Parameters<RelayWorkerGateway[M]>): Promise<Awaited<ReturnType<RelayGateway[M]>>> {
     try { return await this.#call(method, ...args); }
     catch (error) {
       return relayFailure(error instanceof InvalidWorkerRequest ? RELAY_ERROR.INVALID_REQUEST : RELAY_ERROR.STORE_UNAVAILABLE,
@@ -225,7 +225,12 @@ export class WorkerRelayGateway implements RelayGateway {
   endpointForSession(...args: Parameters<RelayGateway["endpointForSession"]>) { return this.#call("endpointForSession", ...args); }
   endpointsForSessions(...args: Parameters<RelayGateway["endpointsForSessions"]>) { return this.#call("endpointsForSessions", ...args); }
   flushPeerOutbox(...args: Parameters<RelayGateway["flushPeerOutbox"]>) { return this.#call("flushPeerOutbox", ...args); }
-  cleanup(...args: Parameters<RelayGateway["cleanup"]>) { return this.#call("cleanup", ...args); }
+  async cleanup(before: Date): Promise<number> {
+    let beforeMs: number;
+    try { beforeMs = Date.prototype.getTime.call(before); } catch { throw new TypeError("relay cleanup cutoff must be a valid date"); }
+    if (!Number.isFinite(beforeMs)) throw new TypeError("relay cleanup cutoff must be a valid date");
+    return this.#call("cleanup", beforeMs);
+  }
   connect(...args: Parameters<RelayGateway["connect"]>) { return this.#result("connect", ...args); }
   disconnect(...args: Parameters<RelayGateway["disconnect"]>) { return this.#result("disconnect", ...args); }
   resolve(...args: Parameters<RelayGateway["resolve"]>) { return this.#result("resolve", ...args); }

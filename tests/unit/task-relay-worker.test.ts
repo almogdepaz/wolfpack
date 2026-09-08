@@ -76,6 +76,33 @@ test("worker preserves input/result ownership, duplicate/content conflicts, curs
   } finally { await g.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("worker cleanup forwards a public Date cutoff and retains only records at the boundary", async () => {
+  const directory = root();
+  const gateway = new WorkerRelayGateway({ root: directory, inspectSession: inspect });
+  try {
+    const source = await connect(gateway, "sender");
+    const target = await connect(gateway, "receiver");
+    const envelope: RelayEnvelope = {
+      envelopeId: randomUUID(), source, target, protocolVersion: RELAY_PROTOCOL_VERSION,
+      createdAt: new Date().toISOString(), payload: { cleanup: true },
+    };
+    expect(await gateway.send({ callerSession: "sender", envelope })).toMatchObject({ ok: true, forwarding: "local" });
+    const invalidCutoff = gateway.cleanup(new Date(Number.NaN));
+    await expect(invalidCutoff).rejects.toThrow("relay cleanup cutoff must be a valid date");
+    const state = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8")) as {
+      readonly envelopes: readonly { readonly acceptedAt: string }[];
+    };
+    const acceptedAt = state.envelopes[0]?.acceptedAt;
+    if (acceptedAt === undefined) throw new Error("expected accepted relay envelope");
+    const cutoff = new Date(acceptedAt);
+    Object.defineProperty(cutoff, "getTime", { value: () => { throw new Error("caller getTime must not run"); } });
+    expect(await gateway.cleanup(cutoff)).toBe(0);
+    expect(await gateway.receive({ callerSession: "receiver", cursor: "0" })).toMatchObject({ ok: true, envelopes: [envelope] });
+    expect(await gateway.cleanup(new Date(Date.parse(acceptedAt) + 1))).toBe(1);
+    expect(await gateway.receive({ callerSession: "receiver", cursor: "0" })).toMatchObject({ ok: true, envelopes: [] });
+  } finally { await gateway.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("peer ingress has reserved capacity while regular admissions are full", async () => {
   const directory = root(); let release!: () => void;
   const gate = new Promise<void>(r => { release = r; }); let held = 0;
