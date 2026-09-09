@@ -2247,7 +2247,8 @@ describe("session-control relay lookup batching", () => {
     const { randomUUID } = await import("node:crypto");
     const relayRoot = mkdtempSync(join(TEST_DEV_DIR, "relay-list-batch-"));
     const store = new TaskRelayStore(relayRoot);
-    const now = new Date("2026-08-09T00:00:00.000Z");
+    // Both the gateway and HTTP projection now validate the lease at observation time.
+    const now = new Date();
     const names = Array.from({ length: 20 }, (_, i) => `relay-list-${19 - i}`);
     const backend = new MockBackend({ sessions: names });
     const identities = await backend.listIdentities();
@@ -2268,7 +2269,9 @@ describe("session-control relay lookup batching", () => {
       const body = await response.json();
       expect(body.sessions.map((s: any) => s.session)).toEqual([...names].sort((a, b) => a.localeCompare(b)));
       for (const registration of registrations) {
-        expect(body.sessions.find((s: any) => s.sessionId === registration.sessionId)?.taskEndpoint).toEqual(registration.endpoint);
+        const session = body.sessions.find((s: any) => s.sessionId === registration.sessionId);
+        expect(session?.taskEndpoint).toEqual(registration.endpoint);
+        expect(session?.taskTransport).toEqual({ profile: "durable-v2", endpoint: registration.endpoint, leaseExpiresAt: registration.leaseExpiresAt });
       }
       expect(relayReads()).toBe(1);
       await store.deactivateRegistration(registrations[0]!.sessionId, registrations[0]!.endpoint.id, now.toISOString());

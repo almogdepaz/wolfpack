@@ -111,7 +111,7 @@ test("real middleware protects metadata and both ingress lanes; valid JWT does n
   const health = await post({ ...binding, operation: "health" }); expect(health.body.value.store.routes).toBe(0); expect(health.body.value.store.activeItems).toBe(0);
 });
 
-test("legacy routes and readiness cannot accidentally enter or advertise the volatile engine", async () => {
+test("legacy routes cannot enter the volatile engine; discovery reports its explicit live transport",  async () => {
   const binding = await connect("sender");
   const { taskRelayRoutes } = await import("../../src/server/task-relay-routes.ts");
   for (const key of Object.keys(taskRelayRoutes)) {
@@ -122,7 +122,21 @@ test("legacy routes and readiness cannot accidentally enter or advertise the vol
   }
   expect(await gateway.endpointForSession("sender-id")).toBeUndefined();
   expect(await gateway.endpointsForSessions(["sender-id"])).toEqual(new Map());
+  const registration = (await gateway.registrationsForSessions(["sender-id"])).get("sender-id");
+  expect(registration).toMatchObject({ profile: binding.profile, epoch: binding.epoch, endpoint: binding.endpoint });
+  expect(validate({ $ref: "#/$defs/TaskRelayRegistration" }, registration, schema)).toEqual([]);
+  const statusResponse = await fetch(base + "/api/session-control/status?session=sender", { headers });
+  expect(statusResponse.headers.get("cache-control")).toBe("no-store");
+  const status = await statusResponse.json() as any;
+  expect(status.taskEndpoint).toEqual(binding.endpoint); expect(status.taskTransport).toEqual(registration);
+  const listResponse = await fetch(base + "/api/session-control/list", { headers });
+  expect(listResponse.headers.get("cache-control")).toBe("no-store");
+  const list = await listResponse.json() as any;
+  expect(list.sessions.find((s: any) => s.sessionId === "sender-id").taskTransport).toEqual(registration);
   expect((await post({ ...binding, operation: "health" })).body.value.store.activeItems).toBe(0);
+  await post({ ...binding, operation: "disconnect" });
+  const retired = await (await fetch(base + "/api/session-control/status?session=sender", { headers })).json() as any;
+  expect(retired.taskEndpoint).toBeUndefined(); expect(retired.taskTransport).toBeUndefined();
 });
 
 test("HTTP delivers opaque content, checks full conflicts, and preserves individual ACKs and reset epochs", async () => {

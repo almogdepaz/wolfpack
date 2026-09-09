@@ -4,6 +4,13 @@ import { AGENT_KIND } from "../agent-kind.js";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import type { SessionInspectionResult } from "../session-status-contract.js";
 import type { RelayEndpoint } from "../task-relay/domain.js";
+import { isLiveTaskRelayRegistration, sameTaskRelayRegistration } from "../task-relay/registration.js";
+import type { TaskRelayRegistration } from "../task-relay/registration.js";
+
+export interface TaskWorkerTransportLookup {
+  readonly registrationForSession?: (sessionId: string) => Promise<TaskRelayRegistration | undefined>;
+  readonly relayProfile?: TaskRelayRegistration["profile"];
+}
 import {
   SESSION_TASK_WORKER_CLEANUP_TIMEOUT_MS,
   SESSION_TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
@@ -58,7 +65,7 @@ export interface TaskWorkerReadinessBackend {
   killSessionById?(sessionId: string): Promise<void>;
 }
 
-interface WaitForTaskWorkerReadinessInput {
+interface WaitForTaskWorkerReadinessInput extends TaskWorkerTransportLookup {
   readonly backend: TaskWorkerReadinessBackend;
   readonly endpointForSession: (sessionId: string) => Promise<RelayEndpoint | undefined>;
   readonly sessionId: string;
@@ -276,7 +283,14 @@ export async function waitForTaskWorkerReadiness(
         failure = "task worker session identity, project root, harness, or liveness changed before readiness";
         break;
       }
-      const endpoint = await boundOperation(() => input.endpointForSession(input.sessionId), deadline);
+      let registration: TaskRelayRegistration | undefined;
+      const endpoint = await boundOperation(async () => {
+        if (!input.registrationForSession) return input.endpointForSession(input.sessionId);
+        registration = await input.registrationForSession(input.sessionId);
+        if (!registration) return undefined;
+        if (!input.relayProfile || !isLiveTaskRelayRegistration(registration, input.relayProfile)) throw new Error("incompatible or expired task transport");
+        return registration.endpoint;
+      }, deadline);
       if (!endpoint.completed) {
         failure = "task worker endpoint lookup exceeded the readiness deadline";
         break;
@@ -292,6 +306,15 @@ export async function waitForTaskWorkerReadiness(
         if (!readySession(liveness.value, input.sessionId, input.projectDir)) {
           failure = "task worker exited or changed before endpoint readiness";
           break;
+        }
+        if (input.registrationForSession) {
+          const confirmed = await boundOperation(() => input.registrationForSession!(input.sessionId), deadline);
+          if (!confirmed.completed || !confirmed.value || !registration || !input.relayProfile
+            || !isLiveTaskRelayRegistration(confirmed.value, input.relayProfile)
+            || !sameTaskRelayRegistration(registration, confirmed.value)) {
+            failure = "task worker transport changed or expired before readiness";
+            break;
+          }
         }
         if (remainingMilliseconds(deadline) === 0) {
           failure = "task worker readiness reached the deadline before endpoint return";

@@ -4644,6 +4644,9 @@
         },
         "taskEndpoint": {
           "$ref": "#/$defs/RelayEndpoint"
+        },
+        "taskTransport": {
+          "$ref": "#/$defs/TaskRelayRegistration"
         }
       },
       "required": [
@@ -4826,6 +4829,58 @@
       ],
       "additionalProperties": false,
       "description": "Opaque local or locally-routed peer endpoint. It never contains a machine name or origin."
+    },
+    "TaskRelayRegistration": {
+      "description": "Request-local lease observation for a live session, not model execution or restart recovery. Re-inspect after expiry or reset.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "durable-v2"
+            },
+            "endpoint": {
+              "$ref": "#/$defs/RelayEndpoint"
+            },
+            "leaseExpiresAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "profile",
+            "endpoint",
+            "leaseExpiresAt"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpoint": {
+              "$ref": "#/$defs/RelayEndpoint"
+            },
+            "leaseExpiresAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "endpoint",
+            "leaseExpiresAt"
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
     "RelayEnvelope": {
       "type": "object",

@@ -253,6 +253,7 @@ export class WorkerRelayGateway implements RelayGateway {
   peerRelay(...args: Parameters<RelayGateway["peerRelay"]>) { return this.#call("peerRelay", ...args); }
   endpointForSession(...args: Parameters<RelayGateway["endpointForSession"]>) { return this.#call("endpointForSession", ...args); }
   endpointsForSessions(...args: Parameters<RelayGateway["endpointsForSessions"]>) { return this.#call("endpointsForSessions", ...args); }
+  registrationsForSessions(...args: Parameters<RelayGateway["registrationsForSessions"]>) { return this.#call("registrationsForSessions", ...args); }
   flushPeerOutbox(...args: Parameters<RelayGateway["flushPeerOutbox"]>) { return this.#call("flushPeerOutbox", ...args); }
   async cleanup(before: Date): Promise<number> {
     let beforeMs: number;

@@ -56,6 +56,7 @@ function pump(): void {
                 : request.method === "volatileTopology" ? volatile.topology(request.args[0]) : volatile.request(request.args[0]));
           } else if (volatile) {
             if (request.method === "initialize") value = volatile.initialize();
+            else if (request.method === "registrationsForSessions") value = await volatile.registrationsForSessions(request.args[0] as readonly string[]);
             // Do not advertise volatile registrations as ready v2 endpoints.
             else if (request.method === "endpointForSession") value = undefined;
             else if (request.method === "endpointsForSessions") value = new Map();

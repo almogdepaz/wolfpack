@@ -58,7 +58,7 @@ import {
   prepareTaskWorkerLaunch,
 } from "./task-worker-readiness.js";
 import { notifySubSessionOpened } from "./session-notifications.js";
-import { getTaskRelayGateway } from "../task-relay/gateway.js";
+import { getTaskRelayGateway, getTaskRelayProfile } from "../task-relay/gateway.js";
 import {
   DEFAULT_QUIET_ALERT_POLICY,
   isQuietAlertPolicy,
@@ -592,7 +592,8 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         ...(taskWorker !== undefined && {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,
-          endpointForSession: (sessionId) => getTaskRelayGateway().endpointForSession(sessionId),
+          relayProfile: getTaskRelayProfile(),
+          registrationForSession: async (sessionId) => (await getTaskRelayGateway().registrationsForSessions([sessionId])).get(sessionId),
         }),
         loadSettings: () => ({ agentCmd: configuredCommand }),
       });
@@ -708,7 +709,8 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         ...(taskWorker !== undefined && {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,
-          endpointForSession: (sessionId) => getTaskRelayGateway().endpointForSession(sessionId),
+          relayProfile: getTaskRelayProfile(),
+          registrationForSession: async (sessionId) => (await getTaskRelayGateway().registrationsForSessions([sessionId])).get(sessionId),
         }),
         notify: (parent, session) => {
           notifySubSessionOpened(parent.wolfpackSessionName, session);

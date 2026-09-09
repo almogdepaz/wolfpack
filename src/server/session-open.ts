@@ -15,7 +15,7 @@ import {
   failTaskWorkerReadiness,
   waitForTaskWorkerReadiness,
 } from "./task-worker-readiness.js";
-import type { TaskWorkerLaunch } from "./task-worker-readiness.js";
+import type { TaskWorkerLaunch, TaskWorkerTransportLookup } from "./task-worker-readiness.js";
 import type { RelayEndpoint } from "../task-relay/domain.js";
 import { DuplicateSessionError } from "./backend.js";
 import type { SessionLaunchOptions } from "./backend.js";
@@ -84,7 +84,7 @@ export interface SessionOpenSuccess {
   readonly taskEndpoint?: RelayEndpoint;
 }
 
-interface OpenSubSessionInput {
+interface OpenSubSessionInput extends TaskWorkerTransportLookup {
   readonly backend: SessionOpenBackend;
   readonly parentSession: string;
   readonly project: string;
@@ -213,6 +213,8 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
       : await waitForTaskWorkerReadiness({
         backend: input.backend,
         endpointForSession: input.endpointForSession ?? (async () => undefined),
+        registrationForSession: input.registrationForSession,
+        relayProfile: input.relayProfile,
         session,
         sessionId: identity.wolfpackSessionId,
         projectDir: input.projectDir,

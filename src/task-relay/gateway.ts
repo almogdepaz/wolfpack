@@ -19,6 +19,7 @@ import type { RelayEndpoint, RelayEnvelope, RelayRegistration, RelayResult } fro
 import { TaskRelayStore, newOpaqueEndpoint } from "./store.ts";
 import { WorkerRelayGateway } from "./worker-client.ts";
 import type { RelayGateway } from "./worker-protocol.ts";
+import type { TaskRelayRegistration } from "./registration.ts";
 import type { PeerOutboxItem } from "./store.ts";
 
 type PeerFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -193,6 +194,13 @@ export class TaskRelayGateway {
     const endpoints = new Map<string, RelayEndpoint>();
     for (const [sessionId, registration] of registrations) endpoints.set(sessionId, registration.endpoint);
     return endpoints;
+  }
+
+  async registrationsForSessions(sessionIds: readonly string[]): Promise<ReadonlyMap<string, TaskRelayRegistration>> {
+    const registrations = await this.#store.registrationsForSessions(sessionIds, this.#now());
+    return new Map([...registrations].map(([sessionId, registration]) => [sessionId, {
+      profile: "durable-v2" as const, endpoint: registration.endpoint, leaseExpiresAt: registration.leaseExpiresAt,
+    }]));
   }
 
   async disconnect(input: { readonly callerSession: string; readonly endpoint: RelayEndpoint }): Promise<RelayResult<Record<never, never>>> {

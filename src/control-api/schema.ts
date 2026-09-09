@@ -591,6 +591,7 @@ export const controlApiSource: ControlApiSource = {
       terminal: ref("SessionTerminalLiveness"),
       parentSession: ref("SessionControlIdentity"),
       taskEndpoint: ref("RelayEndpoint"),
+      taskTransport: ref("TaskRelayRegistration"),
     }, [
       "ok",
       "selector",
@@ -648,6 +649,10 @@ export const controlApiSource: ControlApiSource = {
       relay: { type: "string", pattern: `^${RELAY_ID.replaceAll("-", "\\-")}(?::peer:${OPAQUE_RELAY_UUID_PATTERN})?$` },
       id: { type: "string", format: "uuid" },
     }, ["relay", "id"], { description: "Opaque local or locally-routed peer endpoint. It never contains a machine name or origin." }),
+    TaskRelayRegistration: { description: "Request-local lease observation for a live session, not model execution or restart recovery. Re-inspect after expiry or reset.", oneOf: [
+      object({ profile: { const: "durable-v2" }, endpoint: ref("RelayEndpoint"), leaseExpiresAt: { type: "string", format: "date-time" } }, ["profile", "endpoint", "leaseExpiresAt"]),
+      object({ profile: { const: "volatile-v1" }, epoch: { type: "string", format: "uuid" }, endpoint: ref("RelayEndpoint"), leaseExpiresAt: { type: "string", format: "date-time" } }, ["profile", "epoch", "endpoint", "leaseExpiresAt"]),
+    ] },
     RelayEnvelope: object({
       envelopeId: { type: "string", minLength: 1, maxLength: 512 },
       protocolVersion: { const: RELAY_PROTOCOL_VERSION },

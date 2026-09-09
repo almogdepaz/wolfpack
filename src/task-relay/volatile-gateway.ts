@@ -6,6 +6,7 @@ import { RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION, isLocalRelay, isOpaqueR
 import type { RelayEnvelope, RelayRegistration } from "./domain.ts";
 import { MEMORY_RELAY_LIMITS, MEMORY_RELAY_PROFILE, MemoryRelayError, MemoryRelayStore } from "./memory-store.ts";
 import type { ForwardAttempt } from "./memory-store.ts";
+import type { TaskRelayRegistration } from "./registration.ts";
 import { BoundedRelayInvestigation, RotatingRelayInvestigationWriter } from "./investigation.ts";
 import { captureRelayWire } from "./worker-protocol.ts";
 import { VOLATILE_GATEWAY_LIMITS as LIMIT, VOLATILE_PEER_PATH, volatileFailure } from "./volatile-protocol.ts";
@@ -118,6 +119,17 @@ export class VolatileRelayGateway {
     this.#stop.abort(); if (this.#timer) clearInterval(this.#timer); this.#timer = undefined;
     // Graceful callers may drain. Worker termination remains abrupt/best-effort.
     await this.#investigation?.close();
+  }
+  /** Host-only, request-local lease observation. The broker separately proves liveness/root/harness. */
+  async registrationsForSessions(sessionIds: readonly string[]): Promise<ReadonlyMap<string, TaskRelayRegistration>> {
+    if (this.#stop.signal.aborted) fail("RELAY_RESET");
+    const now = this.#now(), registrations = new Map<string, TaskRelayRegistration>();
+    for (const sessionId of sessionIds) {
+      const registration = this.#store.registrationForSession(this.epoch, sessionId, now);
+      if (registration) registrations.set(sessionId, { profile: MEMORY_RELAY_PROFILE, epoch: this.epoch,
+        endpoint: registration.endpoint, leaseExpiresAt: registration.leaseExpiresAt });
+    }
+    return registrations;
   }
   request(input: unknown): Promise<VolatileResult> { return this.#run(input, "endpoint"); }
   /** Host-only input derived from freshly verified topology, never endpoint URLs. */

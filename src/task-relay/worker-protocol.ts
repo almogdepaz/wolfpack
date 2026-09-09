@@ -15,7 +15,7 @@ export interface RelayWorkerGateway extends Omit<RelayGateway, "cleanup"> {
 }
 
 export const RELAY_WORKER_METHODS = [
-  "initialize", "peerRelay", "resolvePeerEndpoint", "connect", "endpointForSession", "endpointsForSessions",
+  "initialize", "peerRelay", "resolvePeerEndpoint", "connect", "endpointForSession", "endpointsForSessions", "registrationsForSessions",
   "disconnect", "resolve", "send", "receive", "acknowledgeDelivery", "receivePeer", "flushPeerOutbox", "cleanup", "volatileEpoch", "volatile", "volatilePeer", "volatileTopology",
 ] as const satisfies readonly (keyof RelayWorkerGateway)[];
 export type RelayWorkerMethod = typeof RELAY_WORKER_METHODS[number];

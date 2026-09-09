@@ -41,9 +41,9 @@ instruction or completed #351 cutover.
   Capacity failures are explicit; these encoded/application limits are not an RSS
   guarantee. HTTP slots are shared, not a reserved ACK lane.
 - Legacy v2 routes fail `INCOMPATIBLE_PROTOCOL` before admission in this mode.
-  Legacy readiness lookups intentionally return no endpoint, not a volatile
-  endpoint mislabeled as v2. The normal extension/task-worker readiness path is
-  **not yet coordinated**; only explicit compatible clients can use this slice.
+  Legacy endpoint-only RPC lookups intentionally return no volatile endpoint.
+  Normal discovery/readiness now uses the explicit transport-registration path
+  below, not those legacy lookups.
 - HTTP peer ingress always returns `PEER_POLICY_REQUIRED`; endpoint ingress
   rejects topology/peer commands and nonlocal destinations. A valid JWT, claimed
   origin or forwarded header is not independently verified peer-machine authority.
@@ -70,14 +70,45 @@ proof. Both cross-repository tests require `WOLFPACK_PI_TASKS_SOURCE` (absolute
 tracked-clean checkout) and `WOLFPACK_PI_TASKS_REVISION` (exact 40-hex HEAD); otherwise
 they are explicitly skipped.
 
+## Coordinated extension and registration readiness (cutover branch)
+
+The paired pi-tasks cutover branch uses memory-owned transport in its normal
+extension without an opt-in flag. It owns startup/polling/shutdown/SQLite close,
+refuses automatic downgrade, and offers an explicit loss-accepting rebind command.
+Existing legacy endpoints require deliberate rebind; history is not adopted.
+This is source integration, not an installed extension or coordinated release.
+
+Host-only `registrationsForSessions` reads one request-local batch from the active
+engine and exposes only endpoint, profile, lease expiry and volatile epoch (never
+registration generation). `session status` and `session list` retain opaque
+`taskEndpoint` and add `taskTransport` with that registration. Both responses are
+`Cache-Control: no-store`; dead/expired transport observations are not advertised.
+Legacy endpoint-only RPC stays incompatible in volatile mode.
+
+Both production task-worker creation routes select the actual server profile and
+use the new registration lookup. Readiness checks exact live broker ID, canonical
+root and Pi harness, then a live profile-compatible registration, re-inspects the
+broker, and confirms the same profile/epoch/endpoint with a still-live lease before
+returning the opaque endpoint. Lease renewal may extend expiry; replacement,
+expiry and epoch/profile changes fail closed and clean up only the created ID.
+This is a point-in-time transport observation, not a model-execution guarantee or
+an exclusive lease. The endpoint-only lookup remains a low-level compatibility
+input for pre-existing programmatic callers, not the production route path.
+
+Server default selection remains staged until verified federation and rollout
+coordination are complete. Neither normal installed server nor broker is restarted
+by these branches. Tests cover the real middleware/worker discovery path and
+synthetic exact-ID readiness/reset races; native broker, real Pi process, packaged
+release, two-machine and final-path performance gates remain separate.
+
 ## Staged gateway/worker integration (after #360)
 
 `VolatileRelayGateway` now drives the bounded engine with fresh broker inspection,
 explicit profile/epoch/endpoint bindings, true per-delivery cursors and
 mailbox-confirmed acceptance. The initial slice exposed only explicit programmatic
 `WorkerRelayGateway({ profile: "volatile-v1", ... })` construction. The experimental
-same-host HTTP slice below adds explicit startup selection; the default and
-installed adapters have **not** switched. Do not enable it on an installation
+same-host HTTP slice adds explicit server startup selection. The paired source
+extension now switches its default, but installed adapters have **not** switched. Do not enable it on an installation
 before coordinated adapter, discovery and release validation is complete.
 
 The two worker modes are mutually exclusive. Volatile initialization does not
