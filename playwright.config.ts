@@ -60,7 +60,7 @@ export default defineConfig({
         "session-switch.e2e.ts",
         "terminal.e2e.ts",
       ],
-      grep: /clicking a session navigates|mobile card swipe opens|terminal receives output|mobile accessory Enter|mobile touch drag scrolls|machine headers provide an independent collapse control|machine keyboard and pointer alternatives reorder|notification session route|open session drawer|mobile keyboard uses ghostty native input|mobile settings navigation|terminal transcript|visibility resume|WS disconnect shows reconnecting banner then recovers/,
+      grep: /clicking a session navigates|mobile card swipe opens|terminal receives output|mobile accessory Enter|mobile touch drag scrolls|compact machine headers make the name the reorder handle|machine move options use ordinary group semantics|machine name move options, keyboard, and pointer alternatives reorder|notification session route|open session drawer|mobile keyboard uses ghostty native input|mobile settings navigation|terminal transcript|visibility resume|WS disconnect shows reconnecting banner then recovers/,
       use: {
         ...devices["iPhone 14"],
         viewport: { width: 390, height: 844 },

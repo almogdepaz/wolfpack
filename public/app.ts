@@ -1599,7 +1599,7 @@ function renderSessionListFromState(): void {
       ? renderMachineGroupHtml(canonicalLocalGroup, false, "main", 0)
       : "";
   if (html !== state.lastSessionsHtml) {
-    machineGroupEventController?.cancel();
+    machineGroupEventController?.cancelForRender();
     el.innerHTML = html;
     state.lastSessionsHtml = html;
   }
@@ -1676,8 +1676,12 @@ function sessionOrderResetButtonHtml(machineUrl: string): string {
 // Shared visual treatment; actions and machine routing stay on the parent button.
 const NEW_SESSION_CONTENT = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New<span class="machine-add-label-detail"> session</span></span>';
 
-function machineHeaderNameHtml(name: string): string {
-  return `<span class="machine-header-name" title="${escAttr(name)}">${esc(name)}</span>`;
+function machineNameHandleHtml(name: string, optionsId: string): string {
+  return `<button type="button" class="machine-name-handle" data-machine-control="order-handle" aria-label="Reorder ${escAttr(name)}" aria-describedby="machine-order-instructions" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" aria-expanded="false" aria-controls="${optionsId}"><span class="machine-header-name" title="${escAttr(name)}">${esc(name)}</span></button>`;
+}
+
+function machineOrderOptionsHtml(name: string, optionsId: string): string {
+  return `<div id="${optionsId}" class="machine-order-options" role="group" aria-label="Move ${escAttr(name)}" hidden inert><button type="button" data-machine-menu-offset="-1" aria-label="Move ${escAttr(name)} up">Move up</button><button type="button" data-machine-menu-offset="1" aria-label="Move ${escAttr(name)} down">Move down</button></div>`;
 }
 
 function machineAddButtonHtml(machineUrl: string, machineName: string, disabled: boolean): string {
@@ -1728,7 +1732,12 @@ function machineHeaderHtml(
       ? `<span class="machine-header-status">${esc(machineFailureLabel(group.failure || "unknown"))}</span>`
       : "";
   const action = collapsed ? "Expand" : "Collapse";
-  return `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div><button type="button" class="machine-collapse-toggle" data-action="machine-collapse" data-machine-surface="${surface}" data-machine-control="collapse" aria-expanded="${collapsed ? "false" : "true"}" aria-controls="${bodyId}" aria-label="${action} ${escAttr(group.machine.name)}" title="${action} ${escAttr(group.machine.name)}"><span class="machine-collapse-chevron" aria-hidden="true"></span>${machineHeaderNameHtml(group.machine.name)}</button>${versionWarning}${status}<div class="machine-header-btns"><button type="button" class="machine-order-handle" data-machine-control="order-handle" aria-label="Reorder ${escAttr(group.machine.name)}" title="Drag to reorder ${escAttr(group.machine.name)}" aria-describedby="machine-order-instructions" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"><span aria-hidden="true">⠿</span></button><button type="button" class="machine-order-move" data-action="machine-move" data-machine-offset="-1" data-machine-control="move-up" aria-label="Move ${escAttr(group.machine.name)} up" title="Move up">↑</button><button type="button" class="machine-order-move" data-action="machine-move" data-machine-offset="1" data-machine-control="move-down" aria-label="Move ${escAttr(group.machine.name)} down" title="Move down">↓</button>${retryButton}${sessionOrderResetButtonHtml(machineUrl)}${compactCreateButton}</div></div>`;
+  const optionsId = `${bodyId}-order-options`;
+  const nameHandle = machineNameHandleHtml(group.machine.name, optionsId);
+  const options = machineOrderOptionsHtml(group.machine.name, optionsId);
+  const collapseToggle = `<button type="button" class="machine-collapse-toggle" data-action="machine-collapse" data-machine-surface="${surface}" data-machine-control="collapse" aria-expanded="${collapsed ? "false" : "true"}" aria-controls="${bodyId}" aria-label="${action} ${escAttr(group.machine.name)}" title="${action} ${escAttr(group.machine.name)}"><span class="machine-collapse-chevron" aria-hidden="true"></span></button>`;
+  if (collapsed) return `<div class="machine-header">${nameHandle}${collapseToggle}${options}</div>`;
+  return `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${nameHandle}${collapseToggle}${versionWarning}${status}${options}<div class="machine-header-btns">${retryButton}${sessionOrderResetButtonHtml(machineUrl)}${compactCreateButton}</div></div>`;
 }
 
 function idleSessionEmptyHtml(): string {
@@ -2042,7 +2051,7 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
     const html = renderMachineGroupHtml(g, false, "main", 0);
     if (html !== state.lastSessionsHtml) {
-      machineGroupEventController?.cancel();
+      machineGroupEventController?.cancelForRender();
       el.innerHTML = html;
       state.lastSessionsHtml = html;
     }
@@ -2088,7 +2097,7 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
     const presentationGroups = machineGroupsInPresentationOrder(visible);
     const html = presentationGroups.map((group, index) => renderMachineGroupHtml(group, true, "main", index)).join("");
     if (html !== state.lastSessionsHtml) {
-      machineGroupEventController?.cancel();
+      machineGroupEventController?.cancelForRender();
       el.innerHTML = html;
       state.lastSessionsHtml = html;
     }
@@ -4794,7 +4803,7 @@ function _renderSidebarNow() {
   if (!el) return;
   if (!syncSessionChooserOwnership()) {
     if (_lastSidebarHtml) {
-      machineGroupEventController?.cancel();
+      machineGroupEventController?.cancelForRender();
       _lastSidebarHtml = "";
       el.replaceChildren();
     }
@@ -4850,7 +4859,7 @@ function _renderSidebarNow() {
   }
   // Skip DOM update if nothing changed
   if (html === _lastSidebarHtml) return;
-  machineGroupEventController?.cancel();
+  machineGroupEventController?.cancelForRender();
   _lastSidebarHtml = html;
   el.innerHTML = html;
 }
@@ -4952,7 +4961,7 @@ function focusMachineGroupControl(machine: string, surface: MachineGroupSurface,
 function renderMachineGroupViews(
   focus: { readonly machine: string; readonly surface: MachineGroupSurface; readonly control: string } | null = null,
 ): void {
-  machineGroupEventController?.cancel();
+  machineGroupEventController?.cancelForRender();
   state.lastSessionsHtml = "";
   _lastSidebarHtml = "";
   renderSessionListFromState();
@@ -5273,14 +5282,6 @@ function bindHtmlEventListeners(): void {
     toggleGrid,
     setSessionCardView,
     machineGroupCollapse: updateMachineGroupCollapse,
-    machineGroupMove: (machine, surface, offset) => {
-      const group = state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === machine);
-      moveMachineGroupByOffset({
-        machine,
-        surface,
-        name: group?.machine.name ?? "Machine",
-      }, offset);
-    },
   });
 
   // Header

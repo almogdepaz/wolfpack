@@ -54,22 +54,36 @@ function sidebarGroup(page: Page) {
   return page.locator(`#sidebar-session-list .machine-group[data-machine="${peerIdentity}"]`);
 }
 
-test("machine headers provide an independent collapse control and retain empty creation", async ({ page }, testInfo) => {
+test("compact machine headers make the name the reorder handle and reserve the chevron for collapse", async ({ page }, testInfo) => {
   await installMachineFixture(page);
   await page.goto(server.baseUrl);
   if (testInfo.project.name === "desktop") await page.getByRole("button", { name: "Expand sessions" }).click();
 
   const group = mainGroup(page);
+  const name = group.getByRole("button", { name: "Reorder verified peer" });
   const toggle = group.getByRole("button", { name: "Collapse verified peer" });
+  await expect(name).toHaveClass("machine-name-handle");
+  await expect(name).toHaveAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
+  await expect(name.locator(".machine-header-name")).toHaveText("verified peer");
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(toggle.locator(".machine-collapse-chevron")).toBeVisible();
+  await expect(toggle).toHaveText("");
+  await expect(toggle.locator(":scope > .machine-collapse-chevron")).toBeVisible();
+  await expect(toggle.locator(".machine-header-name")).toHaveCount(0);
+  await expect(group.locator(".machine-order-handle, .machine-order-move")).toHaveCount(0);
 
   await toggle.click();
   await expect(group.getByRole("button", { name: "Expand verified peer" })).toHaveAttribute("aria-expanded", "false");
   await expect(group.locator(".machine-group-body")).toHaveAttribute("hidden", "");
   await expect(group.locator(".machine-group-body")).toHaveAttribute("inert", "");
-  await expect(group.getByRole("button", { name: "Start a session on verified peer" })).toBeVisible();
-  await expect(group.getByRole("button", { name: "Move verified peer up" })).toBeVisible();
+  await expect(group.locator(".machine-header-btns")).toHaveCount(0);
+  await expect(group.locator(".machine-header").getByRole("button")).toHaveCount(2);
+  await name.focus();
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect.poll(() => page.locator("#session-list > .machine-group").evaluateAll(groups =>
+    groups.map(group => (group as HTMLElement).dataset.machine ?? ""),
+  )).toEqual([peerIdentity, ""]);
+  await expect(group.getByRole("button", { name: "Start a session on verified peer" })).toHaveCount(0);
+  await expect(group.getByRole("button", { name: "Move verified peer up" })).toHaveCount(0);
 });
 
 test("empty sidebar machine groups keep a header create action on their own machine", async ({ page }, testInfo) => {
@@ -103,9 +117,9 @@ test("empty sidebar machine groups keep a header create action on their own mach
   await page.goto(server.baseUrl);
   const reloadedGroup = sidebarGroup(page);
   await reloadedGroup.getByRole("button", { name: "Collapse verified peer" }).click();
-  const collapsedCreate = reloadedGroup.getByRole("button", { name: "Start a session on verified peer" });
-  await expect(collapsedCreate).toBeVisible();
-  await collapsedCreate.click();
+  await expect(reloadedGroup.getByRole("button", { name: "Start a session on verified peer" })).toHaveCount(0);
+  await reloadedGroup.getByRole("button", { name: "Expand verified peer" }).click();
+  await reloadedGroup.getByRole("button", { name: "Start a session on verified peer" }).click();
   await expect(page.locator("#create-project-action")).toHaveAttribute("aria-label", "Create project on verified peer");
   expect(projectRequests).toEqual([
     "https://peer.example.ts.net/api/projects",
@@ -174,11 +188,12 @@ test("expanded desktop machine cards retain the intended adjacent-card gap", asy
   expect(secondBox!.y - (firstBox!.y + firstBox!.height)).toBeGreaterThanOrEqual(10);
 });
 
-test("machine move controls share order while main and sidebar collapse remain independent", async ({ page }, testInfo) => {
+test("machine name move options share order while main and sidebar collapse remain independent", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop owns both machine presentation surfaces");
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
 
+  await sidebarGroup(page).getByRole("button", { name: "Reorder verified peer" }).click();
   await sidebarGroup(page).getByRole("button", { name: "Move verified peer up" }).click();
   await expect.poll(() => page.locator("#sidebar-session-list > .machine-group").evaluateAll(groups =>
     groups.map(group => (group as HTMLElement).dataset.machine ?? ""),
@@ -206,6 +221,89 @@ test("machine move controls share order while main and sidebar collapse remain i
   await expect(sidebarGroup(page).getByRole("button", { name: "Collapse verified peer" })).toHaveAttribute("aria-expanded", "true");
   await page.getByRole("button", { name: "Expand sessions" }).click();
   await expect(mainGroup(page).getByRole("button", { name: "Expand verified peer" })).toHaveAttribute("aria-expanded", "false");
+});
+
+test("machine move options use ordinary group semantics and keyboard focus", async ({ page }, testInfo) => {
+  const tabSkipsButtons = testInfo.project.name === "mobile-webkit";
+  await installMachineFixture(page, true);
+  await page.goto(server.baseUrl);
+  if (testInfo.project.name === "desktop") await page.getByRole("button", { name: "Expand sessions" }).click();
+
+  const group = mainGroup(page);
+  const handle = group.getByRole("button", { name: "Reorder verified peer" });
+  await expect(handle).not.toHaveAttribute("aria-haspopup");
+  await handle.click();
+  const options = group.locator(".machine-order-options");
+  await expect(options).toHaveAttribute("role", "group");
+  await expect(options).toHaveAttribute("aria-label", "Move verified peer");
+  await expect(options.getByRole("button")).toHaveCount(2);
+  await expect(options.getByRole("button", { name: "Move verified peer up" })).toBeFocused();
+  if (!tabSkipsButtons) {
+    await page.keyboard.press("Tab");
+    await expect(options.getByRole("button", { name: "Move verified peer down" })).toBeFocused();
+  }
+  await page.keyboard.press("Escape");
+  await expect(handle).toBeFocused();
+});
+
+test("boundary machine moves restore focus from closed popups on both surfaces", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "both machine presentation surfaces are desktop-only");
+  await installMachineFixture(page, true);
+  await page.goto(server.baseUrl);
+
+  const assertBoundaryFocus = async (group: ReturnType<typeof mainGroup>, offset: -1 | 1) => {
+    const handle = group.locator(".machine-name-handle");
+    await handle.click();
+    const options = group.locator(".machine-order-options");
+    await options.locator(`[data-machine-menu-offset="${offset}"]`).click();
+    await expect(options).toHaveAttribute("hidden", "");
+    await expect(handle).toBeFocused();
+  };
+  const localSidebarGroup = page.locator('#sidebar-session-list .machine-group[data-machine=""]');
+  await assertBoundaryFocus(localSidebarGroup, -1);
+  await assertBoundaryFocus(sidebarGroup(page), 1);
+
+  await page.getByRole("button", { name: "Expand sessions" }).click();
+  const localMainGroup = page.locator('#session-list .machine-group[data-machine=""]');
+  await assertBoundaryFocus(localMainGroup, -1);
+  await assertBoundaryFocus(mainGroup(page), 1);
+});
+
+test("machine popup focus follows retained groups across renders without targeting removed peers", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "both machine presentation surfaces are desktop-only");
+  let candidateMode: "ready" | "revoked" = "ready";
+  await installMachineFixture(page, true);
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify(candidateMode === "ready" ? { candidates: [{
+      hostname: "peer.example.ts.net",
+      tailnetNodeId: "n-peer",
+      origin: "https://peer.example.ts.net",
+      online: true,
+    }] } : { candidates: [] }),
+  }));
+  await page.goto(server.baseUrl);
+
+  const assertRetainedFocus = async (group: ReturnType<typeof mainGroup>, filter: string) => {
+    const handle = group.locator(".machine-name-handle");
+    await handle.click();
+    await expect(group.locator('[data-machine-menu-offset="-1"]')).toBeFocused();
+    await page.evaluate(selector => document.querySelector<HTMLElement>(selector)?.click(), filter);
+    await expect(handle).toBeFocused();
+  };
+  await assertRetainedFocus(sidebarGroup(page), '#sidebar-session-list [data-session-card-view="idle"]');
+
+  await page.getByRole("button", { name: "Expand sessions" }).click();
+  await page.evaluate(() => document.querySelector<HTMLElement>('#session-dashboard-controls [data-session-card-view="all"]')?.click());
+  await assertRetainedFocus(mainGroup(page), '#session-dashboard-controls [data-session-card-view="idle"]');
+
+  const peerHandle = mainGroup(page).locator(".machine-name-handle");
+  await peerHandle.click();
+  await expect(mainGroup(page).locator('[data-machine-menu-offset="-1"]')).toBeFocused();
+  candidateMode = "revoked";
+  await page.evaluate(() => document.querySelector<HTMLElement>(".discover-btn")?.click());
+  await expect(mainGroup(page)).toHaveCount(0);
+  expect(await page.evaluate(() => (document.activeElement as HTMLElement | null)?.dataset.machine ?? "")).not.toBe(peerIdentity);
 });
 
 test("all-collapsed sidebar groups retain chooser ownership and toggle focus", async ({ page }, testInfo) => {
@@ -266,6 +364,69 @@ test("native wheel scrolling remains available outside machine reorder handles",
   await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
 });
 
+test("native touch preserves pre-hold name scrolling and commits a held machine reorder", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "iphone-se", "native Chromium touch arbitration regression");
+  await installMachineFixture(page, true);
+  let peerSessionCount = 24;
+  await page.route("**/api/sessions", route => {
+    const remote = new URL(route.request().url()).origin === "https://peer.example.ts.net";
+    const sessions = remote
+      ? Array.from({ length: peerSessionCount }, (_, index) => ({ name: `peer-session-${index}`, triage: "idle" }))
+      : [{ name: "local-session", triage: "idle" }];
+    return route.fulfill({
+      contentType: "application/json",
+      headers: { "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify({ sessions }),
+    });
+  });
+  await page.goto(server.baseUrl);
+
+  const touch = await page.context().newCDPSession(page);
+  const peerName = mainGroup(page).getByRole("button", { name: "Reorder verified peer" });
+  const scrollBox = await peerName.boundingBox();
+  expect(scrollBox).not.toBeNull();
+  const x = scrollBox!.x + scrollBox!.width / 2;
+  const y = scrollBox!.y + scrollBox!.height / 2;
+  await touch.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x, y, radiusX: 2, radiusY: 2, force: 1, id: 1 }],
+  });
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ x, y: y - 120, radiusX: 2, radiusY: 2, force: 1, id: 1 }],
+  });
+  await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await expect.poll(() => page.locator("#session-list").evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+
+  peerSessionCount = 1;
+  await page.goto(server.baseUrl);
+  const localName = page.locator('#session-list .machine-group[data-machine=""] .machine-name-handle');
+  await expect(localName).toBeVisible();
+  await expect(peerName).toBeVisible();
+  const localBox = await localName.boundingBox();
+  const reorderBox = await peerName.boundingBox();
+  expect(localBox).not.toBeNull();
+  expect(reorderBox).not.toBeNull();
+  const reorderX = reorderBox!.x + reorderBox!.width / 2;
+  const reorderY = reorderBox!.y + reorderBox!.height / 2;
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [{ x: reorderX, y: reorderY, radiusX: 2, radiusY: 2, force: 1, id: 1 }],
+  });
+  await page.waitForTimeout(350);
+  await expect(page.locator(".machine-group-drag-floating")).toBeVisible();
+  await touch.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ x: localBox!.x + localBox!.width / 2, y: localBox!.y + localBox!.height / 2, radiusX: 2, radiusY: 2, force: 1, id: 1 }],
+  });
+  await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await expect.poll(() => page.locator("#session-list > .machine-group").evaluateAll(groups =>
+    groups.map(group => (group as HTMLElement).dataset.machine ?? ""),
+  )).toEqual([peerIdentity, ""]);
+  await expect(peerName).toBeFocused();
+});
+
 test("revoked ordered peer is never rendered as the local machine", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "main and sidebar local routing regression");
   let candidateMode: "ready" | "revoked" = "ready";
@@ -306,6 +467,7 @@ test("revoked ordered peer is never rendered as the local machine", async ({ pag
 
   await page.goto(server.baseUrl);
   await expect(sidebarGroup(page).getByRole("button", { name: "Open peer-session" })).toBeVisible();
+  await sidebarGroup(page).getByRole("button", { name: "Reorder verified peer" }).click();
   await sidebarGroup(page).getByRole("button", { name: "Move verified peer up" }).click();
   await expect.poll(() => page.locator("#sidebar-session-list > .machine-group").evaluateAll(groups =>
     groups.map(group => (group as HTMLElement).dataset.machine ?? ""),
@@ -456,7 +618,7 @@ test("session refresh teardown cannot restore a dragged sidebar group", async ({
   await expect(page.locator("#sidebar-session-list > .machine-group")).toHaveCount(2);
   const preferencesBeforeDrag = await page.evaluate(() => localStorage.getItem("wolfpack-machine-group-preferences"));
 
-  const localHandle = page.locator('#sidebar-session-list .machine-group[data-machine=""] .machine-order-handle');
+  const localHandle = page.locator('#sidebar-session-list .machine-group[data-machine=""] .machine-name-handle');
   await localHandle.hover();
   await page.mouse.down();
   const localHandleBox = await localHandle.boundingBox();
@@ -478,25 +640,26 @@ test("session refresh teardown cannot restore a dragged sidebar group", async ({
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-machine-group-preferences"))).toBe(preferencesBeforeDrag);
 });
 
-test("machine keyboard and pointer alternatives reorder without exposing stable identities", async ({ page }, testInfo) => {
+test("machine name move options, keyboard, and pointer alternatives reorder without exposing stable identities", async ({ page }, testInfo) => {
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
   if (testInfo.project.name === "desktop") await page.getByRole("button", { name: "Expand sessions" }).click();
 
   const group = mainGroup(page);
   const handle = group.getByRole("button", { name: "Reorder verified peer" });
+  const visibleName = handle.locator(".machine-header-name");
   await handle.focus();
   await page.keyboard.press("Alt+ArrowUp");
   await expect.poll(() => page.locator("#session-list > .machine-group").evaluateAll(groups =>
     groups.map(group => (group as HTMLElement).dataset.machine ?? ""),
   )).toEqual([peerIdentity, ""]);
-  await expect(group.locator(".machine-order-handle")).toHaveAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
+  await expect(group.locator(".machine-name-handle")).toHaveAttribute("aria-keyshortcuts", "Alt+ArrowUp Alt+ArrowDown");
   expect(await handle.getAttribute("data-machine")).toBeNull();
 
   const localGroup = page.locator('#session-list .machine-group[data-machine=""]');
   const localBox = await localGroup.boundingBox();
   expect(localBox).not.toBeNull();
-  await handle.hover();
+  await visibleName.hover();
   await page.mouse.down();
   await localGroup.locator(".machine-header").hover();
   await expect(page.locator(".machine-group-drag-floating")).toBeVisible();
@@ -505,39 +668,39 @@ test("machine keyboard and pointer alternatives reorder without exposing stable 
   )).toBe("");
   await localGroup.locator(".machine-group-body").hover();
   await page.mouse.up();
+  await expect(page.locator(".machine-order-options:not([hidden])")).toHaveCount(0);
   await expect.poll(() => page.locator("#session-list > .machine-group").evaluateAll(groups =>
     groups.map(group => (group as HTMLElement).dataset.machine ?? ""),
   )).toEqual(["", peerIdentity]);
+  await expect(handle).toBeFocused();
 
   const reorderedLocalBox = await localGroup.boundingBox();
   expect(reorderedLocalBox).not.toBeNull();
-  await handle.hover();
+  await visibleName.hover();
   await page.mouse.down();
   await page.mouse.move(reorderedLocalBox!.x + reorderedLocalBox!.width / 2, reorderedLocalBox!.y + 8, { steps: 6 });
   await expect(page.locator(".machine-group-drag-floating")).toBeVisible();
   await page.keyboard.press("Escape");
   await page.mouse.up();
   await expect(page.locator(".machine-group-drag-floating")).toHaveCount(0);
+  await expect(page.locator(".machine-order-options:not([hidden])")).toHaveCount(0);
   await expect.poll(() => page.locator("#session-list > .machine-group").evaluateAll(groups =>
     groups.map(group => (group as HTMLElement).dataset.machine ?? ""),
   )).toEqual(["", peerIdentity]);
 
-  const touchHandleBox = await handle.boundingBox();
-  expect(touchHandleBox).not.toBeNull();
-  await handle.dispatchEvent("pointerdown", {
-    pointerId: 41,
-    pointerType: "touch",
-    isPrimary: true,
-    clientX: touchHandleBox!.x + touchHandleBox!.width / 2,
-    clientY: touchHandleBox!.y + touchHandleBox!.height / 2,
-  });
-  await page.waitForTimeout(350);
-  await expect(page.locator(".machine-group-drag-floating")).toBeVisible();
-  await page.locator("body").dispatchEvent("pointercancel", { pointerId: 41, pointerType: "touch", isPrimary: true });
-  await expect(page.locator(".machine-group-drag-floating")).toHaveCount(0);
-  expect(await page.evaluate(() => {
-    const event = new PointerEvent("pointermove", { bubbles: true, cancelable: true, pointerId: 42, pointerType: "touch" });
-    document.getElementById("session-list")?.dispatchEvent(event);
-    return event.defaultPrevented;
-  })).toBe(false);
+  await handle.click();
+  const options = group.locator(".machine-order-options");
+  await expect(options).not.toHaveAttribute("hidden", "");
+  await expect(options.getByRole("button", { name: "Move verified peer up" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(options).toHaveAttribute("hidden", "");
+  await expect(handle).toBeFocused();
+  await handle.click();
+  await page.locator("body").dispatchEvent("click");
+  await expect(options).toHaveAttribute("hidden", "");
+  await handle.click();
+  await group.getByRole("button", { name: "Collapse verified peer" }).click();
+  await expect(page.locator(".machine-order-options:not([hidden])")).toHaveCount(0);
+  await group.getByRole("button", { name: "Expand verified peer" }).click();
+
 });
