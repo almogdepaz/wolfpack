@@ -413,13 +413,31 @@ export class TaskRelayGateway {
 
 let singleton: RelayGateway | undefined;
 
+export function getTaskRelayProfile(): "durable-v2" | "volatile-v1" {
+  if (singleton) return singleton instanceof WorkerRelayGateway ? singleton.profile : "durable-v2";
+  const profile = process.env.WOLFPACK_TASK_RELAY_PROFILE ?? "durable-v2";
+  if (profile !== "durable-v2" && profile !== "volatile-v1") throw new TypeError("invalid WOLFPACK_TASK_RELAY_PROFILE");
+  return profile;
+}
+
 export function getTaskRelayGateway(): RelayGateway {
-  const config = loadConfig();
-  singleton ??= new WorkerRelayGateway({
-    root: process.env.WOLFPACK_TASK_RELAY_ROOT,
-    peerOrigin: config ? remoteUrl(config) ?? undefined : undefined,
-  });
+  if (!singleton) {
+    const profile = getTaskRelayProfile();
+    const config = loadConfig();
+    singleton = new WorkerRelayGateway({
+      root: process.env.WOLFPACK_TASK_RELAY_ROOT,
+      // HTTP federation remains disabled until verified peer ingress/topology
+      // exists. Do not create outbound routes from caller-supplied origins.
+      ...(profile === "volatile-v1" ? { profile } : { peerOrigin: config ? remoteUrl(config) ?? undefined : undefined }),
+    });
+  }
   return singleton;
+}
+
+export function getVolatileTaskRelayGateway(): WorkerRelayGateway | undefined {
+  if (getTaskRelayProfile() !== "volatile-v1") return undefined;
+  const gateway = getTaskRelayGateway();
+  return gateway instanceof WorkerRelayGateway ? gateway : undefined;
 }
 
 export async function __setTaskRelayGatewayForTests(gateway: RelayGateway): Promise<void> {

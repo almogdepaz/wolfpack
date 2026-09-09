@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
 import { MEMORY_RELAY_PROFILE as profile } from "../../src/task-relay/memory-store.ts";
 import { RELAY_ID } from "../../src/task-relay/domain.ts";
+import { RELAY_WORKER_LIMITS } from "../../src/task-relay/worker-protocol.ts";
 
 const inspection = (selector: string) => ({ ok: true as const, session: selector, sessionId: selector, projectPath: "/fixture", harness: "pi", alive: true });
 
@@ -59,4 +60,19 @@ test("volatile peer ingress retains the reserved lane while ordinary inspection 
   } finally {
     if (timer) clearTimeout(timer); release(); await Promise.all(pending); await gateway.close(); rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("transient metadata RPC pressure does not poison the lifetime's epoch cache", async () => {
+  const root = mkdtempSync(join(tmpdir(), "volatile-metadata-pressure-"));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const gateway = new WorkerRelayGateway({ root, profile, inspectSession: async selector => { await gate; return inspection(selector); } });
+  const pending = Array.from({ length: RELAY_WORKER_LIMITS.regularRequests }, () => gateway.volatile({ operation: "connect", profile, callerSession: "source", generation: "g", protocolVersions: [2] }));
+  try {
+    await expect(gateway.volatileEpoch()).rejects.toBeDefined();
+    release();
+    const results = await Promise.all(pending); expect(results.every(result => result.ok)).toBe(true);
+    const epoch = await gateway.volatileEpoch(); expect(epoch).toBe(results[0]!.epoch);
+    expect(await gateway.volatileEpoch()).toBe(epoch); expect(gateway.profile).toBe(profile);
+  } finally { release(); await Promise.all(pending); await gateway.close(); rmSync(root, { recursive: true, force: true }); }
 });

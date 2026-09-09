@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { RELAY_ERROR, RELAY_LIMITS } from "../task-relay/domain.ts";
 import type { RelayEndpoint, RelayResult } from "../task-relay/domain.ts";
-import { getTaskRelayGateway } from "../task-relay/gateway.ts";
+import { getTaskRelayGateway, getTaskRelayProfile } from "../task-relay/gateway.ts";
 import { json, parseBody } from "./http.ts";
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -47,7 +47,7 @@ async function relayBody(req: IncomingMessage, res: ServerResponse): Promise<Bod
   return body;
 }
 
-export const taskRelayRoutes: Record<string, Handler> = {
+const legacyTaskRelayRoutes: Record<string, Handler> = {
   "POST /api/task-relay/v2/connect": async (req, res) => {
     const body = await relayBody(req, res);
     if (!body) return;
@@ -115,3 +115,14 @@ export const taskRelayRoutes: Record<string, Handler> = {
     response(res, await getTaskRelayGateway().receivePeer(body));
   },
 };
+
+export const taskRelayRoutes: Record<string, Handler> = Object.fromEntries(Object.entries(legacyTaskRelayRoutes).map(([path, handler]) => [path, async (req: IncomingMessage, res: ServerResponse) => {
+  if (getTaskRelayProfile() !== "durable-v2") {
+    req.once("error", () => undefined);
+    res.setHeader("Connection", "close");
+    res.once("finish", () => req.destroy());
+    req.resume();
+    return response(res, { ok: false, error: { code: RELAY_ERROR.INCOMPATIBLE_PROTOCOL, message: "relay requires explicit volatile profile negotiation", retryable: false } });
+  }
+  return handler(req, res);
+}]));

@@ -76,6 +76,8 @@ export class WorkerRelayGateway implements RelayGateway {
   #nextId = 0;
   #regularBytes = 0;
   #peerBytes = 0;
+  #epoch: Promise<string | undefined> | undefined;
+  get profile(): "durable-v2" | "volatile-v1" { return this.#options.profile ?? "durable-v2"; }
 
   constructor(suppliedOptions: WorkerGatewayOptions = { root: undefined }) {
     const options = captureOptions(suppliedOptions);
@@ -235,6 +237,14 @@ export class WorkerRelayGateway implements RelayGateway {
     catch (error) {
       return volatileFailure(error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed ? "RELAY_RESET" : "RELAY_UNAVAILABLE");
     }
+  }
+  volatileEpoch(): Promise<string | undefined> {
+    if (!this.#epoch) {
+      const pending = this.#call("volatileEpoch");
+      this.#epoch = pending;
+      void pending.catch(() => { if (this.#epoch === pending) this.#epoch = undefined; });
+    }
+    return this.#epoch;
   }
   volatile(input: unknown) { return this.#volatileResult("volatile", input); }
   volatilePeer(input: unknown) { return this.#volatileResult("volatilePeer", input); }

@@ -56,6 +56,7 @@ import {
   TASK_STATUS,
 } from "../tasks/domain.ts";
 import { RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../task-relay/domain.ts";
+import { volatileRelayDefinitions } from "./volatile-relay-schema.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
@@ -368,8 +369,11 @@ export const controlApiSource: ControlApiSource = {
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
     "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
+    "volatile-v1 is experimental and explicitly selected at server startup; HTTP operations inherit global auth, do not authorize untrusted per-session tenants, and reject all peer/topology ingress until verified peer policy exists",
+    "relay profile metadata identifies the selected lifetime, not broker/worker readiness; legacy worker readiness does not advertise volatile registrations",
   ],
   defs: {
+    ...volatileRelayDefinitions,
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
     TaskWorkerCreatedSession: object({
       session: ref("SessionName"),
@@ -828,6 +832,20 @@ export const controlApiSource: ControlApiSource = {
       auth: "public",
       response: ref("MachineHandshake"),
       errors: ["503 ErrorEnvelope"],
+    },
+    "GET /api/task-relay/profile": {
+      operationId: "getTaskRelayProfile", stable: false, auth: "jwt-when-configured",
+      response: ref("TaskRelayProfileResponse"), errors: ["400 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
+    },
+    "POST /api/task-relay/volatile-v1": {
+      operationId: "operateVolatileTaskRelay", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: ref("VolatileRequest"), response: ref("VolatileResponse"),
+      errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "404 VolatileErrorEnvelope", "408 VolatileErrorEnvelope", "409 VolatileErrorEnvelope", "410 VolatileErrorEnvelope", "413 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
+    },
+    "POST /api/task-relay/volatile-v1/peer": {
+      operationId: "rejectVolatilePeerIngress", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: { description: "Disabled. The body is not interpreted and HTTP authentication does not establish peer-machine authority." },
+      response: ref("VolatileErrorEnvelope"), errors: ["403 VolatileErrorEnvelope"],
     },
     "POST /api/task-relay/v2/connect": {
       operationId: "connectTaskRelay",

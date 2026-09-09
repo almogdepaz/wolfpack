@@ -31,7 +31,9 @@
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
-    "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization"
+    "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
+    "volatile-v1 is experimental and explicitly selected at server startup; HTTP operations inherit global auth, do not authorize untrusted per-session tenants, and reject all peer/topology ingress until verified peer policy exists",
+    "relay profile metadata identifies the selected lifetime, not broker/worker readiness; legacy worker readiness does not advertise volatile registrations"
   ],
   "http": {
     "getInfo": {
@@ -76,6 +78,70 @@
       },
       "errors": [
         "503 ErrorEnvelope"
+      ]
+    },
+    "getTaskRelayProfile": {
+      "route": "GET /api/task-relay/profile",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:getTaskRelayProfile:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getTaskRelayProfile response",
+        "$ref": "#/$defs/TaskRelayProfileResponse"
+      },
+      "errors": [
+        "400 VolatileErrorEnvelope",
+        "503 VolatileErrorEnvelope"
+      ]
+    },
+    "operateVolatileTaskRelay": {
+      "route": "POST /api/task-relay/volatile-v1",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:operateVolatileTaskRelay:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "operateVolatileTaskRelay request",
+        "$ref": "#/$defs/VolatileRequest"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:operateVolatileTaskRelay:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "operateVolatileTaskRelay response",
+        "$ref": "#/$defs/VolatileResponse"
+      },
+      "errors": [
+        "400 VolatileErrorEnvelope",
+        "403 VolatileErrorEnvelope",
+        "404 VolatileErrorEnvelope",
+        "408 VolatileErrorEnvelope",
+        "409 VolatileErrorEnvelope",
+        "410 VolatileErrorEnvelope",
+        "413 VolatileErrorEnvelope",
+        "503 VolatileErrorEnvelope"
+      ]
+    },
+    "rejectVolatilePeerIngress": {
+      "route": "POST /api/task-relay/volatile-v1/peer",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:rejectVolatilePeerIngress:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "rejectVolatilePeerIngress request",
+        "description": "Disabled. The body is not interpreted and HTTP authentication does not establish peer-machine authority."
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:rejectVolatilePeerIngress:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "rejectVolatilePeerIngress response",
+        "$ref": "#/$defs/VolatileErrorEnvelope"
+      },
+      "errors": [
+        "403 VolatileErrorEnvelope"
       ]
     },
     "connectTaskRelay": {
@@ -2863,6 +2929,890 @@
     }
   },
   "$defs": {
+    "VolatileEnvelope": {
+      "type": "object",
+      "properties": {
+        "envelopeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "protocolVersion": {
+          "const": 2
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "relay": {
+              "const": "wolfpack-pi-tasks-v2"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "relay",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "target": {
+          "type": "object",
+          "properties": {
+            "relay": {
+              "const": "wolfpack-pi-tasks-v2"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "relay",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "payload": {
+          "description": "Opaque JSON. Runtime enforces the 48 KiB encoded payload and 64 KiB HTTP body bounds."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "envelopeId",
+        "protocolVersion",
+        "source",
+        "target",
+        "payload",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "VolatileRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "operation": {
+              "const": "connect"
+            },
+            "callerSession": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "generation": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "protocolVersions": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 1,
+              "maxItems": 16
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "leaseMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 300000
+            }
+          },
+          "required": [
+            "profile",
+            "operation",
+            "callerSession",
+            "generation",
+            "protocolVersions"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "resolve"
+            },
+            "target": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "send"
+            },
+            "envelope": {
+              "$ref": "#/$defs/VolatileEnvelope"
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation",
+            "envelope"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "receive"
+            },
+            "cursor": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,31})$"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation",
+            "cursor"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "acknowledge"
+            },
+            "envelopeId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation",
+            "envelopeId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "disconnect"
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "health"
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "VolatileErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "profile": {
+          "enum": [
+            "durable-v2",
+            "volatile-v1"
+          ]
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "enum": [
+                "RELAY_CAPACITY",
+                "RELAY_RESET",
+                "INVALID_REQUEST",
+                "INVALID_CURSOR",
+                "REGISTRATION_EXPIRED",
+                "TARGET_NOT_REGISTERED",
+                "CROSS_RELAY_ENDPOINT",
+                "ENVELOPE_CONFLICT",
+                "ENVELOPE_EXPIRED",
+                "RELAY_PROFILE_REQUIRED",
+                "CALLER_NOT_FOUND",
+                "CALLER_DEAD",
+                "SOURCE_MISMATCH",
+                "RELAY_UNAVAILABLE",
+                "PEER_UNREACHABLE",
+                "DELIVERY_UNCONFIRMED",
+                "PEER_POLICY_REQUIRED"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "mayHaveBeenDelivered": {
+              "const": true
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok",
+        "profile",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "VolatileResponse": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/VolatileErrorEnvelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "value": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "connected"
+                    },
+                    "endpoint": {
+                      "type": "object",
+                      "properties": {
+                        "relay": {
+                          "const": "wolfpack-pi-tasks-v2"
+                        },
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "required": [
+                        "relay",
+                        "id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "leaseExpiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "endpoint",
+                    "leaseExpiresAt"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "resolved"
+                    },
+                    "endpoint": {
+                      "type": "object",
+                      "properties": {
+                        "relay": {
+                          "const": "wolfpack-pi-tasks-v2"
+                        },
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "required": [
+                        "relay",
+                        "id"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "endpoint"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "accepted"
+                    },
+                    "envelopeId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "acceptanceId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "duplicate": {
+                      "type": "boolean"
+                    },
+                    "forwarding": {
+                      "const": "local"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "envelopeId",
+                    "acceptanceId",
+                    "duplicate",
+                    "forwarding"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "page"
+                    },
+                    "deliveries": {
+                      "type": "array",
+                      "maxItems": 50,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "cursor": {
+                            "type": "string",
+                            "pattern": "^(0|[1-9][0-9]{0,31})$"
+                          },
+                          "envelope": {
+                            "$ref": "#/$defs/VolatileEnvelope"
+                          }
+                        },
+                        "required": [
+                          "cursor",
+                          "envelope"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "pattern": "^(0|[1-9][0-9]{0,31})$"
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "deliveries",
+                    "nextCursor",
+                    "hasMore"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "acknowledged"
+                    },
+                    "duplicate": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "duplicate"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "disconnected"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "health"
+                    },
+                    "store": {
+                      "type": "object",
+                      "properties": {
+                        "activeItems": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "activeBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "receipts": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "receiptBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "registrations": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "sessions": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "routes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "metadataBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "expiryEntries": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "logDrops": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "investigationEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "activeItems",
+                        "activeBytes",
+                        "receipts",
+                        "receiptBytes",
+                        "registrations",
+                        "sessions",
+                        "routes",
+                        "metadataBytes",
+                        "expiryEntries",
+                        "logDrops",
+                        "investigationEnabled"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "investigation": {
+                      "type": "object",
+                      "properties": {
+                        "queuedItems": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "queuedBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "written": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "droppedRecords": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "droppedBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "invalidRecords": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "writeFailures": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "maintenanceFailures": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "degraded": {
+                          "type": "boolean"
+                        },
+                        "closed": {
+                          "type": "boolean"
+                        },
+                        "lastFailure": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "queuedItems",
+                        "queuedBytes",
+                        "written",
+                        "droppedRecords",
+                        "droppedBytes",
+                        "invalidRecords",
+                        "writeFailures",
+                        "maintenanceFailures",
+                        "degraded",
+                        "closed"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "store"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "ok",
+            "profile",
+            "epoch",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "TaskRelayProfileResponse": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/VolatileErrorEnvelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "profile": {
+              "const": "durable-v2"
+            },
+            "endpointPath": {
+              "const": "/api/task-relay/v2/connect"
+            },
+            "federation": {
+              "const": "existing-v2-policy"
+            }
+          },
+          "required": [
+            "ok",
+            "profile",
+            "endpointPath",
+            "federation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "profile": {
+              "const": "volatile-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpointPath": {
+              "const": "/api/task-relay/volatile-v1"
+            },
+            "federation": {
+              "const": "disabled"
+            }
+          },
+          "required": [
+            "ok",
+            "profile",
+            "epoch",
+            "endpointPath",
+            "federation"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "ErrorEnvelope": {
       "type": "object",
       "properties": {

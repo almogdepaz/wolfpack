@@ -23,15 +23,52 @@ Restart durability was already ruled out by #351. Loss of a relay process can
 lose even accepted messages. Endpoint task storage surviving that loss does not
 mean transport replay or successful delivery is guaranteed.
 
+## Experimental same-host HTTP integration
+
+`WOLFPACK_TASK_RELAY_PROFILE=volatile-v1` explicitly selects the memory engine when
+the server singleton is first constructed. Unset selects `durable-v2`; unknown
+values fail initialization rather than falling back. Selection is immutable for
+that singleton, not a hot switch. This is experimental plumbing, not a deployment
+instruction or completed #351 cutover.
+
+- `GET /api/task-relay/profile` reports selected profile, endpoint path, and the
+  volatile instance's epoch. This is **not readiness or liveness evidence**.
+- `POST /api/task-relay/volatile-v1` exposes connect, local resolve/send,
+  receive, individual acknowledge, disconnect and health. It inherits the actual
+  server's origin/JWT policy; no new per-session tenant isolation is implied.
+- Metadata and endpoint handlers share a 24-request pre-body/operation cap.
+  Bodies are limited to 64 KiB, strict UTF-8 JSON, and a 5-second body-read deadline.
+  Capacity failures are explicit; these encoded/application limits are not an RSS
+  guarantee. HTTP slots are shared, not a reserved ACK lane.
+- Legacy v2 routes fail `INCOMPATIBLE_PROTOCOL` before admission in this mode.
+  Legacy readiness lookups intentionally return no endpoint, not a volatile
+  endpoint mislabeled as v2. The normal extension/task-worker readiness path is
+  **not yet coordinated**; only explicit compatible clients can use this slice.
+- HTTP peer ingress always returns `PEER_POLICY_REQUIRED`; endpoint ingress
+  rejects topology/peer commands and nonlocal destinations. A valid JWT, claimed
+  origin or forwarded header is not independently verified peer-machine authority.
+  Federation must remain disabled until host-verified topology and ingress are
+  implemented. Programmatic host-only worker RPC is a separate trusted surface.
+- Source-owned Control API schemas describe these experimental routes. No legacy
+  relay state is migrated, replayed, rewritten or removed. Existing `tasks/v1`
+  persistence is a separate domain and is unchanged.
+
+Validation uses private loopback HTTP, the real middleware and worker, synthetic
+broker identities and explicitly pinned pi-tasks source/SQLite. It is not live
+Tailnet/TLS/device, compiled-release adapter parity, installed-extension or
+performance proof. Source-loaded cross-repository tests require both
+`WOLFPACK_PI_TASKS_SOURCE` (absolute tracked-clean checkout) and
+`WOLFPACK_PI_TASKS_REVISION` (exact 40-hex HEAD); otherwise that test is skipped.
+
 ## Staged gateway/worker integration (after #360)
 
 `VolatileRelayGateway` now drives the bounded engine with fresh broker inspection,
 explicit profile/epoch/endpoint bindings, true per-delivery cursors and
-mailbox-confirmed acceptance. It is selectable **only by explicit programmatic
-`WorkerRelayGateway({ profile: "volatile-v1", ... })` construction**. The existing
-production singleton, HTTP routes, Control API schema and installed adapters have
-not switched. Do not activate this constructor through configuration before the
-coordinated adapter/public-contract work below is complete.
+mailbox-confirmed acceptance. The initial slice exposed only explicit programmatic
+`WorkerRelayGateway({ profile: "volatile-v1", ... })` construction. The experimental
+same-host HTTP slice below adds explicit startup selection; the default and
+installed adapters have **not** switched. Do not enable it on an installation
+before coordinated adapter, discovery and release validation is complete.
 
 The two worker modes are mutually exclusive. Volatile initialization does not
 construct a legacy gateway or inspect/replay its ledger. Legacy registration

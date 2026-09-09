@@ -8,6 +8,7 @@ export type RelayGateway = Pick<TaskRelayGateway, keyof TaskRelayGateway>;
 /** Wire arguments differ from the public gateway only for the cleanup Date cutoff. */
 export interface RelayWorkerGateway extends Omit<RelayGateway, "cleanup"> {
   cleanup(beforeMs: number): Promise<number>;
+  volatileEpoch(): Promise<string | undefined>;
   volatile(input: unknown): Promise<VolatileResult>;
   volatilePeer(input: unknown): Promise<VolatileResult>;
   volatileTopology(input: unknown): Promise<VolatileResult>;
@@ -15,7 +16,7 @@ export interface RelayWorkerGateway extends Omit<RelayGateway, "cleanup"> {
 
 export const RELAY_WORKER_METHODS = [
   "initialize", "peerRelay", "resolvePeerEndpoint", "connect", "endpointForSession", "endpointsForSessions",
-  "disconnect", "resolve", "send", "receive", "acknowledgeDelivery", "receivePeer", "flushPeerOutbox", "cleanup", "volatile", "volatilePeer", "volatileTopology",
+  "disconnect", "resolve", "send", "receive", "acknowledgeDelivery", "receivePeer", "flushPeerOutbox", "cleanup", "volatileEpoch", "volatile", "volatilePeer", "volatileTopology",
 ] as const satisfies readonly (keyof RelayWorkerGateway)[];
 export type RelayWorkerMethod = typeof RELAY_WORKER_METHODS[number];
 export const RELAY_WORKER_LIMITS = {

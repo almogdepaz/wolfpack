@@ -49,12 +49,16 @@ function pump(): void {
       void (async () => {
         try {
           let value: unknown;
-          if (request.method === "volatile" || request.method === "volatilePeer" || request.method === "volatileTopology") {
+          if (request.method === "volatileEpoch") value = volatile?.epoch;
+          else if (request.method === "volatile" || request.method === "volatilePeer" || request.method === "volatileTopology") {
             value = !volatile ? volatileFailure("RELAY_PROFILE_REQUIRED")
               : await (request.method === "volatilePeer" ? volatile.peer(request.args[0])
                 : request.method === "volatileTopology" ? volatile.topology(request.args[0]) : volatile.request(request.args[0]));
           } else if (volatile) {
             if (request.method === "initialize") value = volatile.initialize();
+            // Do not advertise volatile registrations as ready v2 endpoints.
+            else if (request.method === "endpointForSession") value = undefined;
+            else if (request.method === "endpointsForSessions") value = new Map();
             else if (legacyResults.has(request.method)) value = relayFailure(RELAY_ERROR.INCOMPATIBLE_PROTOCOL, "worker requires volatile-v1 requests");
             else throw new Error("worker requires volatile-v1 requests");
           } else {
