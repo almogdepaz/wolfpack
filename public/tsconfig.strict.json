@@ -4,6 +4,8 @@
     "app-debug.ts",
     "delegation-sessions.ts",
     "ghostty-prewarm-pool.ts",
+    "machine-group-preferences.ts",
+    "machine-group-ui.ts",
     "project-picker.ts",
     "pty-socket-client.ts",
     "pty-terminal-controller.ts",

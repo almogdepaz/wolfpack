@@ -25,6 +25,7 @@ export interface DelegatedAppActions {
   agentToggle(command: string, enabled: boolean): void;
   toggleGrid(session: string, machine: string, event: MouseEvent): void;
   setSessionCardView(view: SessionCardView): void;
+  machineGroupCollapse(machine: string, surface: "main" | "sidebar"): void;
 }
 
 /** Owns dynamic data-action dispatch so the app facade does not accumulate per-render listeners. */
@@ -53,6 +54,10 @@ export function bindDelegatedAppActions(root: Document, actions: DelegatedAppAct
     else if (action === "toggle-grid" && session) actions.toggleGrid(session, machine || "", event);
     else if (action === "set-session-card-view" && button.dataset.sessionCardView && isSessionCardView(button.dataset.sessionCardView)) {
       actions.setSessionCardView(button.dataset.sessionCardView);
+    } else if (action === "machine-collapse") {
+      const group = button.closest<HTMLElement>(".machine-group");
+      const surface = button.dataset.machineSurface;
+      if (surface === "main" || surface === "sidebar") actions.machineGroupCollapse(group?.dataset.machine ?? "", surface);
     }
   };
   const change = (event: Event) => {
