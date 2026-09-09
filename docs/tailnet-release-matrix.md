@@ -13,6 +13,13 @@ This operator ledger supplies the physical-device release proof required by the 
 
 Do not change the decision to `GO` until every applicable required check below has a redacted evidence record and every failure has either passed recovery or an approved release exception. Automated tests do not satisfy this gate.
 
+## v1.6.22 release exception
+
+- **release authorization:** requesting operator explicitly approved v1.6.22 publication and the physical-device gate exception on 2026-09-09 (UTC).
+- **exception scope:** the unverified host, iOS/Android PWA, and recovery checks in this matrix are waived for v1.6.22 only. this is not standing approval for later releases.
+- **evidence status:** physical-device checks remain **UNVERIFIED**; no matrix result is changed to `pass`. automated browser/CI checks do not substitute for physical-device evidence.
+- **accepted risk:** device-specific input, accessibility, multi-host routing, and recovery behavior may differ from automated coverage. release under this exception is not a claim that those checks passed.
+
 ## evidence safety
 
 Record only redacted identifiers such as `mac-a`, `linux-b`, `ios-1`, and opaque issue/evidence IDs. Do **not** record terminal output, project names or paths, credentials/tokens, Tailscale device names, or private Tailnet URLs. Record an outcome and a brief sanitized symptom instead of copied logs or screenshots containing sensitive content.
