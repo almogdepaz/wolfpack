@@ -18,8 +18,20 @@ try {
  if (!registration.ok) throw new Error(JSON.stringify(registration));
  const selected = await g.endpointsForSessions(["probe"]);
  if (selected.get("probe")?.id !== registration.endpoint.id) throw new Error("endpoint mismatch");
- console.log(JSON.stringify({ok:true,compiled:import.meta.url.includes("/$bunfs/")}));
 } finally { await g.close(); }
+const v = new WorkerRelayGateway({ root: process.argv[2] + "/volatile", profile: "volatile-v1", inspectSession: async selector => ({ok:true, session:selector, sessionId:selector, projectPath:process.argv[2], harness:AGENT_KIND.PI.id, alive:true}) });
+try {
+ await v.initialize();
+ const registered = await v.volatile({operation:"connect",profile:"volatile-v1",callerSession:"probe",generation:"g",protocolVersions:[2]});
+ if (!registered.ok || registered.value.kind !== "connected") throw new Error(JSON.stringify(registered));
+ const binding = {profile:"volatile-v1",epoch:registered.epoch,callerSession:"probe",endpoint:registered.value.endpoint};
+ const envelope = {envelopeId:"compiled-volatile",protocolVersion:2,source:binding.endpoint,target:binding.endpoint,payload:{opaque:true},createdAt:new Date().toISOString()};
+ const sent = await v.volatile({...binding,operation:"send",envelope});
+ const page = await v.volatile({...binding,operation:"receive",cursor:"0"});
+ const ack = await v.volatile({...binding,operation:"acknowledge",envelopeId:envelope.envelopeId});
+ if (!sent.ok || !page.ok || page.value.kind !== "page" || page.value.deliveries[0]?.cursor !== "1" || !ack.ok) throw new Error("volatile compiled roundtrip failed");
+ console.log(JSON.stringify({ok:true,compiled:import.meta.url.includes("/$bunfs/"),volatile:true}));
+} finally { await v.close(); }
 `);
     const build = Bun.spawn([process.execPath, "build", "--compile", "--entry-naming", "[name].js", entry,
       resolve(import.meta.dir, "../../src/task-relay/worker-entry.ts"), "--outfile", binary], { stdout: "pipe", stderr: "pipe", timeout: 60_000, killSignal: "SIGKILL" });
@@ -30,6 +42,6 @@ try {
       env: { HOME: runDir, PATH: "/usr/bin:/bin", WOLFPACK_TEST: "1" }, stdout: "pipe", stderr: "pipe", timeout: 15_000, killSignal: "SIGKILL" });
     const [exit, result, diagnostic] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()]);
     expect(exit, diagnostic).toBe(0);
-    expect(JSON.parse(result)).toEqual({ ok: true, compiled: true });
+    expect(JSON.parse(result)).toEqual({ ok: true, compiled: true, volatile: true });
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 120_000);

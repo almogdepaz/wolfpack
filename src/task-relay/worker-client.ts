@@ -5,6 +5,8 @@ import { getBackend } from "../server/backend.ts";
 import { createLogger } from "../log.ts";
 import { RELAY_ERROR, relayFailure } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
+import { volatileFailure } from "./volatile-protocol.ts";
+import type { VolatileResult } from "./volatile-protocol.ts";
 import {
   RELAY_WORKER_LIMITS as LIMIT, captureRelayWire, RelayWireBudgetError,
   type RelayGateway, type RelayWorkerGateway, type RelayWorkerMethod, type WorkerMessage, type CallbackRequest,
@@ -12,8 +14,8 @@ import {
 
 const log = createLogger("task-relay");
 const owners = new Map<string, symbol>();
-type WorkerGatewayOptions = GatewayOptions & { requestTimeoutMs?: number };
-const optionNames = new Set(["root", "now", "peerOrigin", "peerFetch", "inspectSession", "retryIntervalMs", "retentionMs", "cleanupIntervalMs", "requestTimeoutMs"]);
+type WorkerGatewayOptions = GatewayOptions & { requestTimeoutMs?: number; profile?: "volatile-v1" };
+const optionNames = new Set(["profile", "root", "now", "peerOrigin", "peerFetch", "inspectSession", "retryIntervalMs", "retentionMs", "cleanupIntervalMs", "requestTimeoutMs"]);
 
 /** Inspect original descriptors before any option read/spread can execute caller code. */
 function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
@@ -33,7 +35,9 @@ function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
     } else {
       if (value !== undefined) {
         if (key === "now") throw new TypeError("worker relay uses the process wall clock");
-        if (key === "root" || key === "peerOrigin") {
+        if (key === "profile") {
+          if (value !== "volatile-v1") throw new TypeError("invalid relay worker profile");
+        } else if (key === "root" || key === "peerOrigin") {
           if (typeof value !== "string") throw new TypeError("invalid relay worker string option");
         } else if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("invalid relay worker numeric option");
       }
@@ -59,7 +63,7 @@ export class WorkerRelayGateway implements RelayGateway {
   readonly #ownedRoot: string;
   readonly #owner = Symbol("relay worker owner");
   readonly #worker: Worker;
-  readonly #options: GatewayOptions;
+  readonly #options: WorkerGatewayOptions;
   readonly #requestMs: number;
   readonly #pending = new Map<number, Pending>();
   readonly #callbacks = new Set<number>();
@@ -75,6 +79,9 @@ export class WorkerRelayGateway implements RelayGateway {
 
   constructor(suppliedOptions: WorkerGatewayOptions = { root: undefined }) {
     const options = captureOptions(suppliedOptions);
+    if (options.profile && [options.retryIntervalMs, options.retentionMs, options.cleanupIntervalMs].some(value => value !== undefined)) {
+      throw new TypeError("legacy retention/retry options do not apply to volatile relay");
+    }
     this.#requestMs = options.requestTimeoutMs ?? LIMIT.requestMs;
     if (!Number.isInteger(this.#requestMs) || this.#requestMs < 1 || this.#requestMs > LIMIT.requestMs) throw new TypeError("invalid relay worker request timeout");
     if (options.now) throw new TypeError("worker relay uses the process wall clock");
@@ -86,7 +93,7 @@ export class WorkerRelayGateway implements RelayGateway {
     void this.#ready.catch(() => undefined);
     // .js resolves to .ts in Bun source runs; build.ts embeds this named entry for compiled runs.
     const configuration = captureRelayWire({
-      root: this.root, peerOrigin: options.peerOrigin, retryIntervalMs: options.retryIntervalMs,
+      root: this.root, profile: options.profile, peerOrigin: options.peerOrigin, retryIntervalMs: options.retryIntervalMs,
       retentionMs: options.retentionMs, cleanupIntervalMs: options.cleanupIntervalMs,
       proxyPeerFetch: options.peerFetch !== undefined,
     }, LIMIT.requestBytes);
@@ -164,7 +171,9 @@ export class WorkerRelayGateway implements RelayGateway {
 
   #fail(reason: string): void {
     if (this.#closed) return;
-    log.warn(reason, { recovery: "restart server; retry unknown outcomes with the same envelope identity/content" });
+    log.warn(reason, { recovery: this.#options.profile === "volatile-v1"
+      ? "restart server; explicitly rebind volatile endpoints; no automatic replay after epoch loss"
+      : "restart server; retry unknown outcomes with the same envelope identity/content" });
     void this.close();
   }
 
@@ -184,9 +193,9 @@ export class WorkerRelayGateway implements RelayGateway {
     await this.#stopping;
   }
 
-  #call<M extends RelayWorkerMethod>(method: M, ...input: Parameters<RelayWorkerGateway[M]>): Promise<Awaited<ReturnType<RelayGateway[M]>>> {
+  #call<M extends RelayWorkerMethod>(method: M, ...input: Parameters<RelayWorkerGateway[M]>): Promise<Awaited<ReturnType<RelayWorkerGateway[M]>>> {
     if (this.#closed) return Promise.reject(new WorkerUnavailable("relay worker is closed"));
-    const peer = method === "receivePeer";
+    const peer = method === "receivePeer" || method === "volatilePeer";
     const count = [...this.#pending.values()].filter(p => p.peer === peer).length;
     if (count >= (peer ? LIMIT.peerRequests : LIMIT.regularRequests)) return Promise.reject(new WorkerUnavailable("relay queue is full"));
     let args: unknown[], bytes: number;
@@ -204,7 +213,7 @@ export class WorkerRelayGateway implements RelayGateway {
     this.#worker.ref();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => this.#fail("relay request timed out; worker stopped to bound outstanding work"), this.#requestMs);
-      this.#pending.set(id, { resolve: value => resolve(value as Awaited<ReturnType<RelayGateway[M]>>), reject, timer, bytes, peer });
+      this.#pending.set(id, { resolve: value => resolve(value as Awaited<ReturnType<RelayWorkerGateway[M]>>), reject, timer, bytes, peer });
       void this.#ready.then(() => {
         if (!this.#closed) this.#worker.postMessage({ kind: "request", id, method, args });
       }).catch(() => this.#fail("relay worker transport unavailable"));
@@ -212,7 +221,8 @@ export class WorkerRelayGateway implements RelayGateway {
   }
 
   async #result<M extends ResultMethod>(method: M, ...args: Parameters<RelayWorkerGateway[M]>): Promise<Awaited<ReturnType<RelayGateway[M]>>> {
-    try { return await this.#call(method, ...args); }
+    // ResultMethod excludes cleanup, the only public/wire signature difference.
+    try { return await this.#call(method, ...args) as Awaited<ReturnType<RelayGateway[M]>>; }
     catch (error) {
       return relayFailure(error instanceof InvalidWorkerRequest ? RELAY_ERROR.INVALID_REQUEST : RELAY_ERROR.STORE_UNAVAILABLE,
         error instanceof InvalidWorkerRequest ? "invalid relay request" : "relay unavailable; retry unknown outcomes with unchanged envelope identity and content",
@@ -220,6 +230,15 @@ export class WorkerRelayGateway implements RelayGateway {
     }
   }
 
+  async #volatileResult(method: "volatile" | "volatilePeer" | "volatileTopology", input: unknown): Promise<VolatileResult> {
+    try { return await this.#call(method, input); }
+    catch (error) {
+      return volatileFailure(error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed ? "RELAY_RESET" : "RELAY_UNAVAILABLE");
+    }
+  }
+  volatile(input: unknown) { return this.#volatileResult("volatile", input); }
+  volatilePeer(input: unknown) { return this.#volatileResult("volatilePeer", input); }
+  volatileTopology(input: unknown) { return this.#volatileResult("volatileTopology", input); }
   initialize() { return this.#call("initialize"); }
   peerRelay(...args: Parameters<RelayGateway["peerRelay"]>) { return this.#call("peerRelay", ...args); }
   endpointForSession(...args: Parameters<RelayGateway["endpointForSession"]>) { return this.#call("endpointForSession", ...args); }

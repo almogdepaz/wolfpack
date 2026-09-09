@@ -43,7 +43,7 @@ interface RegistrationEntry {
   references: number;
   bytes: number;
 }
-interface Route { readonly id: string; readonly origin: string; readonly bytes: number; items: number; payloadBytes: number }
+interface Route { readonly id: string; readonly origin: string; readonly peerEpoch?: string; readonly bytes: number; items: number; payloadBytes: number }
 type State = "mailbox" | "acknowledged" | "forwarding" | "forwarded" | "unconfirmed";
 /** No payload/parsed envelope is allowed in a receipt or secondary index. */
 interface Receipt {
@@ -164,23 +164,27 @@ export class MemoryRelayStore {
     return true;
   }
 
-  peerRoute(epoch: string, origin: string): { readonly id: string; readonly origin: string } {
+  peerRoute(epoch: string, origin: string, peerEpoch?: string): { readonly id: string; readonly origin: string } {
     this.checkEpoch(epoch);
-    if (!text(origin)) fail("INVALID_REQUEST");
+    if (!text(origin) || (peerEpoch !== undefined && !isOpaqueRelayId(peerEpoch))) fail("INVALID_REQUEST");
     let url: URL;
     try { url = new URL(origin); } catch { return fail("INVALID_REQUEST"); }
     if (url.protocol !== "https:" || url.origin !== origin || url.pathname !== "/" || url.search || url.hash || canonicalTailnetOrigin(url.hostname) !== origin) fail("INVALID_REQUEST");
-    const existing = this.#origins.get(origin);
+    // An epoch change gets a different alias, so immutable envelope hashing
+    // also binds remote lifetime without rewriting the opaque endpoint format.
+    const key = `${origin}\0${peerEpoch ?? ""}`;
+    const existing = this.#origins.get(key);
     if (existing) return { id: existing, origin };
     const id = `${RELAY_ID}:peer:${randomUUID()}`;
-    const size = bytes({ id, origin }) + 64;
+    const size = bytes({ id, origin, ...(peerEpoch && { peerEpoch }) }) + Buffer.byteLength(key) + 64;
     if (this.#routes.size >= this.#limits.routes || this.#metadataBytes + size > this.#limits.metadataBytes) fail("RELAY_CAPACITY");
-    this.#routes.set(id, { id, origin, bytes: size, items: 0, payloadBytes: 0 });
-    this.#origins.set(origin, id); this.#metadataBytes += size;
+    this.#routes.set(id, { id, origin, peerEpoch, bytes: size, items: 0, payloadBytes: 0 });
+    this.#origins.set(key, id); this.#metadataBytes += size;
     return { id, origin }; // Routes remain stable for the epoch; never silently evict aliases.
   }
 
   peerOrigin(epoch: string, id: string): string | undefined { this.checkEpoch(epoch); return this.#routes.get(id)?.origin; }
+  peerEpoch(epoch: string, id: string): string | undefined { this.checkEpoch(epoch); return this.#routes.get(id)?.peerEpoch; }
 
   accept(epoch: string, input: RelayEnvelope, now: number): { readonly kind: "accepted" | "duplicate"; readonly acceptanceId: string } {
     this.checkEpoch(epoch); time(now);
@@ -292,6 +296,22 @@ export class MemoryRelayStore {
       this.#emit("forward_retry", now, envelopeId);
     }
     return true;
+  }
+
+  /** Observe forwarding without starting another attempt (even after cooldown). */
+  forwardStatus(epoch: string, id: string, now: number): Exclude<ForwardAttempt, { kind: "attempt" }> | undefined {
+    this.checkEpoch(epoch); time(now);
+    const receipt = this.#receipt(id, now);
+    if (!receipt) return undefined;
+    if (receipt.state === "forwarded") return { kind: "forwarded", acceptanceId: receipt.acceptanceId! };
+    if (receipt.state === "unconfirmed") return { kind: "unconfirmed", mayHaveBeenDelivered: true };
+    if (receipt.state !== "forwarding") return undefined;
+    if (!receipt.token && now >= receipt.deadline) {
+      this.#terminal(receipt, "unconfirmed", now);
+      this.#emit("forward_unconfirmed", now, id);
+      return { kind: "unconfirmed", mayHaveBeenDelivered: true };
+    }
+    return { kind: "pending", retryAt: receipt.nextAttemptAt };
   }
 
   /** Timer/caller drives bounded expiry work. Never expires accepted mailboxes. */

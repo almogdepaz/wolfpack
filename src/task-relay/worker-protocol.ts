@@ -1,18 +1,22 @@
 import { types as utilTypes } from "node:util";
 import type { TaskRelayGateway } from "./gateway.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
+import type { VolatileResult } from "./volatile-protocol.ts";
 
 export type RelayGateway = Pick<TaskRelayGateway, keyof TaskRelayGateway>;
 
 /** Wire arguments differ from the public gateway only for the cleanup Date cutoff. */
 export interface RelayWorkerGateway extends Omit<RelayGateway, "cleanup"> {
   cleanup(beforeMs: number): Promise<number>;
+  volatile(input: unknown): Promise<VolatileResult>;
+  volatilePeer(input: unknown): Promise<VolatileResult>;
+  volatileTopology(input: unknown): Promise<VolatileResult>;
 }
 
 export const RELAY_WORKER_METHODS = [
   "initialize", "peerRelay", "resolvePeerEndpoint", "connect", "endpointForSession", "endpointsForSessions",
-  "disconnect", "resolve", "send", "receive", "acknowledgeDelivery", "receivePeer", "flushPeerOutbox", "cleanup",
-] as const satisfies readonly (keyof RelayGateway)[];
+  "disconnect", "resolve", "send", "receive", "acknowledgeDelivery", "receivePeer", "flushPeerOutbox", "cleanup", "volatile", "volatilePeer", "volatileTopology",
+] as const satisfies readonly (keyof RelayWorkerGateway)[];
 export type RelayWorkerMethod = typeof RELAY_WORKER_METHODS[number];
 export const RELAY_WORKER_LIMITS = {
   regularRequests: 28, peerRequests: 4, regularBytes: 3 * 1024 * 1024, peerBytes: 1024 * 1024,
@@ -22,6 +26,7 @@ export const RELAY_WORKER_LIMITS = {
 
 export interface WorkerOptions {
   root: string;
+  profile?: "volatile-v1";
   peerOrigin?: string;
   retryIntervalMs?: number;
   retentionMs?: number;
