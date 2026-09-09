@@ -1,5 +1,8 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { TaskRelayGateway } from "./gateway.ts";
+import { VolatileRelayGateway } from "./volatile-gateway.ts";
+import { volatileFailure } from "./volatile-protocol.ts";
+import { RELAY_ERROR, relayFailure } from "./domain.ts";
 import {
   RELAY_WORKER_LIMITS as LIMIT, RELAY_WORKER_METHODS, captureRelayWire,
   type WorkerOptions, type WorkerRequest, type ParentMessage, type CallbackValue,
@@ -20,14 +23,19 @@ function callback(request: { kind: "inspect"; selector: string } | { kind: "peer
     port.postMessage({ ...request, id });
   });
 }
-const gateway = new TaskRelayGateway({
+if (options.profile !== undefined && options.profile !== "volatile-v1") throw new Error("invalid relay worker profile");
+const gatewayOptions = {
   ...options,
-  inspectSession: async selector => await callback({ kind: "inspect", selector }) as SessionInspectionResult,
+  inspectSession: async (selector: string) => await callback({ kind: "inspect", selector }) as SessionInspectionResult,
   ...(options.proxyPeerFetch && { peerFetch: async (url: RequestInfo | URL, init?: RequestInit) => {
     const reply = await callback({ kind: "peer-fetch", url: String(url), body: String(init?.body) }) as { status: number; body: string };
     return new Response(reply.body, { status: reply.status });
   } }),
-});
+};
+// Mutually exclusive engines. Volatile startup never reads the legacy ledger.
+const gateway = options.profile === undefined ? new TaskRelayGateway(gatewayOptions) : undefined;
+const volatile = options.profile === "volatile-v1" ? new VolatileRelayGateway(gatewayOptions) : undefined;
+const legacyResults = new Set(["connect", "disconnect", "resolve", "send", "receive", "acknowledgeDelivery", "receivePeer", "resolvePeerEndpoint"]);
 const regular: WorkerRequest[] = [], peers: WorkerRequest[] = [];
 const requests = new Map<number, { peer: boolean; bytes: number }>();
 let activeRegular = 0, activePeer = 0;
@@ -40,8 +48,19 @@ function pump(): void {
       if (peer) activePeer++; else activeRegular++;
       void (async () => {
         try {
-          const method = gateway[request.method] as (...args: unknown[]) => Promise<unknown>;
-          const value = await method.apply(gateway, request.args);
+          let value: unknown;
+          if (request.method === "volatile" || request.method === "volatilePeer" || request.method === "volatileTopology") {
+            value = !volatile ? volatileFailure("RELAY_PROFILE_REQUIRED")
+              : await (request.method === "volatilePeer" ? volatile.peer(request.args[0])
+                : request.method === "volatileTopology" ? volatile.topology(request.args[0]) : volatile.request(request.args[0]));
+          } else if (volatile) {
+            if (request.method === "initialize") value = volatile.initialize();
+            else if (legacyResults.has(request.method)) value = relayFailure(RELAY_ERROR.INCOMPATIBLE_PROTOCOL, "worker requires volatile-v1 requests");
+            else throw new Error("worker requires volatile-v1 requests");
+          } else {
+            const method = gateway![request.method] as (...args: unknown[]) => Promise<unknown>;
+            value = await method.apply(gateway, request.args);
+          }
           const captured = captureRelayWire(value, LIMIT.responseBytes, true);
           port.postMessage({ kind: "result", id: request.id, value: captured.value });
         } catch {
@@ -67,7 +86,7 @@ port.on("message", (message: ParentMessage) => {
   }
   if (message.kind !== "request" || !Number.isSafeInteger(message.id) || message.id < 0
     || !methods.has(message.method) || !Array.isArray(message.args) || requests.has(message.id)) throw new Error("invalid relay worker request");
-  const peer = message.method === "receivePeer";
+  const peer = message.method === "receivePeer" || message.method === "volatilePeer";
   const existing = [...requests.values()].filter(item => item.peer === peer);
   const captured = captureRelayWire(message.args, LIMIT.requestBytes);
   let args = captured.value;
@@ -86,5 +105,5 @@ port.on("message", (message: ParentMessage) => {
   (peer ? peers : regular).push({ ...message, args });
   pump();
 });
-port.on("close", () => gateway.close());
+port.on("close", () => { gateway?.close(); void volatile?.close(); });
 port.postMessage({ kind: "ready" });

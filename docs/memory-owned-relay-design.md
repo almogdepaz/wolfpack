@@ -23,6 +23,81 @@ Restart durability was already ruled out by #351. Loss of a relay process can
 lose even accepted messages. Endpoint task storage surviving that loss does not
 mean transport replay or successful delivery is guaranteed.
 
+## Staged gateway/worker integration (after #360)
+
+`VolatileRelayGateway` now drives the bounded engine with fresh broker inspection,
+explicit profile/epoch/endpoint bindings, true per-delivery cursors and
+mailbox-confirmed acceptance. It is selectable **only by explicit programmatic
+`WorkerRelayGateway({ profile: "volatile-v1", ... })` construction**. The existing
+production singleton, HTTP routes, Control API schema and installed adapters have
+not switched. Do not activate this constructor through configuration before the
+coordinated adapter/public-contract work below is complete.
+
+The two worker modes are mutually exclusive. Volatile initialization does not
+construct a legacy gateway or inspect/replay its ledger. Legacy registration
+calls to a volatile worker fail incompatible protocol; volatile calls to a legacy
+worker fail `RELAY_PROFILE_REQUIRED`. There is no durability fallback or new
+worker replacement/replay loop. Existing worker ownership, transfer admission,
+callback and termination rules remain.
+
+The staged RPC contract is defined in `src/task-relay/volatile-protocol.ts`:
+
+- `volatile`: endpoint commands. `connect` requires `profile`, caller, generation
+  and protocol versions; a supplied old epoch fails before re-registration.
+  Subsequent commands require the returned epoch **and exact endpoint**, not just
+  caller name. A renewed/replaced generation cannot silently consume an old
+  cursor/mailbox. Results carry the current profile/epoch and a tagged value.
+- `volatileTopology`: host-only `resolvePeer`, from freshly verified topology.
+  It must never accept an endpoint-supplied URL as routing authority. The gateway
+  checks the caller binding and canonical origin; the integrating host still
+  owns discovery/handshake verification. Ordinary endpoint ingress rejects this
+  command.
+- `volatilePeer`: trusted peer ingress, using the reserved worker queue/lane.
+  The future production route must enforce the inherited Tailnet/JWT federation
+  policy before calling it. Ordinary endpoint ingress cannot impersonate it.
+- A peer alias binds **origin + peer epoch**, not origin alone. Both remain
+  bounded by the route/metadata budgets. On forwarding, the target alias supplies
+  the expected destination epoch; the receiver normalizes the source into an
+  origin/source-epoch alias. Thus normalized envelope hashes bind remote
+  lifetimes while endpoint IDs remain opaque UUIDs. Changed epochs produce new
+  aliases, not an in-place rewrite of pending envelope identity/content.
+- Successful send values never contain `pending`: they contain the actual
+  destination acceptance ID. Pending/unknown peer delivery is retryable
+  `PEER_UNREACHABLE`; final exhaustion is non-retryable
+  `DELIVERY_UNCONFIRMED`, explicitly possibly delivered. Terminal receipts cannot
+  rearm. Concurrent same-content sends share one attempt; different content is
+  checked before coalescing.
+- Endpoint retries drive forwarding. Five-second network deadlines include the
+  response body; replies are bounded to 4 KiB and must match profile, epoch,
+  envelope ID, acceptance ID and local destination disposition. Late replies
+  cannot mutate a finalized attempt. Observing completion status never starts
+  another network attempt. Broker inspection is bounded to 15 seconds.
+- A one-second timer runs bounded engine expiry. Investigation cleanup requests
+  coalesce through the writer at most once a minute, including while idle;
+  sanitized degradation warnings are rate-limited to once a minute. Ordinary
+  delivery does not wait for logs. Files are under the dedicated
+  `investigation-volatile-v1` directory; historical ledger files are untouched.
+  Graceful inline close may drain logs, but worker termination can lose them.
+
+The `/api/task-relay/volatile-v1` paths are **provisional integration-fixture
+paths, not mounted production routes or a published stable Control API**.
+`tests/integration/task-relay-volatile-process.test.ts` runs two disposable Bun
+processes, each with its own real relay worker, using loopback HTTP. It withholds
+confirmation after actual destination acceptance, retries immutable content,
+checks sparse delivery/ACK and process-epoch reset, and preserves malformed old
+ledger sentinels. Broker inspection and canonical-origin-to-loopback routing are
+explicit test doubles; this is not production auth/discovery, live Tailnet or
+Pi task/model execution. The existing compiled-worker test also exercises the
+volatile local send/receive/ACK path from a standalone binary outside source cwd.
+
+Upstream [pi-tasks#19](https://github.com/almogdepaz/pi-tasks/pull/19) separately
+implements stable owner-persisted timestamps and documents legacy pending-row
+quarantine. It is not a volatile adapter: actual sparse cursors, live-process
+reset/rebind, terminal transport-error quarantine and coordinated release/parity
+remain outstanding. No claim of production activation, end-to-end adapter
+compatibility, measured latency/RSS improvement or #351 completion follows from
+this staged gateway slice.
+
 ## 1. Recommended acceptance and retry contract
 
 **Transfer ownership only after the destination mailbox accepts**, not when the
