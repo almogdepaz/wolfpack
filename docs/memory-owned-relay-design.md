@@ -54,11 +54,21 @@ instruction or completed #351 cutover.
   persistence is a separate domain and is unchanged.
 
 Validation uses private loopback HTTP, the real middleware and worker, synthetic
-broker identities and explicitly pinned pi-tasks source/SQLite. It is not live
-Tailnet/TLS/device, compiled-release adapter parity, installed-extension or
-performance proof. Source-loaded cross-repository tests require both
-`WOLFPACK_PI_TASKS_SOURCE` (absolute tracked-clean checkout) and
-`WOLFPACK_PI_TASKS_REVISION` (exact 40-hex HEAD); otherwise that test is skipped.
+broker identities and explicitly pinned pi-tasks source/SQLite.
+`tests/integration/task-relay-compiled-adapter.test.ts` additionally embeds the HTTP
+host and named relay worker in a standalone Bun binary, removes its private build
+source/dependency paths, verifies the binary hash before each launch and runs away
+from the source checkout. The actual adapter/core/SQLite exercises lost accepted
+send replies with identical retry, lost ACK replies and reopen, sparse ACK gaps,
+worker replacement, durable reset/rebind, historical-task fences, a synthetic
+canonical terminal lifecycle and rollback to the durable profile. JWT middleware
+and disabled peer ingress remain in the path; legacy-file sentinels stay unchanged.
+
+This is compiled-host/worker fixture parity, not the packaged release CLI/native
+broker, installed extension, live Tailnet/TLS/device, model execution or performance
+proof. Both cross-repository tests require `WOLFPACK_PI_TASKS_SOURCE` (absolute
+tracked-clean checkout) and `WOLFPACK_PI_TASKS_REVISION` (exact 40-hex HEAD); otherwise
+they are explicitly skipped.
 
 ## Staged gateway/worker integration (after #360)
 
