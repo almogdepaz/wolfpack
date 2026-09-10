@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { types as utilTypes } from "node:util";
 import { TaskRelayStore } from "./store.ts";
 import { getBackend } from "../server/backend.ts";
@@ -80,6 +81,7 @@ export class WorkerRelayGateway implements RelayGateway {
   get profile(): "durable-v2" | "volatile-v1" { return this.#options.profile ?? "durable-v2"; }
 
   constructor(suppliedOptions: WorkerGatewayOptions = { root: undefined }) {
+    assertSupportedBunRuntime();
     const options = captureOptions(suppliedOptions);
     if (options.profile && [options.retryIntervalMs, options.retentionMs, options.cleanupIntervalMs].some(value => value !== undefined)) {
       throw new TypeError("legacy retention/retry options do not apply to volatile relay");

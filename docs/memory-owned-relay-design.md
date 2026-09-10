@@ -23,6 +23,25 @@ Restart durability was already ruled out by #351. Loss of a relay process can
 lose even accepted messages. Endpoint task storage surviving that loss does not
 mean transport replay or successful delivery is guaranteed.
 
+## Runtime and packaged-path verification
+
+Source/server startup and relay workers require stable Bun 1.4.2 or newer; CI and
+release builds pin 1.4.2. Bun 1.3.9 reproduced a native worker teardown crash in
+1 of 100 fresh-process default/reset runs. The unchanged relay implementation
+completed 100 plus 500 fresh-process runs on a privately installed 1.4.2 runtime.
+This is a tested runtime mitigation, not proof of a particular upstream fix or a
+crash-free guarantee. Do not build release binaries with the known-failing runtime.
+
+An explicitly artifact-pinned test now exercises the compiled CLI, private installed
+Pi tarball, actual native broker, and actual Pi tools through a deterministic local
+model endpoint. It checks task completion/parent ACK, broker-session survival across
+a server-only restart, persisted reset, explicit loss-accepting rebind, retained task
+and event history, and structured `NOT_PARTICIPANT` refusal of old-scope mutation.
+The model is synthetic and has no external credentials. This does not establish
+physical two-machine/TLS behavior, production model quality, or release-native
+artifact provenance for all architectures. Run this artifact gate explicitly;
+ordinary suites skip it when the pinned package/binary inputs are not supplied.
+
 ## Default memory-owned HTTP integration
 
 The server singleton now selects `volatile-v1` when `WOLFPACK_TASK_RELAY_PROFILE`
