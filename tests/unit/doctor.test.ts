@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test, spyOn } from "bun:test";
 import type { CheckResult } from "../../src/cli/doctor.ts";
 
@@ -307,7 +311,7 @@ describe("doctor foreground and managed-service health", () => {
 
 describe("doctor dependency probe wiring", () => {
   const baseProbes = {
-    config: { devDir: "/tmp", port: 3000 },
+    config: {},
     tailscaleBinary: null,
     readTailscaleVersion: (_binary: string) => "",
     readTailscaleStatus: (_binary: string) => "",
@@ -329,6 +333,20 @@ describe("doctor dependency probe wiring", () => {
     expect(tailscale?.status).toBe(expectedStatus);
   });
 
+  test("keeps an unreadable Tailscale status distinct from logged-out", async () => {
+    const { checkDoctorDependencies } = await import("../../src/cli/doctor.ts");
+    const results = checkDoctorDependencies({
+      ...baseProbes,
+      tailscaleBinary: "/usr/bin/tailscale",
+      readTailscaleVersion: (_binary) => "1.80.0",
+      readTailscaleStatus: (_binary) => { throw new Error("permission denied"); },
+    });
+    const status = results.find((result) => result.name === "tailscale connected");
+
+    expect(status?.fact).toBe("tailscale-query-failed");
+    expect(status?.detail).toBe("unable to query status");
+  });
+
   test.each([
     ["local-only", undefined, "warn"],
     ["configured remote", "host.tailnet.ts.net", "fail"],
@@ -345,6 +363,165 @@ describe("doctor dependency probe wiring", () => {
 
     expect(connected?.status).toBe(expectedStatus);
   });
+});
+
+function doctorFixtureEnvironment(root: string, socketMode: "xdg" | "home"): NodeJS.ProcessEnv {
+  const home = join(root, "home");
+  const environment: NodeJS.ProcessEnv = {
+    HOME: home,
+    PATH: "/usr/bin:/bin",
+    TMPDIR: join(root, "tmp"),
+    XDG_CACHE_HOME: join(root, "cache"),
+    XDG_CONFIG_HOME: join(root, "config"),
+    npm_config_cache: join(root, "npm-cache"),
+    npm_config_userconfig: join(root, "npmrc"),
+    npm_config_offline: "true",
+    npm_config_update_notifier: "false",
+  };
+  if (socketMode === "xdg") environment.XDG_RUNTIME_DIR = join(root, "runtime");
+  return environment;
+}
+
+describe("doctor runtime probes", () => {
+  test.each(["xdg", "home"] as const)("uses the real default broker socket in an owned %s environment", (socketMode) => {
+    const root = realpathSync(mkdtempSync("/tmp/wpd-"));
+    const script = `
+      import { createServer } from "node:net";
+      import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+      import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+      import { homedir } from "node:os";
+
+      const root = ${JSON.stringify(root)};
+      const marker = join(root, ".wolfpack-test-fixture");
+      const expectedHome = join(root, "home");
+      const expectedSocket = ${JSON.stringify(socketMode)} === "xdg"
+        ? join(root, "runtime", "wolfpack-broker.sock")
+        : join(expectedHome, ".wolfpack", "broker.sock");
+      const canonicalRoot = realpathSync(root);
+      if (readFileSync(marker, "utf-8") !== "owned\\n") throw new Error("fixture marker missing");
+      const assertOwned = (label, path) => {
+        const resolved = resolve(path);
+        const pathRelative = relative(canonicalRoot, resolved);
+        const parentRelative = relative(canonicalRoot, realpathSync(dirname(resolved)));
+        if (
+          pathRelative === "" || pathRelative === ".." || pathRelative.startsWith(".." + sep) || isAbsolute(pathRelative)
+          || parentRelative === ".." || parentRelative.startsWith(".." + sep) || isAbsolute(parentRelative)
+        ) throw new Error("fixture escape: " + label + "=" + resolved);
+        if (existsSync(resolved)) {
+          const canonical = realpathSync(resolved);
+          const canonicalRelative = relative(canonicalRoot, canonical);
+          if (canonicalRelative === ".." || canonicalRelative.startsWith(".." + sep) || isAbsolute(canonicalRelative)) {
+            throw new Error("fixture symlink escape: " + label + "=" + canonical);
+          }
+        }
+      };
+
+      const { FrameParser, encodeFrame, FRAME_KIND_CONTROL_REQUEST, FRAME_KIND_CONTROL_RESPONSE } = await import(${JSON.stringify(join(process.cwd(), "src", "broker", "codec.ts"))});
+      const { defaultBrokerSocketPath } = await import(${JSON.stringify(join(process.cwd(), "src", "broker", "client.ts"))});
+      const { WOLFPACK_DIR } = await import(${JSON.stringify(join(process.cwd(), "src", "cli", "config.ts"))});
+      const homeSocket = join(expectedHome, ".wolfpack", "broker.sock");
+      const defaultSocket = defaultBrokerSocketPath();
+      const candidates = [join(WOLFPACK_DIR, "bin", "wolfpack-broker"), join(WOLFPACK_DIR, "wolfpack-broker")];
+      assertOwned("home", homedir());
+      assertOwned("config", WOLFPACK_DIR);
+      assertOwned("home socket", homeSocket);
+      assertOwned("default socket", defaultSocket);
+      for (const candidate of candidates) assertOwned("broker candidate", candidate);
+      if (homedir() !== expectedHome || defaultSocket !== expectedSocket) throw new Error("fixture resolver mismatch");
+
+      mkdirSync(dirname(expectedSocket), { recursive: true });
+      mkdirSync(dirname(candidates[0]), { recursive: true });
+      writeFileSync(candidates[0], "broker");
+      let received = false;
+      const server = createServer((socket) => {
+        const parser = new FrameParser();
+        let requestBytes = 0;
+        socket.on("data", (chunk) => {
+          requestBytes += chunk.length;
+          if (requestBytes > 4096) return socket.destroy();
+          parser.push(chunk);
+          const frames = parser.drain();
+          if (frames.length === 0) return;
+          if (frames.length !== 1 || frames[0].kind !== FRAME_KIND_CONTROL_REQUEST || parser.hasPartial()) return socket.destroy();
+          const request = frames[0].value;
+          if (JSON.stringify(request) !== JSON.stringify({ id: 1, method: "list_sessions", params: {} })) return socket.destroy();
+          received = true;
+          socket.end(encodeFrame({ kind: FRAME_KIND_CONTROL_RESPONSE, value: { id: request.id, status: "ok" } }));
+        });
+      });
+      await new Promise((resolve, reject) => server.once("error", reject).listen(expectedSocket, resolve));
+      try {
+        const { checkDoctorBroker } = await import(${JSON.stringify(join(process.cwd(), "src", "cli", "doctor.ts"))});
+        const results = await checkDoctorBroker();
+        if (!received) throw new Error("fixture peer did not receive list_sessions");
+        console.log(JSON.stringify(results));
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    `;
+    try {
+      writeFileSync(join(root, ".wolfpack-test-fixture"), "owned\n");
+      mkdirSync(join(root, "home", ".wolfpack", "bin"), { recursive: true });
+      mkdirSync(join(root, "runtime"), { recursive: true });
+      mkdirSync(join(root, "tmp"), { recursive: true });
+      mkdirSync(join(root, "config"), { recursive: true });
+      mkdirSync(join(root, "cache"), { recursive: true });
+      mkdirSync(join(root, "npm-cache"), { recursive: true });
+      const output = execFileSync(process.execPath, ["--eval", script], {
+        cwd: root,
+        encoding: "utf-8",
+        env: doctorFixtureEnvironment(root, socketMode),
+        timeout: 2500,
+      });
+      const results = JSON.parse(output) as CheckResult[];
+      expect(results.find((check) => check.name === "broker handshake")?.status).toBe("pass");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 3000);
+
+  test("uses the real Tailscale command boundary with an owned absolute stub", () => {
+    const root = realpathSync(mkdtempSync("/tmp/wpd-"));
+    const binary = join(root, "tailscale");
+    const commandLog = join(root, "tailscale.log");
+    const script = `
+      import { homedir } from "node:os";
+      import { readFileSync, realpathSync } from "node:fs";
+      import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+      const root = ${JSON.stringify(root)};
+      const assertOwned = (path) => {
+        const canonicalRoot = realpathSync(root);
+        const resolved = resolve(path);
+        const relativePath = relative(canonicalRoot, resolved);
+        const parentRelative = relative(canonicalRoot, realpathSync(dirname(resolved)));
+        if (relativePath === "" || relativePath === ".." || relativePath.startsWith(".." + sep) || isAbsolute(relativePath) || parentRelative === ".." || parentRelative.startsWith(".." + sep) || isAbsolute(parentRelative)) throw new Error("fixture escape");
+      };
+      if (readFileSync(${JSON.stringify(join(root, ".wolfpack-test-fixture"))}, "utf-8") !== "owned\\n") throw new Error("fixture marker missing");
+      const { WOLFPACK_DIR } = await import(${JSON.stringify(join(process.cwd(), "src", "cli", "config.ts"))});
+      assertOwned(homedir());
+      assertOwned(WOLFPACK_DIR);
+      const { readTailscaleSelfStatus } = await import(${JSON.stringify(join(process.cwd(), "src", "cli", "doctor.ts"))});
+      process.stdout.write(readTailscaleSelfStatus(${JSON.stringify(binary)}));
+    `;
+    try {
+      writeFileSync(join(root, ".wolfpack-test-fixture"), "owned\n");
+      mkdirSync(join(root, "home"), { recursive: true });
+      writeFileSync(commandLog, "");
+      writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(commandLog)}\nprintf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'\n`);
+      chmodSync(binary, 0o755);
+      const output = execFileSync(process.execPath, ["--eval", script], {
+        cwd: root,
+        encoding: "utf-8",
+        env: doctorFixtureEnvironment(root, "home"),
+        timeout: 2500,
+      });
+      expect(output).toContain("host.tailnet.ts.net");
+      // Cross-platform command-boundary evidence only; not Linux/Tailscale execution.
+      expect(readFileSync(commandLog, "utf-8")).toBe("status --self --json\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 3000);
 });
 
 describe("tailscaleBin shared export", () => {

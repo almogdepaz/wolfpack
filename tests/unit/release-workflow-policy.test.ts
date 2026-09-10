@@ -167,6 +167,16 @@ describe("release workflow security policy", () => {
     }
   });
 
+  test("pins Node 22 before the build job runs the installed package smoke", () => {
+    const buildSteps = jobs.build?.steps ?? [];
+    const nodeIndex = buildSteps.findIndex(step => step.uses?.startsWith("actions/setup-node@"));
+    const smokeIndex = buildSteps.findIndex(step => step.name === "Smoke installed package and native release artifacts");
+
+    expect(nodeIndex).toBeGreaterThanOrEqual(0);
+    expect(buildSteps[nodeIndex]?.with?.["node-version"]).toBe("22.17.0");
+    expect(smokeIndex).toBeGreaterThan(nodeIndex);
+  });
+
   test("release broker builds use unconditional authoritative Ghostty", () => {
     const brokerBuilds = allSteps.filter(step => step.run?.includes("--manifest-path broker/Cargo.toml"));
     expect(brokerBuilds).toHaveLength(4);

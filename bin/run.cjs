@@ -2,70 +2,42 @@
 /**
  * bin entry — executes the platform-specific compiled binary.
  *
- * Resolution order:
- * 1. Fast path: bin/wolfpack exists (postinstall ran) — use it directly
- * 2. Slow path: require.resolve the platform-specific optional package
- * 3. Error: neither available
+ * Resolve the exact optional platform pair and execute its validated private
+ * prepared copy. Local bin/wolfpack is deliberately ignored; development runs
+ * its built executable directly. No package lifecycle script is required.
  */
+const MINIMUM_NODE_MAJOR = 22;
+
+if (!process.versions.bun) {
+  const nodeMajor = Number.parseInt(process.versions.node.split(".")[0], 10);
+  if (!Number.isInteger(nodeMajor) || nodeMajor < MINIMUM_NODE_MAJOR) {
+    console.error(`wolfpack: npm/npx requires Node.js ${MINIMUM_NODE_MAJOR} or later (found ${process.version})`);
+    console.error("Use bunx --bun wolfpack-bridge@latest to run with Bun instead.");
+    process.exit(1);
+  }
+}
+
 const { execFileSync } = require("node:child_process");
-const { join, dirname } = require("node:path");
-const { chmodSync, existsSync } = require("node:fs");
+const { dirname } = require("node:path");
 const { platform, arch } = require("node:os");
-
-function prepareMacOSBinary(path) {
-  if (platform() !== "darwin") return true;
-  try {
-    execFileSync("xattr", ["-cr", path], { stdio: "ignore" });
-    execFileSync("codesign", ["--sign", "-", "--force", path], { stdio: "ignore" });
-    return true;
-  } catch (error) {
-    console.error(`wolfpack: could not prepare ${path} for macOS`);
-    console.error(error instanceof Error ? error.message : String(error));
-    return false;
-  }
-}
-
-function makeExecutable(path) {
-  try {
-    chmodSync(path, 0o755);
-    return true;
-  } catch (error) {
-    console.error(`wolfpack: could not make ${path} executable`);
-    console.error(error instanceof Error ? error.message : String(error));
-    return false;
-  }
-}
+const { PlatformPairError, stagePlatformPair } = require("./stage-platform-pair.cjs");
 
 function findBinary() {
-  // fast path: postinstall already copied binary here
-  const local = join(__dirname, "wolfpack");
-  if (existsSync(local)) return makeExecutable(local) ? local : null;
-
-  // slow path: resolve from platform-specific optional package. Bun blocks
-  // dependency postinstall scripts by default, so prepare both extracted
-  // binaries here before the compiled CLI can stage them at stable paths.
-  const pkg = `wolfpack-bridge-${platform()}-${arch()}`;
+  const target = `${platform()}-${arch()}`;
   try {
-    const pkgRoot = dirname(require.resolve(`${pkg}/package.json`));
-    const binary = join(pkgRoot, "wolfpack");
-    const broker = join(pkgRoot, "wolfpack-broker");
-    if (!existsSync(binary) || !makeExecutable(binary) || !prepareMacOSBinary(binary)) return null;
-    if (existsSync(broker) && (!makeExecutable(broker) || !prepareMacOSBinary(broker))) return null;
-    return binary;
-  } catch {}
-
-  return null;
+    return stagePlatformPair(dirname(__dirname), target);
+  } catch (error) {
+    if (error instanceof PlatformPairError) {
+      console.error(error.message);
+    } else {
+      console.error(`wolfpack: could not resolve platform pair for ${target}`);
+      console.error(error instanceof Error ? error.message : String(error));
+    }
+    process.exit(1);
+  }
 }
 
 const binary = findBinary();
-
-if (!binary) {
-  const key = `${platform()}-${arch()}`;
-  console.error(`wolfpack: no binary found for ${key}`);
-  console.error(`Expected platform package: wolfpack-bridge-${key}`);
-  console.error("Try reinstalling: npm install wolfpack-bridge");
-  process.exit(1);
-}
 
 try {
   execFileSync(binary, process.argv.slice(2), { stdio: "inherit" });
