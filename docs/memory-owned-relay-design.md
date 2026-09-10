@@ -19,6 +19,11 @@ fallback. Existing files are not imported, replayed, migrated or deleted.
   reports `RELAY_RESET`; a lost response may already have reached its destination.
 - `/task-relay-rebind --accept-relay-loss` explicitly clears current endpoint RAM
   and establishes a fresh binding. It does not reconstruct or resend old tasks.
+- Installing a new generation retires the old endpoint, its unreachable mailbox,
+  forwarding attempts and completed receipts, reclaiming their capacity. Accepted
+  mail at another live endpoint survives its sender's replacement. Ordinary lease
+  expiry alone does not discard accepted mail. A closed worker cannot advertise
+  its retired epoch as a successful live profile.
 - Old task IDs are unknown after endpoint loss/rebind. They do not regain status,
   wait, ACK or tool-execution authority from old session messages.
 - Pi records complete received task events in `pi-tasks-event` message details,

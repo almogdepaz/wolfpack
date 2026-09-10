@@ -71,7 +71,8 @@ export type ForwardAttempt = { readonly kind: "attempt"; readonly token: string;
  * Worker-owned engine for the negotiated volatile profile. No filesystem/root,
  * timers, network calls, full-state snapshots or process-global store registry.
  * Methods linearize synchronously; the gateway still owns broker inspection and
- * trusted peer admission. NOT wired into the legacy v2 gateway until cutover.
+ * trusted peer admission. Endpoint generation replacement explicitly loses its
+ * unreachable obligations, while other live endpoints retain accepted mail.
  */
 export class MemoryRelayStore {
   readonly #epoch = randomUUID();
@@ -130,8 +131,11 @@ export class MemoryRelayStore {
     };
     // Include space for the fixed-size cursor, references, and index ownership.
     const size = bytes(registration) + 128;
-    if ((!existing && this.#registrations.size >= this.#limits.registrations)
-      || this.#metadataBytes + size - (existing?.bytes ?? 0) > this.#limits.metadataBytes) fail("RELAY_CAPACITY");
+    if ((!prior && this.#registrations.size >= this.#limits.registrations)
+      || this.#metadataBytes + size - (prior?.bytes ?? 0) > this.#limits.metadataBytes) fail("RELAY_CAPACITY");
+    // Preflight before discarding anything. A different generation cannot ever
+    // ACK its predecessor's mail or resume its forwarding attempts.
+    if (prior && !existing) this.#retire(prior);
     const entry = existing ?? { value: registration, mailbox: new Map(), cursor: 0n, mailboxBytes: 0, references: 0, bytes: 0 };
     this.#metadataBytes += size - entry.bytes;
     entry.value = registration; entry.bytes = size;
@@ -341,6 +345,21 @@ export class MemoryRelayStore {
     return processed;
   }
 
+  #retire(entry: RegistrationEntry): void {
+    const id = entry.value.endpoint.id;
+    // Bounded by the receipt ceiling, on generation replacement only. Do not
+    // discard already accepted mail at another endpoint when its sender exits.
+    for (const receipt of this.#receipts.values()) {
+      const target = receipt.target.relay === RELAY_ID && receipt.target.id === id;
+      const source = receipt.source.relay === RELAY_ID && receipt.source.id === id;
+      if (!target && (!source || receipt.state === "mailbox")) continue;
+      this.#releasePayload(receipt);
+      this.#forget(receipt);
+    }
+    this.#registrations.delete(id); this.#metadataBytes -= entry.bytes;
+    this.#expiry.delete(`g:${id}`);
+  }
+
   #activeRegistration(id: string, now: number): RegistrationEntry | undefined {
     const entry = this.#registrations.get(id);
     return entry && this.#sessions.get(entry.value.sessionId) === id && Date.parse(entry.value.leaseExpiresAt) > now ? entry : undefined;
@@ -410,7 +429,7 @@ export class MemoryRelayStore {
     return receipt;
   }
 
-  #terminal(receipt: Receipt, state: "acknowledged" | "forwarded" | "unconfirmed", now: number): void {
+  #releasePayload(receipt: Receipt): void {
     if (this.#payloads.delete(receipt.id)) {
       this.#activeBytes -= receipt.payloadBytes;
       if (receipt.state === "mailbox") {
@@ -421,6 +440,10 @@ export class MemoryRelayStore {
         route.items--; route.payloadBytes -= receipt.payloadBytes;
       }
     }
+  }
+
+  #terminal(receipt: Receipt, state: "acknowledged" | "forwarded" | "unconfirmed", now: number): void {
+    this.#releasePayload(receipt);
     receipt.state = state; receipt.token = undefined;
     receipt.expiresAt = now + MEMORY_RELAY_TIMING.receiptMs;
     this.#expiry.set(`r:${receipt.id}`, receipt.expiresAt);
@@ -431,7 +454,8 @@ export class MemoryRelayStore {
     this.#expiry.delete(`r:${receipt.id}`);
     for (const endpoint of [receipt.source, receipt.target]) {
       if (endpoint.relay !== RELAY_ID) continue;
-      const entry = this.#registrations.get(endpoint.id)!;
+      const entry = this.#registrations.get(endpoint.id);
+      if (!entry) continue; // A retired sender does not revoke another endpoint's accepted mail.
       entry.references--;
       if (!entry.references) this.#expiry.set(`g:${endpoint.id}`, Date.parse(entry.value.leaseExpiresAt));
     }

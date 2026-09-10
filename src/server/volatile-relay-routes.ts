@@ -52,6 +52,7 @@ const handlers: Record<string, Handler> = {
     try {
       const gateway = getVolatileTaskRelayGateway();
       const epoch = await gateway?.volatileEpoch();
+      if (!epoch) return reject(res, "RELAY_UNAVAILABLE", 503);
       if (res.destroyed) return;
       res.setHeader("Cache-Control", "no-store");
       json(res, { ok: true, profile: getTaskRelayProfile(), ...(epoch && { epoch }), endpointPath: VOLATILE_RELAY_PATH, federation: "trusted-tailnet-v1" });

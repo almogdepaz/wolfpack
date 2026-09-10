@@ -188,7 +188,7 @@ export class WorkerRelayGateway implements RelayGateway {
 
   async close(): Promise<void> {
     if (!this.#closed) {
-      this.#closed = true; clearTimeout(this.#startupTimer);
+      this.#closed = true; this.#epoch = undefined; clearTimeout(this.#startupTimer);
       for (const controller of this.#peerControllers) controller.abort();
       const error = new WorkerUnavailable("relay worker unavailable; an interrupted mutation may have committed");
       this.#rejectReady(error);
@@ -236,13 +236,16 @@ export class WorkerRelayGateway implements RelayGateway {
       return volatileFailure(error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed ? "RELAY_RESET" : "RELAY_UNAVAILABLE");
     }
   }
-  volatileEpoch(): Promise<string | undefined> {
+  async volatileEpoch(): Promise<string | undefined> {
+    if (this.#closed) throw new WorkerUnavailable("relay worker is closed");
     if (!this.#epoch) {
       const pending = this.#call("volatileEpoch");
       this.#epoch = pending;
       void pending.catch(() => { if (this.#epoch === pending) this.#epoch = undefined; });
     }
-    return this.#epoch;
+    const epoch = await this.#epoch;
+    if (this.#closed) throw new WorkerUnavailable("relay worker is closed");
+    return epoch;
   }
   volatile(input: unknown) { return this.#volatileResult("volatile", input); }
   volatilePeer(input: unknown) { return this.#volatileResult("volatilePeer", input); }

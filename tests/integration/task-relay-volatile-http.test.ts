@@ -112,6 +112,23 @@ test("real middleware protects metadata and both ingress lanes; valid JWT does n
   const health = await post({ ...binding, operation: "health" }); expect(health.body.value.store.routes).toBe(0); expect(health.body.value.store.activeItems).toBe(0);
 });
 
+test("closed worker fences cached/in-flight epoch reads and stops advertising a live HTTP profile", async () => {
+  const before = await fetch(base + "/api/task-relay/profile", { headers });
+  expect(before.status).toBe(200);
+  expect(await before.json()).toMatchObject({ ok: true, epoch: await gateway.volatileEpoch() });
+  const reading = gateway.volatileEpoch().then(value => ({ value }), error => ({ error }));
+  await gateway.close();
+  expect(await reading).toMatchObject({ error: expect.any(Error) });
+  const closed = await gateway.volatileEpoch().then(value => ({ value }), error => ({ error }));
+  expect(closed).toMatchObject({ error: expect.any(Error) });
+  const after = await fetch(base + "/api/task-relay/profile", { headers });
+  expect(after.status).toBe(503);
+  expect(after.headers.get("cache-control")).toBe("no-store");
+  const body = await after.json();
+  expect(body).toMatchObject({ ok: false, error: { code: "RELAY_UNAVAILABLE", retryable: true } });
+  expect(body).not.toHaveProperty("epoch");
+});
+
 test("relay routes reject public proxy/Funnel clients even with an owner token; unrelated owner APIs retain their policy", async () => {
   for (const forwarded of ["203.0.113.1", "100.100.1.1, 127.0.0.1", "garbage"]) {
     const response = await fetch(base + "/api/task-relay/profile", { headers: { ...headers, "x-forwarded-for": forwarded } });
