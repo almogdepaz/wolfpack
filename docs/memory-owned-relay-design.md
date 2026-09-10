@@ -23,13 +23,16 @@ Restart durability was already ruled out by #351. Loss of a relay process can
 lose even accepted messages. Endpoint task storage surviving that loss does not
 mean transport replay or successful delivery is guaranteed.
 
-## Experimental same-host HTTP integration
+## Default memory-owned HTTP integration
 
-`WOLFPACK_TASK_RELAY_PROFILE=volatile-v1` explicitly selects the memory engine when
-the server singleton is first constructed. Unset selects `durable-v2`; unknown
-values fail initialization rather than falling back. Selection is immutable for
-that singleton, not a hot switch. This is experimental plumbing, not a deployment
-instruction or completed #351 cutover.
+The server singleton now selects `volatile-v1` when `WOLFPACK_TASK_RELAY_PROFILE`
+is unset. The paired normal Pi extension also uses this path without a profile
+flag. Unknown values fail initialization rather than falling back. Selection is
+immutable for that singleton, not a hot switch. `durable-v2` remains an explicit
+compatibility/rollback setting and benchmark baseline, never automatic fallback.
+A rollback requires operator handling of reset state; it cannot recover volatile
+mail or automatically reuse a profile-bound endpoint. Source default integration
+is not an installed deployment or a claim that #351's release gates are complete.
 
 - `GET /api/task-relay/profile` reports selected profile, endpoint path, and the
   volatile instance's epoch. This is **not readiness or liveness evidence**.
@@ -95,8 +98,16 @@ This is a point-in-time transport observation, not a model-execution guarantee o
 an exclusive lease. The endpoint-only lookup remains a low-level compatibility
 input for pre-existing programmatic callers, not the production route path.
 
-Server default selection remains staged until remote CLI/consumer integration and
-rollout coordination are complete. Neither normal installed server nor broker is restarted
+The source server and extension now share the memory-owned default. Remote CLI
+selection qualifies the destination endpoint through the caller's local epoch and
+host-verified topology route; remote lists expose only `remoteTaskEndpoint` metadata
+until an exact status selection resolves it. Successful selection emits a locally
+routable `taskEndpoint`, `remoteTaskTransport` and `taskRouting` source epoch/origin.
+Resolution failure removes the unsafe `taskEndpoint`, retains the remote session
+identity, reports `taskEndpointError`, and selected status/launch commands exit
+nonzero without inventing cleanup or destroying that session. Local coordinator
+registration and configured JWT credentials must exist; no secrets are discovered
+or distributed by this operation. Neither installed server nor broker is restarted
 by these branches. Tests cover the real middleware/worker discovery path and
 synthetic exact-ID readiness/reset races; native broker, real Pi process, packaged
 release, two-machine and final-path performance gates remain separate.
@@ -157,9 +168,8 @@ Tailnet, installed extension, native broker or model-execution proof**.
 `VolatileRelayGateway` now drives the bounded engine with fresh broker inspection,
 explicit profile/epoch/endpoint bindings, true per-delivery cursors and
 mailbox-confirmed acceptance. The initial slice exposed only explicit programmatic
-`WorkerRelayGateway({ profile: "volatile-v1", ... })` construction. The experimental
-same-host HTTP slice adds explicit server startup selection. The paired source
-extension now switches its default, but installed adapters have **not** switched. Do not enable it on an installation
+`WorkerRelayGateway({ profile: "volatile-v1", ... })` construction. The HTTP integration now selects this engine by default alongside the paired
+source extension, but installed adapters have **not** switched. Do not enable it on an installation
 before coordinated adapter, discovery and release validation is complete.
 
 The two worker modes are mutually exclusive. Volatile initialization does not

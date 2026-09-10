@@ -424,7 +424,7 @@ let singleton: RelayGateway | undefined;
 
 export function getTaskRelayProfile(): "durable-v2" | "volatile-v1" {
   if (singleton) return singleton instanceof WorkerRelayGateway ? singleton.profile : "durable-v2";
-  const profile = process.env.WOLFPACK_TASK_RELAY_PROFILE ?? "durable-v2";
+  const profile = process.env.WOLFPACK_TASK_RELAY_PROFILE ?? "volatile-v1";
   if (profile !== "durable-v2" && profile !== "volatile-v1") throw new TypeError("invalid WOLFPACK_TASK_RELAY_PROFILE");
   return profile;
 }

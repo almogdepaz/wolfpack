@@ -75,8 +75,13 @@ function envelope(source: { relay: string; id: string }, target: { relay: string
   return { source, target, envelopeId: randomUUID(), protocolVersion: 2, payload: { opaque: "synthetic payload" }, createdAt: new Date().toISOString() };
 }
 
-test("profile selection is explicit and frozen; disabled profile creates no legacy state", async () => {
+test("normal default is memory-owned, selection is frozen, and explicit compatibility mode never silently migrates state", async () => {
   await __resetTaskRelayGatewayForTests(); delete process.env.WOLFPACK_TASK_RELAY_PROFILE;
+  expect(getTaskRelayProfile()).toBe("volatile-v1");
+  const defaultBinding = await connect("sender");
+  expect(defaultBinding.epoch).toBeString();
+  expect(readFileSync(sentinel)).toEqual(original);
+  await __resetTaskRelayGatewayForTests(); process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
   expect(getTaskRelayProfile()).toBe("durable-v2");
   const result = await post({ operation: "connect", profile: "volatile-v1" });
   expect(result.response.status).toBe(409); expect(result.body.error).toMatchObject({ code: "RELAY_PROFILE_REQUIRED", retryable: false });

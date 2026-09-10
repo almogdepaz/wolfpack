@@ -7,6 +7,7 @@ import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { validateControlApiSchemaValue as validate, type JsonObject } from "../control-api-schema-validator.ts";
 import { buildControlApiSchema } from "../../src/control-api/schema.ts";
+import { qualifyRemoteTaskEndpoint } from "../../src/cli/task-endpoint.ts";
 const profile = "volatile-v1", route = "/api/task-relay/volatile-v1", schema = buildControlApiSchema() as JsonObject;
 const secret = "private-signed-relay-fixture-secret-at-least-32";
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -39,7 +40,7 @@ async function fixture() {
       const status = { BackendState: "Running", Self: node(name), Peer: { other: node(name === "a" ? "b" : "a"), guest: { ...node("guest"), UserID: 2 } } };
       const nonce = randomUUID();
       const child = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures/volatile-peer-http.ts"), home, mapping, nonce], {
-        cwd: home, env: { PATH: process.env.PATH, HOME: home, WOLFPACK_TEST: "1", WOLFPACK_TASK_RELAY_PROFILE: profile,
+        cwd: home, env: { PATH: process.env.PATH, HOME: home, WOLFPACK_TEST: "1",
           WOLFPACK_TASK_RELAY_ROOT: join(home, "relay"), WOLFPACK_BROKER_SOCKET: join(home, "no-broker.sock"), WOLFPACK_JWT_SECRET: secret,
           WOLFPACK_TAILSCALE_STATUS_JSON: JSON.stringify(status) }, stdin: "ignore", stdout: Bun.file(join(home, "stdout.log")), stderr: Bun.file(join(home, "stderr.log")),
       }); children.push(child);
@@ -94,25 +95,36 @@ test("production HTTP federation verifies signatures/topology/JWT, confirms dest
 }, 30_000);
 
 const piSource = process.env.WOLFPACK_PI_TASKS_SOURCE;
-test.skipIf(!piSource)("actual pinned task cores reach canonical completion through signed production HTTP peer ingress", async () => {
+test.skipIf(!piSource)("normal pinned configured cores authenticate locally and complete through CLI-qualified signed HTTP peer routes", async () => {
   expect(isAbsolute(piSource!)).toBe(true); expect(process.env.WOLFPACK_PI_TASKS_REVISION).toMatch(/^[0-9a-f]{40}$/);
   expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: piSource, encoding: "utf8" }).trim()).toBe(process.env.WOLFPACK_PI_TASKS_REVISION!);
   expect(execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: piSource, encoding: "utf8" }).trim()).toBe("");
-  const { createTaskStore, createVolatileTaskSession } = await import(pathToFileURL(join(piSource!, "src/index.ts")).href);
-  const f = await fixture(), stores: any[] = [], sessions: any[] = [];
+  const { createConfiguredTaskCore } = await import(pathToFileURL(join(piSource!, "src/index.ts")).href);
+  const f = await fixture(), cores: any[] = [];
+  const authNames = ["WOLFPACK_JWT_SECRET", "WOLFPACK_JWT_ISSUER", "WOLFPACK_JWT_AUDIENCE"];
+  const prior = authNames.map(name => process.env[name]);
+  process.env.WOLFPACK_JWT_SECRET = secret; delete process.env.WOLFPACK_JWT_ISSUER; delete process.env.WOLFPACK_JWT_AUDIENCE;
   try {
-    const cores: any[] = [];
     for (const name of ["a", "b"]) {
-      const store = createTaskStore({ path: join(f.roots[name]!, "tasks.sqlite") }); stores.push(store);
-      const authenticated = Object.assign((url: any, init: any) => fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), ...headers } }), { preconnect: fetch.preconnect });
-      const session = createVolatileTaskSession({ callerSession: name === "a" ? "sender" : "receiver", url: f.bases[name] + route, store, fetch: authenticated }); sessions.push(session);
-      cores.push(await session.connect());
+      // No authenticated fetch injection: the normal factory must mint its local JWT.
+      cores.push(await createConfiguredTaskCore({ sessionName: name === "a" ? "sender" : "receiver", baseUrl: f.bases[name], path: join(f.roots[name]!, "tasks.sqlite") }));
     }
-    const [a, b] = cores, binding = stores[0].getRelayTransportBinding();
-    const resolved = await f.post("a", { profile, epoch: binding.epoch, callerSession: "sender", endpoint: a.endpoint, origin: origin("b"), target: b.endpoint }, route + "/resolve-peer"); expect(resolved.status).toBe(200);
-    const task = await a.createTask({ target: resolved.body.value.endpoint, task: "signed cross-host completion", timeoutMs: 60_000 });
+    const [a, b] = cores;
+    const selected = await qualifyRemoteTaskEndpoint({ ok: true, sessionId: "receiver-id", taskEndpoint: b.endpoint }, {
+      origin: origin("b"), localBase: f.bases.a!, callerSession: "sender", headers: new Headers(headers),
+      fetch: Object.assign((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (!url.startsWith(origin("b") + "/") && !url.startsWith(f.bases.a! + "/")) throw new Error("fixture selection network denied");
+        return fetch(url.replace(origin("b"), f.bases.b!), init);
+      }, { preconnect: fetch.preconnect }) as typeof fetch,
+    }) as any;
+    expect(selected.taskEndpointError).toBeUndefined(); expect(selected.taskEndpoint.relay).toContain(":peer:");
+    const task = await a.createTask({ target: selected.taskEndpoint, task: "signed cross-host completion", timeoutMs: 60_000 });
     await b.receive(); await b.submitIntent({ taskId: task.taskId, type: "task.completed", payload: { summary: "done through signed peer ingress" } });
     await a.receive(); expect(a.getTask(task.taskId).status).toBe("completed");
     await b.receive(); expect(b.getTask(task.taskId).status).toBe("completed");
-  } finally { for (const session of sessions) session.close(); for (const store of stores) store.close(); await f.close(); }
+  } finally {
+    try { await Promise.all(cores.map(core => core.close())); }
+    finally { authNames.forEach((name, index) => { if (prior[index] === undefined) delete process.env[name]; else process.env[name] = prior[index]; }); await f.close(); }
+  }
 }, 30_000);

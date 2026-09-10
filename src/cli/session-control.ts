@@ -587,6 +587,7 @@ interface SessionLaunchResponse {
   readonly project: string;
   readonly harness: string;
   readonly taskEndpoint?: { readonly relay: string; readonly id: string };
+  readonly taskEndpointError?: { readonly code: string; readonly message: string };
 }
 
 interface SessionPromptResponse extends SessionPromptWaitResult {
@@ -606,6 +607,7 @@ const SESSION_PROMPT_EXIT: Readonly<Record<SessionPromptOutcome, number>> = {
 };
 
 interface SessionStatusResponse {
+  readonly taskEndpointError?: { readonly code: string; readonly message: string };
   readonly ok: true;
   readonly selector: string;
   readonly session: string;
@@ -916,8 +918,8 @@ async function runSessionOpen(
       }),
     }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse;
     if (parsed.output === "json") jsonOut(response, target);
-    else print(response.session);
-    return SESSION_EXIT.OK;
+    else { print(response.session); if (response.taskEndpointError) printError(response.taskEndpointError.message); }
+    return response.taskEndpointError ? SESSION_EXIT.BACKEND_UNAVAILABLE : SESSION_EXIT.OK;
   } catch (error: unknown) {
     return mapOpenApiError(parsed.output, error);
   }
@@ -942,8 +944,8 @@ async function runSessionCreate(
       }),
     }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse;
     if (parsed.output === "json") jsonOut(response, target);
-    else print(response.session);
-    return SESSION_EXIT.OK;
+    else { print(response.session); if (response.taskEndpointError) printError(response.taskEndpointError.message); }
+    return response.taskEndpointError ? SESSION_EXIT.BACKEND_UNAVAILABLE : SESSION_EXIT.OK;
   } catch (error: unknown) {
     return mapCreateApiError(parsed.output, error);
   }
@@ -1053,8 +1055,9 @@ async function runTargetSessionCommand(
       else {
         print(`${data.session} (${data.sessionId})`);
         print(`${data.state} ${data.harness} ${data.projectPath}`);
+        if (data.taskEndpointError) printError(data.taskEndpointError.message);
       }
-      return SESSION_EXIT.OK;
+      return data.taskEndpointError ? SESSION_EXIT.BACKEND_UNAVAILABLE : SESSION_EXIT.OK;
     }
     if (parsed.action === "read") {
       const data = await call(`/api/session-control/read?session=${encodeURIComponent(parsed.session)}`, {}, target) as {
