@@ -32,7 +32,7 @@
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
     "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
-    "volatile-v1 is experimental and explicitly selected at server startup; HTTP operations inherit global auth, do not authorize untrusted per-session tenants, and reject all peer/topology ingress until verified peer policy exists",
+    "volatile-v1 is selected at server startup; HTTP operations inherit global auth and do not authorize untrusted per-session tenants; peer ingress additionally requires raw-request Ed25519 signatures bound to current relay epochs and canonical TLS identities matched to local same-user untagged online Tailscale topology (up to 1s local status cache)",
     "relay profile metadata identifies the selected lifetime, not broker/worker readiness; legacy worker readiness does not advertise volatile registrations"
   ],
   "http": {
@@ -123,25 +123,80 @@
         "503 VolatileErrorEnvelope"
       ]
     },
-    "rejectVolatilePeerIngress": {
+    "getVolatilePeerIdentity": {
+      "route": "GET /api/task-relay/volatile-v1/identity",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:getVolatilePeerIdentity:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getVolatilePeerIdentity response",
+        "oneOf": [
+          {
+            "$ref": "#/$defs/VolatilePeerIdentity"
+          },
+          {
+            "$ref": "#/$defs/VolatileErrorEnvelope"
+          }
+        ]
+      },
+      "errors": [
+        "400 VolatileErrorEnvelope",
+        "409 VolatileErrorEnvelope",
+        "503 VolatileErrorEnvelope"
+      ]
+    },
+    "resolveVerifiedVolatilePeer": {
+      "route": "POST /api/task-relay/volatile-v1/resolve-peer",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:resolveVerifiedVolatilePeer:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resolveVerifiedVolatilePeer request",
+        "$ref": "#/$defs/VolatilePeerResolveRequest"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:resolveVerifiedVolatilePeer:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resolveVerifiedVolatilePeer response",
+        "$ref": "#/$defs/VolatileResponse"
+      },
+      "errors": [
+        "400 VolatileErrorEnvelope",
+        "403 VolatileErrorEnvelope",
+        "408 VolatileErrorEnvelope",
+        "409 VolatileErrorEnvelope",
+        "413 VolatileErrorEnvelope",
+        "503 VolatileErrorEnvelope"
+      ]
+    },
+    "receiveVerifiedVolatilePeer": {
       "route": "POST /api/task-relay/volatile-v1/peer",
       "stable": false,
       "auth": "jwt-when-configured",
       "requestContentType": "application/json",
       "request": {
-        "$id": "wolfpack:control-api:http:rejectVolatilePeerIngress:request",
+        "$id": "wolfpack:control-api:http:receiveVerifiedVolatilePeer:request",
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "rejectVolatilePeerIngress request",
-        "description": "Disabled. The body is not interpreted and HTTP authentication does not establish peer-machine authority."
+        "title": "receiveVerifiedVolatilePeer request",
+        "$ref": "#/$defs/VolatilePeerRequest",
+        "description": "Requires x-wolfpack-relay-signature in addition to configured JWT. The receiver verifies current epoch, canonical TLS key, local same-user untagged online topology and exact raw body/destination before worker admission."
       },
       "response": {
-        "$id": "wolfpack:control-api:http:rejectVolatilePeerIngress:response",
+        "$id": "wolfpack:control-api:http:receiveVerifiedVolatilePeer:response",
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "rejectVolatilePeerIngress response",
-        "$ref": "#/$defs/VolatileErrorEnvelope"
+        "title": "receiveVerifiedVolatilePeer response",
+        "$ref": "#/$defs/VolatileResponse"
       },
       "errors": [
-        "403 VolatileErrorEnvelope"
+        "400 VolatileErrorEnvelope",
+        "403 VolatileErrorEnvelope",
+        "408 VolatileErrorEnvelope",
+        "409 VolatileErrorEnvelope",
+        "413 VolatileErrorEnvelope",
+        "503 VolatileErrorEnvelope"
       ]
     },
     "connectTaskRelay": {
@@ -2941,6 +2996,77 @@
           "const": 2
         },
         "source": {
+          "$ref": "#/$defs/RelayEndpoint"
+        },
+        "target": {
+          "$ref": "#/$defs/RelayEndpoint"
+        },
+        "payload": {
+          "description": "Opaque JSON. Runtime enforces the 48 KiB encoded payload and 64 KiB HTTP body bounds."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "envelopeId",
+        "protocolVersion",
+        "source",
+        "target",
+        "payload",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "VolatilePeerIdentity": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "const": "volatile-v1"
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "origin": {
+          "$ref": "#/$defs/TailnetOrigin"
+        },
+        "nodeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "publicKey": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{59}$"
+        }
+      },
+      "required": [
+        "profile",
+        "epoch",
+        "origin",
+        "nodeId",
+        "publicKey"
+      ],
+      "additionalProperties": false
+    },
+    "VolatilePeerResolveRequest": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "const": "volatile-v1"
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "callerSession": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "endpoint": {
           "type": "object",
           "properties": {
             "relay": {
@@ -2956,6 +3082,9 @@
             "id"
           ],
           "additionalProperties": false
+        },
+        "origin": {
+          "$ref": "#/$defs/TailnetOrigin"
         },
         "target": {
           "type": "object",
@@ -2973,22 +3102,49 @@
             "id"
           ],
           "additionalProperties": false
-        },
-        "payload": {
-          "description": "Opaque JSON. Runtime enforces the 48 KiB encoded payload and 64 KiB HTTP body bounds."
-        },
-        "createdAt": {
-          "type": "string",
-          "format": "date-time"
         }
       },
       "required": [
-        "envelopeId",
-        "protocolVersion",
-        "source",
-        "target",
-        "payload",
-        "createdAt"
+        "profile",
+        "epoch",
+        "callerSession",
+        "endpoint",
+        "origin",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "VolatilePeerRequest": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "receivePeer"
+        },
+        "profile": {
+          "const": "volatile-v1"
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sourceEpoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "origin": {
+          "$ref": "#/$defs/TailnetOrigin"
+        },
+        "envelope": {
+          "$ref": "#/$defs/VolatileEnvelope"
+        }
+      },
+      "required": [
+        "operation",
+        "profile",
+        "epoch",
+        "sourceEpoch",
+        "origin",
+        "envelope"
       ],
       "additionalProperties": false
     },
@@ -3076,21 +3232,7 @@
               "const": "resolve"
             },
             "target": {
-              "type": "object",
-              "properties": {
-                "relay": {
-                  "const": "wolfpack-pi-tasks-v2"
-                },
-                "id": {
-                  "type": "string",
-                  "format": "uuid"
-                }
-              },
-              "required": [
-                "relay",
-                "id"
-              ],
-              "additionalProperties": false
+              "$ref": "#/$defs/RelayEndpoint"
             }
           },
           "required": [
@@ -3481,21 +3623,7 @@
                       "const": "resolved"
                     },
                     "endpoint": {
-                      "type": "object",
-                      "properties": {
-                        "relay": {
-                          "const": "wolfpack-pi-tasks-v2"
-                        },
-                        "id": {
-                          "type": "string",
-                          "format": "uuid"
-                        }
-                      },
-                      "required": [
-                        "relay",
-                        "id"
-                      ],
-                      "additionalProperties": false
+                      "$ref": "#/$defs/RelayEndpoint"
                     }
                   },
                   "required": [
@@ -3523,7 +3651,10 @@
                       "type": "boolean"
                     },
                     "forwarding": {
-                      "const": "local"
+                      "enum": [
+                        "local",
+                        "forwarded"
+                      ]
                     }
                   },
                   "required": [
@@ -3799,7 +3930,7 @@
               "const": "/api/task-relay/volatile-v1"
             },
             "federation": {
-              "const": "disabled"
+              "const": "verified-same-user-v1"
             }
           },
           "required": [

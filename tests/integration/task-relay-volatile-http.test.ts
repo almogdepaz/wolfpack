@@ -98,7 +98,7 @@ test("real middleware protects metadata and both ingress lanes; valid JWT does n
   }
   const info = await (await fetch(base + "/api/task-relay/profile", { headers })).json();
   expect(validate({ $ref: "#/$defs/TaskRelayProfileResponse" }, info, schema)).toEqual([]);
-  expect(info).toMatchObject({ profile: "volatile-v1", epoch: await gateway.volatileEpoch(), federation: "disabled" });
+  expect(info).toMatchObject({ profile: "volatile-v1", epoch: await gateway.volatileEpoch(), federation: "verified-same-user-v1" });
   const binding = await connect("sender");
   for (const operation of ["receivePeer", "resolvePeer"]) {
     expect((await post({ ...binding, operation, origin: "https://claimed.example.ts.net" })).body.error.code).toBe("INVALID_REQUEST");
@@ -107,7 +107,7 @@ test("real middleware protects metadata and both ingress lanes; valid JWT does n
   const peer = await post({ operation: "receivePeer", profile: "volatile-v1", epoch: binding.epoch, sourceEpoch: randomUUID(),
     origin: "https://claimed.example.ts.net", envelope: envelope(binding.endpoint, receiver.endpoint) }, `${path}/peer`);
   expect(peer.response.status).toBe(403); expect(peer.body.error).toMatchObject({ code: "PEER_POLICY_REQUIRED", retryable: false });
-  expect((await post({ ...binding, operation: "resolve", target: { relay: `${RELAY_ID}:peer:${randomUUID()}`, id: randomUUID() } })).body.error.code).toBe("PEER_POLICY_REQUIRED");
+  expect((await post({ ...binding, operation: "resolve", target: { relay: `${RELAY_ID}:peer:${randomUUID()}`, id: randomUUID() } })).body.error.code).toBe("CROSS_RELAY_ENDPOINT");
   const health = await post({ ...binding, operation: "health" }); expect(health.body.value.store.routes).toBe(0); expect(health.body.value.store.activeItems).toBe(0);
 });
 

@@ -369,7 +369,7 @@ export const controlApiSource: ControlApiSource = {
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
     "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
-    "volatile-v1 is experimental and explicitly selected at server startup; HTTP operations inherit global auth, do not authorize untrusted per-session tenants, and reject all peer/topology ingress until verified peer policy exists",
+    "volatile-v1 is selected at server startup; HTTP operations inherit global auth and do not authorize untrusted per-session tenants; peer ingress additionally requires raw-request Ed25519 signatures bound to current relay epochs and canonical TLS identities matched to local same-user untagged online Tailscale topology (up to 1s local status cache)",
     "relay profile metadata identifies the selected lifetime, not broker/worker readiness; legacy worker readiness does not advertise volatile registrations",
   ],
   defs: {
@@ -847,10 +847,19 @@ export const controlApiSource: ControlApiSource = {
       request: ref("VolatileRequest"), response: ref("VolatileResponse"),
       errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "404 VolatileErrorEnvelope", "408 VolatileErrorEnvelope", "409 VolatileErrorEnvelope", "410 VolatileErrorEnvelope", "413 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
     },
+    "GET /api/task-relay/volatile-v1/identity": {
+      operationId: "getVolatilePeerIdentity", stable: false, auth: "jwt-when-configured",
+      response: { oneOf: [ref("VolatilePeerIdentity"), ref("VolatileErrorEnvelope")] }, errors: ["400 VolatileErrorEnvelope", "409 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
+    },
+    "POST /api/task-relay/volatile-v1/resolve-peer": {
+      operationId: "resolveVerifiedVolatilePeer", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: ref("VolatilePeerResolveRequest"), response: ref("VolatileResponse"),
+      errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "408 VolatileErrorEnvelope", "409 VolatileErrorEnvelope", "413 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
+    },
     "POST /api/task-relay/volatile-v1/peer": {
-      operationId: "rejectVolatilePeerIngress", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
-      request: { description: "Disabled. The body is not interpreted and HTTP authentication does not establish peer-machine authority." },
-      response: ref("VolatileErrorEnvelope"), errors: ["403 VolatileErrorEnvelope"],
+      operationId: "receiveVerifiedVolatilePeer", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: { ...ref("VolatilePeerRequest"), description: "Requires x-wolfpack-relay-signature in addition to configured JWT. The receiver verifies current epoch, canonical TLS key, local same-user untagged online topology and exact raw body/destination before worker admission." }, response: ref("VolatileResponse"),
+      errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "408 VolatileErrorEnvelope", "409 VolatileErrorEnvelope", "413 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
     },
     "POST /api/task-relay/v2/connect": {
       operationId: "connectTaskRelay",

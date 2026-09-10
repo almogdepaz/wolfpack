@@ -476,6 +476,12 @@ async function readLocalTailscaleStatusUncached(selfOnly = false): Promise<unkno
 const localTailscaleStatusCache = createTailscaleStatusCache(() => readLocalTailscaleStatusUncached());
 const localTailscaleSelfStatusCache = createTailscaleStatusCache(() => readLocalTailscaleStatusUncached(true));
 
+export async function readRelayPeerTopology(configuredOrigin: string | undefined): Promise<import("../task-relay/peer-topology.ts").RelayPeerTopology> {
+  if (!configuredOrigin) throw new Error("relay peer policy unavailable");
+  const { relayPeerTopology } = await import("../task-relay/peer-topology.ts");
+  return relayPeerTopology(await readLocalTailscaleStatus(), configuredOrigin);
+}
+
 async function readLocalTailscaleStatus(selfOnly = false): Promise<unknown> {
   const testStatus = process.env.WOLFPACK_TEST ? process.env.WOLFPACK_TAILSCALE_STATUS_JSON : undefined;
   if (testStatus !== undefined) return JSON.parse(testStatus) as unknown;

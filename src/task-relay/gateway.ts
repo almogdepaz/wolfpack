@@ -20,6 +20,7 @@ import { TaskRelayStore, newOpaqueEndpoint } from "./store.ts";
 import { WorkerRelayGateway } from "./worker-client.ts";
 import type { RelayGateway } from "./worker-protocol.ts";
 import type { TaskRelayRegistration } from "./registration.ts";
+import { getRelayPeerAuth } from "../server/relay-peer-auth.ts";
 import type { PeerOutboxItem } from "./store.ts";
 
 type PeerFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -432,12 +433,14 @@ export function getTaskRelayGateway(): RelayGateway {
   if (!singleton) {
     const profile = getTaskRelayProfile();
     const config = loadConfig();
-    singleton = new WorkerRelayGateway({
+    const origin = config ? remoteUrl(config) ?? undefined : undefined;
+    const worker: WorkerRelayGateway = new WorkerRelayGateway({
       root: process.env.WOLFPACK_TASK_RELAY_ROOT,
-      // HTTP federation remains disabled until verified peer ingress/topology
-      // exists. Do not create outbound routes from caller-supplied origins.
-      ...(profile === "volatile-v1" ? { profile } : { peerOrigin: config ? remoteUrl(config) ?? undefined : undefined }),
+      peerOrigin: origin,
+      ...(profile === "volatile-v1" && { profile, peerFetch: (input: RequestInfo | URL, init?: RequestInit) => getRelayPeerAuth(worker, origin).forward(input, init) }),
     });
+    if (profile === "volatile-v1") getRelayPeerAuth(worker, origin);
+    singleton = worker;
   }
   return singleton;
 }

@@ -1,0 +1,118 @@
+import { expect, test } from "bun:test";
+import { createHmac, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { validateControlApiSchemaValue as validate, type JsonObject } from "../control-api-schema-validator.ts";
+import { buildControlApiSchema } from "../../src/control-api/schema.ts";
+const profile = "volatile-v1", route = "/api/task-relay/volatile-v1", schema = buildControlApiSchema() as JsonObject;
+const secret = "private-signed-relay-fixture-secret-at-least-32";
+const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+const signed = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ exp: Math.floor(Date.now() / 1000) + 600 })}`;
+const headers = { "content-type": "application/json", authorization: `Bearer ${signed}.${createHmac("sha256", secret).update(signed).digest("base64url")}` };
+const origin = (name: string) => `https://${name}.tail123.ts.net`;
+const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+async function fixture() {
+  const root = mkdtempSync(join(tmpdir(), "signed-peer-http-")), mapping = join(root, "network.json");
+  writeFileSync(mapping, "{}", { mode: 0o600 });
+  const children: ReturnType<typeof Bun.spawn>[] = [], roots: Record<string, string> = {}, bases: Record<string, string> = {};
+  const close = async () => {
+    for (const child of children) child.kill("SIGTERM");
+    for (const child of children) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const exit = await Promise.race([child.exited, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 5000); })]);
+      clearTimeout(timer);
+      if (exit === null) { child.kill("SIGKILL"); await child.exited; throw new Error("owned peer fixture did not stop gracefully"); }
+      expect(exit).toBe(0);
+    }
+    rmSync(root, { recursive: true, force: true });
+  };
+  try {
+    for (const name of ["a", "b"]) {
+      const home = join(root, name); roots[name] = home; mkdirSync(join(home, ".wolfpack"), { recursive: true, mode: 0o700 });
+      // mkdir recursive modes do not retrofit an existing ancestor; own the fixture root explicitly.
+      const { chmodSync } = await import("node:fs"); chmodSync(home, 0o700);
+      writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({ devDir: home, port: 18790, tailscaleHostname: `${name}.tail123.ts.net` }), { mode: 0o600 });
+      const node = (id: string) => ({ ID: `node-${id}`, DNSName: `${id}.tail123.ts.net.`, Online: true, UserID: 1 });
+      const status = { BackendState: "Running", Self: node(name), Peer: { other: node(name === "a" ? "b" : "a"), guest: { ...node("guest"), UserID: 2 } } };
+      const nonce = randomUUID();
+      const child = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures/volatile-peer-http.ts"), home, mapping, nonce], {
+        cwd: home, env: { PATH: process.env.PATH, HOME: home, WOLFPACK_TEST: "1", WOLFPACK_TASK_RELAY_PROFILE: profile,
+          WOLFPACK_TASK_RELAY_ROOT: join(home, "relay"), WOLFPACK_BROKER_SOCKET: join(home, "no-broker.sock"), WOLFPACK_JWT_SECRET: secret,
+          WOLFPACK_TAILSCALE_STATUS_JSON: JSON.stringify(status) }, stdin: "ignore", stdout: Bun.file(join(home, "stdout.log")), stderr: Bun.file(join(home, "stderr.log")),
+      }); children.push(child);
+      const deadline = Date.now() + 8000;
+      while (!existsSync(join(home, "ready.json")) && child.exitCode === null && Date.now() < deadline) await pause(10);
+      if (!existsSync(join(home, "ready.json"))) throw new Error(`private peer startup failed: ${readFileSync(join(home, "stderr.log"), "utf8").slice(-2000)}`);
+      const ready = JSON.parse(readFileSync(join(home, "ready.json"), "utf8")); expect(ready.nonce).toBe(nonce); expect(ready.pid).toBe(child.pid);
+      bases[name] = `http://127.0.0.1:${ready.port}`;
+    }
+    writeFileSync(mapping, JSON.stringify(Object.fromEntries(Object.entries(bases).map(([name, base]) => [origin(name), base]))));
+    const post = async (name: string, body: unknown, path = route) => {
+      const response = await fetch(bases[name] + path, { method: "POST", headers, body: JSON.stringify(body) });
+      const value = await response.json() as any;
+      expect(validate({ $ref: "#/$defs/VolatileResponse" }, value, schema)).toEqual([]);
+      return { status: response.status, body: value };
+    };
+    const connect = async (name: string, callerSession: string) => {
+      const result = await post(name, { profile, operation: "connect", callerSession, generation: randomUUID(), protocolVersions: [2] }); expect(result.status).toBe(200);
+      return { profile, epoch: result.body.epoch, callerSession, endpoint: result.body.value.endpoint };
+    };
+    return { root, roots, bases, post, connect, close };
+  } catch (error) { await close(); throw error; }
+}
+
+test("production HTTP federation verifies signatures/topology/JWT, confirms destination mail and preserves immutable retries", async () => {
+  const f = await fixture();
+  try {
+    const a = await f.connect("a", "sender"), b = await f.connect("b", "receiver");
+    const resolved = await f.post("a", { ...a, origin: origin("b"), target: b.endpoint }, route + "/resolve-peer"); expect(resolved.status).toBe(200);
+    const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: a.endpoint, target: resolved.body.value.endpoint, payload: { opaque: "first" }, createdAt: new Date().toISOString() };
+    const sent = await f.post("a", { ...a, operation: "send", envelope }); expect(sent.status).toBe(200); expect(sent.body.value.forwarding).toBe("forwarded");
+    const duplicate = await f.post("a", { ...a, operation: "send", envelope }); expect(duplicate.body.value).toMatchObject({ duplicate: true, acceptanceId: sent.body.value.acceptanceId });
+    const inbox = await f.post("b", { ...b, operation: "receive", cursor: "0" }); expect(inbox.body.value.deliveries).toHaveLength(1);
+    expect(inbox.body.value.deliveries[0].envelope.payload).toEqual(envelope.payload);
+    writeFileSync(join(f.roots.a!, "network-mode"), "drop-next");
+    const lost = { ...envelope, envelopeId: randomUUID(), payload: { opaque: "lost confirmation" } };
+    const uncertain = await f.post("a", { ...a, operation: "send", envelope: lost }); expect(uncertain.body.error.code).toBe("PEER_UNREACHABLE");
+    const firstFrame = JSON.parse(readFileSync(join(f.roots.a!, "last-forward.json"), "utf8"));
+    await pause(1050);
+    const retry = await f.post("a", { ...a, operation: "send", envelope: lost }); expect(retry.status).toBe(200); expect(retry.body.value.duplicate).toBe(true);
+    expect(JSON.parse(readFileSync(join(f.roots.a!, "last-forward.json"), "utf8"))).toEqual(firstFrame);
+    writeFileSync(join(f.roots.a!, "network-mode"), "tamper");
+    expect((await f.post("a", { ...a, operation: "send", envelope: { ...envelope, envelopeId: randomUUID(), payload: { opaque: "tamper-me" } } })).status).not.toBe(200);
+    expect((await f.post("b", { ...b, operation: "receive", cursor: "0" })).body.value.deliveries).toHaveLength(2);
+    const frame = JSON.parse(readFileSync(join(f.roots.a!, "last-forward.json"), "utf8"));
+    expect((await fetch(f.bases.b + route + "/peer", { method: "POST", headers: { "content-type": "application/json", "x-wolfpack-relay-signature": frame.signature }, body: frame.raw })).status).toBe(401);
+    expect((await fetch(f.bases.b + route + "/peer", { method: "POST", headers, body: frame.raw })).status).toBe(403);
+    const guest = { ...JSON.parse(frame.raw), origin: origin("guest") };
+    expect((await fetch(f.bases.b + route + "/peer", { method: "POST", headers: { ...headers, "x-wolfpack-relay-signature": frame.signature }, body: JSON.stringify(guest) })).status).toBe(403);
+    expect((await f.post("a", { ...a, origin: origin("guest"), target: b.endpoint }, route + "/resolve-peer")).status).toBe(403);
+  } finally { await f.close(); }
+}, 30_000);
+
+const piSource = process.env.WOLFPACK_PI_TASKS_SOURCE;
+test.skipIf(!piSource)("actual pinned task cores reach canonical completion through signed production HTTP peer ingress", async () => {
+  expect(isAbsolute(piSource!)).toBe(true); expect(process.env.WOLFPACK_PI_TASKS_REVISION).toMatch(/^[0-9a-f]{40}$/);
+  expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: piSource, encoding: "utf8" }).trim()).toBe(process.env.WOLFPACK_PI_TASKS_REVISION!);
+  expect(execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: piSource, encoding: "utf8" }).trim()).toBe("");
+  const { createTaskStore, createVolatileTaskSession } = await import(pathToFileURL(join(piSource!, "src/index.ts")).href);
+  const f = await fixture(), stores: any[] = [], sessions: any[] = [];
+  try {
+    const cores: any[] = [];
+    for (const name of ["a", "b"]) {
+      const store = createTaskStore({ path: join(f.roots[name]!, "tasks.sqlite") }); stores.push(store);
+      const authenticated = Object.assign((url: any, init: any) => fetch(url, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), ...headers } }), { preconnect: fetch.preconnect });
+      const session = createVolatileTaskSession({ callerSession: name === "a" ? "sender" : "receiver", url: f.bases[name] + route, store, fetch: authenticated }); sessions.push(session);
+      cores.push(await session.connect());
+    }
+    const [a, b] = cores, binding = stores[0].getRelayTransportBinding();
+    const resolved = await f.post("a", { profile, epoch: binding.epoch, callerSession: "sender", endpoint: a.endpoint, origin: origin("b"), target: b.endpoint }, route + "/resolve-peer"); expect(resolved.status).toBe(200);
+    const task = await a.createTask({ target: resolved.body.value.endpoint, task: "signed cross-host completion", timeoutMs: 60_000 });
+    await b.receive(); await b.submitIntent({ taskId: task.taskId, type: "task.completed", payload: { summary: "done through signed peer ingress" } });
+    await a.receive(); expect(a.getTask(task.taskId).status).toBe("completed");
+    await b.receive(); expect(b.getTask(task.taskId).status).toBe("completed");
+  } finally { for (const session of sessions) session.close(); for (const store of stores) store.close(); await f.close(); }
+}, 30_000);

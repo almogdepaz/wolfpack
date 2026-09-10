@@ -80,7 +80,7 @@ test.skipIf(!piSource)("actual adapter/SQLite crosses a source-free compiled HTT
     expect((await fetch(url, { method: "POST" })).status).toBe(401);
     expect((await fetch(url + "/peer", { method: "POST", headers: { authorization } })).status).toBe(403);
     const info = await (await fetch(`http://127.0.0.1:${port}/api/task-relay/profile`, { headers: { authorization } })).json() as any;
-    expect(info).toMatchObject({ profile: "volatile-v1", federation: "disabled" });
+    expect(info).toMatchObject({ profile: "volatile-v1", federation: "verified-same-user-v1" });
     let loseSend = true, loseAck = true;
     const sends: string[] = [], confirmations: any[] = [], acks: string[] = [];
     const authenticated = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {

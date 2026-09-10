@@ -44,11 +44,11 @@ instruction or completed #351 cutover.
   Legacy endpoint-only RPC lookups intentionally return no volatile endpoint.
   Normal discovery/readiness now uses the explicit transport-registration path
   below, not those legacy lookups.
-- HTTP peer ingress always returns `PEER_POLICY_REQUIRED`; endpoint ingress
-  rejects topology/peer commands and nonlocal destinations. A valid JWT, claimed
-  origin or forwarded header is not independently verified peer-machine authority.
-  Federation must remain disabled until host-verified topology and ingress are
-  implemented. Programmatic host-only worker RPC is a separate trusted surface.
+- HTTP peer ingress now additionally requires an epoch-bound Ed25519 signature
+  verified against canonical HTTPS identity and host-controlled same-user Tailscale
+  topology. A valid JWT, claimed origin or forwarded header is still insufficient.
+  Ordinary endpoint ingress rejects peer/topology commands; nonlocal endpoint IDs
+  must be aliases created through the host-verified `/resolve-peer` route.
 - Source-owned Control API schemas describe these experimental routes. No legacy
   relay state is migrated, replayed, rewritten or removed. Existing `tasks/v1`
   persistence is a separate domain and is unchanged.
@@ -62,7 +62,7 @@ from the source checkout. The actual adapter/core/SQLite exercises lost accepted
 send replies with identical retry, lost ACK replies and reopen, sparse ACK gaps,
 worker replacement, durable reset/rebind, historical-task fences, a synthetic
 canonical terminal lifecycle and rollback to the durable profile. JWT middleware
-and disabled peer ingress remain in the path; legacy-file sentinels stay unchanged.
+and unsigned-peer denial remain in the path; legacy-file sentinels stay unchanged.
 
 This is compiled-host/worker fixture parity, not the packaged release CLI/native
 broker, installed extension, live Tailnet/TLS/device, model execution or performance
@@ -95,11 +95,62 @@ This is a point-in-time transport observation, not a model-execution guarantee o
 an exclusive lease. The endpoint-only lookup remains a low-level compatibility
 input for pre-existing programmatic callers, not the production route path.
 
-Server default selection remains staged until verified federation and rollout
-coordination are complete. Neither normal installed server nor broker is restarted
+Server default selection remains staged until remote CLI/consumer integration and
+rollout coordination are complete. Neither normal installed server nor broker is restarted
 by these branches. Tests cover the real middleware/worker discovery path and
 synthetic exact-ID readiness/reset races; native broker, real Pi process, packaged
 release, two-machine and final-path performance gates remain separate.
+
+## Signed same-user federation
+
+The host owns an ephemeral Ed25519 key pair per relay epoch. It is never stored on
+disk, exposed through a signing API or used as recovery authority. The authenticated
+`GET /api/task-relay/volatile-v1/identity` returns only profile, epoch, canonical
+origin, Tailscale node ID and public SPKI key. Metadata does not prove model/task
+readiness. The identity handler has four separate HTTP admission slots, independent
+of ordinary endpoint work and the four peer-ingress slots.
+
+`POST /api/task-relay/volatile-v1/peer` preserves global CORS/JWT checks and requires
+`x-wolfpack-relay-signature`. It signs a domain-separated tuple of destination
+origin and the exact raw UTF-8 request, including source/destination epochs and
+immutable wire envelope. Before mailbox admission, the receiver checks:
+
+1. Local Tailscale status is Running; its configured canonical origin agrees with
+   the online untagged Self node and a nonzero user ID.
+2. The source is an unambiguous online untagged node of that same user, authorized
+   by local control-plane status, not remote payloads or forwarded headers. The
+   existing status cache has a one-second TTL; this is not instantaneous revocation.
+   Foreign-user/shared/tagged nodes fail closed, rather than silently becoming
+   trusted task senders. A broader policy needs separate review.
+3. A no-redirect canonical HTTPS lookup yields that exact source node/origin,
+   current source epoch and an Ed25519 public key. The response is strict UTF-8,
+   bounded to 4 KiB, and never cached as durable routing/recovery authority.
+4. The signature covers the exact raw body and this destination origin; local
+   topology and the destination epoch are checked again after I/O.
+
+All outbound attempts recheck peer topology/identity/epoch and sign only frames
+from the worker-owned forwarding callback. Per-controller signing/verification
+has eight slots, separate four-slot identity headroom, and a four-second total
+operation bound inside the existing five-second peer callback. Timeouts/unknown
+outcomes still use immutable retries and terminal exhaustion; no envelope metadata
+is reconstructed. The worker remains responsible for complete-content conflicts,
+individual ACKs, destination acceptance and deduplication of legitimate repeats.
+
+`POST /api/task-relay/volatile-v1/resolve-peer` validates the caller's live local
+binding before network lookup, derives the peer epoch from the verified identity,
+and invokes host-only topology RPC. It never accepts caller-supplied peer epochs or
+keys. JWT remains additive: configured peers must accept the deployment's existing
+short-lived JWT credentials; machine signatures do not bypass a 401. Independent
+JWT configurations require authentication coordination, just like remote CLI
+control. No credentials are sent to an origin before local topology authorizes it.
+
+Tests exercise signature/content/destination/epoch/node/topology failures,
+revocation rechecks, bounded cancellation/admission and unchanged JWT enforcement.
+Two fresh isolated processes run production HTTP/auth/worker routes and actual
+pinned task cores through canonical completion, accepted-response loss/identical
+retry, guest denial and tampering. Their Tailscale status, broker and HTTPS-to-
+loopback network mapping are synthetic: **not live TLS/certificate, physical
+Tailnet, installed extension, native broker or model-execution proof**.
 
 ## Staged gateway/worker integration (after #360)
 
