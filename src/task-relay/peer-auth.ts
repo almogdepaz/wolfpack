@@ -1,7 +1,8 @@
 import { createPublicKey, generateKeyPairSync, sign, verify, type KeyObject } from "node:crypto";
 import { isOpaqueRelayId } from "./domain.ts";
 import type { RelayPeerTopology } from "./peer-topology.ts";
-import { VOLATILE_PEER_PATH } from "./volatile-protocol.ts";
+import { VOLATILE_PEER_PATH, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
+import { readPeerResponse } from "./peer-response.ts";
 
 export const RELAY_PEER_IDENTITY_PATH = "/api/task-relay/volatile-v1/identity";
 export const RELAY_PEER_SIGNATURE_HEADER = "x-wolfpack-relay-signature";
@@ -60,7 +61,7 @@ export class RelayPeerAuth {
       if (controller.signal.aborted) throw new RelayPeerPolicyError("PEER_UNREACHABLE");
       return operation(controller.signal);
     })]); }
-    finally { clearTimeout(timer); caller?.removeEventListener("abort", abort); controller.signal.removeEventListener("abort", rejectAbort); if (identity) this.#identities--; else this.#active--; }
+    finally { clearTimeout(timer); caller?.removeEventListener("abort", abort); controller.signal.removeEventListener("abort", rejectAbort); controller.abort(); if (identity) this.#identities--; else this.#active--; }
   }
 
   #headers(): Headers {
@@ -151,7 +152,11 @@ export class RelayPeerAuth {
       if (signal.aborted || current.origin !== own.origin || current.nodeId !== own.nodeId || current.peers.get(url.origin) !== remote.nodeId) return denied();
       const headers = this.#headers();
       headers.set(RELAY_PEER_SIGNATURE_HEADER, sign(null, signedBytes(url.origin, init.body), this.#keys.pair.privateKey).toString("base64url"));
-      return (this.#options.fetch ?? fetch)(url.href, { method: "POST", body: init.body, headers, redirect: "error", signal });
+      const response = await (this.#options.fetch ?? fetch)(url.href, { method: "POST", body: init.body, headers, redirect: "error", signal });
+      // Keep the same authentication/caller deadline alive through complete body
+      // consumption. Never return a live network stream outside this scope.
+      const reply = await readPeerResponse(response, signal, VOLATILE_GATEWAY_LIMITS.replyBytes);
+      return new Response(reply || null, { status: response.status });
     }, init?.signal ?? undefined);
   }
 }

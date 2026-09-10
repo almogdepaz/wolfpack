@@ -6,7 +6,8 @@ import { getBackend } from "../server/backend.ts";
 import { createLogger } from "../log.ts";
 import { RELAY_ERROR, relayFailure } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
-import { volatileFailure } from "./volatile-protocol.ts";
+import { volatileFailure, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
+import { readPeerResponse, withPeerAbort } from "./peer-response.ts";
 import type { VolatileResult } from "./volatile-protocol.ts";
 import {
   RELAY_WORKER_LIMITS as LIMIT, captureRelayWire, RelayWireBudgetError,
@@ -68,6 +69,7 @@ export class WorkerRelayGateway implements RelayGateway {
   readonly #requestMs: number;
   readonly #pending = new Map<number, Pending>();
   readonly #callbacks = new Set<number>();
+  readonly #peerControllers = new Set<AbortController>();
   readonly #ready: Promise<void>;
   #resolveReady!: () => void;
   #rejectReady!: (error: Error) => void;
@@ -157,11 +159,22 @@ export class WorkerRelayGateway implements RelayGateway {
         value = await inspect(message.selector);
       } else {
         if (!this.#options.peerFetch || typeof message.body !== "string" || Buffer.byteLength(message.body) > LIMIT.requestBytes) throw new Error("unexpected peer callback");
-        const response = await this.#options.peerFetch(message.url, {
-          method: "POST", headers: { "content-type": "application/json" }, body: message.body,
-          redirect: "error", signal: AbortSignal.timeout(5_000),
-        });
-        value = { status: response.status, body: await response.text() };
+        const controller = new AbortController();
+        this.#peerControllers.add(controller);
+        const timer = setTimeout(() => controller.abort(), VOLATILE_GATEWAY_LIMITS.peerMs);
+        try {
+          value = await withPeerAbort(controller.signal, async () => {
+            const response = await this.#options.peerFetch!(message.url, {
+              method: "POST", headers: { "content-type": "application/json" }, body: message.body,
+              redirect: "error", signal: controller.signal,
+            });
+            const body = await readPeerResponse(response, controller.signal,
+              this.profile === "volatile-v1" ? VOLATILE_GATEWAY_LIMITS.replyBytes : LIMIT.responseBytes);
+            return { status: response.status, body };
+          });
+        } finally {
+          clearTimeout(timer); controller.abort(); this.#peerControllers.delete(controller);
+        }
       }
       const captured = captureRelayWire(value, LIMIT.responseBytes);
       if (!this.#closed) this.#worker.postMessage({ kind: "callback", id: message.id, value: captured.value });
@@ -184,6 +197,7 @@ export class WorkerRelayGateway implements RelayGateway {
   async close(): Promise<void> {
     if (!this.#closed) {
       this.#closed = true; clearTimeout(this.#startupTimer);
+      for (const controller of this.#peerControllers) controller.abort();
       const error = new WorkerUnavailable("relay worker unavailable; an interrupted mutation may have committed");
       this.#rejectReady(error);
       for (const item of this.#pending.values()) { clearTimeout(item.timer); item.reject(error); }

@@ -232,7 +232,10 @@ test.skipIf(!piSource)("actual pinned pi-tasks core/SQLite traverses production 
     expect(await bc.receive()).toEqual([]);
     expect(bStore.getReceiveCursor()).toBe("1");
     await __resetTaskRelayGatewayForTests(); gateway = getTaskRelayGateway() as typeof gateway; await gateway.initialize();
-    await expect(bc.receive()).rejects.toMatchObject({ code: "RELAY_RESET", retryable: false });
+    // Await on the normal JS path before matching: Bun's eager .rejects matcher
+    // can starve this same-process HTTP/worker response until the transport deadline.
+    const resetError = await bc.receive().then(() => undefined, (error: unknown) => error);
+    expect(resetError).toMatchObject({ code: "RELAY_RESET", retryable: false });
     expect(b.status().state).toBe("reset");
     b.close(); bStore.close(); bStore = createTaskStore({ path: bf }); b = open("receiver", bStore);
     await expect(b.connect()).rejects.toMatchObject({ code: "RELAY_REBIND_REQUIRED", retryable: false });

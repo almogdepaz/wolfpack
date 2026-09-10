@@ -161,7 +161,13 @@ immutable wire envelope. Before mailbox admission, the receiver checks:
 All outbound attempts recheck peer topology/identity/epoch and sign only frames
 from the worker-owned forwarding callback. Per-controller signing/verification
 has eight slots, separate four-slot identity headroom, and a four-second total
-operation bound inside the existing five-second peer callback. Timeouts/unknown
+operation bound inside the existing five-second peer callback. Both bounds cover
+complete response-body consumption, not just headers. Before worker cloning, the
+host reads at most 4 KiB with strict UTF-8 and fixed-size storage; overflow,
+timeout and worker close cancel the reader and network request. Authentication
+never returns a live network stream outside its deadline scope. Host callback
+slots recover even when a stream's cancellation promise does not settle.
+Timeouts/unknown
 outcomes still use immutable retries and terminal exhaustion; no envelope metadata
 is reconstructed. The worker remains responsible for complete-content conflicts,
 individual ACKs, destination acceptance and deduplication of legitimate repeats.
