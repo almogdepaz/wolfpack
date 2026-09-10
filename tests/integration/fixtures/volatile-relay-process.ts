@@ -28,7 +28,7 @@ const server = Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 6
     peers.set(canonical, loopback); return Response.json({ ok: true });
   }
   if (path === "/fixture/topology") return Response.json(await gateway.volatileTopology(input));
-  if (path === "/fixture/legacy") return Response.json(await gateway.connect(input as Parameters<typeof gateway.connect>[0]));
+  if (path === "/fixture/legacy") return Response.json({ available: "connect" in gateway });
   if (path !== VOLATILE_RELAY_PATH && path !== VOLATILE_PEER_PATH) return new Response(null, { status: 404 });
   const result = path === VOLATILE_PEER_PATH ? await gateway.volatilePeer(input) : await gateway.volatile(input);
   if (path === VOLATILE_PEER_PATH && result.ok && result.value.kind === "accepted" && loseReply) {

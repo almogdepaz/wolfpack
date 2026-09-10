@@ -32,7 +32,6 @@ const codes = {
 export const volatileRelayDefinitions: Record<string, Schema> = {
   VolatileEnvelope: object({ envelopeId: text, protocolVersion: { const: RELAY_PROTOCOL_VERSION }, source: ref("RelayEndpoint"), target: ref("RelayEndpoint"),
     payload: { description: "Opaque JSON. Runtime enforces the 48 KiB encoded payload and 64 KiB HTTP body bounds." }, createdAt: { type: "string", format: "date-time" } }),
-  VolatilePeerIdentity: object({ profile, epoch: uuid, origin: ref("TailnetOrigin"), nodeId: text, publicKey: { type: "string", pattern: "^[A-Za-z0-9_-]{59}$" } }),
   VolatilePeerResolveRequest: object({ ...binding, origin: ref("TailnetOrigin"), target: localEndpoint }),
   VolatilePeerRequest: object({ operation: { const: "receivePeer" }, profile, epoch: uuid, sourceEpoch: uuid, origin: ref("TailnetOrigin"), envelope: ref("VolatileEnvelope") }),
   VolatileRequest: { oneOf: [
@@ -43,7 +42,7 @@ export const volatileRelayDefinitions: Record<string, Schema> = {
     bound("receive", { cursor, limit: { type: "integer", minimum: 1, maximum: 50 } }, ["limit"]),
     bound("acknowledge", { envelopeId: text }), bound("disconnect"), bound("health"),
   ] },
-  VolatileErrorEnvelope: object({ ok: { const: false }, profile: { enum: ["durable-v2", "volatile-v1"] }, epoch: uuid,
+  VolatileErrorEnvelope: object({ ok: { const: false }, profile, epoch: uuid,
     error: object({ code: { enum: Object.keys(codes) }, message: { type: "string" }, retryable: boolean,
       mayHaveBeenDelivered: { const: true }, retryAfterMs: count }, ["code", "message", "retryable"]) }, ["ok", "profile", "error"]),
   VolatileResponse: { oneOf: [ref("VolatileErrorEnvelope"), object({ ok: { const: true }, profile, epoch: uuid, value: { oneOf: [
@@ -59,7 +58,6 @@ export const volatileRelayDefinitions: Record<string, Schema> = {
     }, ["investigation"]),
   ] } })] },
   TaskRelayProfileResponse: { oneOf: [ref("VolatileErrorEnvelope"),
-    object({ ok: { const: true }, profile: { const: "durable-v2" }, endpointPath: { const: "/api/task-relay/v2/connect" }, federation: { const: "existing-v2-policy" } }),
-    object({ ok: { const: true }, profile, epoch: uuid, endpointPath: { const: "/api/task-relay/volatile-v1" }, federation: { const: "verified-same-user-v1" } }),
+    object({ ok: { const: true }, profile, epoch: uuid, endpointPath: { const: "/api/task-relay/volatile-v1" }, federation: { const: "trusted-tailnet-v1" } }),
   ] },
 };

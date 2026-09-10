@@ -14,10 +14,10 @@ test("standalone build embeds the relay worker and runs it away from the source 
 import { AGENT_KIND } from ${JSON.stringify(agent)};
 const g = new WorkerRelayGateway({ root: process.argv[2], inspectSession: async selector => ({ok:true, session:selector, sessionId:selector, projectPath:process.argv[2], harness:AGENT_KIND.PI.id, alive:true}) });
 try {
- const registration = await g.connect({callerSession:"probe",generation:"compiled",protocolVersions:[2]});
- if (!registration.ok) throw new Error(JSON.stringify(registration));
+ const registration = await g.volatile({profile:"volatile-v1",operation:"connect",callerSession:"probe",generation:"compiled",protocolVersions:[2]});
+ if (!registration.ok || registration.value.kind !== "connected") throw new Error(JSON.stringify(registration));
  const selected = await g.endpointsForSessions(["probe"]);
- if (selected.get("probe")?.id !== registration.endpoint.id) throw new Error("endpoint mismatch");
+ if (selected.get("probe")?.id !== registration.value.endpoint.id || "connect" in g) throw new Error("endpoint or retired-method mismatch");
 } finally { await g.close(); }
 const v = new WorkerRelayGateway({ root: process.argv[2] + "/volatile", profile: "volatile-v1", inspectSession: async selector => ({ok:true, session:selector, sessionId:selector, projectPath:process.argv[2], harness:AGENT_KIND.PI.id, alive:true}) });
 try {

@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AGENT_KIND } from "../../src/agent-kind.ts";
 import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
-import { RELAY_ERROR, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
+import { RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
 import { captureRelayWire, relayWireBytes, RelayWireBudgetError, RELAY_WORKER_LIMITS as LIMIT } from "../../src/task-relay/worker-protocol.ts";
 
-const registration = { callerSession: "sender", generation: "generation", protocolVersions: [RELAY_PROTOCOL_VERSION] };
+const registration = { profile: "volatile-v1", operation: "connect", callerSession: "sender", generation: "generation", protocolVersions: [RELAY_PROTOCOL_VERSION] };
 const inspection = { ok: true as const, session: "sender", sessionId: "sender", projectPath: "/tmp", harness: AGENT_KIND.PI.id, alive: true };
 
 test("wire snapshots bound exact JSON bytes and own opaque data before transfer", () => {
@@ -77,15 +77,15 @@ test("review reproduction: ignored 4 MiB request and callback buffers fail close
   } });
   try {
     const malformedRequest = { ...registration, padding };
-    expect(await gateway.connect(malformedRequest)).toMatchObject({ ok: false, error: { code: RELAY_ERROR.INVALID_REQUEST } });
+    expect(await gateway.volatile(malformedRequest)).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
     expect(calls).toBe(0);
     expect((await gateway.endpointsForSessions(["sender"])).size).toBe(0);
     badCallback = true;
-    expect(await gateway.connect(registration)).toMatchObject({ ok: false, error: { code: RELAY_ERROR.STORE_UNAVAILABLE } });
+    expect(await gateway.volatile(registration)).toMatchObject({ ok: false, error: { code: "RELAY_UNAVAILABLE" } });
     expect(calls).toBe(1);
     expect((await gateway.endpointsForSessions(["sender"])).size).toBe(0);
     badCallback = false;
-    expect(await gateway.connect(registration)).toMatchObject({ ok: true });
+    expect(await gateway.volatile(registration)).toMatchObject({ ok: true });
   } finally { await gateway.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -95,24 +95,24 @@ test("bootstrap options reject hidden clone payloads without reserving the root"
   try {
     expect(() => new WorkerRelayGateway({ root, peerOrigin: new ArrayBuffer(4 * 1024 * 1024) as unknown as string })).toThrow();
     gateway = new WorkerRelayGateway({ root, inspectSession: async () => inspection });
-    expect(await gateway.connect(registration)).toMatchObject({ ok: true });
+    expect(await gateway.volatile(registration)).toMatchObject({ ok: true });
   } finally { await gateway?.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("aggregate byte credits reject before count saturation and recover after completion", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-wire-credits-"));
-  let release!: () => void;
-  const gate = new Promise<void>(r => { release = r; });
-  const gateway = new WorkerRelayGateway({ root, inspectSession: async () => { await gate; return inspection; } });
-  const request = { ...registration, padding: "x".repeat(200 * 1024) };
+  const gateway = new WorkerRelayGateway({ root, inspectSession: async () => inspection });
+  // Metadata calls accept large inert selector lists; endpoint envelopes deliberately
+  // have a tighter 64KiB domain bound. Admit synchronously before worker responses.
+  const request = ["x".repeat(200 * 1024)];
   const bytes = captureRelayWire([request], LIMIT.requestBytes).bytes;
   const count = Math.floor(LIMIT.regularBytes / bytes);
   try {
     expect(count).toBeLessThan(LIMIT.regularRequests);
-    const pending = Array.from({ length: count }, () => gateway.connect(request));
-    expect(await gateway.connect(request)).toMatchObject({ ok: false, error: { code: RELAY_ERROR.STORE_UNAVAILABLE } });
-    release();
-    expect((await Promise.all(pending)).every(r => r.ok)).toBe(true);
-    expect(await gateway.connect(request)).toMatchObject({ ok: true });
-  } finally { release(); await gateway.close(); rmSync(root, { recursive: true, force: true }); }
+    const pending = Array.from({ length: count }, () => gateway.registrationsForSessions(request));
+    const overflow = await gateway.registrationsForSessions(request).then(() => undefined, (error: unknown) => error);
+    expect(overflow).toMatchObject({ message: "relay request byte budget exceeded" });
+    expect((await Promise.all(pending)).every(r => r.size === 0)).toBe(true);
+    expect((await gateway.registrationsForSessions(request)).size).toBe(0);
+  } finally { await gateway.close(); rmSync(root, { recursive: true, force: true }); }
 });

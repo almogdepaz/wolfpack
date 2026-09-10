@@ -37,7 +37,7 @@ for (const change of ["epoch", "endpoint", "profile", "expired", "missing"] as c
     switch (change) {
       case "epoch": return { ...f.registration, epoch: randomUUID() };
       case "endpoint": return { ...f.registration, endpoint: { relay: RELAY_ID, id: randomUUID() } };
-      case "profile": return { ...f.registration, profile: "durable-v2" };
+      case "profile": return { ...f.registration, profile: "durable-v2" } as unknown as TaskRelayRegistration;
       case "expired": return { ...f.registration, leaseExpiresAt: new Date(0).toISOString() };
       case "missing": return undefined;
     }

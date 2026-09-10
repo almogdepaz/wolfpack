@@ -56,8 +56,8 @@ afterAll(async () => {
     await __resetTaskRelayGatewayForTests();
     expect(readFileSync(sentinel)).toEqual(original);
     rmSync(root, { recursive: true, force: true });
+    __resetJwtAuthConfig(); // Clear while the test-only guard is still active, even when run alone.
     for (const name of names) { if (saved[name] === undefined) delete process.env[name]; else process.env[name] = saved[name]; }
-    __resetJwtAuthConfig();
   }
 });
 async function post(body: unknown, route = path) {
@@ -75,20 +75,16 @@ function envelope(source: { relay: string; id: string }, target: { relay: string
   return { source, target, envelopeId: randomUUID(), protocolVersion: 2, payload: { opaque: "synthetic payload" }, createdAt: new Date().toISOString() };
 }
 
-test("normal default is memory-owned, selection is frozen, and explicit compatibility mode never silently migrates state", async () => {
+test("only memory-owned startup is allowed, selection is frozen and obsolete state is untouched", async () => {
   await __resetTaskRelayGatewayForTests(); delete process.env.WOLFPACK_TASK_RELAY_PROFILE;
   expect(getTaskRelayProfile()).toBe("volatile-v1");
   const defaultBinding = await connect("sender");
   expect(defaultBinding.epoch).toBeString();
   expect(readFileSync(sentinel)).toEqual(original);
   await __resetTaskRelayGatewayForTests(); process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
-  expect(getTaskRelayProfile()).toBe("durable-v2");
-  const result = await post({ operation: "connect", profile: "volatile-v1" });
-  expect(result.response.status).toBe(409); expect(result.body.error).toMatchObject({ code: "RELAY_PROFILE_REQUIRED", retryable: false });
-  const info = await (await fetch(base + "/api/task-relay/profile", { headers })).json();
-  expect(validate({ $ref: "#/$defs/TaskRelayProfileResponse" }, info, schema)).toEqual([]);
-  expect(info).toMatchObject({ profile: "durable-v2", federation: "existing-v2-policy" });
-  process.env.WOLFPACK_TASK_RELAY_PROFILE = "typo"; expect(() => getTaskRelayGateway()).toThrow("invalid WOLFPACK_TASK_RELAY_PROFILE");
+  expect(() => getTaskRelayProfile()).toThrow("only memory-owned volatile-v1 is supported");
+  expect(() => getTaskRelayGateway()).toThrow("only memory-owned volatile-v1 is supported");
+  process.env.WOLFPACK_TASK_RELAY_PROFILE = "typo"; expect(() => getTaskRelayGateway()).toThrow("only memory-owned volatile-v1 is supported");
   expect(readFileSync(sentinel)).toEqual(original);
   process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1"; gateway = getTaskRelayGateway() as typeof gateway;
   process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
@@ -103,7 +99,7 @@ test("real middleware protects metadata and both ingress lanes; valid JWT does n
   }
   const info = await (await fetch(base + "/api/task-relay/profile", { headers })).json();
   expect(validate({ $ref: "#/$defs/TaskRelayProfileResponse" }, info, schema)).toEqual([]);
-  expect(info).toMatchObject({ profile: "volatile-v1", epoch: await gateway.volatileEpoch(), federation: "verified-same-user-v1" });
+  expect(info).toMatchObject({ profile: "volatile-v1", epoch: await gateway.volatileEpoch(), federation: "trusted-tailnet-v1" });
   const binding = await connect("sender");
   for (const operation of ["receivePeer", "resolvePeer"]) {
     expect((await post({ ...binding, operation, origin: "https://claimed.example.ts.net" })).body.error.code).toBe("INVALID_REQUEST");
@@ -116,17 +112,26 @@ test("real middleware protects metadata and both ingress lanes; valid JWT does n
   const health = await post({ ...binding, operation: "health" }); expect(health.body.value.store.routes).toBe(0); expect(health.body.value.store.activeItems).toBe(0);
 });
 
-test("legacy routes cannot enter the volatile engine; discovery reports its explicit live transport",  async () => {
+test("relay routes reject public proxy/Funnel clients even with an owner token; unrelated owner APIs retain their policy", async () => {
+  for (const forwarded of ["203.0.113.1", "100.100.1.1, 127.0.0.1", "garbage"]) {
+    const response = await fetch(base + "/api/task-relay/profile", { headers: { ...headers, "x-forwarded-for": forwarded } });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ ok: false, error: { code: "PEER_POLICY_REQUIRED" } });
+  }
+  expect((await fetch(base + "/api/task-relay/profile", { headers: { ...headers, "x-forwarded-for": "100.100.1.1" } })).status).toBe(200);
+  expect((await fetch(base + "/api/session-control/list", { headers: { ...headers, "x-forwarded-for": "203.0.113.1" } })).status).toBe(200);
+});
+
+test("retired routes are absent; discovery reports the only live transport",  async () => {
   const binding = await connect("sender");
-  const { taskRelayRoutes } = await import("../../src/server/task-relay-routes.ts");
-  for (const key of Object.keys(taskRelayRoutes)) {
+  const retired = ["POST /api/task-relay/v2/connect", "POST /api/task-relay/v2/disconnect", "POST /api/task-relay/v2/resolve", "POST /api/task-relay/v2/peer/resolve", "POST /api/task-relay/v2/send", "GET /api/task-relay/v2/receive", "POST /api/task-relay/v2/delivery-ack", "POST /api/task-relay/v2/peer/receive", "GET /api/task-relay/volatile-v1/identity"];
+  for (const key of retired) {
     const [method, route] = key.split(" ");
     const response = await fetch(base + route, { method, headers, ...(method === "POST" && { body: "{}" }) });
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ ok: false, error: { code: "INCOMPATIBLE_PROTOCOL", retryable: false } });
+    expect(response.status).toBe(404);
   }
-  expect(await gateway.endpointForSession("sender-id")).toBeUndefined();
-  expect(await gateway.endpointsForSessions(["sender-id"])).toEqual(new Map());
+  expect(await gateway.endpointForSession("sender-id")).toEqual(binding.endpoint);
+  expect(await gateway.endpointsForSessions(["sender-id"])).toEqual(new Map([["sender-id", binding.endpoint]]));
   const registration = (await gateway.registrationsForSessions(["sender-id"])).get("sender-id");
   expect(registration).toMatchObject({ profile: binding.profile, epoch: binding.epoch, endpoint: binding.endpoint });
   expect(validate({ $ref: "#/$defs/TaskRelayRegistration" }, registration, schema)).toEqual([]);
@@ -140,8 +145,8 @@ test("legacy routes cannot enter the volatile engine; discovery reports its expl
   expect(list.sessions.find((s: any) => s.sessionId === "sender-id").taskTransport).toEqual(registration);
   expect((await post({ ...binding, operation: "health" })).body.value.store.activeItems).toBe(0);
   await post({ ...binding, operation: "disconnect" });
-  const retired = await (await fetch(base + "/api/session-control/status?session=sender", { headers })).json() as any;
-  expect(retired.taskEndpoint).toBeUndefined(); expect(retired.taskTransport).toBeUndefined();
+  const disconnected = await (await fetch(base + "/api/session-control/status?session=sender", { headers })).json() as any;
+  expect(disconnected.taskEndpoint).toBeUndefined(); expect(disconnected.taskTransport).toBeUndefined();
 });
 
 test("HTTP delivers opaque content, checks full conflicts, and preserves individual ACKs and reset epochs", async () => {
@@ -213,13 +218,12 @@ test("body deadline and pre-body concurrency cap release abandoned request slots
 
 const piSource = process.env.WOLFPACK_PI_TASKS_SOURCE, piRevision = process.env.WOLFPACK_PI_TASKS_REVISION;
 if (Boolean(piSource) !== Boolean(piRevision)) throw new Error("both trusted pi-tasks source and exact revision are required");
-test.skipIf(!piSource)("actual pinned pi-tasks core/SQLite traverses production HTTP middleware and persists reset/rebind", async () => {
+test.skipIf(!piSource)("actual pinned RAM core traverses production HTTP middleware with reset/rebind and empty restarted lifetime", async () => {
   if (!piSource || !isAbsolute(piSource) || !/^[a-f0-9]{40}$/.test(piRevision!)) throw new Error("invalid trusted pi-tasks source selection");
   expect(execFileSync("git", ["-C", piSource, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(piRevision!);
   expect(execFileSync("git", ["-C", piSource, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim()).toBe("");
   const { createTaskStore, createVolatileTaskSession } = await import(pathToFileURL(join(piSource, "src/index.ts")).href);
-  const af = join(root, "a.sqlite"), bf = join(root, "b.sqlite");
-  const aStore = createTaskStore({ path: af }); let bStore = createTaskStore({ path: bf });
+  const aStore = createTaskStore(); let bStore = createTaskStore();
   const authenticatedFetch = ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, { ...init, headers: { ...init?.headers, authorization: headers.authorization } })) as typeof fetch;
   const open = (callerSession: string, store: any) => createVolatileTaskSession({ callerSession, store, url: base + path, fetch: authenticatedFetch });
   const a = open("sender", aStore); let b = open("receiver", bStore);
@@ -227,8 +231,8 @@ test.skipIf(!piSource)("actual pinned pi-tasks core/SQLite traverses production 
     const ac = await a.connect(); let bc = await b.connect();
     const task = await ac.createTask({ target: bc.endpoint, task: "real HTTP adapter fixture", timeoutMs: 60_000 });
     const deliveries = await bc.receive(); expect(deliveries.map((item: any) => item.cursor)).toEqual(["1"]);
-    await bc.acknowledgeRelayDelivery("1"); b.close(); bStore.close();
-    bStore = createTaskStore({ path: bf }); b = open("receiver", bStore); bc = await b.connect();
+    await bc.acknowledgeRelayDelivery("1"); b.close();
+    b = open("receiver", bStore); bc = await b.connect(); // Transport replacement inside the same RAM lifetime.
     expect(await bc.receive()).toEqual([]);
     expect(bStore.getReceiveCursor()).toBe("1");
     await __resetTaskRelayGatewayForTests(); gateway = getTaskRelayGateway() as typeof gateway; await gateway.initialize();
@@ -237,16 +241,16 @@ test.skipIf(!piSource)("actual pinned pi-tasks core/SQLite traverses production 
     const resetError = await bc.receive().then(() => undefined, (error: unknown) => error);
     expect(resetError).toMatchObject({ code: "RELAY_RESET", retryable: false });
     expect(b.status().state).toBe("reset");
-    b.close(); bStore.close(); bStore = createTaskStore({ path: bf }); b = open("receiver", bStore);
+    b.close(); b = open("receiver", bStore);
     await expect(b.connect()).rejects.toMatchObject({ code: "RELAY_REBIND_REQUIRED", retryable: false });
     const fresh = await b.rebind(); expect(fresh.endpoint).not.toEqual(bc.endpoint); expect(bStore.getReceiveCursor()).toBe("0");
-    expect(bStore.getTask(task.taskId)).toBeDefined();
+    expect(bStore.getTask(task.taskId)).toBeUndefined();
     await fresh.createTask({ target: fresh.endpoint, task: "new epoch", timeoutMs: 60_000 });
     expect((await fresh.receive()).map((item: any) => item.cursor)).toEqual(["1"]);
-    await __resetTaskRelayGatewayForTests(); process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
-    await expect(fresh.receive()).rejects.toMatchObject({ code: "RELAY_RESET", retryable: false });
-    expect(b.status().state).toBe("reset");
-    b.close(); bStore.close(); bStore = createTaskStore({ path: bf }); b = open("receiver", bStore);
-    await expect(b.connect()).rejects.toMatchObject({ code: "RELAY_REBIND_REQUIRED", retryable: false });
+    b.close(); bStore.close(); bStore = createTaskStore(); b = open("receiver", bStore);
+    const restarted = await b.connect();
+    expect(restarted.endpoint).not.toEqual(fresh.endpoint);
+    expect(restarted.listTasks()).toEqual([]); expect(await restarted.receive()).toEqual([]);
+    expect(bStore.getReceiveCursor()).toBe("0"); expect(bStore.outbox("pending")).toEqual([]);
   } finally { a.close(); b.close(); aStore.close(); bStore.close(); }
 }, 15_000);

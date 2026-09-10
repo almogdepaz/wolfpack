@@ -15,14 +15,13 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
   const peers = JSON.parse(readFileSync(mapping, "utf8")) as Record<string, string>;
   const loopback = peers[url.origin];
   if (!loopback || !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(loopback) || url.protocol !== "https:" || init?.redirect !== "error") throw new Error("fixture network denied");
-  let outgoing = init;
   const forward = url.pathname === "/api/task-relay/volatile-v1/peer";
   const modePath = join(root, "network-mode"), mode = existsSync(modePath) ? readFileSync(modePath, "utf8") : "";
   if (forward) {
-    writeFileSync(join(root, "last-forward.json"), JSON.stringify({ raw: init?.body, signature: new Headers(init?.headers).get("x-wolfpack-relay-signature") }), { mode: 0o600 });
-    if (mode === "tamper") outgoing = { ...init, body: String(init?.body).replace("tamper-me", "tampered!") };
+    if (new Headers(init?.headers).has("x-wolfpack-relay-signature")) throw new Error("retired signature layer");
+    writeFileSync(join(root, "last-forward.json"), JSON.stringify({ raw: init?.body, ownerAuth: new Headers(init?.headers).has("authorization") }), { mode: 0o600 });
   }
-  const response = await actualFetch(loopback + url.pathname + url.search, outgoing);
+  const response = await actualFetch(loopback + url.pathname + url.search, init);
   if (forward && mode === "drop-next" && response.ok) {
     unlinkSync(modePath); await response.text(); return new Response("lost acceptance confirmation", { status: 503 });
   }

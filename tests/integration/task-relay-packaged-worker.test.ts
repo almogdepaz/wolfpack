@@ -4,7 +4,6 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { Database } from "bun:sqlite";
 
 const cli = process.env.WOLFPACK_PACKAGED_CLI;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -44,27 +43,32 @@ test.skipIf(!cli)("packaged CLI/native broker/installed Pi tool loop survives se
   let parent: any, child: any, taskId: string | undefined, sent = false, done = false, ack = false, historical = false, checkHistorical = false;
   const calls: Array<{ model: string; tool?: string }> = [];
   const snapshots: any[] = [];
-  const dbPath = (session: string) => join(agent, "..", "tasks", "v2", "sessions", createHash("sha256").update(session).digest("hex"), "tasks.sqlite");
-  const state = (session: string) => {
-    if (!existsSync(dbPath(session))) return undefined;
-    // Observe, do not initialize/own the live Pi SQLite store. A writer-backed
-    // introspection handle races lifecycle reopen and can itself cause SQLITE_BUSY.
-    let database: Database | undefined;
-    try {
-      database = new Database(dbPath(session), { readonly: true });
-      database.exec("BEGIN");
-      const row = database.query("SELECT value FROM relay_state WHERE name = 'transport_binding'").get() as { value: string } | null;
-      return { binding: row ? JSON.parse(row.value) : undefined, tasks: database.query("SELECT *, task_id AS taskId FROM tasks ORDER BY task_id").all() as any[], events: database.query("SELECT * FROM events ORDER BY event_id").all() as any[] };
-    } catch (error) { if ((error as { code?: string }).code === "SQLITE_BUSY") return undefined; throw error; }
-    finally { database?.close(); }
+  const readEntries = (): any[] => {
+    const sessionRoot = join(agent, "sessions");
+    if (!existsSync(sessionRoot)) return [];
+    return readdirSync(sessionRoot, { withFileTypes: true }).filter(entry => entry.isDirectory()).flatMap(directory =>
+      readdirSync(join(sessionRoot, directory.name)).filter(file => file.endsWith(".jsonl")).flatMap(file => {
+        const text = readFileSync(join(sessionRoot, directory.name, file), "utf8"); expect(text.length).toBeLessThan(2_000_000);
+        // Observe complete records only while Pi may be appending the last line.
+        const end = text.lastIndexOf("\n"); if (end < 0) return [];
+        const complete = text.slice(0, end);
+        return complete ? complete.split("\n").map(line => ({ ...JSON.parse(line), fixtureFile: file })) : [];
+      }));
   };
+  const events = () => readEntries().flatMap(entry => {
+    const event = entry.customType === "pi-tasks-event" ? entry.details?.event
+      : entry.customType === "pi-tasks-event-record" ? entry.data?.event : undefined;
+    return event ? [{ file: entry.fixtureFile, event }] : [];
+  });
+  const hasEvent = (type: string) => events().some(item => item.event.taskId === taskId && item.event.type === type);
   let modelError: string | undefined, historicalDenied = false;
   model = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     try {
       expect(new URL(request.url).pathname).toBe("/v1/chat/completions");
       const text = await request.text(); expect(text.length).toBeLessThan(300_000);
       const body = JSON.parse(text); expect(["parent", "child"]).toContain(body.model); expect(calls.length).toBeLessThan(24);
-      const recorded = parent && state(parent.session); taskId ??= recorded?.tasks[0]?.taskId;
+      taskId ??= events().find(item => item.event.type === "task.created" && item.event.payload.task === "PACKAGED_FIXTURE_ASSIGNMENT")?.event.taskId
+        ?? readEntries().find(entry => entry.message?.toolName === "agent_task_send")?.message.details?.taskId;
       let tool: string | undefined, args: any;
       if (body.model === "parent" && !sent) {
         expect(child?.taskEndpoint).toBeDefined(); expect(text).toContain("FIXTURE_START");
@@ -72,12 +76,12 @@ test.skipIf(!cli)("packaged CLI/native broker/installed Pi tool loop survives se
       } else if (body.model === "child" && !done) {
         expect(taskId).toBeString(); expect(text).toContain(taskId!); expect(text).toContain("PACKAGED_FIXTURE_ASSIGNMENT");
         tool = "agent_task_done"; args = { taskId, status: "completed", summary: "completed by installed Pi tool through native broker" }; done = true;
-      } else if (body.model === "parent" && recorded?.tasks[0]?.status === "completed" && !ack) {
+      } else if (body.model === "parent" && text.includes("## task completed") && !ack) {
         tool = "agent_task_ack"; args = { taskId }; ack = true;
       } else if (body.model === "parent" && checkHistorical && !historical) {
         tool = "agent_task_message"; args = { taskId, type: "information", message: "must not adopt old scope" }; historical = true;
       }
-      if (historical && text.includes("historical task belongs to a different endpoint")) historicalDenied = true;
+      if (historical && text.includes("unknown task:")) historicalDenied = true;
       if (tool) expect(body.tools.some((item: any) => item.function?.name === tool)).toBe(true);
       calls.push({ model: body.model, tool });
       const id = `fixture-${randomUUID()}`, delta = tool ? { role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name: tool, arguments: JSON.stringify(args) } }] } : { role: "assistant", content: "fixture turn complete" };
@@ -127,34 +131,38 @@ test.skipIf(!cli)("packaged CLI/native broker/installed Pi tool loop survives se
     await run(["session", "send", parent.sessionId, "FIXTURE_START", "--json"]);
     await until("canonical completion and parent ACK through actual Pi tools", () => {
       if (modelError) throw new Error(modelError);
-      return taskId && ack && state(parent.session)?.tasks[0]?.status === "completed" && state(child.session)?.tasks[0]?.status === "completed" && state(child.session)?.events.some(event => event.type === "task.parent_acknowledged");
+      return taskId && ack && hasEvent("task.completed") && hasEvent("task.parent_acknowledged")
+        && readEntries().some(entry => entry.message?.toolName === "agent_task_ack" && !entry.message.details?.error);
     }, 45_000);
-    const before = state(parent.session)!; snapshots.push(before);
+    const before = { binding: (await run(["session", "status", parent.sessionId, "--json"])).taskTransport, events: events() };
+    expect(before.binding?.profile).toBe("volatile-v1"); snapshots.push(before);
+    expect(existsSync(join(home, ".pi", "tasks"))).toBe(false);
     const echo = await run(["session", "create", "--project-dir", project, "--harness", "shell", "--json"]);
     await stop(server); expect(brokerProcess.exitCode).toBeNull();
     server = await startServer("server-2");
     const echoStatus = await run(["session", "status", echo.sessionId, "--json"]);
     expect(echoStatus.terminal.alive).toBe(true); expect(echoStatus.sessionId).toBe(echo.sessionId);
-    await until("persisted endpoint reset", () => state(parent.session)?.binding?.reset === true);
+    await until("existing Pi reports relay reset without automatic rebind", async () => JSON.stringify(await run(["session", "read", parent.sessionId, "--json"])).includes("tasks: relay reset"));
+    expect((await run(["session", "status", parent.sessionId, "--json"])).taskTransport).toBeUndefined();
     await run(["session", "send", parent.sessionId, "/task-relay-rebind", "--json"]); await sleep(700);
-    expect(state(parent.session)?.binding?.reset).toBe(true);
+    expect((await run(["session", "status", parent.sessionId, "--json"])).taskTransport).toBeUndefined();
     await run(["session", "send", parent.sessionId, "/task-relay-rebind --accept-relay-loss", "--json"]);
-    const after = await until("explicit rebind to new server epoch", () => {
-      const value = state(parent.session); return value?.binding && !value.binding.reset && value.binding.epoch !== before.binding.epoch && value;
+    const after = await until("explicit rebind to new server epoch", async () => {
+      const binding = (await run(["session", "status", parent.sessionId, "--json"])).taskTransport;
+      return binding && binding.epoch !== before.binding.epoch && { binding, events: events() };
     });
-    snapshots.push(after); expect(after.binding.endpoint).not.toEqual(before.binding.endpoint); expect(after.tasks).toEqual(before.tasks); expect(after.events).toEqual(before.events);
+    snapshots.push(after); expect(after.binding.endpoint).not.toEqual(before.binding.endpoint);
+    expect(after.events).toEqual(expect.arrayContaining(before.events));
     checkHistorical = true;
     await run(["session", "send", parent.sessionId, "FIXTURE_HISTORICAL", "--json"]);
     await until("historical task mutation refusal", () => historicalDenied);
     // Model serialization includes tool text, not the structured details object.
     // Assert the actual error code from Pi's persisted tool result instead.
-    const sessionRoot = join(agent, "sessions");
-    const entries = readdirSync(sessionRoot).flatMap(directory => readdirSync(join(sessionRoot, directory)).filter(file => file.endsWith(".jsonl")).flatMap(file => {
-      const text = readFileSync(join(sessionRoot, directory, file), "utf8"); expect(text.length).toBeLessThan(2_000_000);
-      return text.trim().split("\n").map(line => JSON.parse(line));
-    }));
-    expect(entries.some(entry => entry.message?.role === "toolResult" && entry.message.toolName === "agent_task_message" && entry.message.details?.error?.code === "NOT_PARTICIPANT")).toBe(true);
-    expect(state(parent.session)?.tasks).toEqual(before.tasks);
+    const entries = readEntries();
+    expect(entries.some(entry => entry.message?.role === "toolResult" && entry.message.toolName === "agent_task_message" && entry.message.details?.error?.code === "UNKNOWN_TASK")).toBe(true);
+    expect(events()).toEqual(expect.arrayContaining(before.events));
+    expect(existsSync(join(home, ".pi", "tasks"))).toBe(false);
+    expect(existsSync(join(home, ".wolfpack", "task-relay"))).toBe(false);
     for (const id of [parent.sessionId, echo.sessionId]) await run(["kill", id, "--json"]);
     // Worker may have exited itself after parent ACK. Kill only an exact ID if still active.
     const active = (await run(["list", "--json"])).sessions;

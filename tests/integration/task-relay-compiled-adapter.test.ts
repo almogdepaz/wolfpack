@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 const piSource = process.env.WOLFPACK_PI_TASKS_SOURCE, piRevision = process.env.WOLFPACK_PI_TASKS_REVISION;
 if (Boolean(piSource) !== Boolean(piRevision)) throw new Error("both trusted pi-tasks source and exact revision are required");
 
-test.skipIf(!piSource)("actual adapter/SQLite crosses a source-free compiled HTTP host and worker, retry/ACK loss and resets", async () => {
+test.skipIf(!piSource)("actual RAM adapter crosses source-free compiled HTTP host/worker, same-lifetime retry/ACK loss and restart loss", async () => {
   if (!piSource || !isAbsolute(piSource) || !/^[a-f0-9]{40}$/.test(piRevision!)) throw new Error("invalid trusted pi-tasks source selection");
   expect(execFileSync("git", ["-C", piSource, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(piRevision!);
   expect(execFileSync("git", ["-C", piSource, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim()).toBe("");
@@ -78,9 +78,11 @@ test.skipIf(!piSource)("actual adapter/SQLite crosses a source-free compiled HTT
     child = await start();
     const url = `http://127.0.0.1:${port}/api/task-relay/volatile-v1`;
     expect((await fetch(url, { method: "POST" })).status).toBe(401);
-    expect((await fetch(url + "/peer", { method: "POST", headers: { authorization } })).status).toBe(403);
+    const malformed = await fetch(url + "/peer", { method: "POST", headers: { authorization } });
+    expect(malformed.status).toBe(400); // No signature gate: malformed body/content type still fails admission.
+    expect(await malformed.json()).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
     const info = await (await fetch(`http://127.0.0.1:${port}/api/task-relay/profile`, { headers: { authorization } })).json() as any;
-    expect(info).toMatchObject({ profile: "volatile-v1", federation: "verified-same-user-v1" });
+    expect(info).toMatchObject({ profile: "volatile-v1", federation: "trusted-tailnet-v1" });
     let loseSend = true, loseAck = true;
     const sends: string[] = [], confirmations: any[] = [], acks: string[] = [];
     const authenticated = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -99,7 +101,7 @@ test.skipIf(!piSource)("actual adapter/SQLite crosses a source-free compiled HTT
       return response;
     }, { preconnect: fetch.preconnect }) as typeof fetch;
     const store = (name: string) => {
-      const raw = createTaskStore({ path: join(runtime, `${name}.sqlite`) }); let closed = false;
+      const raw = createTaskStore(); let closed = false;
       const value = { ...raw, close() { if (!closed) { closed = true; raw.close(); } } };
       stores.push(value); return value;
     };
@@ -109,7 +111,7 @@ test.skipIf(!piSource)("actual adapter/SQLite crosses a source-free compiled HTT
     expect(b.status().binding.epoch).toBe(info.epoch);
     await expect(ac.createTask({ target: bc.endpoint, task: "compiled accepted response loss", timeoutMs: 60_000 })).rejects.toMatchObject({ code: "RELAY_UNAVAILABLE", retryable: true });
     expect(as.outbox("pending")).toHaveLength(1); expect(as.outbox("accepted")).toEqual([]);
-    a.close(); as.close(); as = store("a"); a = session("sender", as); ac = await a.connect();
+    a.close(); a = session("sender", as); ac = await a.connect(); // Same RAM lifetime, not process recovery.
     await ac.flushOutbox();
     expect(sends).toHaveLength(2); expect(sends[1]).toBe(sends[0]);
     expect(confirmations[1].value).toMatchObject({ acceptanceId: confirmations[0].value.acceptanceId, duplicate: true, forwarding: "local" });
@@ -118,7 +120,7 @@ test.skipIf(!piSource)("actual adapter/SQLite crosses a source-free compiled HTT
     expect((await bc.receive()).map((item: any) => item.cursor)).toEqual(["1", "2"]);
     await expect(bc.acknowledgeRelayDelivery("2")).rejects.toMatchObject({ code: "RELAY_UNAVAILABLE" });
     expect(bs.getReceiveCursor()).toBe("0");
-    b.close(); bs.close(); bs = store("b"); b = session("receiver", bs); bc = await b.connect();
+    b.close(); b = session("receiver", bs); bc = await b.connect(); // Same RAM lifetime retains individual ACK state.
     expect(acks).toHaveLength(2); expect(acks[1]).toBe(acks[0]);
     expect((await bc.receive()).map((item: any) => item.cursor)).toEqual(["1"]);
     await bc.acknowledgeRelayDelivery("1"); expect(bs.getReceiveCursor()).toBe("2");
@@ -126,24 +128,25 @@ test.skipIf(!piSource)("actual adapter/SQLite crosses a source-free compiled HTT
     await stop(child); child = await start();
     await expect(bc.receive()).rejects.toMatchObject({ code: "RELAY_RESET", retryable: false });
     expect(bs.getRelayTransportBinding().reset).toBe(true);
-    b.close(); bs.close(); bs = store("b"); b = session("receiver", bs);
+    b.close(); b = session("receiver", bs);
     await expect(b.connect()).rejects.toMatchObject({ code: "RELAY_REBIND_REQUIRED", retryable: false });
     const fresh = await b.rebind(); expect(fresh.endpoint).not.toEqual(oldEndpoint);
-    expect(fresh.listTasks()).toEqual(history); expect(bs.getReceiveCursor()).toBe("0");
-    await expect(fresh.submitIntent({ taskId: history[0].taskId, type: "task.information", payload: { message: "not my lifetime" } })).rejects.toMatchObject({ code: "NOT_PARTICIPANT" });
+    expect(fresh.listTasks()).toEqual([]); expect(bs.getReceiveCursor()).toBe("0");
+    await expect(fresh.submitIntent({ taskId: history[0].taskId, type: "task.information", payload: { message: "not my lifetime" } })).rejects.toMatchObject({ code: "UNKNOWN_TASK" });
     const task = await fresh.createTask({ target: fresh.endpoint, task: "new compiled lifetime", timeoutMs: 60_000 });
     const first = await fresh.receive(); expect(first.map((item: any) => item.cursor)).toEqual(["1"]);
     await fresh.acknowledgeRelayDelivery("1");
     await fresh.submitIntent({ taskId: task.taskId, type: "task.completed", payload: { summary: "synthetic fixture completed" } });
     for (let i = 0; i < 3; i++) for (const delivery of await fresh.receive()) await fresh.acknowledgeRelayDelivery(delivery.cursor);
     expect(fresh.getTask(task.taskId).status).toBe("completed");
-    await stop(child); child = await start("durable-v2");
-    await expect(fresh.receive()).rejects.toMatchObject({ code: "RELAY_RESET", retryable: false });
-    b.close(); bs.close(); bs = store("b"); b = session("receiver", bs);
-    await expect(b.connect()).rejects.toMatchObject({ code: "RELAY_REBIND_REQUIRED", retryable: false });
+    b.close(); bs.close(); bs = store("b"); b = session("receiver", bs); // Actual endpoint lifetime loss.
+    const restarted = await b.connect();
+    expect(restarted.endpoint).not.toEqual(fresh.endpoint); expect(restarted.listTasks()).toEqual([]);
+    expect(bs.getReceiveCursor()).toBe("0"); expect(bs.outbox("pending")).toEqual([]);
+    expect(existsSync(join(runtime, "a.sqlite"))).toBe(false); expect(existsSync(join(runtime, "b.sqlite"))).toBe(false);
     expect(readFileSync(sentinel, "utf8")).toBe(historical);
     expect(existsSync(buildRoot)).toBe(false);
-    console.log(JSON.stringify({ fixture: "compiled-volatile-http-adapter", binarySha256: binaryHash, piTasksRevision: piRevision, sourceRemoved: true, restarts: 2 }));
+    console.log(JSON.stringify({ fixture: "compiled-volatile-http-adapter", binarySha256: binaryHash, piTasksRevision: piRevision, sourceRemoved: true, relayRestarts: 1, endpointRestarts: 1 }));
   } finally {
     for (const value of sessions) value.close();
     for (const value of stores) value.close();

@@ -46,7 +46,7 @@ The child launches Pi with the explicit extension and `PI_TASK_WORKER=1`; no sta
 
 For a remote launch or exact `session status` selection, the CLI resolves that
 endpoint through the coordinator's **local** live registration and host-verified
-same-user peer route. `WOLFPACK_SESSION_NAME` must identify the local coordinator;
+trusted Tailnet peer route (all visible online peers are assumed honest). `WOLFPACK_SESSION_NAME` must identify the local coordinator;
 normal JWT configuration must authorize both control servers. The resulting
 `taskEndpoint` is a locally routable opaque alias, with `taskRouting` describing
 the source epoch/origin and `remoteTaskTransport` retaining the destination's

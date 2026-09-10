@@ -1,14 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { RELAY_LIMITS, isRelayEndpoint, isLocalRelay } from "../task-relay/domain.ts";
-import { getRelayPeerAuth } from "./relay-peer-auth.ts";
-import { RELAY_PEER_IDENTITY_PATH, RELAY_PEER_SIGNATURE_HEADER, RelayPeerPolicyError } from "../task-relay/peer-auth.ts";
+import { getRelayPeerTransport, trustedRelayClient } from "./relay-peer-transport.ts";
+import { RelayPeerPolicyError } from "../task-relay/peer-transport.ts";
 import { getTaskRelayProfile, getVolatileTaskRelayGateway } from "../task-relay/gateway.ts";
 import { VOLATILE_RELAY_PATH, VOLATILE_PEER_PATH } from "../task-relay/volatile-protocol.ts";
 import { json } from "./http.ts";
 
 export const VOLATILE_HTTP_LIMITS = Object.freeze({ requests: 24, bodyMs: 5000, bodyBytes: RELAY_LIMITS.HTTP_BODY_BYTES });
 const operations = new Set(["connect", "resolve", "send", "receive", "acknowledge", "disconnect", "health"]);
-let active = 0, activePeers = 0, activeIdentities = 0;
+let active = 0, activePeers = 0;
 type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 class BodyError extends Error { constructor(readonly status: number) { super("invalid volatile relay body"); } }
@@ -44,7 +44,7 @@ function read(req: IncomingMessage): Promise<string> {
   });
 }
 
-export const volatileRelayRoutes: Record<string, Handler> = {
+const handlers: Record<string, Handler> = {
   "GET /api/task-relay/profile": async (req, res) => {
     if (new URL(req.url ?? "/", "http://localhost").search) return reject(res, "INVALID_REQUEST", 400);
     if (active >= VOLATILE_HTTP_LIMITS.requests) return reject(res, "RELAY_CAPACITY", 503);
@@ -54,25 +54,11 @@ export const volatileRelayRoutes: Record<string, Handler> = {
       const epoch = await gateway?.volatileEpoch();
       if (res.destroyed) return;
       res.setHeader("Cache-Control", "no-store");
-      json(res, { ok: true, profile: getTaskRelayProfile(), ...(epoch && { epoch }), endpointPath: gateway ? VOLATILE_RELAY_PATH : "/api/task-relay/v2/connect", federation: gateway ? "verified-same-user-v1" : "existing-v2-policy" });
+      json(res, { ok: true, profile: getTaskRelayProfile(), ...(epoch && { epoch }), endpointPath: VOLATILE_RELAY_PATH, federation: "trusted-tailnet-v1" });
     } catch { reject(res, "RELAY_UNAVAILABLE", 503); }
     finally { active--; }
   },
-  [`GET ${RELAY_PEER_IDENTITY_PATH}`]: async (req, res) => {
-    if (new URL(req.url ?? "/", "http://localhost").search) return reject(res, "INVALID_REQUEST", 400);
-    const gateway = getVolatileTaskRelayGateway();
-    if (!gateway) return reject(res, "RELAY_PROFILE_REQUIRED", 409);
-    if (activeIdentities >= 4) return reject(res, "RELAY_CAPACITY", 503);
-    activeIdentities++;
-    try {
-      const identity = await getRelayPeerAuth(gateway).identity();
-      if (!res.destroyed) { res.setHeader("Cache-Control", "no-store"); json(res, identity); }
-    } catch (error) { reject(res, error instanceof RelayPeerPolicyError ? error.code : "RELAY_UNAVAILABLE", 503); }
-    finally { activeIdentities--; }
-  },
   [`POST ${VOLATILE_PEER_PATH}`]: async (req, res) => {
-    const signature = req.headers[RELAY_PEER_SIGNATURE_HEADER];
-    if (typeof signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(signature)) { discard(req, res); return reject(res, "PEER_POLICY_REQUIRED", 403); }
     const gateway = getVolatileTaskRelayGateway();
     if (!gateway) { discard(req, res); return reject(res, "RELAY_PROFILE_REQUIRED", 409); }
     if (activePeers >= 4) { discard(req, res); return reject(res, "RELAY_CAPACITY", 503); }
@@ -81,7 +67,7 @@ export const volatileRelayRoutes: Record<string, Handler> = {
       if (new URL(req.url ?? "/", "http://localhost").search || typeof req.headers["content-type"] !== "string"
         || req.headers["content-type"].split(";")[0]!.trim().toLowerCase() !== "application/json") throw new BodyError(400);
       const raw = await read(req);
-      await getRelayPeerAuth(gateway).verify(raw, signature);
+      await getRelayPeerTransport(gateway).verify(raw);
       const result = await gateway.volatilePeer(JSON.parse(raw));
       if (!res.destroyed) { res.setHeader("Cache-Control", "no-store"); json(res, result, result.ok ? 200 : result.error.retryable ? 503 : 409); }
     } catch (error) {
@@ -102,7 +88,7 @@ export const volatileRelayRoutes: Record<string, Handler> = {
         || typeof body.origin !== "string" || !isRelayEndpoint(body.target) || !isLocalRelay(body.target)) throw new BodyError(400);
       const owner = await gateway.volatile({ operation: "health", profile: body.profile, epoch: body.epoch, callerSession: body.callerSession, endpoint: body.endpoint });
       if (!owner.ok) return json(res, owner, owner.error.retryable ? 503 : 409);
-      const peer = await getRelayPeerAuth(gateway).peer(body.origin);
+      const peer = await getRelayPeerTransport(gateway).peer(body.origin);
       const result = await gateway.volatileTopology({ ...body, operation: "resolvePeer", peerEpoch: peer.epoch });
       if (!res.destroyed) { res.setHeader("Cache-Control", "no-store"); json(res, result, result.ok ? 200 : result.error.retryable ? 503 : 409); }
     } catch (error) {
@@ -125,7 +111,7 @@ export const volatileRelayRoutes: Record<string, Handler> = {
       try { body = JSON.parse(raw) as unknown; } catch { throw new BodyError(400); }
       if (!object(body) || typeof body.operation !== "string" || !operations.has(body.operation)) throw new BodyError(400);
       // Nonlocal IDs must already be host-resolved aliases. The worker refuses
-      // unknown routes; outbound signed transport rechecks topology on every attempt.
+      // unknown routes; trusted-Tailnet transport rechecks topology on every attempt.
       const result = await gateway.volatile(body);
       if (res.destroyed) return;
       res.setHeader("Cache-Control", "no-store");
@@ -140,3 +126,10 @@ export const volatileRelayRoutes: Record<string, Handler> = {
     } finally { active--; }
   },
 };
+
+export const volatileRelayRoutes: Record<string, Handler> = Object.fromEntries(Object.entries(handlers).map(([path, handler]) => [path, async (req: IncomingMessage, res: ServerResponse) => {
+  if (!trustedRelayClient(req.socket.remoteAddress, req.headers["x-forwarded-for"])) {
+    discard(req, res); return reject(res, "PEER_POLICY_REQUIRED", 403);
+  }
+  await handler(req, res);
+}]));

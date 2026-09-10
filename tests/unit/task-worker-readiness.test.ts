@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "bun:test";
-import { TaskRelayGateway } from "../../src/task-relay/gateway.ts";
+import { VolatileRelayGateway } from "../../src/task-relay/volatile-gateway.ts";
 import {
   TaskWorkerReadinessError,
   prepareTaskWorkerLaunch,
@@ -229,14 +229,14 @@ describe("task worker readiness", () => {
     expect(killed).toEqual(["worker-id"]);
   });
 
-  test("rejects expired and foreign relay registrations through the real gateway store", async () => {
+  test("rejects expired and foreign registrations through the real memory gateway", async () => {
     const root = temporaryRoot();
     let now = new Date("2026-01-01T00:00:00.000Z");
     let alive = true;
     const killed: string[] = [];
-    const gateway = new TaskRelayGateway({
+    const gateway = new VolatileRelayGateway({
       root,
-      now: () => now,
+      now: () => now.getTime(),
       inspectSession: async (selector) => {
         if (selector === "foreign") {
           return {
@@ -259,14 +259,14 @@ describe("task worker readiness", () => {
       },
     });
     try {
-      const foreign = await gateway.connect({
-        callerSession: "foreign",
+      const foreign = await gateway.request({
+        profile: "volatile-v1", operation: "connect", callerSession: "foreign",
         generation: "foreign-generation",
         protocolVersions: [2],
       });
       expect(foreign.ok).toBe(true);
-      const expired = await gateway.connect({
-        callerSession: "worker",
+      const expired = await gateway.request({
+        profile: "volatile-v1", operation: "connect", callerSession: "worker",
         generation: "expired-generation",
         protocolVersions: [2],
         leaseMs: 1,
@@ -291,7 +291,7 @@ describe("task worker readiness", () => {
             alive = false;
           },
         },
-        endpointForSession: (sessionId) => gateway.endpointForSession(sessionId),
+        endpointForSession: async (sessionId) => (await gateway.registrationsForSessions([sessionId])).get(sessionId)?.endpoint,
         sessionId: "worker-id",
         projectDir: "/worktree",
         timeoutMs: 5,
@@ -299,7 +299,7 @@ describe("task worker readiness", () => {
       })).rejects.toMatchObject({ code: "TASK_WORKER_NOT_READY", cleanup: "completed" });
       expect(killed).toEqual(["worker-id"]);
     } finally {
-      gateway.close();
+      await gateway.close();
     }
   });
 

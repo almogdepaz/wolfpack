@@ -55,8 +55,8 @@ test("two isolated relay processes: worker/HTTP delivery, loss, sparse ACKs, epo
     const a = await boot("a"), b = await boot("b", true);
     await post(a.origin, { canonical: "https://b.tail123.ts.net", loopback: b.origin }, "/fixture/peer");
     const source = await a.connect("source"), destination = await b.connect("destination");
-    expect(await post(a.origin, { callerSession: "old-client", generation: "old", protocolVersions: [2] }, "/fixture/legacy"))
-      .toMatchObject({ ok: false, error: { code: "INCOMPATIBLE_PROTOCOL" } });
+    expect(await post(a.origin, { callerSession: "old-client", generation: "old", protocolVersions: [2] }, "/fixture/legacy") as unknown)
+      .toEqual({ available: false });
     expect(await post(a.origin, { operation: "connect", callerSession: "old-client", generation: "old", protocolVersions: [2] }))
       .toMatchObject({ ok: false, error: { code: "RELAY_PROFILE_REQUIRED" } });
     const target = take(await post(a.origin, { ...source, operation: "resolvePeer", origin: "https://b.tail123.ts.net", peerEpoch: destination.epoch, target: destination.endpoint }, "/fixture/topology"), "resolved").endpoint;

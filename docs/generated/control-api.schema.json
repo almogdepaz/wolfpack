@@ -32,8 +32,8 @@
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
     "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
-    "volatile-v1 is selected at server startup; HTTP operations inherit global auth and do not authorize untrusted per-session tenants; peer ingress additionally requires raw-request Ed25519 signatures bound to current relay epochs and canonical TLS identities matched to local same-user untagged online Tailscale topology (up to 1s local status cache)",
-    "relay profile metadata identifies the selected lifetime, not broker/worker readiness; legacy worker readiness does not advertise volatile registrations"
+    "volatile-v1 is the only task relay; all relay HTTP routes require loopback or trusted Tailnet access and inherit optional configured global auth; all visible online Tailnet peers are assumed honest, with canonical TLS routing and current epochs but no signatures, user/tag filtering, or key discovery (up to 1s local topology cache)",
+    "relay profile metadata identifies the current RAM lifetime, not broker/worker readiness; restart loses active task state and never replays Pi session history"
   ],
   "http": {
     "getInfo": {
@@ -92,6 +92,7 @@
       },
       "errors": [
         "400 VolatileErrorEnvelope",
+        "403 VolatileErrorEnvelope",
         "503 VolatileErrorEnvelope"
       ]
     },
@@ -120,29 +121,6 @@
         "409 VolatileErrorEnvelope",
         "410 VolatileErrorEnvelope",
         "413 VolatileErrorEnvelope",
-        "503 VolatileErrorEnvelope"
-      ]
-    },
-    "getVolatilePeerIdentity": {
-      "route": "GET /api/task-relay/volatile-v1/identity",
-      "stable": false,
-      "auth": "jwt-when-configured",
-      "response": {
-        "$id": "wolfpack:control-api:http:getVolatilePeerIdentity:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "getVolatilePeerIdentity response",
-        "oneOf": [
-          {
-            "$ref": "#/$defs/VolatilePeerIdentity"
-          },
-          {
-            "$ref": "#/$defs/VolatileErrorEnvelope"
-          }
-        ]
-      },
-      "errors": [
-        "400 VolatileErrorEnvelope",
-        "409 VolatileErrorEnvelope",
         "503 VolatileErrorEnvelope"
       ]
     },
@@ -182,7 +160,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "receiveVerifiedVolatilePeer request",
         "$ref": "#/$defs/VolatilePeerRequest",
-        "description": "Requires x-wolfpack-relay-signature in addition to configured JWT. The receiver verifies current epoch, canonical TLS key, local same-user untagged online topology and exact raw body/destination before worker admission."
+        "description": "Trusted Tailnet ingress only; optional configured owner authentication still applies. Checks current source/destination epochs and online local topology. No request signatures."
       },
       "response": {
         "$id": "wolfpack:control-api:http:receiveVerifiedVolatilePeer:response",
@@ -197,311 +175,6 @@
         "409 VolatileErrorEnvelope",
         "413 VolatileErrorEnvelope",
         "503 VolatileErrorEnvelope"
-      ]
-    },
-    "connectTaskRelay": {
-      "route": "POST /api/task-relay/v2/connect",
-      "stable": true,
-      "auth": "jwt-when-configured",
-      "requestContentType": "application/json",
-      "request": {
-        "$id": "wolfpack:control-api:http:connectTaskRelay:request",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "connectTaskRelay request",
-        "type": "object",
-        "properties": {
-          "callerSession": {
-            "$ref": "#/$defs/SessionSelector"
-          },
-          "generation": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512
-          },
-          "protocolVersions": {
-            "type": "array",
-            "items": {
-              "type": "integer"
-            }
-          },
-          "leaseMs": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 300000
-          }
-        },
-        "required": [
-          "callerSession",
-          "generation",
-          "protocolVersions"
-        ],
-        "additionalProperties": false
-      },
-      "response": {
-        "$id": "wolfpack:control-api:http:connectTaskRelay:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "connectTaskRelay response",
-        "$ref": "#/$defs/RelayConnectResponse"
-      },
-      "errors": [
-        "400 RelayErrorEnvelope",
-        "404 RelayErrorEnvelope",
-        "410 RelayErrorEnvelope",
-        "503 RelayErrorEnvelope"
-      ]
-    },
-    "disconnectTaskRelay": {
-      "route": "POST /api/task-relay/v2/disconnect",
-      "stable": true,
-      "auth": "jwt-when-configured",
-      "requestContentType": "application/json",
-      "request": {
-        "$id": "wolfpack:control-api:http:disconnectTaskRelay:request",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "disconnectTaskRelay request",
-        "type": "object",
-        "properties": {
-          "callerSession": {
-            "$ref": "#/$defs/SessionSelector"
-          },
-          "endpoint": {
-            "$ref": "#/$defs/RelayEndpoint"
-          }
-        },
-        "required": [
-          "callerSession",
-          "endpoint"
-        ],
-        "additionalProperties": false
-      },
-      "response": {
-        "$id": "wolfpack:control-api:http:disconnectTaskRelay:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "disconnectTaskRelay response",
-        "$ref": "#/$defs/RelayEmptyResponse"
-      },
-      "errors": [
-        "400 RelayErrorEnvelope",
-        "404 RelayErrorEnvelope",
-        "409 RelayErrorEnvelope",
-        "410 RelayErrorEnvelope",
-        "503 RelayErrorEnvelope"
-      ]
-    },
-    "resolveTaskRelayEndpoint": {
-      "route": "POST /api/task-relay/v2/resolve",
-      "stable": true,
-      "auth": "jwt-when-configured",
-      "requestContentType": "application/json",
-      "request": {
-        "$id": "wolfpack:control-api:http:resolveTaskRelayEndpoint:request",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "resolveTaskRelayEndpoint request",
-        "type": "object",
-        "properties": {
-          "callerSession": {
-            "$ref": "#/$defs/SessionSelector"
-          },
-          "target": {
-            "$ref": "#/$defs/RelayEndpoint"
-          },
-          "protocolVersion": {
-            "const": 2
-          }
-        },
-        "required": [
-          "callerSession",
-          "target",
-          "protocolVersion"
-        ],
-        "additionalProperties": false
-      },
-      "response": {
-        "$id": "wolfpack:control-api:http:resolveTaskRelayEndpoint:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "resolveTaskRelayEndpoint response",
-        "$ref": "#/$defs/RelayResolveResponse"
-      },
-      "errors": [
-        "400 RelayErrorEnvelope",
-        "404 RelayErrorEnvelope",
-        "410 RelayErrorEnvelope",
-        "503 RelayErrorEnvelope"
-      ]
-    },
-    "resolvePeerTaskRelayTopology": {
-      "route": "POST /api/task-relay/v2/peer/resolve",
-      "stable": true,
-      "auth": "jwt-when-configured",
-      "requestContentType": "application/json",
-      "request": {
-        "$id": "wolfpack:control-api:http:resolvePeerTaskRelayTopology:request",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "resolvePeerTaskRelayTopology request",
-        "type": "object",
-        "properties": {
-          "origin": {
-            "$ref": "#/$defs/TailnetOrigin"
-          },
-          "endpoint": {
-            "$ref": "#/$defs/RelayEndpoint"
-          }
-        },
-        "required": [
-          "origin",
-          "endpoint"
-        ],
-        "additionalProperties": false
-      },
-      "response": {
-        "$id": "wolfpack:control-api:http:resolvePeerTaskRelayTopology:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "resolvePeerTaskRelayTopology response",
-        "$ref": "#/$defs/RelayResolveResponse"
-      },
-      "errors": [
-        "400 RelayErrorEnvelope",
-        "503 RelayErrorEnvelope"
-      ]
-    },
-    "sendTaskRelayEnvelope": {
-      "route": "POST /api/task-relay/v2/send",
-      "stable": true,
-      "auth": "jwt-when-configured",
-      "requestContentType": "application/json",
-      "request": {
-        "$id": "wolfpack:control-api:http:sendTaskRelayEnvelope:request",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "sendTaskRelayEnvelope request",
-        "type": "object",
-        "properties": {
-          "callerSession": {
-            "$ref": "#/$defs/SessionSelector"
-          },
-          "envelope": {
-            "$ref": "#/$defs/RelayEnvelope"
-          }
-        },
-        "required": [
-          "callerSession",
-          "envelope"
-        ],
-        "additionalProperties": false
-      },
-      "response": {
-        "$id": "wolfpack:control-api:http:sendTaskRelayEnvelope:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "sendTaskRelayEnvelope response",
-        "$ref": "#/$defs/RelaySendResponse"
-      },
-      "errors": [
-        "400 RelayErrorEnvelope",
-        "404 RelayErrorEnvelope",
-        "409 RelayErrorEnvelope",
-        "410 RelayErrorEnvelope",
-        "413 RelayErrorEnvelope",
-        "503 RelayErrorEnvelope"
-      ]
-    },
-    "receiveTaskRelayEnvelopes": {
-      "route": "GET /api/task-relay/v2/receive",
-      "stable": true,
-      "auth": "jwt-when-configured",
-      "request": {
-        "$id": "wolfpack:control-api:http:receiveTaskRelayEnvelopes:request",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "receiveTaskRelayEnvelopes request",
-        "type": "object",
-        "properties": {
-          "callerSession": {
-            "$ref": "#/$defs/SessionSelector"
-          },
-          "cursor": {
-            "type": "string",
-            "pattern": "^(0|[1-9][0-9]*)$"
-          }
-        },
-        "required": [
-          "callerSession",
-          "cursor"
-        ],
-        "additionalProperties": false
-      },
-      "response": {
-        "$id": "wolfpack:control-api:http:receiveTaskRelayEnvelopes:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "receiveTaskRelayEnvelopes response",
-        "$ref": "#/$defs/RelayReceiveResponse"
-      },
-      "errors": [
-        "400 RelayErrorEnvelope",
-        "404 RelayErrorEnvelope",
-        "410 RelayErrorEnvelope",
-        "503 RelayErrorEnvelope"
-      ]
-    },
-    "acknowledgeTaskRelayDelivery": {
-      "route": "POST /api/task-relay/v2/delivery-ack",
-      "stable": true,
-      "auth": "jwt-when-configured",
-      "requestContentType": "application/json",
-      "request": {
-        "$id": "wolfpack:control-api:http:acknowledgeTaskRelayDelivery:request",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "acknowledgeTaskRelayDelivery request",
-        "type": "object",
-        "properties": {
-          "callerSession": {
-            "$ref": "#/$defs/SessionSelector"
-          },
-          "envelopeId": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 512
-          }
-        },
-        "required": [
-          "callerSession",
-          "envelopeId"
-        ],
-        "additionalProperties": false
-      },
-      "response": {
-        "$id": "wolfpack:control-api:http:acknowledgeTaskRelayDelivery:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "acknowledgeTaskRelayDelivery response",
-        "$ref": "#/$defs/RelayAcknowledgementResponse"
-      },
-      "errors": [
-        "400 RelayErrorEnvelope",
-        "404 RelayErrorEnvelope",
-        "410 RelayErrorEnvelope",
-        "503 RelayErrorEnvelope"
-      ]
-    },
-    "receivePeerTaskRelayEnvelope": {
-      "route": "POST /api/task-relay/v2/peer/receive",
-      "stable": true,
-      "auth": "jwt-when-configured",
-      "requestContentType": "application/json",
-      "request": {
-        "$id": "wolfpack:control-api:http:receivePeerTaskRelayEnvelope:request",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "receivePeerTaskRelayEnvelope request",
-        "$ref": "#/$defs/RelayPeerEnvelope"
-      },
-      "response": {
-        "$id": "wolfpack:control-api:http:receivePeerTaskRelayEnvelope:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "receivePeerTaskRelayEnvelope response",
-        "$ref": "#/$defs/RelayPeerReceiveResponse"
-      },
-      "errors": [
-        "400 RelayErrorEnvelope",
-        "404 RelayErrorEnvelope",
-        "409 RelayErrorEnvelope",
-        "413 RelayErrorEnvelope",
-        "503 RelayErrorEnvelope"
       ]
     },
     "sendTask": {
@@ -3019,38 +2692,6 @@
       ],
       "additionalProperties": false
     },
-    "VolatilePeerIdentity": {
-      "type": "object",
-      "properties": {
-        "profile": {
-          "const": "volatile-v1"
-        },
-        "epoch": {
-          "type": "string",
-          "format": "uuid"
-        },
-        "origin": {
-          "$ref": "#/$defs/TailnetOrigin"
-        },
-        "nodeId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 512
-        },
-        "publicKey": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_-]{59}$"
-        }
-      },
-      "required": [
-        "profile",
-        "epoch",
-        "origin",
-        "nodeId",
-        "publicKey"
-      ],
-      "additionalProperties": false
-    },
     "VolatilePeerResolveRequest": {
       "type": "object",
       "properties": {
@@ -3499,10 +3140,7 @@
           "const": false
         },
         "profile": {
-          "enum": [
-            "durable-v2",
-            "volatile-v1"
-          ]
+          "const": "volatile-v1"
         },
         "epoch": {
           "type": "string",
@@ -3896,30 +3534,6 @@
               "const": true
             },
             "profile": {
-              "const": "durable-v2"
-            },
-            "endpointPath": {
-              "const": "/api/task-relay/v2/connect"
-            },
-            "federation": {
-              "const": "existing-v2-policy"
-            }
-          },
-          "required": [
-            "ok",
-            "profile",
-            "endpointPath",
-            "federation"
-          ],
-          "additionalProperties": false
-        },
-        {
-          "type": "object",
-          "properties": {
-            "ok": {
-              "const": true
-            },
-            "profile": {
               "const": "volatile-v1"
             },
             "epoch": {
@@ -3930,7 +3544,7 @@
               "const": "/api/task-relay/volatile-v1"
             },
             "federation": {
-              "const": "verified-same-user-v1"
+              "const": "trusted-tailnet-v1"
             }
           },
           "required": [
@@ -4964,27 +4578,6 @@
     "TaskRelayRegistration": {
       "description": "Request-local lease observation for a live session, not model execution or restart recovery. Re-inspect after expiry or reset.",
       "oneOf": [
-        {
-          "type": "object",
-          "properties": {
-            "profile": {
-              "const": "durable-v2"
-            },
-            "endpoint": {
-              "$ref": "#/$defs/RelayEndpoint"
-            },
-            "leaseExpiresAt": {
-              "type": "string",
-              "format": "date-time"
-            }
-          },
-          "required": [
-            "profile",
-            "endpoint",
-            "leaseExpiresAt"
-          ],
-          "additionalProperties": false
-        },
         {
           "type": "object",
           "properties": {

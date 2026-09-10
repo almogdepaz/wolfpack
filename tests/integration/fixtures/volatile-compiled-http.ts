@@ -8,7 +8,7 @@ import { createServerInstance } from "../../../src/server/index.ts";
 import { getTaskRelayGateway, __resetTaskRelayGatewayForTests } from "../../../src/task-relay/gateway.ts";
 
 const [root, portText, profile, nonce] = process.argv.slice(2);
-if (!root || !nonce || !/^[0-9]+$/.test(portText ?? "") || !["volatile-v1", "durable-v2"].includes(profile ?? "")
+if (!root || !nonce || !/^[0-9]+$/.test(portText ?? "") || profile !== "volatile-v1"
   || process.env.WOLFPACK_TEST !== "1" || !import.meta.url.includes("/$bunfs/")) throw new Error("compiled private fixture required");
 process.env.WOLFPACK_TASK_RELAY_ROOT = join(root, "relay");
 process.env.WOLFPACK_TASK_RELAY_PROFILE = profile;

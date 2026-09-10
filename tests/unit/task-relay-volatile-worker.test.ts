@@ -15,22 +15,20 @@ test("profile bootstrap remains data-only and rejects irrelevant legacy lifecycl
   try {
     expect(() => new WorkerRelayGateway({ root, get profile(): "volatile-v1" { calls++; return profile; } })).toThrow("data properties");
     expect(calls).toBe(0);
-    expect(() => new WorkerRelayGateway({ root, profile, retentionMs: 1000 })).toThrow("do not apply");
+    expect(() => new WorkerRelayGateway({ root, profile, retentionMs: 1000 } as ConstructorParameters<typeof WorkerRelayGateway>[0])).toThrow("unknown relay worker option");
     const gateway = new WorkerRelayGateway({ root, profile, inspectSession: async selector => inspection(selector) });
     try { await gateway.initialize(); } finally { await gateway.close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test("worker profiles cannot silently cross over or parse the other profile's ledger", async () => {
+test("default worker is memory-only, has no durable methods and never parses old ledgers", async () => {
   const root = mkdtempSync(join(tmpdir(), "volatile-exclusive-"));
   const ledger = join(root, "relay-state.json"), historical = "invalid historical ledger"; writeFileSync(ledger, historical);
-  const legacy = new WorkerRelayGateway({ root, inspectSession: async selector => inspection(selector) });
-  try { expect(await legacy.volatile({ operation: "connect", profile, callerSession: "a", generation: "g", protocolVersions: [2] })).toMatchObject({ ok: false, error: { code: "RELAY_PROFILE_REQUIRED" } }); }
-  finally { await legacy.close(); }
-  const gateway = new WorkerRelayGateway({ root, profile, inspectSession: async selector => inspection(selector) });
+  const gateway = new WorkerRelayGateway({ root, inspectSession: async selector => inspection(selector) });
   try {
     await gateway.initialize();
-    expect(await gateway.connect({ callerSession: "a", generation: "g", protocolVersions: [2] })).toMatchObject({ ok: false, error: { code: "INCOMPATIBLE_PROTOCOL" } });
+    expect("connect" in gateway).toBe(false);
+    expect(await gateway.volatile({ operation: "connect", profile: "durable-v2" })).toMatchObject({ ok: false, error: { code: "RELAY_PROFILE_REQUIRED" } });
     expect(await gateway.volatile({ operation: "connect", profile, callerSession: "a", generation: "g", protocolVersions: [2] })).toMatchObject({ ok: true, value: { kind: "connected" } });
     expect(readFileSync(ledger, "utf8")).toBe(historical);
   } finally { await gateway.close(); rmSync(root, { recursive: true, force: true }); }

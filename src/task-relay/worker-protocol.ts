@@ -1,22 +1,26 @@
 import { types as utilTypes } from "node:util";
-import type { TaskRelayGateway } from "./gateway.ts";
+import type { TaskRelayRegistration } from "./registration.ts";
+import type { RelayEndpoint } from "./domain.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import type { VolatileResult } from "./volatile-protocol.ts";
 
-export type RelayGateway = Pick<TaskRelayGateway, keyof TaskRelayGateway>;
-
-/** Wire arguments differ from the public gateway only for the cleanup Date cutoff. */
-export interface RelayWorkerGateway extends Omit<RelayGateway, "cleanup"> {
-  cleanup(beforeMs: number): Promise<number>;
+export interface RelayGateway {
+  readonly root: string;
+  readonly profile: "volatile-v1";
+  initialize(): Promise<void>;
+  close(): Promise<void>;
+  registrationsForSessions(ids: readonly string[]): Promise<ReadonlyMap<string, TaskRelayRegistration>>;
+  endpointForSession(id: string): Promise<RelayEndpoint | undefined>;
+  endpointsForSessions(ids: readonly string[]): Promise<ReadonlyMap<string, RelayEndpoint>>;
   volatileEpoch(): Promise<string | undefined>;
   volatile(input: unknown): Promise<VolatileResult>;
   volatilePeer(input: unknown): Promise<VolatileResult>;
   volatileTopology(input: unknown): Promise<VolatileResult>;
 }
 
+export type RelayWorkerGateway = Pick<RelayGateway, "initialize" | "registrationsForSessions" | "volatileEpoch" | "volatile" | "volatilePeer" | "volatileTopology">;
 export const RELAY_WORKER_METHODS = [
-  "initialize", "peerRelay", "resolvePeerEndpoint", "connect", "endpointForSession", "endpointsForSessions", "registrationsForSessions",
-  "disconnect", "resolve", "send", "receive", "acknowledgeDelivery", "receivePeer", "flushPeerOutbox", "cleanup", "volatileEpoch", "volatile", "volatilePeer", "volatileTopology",
+  "initialize", "registrationsForSessions", "volatileEpoch", "volatile", "volatilePeer", "volatileTopology",
 ] as const satisfies readonly (keyof RelayWorkerGateway)[];
 export type RelayWorkerMethod = typeof RELAY_WORKER_METHODS[number];
 export const RELAY_WORKER_LIMITS = {
@@ -27,11 +31,7 @@ export const RELAY_WORKER_LIMITS = {
 
 export interface WorkerOptions {
   root: string;
-  profile?: "volatile-v1";
   peerOrigin?: string;
-  retryIntervalMs?: number;
-  retentionMs?: number;
-  cleanupIntervalMs?: number;
   proxyPeerFetch: boolean;
 }
 export type WorkerRequest = { kind: "request"; id: number; method: RelayWorkerMethod; args: unknown[] };

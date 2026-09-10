@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
-import { RelayPeerAuth, RELAY_PEER_IDENTITY_PATH } from "../../src/task-relay/peer-auth.ts";
+import { RelayPeerTransport } from "../../src/task-relay/peer-transport.ts";
 import { readPeerResponse } from "../../src/task-relay/peer-response.ts";
 import { RELAY_ID } from "../../src/task-relay/domain.ts";
 
@@ -16,9 +16,8 @@ async function fixture(authenticated: boolean) {
   const root = mkdtempSync(join(tmpdir(), "peer-response-worker-")), peerEpoch = randomUUID();
   let mode: Mode = "oversized", cancelled = 0, started: (() => void) | undefined;
   const signals: AbortSignal[] = [];
-  const target = new RelayPeerAuth({ topology: async () => ({ origin: targetOrigin, nodeId: "target-node", peers: new Map([[sourceOrigin, "source-node"]]) }), epoch: async () => peerEpoch });
   const network = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (new URL(String(input)).pathname === RELAY_PEER_IDENTITY_PATH) return Response.json(await target.identity());
+    if (new URL(String(input)).pathname === "/api/task-relay/profile") return Response.json({ ok: true, profile, epoch: peerEpoch });
     signals.push(init!.signal!);
     if (mode === "valid") {
       const body = JSON.parse(String(init?.body));
@@ -31,7 +30,7 @@ async function fixture(authenticated: boolean) {
     }), mode === "declared-oversized" ? { headers: { "content-length": "4097" } } : undefined);
     started?.(); return response;
   }, { preconnect: fetch.preconnect }) as typeof fetch;
-  const auth: RelayPeerAuth = new RelayPeerAuth({ topology: async () => ({ origin: sourceOrigin, nodeId: "source-node", peers: new Map([[targetOrigin, "target-node"]]) }), epoch: async () => gateway.volatileEpoch(), fetch: network });
+  const auth: RelayPeerTransport = new RelayPeerTransport({ topology: async () => ({ origin: sourceOrigin, nodeId: "source-node", peers: new Map([[targetOrigin, "target-node"]]) }), epoch: async () => gateway.volatileEpoch(), fetch: network });
   const gateway = new WorkerRelayGateway({ root, profile, peerOrigin: sourceOrigin, peerFetch: authenticated ? (input, init) => auth.forward(input, init) : network,
     inspectSession: async selector => ({ ok: true, session: selector, sessionId: selector, projectPath: "/fixture", harness: "pi", alive: true }) });
   try {
@@ -51,7 +50,7 @@ async function fixture(authenticated: boolean) {
   } catch (error) { await gateway.close(); rmSync(root, { recursive: true, force: true }); throw error; }
 }
 
-for (const authenticated of [false, true]) test(`worker-mediated peer bodies are bounded before cloning and recover callback slots (signed=${authenticated})`, async () => {
+for (const authenticated of [false, true]) test(`worker-mediated peer bodies are bounded before cloning and recover callback slots (policy=${authenticated})`, async () => {
   const f = await fixture(authenticated);
   try {
     // More failures than the eight host callback slots: no leak and no false ACK.
@@ -64,7 +63,7 @@ for (const authenticated of [false, true]) test(`worker-mediated peer bodies are
   } finally { await f.close(); }
 }, 15_000);
 
-test("authenticated worker forwarding retains its four-second deadline through a never-ending body", async () => {
+test("trusted worker forwarding retains its four-second deadline through a never-ending body", async () => {
   const f = await fixture(true);
   try {
     f.setMode("stalled"); const start = performance.now();
@@ -75,7 +74,7 @@ test("authenticated worker forwarding retains its four-second deadline through a
   } finally { await f.close(); }
 }, 10_000);
 
-for (const authenticated of [false, true]) test(`worker close aborts active peer bodies and settles without waiting for the deadline (signed=${authenticated})`, async () => {
+for (const authenticated of [false, true]) test(`worker close aborts active peer bodies and settles without waiting for the deadline (policy=${authenticated})`, async () => {
   const f = await fixture(authenticated);
   try {
     f.setMode("stalled"); const started = f.started(), pending = f.send(); await started;

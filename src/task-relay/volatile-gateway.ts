@@ -1,4 +1,3 @@
-import { join } from "node:path";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import { canonicalTailnetOrigin } from "../tailnet-machine-contract.ts";
 import { createLogger } from "../log.ts";
@@ -7,7 +6,7 @@ import type { RelayEnvelope, RelayRegistration } from "./domain.ts";
 import { MEMORY_RELAY_LIMITS, MEMORY_RELAY_PROFILE, MemoryRelayError, MemoryRelayStore } from "./memory-store.ts";
 import type { ForwardAttempt } from "./memory-store.ts";
 import type { TaskRelayRegistration } from "./registration.ts";
-import { BoundedRelayInvestigation, RotatingRelayInvestigationWriter } from "./investigation.ts";
+import type { BoundedRelayInvestigation } from "./investigation.ts";
 import { captureRelayWire } from "./worker-protocol.ts";
 import { VOLATILE_GATEWAY_LIMITS as LIMIT, VOLATILE_PEER_PATH, volatileFailure } from "./volatile-protocol.ts";
 import type { VolatileBinding, VolatileCode, VolatilePeerRequest, VolatileRequest, VolatileResult, VolatileValue, VolatileTopologyRequest } from "./volatile-protocol.ts";
@@ -71,8 +70,8 @@ export interface VolatileGatewayOptions {
   readonly limits?: Partial<Record<keyof typeof MEMORY_RELAY_LIMITS, number>>;
 }
 
-/** Broker-authorized volatile transport. Explicit construction only: no production
- * singleton/HTTP cutover. Endpoint retries drive forwarding; no replay/background spool. */
+/** Broker-authorized memory transport. Endpoint retries drive forwarding;
+ * no disk history, recovery engine, replay or background spool. */
 export class VolatileRelayGateway {
   readonly #store: MemoryRelayStore;
   readonly #now: () => number;
@@ -93,8 +92,8 @@ export class VolatileRelayGateway {
     }
     this.#origin = options.peerOrigin; this.#fetch = options.peerFetch ?? fetch;
     this.#inspect = options.inspectSession; this.#now = options.now ?? Date.now;
-    this.#investigation = options.investigation ?? (options.root === undefined ? undefined
-      : new BoundedRelayInvestigation(new RotatingRelayInvestigationWriter(join(options.root, "investigation-volatile-v1"))));
+    // Explicit diagnostic injection only. The normal worker never writes task history.
+    this.#investigation = options.investigation;
     this.#store = new MemoryRelayStore({ limits: options.limits, investigation: this.#investigation });
   }
 

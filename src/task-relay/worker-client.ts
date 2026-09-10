@@ -1,10 +1,11 @@
 import { Worker } from "node:worker_threads";
 import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { types as utilTypes } from "node:util";
-import { TaskRelayStore } from "./store.ts";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { getBackend } from "../server/backend.ts";
 import { createLogger } from "../log.ts";
-import { RELAY_ERROR, relayFailure } from "./domain.ts";
+import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
 import { volatileFailure, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
 import { readPeerResponse, withPeerAbort } from "./peer-response.ts";
@@ -17,7 +18,7 @@ import {
 const log = createLogger("task-relay");
 const owners = new Map<string, symbol>();
 type WorkerGatewayOptions = GatewayOptions & { requestTimeoutMs?: number; profile?: "volatile-v1" };
-const optionNames = new Set(["profile", "root", "now", "peerOrigin", "peerFetch", "inspectSession", "retryIntervalMs", "retentionMs", "cleanupIntervalMs", "requestTimeoutMs"]);
+const optionNames = new Set(["profile", "root", "peerOrigin", "peerFetch", "inspectSession", "requestTimeoutMs"]);
 
 /** Inspect original descriptors before any option read/spread can execute caller code. */
 function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
@@ -36,7 +37,6 @@ function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
       callbacks[key] = value; // Main-thread callbacks are deliberately not transferred.
     } else {
       if (value !== undefined) {
-        if (key === "now") throw new TypeError("worker relay uses the process wall clock");
         if (key === "profile") {
           if (value !== "volatile-v1") throw new TypeError("invalid relay worker profile");
         } else if (key === "root" || key === "peerOrigin") {
@@ -50,7 +50,6 @@ function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
 }
 class WorkerUnavailable extends Error {}
 class InvalidWorkerRequest extends Error {}
-type ResultMethod = "connect" | "disconnect" | "resolve" | "send" | "receive" | "acknowledgeDelivery" | "receivePeer" | "resolvePeerEndpoint";
 interface Pending {
   resolve(value: unknown): void;
   reject(error: Error): void;
@@ -80,27 +79,22 @@ export class WorkerRelayGateway implements RelayGateway {
   #regularBytes = 0;
   #peerBytes = 0;
   #epoch: Promise<string | undefined> | undefined;
-  get profile(): "durable-v2" | "volatile-v1" { return this.#options.profile ?? "durable-v2"; }
+  get profile(): "volatile-v1" { return "volatile-v1"; }
 
   constructor(suppliedOptions: WorkerGatewayOptions = { root: undefined }) {
     assertSupportedBunRuntime();
     const options = captureOptions(suppliedOptions);
-    if (options.profile && [options.retryIntervalMs, options.retentionMs, options.cleanupIntervalMs].some(value => value !== undefined)) {
-      throw new TypeError("legacy retention/retry options do not apply to volatile relay");
-    }
     this.#requestMs = options.requestTimeoutMs ?? LIMIT.requestMs;
     if (!Number.isInteger(this.#requestMs) || this.#requestMs < 1 || this.#requestMs > LIMIT.requestMs) throw new TypeError("invalid relay worker request timeout");
-    if (options.now) throw new TypeError("worker relay uses the process wall clock");
     this.#options = options;
-    this.root = new TaskRelayStore(options.root).root;
+    this.root = resolve(options.root ?? join(homedir(), ".wolfpack", "task-relay"));
     this.#ownedRoot = this.root;
     if (owners.has(this.root)) throw new Error("relay root already has a worker owner; await close before replacement");
     this.#ready = new Promise((resolve, reject) => { this.#resolveReady = resolve; this.#rejectReady = reject; });
     void this.#ready.catch(() => undefined);
     // .js resolves to .ts in Bun source runs; build.ts embeds this named entry for compiled runs.
     const configuration = captureRelayWire({
-      root: this.root, profile: options.profile, peerOrigin: options.peerOrigin, retryIntervalMs: options.retryIntervalMs,
-      retentionMs: options.retentionMs, cleanupIntervalMs: options.cleanupIntervalMs,
+      root: this.root, peerOrigin: options.peerOrigin,
       proxyPeerFetch: options.peerFetch !== undefined,
     }, LIMIT.requestBytes);
     // Reserve before constructing a worker. Release only this owner's token, and
@@ -169,7 +163,7 @@ export class WorkerRelayGateway implements RelayGateway {
               redirect: "error", signal: controller.signal,
             });
             const body = await readPeerResponse(response, controller.signal,
-              this.profile === "volatile-v1" ? VOLATILE_GATEWAY_LIMITS.replyBytes : LIMIT.responseBytes);
+              VOLATILE_GATEWAY_LIMITS.replyBytes);
             return { status: response.status, body };
           });
         } finally {
@@ -188,9 +182,7 @@ export class WorkerRelayGateway implements RelayGateway {
 
   #fail(reason: string): void {
     if (this.#closed) return;
-    log.warn(reason, { recovery: this.#options.profile === "volatile-v1"
-      ? "restart server; explicitly rebind volatile endpoints; no automatic replay after epoch loss"
-      : "restart server; retry unknown outcomes with the same envelope identity/content" });
+    log.warn(reason, { recovery: "restart server; explicitly rebind endpoints; no replay after epoch loss" });
     void this.close();
   }
 
@@ -213,7 +205,7 @@ export class WorkerRelayGateway implements RelayGateway {
 
   #call<M extends RelayWorkerMethod>(method: M, ...input: Parameters<RelayWorkerGateway[M]>): Promise<Awaited<ReturnType<RelayWorkerGateway[M]>>> {
     if (this.#closed) return Promise.reject(new WorkerUnavailable("relay worker is closed"));
-    const peer = method === "receivePeer" || method === "volatilePeer";
+    const peer = method === "volatilePeer";
     const count = [...this.#pending.values()].filter(p => p.peer === peer).length;
     if (count >= (peer ? LIMIT.peerRequests : LIMIT.regularRequests)) return Promise.reject(new WorkerUnavailable("relay queue is full"));
     let args: unknown[], bytes: number;
@@ -238,16 +230,6 @@ export class WorkerRelayGateway implements RelayGateway {
     });
   }
 
-  async #result<M extends ResultMethod>(method: M, ...args: Parameters<RelayWorkerGateway[M]>): Promise<Awaited<ReturnType<RelayGateway[M]>>> {
-    // ResultMethod excludes cleanup, the only public/wire signature difference.
-    try { return await this.#call(method, ...args) as Awaited<ReturnType<RelayGateway[M]>>; }
-    catch (error) {
-      return relayFailure(error instanceof InvalidWorkerRequest ? RELAY_ERROR.INVALID_REQUEST : RELAY_ERROR.STORE_UNAVAILABLE,
-        error instanceof InvalidWorkerRequest ? "invalid relay request" : "relay unavailable; retry unknown outcomes with unchanged envelope identity and content",
-        !(error instanceof InvalidWorkerRequest)) as Awaited<ReturnType<RelayGateway[M]>>;
-    }
-  }
-
   async #volatileResult(method: "volatile" | "volatilePeer" | "volatileTopology", input: unknown): Promise<VolatileResult> {
     try { return await this.#call(method, input); }
     catch (error) {
@@ -266,23 +248,9 @@ export class WorkerRelayGateway implements RelayGateway {
   volatilePeer(input: unknown) { return this.#volatileResult("volatilePeer", input); }
   volatileTopology(input: unknown) { return this.#volatileResult("volatileTopology", input); }
   initialize() { return this.#call("initialize"); }
-  peerRelay(...args: Parameters<RelayGateway["peerRelay"]>) { return this.#call("peerRelay", ...args); }
-  endpointForSession(...args: Parameters<RelayGateway["endpointForSession"]>) { return this.#call("endpointForSession", ...args); }
-  endpointsForSessions(...args: Parameters<RelayGateway["endpointsForSessions"]>) { return this.#call("endpointsForSessions", ...args); }
   registrationsForSessions(...args: Parameters<RelayGateway["registrationsForSessions"]>) { return this.#call("registrationsForSessions", ...args); }
-  flushPeerOutbox(...args: Parameters<RelayGateway["flushPeerOutbox"]>) { return this.#call("flushPeerOutbox", ...args); }
-  async cleanup(before: Date): Promise<number> {
-    let beforeMs: number;
-    try { beforeMs = Date.prototype.getTime.call(before); } catch { throw new TypeError("relay cleanup cutoff must be a valid date"); }
-    if (!Number.isFinite(beforeMs)) throw new TypeError("relay cleanup cutoff must be a valid date");
-    return this.#call("cleanup", beforeMs);
+  async endpointForSession(id: string): Promise<RelayEndpoint | undefined> { return (await this.registrationsForSessions([id])).get(id)?.endpoint; }
+  async endpointsForSessions(ids: readonly string[]): Promise<ReadonlyMap<string, RelayEndpoint>> {
+    return new Map([...await this.registrationsForSessions(ids)].map(([id, registration]) => [id, registration.endpoint]));
   }
-  connect(...args: Parameters<RelayGateway["connect"]>) { return this.#result("connect", ...args); }
-  disconnect(...args: Parameters<RelayGateway["disconnect"]>) { return this.#result("disconnect", ...args); }
-  resolve(...args: Parameters<RelayGateway["resolve"]>) { return this.#result("resolve", ...args); }
-  send(...args: Parameters<RelayGateway["send"]>) { return this.#result("send", ...args); }
-  receive(...args: Parameters<RelayGateway["receive"]>) { return this.#result("receive", ...args); }
-  acknowledgeDelivery(...args: Parameters<RelayGateway["acknowledgeDelivery"]>) { return this.#result("acknowledgeDelivery", ...args); }
-  receivePeer(...args: Parameters<RelayGateway["receivePeer"]>) { return this.#result("receivePeer", ...args); }
-  resolvePeerEndpoint(...args: Parameters<RelayGateway["resolvePeerEndpoint"]>) { return this.#result("resolvePeerEndpoint", ...args); }
 }
