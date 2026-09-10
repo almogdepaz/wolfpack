@@ -60,7 +60,7 @@ test.skipIf(!cli)("packaged CLI/native broker/installed Pi tool loop survives se
       : entry.customType === "pi-tasks-event-record" ? entry.data?.event : undefined;
     return event ? [{ file: entry.fixtureFile, event }] : [];
   });
-  const hasEvent = (type: string) => events().some(item => item.event.taskId === taskId && item.event.type === type);
+  const hasEvent = (type: string, file: string) => events().some(item => item.file === file && item.event.taskId === taskId && item.event.type === type);
   let modelError: string | undefined, historicalDenied = false;
   model = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     try {
@@ -131,8 +131,13 @@ test.skipIf(!cli)("packaged CLI/native broker/installed Pi tool loop survives se
     await run(["session", "send", parent.sessionId, "FIXTURE_START", "--json"]);
     await until("canonical completion and parent ACK through actual Pi tools", () => {
       if (modelError) throw new Error(modelError);
-      return taskId && ack && hasEvent("task.completed") && hasEvent("task.parent_acknowledged")
-        && readEntries().some(entry => entry.message?.toolName === "agent_task_ack" && !entry.message.details?.error);
+      const entries = readEntries();
+      const parentFile = entries.find(entry => entry.message?.role === "toolResult" && entry.message.toolName === "agent_task_send" && !entry.message.details?.error)?.fixtureFile;
+      const childFile = entries.find(entry => entry.message?.role === "toolResult" && entry.message.toolName === "agent_task_done" && !entry.message.details?.error)?.fixtureFile;
+      return taskId && ack && parentFile && childFile && parentFile !== childFile
+        && hasEvent("task.completed", parentFile) && hasEvent("task.completed", childFile)
+        && hasEvent("task.parent_acknowledged", childFile)
+        && entries.some(entry => entry.fixtureFile === parentFile && entry.message?.toolName === "agent_task_ack" && !entry.message.details?.error);
     }, 45_000);
     const before = { binding: (await run(["session", "status", parent.sessionId, "--json"])).taskTransport, events: events() };
     expect(before.binding?.profile).toBe("volatile-v1"); snapshots.push(before);
