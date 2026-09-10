@@ -158,7 +158,7 @@ describe("release workflow security policy", () => {
     const bunSetupSteps = stepsUsing("oven-sh/setup-bun");
     expect(bunSetupSteps).toHaveLength(5);
     for (const step of bunSetupSteps) {
-      expect(step.with?.["bun-version"]).toBe("1.3.9");
+      expect(step.with?.["bun-version"]).toBe("1.4.2");
     }
     const rustSetupSteps = stepsUsing("dtolnay/rust-toolchain");
     expect(rustSetupSteps).toHaveLength(2);

@@ -50,7 +50,7 @@ describe("pull request Ghostty VT behavior CI policy", () => {
       expect(reference).toMatch(/^[^@\s]+@[0-9a-f]{40}$/);
     }
 
-    expect(jobSource(job)).toContain("bun-version\":\"1.3.9");
+    expect(jobSource(job)).toContain("bun-version\":\"1.4.2");
     expect(jobSource(job)).toContain("toolchain\":\"1.89.0");
   });
 
