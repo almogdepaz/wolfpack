@@ -80,19 +80,20 @@ describe("control api schema generation", () => {
 
 describe("control api schema", () => {
   test("publishes the opaque relay adapter contract", () => {
-    const connect = httpOperation("connectTaskRelay");
-    const peerTopology = httpOperation("resolvePeerTaskRelayTopology");
-    const send = httpOperation("sendTaskRelayEnvelope");
+    const endpointOperation = httpOperation("operateVolatileTaskRelay");
+    const peerTopology = httpOperation("resolveVerifiedVolatilePeer");
     const endpoint = resolveRef({ $ref: "#/$defs/RelayEndpoint" }, artifact);
     const relay = (endpoint.properties as JsonObject).relay as JsonObject;
 
-    expect(connect.route).toBe("POST /api/task-relay/v2/connect");
-    expect(peerTopology.route).toBe("POST /api/task-relay/v2/peer/resolve");
-    expect(peerTopology.request).toMatchObject({
-      required: ["origin", "endpoint"],
-      properties: { origin: { $ref: "#/$defs/TailnetOrigin" }, endpoint: { $ref: "#/$defs/RelayEndpoint" } },
+    expect(endpointOperation.route).toBe("POST /api/task-relay/volatile-v1");
+    expect(peerTopology.route).toBe("POST /api/task-relay/volatile-v1/resolve-peer");
+    expect(resolveRef(peerTopology.request as JsonObject, artifact)).toMatchObject({
+      required: ["profile", "epoch", "callerSession", "endpoint", "origin", "target"],
+      properties: { origin: { $ref: "#/$defs/TailnetOrigin" } },
     });
-    expect(send.route).toBe("POST /api/task-relay/v2/send");
+    for (const retired of ["connectTaskRelay", "sendTaskRelayEnvelope", "getVolatilePeerIdentity"]) expect(artifact.http).not.toHaveProperty(retired);
+    expect(JSON.stringify(artifact)).not.toContain('"durable-v2"');
+    expect(JSON.stringify(artifact)).not.toContain("x-wolfpack-relay-signature");
     expect(relay).toMatchObject({ type: "string" });
     expect(String(relay.pattern)).toContain("wolfpack");
     expect(JSON.stringify(endpoint)).not.toContain("ts.net");

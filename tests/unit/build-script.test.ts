@@ -51,6 +51,7 @@ function prepareFixture(): { readonly root: string; readonly bin: string; readon
   mkdirSync(join(fixtureRoot, "bin"), { recursive: true });
   mkdirSync(bin, { recursive: true });
   cpSync(join(process.cwd(), "scripts", "build.ts"), join(fixtureRoot, "scripts", "build.ts"));
+  cpSync(join(process.cwd(), "src", "runtime-version.ts"), join(fixtureRoot, "src", "runtime-version.ts"));
   cpSync(join(process.cwd(), "scripts", "broker-artifacts.ts"), join(fixtureRoot, "scripts", "broker-artifacts.ts"));
   cpSync(join(process.cwd(), "scripts", "release-version-policy.ts"), join(fixtureRoot, "scripts", "release-version-policy.ts"));
   writeFileSync(join(fixtureRoot, "package.json"), JSON.stringify({

@@ -43,7 +43,7 @@ interface RegistrationEntry {
   references: number;
   bytes: number;
 }
-interface Route { readonly id: string; readonly origin: string; readonly bytes: number; items: number; payloadBytes: number }
+interface Route { readonly id: string; readonly origin: string; readonly peerEpoch?: string; readonly bytes: number; items: number; payloadBytes: number }
 type State = "mailbox" | "acknowledged" | "forwarding" | "forwarded" | "unconfirmed";
 /** No payload/parsed envelope is allowed in a receipt or secondary index. */
 interface Receipt {
@@ -71,7 +71,8 @@ export type ForwardAttempt = { readonly kind: "attempt"; readonly token: string;
  * Worker-owned engine for the negotiated volatile profile. No filesystem/root,
  * timers, network calls, full-state snapshots or process-global store registry.
  * Methods linearize synchronously; the gateway still owns broker inspection and
- * trusted peer admission. NOT wired into the legacy v2 gateway until cutover.
+ * trusted peer admission. Endpoint generation replacement explicitly loses its
+ * unreachable obligations, while other live endpoints retain accepted mail.
  */
 export class MemoryRelayStore {
   readonly #epoch = randomUUID();
@@ -130,8 +131,11 @@ export class MemoryRelayStore {
     };
     // Include space for the fixed-size cursor, references, and index ownership.
     const size = bytes(registration) + 128;
-    if ((!existing && this.#registrations.size >= this.#limits.registrations)
-      || this.#metadataBytes + size - (existing?.bytes ?? 0) > this.#limits.metadataBytes) fail("RELAY_CAPACITY");
+    if ((!prior && this.#registrations.size >= this.#limits.registrations)
+      || this.#metadataBytes + size - (prior?.bytes ?? 0) > this.#limits.metadataBytes) fail("RELAY_CAPACITY");
+    // Preflight before discarding anything. A different generation cannot ever
+    // ACK its predecessor's mail or resume its forwarding attempts.
+    if (prior && !existing) this.#retire(prior);
     const entry = existing ?? { value: registration, mailbox: new Map(), cursor: 0n, mailboxBytes: 0, references: 0, bytes: 0 };
     this.#metadataBytes += size - entry.bytes;
     entry.value = registration; entry.bytes = size;
@@ -164,23 +168,27 @@ export class MemoryRelayStore {
     return true;
   }
 
-  peerRoute(epoch: string, origin: string): { readonly id: string; readonly origin: string } {
+  peerRoute(epoch: string, origin: string, peerEpoch?: string): { readonly id: string; readonly origin: string } {
     this.checkEpoch(epoch);
-    if (!text(origin)) fail("INVALID_REQUEST");
+    if (!text(origin) || (peerEpoch !== undefined && !isOpaqueRelayId(peerEpoch))) fail("INVALID_REQUEST");
     let url: URL;
     try { url = new URL(origin); } catch { return fail("INVALID_REQUEST"); }
     if (url.protocol !== "https:" || url.origin !== origin || url.pathname !== "/" || url.search || url.hash || canonicalTailnetOrigin(url.hostname) !== origin) fail("INVALID_REQUEST");
-    const existing = this.#origins.get(origin);
+    // An epoch change gets a different alias, so immutable envelope hashing
+    // also binds remote lifetime without rewriting the opaque endpoint format.
+    const key = `${origin}\0${peerEpoch ?? ""}`;
+    const existing = this.#origins.get(key);
     if (existing) return { id: existing, origin };
     const id = `${RELAY_ID}:peer:${randomUUID()}`;
-    const size = bytes({ id, origin }) + 64;
+    const size = bytes({ id, origin, ...(peerEpoch && { peerEpoch }) }) + Buffer.byteLength(key) + 64;
     if (this.#routes.size >= this.#limits.routes || this.#metadataBytes + size > this.#limits.metadataBytes) fail("RELAY_CAPACITY");
-    this.#routes.set(id, { id, origin, bytes: size, items: 0, payloadBytes: 0 });
-    this.#origins.set(origin, id); this.#metadataBytes += size;
+    this.#routes.set(id, { id, origin, peerEpoch, bytes: size, items: 0, payloadBytes: 0 });
+    this.#origins.set(key, id); this.#metadataBytes += size;
     return { id, origin }; // Routes remain stable for the epoch; never silently evict aliases.
   }
 
   peerOrigin(epoch: string, id: string): string | undefined { this.checkEpoch(epoch); return this.#routes.get(id)?.origin; }
+  peerEpoch(epoch: string, id: string): string | undefined { this.checkEpoch(epoch); return this.#routes.get(id)?.peerEpoch; }
 
   accept(epoch: string, input: RelayEnvelope, now: number): { readonly kind: "accepted" | "duplicate"; readonly acceptanceId: string } {
     this.checkEpoch(epoch); time(now);
@@ -294,6 +302,22 @@ export class MemoryRelayStore {
     return true;
   }
 
+  /** Observe forwarding without starting another attempt (even after cooldown). */
+  forwardStatus(epoch: string, id: string, now: number): Exclude<ForwardAttempt, { kind: "attempt" }> | undefined {
+    this.checkEpoch(epoch); time(now);
+    const receipt = this.#receipt(id, now);
+    if (!receipt) return undefined;
+    if (receipt.state === "forwarded") return { kind: "forwarded", acceptanceId: receipt.acceptanceId! };
+    if (receipt.state === "unconfirmed") return { kind: "unconfirmed", mayHaveBeenDelivered: true };
+    if (receipt.state !== "forwarding") return undefined;
+    if (!receipt.token && now >= receipt.deadline) {
+      this.#terminal(receipt, "unconfirmed", now);
+      this.#emit("forward_unconfirmed", now, id);
+      return { kind: "unconfirmed", mayHaveBeenDelivered: true };
+    }
+    return { kind: "pending", retryAt: receipt.nextAttemptAt };
+  }
+
   /** Timer/caller drives bounded expiry work. Never expires accepted mailboxes. */
   maintenance(epoch: string, now: number, limit = 64): number {
     this.checkEpoch(epoch); time(now);
@@ -319,6 +343,21 @@ export class MemoryRelayStore {
       }
     }
     return processed;
+  }
+
+  #retire(entry: RegistrationEntry): void {
+    const id = entry.value.endpoint.id;
+    // Bounded by the receipt ceiling, on generation replacement only. Do not
+    // discard already accepted mail at another endpoint when its sender exits.
+    for (const receipt of this.#receipts.values()) {
+      const target = receipt.target.relay === RELAY_ID && receipt.target.id === id;
+      const source = receipt.source.relay === RELAY_ID && receipt.source.id === id;
+      if (!target && (!source || receipt.state === "mailbox")) continue;
+      this.#releasePayload(receipt);
+      this.#forget(receipt);
+    }
+    this.#registrations.delete(id); this.#metadataBytes -= entry.bytes;
+    this.#expiry.delete(`g:${id}`);
   }
 
   #activeRegistration(id: string, now: number): RegistrationEntry | undefined {
@@ -390,7 +429,7 @@ export class MemoryRelayStore {
     return receipt;
   }
 
-  #terminal(receipt: Receipt, state: "acknowledged" | "forwarded" | "unconfirmed", now: number): void {
+  #releasePayload(receipt: Receipt): void {
     if (this.#payloads.delete(receipt.id)) {
       this.#activeBytes -= receipt.payloadBytes;
       if (receipt.state === "mailbox") {
@@ -401,6 +440,10 @@ export class MemoryRelayStore {
         route.items--; route.payloadBytes -= receipt.payloadBytes;
       }
     }
+  }
+
+  #terminal(receipt: Receipt, state: "acknowledged" | "forwarded" | "unconfirmed", now: number): void {
+    this.#releasePayload(receipt);
     receipt.state = state; receipt.token = undefined;
     receipt.expiresAt = now + MEMORY_RELAY_TIMING.receiptMs;
     this.#expiry.set(`r:${receipt.id}`, receipt.expiresAt);
@@ -411,7 +454,8 @@ export class MemoryRelayStore {
     this.#expiry.delete(`r:${receipt.id}`);
     for (const endpoint of [receipt.source, receipt.target]) {
       if (endpoint.relay !== RELAY_ID) continue;
-      const entry = this.#registrations.get(endpoint.id)!;
+      const entry = this.#registrations.get(endpoint.id);
+      if (!entry) continue; // A retired sender does not revoke another endpoint's accepted mail.
       entry.references--;
       if (!entry.references) this.#expiry.set(`g:${endpoint.id}`, Date.parse(entry.value.leaseExpiresAt));
     }

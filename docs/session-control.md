@@ -12,7 +12,7 @@ The global selector supports `list`/`ls`, `session create`, deprecated `session 
 
 A short name is expanded using the exact Tailnet suffix from configured `tailscaleHostname`. A full name must be a canonical HTTPS Tailnet hostname in that suffix; URLs, ports, paths, foreign suffixes, malformed or duplicate selectors, and missing configuration fail closed without a localhost fallback. Before any control request, the CLI sends an exact, bounded `GET /api/machine` probe with redirects disabled, a bounded timeout, and the normal Wolfpack JWT `Authorization` header when configured. The structured handshake must report the selected canonical origin and session-control capability.
 
-Subsequent requests go directly to that verified HTTPS origin. Remote JSON successes retain every server field and add the verified identity as `"machine": { "tailnetNodeId": string, "installationId": string, "displayName": string, "origin": string }`; server-owned `sessionId` values are unchanged. Without `--machine`, request routing and JSON output remain local and unchanged.
+Subsequent requests go directly to that verified HTTPS origin. Remote JSON successes retain server fields (except the task endpoint projection described below) and add the verified identity as `"machine": { "tailnetNodeId": string, "installationId": string, "displayName": string, "origin": string }`; server-owned `sessionId` values are unchanged. Without `--machine`, request routing and JSON output remain local and unchanged.
 
 `agent spawn` still uses `POST /api/session-open` and resolves its parent on the selected machine. It does not create cross-machine lineage: a parent absent from the selected machine fails through the existing structured response.
 
@@ -42,7 +42,24 @@ Add `--task-worker` to `session create` or `agent spawn` only with `--project-di
 
 Before creating anything, Wolfpack resolves and validates only the resources it will launch: `WOLFPACK_TASK_WORKER_PI_EXECUTABLE` (otherwise `pi` from `PATH`) and `WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION` (otherwise `$PI_CODING_AGENT_DIR/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts`, or `~/.pi/agent/...` when the Pi config directory is unset). Both configured paths must be absolute; the executable must be a regular executable file (working package-manager symlinks are accepted), and the extension must be a readable regular file.
 
-The child launches Pi with the explicit extension and `PI_TASK_WORKER=1`; no startup assignment prompt runs. Success waits only for the exact live broker `sessionId`, exact canonical project root, Pi harness, and a lease-valid opaque relay v2 endpoint. It does not infer model readiness, task execution, or state from terminal output. A ready success additionally returns `taskEndpoint: { relay, id }`.
+The child launches Pi with the explicit extension and `PI_TASK_WORKER=1`; no startup assignment prompt runs. Success waits only for the exact live broker `sessionId`, exact canonical project root, Pi harness, and a lease-valid endpoint in the selected relay profile. The normal memory-owned profile also checks that endpoint and epoch have not changed before returning. It does not infer model readiness, task execution, or state from terminal output. A ready local success additionally returns `taskEndpoint: { relay, id }`.
+
+For a remote launch or exact `session status` selection, the CLI resolves that
+endpoint through the coordinator's **local** live registration and host-verified
+trusted Tailnet peer route (all visible online peers are assumed honest). `WOLFPACK_SESSION_NAME` must identify the local coordinator;
+normal JWT configuration must authorize both control servers. The resulting
+`taskEndpoint` is a locally routable opaque alias, with `taskRouting` describing
+the source epoch/origin and `remoteTaskTransport` retaining the destination's
+registration metadata. Resolution is bounded to 12 seconds after the remote
+operation. Remote `list --json` does not allocate routes for the whole fleet: it
+prints `remoteTaskEndpoint`/`remoteTaskTransport` and asks you to select an exact
+session with `session status`.
+
+If qualification fails, there is **no `taskEndpoint`**: the output retains the
+remote `sessionId`, records `taskEndpointError`, and selected launch/status exits
+nonzero. The remote session may have been successfully created and is **retained**;
+inspect or explicitly kill that exact remote ID rather than blindly retrying
+creation. This is not a claim of cleanup, task execution, or delivery.
 
 After creation, a failed root/identity/liveness/endpoint check or deadline kills only the exact created stable ID. Failure responses use `TASK_WORKER_NOT_READY`; they retain `createdSession` plus `cleanup: "completed" | "unconfirmed"`. Resource preflight failure returns `TASK_WORKER_PREFLIGHT_FAILED` without creating a session.
 

@@ -1,39 +1,20 @@
-import { expect, test, jest, spyOn } from "bun:test";
-import { TaskRelayGateway } from "../../src/task-relay/gateway.ts";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { mkdtempSync, existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { AGENT_KIND } from "../../src/agent-kind.ts";
 import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
-import { RELAY_ID, RELAY_ERROR, RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "../../src/task-relay/domain.ts";
-
-test("background maintenance cannot accumulate overlapping history scans", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "relay-maintenance-test-"));
-  const gateway = new TaskRelayGateway({ root: directory, retryIntervalMs: 20 });
-  const flush = spyOn(gateway, "flushPeerOutbox").mockResolvedValue({ forwarded: 0, pending: 0 });
-  jest.useFakeTimers();
-  let release!: () => void;
-  try {
-    await gateway.initialize(); flush.mockClear();
-    const blocked = new Promise<void>(r => { release = r; });
-    flush.mockImplementation(async () => { await blocked; return { forwarded: 0, pending: 0 }; });
-    jest.advanceTimersByTime(100);
-    expect(flush).toHaveBeenCalledTimes(1);
-    release();
-    for (let i = 0; i < 10; i++) await Promise.resolve();
-    jest.advanceTimersByTime(20);
-    expect(flush).toHaveBeenCalledTimes(2);
-  } finally { release?.(); gateway.close(); flush.mockRestore(); jest.useRealTimers(); rmSync(directory, { recursive: true, force: true }); }
-});
+import type { RelayEnvelope } from "../../src/task-relay/domain.ts";
+import type { VolatileBinding } from "../../src/task-relay/volatile-protocol.ts";
 
 const root = () => mkdtempSync(join(tmpdir(), "relay-worker-test-"));
 const inspect = async (selector: string) => ({ ok: true as const, session: selector, sessionId: selector, projectPath: "/tmp", harness: AGENT_KIND.PI.id, alive: true });
-const input = (callerSession: string) => ({ callerSession, generation: "generation", protocolVersions: [RELAY_PROTOCOL_VERSION] });
-async function connect(g: WorkerRelayGateway, selector: string) {
-  const result = await g.connect(input(selector));
-  if (!result.ok) throw new Error(JSON.stringify(result));
-  return result.endpoint;
+const input = (callerSession: string) => ({ profile: "volatile-v1" as const, operation: "connect", callerSession, generation: "generation", protocolVersions: [2] });
+async function connect(gateway: WorkerRelayGateway, callerSession: string): Promise<VolatileBinding> {
+  const result = await gateway.volatile(input(callerSession));
+  if (!result.ok || result.value.kind !== "connected") throw new Error(JSON.stringify(result));
+  return { profile: "volatile-v1", epoch: result.epoch, callerSession, endpoint: result.value.endpoint };
 }
 const tick = () => new Promise(r => setTimeout(r, 10));
 async function until(check: () => boolean) {
@@ -41,148 +22,75 @@ async function until(check: () => boolean) {
   throw new Error("test readiness timeout");
 }
 
-test("worker preserves input/result ownership, duplicate/content conflicts, cursor and restart semantics", async () => {
+test("worker owns snapshots, dedup/conflicts, individual ACKs and loses all state on restart", async () => {
   const directory = root(); let g = new WorkerRelayGateway({ root: directory, inspectSession: inspect });
   try {
     const registration = input("sender");
-    const pending = g.connect(registration); registration.generation = "mutated";
-    const sourceResult = await pending; if (!sourceResult.ok) throw new Error("connect failed");
-    const source = sourceResult.endpoint, target = await connect(g, "receiver");
-    expect(JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8")).registrations[0].generation).toBe("generation");
-    const original: RelayEnvelope = { envelopeId: randomUUID(), source, target, protocolVersion: RELAY_PROTOCOL_VERSION, createdAt: new Date().toISOString(), payload: { text: "original" } };
+    const pending = g.volatile(registration); registration.generation = "mutated";
+    const first = await pending; if (!first.ok || first.value.kind !== "connected") throw new Error("connect failed");
+    const source = await connect(g, "sender"), target = await connect(g, "receiver");
+    expect(source.endpoint).toEqual(first.value.endpoint); // Original generation was captured before mutation.
+    const original: RelayEnvelope = { envelopeId: randomUUID(), source: source.endpoint, target: target.endpoint, protocolVersion: 2, createdAt: new Date().toISOString(), payload: { text: "original" } };
     const submitted = structuredClone(original);
-    const sent = g.send({ callerSession: "sender", envelope: submitted });
+    const sent = g.volatile({ ...source, operation: "send", envelope: submitted });
     (submitted.payload as { text: string }).text = "mutated";
-    expect(await sent).toMatchObject({ ok: true, kind: "accepted", forwarding: "local" });
-    expect(await g.send({ callerSession: "sender", envelope: original })).toMatchObject({ ok: true, kind: "duplicate" });
-    expect(await g.send({ callerSession: "sender", envelope: submitted })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.ENVELOPE_CONFLICT } });
-    expect(await g.send({ callerSession: "receiver", envelope: original })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.SOURCE_MISMATCH } });
-    expect(await g.send({ callerSession: "sender", envelope: { ...original, envelopeId: randomUUID(), payload: { value: NaN } } })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.INVALID_REQUEST } });
-    class NotJson { value = "must not become a plain payload after cloning"; }
-    const nonJson = { ...original, envelopeId: randomUUID(), payload: new NotJson() as unknown as RelayEnvelope["payload"] };
-    expect(await g.send({ callerSession: "sender", envelope: nonJson })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.INVALID_REQUEST } });
-    expect(await g.receivePeer({ origin: "https://sender.example.ts.net", envelope: nonJson })).toMatchObject({ ok: false, error: { code: RELAY_ERROR.INVALID_REQUEST } });
-    const page = await g.receive({ callerSession: "receiver", cursor: "0" }); if (!page.ok) throw new Error("receive failed");
-    expect(page.envelopes).toEqual([original]); expect(page.nextCursor).toBe("1");
-    expect(await g.acknowledgeDelivery({ callerSession: "receiver", envelopeId: original.envelopeId })).toMatchObject({ ok: true, kind: "acknowledged" });
+    expect(await sent).toMatchObject({ ok: true, value: { kind: "accepted", duplicate: false, forwarding: "local" } });
+    expect(await g.volatile({ ...source, operation: "send", envelope: original })).toMatchObject({ ok: true, value: { duplicate: true } });
+    expect(await g.volatile({ ...source, operation: "send", envelope: submitted })).toMatchObject({ ok: false, error: { code: "ENVELOPE_CONFLICT" } });
+    expect(await g.volatile({ ...target, operation: "send", envelope: original })).toMatchObject({ ok: false, error: { code: "SOURCE_MISMATCH" } });
+    expect(await g.volatile({ ...source, operation: "send", envelope: { ...original, payload: { value: NaN } } })).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+    class NotJson { value = "must not become plain after cloning"; }
+    const nonJson = { ...original, payload: new NotJson() as unknown as RelayEnvelope["payload"] };
+    expect(await g.volatile({ ...source, operation: "send", envelope: nonJson })).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+    expect(await g.volatilePeer({ origin: "https://sender.example.ts.net", envelope: nonJson })).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
+    const page = await g.volatile({ ...target, operation: "receive", cursor: "0" });
+    expect(page).toMatchObject({ ok: true, value: { kind: "page", deliveries: [{ cursor: "1", envelope: original }], nextCursor: "1" } });
+    expect(await g.volatile({ ...target, operation: "acknowledge", envelopeId: original.envelopeId })).toMatchObject({ ok: true, value: { kind: "acknowledged", duplicate: false } });
+    expect(await g.volatile({ ...target, operation: "acknowledge", envelopeId: original.envelopeId })).toMatchObject({ ok: true, value: { duplicate: true } });
     const endpoints = await g.endpointsForSessions(["sender", "receiver"]);
-    expect(endpoints.get("sender")).toEqual(source); (endpoints as Map<string, unknown>).clear();
-    expect((await g.endpointsForSessions(["sender"])).get("sender")).toEqual(source);
+    expect(endpoints.get("sender")).toEqual(source.endpoint); (endpoints as Map<string, unknown>).clear();
+    expect((await g.endpointsForSessions(["sender"])).get("sender")).toEqual(source.endpoint);
+    expect(existsSync(join(directory, "relay-state.json"))).toBe(false);
+    expect(readdirSync(directory)).toEqual([]); // No hidden default investigation/history spool either.
     await g.close();
     g = new WorkerRelayGateway({ root: directory, inspectSession: inspect }); await g.initialize();
-    expect(await g.send({ callerSession: "sender", envelope: original })).toMatchObject({ ok: true, kind: "duplicate" });
-    expect(await g.receive({ callerSession: "receiver", cursor: "1" })).toMatchObject({ ok: true, envelopes: [] });
-    expect(await g.acknowledgeDelivery({ callerSession: "receiver", envelopeId: original.envelopeId })).toMatchObject({ ok: true, kind: "duplicate" });
+    expect((await g.registrationsForSessions(["sender", "receiver"])).size).toBe(0);
+    expect(await g.volatile({ ...source, operation: "send", envelope: original })).toMatchObject({ ok: false, error: { code: "RELAY_RESET" } });
+    expect(await g.volatile({ ...target, operation: "acknowledge", envelopeId: original.envelopeId })).toMatchObject({ ok: false, error: { code: "RELAY_RESET" } });
+    const fresh = await connect(g, "receiver");
+    expect(fresh.endpoint).not.toEqual(target.endpoint);
+    expect(await g.volatile({ ...fresh, operation: "receive", cursor: "0" })).toMatchObject({ ok: true, value: { deliveries: [] } });
   } finally { await g.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("worker cleanup forwards a public Date cutoff and retains only records at the boundary", async () => {
-  const directory = root();
-  const gateway = new WorkerRelayGateway({ root: directory, inspectSession: inspect });
-  try {
-    const source = await connect(gateway, "sender");
-    const target = await connect(gateway, "receiver");
-    const envelope: RelayEnvelope = {
-      envelopeId: randomUUID(), source, target, protocolVersion: RELAY_PROTOCOL_VERSION,
-      createdAt: new Date().toISOString(), payload: { cleanup: true },
-    };
-    expect(await gateway.send({ callerSession: "sender", envelope })).toMatchObject({ ok: true, forwarding: "local" });
-    const invalidCutoff = gateway.cleanup(new Date(Number.NaN));
-    await expect(invalidCutoff).rejects.toThrow("relay cleanup cutoff must be a valid date");
-    const state = JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8")) as {
-      readonly envelopes: readonly { readonly acceptedAt: string }[];
-    };
-    const acceptedAt = state.envelopes[0]?.acceptedAt;
-    if (acceptedAt === undefined) throw new Error("expected accepted relay envelope");
-    const cutoff = new Date(acceptedAt);
-    Object.defineProperty(cutoff, "getTime", { value: () => { throw new Error("caller getTime must not run"); } });
-    expect(await gateway.cleanup(cutoff)).toBe(0);
-    expect(await gateway.receive({ callerSession: "receiver", cursor: "0" })).toMatchObject({ ok: true, envelopes: [envelope] });
-    expect(await gateway.cleanup(new Date(Date.parse(acceptedAt) + 1))).toBe(1);
-    expect(await gateway.receive({ callerSession: "receiver", cursor: "0" })).toMatchObject({ ok: true, envelopes: [] });
-  } finally { await gateway.close(); rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("peer ingress has reserved capacity while regular admissions are full", async () => {
-  const directory = root(); let release!: () => void;
-  const gate = new Promise<void>(r => { release = r; }); let held = 0;
-  const g = new WorkerRelayGateway({ root: directory, inspectSession: async selector => {
-    if (selector === "held") { held++; await gate; } return inspect(selector);
-  } });
-  try {
-    const target = await connect(g, "receiver");
-    const requests = Array.from({ length: 28 }, () => g.connect(input("held")));
-    expect(await g.connect(input("overflow"))).toMatchObject({ ok: false, error: { code: RELAY_ERROR.STORE_UNAVAILABLE, retryable: true } });
-    await until(() => held === 4);
-    expect(await g.receivePeer({ origin: "https://sender.example.ts.net", envelope: {
-      envelopeId: randomUUID(), protocolVersion: RELAY_PROTOCOL_VERSION, source: { relay: RELAY_ID, id: randomUUID() }, target,
-      createdAt: new Date().toISOString(), payload: { ingress: true },
-    } })).toMatchObject({ ok: true, kind: "accepted" });
-    release(); expect((await Promise.all(requests)).every(r => r.ok)).toBe(true);
-  } finally { release(); await g.close(); rmSync(directory, { recursive: true, force: true }); }
-});
-
-test("two workers preserve opaque routes and recover a lost peer response without duplicating delivery", async () => {
-  const aRoot = root(), bRoot = root();
-  let a!: WorkerRelayGateway, b!: WorkerRelayGateway, drop = true;
-  const optionsA = { root: aRoot, inspectSession: inspect, peerOrigin: "https://a.example.ts.net", peerFetch: async (_url: RequestInfo | URL, init?: RequestInit) => {
-    const result = await b.receivePeer(JSON.parse(String(init?.body)));
-    if (drop) { drop = false; throw new Error("response lost"); }
-    return Response.json(result);
-  } };
-  a = new WorkerRelayGateway(optionsA);
-  b = new WorkerRelayGateway({ root: bRoot, inspectSession: inspect, peerOrigin: "https://b.example.ts.net", peerFetch: async (_url, init) => Response.json(await a.receivePeer(JSON.parse(String(init?.body)))) });
-  try {
-    const source = await connect(a, "overlap"), destination = await connect(b, "overlap");
-    expect((await a.endpointsForSessions(["overlap"])).get("overlap")).toEqual(source);
-    expect((await b.endpointsForSessions(["overlap"])).get("overlap")).toEqual(destination);
-    const route = await a.resolvePeerEndpoint({ origin: "https://b.example.ts.net", endpoint: destination }); if (!route.ok) throw new Error("route failed");
-    expect(route.endpoint.relay.startsWith(`${RELAY_ID}:peer:`)).toBe(true);
-    const envelope = { envelopeId: randomUUID(), source, target: route.endpoint, protocolVersion: RELAY_PROTOCOL_VERSION, payload: { hello: true }, createdAt: new Date().toISOString() };
-    expect(await a.send({ callerSession: "overlap", envelope })).toMatchObject({ ok: true, kind: "accepted", forwarding: "pending" });
-    await a.close(); a = new WorkerRelayGateway(optionsA); await a.initialize();
-    const page = await b.receive({ callerSession: "overlap", cursor: "0" }); if (!page.ok) throw new Error("receive failed");
-    expect(page.envelopes.length).toBe(1); expect(page.envelopes[0]!.envelopeId).toBe(envelope.envelopeId);
-    expect(await b.acknowledgeDelivery({ callerSession: "overlap", envelopeId: envelope.envelopeId })).toMatchObject({ ok: true });
-    expect(await b.send({ callerSession: "overlap", envelope: { ...envelope, envelopeId: randomUUID(), source: destination, target: page.envelopes[0]!.source } })).toMatchObject({ ok: true, forwarding: "forwarded" });
-    const replies = await a.receive({ callerSession: "overlap", cursor: "0" }); if (!replies.ok) throw new Error("reply missing");
-    expect(replies.envelopes.length).toBe(1);
-    expect(await a.acknowledgeDelivery({ callerSession: "overlap", envelopeId: replies.envelopes[0]!.envelopeId })).toMatchObject({ ok: true });
-  } finally { await a.close(); await b.close(); rmSync(aRoot, { recursive: true, force: true }); rmSync(bRoot, { recursive: true, force: true }); }
-});
-
-test("dead/missing host inspection and malformed fresh state remain fail-closed", async () => {
+test("dead/missing host inspection fails closed while obsolete disk state is never read", async () => {
   const directory = root(); let alive = true;
+  writeFileSync(join(directory, "relay-state.json"), "malformed retired ledger");
   const g = new WorkerRelayGateway({ root: directory, inspectSession: async selector => selector === "missing"
     ? { ok: false as const, code: "NOT_FOUND" as const } : ({ ...await inspect(selector), alive }) });
   try {
-    await connect(g, "sender");
-    expect(await g.connect(input("missing"))).toMatchObject({ ok: false, error: { code: RELAY_ERROR.CALLER_NOT_FOUND } });
+    const source = await connect(g, "sender");
+    expect(await g.volatile(input("missing"))).toMatchObject({ ok: false, error: { code: "CALLER_NOT_FOUND" } });
     alive = false;
-    expect(await g.connect(input("sender"))).toMatchObject({ ok: false, error: { code: RELAY_ERROR.CALLER_DEAD } });
+    expect(await g.volatile(input("sender"))).toMatchObject({ ok: false, error: { code: "CALLER_DEAD" } });
     alive = true;
-    const path = join(directory, "relay-state.json"), good = readFileSync(path);
-    writeFileSync(path, "malformed");
-    expect((await g.endpointsForSessions([])).size).toBe(0);
-    expect(await g.connect(input("sender"))).toMatchObject({ ok: false, error: { code: RELAY_ERROR.STORE_UNAVAILABLE } });
-    writeFileSync(path, good);
-    expect((await g.connect(input("sender"))).ok).toBe(true);
+    expect((await connect(g, "sender")).endpoint).toEqual(source.endpoint);
   } finally { await g.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("deadline stops the owner, rejects all work, and late inspection cannot write after replacement", async () => {
+test("deadline stops owner and late inspection cannot affect replacement state", async () => {
   const directory = root(); let release!: () => void, held = false;
   const gate = new Promise<void>(r => { release = r; });
   const g = new WorkerRelayGateway({ root: directory, requestTimeoutMs: 1000, inspectSession: async selector => { held = true; await gate; return inspect(selector); } });
   let replacement: WorkerRelayGateway | undefined;
   try {
-    await g.endpointsForSessions([]); // prove startup succeeded before withholding host inspection
+    await g.endpointsForSessions([]);
     expect(() => new WorkerRelayGateway({ root: directory })).toThrow("already has a worker owner");
-    const pending = g.connect({ ...input("sender"), generation: "old" }); await until(() => held);
-    expect(await pending).toMatchObject({ ok: false, error: { code: RELAY_ERROR.STORE_UNAVAILABLE, retryable: true } });
-    expect(await g.connect(input("sender"))).toMatchObject({ ok: false, error: { code: RELAY_ERROR.STORE_UNAVAILABLE } });
+    const pending = g.volatile({ ...input("sender"), generation: "old" }); await until(() => held);
+    expect(await pending).toMatchObject({ ok: false, error: { code: "RELAY_RESET", retryable: false } });
+    expect(await g.volatile(input("sender"))).toMatchObject({ ok: false, error: { code: "RELAY_RESET" } });
     await g.close(); replacement = new WorkerRelayGateway({ root: directory, inspectSession: inspect });
-    await connect(replacement, "sender"); release(); await tick();
-    expect(JSON.parse(readFileSync(join(directory, "relay-state.json"), "utf8")).registrations[0].generation).toBe("generation");
+    const fresh = await connect(replacement, "sender"); release(); await tick();
+    expect((await replacement.registrationsForSessions(["sender"])).get("sender")?.endpoint).toEqual(fresh.endpoint);
   } finally { release(); await g.close(); await replacement?.close(); rmSync(directory, { recursive: true, force: true }); }
 });

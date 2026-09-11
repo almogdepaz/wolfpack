@@ -40,7 +40,7 @@ export {
   __runSessionNotificationObservationForTests,
 } from "./session-observation.js";
 import { taskRoutes } from "./task-routes.ts";
-import { taskRelayRoutes } from "./task-relay-routes.ts";
+import { volatileRelayRoutes } from "./volatile-relay-routes.ts";
 import { getTaskGateway } from "../tasks/gateway.ts";
 import { projectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, sessionControlRoutes } from "./session-control-routes.js";
@@ -271,7 +271,7 @@ export const routes: Record<
   // ── Agent-triggered notifications ──
 
   ...taskRoutes,
-  ...taskRelayRoutes,
+  ...volatileRelayRoutes,
 
   ...pushNotifyRoutes,
 };

@@ -9,7 +9,7 @@ import { AGENT_KIND } from "../../src/agent-kind.ts";
 
 const directory = () => mkdtempSync(join(tmpdir(), "relay-bootstrap-regression-"));
 const inspectSession = async (session: string) => ({ ok: true as const, session, sessionId: session, projectPath: "/tmp", harness: AGENT_KIND.PI.id, alive: true });
-const registration = { callerSession: "sender", generation: "generation", protocolVersions: [2] };
+const registration = { profile: "volatile-v1", operation: "connect", callerSession: "sender", generation: "generation", protocolVersions: [2] };
 
 test("original bootstrap accessor cannot execute in the owner acquisition gap", async () => {
   const root = directory(); let calls = 0;
@@ -25,20 +25,20 @@ test("original bootstrap accessor cannot execute in the owner acquisition gap", 
     expect(calls).toBe(0);
     expect(inner).toBeUndefined();
     outer = new WorkerRelayGateway({ root, inspectSession });
-    expect(await outer.connect(registration)).toMatchObject({ ok: true });
+    expect(await outer.volatile(registration)).toMatchObject({ ok: true });
     expect(() => new WorkerRelayGateway({ root, inspectSession })).toThrow("already has a worker owner");
     await outer.close();
     replacement = new WorkerRelayGateway({ root, inspectSession });
     await outer.close(); // A previous owner's repeated close cannot free a replacement.
     expect(() => new WorkerRelayGateway({ root, inspectSession })).toThrow("already has a worker owner");
-    expect(await replacement.connect(registration)).toMatchObject({ ok: true });
+    expect(await replacement.volatile(registration)).toMatchObject({ ok: true });
   } finally { await inner?.close(); await outer?.close(); await replacement?.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("every original option descriptor is checked before any getter, proxy or inherited value is read", async () => {
   const root = directory(); let gateway: WorkerRelayGateway | undefined;
   try {
-    for (const key of ["root", "requestTimeoutMs", "now", "peerOrigin", "retryIntervalMs", "retentionMs", "cleanupIntervalMs", "inspectSession", "peerFetch"]) {
+    for (const key of ["root", "profile", "requestTimeoutMs", "now", "peerOrigin", "retryIntervalMs", "retentionMs", "cleanupIntervalMs", "inspectSession", "peerFetch"]) {
       for (const enumerable of [false, true]) {
         let calls = 0;
         const options = { root, inspectSession };
@@ -57,7 +57,7 @@ test("every original option descriptor is checked before any getter, proxy or in
       expect(() => new WorkerRelayGateway(options as GatewayOptions)).toThrow();
     }
     gateway = new WorkerRelayGateway({ root, inspectSession });
-    expect(await gateway.connect(registration)).toMatchObject({ ok: true });
+    expect(await gateway.volatile(registration)).toMatchObject({ ok: true });
   } finally { await gateway?.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -70,13 +70,13 @@ test("captured plain options retain the selected callback and release the origin
     gateway = new WorkerRelayGateway(options);
     options.root = otherRoot;
     options.inspectSession = async session => ({ ...await inspectSession(session), alive: false });
-    expect(await gateway.connect(registration)).toMatchObject({ ok: true });
+    expect(await gateway.volatile(registration)).toMatchObject({ ok: true });
     // Internal ownership must not use a caller-writable public label for release.
     (gateway as { root: string }).root = otherRoot;
     await gateway.close();
     expect(() => new WorkerRelayGateway({ root: otherRoot, inspectSession })).toThrow("already has a worker owner");
     replacement = new WorkerRelayGateway({ root, inspectSession });
-    expect(await replacement.connect(registration)).toMatchObject({ ok: true });
+    expect(await replacement.volatile(registration)).toMatchObject({ ok: true });
   } finally { await gateway?.close(); await replacement?.close(); await other.close(); rmSync(root, { recursive: true, force: true }); rmSync(otherRoot, { recursive: true, force: true }); }
 });
 
@@ -98,16 +98,16 @@ test("partially started worker is terminated and its reservation released on con
     await exit;
     await new Promise(resolve => setTimeout(resolve, 10));
     gateway = new WorkerRelayGateway({ root, inspectSession });
-    expect(await gateway.connect(registration)).toMatchObject({ ok: true });
+    expect(await gateway.volatile(registration)).toMatchObject({ ok: true });
   } finally { unref.mockRestore(); if (!exited) void started?.terminate(); await gateway?.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
 test("asynchronous startup failure permits reuse only after confirmed close", async () => {
-  const root = directory(); let gateway = new WorkerRelayGateway({ root, retentionMs: -1 });
+  const root = directory(); let gateway = new WorkerRelayGateway({ root, peerOrigin: "https://not-a-tailnet.example" });
   try {
     await expect(gateway.initialize()).rejects.toThrow();
     await gateway.close();
     gateway = new WorkerRelayGateway({ root, inspectSession });
-    expect(await gateway.connect(registration)).toMatchObject({ ok: true });
+    expect(await gateway.volatile(registration)).toMatchObject({ ok: true });
   } finally { await gateway.close(); rmSync(root, { recursive: true, force: true }); }
 });

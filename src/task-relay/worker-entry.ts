@@ -1,5 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { TaskRelayGateway } from "./gateway.ts";
+import { VolatileRelayGateway } from "./volatile-gateway.ts";
 import {
   RELAY_WORKER_LIMITS as LIMIT, RELAY_WORKER_METHODS, captureRelayWire,
   type WorkerOptions, type WorkerRequest, type ParentMessage, type CallbackValue,
@@ -20,14 +20,16 @@ function callback(request: { kind: "inspect"; selector: string } | { kind: "peer
     port.postMessage({ ...request, id });
   });
 }
-const gateway = new TaskRelayGateway({
+const gatewayOptions = {
   ...options,
-  inspectSession: async selector => await callback({ kind: "inspect", selector }) as SessionInspectionResult,
+  inspectSession: async (selector: string) => await callback({ kind: "inspect", selector }) as SessionInspectionResult,
   ...(options.proxyPeerFetch && { peerFetch: async (url: RequestInfo | URL, init?: RequestInit) => {
     const reply = await callback({ kind: "peer-fetch", url: String(url), body: String(init?.body) }) as { status: number; body: string };
     return new Response(reply.body, { status: reply.status });
   } }),
-});
+};
+// The only engine is memory-owned. No compatibility engine or disk replay.
+const volatile = new VolatileRelayGateway(gatewayOptions);
 const regular: WorkerRequest[] = [], peers: WorkerRequest[] = [];
 const requests = new Map<number, { peer: boolean; bytes: number }>();
 let activeRegular = 0, activePeer = 0;
@@ -40,8 +42,12 @@ function pump(): void {
       if (peer) activePeer++; else activeRegular++;
       void (async () => {
         try {
-          const method = gateway[request.method] as (...args: unknown[]) => Promise<unknown>;
-          const value = await method.apply(gateway, request.args);
+          let value: unknown;
+          if (request.method === "volatileEpoch") value = volatile.epoch;
+          else if (request.method === "initialize") value = volatile.initialize();
+          else if (request.method === "registrationsForSessions") value = await volatile.registrationsForSessions(request.args[0] as readonly string[]);
+          else value = await (request.method === "volatilePeer" ? volatile.peer(request.args[0])
+            : request.method === "volatileTopology" ? volatile.topology(request.args[0]) : volatile.request(request.args[0]));
           const captured = captureRelayWire(value, LIMIT.responseBytes, true);
           port.postMessage({ kind: "result", id: request.id, value: captured.value });
         } catch {
@@ -67,18 +73,10 @@ port.on("message", (message: ParentMessage) => {
   }
   if (message.kind !== "request" || !Number.isSafeInteger(message.id) || message.id < 0
     || !methods.has(message.method) || !Array.isArray(message.args) || requests.has(message.id)) throw new Error("invalid relay worker request");
-  const peer = message.method === "receivePeer";
+  const peer = message.method === "volatilePeer";
   const existing = [...requests.values()].filter(item => item.peer === peer);
   const captured = captureRelayWire(message.args, LIMIT.requestBytes);
-  let args = captured.value;
-  if (message.method === "cleanup") {
-    const [beforeMs] = args;
-    const before = typeof beforeMs === "number" ? new Date(beforeMs) : undefined;
-    if (args.length !== 1 || !Number.isFinite(beforeMs) || before === undefined || Number.isNaN(before.getTime())) {
-      throw new Error("invalid relay cleanup cutoff");
-    }
-    args = [before];
-  }
+  const args = captured.value;
   const bytes = captured.bytes;
   if (bytes > LIMIT.requestBytes || existing.length >= (peer ? LIMIT.peerRequests : LIMIT.regularRequests)
     || existing.reduce((sum, item) => sum + item.bytes, bytes) > (peer ? LIMIT.peerBytes : LIMIT.regularBytes)) throw new Error("relay worker admission budget exceeded");
@@ -86,5 +84,5 @@ port.on("message", (message: ParentMessage) => {
   (peer ? peers : regular).push({ ...message, args });
   pump();
 });
-port.on("close", () => gateway.close());
+port.on("close", () => { void volatile.close(); });
 port.postMessage({ kind: "ready" });

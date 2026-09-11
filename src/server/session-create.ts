@@ -6,7 +6,7 @@ import {
   TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
   waitForTaskWorkerReadiness,
 } from "./task-worker-readiness.js";
-import type { TaskWorkerLaunch } from "./task-worker-readiness.js";
+import type { TaskWorkerLaunch, TaskWorkerTransportLookup } from "./task-worker-readiness.js";
 import type { RelayEndpoint } from "../task-relay/domain.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 
@@ -34,7 +34,7 @@ export interface TopLevelSessionSuccess {
   readonly taskEndpoint?: RelayEndpoint;
 }
 
-interface CreateTopLevelSessionInput {
+interface CreateTopLevelSessionInput extends TaskWorkerTransportLookup {
   readonly backend: SessionCreateBackend;
   readonly project: string;
   readonly projectDir: string;
@@ -85,6 +85,8 @@ export async function createTopLevelSession(
         : await waitForTaskWorkerReadiness({
           backend: input.backend,
           endpointForSession: input.endpointForSession ?? (async () => undefined),
+          registrationForSession: input.registrationForSession,
+          relayProfile: input.relayProfile,
           session,
           sessionId: identity.wolfpackSessionId,
           projectDir: input.projectDir,

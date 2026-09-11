@@ -58,6 +58,8 @@ function expectSkillWriteFailure(filename: string): void {
   const script = String.raw`
     import { mock } from "bun:test";
     const fs = await import("node:fs");
+    // ESM namespace exports are live; don't recurse into our own mock on newer Bun.
+    const realWriteFileSync = fs.writeFileSync;
     const path = await import("node:path");
     const os = await import("node:os");
     await mock.module("node:fs", () => ({
@@ -66,7 +68,7 @@ function expectSkillWriteFailure(filename: string): void {
         if (String(file).endsWith("/wolfpack-tailnet-control/${filename}")) {
           throw new Error("simulated write failure");
         }
-        return fs.writeFileSync(file, ...args);
+        return realWriteFileSync(file, ...args);
       },
     }));
     const { installPiIntegration } = await import("./src/cli/pi-integration.ts");

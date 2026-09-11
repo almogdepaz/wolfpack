@@ -2240,58 +2240,50 @@ describe("GET /api/sessions", () => {
 });
 
 describe("session-control relay lookup batching", () => {
-  test("lists stable-ID endpoints with one fresh read, fails closed, and skips empty-list relay reads", async () => {
-    const { TaskRelayStore } = await import("../../src/task-relay/store.ts");
-    const { TaskRelayGateway, __setTaskRelayGatewayForTests } = await import("../../src/task-relay/gateway.ts");
-    const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/domain.ts");
-    const { randomUUID } = await import("node:crypto");
+  test("lists stable-ID memory registrations in one RPC, sees retirement, and skips empty-list queries", async () => {
+    const { WorkerRelayGateway } = await import("../../src/task-relay/worker-client.ts");
+    const { __setTaskRelayGatewayForTests } = await import("../../src/task-relay/gateway.ts");
     const relayRoot = mkdtempSync(join(TEST_DEV_DIR, "relay-list-batch-"));
-    const store = new TaskRelayStore(relayRoot);
-    const now = new Date("2026-08-09T00:00:00.000Z");
     const names = Array.from({ length: 20 }, (_, i) => `relay-list-${19 - i}`);
     const backend = new MockBackend({ sessions: names });
-    const identities = await backend.listIdentities();
-    const registrations = names.map(name => ({
-      sessionId: identities[name]!.wolfpackSessionId,
-      endpoint: { relay: RELAY_ID, id: randomUUID() }, generation: "process-1",
-      protocolVersions: [RELAY_PROTOCOL_VERSION], leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
-    }));
-    for (const registration of registrations) await store.register(registration);
-    const gateway = new TaskRelayGateway({ root: relayRoot, now: () => now });
-    await __setTaskRelayGatewayForTests(gateway);
     __setTestBackend(backend);
-    const read = spyOn(fs, "readFileSync");
-    const relayReads = () => read.mock.calls.filter(([path]) => path === store.path).length;
+    const identities = await backend.listIdentities();
+    const gateway = new WorkerRelayGateway({ root: relayRoot });
+    await __setTaskRelayGatewayForTests(gateway);
+    const registrations = [];
+    for (const name of names) {
+      const result = await gateway.volatile({ profile: "volatile-v1", operation: "connect", callerSession: name, generation: "process-1", protocolVersions: [2] });
+      if (!result.ok || result.value.kind !== "connected") throw new Error("fixture connection failed");
+      registrations.push({ sessionId: identities[name]!.wolfpackSessionId, profile: "volatile-v1", epoch: result.epoch, endpoint: result.value.endpoint, leaseExpiresAt: result.value.leaseExpiresAt });
+    }
+    const lookup = spyOn(gateway, "registrationsForSessions");
     try {
       const response = await get("/api/session-control/list");
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.sessions.map((s: any) => s.session)).toEqual([...names].sort((a, b) => a.localeCompare(b)));
-      for (const registration of registrations) {
-        expect(body.sessions.find((s: any) => s.sessionId === registration.sessionId)?.taskEndpoint).toEqual(registration.endpoint);
+      for (const { sessionId, ...registration } of registrations) {
+        const session = body.sessions.find((s: any) => s.sessionId === sessionId);
+        expect(session?.taskEndpoint).toEqual(registration.endpoint);
+        expect(session?.taskTransport).toEqual(registration);
       }
-      expect(relayReads()).toBe(1);
-      await store.deactivateRegistration(registrations[0]!.sessionId, registrations[0]!.endpoint.id, now.toISOString());
-      read.mockClear();
+      expect(lookup).toHaveBeenCalledTimes(1);
+      const first = registrations[0]!;
+      expect(await gateway.volatile({ profile: first.profile, epoch: first.epoch, callerSession: names[0], endpoint: first.endpoint, operation: "disconnect" })).toMatchObject({ ok: true });
+      lookup.mockClear();
       const updated = await (await get("/api/session-control/list")).json();
-      expect(updated.sessions.find((s: any) => s.sessionId === registrations[0]!.sessionId)).not.toHaveProperty("taskEndpoint");
-      expect(relayReads()).toBe(1);
-      writeFileSync(store.path, "{malformed");
-      read.mockClear();
+      expect(updated.sessions.find((s: any) => s.sessionId === first.sessionId)).not.toHaveProperty("taskEndpoint");
+      expect(lookup).toHaveBeenCalledTimes(1);
+      await gateway.close(); lookup.mockClear();
       expect((await get("/api/session-control/list")).status).toBe(503);
-      expect(relayReads()).toBe(1);
-      backend.setSessions([]);
-      read.mockClear();
+      expect(lookup).toHaveBeenCalledTimes(1);
+      backend.setSessions([]); lookup.mockClear();
       const empty = await get("/api/session-control/list");
-      expect(empty.status).toBe(200);
-      expect(await empty.json()).toEqual({ sessions: [] });
-      expect(relayReads()).toBe(0);
+      expect(empty.status).toBe(200); expect(await empty.json()).toEqual({ sessions: [] });
+      expect(lookup).not.toHaveBeenCalled();
     } finally {
-      read.mockRestore();
-      // A closed worker is terminal: restore through the default factory, not a dead instance.
-      await __resetTaskRelayGatewayForTests();
-      __setTestBackend(mockBackend);
-      rmSync(relayRoot, { recursive: true, force: true });
+      lookup.mockRestore(); await __resetTaskRelayGatewayForTests();
+      __setTestBackend(mockBackend); rmSync(relayRoot, { recursive: true, force: true });
     }
   });
 });
@@ -2434,8 +2426,8 @@ describe("agent-native top-level session control", () => {
     mockBackend.setSessions([]);
     mockBackend.setOnBeforeCreate((name) => {
       queueMicrotask(() => {
-        void getTaskRelayGateway().connect({
-          callerSession: name,
+        void getTaskRelayGateway().volatile({
+          profile: "volatile-v1", operation: "connect", callerSession: name,
           generation: `test-${name}`,
           protocolVersions: [2],
         });

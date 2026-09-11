@@ -2,6 +2,7 @@
  * Wolfpack server — HTTP + WebSocket server creation, CORS, startup.
  */
 import { createServer } from "node:http";
+import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { WebSocketServer } from "ws";
 
 import { existsSync } from "node:fs";
@@ -268,6 +269,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
 const { server, wss } = createServerInstance();
 
 export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void> {
+  assertSupportedBunRuntime();
   // Verify JWT auth configuration BEFORE any listeners are bound. We fail
   // hard on misconfiguration (secret set but rejected) so a typo can never
   // silently disable authentication. A missing secret is surfaced as an

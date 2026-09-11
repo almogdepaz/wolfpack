@@ -143,16 +143,6 @@ class PeerBackend extends MockBackend {
 }
 
 __setTestBackend(new PeerBackend({ sessions: [role === "sender" ? "parent" : "receiver"] }));
-// v1 fixtures shorten timers and deliberately exit; only v2 fixtures need a relay worker.
-if (taskRelay) {
-  const { __setTaskRelayGatewayForTests } = await import("../../../src/task-relay/gateway.ts");
-  const { WorkerRelayGateway } = await import("../../../src/task-relay/worker-client.ts");
-  await __setTaskRelayGatewayForTests(new WorkerRelayGateway({
-    root: join(taskRoot, "relay"),
-    peerOrigin,
-    peerFetch: (input, init) => rewrittenFetch(input, init),
-  }));
-}
 const { getTaskGateway } = await import("../../../src/tasks/gateway.ts");
 const { createServerInstance } = await import("../../../src/server/index.ts");
 await getTaskGateway().initialize();

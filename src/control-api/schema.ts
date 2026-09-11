@@ -56,6 +56,7 @@ import {
   TASK_STATUS,
 } from "../tasks/domain.ts";
 import { RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../task-relay/domain.ts";
+import { volatileRelayDefinitions } from "./volatile-relay-schema.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
@@ -368,8 +369,11 @@ export const controlApiSource: ControlApiSource = {
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
     "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
+    "volatile-v1 is the only task relay; all relay HTTP routes require loopback or trusted Tailnet access and inherit optional configured global auth; all visible online Tailnet peers are assumed honest, with canonical TLS routing and current epochs but no signatures, user/tag filtering, or key discovery (up to 1s local topology cache)",
+    "relay profile metadata identifies the current RAM lifetime, not broker/worker readiness; restart loses active task state and never replays Pi session history",
   ],
   defs: {
+    ...volatileRelayDefinitions,
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
     TaskWorkerCreatedSession: object({
       session: ref("SessionName"),
@@ -587,6 +591,7 @@ export const controlApiSource: ControlApiSource = {
       terminal: ref("SessionTerminalLiveness"),
       parentSession: ref("SessionControlIdentity"),
       taskEndpoint: ref("RelayEndpoint"),
+      taskTransport: ref("TaskRelayRegistration"),
     }, [
       "ok",
       "selector",
@@ -644,6 +649,9 @@ export const controlApiSource: ControlApiSource = {
       relay: { type: "string", pattern: `^${RELAY_ID.replaceAll("-", "\\-")}(?::peer:${OPAQUE_RELAY_UUID_PATTERN})?$` },
       id: { type: "string", format: "uuid" },
     }, ["relay", "id"], { description: "Opaque local or locally-routed peer endpoint. It never contains a machine name or origin." }),
+    TaskRelayRegistration: { description: "Request-local lease observation for a live session, not model execution or restart recovery. Re-inspect after expiry or reset.", oneOf: [
+      object({ profile: { const: "volatile-v1" }, epoch: { type: "string", format: "uuid" }, endpoint: ref("RelayEndpoint"), leaseExpiresAt: { type: "string", format: "date-time" } }, ["profile", "epoch", "endpoint", "leaseExpiresAt"]),
+    ] },
     RelayEnvelope: object({
       envelopeId: { type: "string", minLength: 1, maxLength: 512 },
       protocolVersion: { const: RELAY_PROTOCOL_VERSION },
@@ -829,81 +837,24 @@ export const controlApiSource: ControlApiSource = {
       response: ref("MachineHandshake"),
       errors: ["503 ErrorEnvelope"],
     },
-    "POST /api/task-relay/v2/connect": {
-      operationId: "connectTaskRelay",
-      stable: true,
-      auth: "jwt-when-configured",
-      requestContentType: "application/json",
-      request: object({
-        callerSession: ref("SessionSelector"),
-        generation: { type: "string", minLength: 1, maxLength: 512 },
-        protocolVersions: arrayOf({ type: "integer" }),
-        leaseMs: { type: "integer", minimum: 1, maximum: RELAY_LIMITS.MAX_LEASE_MS },
-      }, ["callerSession", "generation", "protocolVersions"]),
-      response: ref("RelayConnectResponse"),
-      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    "GET /api/task-relay/profile": {
+      operationId: "getTaskRelayProfile", stable: false, auth: "jwt-when-configured",
+      response: ref("TaskRelayProfileResponse"), errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
     },
-    "POST /api/task-relay/v2/disconnect": {
-      operationId: "disconnectTaskRelay",
-      stable: true,
-      auth: "jwt-when-configured",
-      requestContentType: "application/json",
-      request: object({ callerSession: ref("SessionSelector"), endpoint: ref("RelayEndpoint") }, ["callerSession", "endpoint"]),
-      response: ref("RelayEmptyResponse"),
-      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "409 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    "POST /api/task-relay/volatile-v1": {
+      operationId: "operateVolatileTaskRelay", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: ref("VolatileRequest"), response: ref("VolatileResponse"),
+      errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "404 VolatileErrorEnvelope", "408 VolatileErrorEnvelope", "409 VolatileErrorEnvelope", "410 VolatileErrorEnvelope", "413 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
     },
-    "POST /api/task-relay/v2/resolve": {
-      operationId: "resolveTaskRelayEndpoint",
-      stable: true,
-      auth: "jwt-when-configured",
-      requestContentType: "application/json",
-      request: object({ callerSession: ref("SessionSelector"), target: ref("RelayEndpoint"), protocolVersion: { const: RELAY_PROTOCOL_VERSION } }, ["callerSession", "target", "protocolVersion"]),
-      response: ref("RelayResolveResponse"),
-      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    "POST /api/task-relay/volatile-v1/resolve-peer": {
+      operationId: "resolveVerifiedVolatilePeer", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: ref("VolatilePeerResolveRequest"), response: ref("VolatileResponse"),
+      errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "408 VolatileErrorEnvelope", "409 VolatileErrorEnvelope", "413 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
     },
-    "POST /api/task-relay/v2/peer/resolve": {
-      operationId: "resolvePeerTaskRelayTopology",
-      stable: true,
-      auth: "jwt-when-configured",
-      requestContentType: "application/json",
-      request: object({ origin: ref("TailnetOrigin"), endpoint: ref("RelayEndpoint") }, ["origin", "endpoint"]),
-      response: ref("RelayResolveResponse"),
-      errors: ["400 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
-    },
-    "POST /api/task-relay/v2/send": {
-      operationId: "sendTaskRelayEnvelope",
-      stable: true,
-      auth: "jwt-when-configured",
-      requestContentType: "application/json",
-      request: object({ callerSession: ref("SessionSelector"), envelope: ref("RelayEnvelope") }, ["callerSession", "envelope"]),
-      response: ref("RelaySendResponse"),
-      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "409 RelayErrorEnvelope", "410 RelayErrorEnvelope", "413 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
-    },
-    "GET /api/task-relay/v2/receive": {
-      operationId: "receiveTaskRelayEnvelopes",
-      stable: true,
-      auth: "jwt-when-configured",
-      request: object({ callerSession: ref("SessionSelector"), cursor: { type: "string", pattern: "^(0|[1-9][0-9]*)$" } }, ["callerSession", "cursor"]),
-      response: ref("RelayReceiveResponse"),
-      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
-    },
-    "POST /api/task-relay/v2/delivery-ack": {
-      operationId: "acknowledgeTaskRelayDelivery",
-      stable: true,
-      auth: "jwt-when-configured",
-      requestContentType: "application/json",
-      request: object({ callerSession: ref("SessionSelector"), envelopeId: { type: "string", minLength: 1, maxLength: 512 } }, ["callerSession", "envelopeId"]),
-      response: ref("RelayAcknowledgementResponse"),
-      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "410 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
-    },
-    "POST /api/task-relay/v2/peer/receive": {
-      operationId: "receivePeerTaskRelayEnvelope",
-      stable: true,
-      auth: "jwt-when-configured",
-      requestContentType: "application/json",
-      request: ref("RelayPeerEnvelope"),
-      response: ref("RelayPeerReceiveResponse"),
-      errors: ["400 RelayErrorEnvelope", "404 RelayErrorEnvelope", "409 RelayErrorEnvelope", "413 RelayErrorEnvelope", "503 RelayErrorEnvelope"],
+    "POST /api/task-relay/volatile-v1/peer": {
+      operationId: "receiveVerifiedVolatilePeer", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: { ...ref("VolatilePeerRequest"), description: "Trusted Tailnet ingress only; optional configured owner authentication still applies. Checks current source/destination epochs and online local topology. No request signatures." }, response: ref("VolatileResponse"),
+      errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "408 VolatileErrorEnvelope", "409 VolatileErrorEnvelope", "413 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
     },
     "POST /api/tasks/v1/send": {
       operationId: "sendTask",

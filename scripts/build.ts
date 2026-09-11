@@ -8,6 +8,8 @@
  * Release/CI:  WOLFPACK_BUILD_MODE=package-all bun run scripts/build.ts
  */
 import { execSync } from "node:child_process";
+import { assertSupportedBunRuntime } from "../src/runtime-version.ts";
+assertSupportedBunRuntime();
 import {
   chmodSync,
   copyFileSync,

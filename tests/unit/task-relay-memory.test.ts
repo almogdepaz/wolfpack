@@ -20,7 +20,7 @@ function code(operation: () => unknown, expected: MemoryRelayError["code"]) {
   catch (error) { expect(error).toBeInstanceOf(MemoryRelayError); expect((error as MemoryRelayError).code).toBe(expected); }
 }
 
-describe("bounded volatile relay engine (not legacy gateway cutover)", () => {
+describe("bounded volatile relay engine", () => {
   test("ACK releases payload, preserves exact receipt, and sparse pages use real cursors", () => {
     const f = fixture();
     const first = f.envelope("1"), second = f.envelope("2"), third = f.envelope("3");
@@ -112,7 +112,7 @@ describe("bounded volatile relay engine (not legacy gateway cutover)", () => {
     expect(tiny.stats().registrations).toBe(0);
   });
 
-  test("leases are strict; accepted obligations pin old generations, not their authority", () => {
+  test("leases are strict; same-generation renewal keeps mail but replacement explicitly loses it", () => {
     const f = fixture();
     f.store.accept(f.epoch, f.envelope("pending"), NOW);
     f.store.maintenance(f.epoch, NOW + 10_000_000);
@@ -123,7 +123,63 @@ describe("bounded volatile relay engine (not legacy gateway cutover)", () => {
     expect(replacement.id).not.toBe(f.target.id);
     code(() => f.store.acknowledge(f.epoch, f.target.id, "pending", NOW + 10_000_000), "REGISTRATION_EXPIRED");
     expect(f.store.acknowledge(f.epoch, replacement.id, "pending", NOW + 10_000_000)).toBe("missing");
-    expect(f.store.stats().activeItems).toBe(1);
+    expect(f.store.stats()).toMatchObject({ activeItems: 0, activeBytes: 0, receipts: 0, receiptBytes: 0, registrations: 2, expiryEntries: 2 });
+  });
+
+  test("repeated generation replacement reclaims mailbox, receipt, registration and expiry credits", () => {
+    const f = fixture({ limits: { activeItems: 2, mailboxItems: 2, receipts: 2, registrations: 2 } });
+    let target = f.target;
+    for (let generation = 0; generation < 32; generation++) {
+      for (let item = 0; item < 2; item++) f.store.accept(f.epoch, { ...f.envelope(`${generation}-${item}`), target }, NOW);
+      const old = target;
+      target = f.registration("target", `new-${generation}`).endpoint;
+      code(() => f.store.inbox(f.epoch, old.id, "0", NOW), "REGISTRATION_EXPIRED");
+      code(() => f.store.acknowledge(f.epoch, old.id, `${generation}-0`, NOW), "REGISTRATION_EXPIRED");
+      expect(f.store.inbox(f.epoch, target.id, "0", NOW).deliveries).toEqual([]);
+      expect(f.store.stats()).toMatchObject({ activeItems: 0, activeBytes: 0, receipts: 0, receiptBytes: 0, registrations: 2, sessions: 2, expiryEntries: 2 });
+    }
+    f.store.maintenance(f.epoch, NOW + RELAY_LIMITS.MAX_LEASE_MS);
+    expect(f.store.stats()).toMatchObject({ registrations: 0, sessions: 0, metadataBytes: 0, expiryEntries: 0 });
+  });
+
+  test("sender replacement preserves another endpoint's accepted mail without retaining its registration", () => {
+    const f = fixture();
+    const sent = f.envelope("accepted-before-sender-loss");
+    f.store.accept(f.epoch, sent, NOW);
+    f.registration("source", "replacement");
+    expect(f.store.registration(f.epoch, f.source.id, NOW)).toBeUndefined();
+    expect(f.store.stats()).toMatchObject({ activeItems: 1, receipts: 1, registrations: 2 });
+    expect(f.store.inbox(f.epoch, f.target.id, "0", NOW).deliveries[0]!.envelope).toEqual(sent);
+    expect(f.store.acknowledge(f.epoch, f.target.id, sent.envelopeId, NOW)).toBe("acknowledged");
+    f.store.maintenance(f.epoch, NOW + MEMORY_RELAY_TIMING.receiptMs);
+    expect(f.store.stats()).toMatchObject({ activeItems: 0, activeBytes: 0, receipts: 0, receiptBytes: 0, registrations: 0, metadataBytes: 0, expiryEntries: 0 });
+  });
+
+  test("replacement retires self-mail, incoming mail, completed receipts and forwarding tokens/peer credits", () => {
+    const f = fixture({ limits: { peerItems: 1 } });
+    const route = f.store.peerRoute(f.epoch, "https://peer.example.ts.net");
+    const outbound = { ...f.envelope("forwarding"), target: { relay: route.id, id: randomUUID() } };
+    const attempt = f.store.beginForward(f.epoch, outbound, NOW);
+    if (attempt.kind !== "attempt") throw new Error("no attempt");
+    f.store.accept(f.epoch, { ...f.envelope("self"), target: f.source }, NOW);
+    f.store.accept(f.epoch, { ...f.envelope("incoming"), source: f.target, target: f.source }, NOW);
+    f.store.accept(f.epoch, f.envelope("completed"), NOW);
+    f.store.acknowledge(f.epoch, f.target.id, "completed", NOW);
+    const source = f.registration("source", "new").endpoint;
+    expect(f.store.stats()).toMatchObject({ activeItems: 0, activeBytes: 0, receipts: 0, receiptBytes: 0, registrations: 2, expiryEntries: 2, routes: 1 });
+    expect(f.store.finishForward(f.epoch, outbound.envelopeId, attempt.token, { kind: "confirmed", acceptanceId: randomUUID() }, NOW)).toBe(false);
+    expect(f.store.forwardStatus(f.epoch, outbound.envelopeId, NOW)).toBeUndefined();
+    expect(f.store.beginForward(f.epoch, { ...outbound, envelopeId: "new-forwarding", source }, NOW).kind).toBe("attempt");
+  });
+
+  test("failed replacement preflight preserves the old binding and accepted obligations atomically", () => {
+    const f = fixture({ limits: { metadataBytes: fixture().store.stats().metadataBytes } });
+    f.store.accept(f.epoch, f.envelope("owned"), NOW);
+    const before = f.store.stats();
+    code(() => f.registration("target", "x".repeat(512)), "RELAY_CAPACITY");
+    expect(f.store.stats()).toEqual(before);
+    expect(f.store.registrationForSession(f.epoch, "target", NOW)!.endpoint).toEqual(f.target);
+    expect(f.store.inbox(f.epoch, f.target.id, "0", NOW).deliveries.map(item => item.envelope.envelopeId)).toEqual(["owned"]);
   });
 
   test("renewals update one expiry node and preserve owned registration values", () => {

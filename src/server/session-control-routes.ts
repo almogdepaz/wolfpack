@@ -34,8 +34,9 @@ import {
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
-import { getTaskRelayGateway } from "../task-relay/gateway.ts";
-import type { RelayEndpoint } from "../task-relay/domain.ts";
+import { getTaskRelayGateway, getTaskRelayProfile } from "../task-relay/gateway.ts";
+import { isLiveTaskRelayRegistration } from "../task-relay/registration.ts";
+import type { TaskRelayRegistration } from "../task-relay/registration.ts";
 import type { RouteHandler } from "./route-handler.js";
 import {
   SESSION_SNAPSHOT_MAX_RESPONSE_BYTES,
@@ -154,7 +155,7 @@ function sessionTerminalLiveness(name: string): SessionTerminalLiveness {
   };
 }
 
-function sessionStatusPayload(name: string, identity: PublicSessionIdentity, taskEndpoint: RelayEndpoint | undefined, selector: string = name) {
+function sessionStatusPayload(name: string, identity: PublicSessionIdentity, taskTransport: TaskRelayRegistration | undefined, selector: string = name) {
   const terminal = sessionTerminalLiveness(name);
   return {
     ok: true as const,
@@ -173,13 +174,13 @@ function sessionStatusPayload(name: string, identity: PublicSessionIdentity, tas
         sessionId: identity.parentSession.wolfpackSessionId,
       },
     }),
-    ...(taskEndpoint && { taskEndpoint }),
+    ...(terminal.alive && taskTransport && isLiveTaskRelayRegistration(taskTransport, getTaskRelayProfile()) && { taskEndpoint: taskTransport.endpoint, taskTransport }),
   };
 }
 
 type SuccessfulSessionInspection = Extract<SessionInspectionResult, { readonly ok: true }>;
 
-function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulSessionInspection, taskEndpoint: RelayEndpoint | undefined) {
+function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulSessionInspection, taskTransport: TaskRelayRegistration | undefined) {
   const terminal: SessionTerminalLiveness = {
     exists: true,
     alive: inspection.alive,
@@ -197,7 +198,7 @@ function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulS
     harness: inspection.harness,
     terminal,
     ...(inspection.parentSession && { parentSession: inspection.parentSession }),
-    ...(taskEndpoint && { taskEndpoint }),
+    ...(terminal.alive && taskTransport && isLiveTaskRelayRegistration(taskTransport, getTaskRelayProfile()) && { taskEndpoint: taskTransport.endpoint, taskTransport }),
   };
 }
 
@@ -257,6 +258,7 @@ async function waitForSessionText(session: string, text: string, timeoutMs: numb
 
 export const sessionControlRoutes: Record<string, RouteHandler> = {
   "GET /api/session-control/list": async (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
     try {
       const backend = getBackend();
       const names = await backend.list();
@@ -265,7 +267,7 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
         return json(res, { error: "session identity unavailable" }, 503);
       }
       if (names.length === 0) return json(res, { sessions: [] });
-      const endpoints = await getTaskRelayGateway().endpointsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
+      const endpoints = await getTaskRelayGateway().registrationsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
       const sessions = names.map((name) => {
         const identity = identities[name]!;
         return sessionStatusPayload(name, identity, endpoints.get(identity.wolfpackSessionId));
@@ -278,6 +280,7 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
   },
 
   "GET /api/session-control/status": async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
     const url = new URL(req.url ?? "/", "http://localhost");
     const selector = url.searchParams.get("session") ?? undefined;
     if (!selector) {
@@ -310,7 +313,7 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
           ambiguous ? 409 : 404,
         );
       }
-      const status = inspectedSessionStatusPayload(selector, inspection, await getTaskRelayGateway().endpointForSession(inspection.sessionId));
+      const status = inspectedSessionStatusPayload(selector, inspection, (await getTaskRelayGateway().registrationsForSessions([inspection.sessionId])).get(inspection.sessionId));
       if (!inspection.alive) {
         return json(
           res,
