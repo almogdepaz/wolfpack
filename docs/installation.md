@@ -31,12 +31,20 @@ On later runs, `wolfpack` stages the current server binary and runs `setup --def
 Use a package runner when you do not want a global `wolfpack` command. Pin `@latest` so the runner does not reuse an older cached release:
 
 ```bash
-bunx wolfpack-bridge@latest
-# or
+bunx --bun wolfpack-bridge@latest
+# or, with Node.js 22+
 npx --yes wolfpack-bridge@latest
 ```
 
-These commands resolve the same matching prebuilt `wolfpack` and `wolfpack-broker` pair and run the same setup wizard, but do **not** add `wolfpack` to your `PATH`. Repeat the runner prefix for every later command.
+These commands resolve the same matching prebuilt `wolfpack` and `wolfpack-broker` pair and run the same setup wizard, but do **not** add `wolfpack` to your `PATH`. `bunx --bun` runs the launcher with Bun; npm/npx requires Node.js 22 or later. The launcher resolves and prepares the optional platform binaries itself instead of depending on a package lifecycle script. Repeat the runner prefix for every later command.
+
+The launcher leaves the package store unchanged. It copies the exact declared server/broker pair into a private `0700` generation under `${XDG_CACHE_HOME:-$HOME/.cache}/wolfpack-bridge/platform-pairs`, preparing macOS copies there. The cache base must be absolute, owned by you, and have an existing trusted parent; symlinked staging destinations and unsafe writable ancestry are refused. Complete generations are validated and reused without copying or signing again.
+
+Concurrent first launches share an exclusively claimed generation; `pair.json` is published only after both copies are prepared. An incomplete generation gets a bounded five-second wait, not an assumption that another process is alive. Failed, corrupt, or interrupted generations are never automatically replaced or deleted. Follow the reported path: inspect it and move it aside only after confirming no launcher is using it, then retry. Permission, read-only filesystem, and capacity errors are reported separately from a missing optional dependency. macOS ad-hoc preparation is not publisher identity verification.
+
+### verification limits
+
+Automated coverage includes real launcher/helper imports, owned package/cache fixtures, offline reduced package installation, concurrent launchers, failure boundaries, and consent/diagnostic behavior. Shell payloads and command stubs do **not** prove native release execution, Gatekeeper acceptance, live Tailscale/systemd/loginctl behavior, or persistence after reboot. The early Node-version guard is checked with a controlled version mutation, not an actual unsupported Node runtime. Cross-architecture and real package-runner/platform acceptance still require the corresponding release environments. The unregistered legacy `bin/install.cjs` remains packaged but is not run automatically.
 
 ## What the installer does
 
@@ -192,7 +200,7 @@ Run the matching diagnosis command after setup:
 | install path | diagnosis |
 | --- | --- |
 | curl | `wolfpack doctor` |
-| Bunx | `bunx wolfpack-bridge@latest doctor` |
+| Bunx | `bunx --bun wolfpack-bridge@latest doctor` |
 | npm/npx | `npx --yes wolfpack-bridge@latest doctor` |
 
 `doctor` checks the server, broker, binaries, JWT configuration, Tailscale, and common service problems. Resolve any reported failures; see [troubleshooting](troubleshooting.md) for recovery steps.
@@ -201,7 +209,7 @@ Run the matching diagnosis command after setup:
 
 The installer supports macOS arm64/x64 and Linux x64/arm64. The bundled broker includes its Ghostty VT engine; release installs do not require Zig, Ghostty, or extra system libraries.
 
-On macOS, Wolfpack can install a login service. On Linux, managed services use `systemd --user`; persistence after reboot needs `sudo loginctl enable-linger $USER`. Automatic Tailscale installation on Linux requires `apt`; otherwise install Tailscale yourself. You can always run Wolfpack in the foreground instead of installing a service.
+On macOS, Wolfpack can install a login service. On Linux, managed services use `systemd --user`; Wolfpack inspects linger first, asks before any interactive `sudo loginctl enable-linger $USER`, and prints the command without elevating in noninteractive runs. Automatic Tailscale installation on Linux requires `apt`; otherwise install Tailscale yourself. You can always run Wolfpack in the foreground instead of installing a service.
 
 Use `wolfpack service status` after a curl installation to inspect the managed service. Package-runner users should use the matching Bunx or npm prefix.
 
@@ -212,7 +220,7 @@ Uninstall removes Wolfpack-managed files and the installer-created `/usr/local/b
 | install path | uninstall |
 | --- | --- |
 | curl | `wolfpack uninstall --yes` |
-| Bunx | `bunx wolfpack-bridge@latest uninstall --yes` |
+| Bunx | `bunx --bun wolfpack-bridge@latest uninstall --yes` |
 | npm/npx | `npx --yes wolfpack-bridge@latest uninstall --yes` |
 
 ## security and trust

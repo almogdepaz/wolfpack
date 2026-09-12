@@ -6,13 +6,17 @@ import { describe, expect, test } from "bun:test";
 
 const innerTestPath = join(process.cwd(), "tests", "unit", ".tmp-service-lifecycle-inner.test.ts");
 
-const innerTest = String.raw`import { describe, expect, mock, test } from "bun:test";
+const innerTest = String.raw`import { describe, expect, mock, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 
 const execCommands: string[] = [];
+const execFileCalls: Array<{ command: string; args: readonly string[] }> = [];
 const askPrompts: string[] = [];
+let lingerStatus: string | Error = "yes\n";
+let lingerAnswer = "y";
+let failLingerElevation = false;
 let curlBackendResponse = JSON.stringify({ counts: { broker: 3 } });
 let serviceActive = false;
 let failServerStop = false;
@@ -22,7 +26,13 @@ let currentConfig = { devDir: "/tmp/old-dev", port: 18790 };
 await mock.module("node:child_process", () => ({
   execFile: mock(() => undefined),
   execFileSync: mock((command: string, args?: string[]) => {
+    execFileCalls.push({ command, args: args ?? [] });
+    if (command === "sudo" && failLingerElevation) throw new Error("fixture elevation refused");
     if (command === "curl" && args?.some((arg) => arg.includes("/api/backend"))) return curlBackendResponse;
+    if (command === "loginctl" && args?.[0] === "show-user") {
+      if (lingerStatus instanceof Error) throw lingerStatus;
+      return lingerStatus;
+    }
     return "";
   }),
   execSync: mock((command: string) => {
@@ -43,7 +53,7 @@ await mock.module("../../src/cli/config.js", () => ({
   IS_LINUX: true,
   ask: mock((prompt: string) => {
     askPrompts.push(prompt);
-    return "y";
+    return lingerAnswer;
   }),
   isPortInUse: mock(() => true),
   killPortHolder: mock(() => undefined),
@@ -62,15 +72,25 @@ function systemdLifecycleCommands(): readonly string[] {
   );
 }
 
-describe("serviceInstall", () => {
+describe.serial("serviceInstall", () => {
+  function prepareBroker(): void {
+    const brokerBin = join(homedir(), ".wolfpack", "bin", "wolfpack-broker");
+    mkdirSync(join(homedir(), ".wolfpack", "bin"), { recursive: true });
+    writeFileSync(brokerBin, "broker\\n");
+  }
+
+  function setInteractive(value: boolean): void {
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value });
+  }
+
   test("writes and starts the broker before the server on Linux", () => {
     execCommands.length = 0;
     serviceActive = false;
     currentConfig = { devDir: "/tmp/new dev", port: 24444 };
     const serviceDir = join(homedir(), ".config", "systemd", "user");
     const brokerBin = join(homedir(), ".wolfpack", "bin", "wolfpack-broker");
-    mkdirSync(join(homedir(), ".wolfpack", "bin"), { recursive: true });
-    writeFileSync(brokerBin, "broker\n");
+    prepareBroker();
 
     serviceInstall();
 
@@ -86,6 +106,80 @@ describe("serviceInstall", () => {
       "systemctl --user enable wolfpack",
       "systemctl --user start wolfpack",
     ]);
+  });
+
+  test("does not elevate when linger is already enabled", () => {
+    execFileCalls.length = 0;
+    askPrompts.length = 0;
+    lingerStatus = "yes\n";
+    setInteractive(true);
+    prepareBroker();
+
+    serviceInstall();
+
+    expect(execFileCalls).toContainEqual({
+      command: "loginctl",
+      args: ["show-user", process.env.USER || "", "--property=Linger", "--value"],
+    });
+    expect(execFileCalls.filter((call) => call.command === "sudo")).toEqual([]);
+    expect(askPrompts).toEqual([]);
+  });
+
+  test("requests explicit interactive consent before enabling disabled linger", () => {
+    execFileCalls.length = 0;
+    askPrompts.length = 0;
+    lingerStatus = "no\n";
+    setInteractive(true);
+    prepareBroker();
+
+    serviceInstall();
+
+    expect(askPrompts).toContain("  Enable linger with sudo so user services can survive logout? [y/N] ");
+    expect(execFileCalls).toContainEqual({ command: "sudo", args: ["loginctl", "enable-linger", process.env.USER || ""] });
+  });
+
+  test.each([
+    ["declined disabled", "no\n", true, "n", false, false, "To enable it later:"],
+    ["noninteractive disabled", "no\n", false, "y", false, false, "To enable it:"],
+    ["accepted unknown", "unexpected\n", true, "y", false, true, "Linger enable requested; verify with:"],
+    ["declined unknown", new Error("query failed"), true, "", false, false, "persistence after logout is unverified"],
+    ["successful request", "no\n", true, "y", false, true, "Linger enable requested; verify with:"],
+    ["failed elevation", "no\n", true, "y", true, true, "Could not enable linger"],
+  ] as const)("linger consent and wording: %s", (_case, status, interactive, answer, failElevation, elevated, detail) => {
+    execFileCalls.length = 0;
+    askPrompts.length = 0;
+    lingerStatus = status;
+    lingerAnswer = answer;
+    failLingerElevation = failElevation;
+    setInteractive(interactive);
+    prepareBroker();
+    const lines: string[] = [];
+    const output = spyOn(process.stdout, "write").mockImplementation((chunk) => { lines.push(String(chunk)); return true; });
+    try {
+      serviceInstall();
+    } finally {
+      output.mockRestore();
+      lingerAnswer = "y";
+      failLingerElevation = false;
+    }
+    expect(askPrompts.length).toBe(interactive ? 1 : 0);
+    expect(execFileCalls.some((call) => call.command === "sudo")).toBe(elevated);
+    expect(lines.join("")).toContain(detail);
+    expect(lines.join("")).not.toContain("Linger is already enabled");
+    expect(lines.join("")).not.toContain("Linger enabled.");
+  });
+
+  test("does not prompt or elevate when linger cannot be queried noninteractively", () => {
+    execFileCalls.length = 0;
+    askPrompts.length = 0;
+    lingerStatus = new Error("loginctl unavailable");
+    setInteractive(false);
+    prepareBroker();
+
+    serviceInstall();
+
+    expect(askPrompts).toEqual([]);
+    expect(execFileCalls.some((call) => call.command === "sudo")).toBe(false);
   });
 });
 
@@ -323,8 +417,9 @@ describe("service lifecycle", () => {
       const output = execFileSync(process.execPath, ["test", innerTestPath], {
         cwd: process.cwd(),
         encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, HOME: home },
+        stdio: ["ignore", "pipe", "inherit"],
+        env: { ...process.env, HOME: home, USER: "wolfpack_test" },
+        timeout: 10_000,
       });
       expect(output).toContain("Wolfpack broker stopped");
 
@@ -332,12 +427,13 @@ describe("service lifecycle", () => {
       execFileSync(process.execPath, ["test", innerTestPath], {
         cwd: process.cwd(),
         encoding: "utf-8",
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, HOME: home },
+        stdio: ["ignore", "pipe", "inherit"],
+        env: { ...process.env, HOME: home, USER: "wolfpack_test" },
+        timeout: 10_000,
       });
     } finally {
       rmSync(innerTestPath, { force: true });
       rmSync(home, { recursive: true, force: true });
     }
-  });
+  }, 25_000);
 });
