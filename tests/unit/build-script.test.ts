@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { arch, platform, tmpdir } from "node:os";
 import {
@@ -86,7 +86,7 @@ done
 if [ -n "$outfile" ]; then
   mkdir -p "$(dirname "$outfile")"
   printf 'binary\\n' > "$outfile"
-  chmod +x "$outfile"
+  chmod 0644 "$outfile"
 fi
 `);
   writeExecutable(join(bin, "cargo"), `#!/bin/sh
@@ -161,6 +161,36 @@ describe("scripts/build.ts modes", () => {
     expect(existsSync(join(fixture.root, "dist", "broker"))).toBe(false);
     expect(existsSync(join(fixture.root, "dist", "npm"))).toBe(false);
     expect(existsSync(join(fixture.root, "bin", "wolfpack"))).toBe(true);
+  });
+
+  test("package-all makes both payloads owner-executable in every platform package", () => {
+    const fixture = prepareFixture();
+    const revision = readSourceRevision(fixture.root);
+    for (const target of Object.keys(BROKER_TARGETS) as BrokerTarget[]) {
+      const targetDir = join(fixture.root, "dist", "broker", target);
+      const binary = join(targetDir, "wolfpack-broker");
+      mkdirSync(targetDir, { recursive: true });
+      writeFileSync(binary, brokerBinary(target));
+      writeBrokerArtifactMetadata(
+        join(targetDir, "broker-artifact.json"),
+        createBrokerArtifactMetadata({
+          binaryPath: binary,
+          mode: "release",
+          target,
+          brokerVersion: "1.0.0",
+          sourceRevision: revision,
+        }),
+      );
+    }
+
+    runBuild(fixture, "package-all");
+
+    for (const target of Object.keys(BROKER_TARGETS) as BrokerTarget[]) {
+      const platformPackage = join(fixture.root, "dist", "npm", BROKER_TARGETS[target].packageName);
+      expect(statSync(join(fixture.root, "dist", `wolfpack-${target.replace("bun-", "")}`)).mode & 0o100).toBe(0o100);
+      expect(statSync(join(platformPackage, "wolfpack")).mode & 0o100).toBe(0o100);
+      expect(statSync(join(platformPackage, "wolfpack-broker")).mode & 0o100).toBe(0o100);
+    }
   });
 
   test("local mode ignores stale release staging and emits only the fresh host broker", () => {

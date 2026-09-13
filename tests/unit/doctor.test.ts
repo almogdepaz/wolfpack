@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test, spyOn } from "bun:test";
 import type { CheckResult } from "../../src/cli/doctor.ts";
 
@@ -307,7 +311,7 @@ describe("doctor foreground and managed-service health", () => {
 
 describe("doctor dependency probe wiring", () => {
   const baseProbes = {
-    config: { devDir: "/tmp", port: 3000 },
+    config: {},
     tailscaleBinary: null,
     readTailscaleVersion: (_binary: string) => "",
     readTailscaleStatus: (_binary: string) => "",
@@ -329,6 +333,20 @@ describe("doctor dependency probe wiring", () => {
     expect(tailscale?.status).toBe(expectedStatus);
   });
 
+  test("keeps an unreadable Tailscale status distinct from logged-out", async () => {
+    const { checkDoctorDependencies } = await import("../../src/cli/doctor.ts");
+    const results = checkDoctorDependencies({
+      ...baseProbes,
+      tailscaleBinary: "/usr/bin/tailscale",
+      readTailscaleVersion: (_binary) => "1.80.0",
+      readTailscaleStatus: (_binary) => { throw new Error("permission denied"); },
+    });
+    const status = results.find((result) => result.name === "tailscale connected");
+
+    expect(status?.fact).toBe("tailscale-query-failed");
+    expect(status?.detail).toBe("unable to query status");
+  });
+
   test.each([
     ["local-only", undefined, "warn"],
     ["configured remote", "host.tailnet.ts.net", "fail"],
@@ -344,6 +362,70 @@ describe("doctor dependency probe wiring", () => {
     const connected = results.find((result) => result.fact === "tailscale-disconnected");
 
     expect(connected?.status).toBe(expectedStatus);
+  });
+});
+
+describe("doctor runtime probes", () => {
+  test.each(["xdg", "home"] as const)("uses the real default broker socket in an owned %s environment", (socketMode) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "wpd-")));
+    const home = join(root, "home");
+    const runtime = join(root, "runtime");
+    const socketPath = socketMode === "xdg"
+      ? join(runtime, "wolfpack-broker.sock")
+      : join(home, ".wolfpack", "broker.sock");
+    const brokerPath = join(home, ".wolfpack", "bin", "wolfpack-broker");
+    const script = `
+      import { createServer } from "node:net";
+      import { mkdirSync, writeFileSync } from "node:fs";
+      import { dirname } from "node:path";
+      const socketPath = ${JSON.stringify(socketPath)};
+      mkdirSync(dirname(socketPath), { recursive: true });
+      mkdirSync(dirname(${JSON.stringify(brokerPath)}), { recursive: true });
+      writeFileSync(${JSON.stringify(brokerPath)}, "broker");
+      const server = createServer((socket) => socket.once("data", () => {
+        const payload = Buffer.from(JSON.stringify({ id: 1, status: "ok" }));
+        const frame = Buffer.alloc(5 + payload.length);
+        frame[0] = 2;
+        frame.writeUInt32BE(payload.length, 1);
+        payload.copy(frame, 5);
+        socket.end(frame);
+      }));
+      await new Promise((resolve, reject) => server.once("error", reject).listen(socketPath, resolve));
+      try {
+        const { checkDoctorBroker } = await import(${JSON.stringify(join(process.cwd(), "src", "cli", "doctor.ts"))});
+        console.log(JSON.stringify(await checkDoctorBroker()));
+      } finally {
+        await new Promise((resolve) => server.close(resolve));
+      }
+    `;
+    try {
+      const output = execFileSync(process.execPath, ["--eval", script], {
+        cwd: root,
+        encoding: "utf-8",
+        env: { ...process.env, HOME: home, XDG_RUNTIME_DIR: socketMode === "xdg" ? runtime : "" },
+        timeout: 2500,
+      });
+      const results = JSON.parse(output) as CheckResult[];
+      expect(results.find((check) => check.name === "broker handshake")?.status).toBe("pass");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 3000);
+
+  test("invokes Tailscale directly without sudo", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "wpd-")));
+    const binary = join(root, "tailscale");
+    const commandLog = join(root, "tailscale.log");
+    try {
+      writeFileSync(binary, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(commandLog)}\nprintf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'\n`);
+      chmodSync(binary, 0o755);
+      const { readTailscaleSelfStatus } = await import("../../src/cli/doctor.ts");
+
+      expect(readTailscaleSelfStatus(binary)).toContain("host.tailnet.ts.net");
+      expect(readFileSync(commandLog, "utf-8")).toBe("status --self --json\n");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

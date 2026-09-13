@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -10,6 +10,136 @@ let fixtureRoot = "";
 function writeExecutable(path: string, content: string): void {
   writeFileSync(path, content);
   chmodSync(path, 0o755);
+}
+
+function packageFixtureEnvironment(root: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return {
+    HOME: join(root, "home"),
+    PATH: "/usr/bin:/bin",
+    TMPDIR: join(root, "tmp"),
+    XDG_CACHE_HOME: join(root, "cache"),
+    XDG_CONFIG_HOME: join(root, "config"),
+    npm_config_cache: join(root, "npm-cache"),
+    npm_config_userconfig: join(root, "npmrc"),
+    npm_config_offline: "true",
+    npm_config_update_notifier: "false",
+    ...extra,
+  };
+}
+
+interface PackageRunnerFixture {
+  readonly packageRoot: string;
+  readonly packageBin: string;
+  readonly platformPackage: string;
+  readonly platformRoot: string;
+  readonly server: string;
+  readonly broker: string;
+}
+
+interface PackageFixtureCommands {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly npm: string;
+  readonly tar: string;
+}
+
+function packageFixtureCommands(root: string): PackageFixtureCommands {
+  const toolBin = join(root, "tool-bin");
+  const userConfig = join(root, "npmrc");
+  const globalConfig = join(root, "npm-globalrc");
+  const resolveTool = (name: "node" | "npm" | "tar"): string => {
+    const tool = Bun.which(name);
+    if (!tool) throw new Error(`missing fixture tool: ${name}`);
+    return realpathSync(tool);
+  };
+  const node = resolveTool("node");
+  const npm = resolveTool("npm");
+  const tar = resolveTool("tar");
+  mkdirSync(toolBin, { recursive: true });
+  for (const directory of ["home", "tmp", "cache", "config", "npm-cache"]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  for (const [name, target] of [["node", node], ["npm", npm], ["tar", tar]] as const) {
+    symlinkSync(target, join(toolBin, name));
+  }
+  writeFileSync(globalConfig, "");
+  writeFileSync(userConfig, [
+    "offline=true",
+    "audit=false",
+    "fund=false",
+    "update-notifier=false",
+    "ignore-scripts=true",
+    `cache=${join(root, "npm-cache")}`,
+    `globalconfig=${globalConfig}`,
+    "",
+  ].join("\n"));
+  return {
+    npm: join(toolBin, "npm"),
+    tar: join(toolBin, "tar"),
+    environment: packageFixtureEnvironment(root, {
+      PATH: `${toolBin}:/usr/bin:/bin`,
+      npm_config_cache: join(root, "npm-cache"),
+      npm_config_userconfig: userConfig,
+      npm_config_globalconfig: globalConfig,
+      npm_config_offline: "true",
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+      npm_config_update_notifier: "false",
+      npm_config_ignore_scripts: "true",
+    }),
+  };
+}
+
+function runOwnedPackageCommand(
+  command: string,
+  args: readonly string[],
+  root: string,
+  environment: NodeJS.ProcessEnv,
+): string {
+  const result = spawnSync(command, args, {
+    cwd: root,
+    encoding: "utf-8",
+    env: environment,
+    timeout: 2500,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} exited ${result.status}: ${result.stderr}`);
+  return result.stdout;
+}
+
+function createPackageRunnerFixture(
+  root: string,
+  { target = `${process.platform}-${process.arch}` }: { readonly target?: string } = {},
+): PackageRunnerFixture {
+  const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8"));
+  const packageRoot = join(root, "node_modules", manifest.name);
+  const packageBin = join(packageRoot, "bin");
+  const platformPackage = `wolfpack-bridge-${target}`;
+  const platformVersion = manifest.optionalDependencies[platformPackage];
+  if (typeof platformVersion !== "string") throw new Error(`missing fixture platform dependency: ${platformPackage}`);
+  const platformRoot = join(root, "node_modules", platformPackage);
+  const server = join(platformRoot, "wolfpack");
+  const broker = join(platformRoot, "wolfpack-broker");
+
+  mkdirSync(packageBin, { recursive: true });
+  mkdirSync(platformRoot, { recursive: true });
+  for (const directory of ["home", "tmp", "cache", "config", "npm-cache"]) {
+    mkdirSync(join(root, directory), { recursive: true });
+  }
+  copyFileSync(join(process.cwd(), "bin", "run.cjs"), join(packageBin, "run.cjs"));
+  writeFileSync(join(packageRoot, "package.json"), JSON.stringify({
+    name: manifest.name,
+    version: manifest.version,
+    bin: manifest.bin,
+    optionalDependencies: { [platformPackage]: platformVersion },
+  }));
+  writeFileSync(join(platformRoot, "package.json"), JSON.stringify({
+    name: platformPackage,
+    version: platformVersion,
+  }));
+  writeExecutable(server, "#!/bin/sh\nprintf 'wolfpack %s\\n' \"$*\"\n");
+  writeExecutable(broker, "#!/bin/sh\nprintf 'broker\\n'\n");
+
+  return { packageRoot, packageBin, platformPackage, platformRoot, server, broker };
 }
 
 function prepareFixture(): {
@@ -174,6 +304,98 @@ describe("install entrypoint parity", () => {
     expect([...new Set(Object.values(manifest.optionalDependencies))]).toEqual([manifest.version]);
   });
 
+  test("actual root tar contains the launcher contract without local platform payloads", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-root-tar-")));
+    const packs = join(fixtureRoot, "packs");
+    const packedRoot = join(fixtureRoot, "packed-root");
+    mkdirSync(packs, { recursive: true });
+    mkdirSync(packedRoot, { recursive: true });
+    const commands = packageFixtureCommands(fixtureRoot);
+    const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8"));
+
+    const mainPack = JSON.parse(runOwnedPackageCommand(commands.npm, [
+      "pack", process.cwd(), "--pack-destination", packs, "--json", "--offline", "--ignore-scripts", "--no-audit", "--no-fund",
+    ], fixtureRoot, commands.environment))[0];
+    const packedFiles = mainPack.files.map((file: { path: string }) => file.path).sort();
+    expect(mainPack.name).toBe(manifest.name);
+    expect(mainPack.version).toBe(manifest.version);
+    expect(packedFiles).toEqual(expect.arrayContaining([
+      "bin/run.cjs",
+      "package.json",
+    ]));
+    expect(packedFiles).not.toContain("bin/install.cjs");
+    expect(packedFiles).not.toContain("bin/wolfpack");
+    expect(packedFiles).not.toContain("bin/wolfpack-broker");
+
+    runOwnedPackageCommand(commands.tar, ["-xzf", join(packs, mainPack.filename), "-C", packedRoot], fixtureRoot, commands.environment);
+    const packedManifest = JSON.parse(readFileSync(join(packedRoot, "package", "package.json"), "utf-8"));
+    expect(packedManifest.bin).toEqual(manifest.bin);
+    expect(packedManifest.engines).toEqual({ node: ">=22" });
+    expect(packedManifest.scripts.postinstall).toBeUndefined();
+    expect(packedManifest.optionalDependencies).toEqual(manifest.optionalDependencies);
+  }, 7500);
+
+  test("package runner directly executes an exact immutable executable pair with its colocated broker", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-direct-package-runner-")));
+    const { packageBin, platformRoot, server, broker } = createPackageRunnerFixture(fixtureRoot);
+    writeExecutable(server, "#!/bin/sh\n\"$(dirname \"$0\")/wolfpack-broker\" --version\nprintf 'wolfpack %s\\n' \"$*\"\n");
+    writeExecutable(broker, "#!/bin/sh\nprintf 'broker %s\\n' \"$*\"\n");
+    writeExecutable(join(packageBin, "wolfpack"), "#!/bin/sh\nprintf 'STALE LOCAL BINARY\\n'\n");
+    const sourceBytes = [readFileSync(server), readFileSync(broker)];
+    const sourceModes = [statSync(server).mode & 0o777, statSync(broker).mode & 0o777];
+
+    const invoked = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], {
+      cwd: fixtureRoot,
+      encoding: "utf-8",
+      env: packageFixtureEnvironment(fixtureRoot),
+      timeout: 2500,
+    });
+
+    expect(invoked.status, invoked.stderr).toBe(0);
+    expect(invoked.stdout).toBe("broker --version\nwolfpack --version\n");
+    expect(existsSync(join(fixtureRoot, "cache", "wolfpack-bridge"))).toBe(false);
+    expect([readFileSync(server), readFileSync(broker)]).toEqual(sourceBytes);
+    expect([statSync(server).mode & 0o777, statSync(broker).mode & 0o777]).toEqual(sourceModes);
+    expect(platformRoot).toContain("wolfpack-bridge-");
+  });
+
+  test.each(["wolfpack", "wolfpack-broker"] as const)("package runner rejects a non-executable exact-pair payload: %s", (payload) => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-direct-non-executable-")));
+    const { packageBin, platformPackage, server, broker } = createPackageRunnerFixture(fixtureRoot);
+    const target = payload === "wolfpack" ? server : broker;
+    chmodSync(target, 0o644);
+
+    const invoked = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], {
+      cwd: fixtureRoot,
+      encoding: "utf-8",
+      env: packageFixtureEnvironment(fixtureRoot),
+      timeout: 2500,
+    });
+
+    expect(invoked.status).toBe(1);
+    expect(invoked.stdout).toBe("");
+    expect(invoked.stderr).toContain(`wolfpack: platform package ${platformPackage} has non-executable ${payload}`);
+    expect(existsSync(join(fixtureRoot, "cache", "wolfpack-bridge"))).toBe(false);
+  });
+
+  test("rejects unsupported Node before loading node builtins", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-old-node-")));
+    const packageBin = join(fixtureRoot, "bin");
+    mkdirSync(packageBin, { recursive: true });
+    writeFileSync(join(packageBin, "run.cjs"), readFileSync(join(process.cwd(), "bin", "run.cjs")));
+    writeExecutable(join(packageBin, "wolfpack"), "#!/bin/sh\nprintf 'wolfpack %s\\n' \"$*\"\n");
+
+    const result = spawnSync("node", ["-e", `
+      Object.defineProperty(process.versions, "node", { value: "14.16.0" });
+      require(process.argv[1]);
+    `, join(packageBin, "run.cjs"), "--version"], { encoding: "utf-8" });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("requires Node.js 22 or later");
+    expect(result.stderr).toContain("bunx --bun wolfpack-bridge@latest");
+    expect(result.stdout).toBe("");
+  });
+
   test("curl install does not require or mention obsolete tmux", () => {
     const fixture = prepareFixture();
     rmSync(join(fixture.bin, "tmux"));
@@ -194,119 +416,155 @@ describe("install entrypoint parity", () => {
     expect(installer).not.toContain("WOLFPACK_JWT_SECRET");
   });
 
-  test("package runner prepares both binaries when Bun blocks postinstall", () => {
-    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-runner-")));
-    const packageRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge");
-    const packageBin = join(packageRoot, "bin");
-    const platformPackage = `wolfpack-bridge-${process.platform}-${process.arch}`;
-    const platformRoot = join(fixtureRoot, "node_modules", platformPackage);
-    mkdirSync(packageBin, { recursive: true });
-    mkdirSync(platformRoot, { recursive: true });
-    writeFileSync(join(packageBin, "run.cjs"), readFileSync(join(process.cwd(), "bin", "run.cjs")));
-    writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: platformPackage, version: "test" }));
-    writeFileSync(join(platformRoot, "wolfpack"), "#!/bin/sh\nprintf 'wolfpack %s\\n' \"$*\"\n");
-    writeFileSync(join(platformRoot, "wolfpack-broker"), "#!/bin/sh\nprintf 'broker\\n'\n");
+  test("package runner accepts an exact release-policy build-metadata version", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-build-metadata-version-")));
+    const { packageBin, packageRoot, platformPackage, platformRoot } = createPackageRunnerFixture(fixtureRoot);
+    const version = "1.6.20-rc.1+build.7";
+    const mainManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf-8"));
+    mainManifest.version = version;
+    mainManifest.optionalDependencies[platformPackage] = version;
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify(mainManifest));
+    writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: platformPackage, version }));
 
-    const result = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], { encoding: "utf-8" });
-
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe("wolfpack --version\n");
-    expect(statSync(join(platformRoot, "wolfpack")).mode & 0o111).not.toBe(0);
-    expect(statSync(join(platformRoot, "wolfpack-broker")).mode & 0o111).not.toBe(0);
-  });
-
-  test("package runner clears macOS provenance and signs binaries when Bun blocks postinstall", () => {
-    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-runner-macos-")));
-    const packageRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge");
-    const packageBin = join(packageRoot, "bin");
-    const platformRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge-darwin-arm64");
-    const commandBin = join(fixtureRoot, "command-bin");
-    const commandLog = join(fixtureRoot, "commands.log");
-    mkdirSync(packageBin, { recursive: true });
-    mkdirSync(platformRoot, { recursive: true });
-    mkdirSync(commandBin, { recursive: true });
-    writeFileSync(join(packageBin, "run.cjs"), readFileSync(join(process.cwd(), "bin", "run.cjs")));
-    writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: "wolfpack-bridge-darwin-arm64", version: "test" }));
-    writeExecutable(join(platformRoot, "wolfpack"), "#!/bin/sh\nprintf 'wolfpack %s\\n' \"$*\"\n");
-    writeExecutable(join(platformRoot, "wolfpack-broker"), "#!/bin/sh\nprintf 'broker\\n'\n");
-    writeExecutable(join(commandBin, "xattr"), "#!/bin/sh\nprintf 'xattr %s\\n' \"$*\" >> \"$POSTINSTALL_TEST_LOG\"\n");
-    writeExecutable(join(commandBin, "codesign"), "#!/bin/sh\nprintf 'codesign %s\\n' \"$*\" >> \"$POSTINSTALL_TEST_LOG\"\n");
-    writeFileSync(commandLog, "");
-
-    const result = spawnSync("node", ["-e", `
-      const Module = require("node:module");
-      const os = require("node:os");
-      const load = Module._load;
-      Module._load = function(request, parent, isMain) {
-        if (request === "node:os") return { ...os, platform: () => "darwin", arch: () => "arm64" };
-        return load.call(this, request, parent, isMain);
-      };
-      require(process.argv[1]);
-    `, join(packageBin, "run.cjs"), "--version"], {
+    const invoked = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], {
+      cwd: fixtureRoot,
       encoding: "utf-8",
-      env: {
-        ...process.env,
-        PATH: `${commandBin}:${process.env.PATH}`,
-        POSTINSTALL_TEST_LOG: commandLog,
-      },
+      env: packageFixtureEnvironment(fixtureRoot),
+      timeout: 2500,
     });
 
-    expect(result.status).toBe(0);
-    expect(result.stdout).toBe("wolfpack --version\n");
-    expect(readFileSync(commandLog, "utf-8")).toBe([
-      `xattr -cr ${join(platformRoot, "wolfpack")}`,
-      `codesign --sign - --force ${join(platformRoot, "wolfpack")}`,
-      `xattr -cr ${join(platformRoot, "wolfpack-broker")}`,
-      `codesign --sign - --force ${join(platformRoot, "wolfpack-broker")}`,
-      "",
-    ].join("\n"));
+    expect(invoked.status, invoked.stderr).toBe(0);
+    expect(invoked.stdout).toBe("wolfpack --version\n");
   });
 
-  test("package postinstall clears macOS provenance and signs both binaries", () => {
-    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-postinstall-")));
-    const packageRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge");
-    const packageBin = join(packageRoot, "bin");
-    const platformRoot = join(fixtureRoot, "node_modules", "wolfpack-bridge-darwin-arm64");
-    const commandBin = join(fixtureRoot, "command-bin");
-    const commandLog = join(fixtureRoot, "commands.log");
-    mkdirSync(packageBin, { recursive: true });
-    mkdirSync(platformRoot, { recursive: true });
-    mkdirSync(commandBin, { recursive: true });
-    writeFileSync(join(packageBin, "install.cjs"), readFileSync(join(process.cwd(), "bin", "install.cjs")));
-    writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: "wolfpack-bridge-darwin-arm64", version: "test" }));
-    writeFileSync(join(platformRoot, "wolfpack"), "server\n");
-    writeFileSync(join(platformRoot, "wolfpack-broker"), "broker\n");
-    writeExecutable(join(commandBin, "xattr"), "#!/bin/sh\nprintf 'xattr %s\\n' \"$*\" >> \"$POSTINSTALL_TEST_LOG\"\n");
-    writeExecutable(join(commandBin, "codesign"), "#!/bin/sh\nprintf 'codesign %s\\n' \"$*\" >> \"$POSTINSTALL_TEST_LOG\"\n");
-    writeFileSync(commandLog, "");
+  test("package runner refuses a platform package with a different exact version", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-version-mismatch-")));
+    const { packageBin, platformRoot, platformPackage } = createPackageRunnerFixture(fixtureRoot);
+    writeFileSync(join(platformRoot, "package.json"), JSON.stringify({ name: platformPackage, version: "0.0.0-fixture-mismatch" }));
 
-    const result = spawnSync("node", ["-e", `
-      const Module = require("node:module");
-      const os = require("node:os");
-      const load = Module._load;
-      Module._load = function(request, parent, isMain) {
-        if (request === "node:os") return { ...os, platform: () => "darwin", arch: () => "arm64" };
-        return load.call(this, request, parent, isMain);
-      };
-      require(process.argv[1]);
-    `, join(packageBin, "install.cjs")], {
+    const invoked = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], {
+      cwd: fixtureRoot,
       encoding: "utf-8",
-      env: {
-        ...process.env,
-        PATH: `${commandBin}:${process.env.PATH}`,
-        POSTINSTALL_TEST_LOG: commandLog,
-      },
+      env: packageFixtureEnvironment(fixtureRoot),
+      timeout: 2500,
     });
 
-    expect(result.status).toBe(0);
-    expect(readFileSync(commandLog, "utf-8")).toBe([
-      `xattr -cr ${join(packageBin, "wolfpack")}`,
-      `codesign --sign - --force ${join(packageBin, "wolfpack")}`,
-      `xattr -cr ${join(packageBin, "wolfpack-broker")}`,
-      `codesign --sign - --force ${join(packageBin, "wolfpack-broker")}`,
-      "",
-    ].join("\n"));
+    expect(invoked.status).toBe(1);
+    expect(invoked.stderr).toContain(`platform package ${platformPackage} does not match declared version`);
+    expect(invoked.stderr).not.toContain("optional dependencies enabled");
   });
+
+  test("package runner gives optional-dependency guidance for genuine absence", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-missing-")));
+    const { packageBin, platformRoot, platformPackage } = createPackageRunnerFixture(fixtureRoot);
+    rmSync(platformRoot, { recursive: true });
+    writeExecutable(join(packageBin, "wolfpack"), "#!/bin/sh\nprintf 'STALE LOCAL BINARY\\n'\n");
+
+    const invoked = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], {
+      cwd: fixtureRoot,
+      encoding: "utf-8",
+      env: packageFixtureEnvironment(fixtureRoot),
+      timeout: 2500,
+    });
+
+    expect(invoked.status).toBe(1);
+    expect(invoked.stderr).toContain(`missing optional platform package ${platformPackage}`);
+    expect(invoked.stderr).toContain("optional dependencies enabled");
+  });
+
+  test("package runner preserves non-ENOENT payload inspection errors", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-inspection-error-")));
+    const { packageBin, platformPackage, broker } = createPackageRunnerFixture(fixtureRoot);
+    const nodeRuntime = Bun.which("node");
+    if (!nodeRuntime) throw new Error("missing Node for the owned payload inspection fixture");
+    const injection = `
+      const Module = require("node:module");
+      const load = Module._load;
+      Module._load = function(request, parent, isMain) {
+        const loaded = load.call(this, request, parent, isMain);
+        if (request !== "node:fs") return loaded;
+        return { ...loaded, lstatSync(path, ...args) {
+          if (path === process.env.WOLFPACK_INSPECTION_TARGET) {
+            throw Object.assign(new Error("owned fixture denies inspection"), { code: "EACCES" });
+          }
+          return loaded.lstatSync(path, ...args);
+        }};
+      };
+      require(process.argv[1]);
+    `;
+    const invoked = spawnSync(realpathSync(nodeRuntime), ["--eval", injection, join(packageBin, "run.cjs"), "--version"], {
+      cwd: fixtureRoot,
+      encoding: "utf-8",
+      env: packageFixtureEnvironment(fixtureRoot, { WOLFPACK_INSPECTION_TARGET: broker }),
+      timeout: 2500,
+    });
+
+    expect(invoked.status).toBe(1);
+    expect(invoked.stdout).toBe("");
+    expect(invoked.stderr).toContain(`wolfpack: could not inspect wolfpack-broker in platform package ${platformPackage} (EACCES)`);
+    expect(invoked.stderr).not.toContain("missing wolfpack-broker");
+  });
+
+  test.each(["directory", "symlink"] as const)("package runner reports a non-regular payload: %s", (kind) => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-non-regular-")));
+    const { packageBin, platformPackage, broker, server } = createPackageRunnerFixture(fixtureRoot);
+    rmSync(broker);
+    if (kind === "directory") mkdirSync(broker);
+    else symlinkSync(server, broker);
+
+    const invoked = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], {
+      cwd: fixtureRoot,
+      encoding: "utf-8",
+      env: packageFixtureEnvironment(fixtureRoot),
+      timeout: 2500,
+    });
+
+    expect(invoked.status).toBe(1);
+    expect(invoked.stdout).toBe("");
+    expect(invoked.stderr).toContain(`wolfpack: platform package ${platformPackage} has non-regular wolfpack-broker`);
+  });
+
+  test.each([
+    ["main", "null"],
+    ["main", "array"],
+    ["platform", "null"],
+    ["platform", "array"],
+  ] as const)("package runner rejects a %s %s manifest shape", (owner, shape) => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-manifest-shape-")));
+    const { packageRoot, packageBin, platformPackage, platformRoot } = createPackageRunnerFixture(fixtureRoot);
+    writeFileSync(join(owner === "main" ? packageRoot : platformRoot, "package.json"), shape === "null" ? "null\n" : "[]\n");
+
+    const invoked = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], {
+      cwd: fixtureRoot,
+      encoding: "utf-8",
+      env: packageFixtureEnvironment(fixtureRoot),
+      timeout: 2500,
+    });
+
+    expect(invoked.status).toBe(1);
+    expect(invoked.stdout).toBe("");
+    expect(invoked.stderr).toContain(owner === "main"
+      ? "wolfpack: invalid main package manifest"
+      : `wolfpack: invalid platform package manifest for ${platformPackage}`);
+  });
+
+  test("package runner reports an incomplete optional platform pair distinctly", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-runner-incomplete-")));
+    const { packageBin, platformPackage, broker } = createPackageRunnerFixture(fixtureRoot);
+    rmSync(broker);
+
+    const result = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], {
+      encoding: "utf-8",
+      cwd: fixtureRoot,
+      env: packageFixtureEnvironment(fixtureRoot),
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`wolfpack: incomplete platform package ${platformPackage}`);
+    expect(result.stderr).toContain("missing wolfpack-broker");
+    expect(result.stderr).not.toContain("optional dependencies enabled");
+  });
+
 });
 
 describe("install.sh release binary staging", () => {

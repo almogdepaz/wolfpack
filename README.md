@@ -47,8 +47,8 @@ On later runs, `wolfpack` stages current binaries, runs deferred setup to verify
 ### Bunx or npm: package runner
 
 ```bash
-bunx wolfpack-bridge@latest
-# or
+bunx --bun wolfpack-bridge@latest
+# or, with Node.js 22+
 npx --yes wolfpack-bridge@latest
 ```
 
@@ -63,14 +63,14 @@ Package runners use the same setup wizard but do not add `wolfpack` to `PATH`. U
 | install path | verify |
 | --- | --- |
 | curl | `wolfpack doctor` |
-| Bunx | `bunx wolfpack-bridge@latest doctor` |
+| Bunx | `bunx --bun wolfpack-bridge@latest doctor` |
 | npm/npx | `npx --yes wolfpack-bridge@latest doctor` |
 
 Next, follow the [first-session guide](docs/first-session.md) to create a terminal, run a harmless command or task, and reopen the same session.
 
 Open the local URL on the host machine. The project picker lists projects under the configured directory by default; **Open existing directory** can launch an existing server-local absolute path elsewhere. For phone or remote access, scan only the verified Tailnet HTTPS QR code.
 
-To uninstall: `wolfpack uninstall --yes` (curl), `bunx wolfpack-bridge@latest uninstall --yes` (Bunx), or `npx --yes wolfpack-bridge@latest uninstall --yes` (npm).
+To uninstall: `wolfpack uninstall --yes` (curl), `bunx --bun wolfpack-bridge@latest uninstall --yes` (Bunx), or `npx --yes wolfpack-bridge@latest uninstall --yes` (npm with Node.js 22+).
 
 ## built for remote and mobile work
 
