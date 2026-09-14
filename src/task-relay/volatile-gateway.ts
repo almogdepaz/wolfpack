@@ -7,11 +7,14 @@ import { MEMORY_RELAY_LIMITS, MEMORY_RELAY_PROFILE, MemoryRelayError, MemoryRela
 import type { ForwardAttempt } from "./memory-store.ts";
 import type { TaskRelayRegistration } from "./registration.ts";
 import type { BoundedRelayInvestigation } from "./investigation.ts";
+import { createSuspensionInclusiveElapsedNow } from "./suspension-inclusive-clock.ts";
 import { captureRelayWire } from "./worker-protocol.ts";
 import { VOLATILE_GATEWAY_LIMITS as LIMIT, VOLATILE_PEER_PATH, volatileFailure } from "./volatile-protocol.ts";
 import type { VolatileBinding, VolatileCode, VolatilePeerRequest, VolatileRequest, VolatileResult, VolatileValue, VolatileTopologyRequest } from "./volatile-protocol.ts";
 
 const log = createLogger("task-relay");
+const MAINTENANCE_INTERVAL_MS = 1_000;
+const MATERIAL_MAINTENANCE_GAP_MS = MAINTENANCE_INTERVAL_MS * 5;
 const fields: Readonly<Record<string, readonly string[]>> = {
   connect: ["callerSession", "generation", "protocolVersions", "leaseMs", "epoch"],
   resolvePeer: ["origin", "peerEpoch", "target"], resolve: ["target"], send: ["envelope"],
@@ -66,6 +69,7 @@ export interface VolatileGatewayOptions {
   readonly inspectSession: (selector: string) => Promise<SessionInspectionResult>;
   readonly peerFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   readonly now?: () => number;
+  readonly elapsedNow?: () => number;
   readonly investigation?: BoundedRelayInvestigation;
   readonly limits?: Partial<Record<keyof typeof MEMORY_RELAY_LIMITS, number>>;
 }
@@ -75,6 +79,7 @@ export interface VolatileGatewayOptions {
 export class VolatileRelayGateway {
   readonly #store: MemoryRelayStore;
   readonly #now: () => number;
+  readonly #elapsedNow: () => number;
   readonly #inspect: VolatileGatewayOptions["inspectSession"];
   readonly #fetch: NonNullable<VolatileGatewayOptions["peerFetch"]>;
   readonly #origin: string | undefined;
@@ -83,6 +88,9 @@ export class VolatileRelayGateway {
   readonly #forwarding = new Map<string, Promise<VolatileResult>>();
   #ordinary = 0; #peers = 0;
   #timer: ReturnType<typeof setInterval> | undefined;
+  #lastMaintenance: number | undefined;
+  #lastMaintenanceElapsed: number | undefined;
+  #lastMaintenanceMutation: bigint | undefined;
   #lastCleanup = -Infinity; #lastWarning = -Infinity;
 
   constructor(options: VolatileGatewayOptions) {
@@ -92,6 +100,7 @@ export class VolatileRelayGateway {
     }
     this.#origin = options.peerOrigin; this.#fetch = options.peerFetch ?? fetch;
     this.#inspect = options.inspectSession; this.#now = options.now ?? Date.now;
+    this.#elapsedNow = options.elapsedNow ?? createSuspensionInclusiveElapsedNow();
     // Explicit diagnostic injection only. The normal worker never writes task history.
     this.#investigation = options.investigation;
     this.#store = new MemoryRelayStore({ limits: options.limits, investigation: this.#investigation });
@@ -102,11 +111,20 @@ export class VolatileRelayGateway {
     if (this.#stop.signal.aborted) fail("RELAY_RESET");
     if (this.#timer) return;
     this.maintenance();
-    this.#timer = setInterval(() => this.maintenance(), 1000); this.#timer.unref?.();
+    this.#timer = setInterval(() => this.maintenance(), MAINTENANCE_INTERVAL_MS); this.#timer.unref?.();
   }
   maintenance(): void {
     if (this.#stop.signal.aborted) return;
-    const now = this.#now(); this.#store.maintenance(this.epoch, now);
+    const now = this.#now(), elapsed = this.#elapsedNow(), previousElapsed = this.#lastMaintenanceElapsed;
+    const elapsedContinuous = Number.isFinite(elapsed) && previousElapsed !== undefined && elapsed > previousElapsed;
+    if (elapsedContinuous && this.#lastMaintenance !== undefined && this.#lastMaintenanceMutation !== undefined
+      && elapsed - previousElapsed >= MATERIAL_MAINTENANCE_GAP_MS) {
+      this.#store.compensateLiveRegistrationLeases(this.epoch, this.#lastMaintenance, this.#lastMaintenanceMutation, now);
+    }
+    this.#store.maintenance(this.epoch, now);
+    this.#lastMaintenance = now;
+    this.#lastMaintenanceMutation = this.#store.registrationMutation;
+    this.#lastMaintenanceElapsed = Number.isFinite(elapsed) && (previousElapsed === undefined || elapsed > previousElapsed) ? elapsed : undefined;
     if (now - this.#lastCleanup >= 60_000) { this.#lastCleanup = now; this.#investigation?.requestCleanup(); }
     const health = this.#investigation?.health();
     if (health?.degraded && now - this.#lastWarning >= 60_000) {

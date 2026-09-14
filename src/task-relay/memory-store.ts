@@ -37,6 +37,7 @@ function captured<T>(input: T, limit: number): T {
 
 interface RegistrationEntry {
   value: RelayRegistration;
+  mutation: bigint;
   readonly mailbox: Map<string, bigint>;
   cursor: bigint;
   mailboxBytes: number;
@@ -89,6 +90,7 @@ export class MemoryRelayStore {
   #receiptBytes = 0;
   #metadataBytes = 0;
   #logDrops = 0;
+  #registrationMutation = 0n;
 
   constructor(options: { readonly limits?: Partial<Limits>; readonly investigation?: RelayInvestigationSink } = {}) {
     const overrides = captured(options.limits ?? {}, 4096);
@@ -102,6 +104,7 @@ export class MemoryRelayStore {
   }
 
   get epoch(): string { return this.#epoch; }
+  get registrationMutation(): bigint { return this.#registrationMutation; }
   checkEpoch(epoch: string): void { if (epoch !== this.#epoch) fail("RELAY_RESET"); }
 
   stats() {
@@ -136,9 +139,9 @@ export class MemoryRelayStore {
     // Preflight before discarding anything. A different generation cannot ever
     // ACK its predecessor's mail or resume its forwarding attempts.
     if (prior && !existing) this.#retire(prior);
-    const entry = existing ?? { value: registration, mailbox: new Map(), cursor: 0n, mailboxBytes: 0, references: 0, bytes: 0 };
+    const entry = existing ?? { value: registration, mutation: 0n, mailbox: new Map(), cursor: 0n, mailboxBytes: 0, references: 0, bytes: 0 };
     this.#metadataBytes += size - entry.bytes;
-    entry.value = registration; entry.bytes = size;
+    entry.value = registration; entry.mutation = ++this.#registrationMutation; entry.bytes = size;
     this.#registrations.set(registration.endpoint.id, entry);
     this.#sessions.set(value.sessionId, registration.endpoint.id);
     if (!entry.references) this.#expiry.set(`g:${registration.endpoint.id}`, Date.parse(registration.leaseExpiresAt));
@@ -163,6 +166,7 @@ export class MemoryRelayStore {
     const entry = this.#activeRegistration(endpointId, now);
     if (!entry || entry.value.sessionId !== sessionId) return false;
     entry.value = { ...entry.value, leaseExpiresAt: new Date(now).toISOString() };
+    entry.mutation = ++this.#registrationMutation;
     if (!entry.references) this.#expiry.set(`g:${endpointId}`, now);
     this.#emit("disconnected", now);
     return true;
@@ -316,6 +320,21 @@ export class MemoryRelayStore {
       return { kind: "unconfirmed", mayHaveBeenDelivered: true };
     }
     return { kind: "pending", retryAt: receipt.nextAttemptAt };
+  }
+
+  /** Preserves lease identity across a material gateway timer gap without moving relay deadlines. */
+  compensateLiveRegistrationLeases(epoch: string, previousNow: number, previousMutation: bigint, now: number): void {
+    this.checkEpoch(epoch); time(previousNow); time(now);
+    if (typeof previousMutation !== "bigint" || previousMutation < 0n || previousMutation > this.#registrationMutation) fail("INVALID_REQUEST");
+    const gap = now - previousNow;
+    if (gap <= 0) return;
+    for (const [id, entry] of this.#registrations) {
+      const expiresAt = Date.parse(entry.value.leaseExpiresAt);
+      if (entry.mutation > previousMutation || expiresAt <= previousNow) continue;
+      const leaseExpiresAt = new Date(expiresAt + gap).toISOString();
+      entry.value = { ...entry.value, leaseExpiresAt };
+      if (!entry.references) this.#expiry.set(`g:${id}`, Date.parse(leaseExpiresAt));
+    }
   }
 
   /** Timer/caller drives bounded expiry work. Never expires accepted mailboxes. */
