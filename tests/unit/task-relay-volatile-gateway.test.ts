@@ -16,19 +16,19 @@ function take<K extends VolatileValue["kind"]>(result: VolatileResult, kind: K):
   expect(result.value.kind).toBe(kind); return result.value as Extract<VolatileValue, { kind: K }>;
 }
 function fixture(options: Partial<VolatileGatewayOptions> = {}) {
-  let now = NOW, inspections = 0;
+  let now = NOW, elapsed = 0, inspections = 0;
   const people = new Map(["alice", "bob", "mallory"].map(name => [name, { id: randomUUID(), alive: true }]));
-  const gateway = new VolatileRelayGateway({ now: () => now, inspectSession: async selector => {
+  const gateway = new VolatileRelayGateway({ now: () => now, elapsedNow: () => elapsed, inspectSession: async selector => {
     inspections++;
     const found = [...people.entries()].find(([name, person]) => name === selector || person.id === selector);
     return found ? { ok: true, session: found[0], sessionId: found[1].id, projectPath: "/fixture", harness: "pi", alive: found[1].alive }
       : { ok: false, code: "NOT_FOUND" };
   }, ...options }); gateways.push(gateway);
-  const connect = async (callerSession: string, generation = "g"): Promise<VolatileBinding> => {
-    const result = await gateway.request({ operation: "connect", profile, callerSession, generation, protocolVersions: [2], leaseMs: 300_000 });
+  const connect = async (callerSession: string, generation = "g", leaseMs = 300_000): Promise<VolatileBinding> => {
+    const result = await gateway.request({ operation: "connect", profile, callerSession, generation, protocolVersions: [2], leaseMs });
     return { profile, epoch: gateway.epoch, callerSession, endpoint: take(result, "connected").endpoint };
   };
-  return { gateway, people, connect, advance(ms: number) { now += ms; }, inspections: () => inspections };
+  return { gateway, people, connect, advance(ms: number, elapsedMs = ms) { now += ms; elapsed += elapsedMs; }, setElapsed(value: number) { elapsed = value; }, inspections: () => inspections };
 }
 function envelope(source: RelayEndpoint, target: RelayEndpoint, id = randomUUID()): RelayEnvelope {
   return { envelopeId: id, protocolVersion: 2, source, target, payload: { arbitrary: "opaque" }, createdAt: new Date(NOW).toISOString() };
@@ -214,6 +214,83 @@ test("status observation after a slow failure never starts a phantom forwarding 
   expect(await f.gateway.request({ ...source, operation: "send", envelope: item })).toMatchObject({ ok: false });
   take(await f.gateway.request({ ...source, operation: "send", envelope: item }), "accepted");
   expect(calls).toBe(2);
+});
+
+test("maintenance preserves a live generation across host suspension", async () => {
+  const f = fixture(), original = await f.connect("alice");
+  f.gateway.initialize();
+  f.advance(344_000);
+  f.gateway.maintenance();
+  expect((await f.connect("alice")).endpoint).toEqual(original.endpoint);
+});
+
+test("maintenance gap does not resurrect a registration expired at its last instant", async () => {
+  const f = fixture(), original = await f.connect("alice", "g", 1);
+  f.gateway.initialize();
+  f.advance(1); f.gateway.maintenance();
+  f.advance(344_000); f.gateway.maintenance();
+  expect((await f.connect("alice")).endpoint).not.toEqual(original.endpoint);
+});
+
+test("suspension compensation does not restore a resumed disconnect", async () => {
+  const f = fixture(), original = await f.connect("alice");
+  f.gateway.initialize();
+  f.advance(344_000);
+  const resumed = await f.connect("alice");
+  expect(resumed.endpoint).toEqual(original.endpoint);
+  take(await f.gateway.request({ ...resumed, operation: "disconnect" }), "disconnected");
+  f.gateway.maintenance();
+  expect(await f.gateway.request({ ...resumed, operation: "health" })).toMatchObject({ ok: false, error: { code: "REGISTRATION_EXPIRED" } });
+});
+
+test("wall-clock rollback does not create a later maintenance gap", async () => {
+  const f = fixture();
+  await f.connect("alice");
+  f.gateway.initialize();
+  for (let step = 0; step < 10; step++) { f.advance(1_000); f.gateway.maintenance(); }
+  f.advance(-6_000); f.gateway.maintenance();
+  f.advance(6_000); f.gateway.maintenance();
+  f.advance(290_000);
+  const sessionId = f.people.get("alice")!.id;
+  expect((await f.gateway.registrationsForSessions([sessionId])).has(sessionId)).toBe(false);
+});
+
+test("stepped wall-clock recovery does not extend a rollback renewal", async () => {
+  const f = fixture();
+  await f.connect("alice");
+  f.gateway.initialize();
+  for (let step = 0; step < 100; step++) { f.advance(1_000); f.gateway.maintenance(); }
+  f.advance(-99_000, 1_000);
+  await f.connect("alice");
+  f.gateway.maintenance();
+  f.advance(109_000, 1_000); f.gateway.maintenance();
+  f.advance(191_000, 191_000);
+  const sessionId = f.people.get("alice")!.id;
+  expect((await f.gateway.registrationsForSessions([sessionId])).has(sessionId)).toBe(false);
+});
+
+test("broken elapsed continuity does not reactivate referenced expired registrations", async () => {
+  for (const invalidElapsed of [Number.NaN, -1]) {
+    const f = fixture(), source = await f.connect("alice"), target = await f.connect("bob");
+    take(await f.gateway.request({ ...source, operation: "send", envelope: envelope(source.endpoint, target.endpoint) }), "accepted");
+    f.gateway.initialize();
+    f.advance(300_000); f.setElapsed(invalidElapsed); f.gateway.maintenance();
+    f.advance(344_000); f.setElapsed(344_000); f.gateway.maintenance();
+    const sessionId = f.people.get("bob")!.id;
+    expect((await f.gateway.registrationsForSessions([sessionId])).has(sessionId)).toBe(false);
+  }
+});
+
+test("suspension compensation does not extend forwarding deadlines", async () => {
+  const f = fixture({ peerOrigin: "https://sender.tail123.ts.net", peerFetch: async () => { throw new Error("offline"); } });
+  const source = await f.connect("alice");
+  const remote = take(await f.gateway.topology({ ...source, operation: "resolvePeer", origin: "https://peer.tail123.ts.net",
+    peerEpoch: randomUUID(), target: { relay: RELAY_ID, id: randomUUID() } }), "resolved").endpoint;
+  const item = envelope(source.endpoint, remote);
+  f.gateway.initialize();
+  expect(await f.gateway.request({ ...source, operation: "send", envelope: item })).toMatchObject({ ok: false, error: { code: "PEER_UNREACHABLE" } });
+  f.advance(344_000); f.gateway.maintenance();
+  expect(await f.gateway.request({ ...source, operation: "send", envelope: item })).toMatchObject({ ok: false, error: { code: "DELIVERY_UNCONFIRMED" } });
 });
 
 test("idle maintenance coalesces investigation cleanup and never evicts accepted mailboxes", async () => {
