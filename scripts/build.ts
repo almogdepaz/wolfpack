@@ -133,7 +133,9 @@ if (mode === "local") {
 console.log("\n=== compiling binaries ===");
 for (const target of TARGETS) {
   const name = `wolfpack-${target.replace("bun-", "")}`;
-  run(`bun build --compile --target=${target} --entry-naming '[name].js' ${ENTRY} ${RELAY_WORKER_ENTRY} --outfile ${join(DIST, name)}`);
+  const binaryPath = join(DIST, name);
+  run(`bun build --compile --target=${target} --entry-naming '[name].js' ${ENTRY} ${RELAY_WORKER_ENTRY} --outfile ${binaryPath}`);
+  chmodSync(binaryPath, 0o755);
 }
 
 if (mode === "package-all") {
@@ -162,11 +164,14 @@ if (mode === "package-all") {
       },
     };
     writeFileSync(join(packageDir, "package.json"), `${JSON.stringify(platformPackage, null, 2)}\n`);
-    copyFileSync(join(DIST, `wolfpack-${target.replace("bun-", "")}`), join(packageDir, "wolfpack"));
-    copyFileSync(brokerSource, join(packageDir, "wolfpack-broker"));
+    const serverPath = join(packageDir, "wolfpack");
+    const brokerPath = join(packageDir, "wolfpack-broker");
+    copyFileSync(join(DIST, `wolfpack-${target.replace("bun-", "")}`), serverPath);
+    copyFileSync(brokerSource, brokerPath);
     copyFileSync(join(BROKER_DIR, target, "broker-artifact.json"), join(packageDir, "broker-artifact.json"));
     copyFileSync(THIRD_PARTY_NOTICES, join(packageDir, "THIRD_PARTY_NOTICES"));
-    chmodSync(join(packageDir, "wolfpack-broker"), 0o755);
+    chmodSync(serverPath, 0o755);
+    chmodSync(brokerPath, 0o755);
     console.log(`  ${targetMetadata.packageName}/  (wolfpack + verified wolfpack-broker)`);
   }
 }

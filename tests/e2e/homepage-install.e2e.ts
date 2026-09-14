@@ -18,7 +18,7 @@ import { startTestServer } from "./helpers.ts";
 import type { TestServer } from "./helpers.ts";
 
 const HOMEPAGE_PREFIX = "/homepage/";
-const BUNX_COMMAND = "bunx wolfpack-bridge@latest";
+const BUNX_COMMAND = "bunx --bun wolfpack-bridge@latest";
 const LOCAL_FCP_BUDGET_MS = 5_000;
 const FIRST_PARTY_TRANSFER_BUDGET_BYTES = 1_000_000;
 const GOOGLE_FONTS_URL = /^https:\/\/fonts\.(?:googleapis|gstatic)\.com\//;

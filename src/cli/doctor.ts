@@ -15,6 +15,7 @@ import { join } from "node:path";
 import * as net from "node:net";
 import { createLogger, errMsg } from "../log.js";
 import { LOG_ROTATE_BYTES } from "../log-rotation.js";
+import { defaultBrokerSocketPath } from "../broker/client.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
 
 const log = createLogger("doctor");
@@ -38,6 +39,7 @@ import {
 type DoctorFact =
   | "tailscale-unavailable"
   | "tailscale-disconnected"
+  | "tailscale-query-failed"
   | "service-absent"
   | "service-installed"
   | "service-running"
@@ -72,6 +74,14 @@ interface DoctorDependencyProbes {
   readonly pathExists: (path: string) => boolean;
 }
 
+export function readTailscaleSelfStatus(binary: string): string {
+  return execFileSync(
+    binary,
+    ["status", "--self", "--json"],
+    { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+  );
+}
+
 function defaultDependencyProbes(): DoctorDependencyProbes {
   return {
     config: loadConfig(),
@@ -81,11 +91,7 @@ function defaultDependencyProbes(): DoctorDependencyProbes {
       ["version"],
       { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
     ),
-    readTailscaleStatus: binary => execFileSync(
-      IS_LINUX ? "sudo" : binary,
-      IS_LINUX ? [binary, "status", "--self", "--json"] : ["status", "--self", "--json"],
-      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
-    ),
+    readTailscaleStatus: readTailscaleSelfStatus,
     shellPath: process.env.SHELL,
     pathExists: existsSync,
   };
@@ -119,7 +125,7 @@ export function checkDoctorDependencies(probes: DoctorDependencyProbes): CheckRe
     } catch {
       results.push({
         name: "tailscale connected", group: "Dependencies", status: tailscaleFailureStatus,
-        detail: "unable to query status", fixHint: "tailscale up", fact: "tailscale-disconnected",
+        detail: "unable to query status", fixHint: "tailscale status --self --json", fact: "tailscale-query-failed",
       });
     }
   } else {
@@ -371,7 +377,7 @@ function checkBinary(): CheckResult[] {
 // Check group 6: Broker (PTY daemon)
 // ---------------------------------------------------------------------------
 
-async function checkBroker(): Promise<CheckResult[]> {
+export async function checkDoctorBroker(): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
 
   // Binary location: ~/.wolfpack/bin/wolfpack-broker (preferred) or co-located
@@ -394,7 +400,7 @@ async function checkBroker(): Promise<CheckResult[]> {
   }
 
   // Socket: open it, send list_sessions, expect status === "ok" within 1s.
-  const socketPath = join(WOLFPACK_DIR, "broker.sock");
+  const socketPath = defaultBrokerSocketPath();
   if (!existsSync(socketPath)) {
     const fix = found ? () => kickstartBroker() : undefined;
     results.push({
@@ -664,7 +670,7 @@ export interface DoctorOptions {
 export async function doctor({
   fix: doFix = process.argv.includes("--fix"),
   json = process.argv.includes("--json"),
-  checkGroups = [checkDeps, checkConfig, checkService, checkConnectivity, checkBinary, checkBroker, checkEnvironment, checkLogs],
+  checkGroups = [checkDeps, checkConfig, checkService, checkConnectivity, checkBinary, checkDoctorBroker, checkEnvironment, checkLogs],
 }: DoctorOptions = {}) {
 
   let allResults = await runCheckGroups(checkGroups);

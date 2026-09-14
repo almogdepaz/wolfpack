@@ -156,6 +156,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.17.0
+
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
@@ -191,49 +195,76 @@ jobs:
       - name: Build all targets
         run: WOLFPACK_BUILD_MODE=package-all bun run scripts/build.ts
 
-      - name: Generate checksums
-        working-directory: dist
-        run: |
-          # Include both the bun-compiled wolfpack binaries and the
-          # rust-compiled broker binaries so users verifying a download
-          # have one canonical sha256 list per release. Enumerate the
-          # exact set we upload; the local deploy broker under dist/local/
-          # is not a release asset.
-          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
-            cp "broker/bun-${target}/wolfpack-broker" "wolfpack-broker-${target}"
-          done
-          sha256sum \
-            wolfpack-linux-x64 wolfpack-linux-arm64 \
-            wolfpack-darwin-x64 wolfpack-darwin-arm64 \
-            wolfpack-broker-linux-x64 wolfpack-broker-linux-arm64 \
-            wolfpack-broker-darwin-x64 wolfpack-broker-darwin-arm64 \
-            THIRD_PARTY_NOTICES \
-            > checksums-sha256.txt
-
       - name: Smoke installed package and native release artifacts
         run: bun run scripts/smoke-release-artifacts.ts linux-x64
 
-      - name: Upload release bundle
+      - name: Archive mode-preserving build bundle
+        run: tar -czf "$RUNNER_TEMP/release-build-bundle.tar.gz" dist
+
+      - name: Upload build bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-bundle-${{ github.sha }}
-          path: dist
+          name: release-build-bundle-${{ github.sha }}
+          path: ${{ runner.temp }}/release-build-bundle.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  prepare-final-bundle:
+    needs: build
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.17.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Download mode-preserving build bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-build-bundle-${{ github.sha }}
+          path: bundle
+
+      - name: Extract build bundle
+        run: tar -xzf bundle/release-build-bundle.tar.gz
+
+      - name: Prepare final macOS payloads
+        run: scripts/prepare-final-macos-payloads.sh
+
+      - name: Smoke host-compatible final package
+        run: bun run scripts/smoke-release-artifacts.ts
+
+      - name: Create final release bundle
+        run: scripts/create-final-release-bundle.sh
+
+      - name: Upload final bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-final-bundle-${{ github.sha }}
+          path: ${{ runner.temp }}/release-final-bundle.tar.gz
           if-no-files-found: error
           retention-days: 7
 
   release:
-    needs: [build, classify-release]
+    needs: [prepare-final-bundle, classify-release]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
-      - name: Download release bundle
+      - name: Download final release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-bundle-${{ github.sha }}
-          path: dist
+          name: release-final-bundle-${{ github.sha }}
+          path: bundle
+
+      - name: Extract final release bundle
+        run: tar -xzf bundle/release-final-bundle.tar.gz
 
       - name: Attest release binaries
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
@@ -269,7 +300,7 @@ jobs:
 
   publish-npm:
     if: ${{ needs.classify-release.outputs.prerelease == 'false' }}
-    needs: [build, classify-release, release]
+    needs: [prepare-final-bundle, classify-release, release]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -286,11 +317,14 @@ jobs:
         with:
           bun-version: 1.4.2
 
-      - name: Download release bundle
+      - name: Download final release bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-bundle-${{ github.sha }}
-          path: dist
+          name: release-final-bundle-${{ github.sha }}
+          path: bundle
+
+      - name: Extract final release bundle
+        run: tar -xzf bundle/release-final-bundle.tar.gz
 
       - name: Publish to npm with provenance
         env:

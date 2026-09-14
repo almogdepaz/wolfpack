@@ -235,6 +235,11 @@ describe("homepage quality contract", () => {
     }
   });
 
+  test("describes package runners as direct platform-pair execution rather than cache preparation", () => {
+    expect(HOMEPAGE).toContain("directly run the matching platform pair");
+    expect(HOMEPAGE).not.toContain("prepare Wolfpack in the package cache");
+  });
+
   test("keeps artifact behavior links to install, release, recovery, and trust destinations", () => {
     const hrefs = new Set(
       attributesFor("a[href]")

@@ -49,6 +49,23 @@ describe("discovery assets", () => {
     expect(sitemap).toContain(`<loc>${CANONICAL_URL}</loc>`);
   });
 
+  test("keeps the Bun package-runner command consistent across discovery surfaces", () => {
+    const surfaces = [
+      "README.md",
+      "docs/installation.md",
+      "site/index.html",
+      "llms.txt",
+      "public/llms.txt",
+      "src/public-assets.ts",
+    ];
+
+    for (const path of surfaces) {
+      const content = readRepoFile(path);
+      expect(content).toContain("bunx --bun wolfpack-bridge@latest");
+      expect(content).not.toContain("bunx wolfpack-bridge@latest");
+    }
+  });
+
   test("pins the privileged Pages deployment actions", () => {
     const workflow = readRepoFile(".github/workflows/pages.yml");
 

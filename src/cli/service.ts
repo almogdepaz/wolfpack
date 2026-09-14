@@ -520,6 +520,72 @@ export function refreshInstalledServerService(options: { readonly reload?: boole
   print(dim(`  Refreshed installed server service descriptor${wasLoaded ? " and reloaded it" : ""}.`));
 }
 
+const LINGER_STATE = {
+  ENABLED: "enabled",
+  DISABLED: "disabled",
+  UNKNOWN: "unknown",
+} as const;
+
+type LingerState = (typeof LINGER_STATE)[keyof typeof LINGER_STATE];
+
+function inspectLinger(user: string): LingerState {
+  try {
+    const value = execFileSync("loginctl", ["show-user", user, "--property=Linger", "--value"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim().toLowerCase();
+    if (value === "yes") return LINGER_STATE.ENABLED;
+    if (value === "no") return LINGER_STATE.DISABLED;
+  } catch (e: unknown) {
+    log.warn("failed to inspect linger", { error: errMsg(e) });
+  }
+  return LINGER_STATE.UNKNOWN;
+}
+
+function canPromptForLinger(): boolean {
+  return process.stdin.isTTY === true && process.stdout.isTTY === true;
+}
+
+function configureLinger(): void {
+  const user = process.env.USER || "";
+  if (!/^[a-z_][a-z0-9_-]*$/.test(user)) {
+    print(dim("  Note: Could not validate USER for linger. Skipping."));
+    return;
+  }
+
+  const state = inspectLinger(user);
+  if (state === LINGER_STATE.ENABLED) {
+    print(dim("  Linger is already enabled."));
+    return;
+  }
+
+  if (state === LINGER_STATE.DISABLED) {
+    print(dim("  Note: Linger is disabled; user services may stop after logout."));
+  } else {
+    print(dim("  Note: Could not determine linger status; persistence after logout is unverified."));
+  }
+
+  if (!canPromptForLinger()) {
+    print(dim("  To enable it: sudo loginctl enable-linger $USER"));
+    return;
+  }
+
+  const consent = ask("  Enable linger with sudo so user services can survive logout? [y/N] ");
+  if (consent.toLowerCase() !== "y") {
+    print(dim("  To enable it later: sudo loginctl enable-linger $USER"));
+    return;
+  }
+
+  try {
+    execFileSync("sudo", ["loginctl", "enable-linger", user]);
+    print(dim("  Linger enable requested; verify with: loginctl show-user $USER --property=Linger --value"));
+  } catch (e: unknown) {
+    log.warn("failed to enable linger", { error: errMsg(e) });
+    print(dim("  Note: Could not enable linger. Service may not start at boot."));
+    print(dim("  Run: sudo loginctl enable-linger $USER"));
+  }
+}
+
 export function serviceInstall() {
   if (IS_MACOS) {
     rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
@@ -622,18 +688,7 @@ export function serviceInstall() {
       print(dim(`  Check logs: journalctl --user -u ${SYSTEMD_SERVICE}`));
       process.exit(1);
     }
-    try {
-      const user = process.env.USER || "";
-      if (!/^[a-z_][a-z0-9_-]*$/.test(user)) {
-        print(dim("  Note: Could not validate USER for linger. Skipping."));
-      } else {
-        execFileSync("sudo", ["loginctl", "enable-linger", user]);
-      }
-    } catch (e: unknown) {
-      log.warn("failed to enable linger", { error: errMsg(e) });
-      print(dim("  Note: Could not enable linger. Service may not start at boot."));
-      print(dim("  Run: sudo loginctl enable-linger $USER"));
-    }
+    configureLinger();
     print("");
     print(green("  Wolfpack service installed and started."));
     print(dim(`  Unit: ${SYSTEMD_PATH}`));

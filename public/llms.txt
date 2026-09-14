@@ -45,7 +45,7 @@ The installer immediately launches setup. After setup, if you accepted the login
 Package runners:
 
 ```bash
-bunx wolfpack-bridge@latest
+bunx --bun wolfpack-bridge@latest
 npx --yes wolfpack-bridge@latest
 ```
 
