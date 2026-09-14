@@ -1676,12 +1676,8 @@ function sessionOrderResetButtonHtml(machineUrl: string): string {
 // Shared visual treatment; actions and machine routing stay on the parent button.
 const NEW_SESSION_CONTENT = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New<span class="machine-add-label-detail"> session</span></span>';
 
-function machineNameHandleHtml(name: string, optionsId: string): string {
-  return `<button type="button" class="machine-name-handle" data-machine-control="order-handle" aria-label="Reorder ${escAttr(name)}" aria-describedby="machine-order-instructions" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" aria-expanded="false" aria-controls="${optionsId}"><span class="machine-header-name" title="${escAttr(name)}">${esc(name)}</span></button>`;
-}
-
-function machineOrderOptionsHtml(name: string, optionsId: string): string {
-  return `<div id="${optionsId}" class="machine-order-options" role="group" aria-label="Move ${escAttr(name)}" hidden inert><button type="button" data-machine-menu-offset="-1" aria-label="Move ${escAttr(name)} up">Move up</button><button type="button" data-machine-menu-offset="1" aria-label="Move ${escAttr(name)} down">Move down</button></div>`;
+function machineNameHandleHtml(name: string): string {
+  return `<span class="machine-name-handle" title="Drag to reorder ${escAttr(name)}"><span class="machine-header-name" title="${escAttr(name)}">${esc(name)}</span></span>`;
 }
 
 function machineAddButtonHtml(machineUrl: string, machineName: string, disabled: boolean): string {
@@ -1732,12 +1728,10 @@ function machineHeaderHtml(
       ? `<span class="machine-header-status">${esc(machineFailureLabel(group.failure || "unknown"))}</span>`
       : "";
   const action = collapsed ? "Expand" : "Collapse";
-  const optionsId = `${bodyId}-order-options`;
-  const nameHandle = machineNameHandleHtml(group.machine.name, optionsId);
-  const options = machineOrderOptionsHtml(group.machine.name, optionsId);
+  const nameHandle = machineNameHandleHtml(group.machine.name);
   const collapseToggle = `<button type="button" class="machine-collapse-toggle" data-action="machine-collapse" data-machine-surface="${surface}" data-machine-control="collapse" aria-expanded="${collapsed ? "false" : "true"}" aria-controls="${bodyId}" aria-label="${action} ${escAttr(group.machine.name)}" title="${action} ${escAttr(group.machine.name)}"><span class="machine-collapse-chevron" aria-hidden="true"></span></button>`;
-  if (collapsed) return `<div class="machine-header">${nameHandle}${collapseToggle}${options}</div>`;
-  return `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${nameHandle}${collapseToggle}${versionWarning}${status}${options}<div class="machine-header-btns">${retryButton}${sessionOrderResetButtonHtml(machineUrl)}${compactCreateButton}</div></div>`;
+  if (collapsed) return `<div class="machine-header">${nameHandle}${collapseToggle}</div>`;
+  return `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${nameHandle}${collapseToggle}${versionWarning}${status}<div class="machine-header-btns">${retryButton}${sessionOrderResetButtonHtml(machineUrl)}${compactCreateButton}</div></div>`;
 }
 
 function idleSessionEmptyHtml(): string {
@@ -4992,22 +4986,9 @@ function moveMachineGroupRelative(
   if (nextOrder.every((identity, index) => identity === machineGroupPreferences.order[index])) return false;
   machineGroupPreferences = { ...machineGroupPreferences, order: nextOrder };
   const persisted = saveMachineGroupPreferences(safeLocalStorage(), machineGroupPreferences);
-  renderMachineGroupViews({ machine: moving.machine, surface: moving.surface, control: "order-handle" });
+  renderMachineGroupViews();
   announceSessionOrder(`${moving.name} moved${persisted ? "" : "; order could not be saved"}`);
   return true;
-}
-
-function moveMachineGroupByOffset(moving: MachineGroupReference, offset: -1 | 1): boolean {
-  const groups = machineGroupsInPresentationOrder(state.lastSessionGroups);
-  const movingIdentity = machinePreferenceIdentity(moving.machine);
-  const index = groups.findIndex(group => machineGroupIdentity(group) === movingIdentity);
-  const target = groups[index + offset];
-  if (!target) return false;
-  return moveMachineGroupRelative(moving, {
-    machine: target.machine.url || "",
-    surface: moving.surface,
-    name: target.machine.name,
-  }, offset < 0 ? "before" : "after");
 }
 
 function moveSessionCard(
@@ -5295,7 +5276,6 @@ function bindHtmlEventListeners(): void {
   });
   machineGroupEventController = bindMachineGroupEvents({
     move: moveMachineGroupRelative,
-    moveByOffset: moveMachineGroupByOffset,
     setDragActive: active => { sidebarMachineGroupDragActive = active; },
   });
 

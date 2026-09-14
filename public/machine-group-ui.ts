@@ -6,7 +6,6 @@ export interface MachineGroupReference {
 
 export interface MachineGroupUiHandlers {
   readonly move: (moving: MachineGroupReference, target: MachineGroupReference, placement: "before" | "after") => boolean;
-  readonly moveByOffset: (moving: MachineGroupReference, offset: -1 | 1) => boolean;
   readonly setDragActive: (active: boolean) => void;
 }
 
@@ -23,11 +22,6 @@ interface MachineGroupDragState {
   readonly pointerOffsetY: number;
   target: MachineGroupReference | null;
   placement: "before" | "after";
-}
-
-interface MachineGroupMoveOptions {
-  readonly button: HTMLButtonElement;
-  readonly options: HTMLElement;
 }
 
 const MOUSE_DRAG_THRESHOLD = 5;
@@ -74,8 +68,6 @@ class MachineGroupDragController implements MachineGroupEventController {
     timer: number | null;
   } | null = null;
   private drag: MachineGroupDragState | null = null;
-  private options: MachineGroupMoveOptions | null = null;
-  private ignoreNextMenuClick = false;
 
   public constructor(private readonly handlers: MachineGroupUiHandlers) {}
 
@@ -154,87 +146,21 @@ class MachineGroupDragController implements MachineGroupEventController {
 
   public cancel(): void {
     this.finishDrag(false);
-    this.closeMenu(false);
   }
 
   public cancelForRender(): void {
-    const restore = this.options?.options.contains(document.activeElement)
-      ? machineGroupReference(this.options.button)
-      : null;
     this.cancel();
-    if (!restore) return;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      if (document.activeElement !== document.body) return;
-      groupForReference(restore)?.querySelector<HTMLElement>(".machine-name-handle")?.focus({ preventScroll: true });
-    }));
   }
 
   public escape(): boolean {
-    if (this.closeMenu(true)) return true;
+    const active = this.drag !== null || this.candidate !== null;
     this.finishDrag(false);
-    return false;
-  }
-
-  public click(target: EventTarget | null): void {
-    if (!(target instanceof Element)) return;
-    const menuItem = target.closest<HTMLButtonElement>("[data-machine-menu-offset]");
-    if (menuItem) {
-      const moving = machineGroupReference(menuItem);
-      const offset = menuItem.dataset.machineMenuOffset === "-1" ? -1 : 1;
-      const moved = moving ? this.handlers.moveByOffset(moving, offset) : false;
-      if (!moved) this.closeMenu(true);
-      return;
-    }
-    const button = target.closest<HTMLButtonElement>(".machine-name-handle");
-    if (button) {
-      if (this.ignoreNextMenuClick) {
-        this.ignoreNextMenuClick = false;
-        return;
-      }
-      this.toggleMenu(button);
-      return;
-    }
-    this.closeMenu(false);
-  }
-
-  public focus(target: EventTarget | null): void {
-    if (!(target instanceof Node) || !this.options) return;
-    if (this.options.button.contains(target) || this.options.options.contains(target)) return;
-    this.closeMenu(false);
+    return active;
   }
 
   public clearCandidate(): void {
     if (this.candidate?.timer !== null && this.candidate?.timer !== undefined) window.clearTimeout(this.candidate.timer);
     this.candidate = null;
-  }
-
-  private toggleMenu(button: HTMLButtonElement): void {
-    const group = button.closest<HTMLElement>(".machine-group");
-    const options = group?.querySelector<HTMLElement>(".machine-order-options");
-    if (!options) return;
-    if (this.options?.button === button) {
-      this.closeMenu(true);
-      return;
-    }
-    this.closeMenu(false);
-    this.options = { button, options };
-    options.hidden = false;
-    options.removeAttribute("inert");
-    button.setAttribute("aria-expanded", "true");
-    options.querySelector<HTMLButtonElement>("[data-machine-menu-offset]")?.focus({ preventScroll: true });
-  }
-
-  private closeMenu(returnFocus: boolean): boolean {
-    const active = this.options;
-    this.options = null;
-    if (!active) return false;
-    if (active.options.isConnected) {
-      active.options.hidden = true;
-      active.options.setAttribute("inert", "");
-    }
-    if (active.button.isConnected) active.button.setAttribute("aria-expanded", "false");
-    if (returnFocus && active.button.isConnected) active.button.focus({ preventScroll: true });
-    return true;
   }
 
   private start(
@@ -243,7 +169,6 @@ class MachineGroupDragController implements MachineGroupEventController {
     clientY: number,
   ): void {
     if (this.candidate !== pending || this.drag) return;
-    this.closeMenu(false);
     this.clearCandidate();
     const originParent = pending.group.parentElement;
     if (!originParent) return;
@@ -319,10 +244,6 @@ class MachineGroupDragController implements MachineGroupEventController {
     this.drag = null;
     this.clearCandidate();
     if (!active) return;
-    if (active.pointerType !== "touch") {
-      this.ignoreNextMenuClick = true;
-      window.setTimeout(() => { this.ignoreNextMenuClick = false; }, 0);
-    }
     active.group.classList.remove("machine-group-drag-floating");
     active.group.style.cssText = active.originalStyle;
     active.originParent.insertBefore(active.group, active.originNextSibling);
@@ -335,24 +256,11 @@ class MachineGroupDragController implements MachineGroupEventController {
 export function bindMachineGroupEvents(handlers: MachineGroupUiHandlers): MachineGroupEventController {
   const drag = new MachineGroupDragController(handlers);
   document.addEventListener("keydown", event => {
-    if (event.key === "Escape") {
-      if (drag.escape()) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-      return;
+    if (event.key === "Escape" && drag.escape()) {
+      event.preventDefault();
+      event.stopPropagation();
     }
-    const target = event.target;
-    if (!(target instanceof Element) || !target.closest(".machine-name-handle") || !event.altKey) return;
-    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-    const moving = machineGroupReference(target);
-    if (!moving || !handlers.moveByOffset(moving, event.key === "ArrowUp" ? -1 : 1)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    requestAnimationFrame(() => groupForReference(moving)?.querySelector<HTMLElement>(".machine-name-handle")?.focus());
   });
-  document.addEventListener("click", event => drag.click(event.target));
-  document.addEventListener("focusin", event => drag.focus(event.target));
   document.addEventListener("pointerdown", event => {
     if (event.pointerType === "touch" || !event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
     drag.begin(event.target, event.pointerId, event.pointerType, event.clientX, event.clientY);
