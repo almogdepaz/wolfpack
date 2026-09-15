@@ -1,6 +1,6 @@
 # UI extensions phase-0 contract gate
 
-Status: **independent review completed CHANGES REQUIRED: npm acquisition remains blocking; other prior finding groups are closed**.
+Status: **acquisition correction implemented; final verification and independent approval pending. Other prior finding groups are closed**.
 This artifact records intended phase-0 interfaces and explicit implementation gaps; it does not wire extension code into the server, CLI, browser
 workspace, or a user Pi installation.
 
@@ -105,21 +105,31 @@ unauthenticated import.
 
 ## Package fetch/extraction decision
 
-**Open acquisition blocker:** the current `fetchExactNpmPackage()` has no finite
-npm-child deadlines, applies its archive cap only after npm writes the download,
-and does not validate successful `npm --version` output against a supported
-version policy. Thus the bounded snapshot/extraction below does not bound npm's
-preceding network/disk work. The native smoke executes tar operations but not
-package acquisition/system npm. Correct these with test-first acquisition,
-termination/cleanup, preflight and compiled-execution evidence before approval;
-adding only a child timeout does not establish a download disk bound.
+The selected mechanism is now native Bun Fetch, **not an external npm process**.
+`fetchExactNpmPackage()` is asynchronous and retrieves exact `npm:<name>@<semver>`
+version metadata, checks package identity and required canonical SHA-512/SHA-256
+SRI, then streams the tarball directly into one exclusive 0600 file. A shared
+30-second request/body deadline covers metadata and download; metadata is capped
+at 256 KiB and tarball writes at 32 MiB. Overrides only reduce these bounds. Each
+chunk is checked before writing; npm cannot fill a cache or staging disk first
+because no npm process/cache exists. Staging requires an existing current-owner
+0700 non-symlink directory and creates a fresh private child per acquisition.
+Timeouts return `NPM_FETCH_TIMEOUT`; failed downloads are aborted/cancelled and
+partial stages removed without waiting for uncooperative cancellation. Cleanup
+failure reports the owned `cleanupDirectory`. Limits are per acquisition, not a
+package-manager-wide quota or a hostile-filesystem/synchronous-I/O sandbox.
 
-Intended acquisition contract (not fully implemented): npm source syntax is
-exactly `npm:<name>@<semver>` (no range/tag). A compiled
-install preflights a supported system `npm`; this is an explicit prerequisite,
-not an assumption about a checkout or global Bun. It runs `npm pack --ignore-scripts
---json` into a private staging directory, validates registry SRI (`sha512` or
-`sha256`). `archive-snapshot.ts` takes one bounded no-follow regular-file snapshot
+This deliberately supports anonymous HTTPS registry origins, defaulting to
+`https://registry.npmjs.org/`, with same-origin tarballs and no redirects. Explicit
+loopback HTTP origins support offline tests. npmrc credentials, authenticated
+registries, and cross-origin CDN mirrors are not implemented or inferred. There
+is no system npm version preflight/prerequisite anymore. The compiled executable
+supplies its own Fetch runtime: the expanded native smoke executes the actual
+helper from empty CWD against a local registry, verifies/extracts its package,
+rejects oversize acquisition, and checks that poisoned npm and package lifecycle
+script markers never ran. No real registry call is claimed by this local gate.
+
+`archive-snapshot.ts` takes one bounded no-follow regular-file snapshot
 before its first await. Registry callers must forward the returned SRI to
 `extractVerifiedNpmTarball(..., { integrity })`; omitting SRI is structural
 validation for explicitly trusted local input, not registry authentication.
@@ -219,7 +229,9 @@ regressions. Exact run IDs/results live in the phase handoff and closure matrix.
 `extension-foundation-compiled-smoke.ts` now executes schema validation, document
 persistence, SemVer, YAML skill install/update/remove, and actual tar
 inspection/extraction outside the checkout, including quota rejection and
-pathname replacement after snapshot capture. `extension-compiled-host.e2e.ts`
+pathname replacement after snapshot capture, plus actual offline registry
+acquisition, its byte cap/cleanup, and absence of npm/script execution.
+`extension-compiled-host.e2e.ts`
 starts a native Bun-compiled isolated host from an empty CWD. Its embedded browser
 loader reads runtime package assets behind a rejecting bearer fixture under the
 reviewed Blob CSP; Chromium and WebKit cover missing auth, safe mode, digest

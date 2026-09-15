@@ -1,11 +1,36 @@
 # Phase-0 corrective closure matrix
 
-**Independent re-review completed: CHANGES REQUIRED for npm acquisition. All other prior finding groups are closed. Phase 0 is not approved.** This is a finding/evidence report, not
+**Acquisition correction implemented; follow-up verification/approval pending. All other prior finding groups are closed. Phase 0 is not approved.** This is a finding/evidence report, not
 assignment state. The single current handoff is section 2 of
 `docs/plans/ui-extensions-context-skill.md`. Full findings remain in the immutable
 `.plans/review-ui-extensions-0f4c4e3.md`.
 
-## Independent final disposition at `34fec6e`
+## Acquisition correction after the independent review
+
+Code `a761a0f22f15b365fd6be6ebcbc835efecca903e` selects bounded native Fetch instead
+of external npm. This removes both unbounded child calls, npm version preflight,
+cache/config side effects and package-manager disk writes. The async helper has
+one reducible 30-second deadline, 256-KiB metadata cap, 32-MiB pre-write tarball
+cap, matching package/SRI authority, owner-private staging, and typed cancellation
+and cleanup. It supports anonymous same-origin registries, not npmrc/private
+registry/CDN authentication. Local loopback is for isolated fixtures.
+
+- Test-first contract `072537d6ac0d89a4ec895c00362e6ce16bf9ce96`: 19 new
+  async-transport cases initially failed (`e8f7d649-af8a-4bc2-b66f-1a30d6fdeaa0`).
+  Those are new-API contract failures; the independent old-executor deadline and
+  bad-version probes below remain direct evidence of the original defects.
+- Initial correction: **60 tests passed**, then typecheck failed on overly broad
+  option narrowing (`e611b4c5-7641-4e40-86a4-73046c7ae7fe`). Narrowing fixed.
+- Focused **282 pass / 0 fail / 0 skip**, typecheck/context and native smoke passed
+  (`969f78bf-fb8d-4450-99ca-74eadc3ef802`). The compiled executable uses real Fetch
+  against a local fixture registry, acquires/verifies/extracts a harmless package,
+  rejects an oversized acquisition and checks cleanup, with poisoned npm and
+  lifecycle-script markers proving neither ran. Tests never contact a real registry.
+- A small late-response elapsed-deadline check was included after that run. The
+  final frozen revision must rerun all required gates; results above are not reused
+  as final approval. No unrelated feature/security-nit expansion is in scope.
+
+## Previous independent final disposition at `34fec6e`
 
 The immutable `.plans/review-ui-extensions-34fec6e.md` closes the prior
 loader/schema/receipt/skill/archive-byte/SemVer/layout/contribution/compiled-host
