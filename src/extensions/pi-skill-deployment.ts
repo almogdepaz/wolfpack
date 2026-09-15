@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { canonicalJson } from "../canonical-json.ts";
 import { readValidatedJsonFile, writePrivateJsonFile } from "../server/persistence.ts";
@@ -18,6 +18,7 @@ function inventory(skill: BundledPiSkill): { digest: string; files: Record<strin
 }
 function path(root: string, name: string): string { const result = resolve(root, name); if (relative(resolve(root), result).startsWith("..")) throw new Error("skill path escaped skills root"); return result; }
 function registryPath(root: string) { return join(root, OWNERSHIP_FILE); }
+function hasUntracked(directory: string, tracked: Readonly<Record<string, string>>, prefix = ""): boolean { for (const entry of readdirSync(directory)) { const relativePath = prefix ? `${prefix}/${entry}` : entry; const full = join(directory, entry); if (statSync(full).isDirectory()) { if (hasUntracked(full, tracked, relativePath)) return true; } else if (!(relativePath in tracked)) return true; } return false; }
 function isRegistry(value: unknown): value is OwnershipRegistry { return typeof value === "object" && value !== null && (value as { version?: unknown }).version === 1 && typeof (value as { skills?: unknown }).skills === "object" && (value as { skills: unknown }).skills !== null; }
 export function deployBundledPiSkills(options: { readonly skillsRoot: string; readonly extensionId: string; readonly skills: readonly BundledPiSkill[] }): readonly PiSkillDeploymentResult[] {
   if (!SKILL_NAME.test(options.extensionId)) throw new Error("extension ID must be stable"); mkdirSync(options.skillsRoot, { recursive: true, mode: 0o700 });
@@ -26,7 +27,7 @@ export function deployBundledPiSkills(options: { readonly skillsRoot: string; re
     const current = inventory(skill); const owner = registry.skills[skill.name]; const destination = path(options.skillsRoot, skill.name);
     if (!owner && existsSync(destination)) { results.push({ name: skill.name, status: "collision", message: "skill name already exists and is not installer-owned" }); continue; }
     if (owner?.extensionId !== undefined && owner.extensionId !== options.extensionId) { results.push({ name: skill.name, status: "collision", message: "skill is owned by another extension" }); continue; }
-    const modified = owner && Object.entries(owner.files).some(([file, oldDigest]) => !existsSync(join(destination, file)) || hash(readFileSync(join(destination, file), "utf8")) !== oldDigest);
+    const modified = owner && (hasUntracked(destination, owner.files) || Object.entries(owner.files).some(([file, oldDigest]) => !existsSync(join(destination, file)) || hash(readFileSync(join(destination, file), "utf8")) !== oldDigest));
     if (modified) { results.push({ name: skill.name, status: "modified", message: "owned skill was modified; refusing overwrite" }); continue; }
     if (owner?.sourceDigest === current.digest) { results.push({ name: skill.name, status: "unchanged" }); continue; }
     const stage = path(options.skillsRoot, `.${skill.name}-stage-${process.pid}`); const backup = path(options.skillsRoot, `.${skill.name}-backup-${process.pid}`); rmSync(stage, { recursive: true, force: true }); rmSync(backup, { recursive: true, force: true }); mkdirSync(stage, { recursive: true, mode: 0o700 });

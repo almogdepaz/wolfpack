@@ -82,14 +82,20 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /** Static installed schemas only: no remote/local $refs, dynamic anchors, or executable validators. */
 export function compileStaticDocumentSchema(schema: unknown): StaticSchemaValidator {
+  let nodes = 0;
   const inspect = (value: unknown, depth = 0): void => {
-    if (depth > 16 || !isPlainObject(value)) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "schema must be a bounded object tree");
-    for (const [key, child] of Object.entries(value)) {
-      if (["$ref", "$dynamicRef", "$recursiveRef", "$id", "$anchor", "$dynamicAnchor", "pattern", "patternProperties", "format"].includes(key)) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, `unsupported static schema keyword: ${key}`);
-      if (key === "$schema" && child !== "https://json-schema.org/draft/2020-12/schema") throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "unsupported JSON Schema dialect");
-      if (Array.isArray(child)) child.forEach((item) => { if (isPlainObject(item)) inspect(item, depth + 1); }); else if (isPlainObject(child)) inspect(child, depth + 1);
-    }
+    if (depth > 16 || !isPlainObject(value) || ++nodes > 1_000) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "schema exceeds bounded object graph");
+    for (const key of Object.keys(value)) if (["$ref", "$dynamicRef", "$recursiveRef", "$id", "$anchor", "$dynamicAnchor", "pattern", "patternProperties", "format"].includes(key)) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, `unsupported static schema keyword: ${key}`);
+    if (value.$schema !== undefined && value.$schema !== "https://json-schema.org/draft/2020-12/schema") throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "unsupported JSON Schema dialect");
+    const single = ["not", "if", "then", "else", "contains", "propertyNames", "additionalProperties", "unevaluatedProperties"];
+    for (const key of single) if (isPlainObject(value[key])) inspect(value[key], depth + 1);
+    for (const key of ["allOf", "anyOf", "oneOf", "prefixItems"]) if (Array.isArray(value[key])) for (const child of value[key] as unknown[]) inspect(child, depth + 1);
+    if (isPlainObject(value.properties)) for (const child of Object.values(value.properties)) inspect(child, depth + 1);
+    if (isPlainObject(value.patternProperties)) for (const child of Object.values(value.patternProperties)) inspect(child, depth + 1);
+    if (isPlainObject(value.dependentSchemas)) for (const child of Object.values(value.dependentSchemas)) inspect(child, depth + 1);
+    if (isPlainObject(value.items)) inspect(value.items, depth + 1);
   };
+  if (Buffer.byteLength(JSON.stringify(schema), "utf8") > 64 * 1024) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "schema exceeds byte limit");
   inspect(schema);
   const ajv = new Ajv2020({ allErrors: true, strict: true, validateSchema: true });
   const validate = ajv.compile(schema as Record<string, unknown>);
@@ -161,7 +167,7 @@ export class ExtensionDocumentStore {
   private path(key: ExtensionDocumentKey): string { return join(this.options.root, "documents", `${stableRecordKey(key)}.json`); }
   read(key: ExtensionDocumentKey): StoredExtensionDocument | null {
     validateDocumentKey(key);
-    try { return readValidatedJsonFile(this.path(key), "extension document", isRecord); }
+    try { const record = readValidatedJsonFile(this.path(key), "extension document", isRecord); if (record && canonicalJson(record.key) !== canonicalJson(key)) throw new Error("stored key mismatch"); return record; }
     catch (error) { throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.STORE_CORRUPT, `extension document cannot be read: ${(error as Error).message}`); }
   }
   private totalUsage(): { documents: number; bytes: number } {

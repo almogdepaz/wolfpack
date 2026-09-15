@@ -27,11 +27,14 @@ export async function loadAuthenticatedExtensionBundle<T>(url: string, expectedS
   const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 5_000);
   let response: Response;
   try { response = await (options.fetchImpl ?? browserAuthFetch)(target, { cache: "no-store", redirect: "error", signal: controller.signal }); }
-  catch (error) { throw new ExtensionBundleLoadError("FETCH_FAILED", `extension bundle request failed: ${(error as Error).name}`); }
-  finally { clearTimeout(timer); }
+  catch (error) { clearTimeout(timer); throw new ExtensionBundleLoadError("FETCH_FAILED", `extension bundle request failed: ${(error as Error).name}`); }
   if (!response.ok) throw new ExtensionBundleLoadError("FETCH_FAILED", `extension bundle request failed with ${response.status}`);
   if (response.redirected || !/^text\/javascript(?:;|$)/i.test(response.headers.get("content-type") ?? "")) throw new ExtensionBundleLoadError("RESPONSE_INVALID", "extension bundle response must be a non-redirected JavaScript asset");
-  const source = await boundedBytes(response, options.maxBytes ?? EXTENSION_BUNDLE_MAX_BYTES);
+  const requestedLimit = options.maxBytes ?? EXTENSION_BUNDLE_MAX_BYTES;
+  if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) { clearTimeout(timer); throw new ExtensionBundleLoadError("RESPONSE_TOO_LARGE", "extension bundle test limit must be a positive integer"); }
+  let source: ArrayBuffer;
+  try { source = await boundedBytes(response, Math.min(requestedLimit, EXTENSION_BUNDLE_MAX_BYTES)); } catch (error) { clearTimeout(timer); throw error; }
+  clearTimeout(timer);
   if (hex(await crypto.subtle.digest("SHA-256", source)) !== expectedSha256.toLowerCase()) throw new ExtensionBundleLoadError("INTEGRITY_MISMATCH", "extension bundle digest did not match installed inventory");
   const blobUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
   try { return await import(/* @vite-ignore */ blobUrl) as T; } catch (error) { throw new ExtensionBundleLoadError("IMPORT_FAILED", `extension bundle could not load: ${(error as Error).message}`); } finally { URL.revokeObjectURL(blobUrl); }
