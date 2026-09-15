@@ -1,6 +1,6 @@
 # UI extensions phase-0 contract gate
 
-Status: **coordinator corrections complete; final verification and independent phase-0 approval still required**.
+Status: **independent phase-0 re-review pending; focused/browser/native/budget gates pass, broad gate retains the known intermittent smoke timeout**.
 This artifact records intended phase-0 interfaces and explicit implementation gaps; it does not wire extension code into the server, CLI, browser
 workspace, or a user Pi installation.
 

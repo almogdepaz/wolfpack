@@ -1,6 +1,6 @@
 # Phase-0 corrective closure matrix
 
-**Coordinator corrections complete; final verification/re-review pending. Phase 0 is not approved.** This is a finding/evidence report, not
+**Coordinator corrections verified; independent re-review pending. Broad gate retains the known smoke timeout. Phase 0 is not approved.** This is a finding/evidence report, not
 assignment state. The single current handoff is section 2 of
 `docs/plans/ui-extensions-context-skill.md`. Full findings remain in the immutable
 `.plans/review-ui-extensions-0f4c4e3.md`.
@@ -20,7 +20,7 @@ assignment state. The single current handoff is section 2 of
 | Canonical npm/manifest SemVer and preserved SRI error identity | `extension-version-layout-regressions.test.ts`: standard versions including build metadata; invalid prefixes/whitespace/versions; missing SRI | Fix `6810cda`; final tests pass; independent re-review pending |
 | Layout malformed object typed errors | Same suite: null/primitive/sparse inputs, bounded IDs/tracks/spans, zero/12/13 panes, selected lead, detached output | Fix `6810cda`; final tests pass; independent re-review pending |
 | Separate tab-only/layout-only package fixtures | Same suite: two manifest-bound contribution gates with independent registrations; unknown kinds refused | Fix `6810cda`; final tests pass; independent re-review pending |
-| Compiled asset-host and archive-extraction feasibility | Native empty-CWD host with real browser loader/runtime assets; native schema/store/SemVer/YAML/skill/tar operations | `a009ea8` + `d4561ec`; both browser projects passed; final expanded native smoke must rerun |
+| Compiled asset-host and archive-extraction feasibility | Native empty-CWD host with real browser loader/runtime assets; native schema/store/SemVer/YAML/skill/tar operations | `a009ea8` + `d4561ec`; expanded native smoke and both browser projects passed at `34fec6e`; independent re-review pending |
 | Contradictory/overstated docs | Corrected 12-pane bound, WebKit status, removed scanner/atomic-removal claims; explicitly documented current gaps | Current assertions narrowed, but final contract freeze/review remains open |
 
 ## Exact verification evidence
@@ -146,5 +146,29 @@ route, real-terminal retention or real-agent skill acceptance is proved here.
   assertions; the final gate must run that expanded smoke, both browser fixtures,
   generated assets/budget and broad unit/snapshot tests on the final candidate.
 
-These are coordinator closures, not independent approval. See the single phase
-handoff for the current frozen candidate, verification and reviewer assignment.
+## Frozen-candidate final coordinator gate
+
+Exact clean revision **`34fec6e8851b53fc06319c79e8f418da5cffbbc2`**:
+
+- `6cbeaff5-efd8-4615-b2e8-71ddf030525a`, exit **0**, 26.909s: **263 focused pass /
+  0 fail / 0 skip**; typecheck/context; expanded native smoke including quota
+  rejection and SRI/pathname replacement; Chromium **2/2**; WebKit **2/2**; assets
+  generated from a private exact-revision export and bundle budgets passed.
+  App: 331067 raw/81296 gzip bytes; Ghostty: 643371/187737; CSS: 96978/17005.
+  Only browser NO_COLOR/FORCE_COLOR warnings. Temporary builds/hosts were cleaned.
+- `0b6be1aa-eae7-4261-ad75-c029ae64f430`, exit **1**, 131.238s: broad unit/snapshot
+  final top-level **2021 pass / 1 skip / 1 fail**, 2023 tests across 178 files.
+  Failure: release artifact smoke's unchanged first-test 5000ms timeout.
+  Skip: Linux no-controlling-TTY fixture on macOS. Use 2021, not the runner's
+  aggregate 2038 containing nested summaries. Full warning diagnostics retained.
+- `6ccd8267-e603-4689-a136-f3abdab1c21d`, exit **0**, 16.578s: isolated same-revision
+  release smoke **6/6 pass**. This does not replace the failed broad gate. The same
+  timeout was independently reproduced on original runtime-base source earlier;
+  no timeout increase, test disabling or unrelated source fix was made.
+- Reviewer worktree alone advanced to the same frozen candidate. Its dependency
+  preflight `84a2f2a5-f607-4b38-91e1-7b16327fa939` passed the frozen/script-disabled
+  install with a clean source tree. Installation is not test coverage.
+
+These are coordinator closures, not independent approval. The implementation's
+subsequent changes are handoff/contract/closure evidence only; review source stays
+frozen at `34fec6e`. See the single phase handoff for current assignment state.
