@@ -195,11 +195,13 @@ describe("persisted document authority", () => {
     const decision = new Promise<void>((_resolve, reject) => { deny = reject; });
     const store = new ExtensionDocumentStore({ root, assertWritableScope: () => { entered(); return decision; } });
     const publishing = store.publish({ key, document: {}, requestId: randomUUID(), ifRevision: 0, schemaVersion: 1 }, objectSchema());
-    const rejected = expect(publishing).rejects.toMatchObject({ code: "SCOPE_NOT_WRITABLE" });
+    // Bun's rejection matcher can drain the promise immediately. Attach only a
+    // handler until the test has explicitly released the authority decision.
+    void publishing.catch(() => {});
     await checking;
     expect(store.read(key)).toBeNull();
     deny(new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "scope ended"));
-    await rejected;
+    await expect(publishing).rejects.toMatchObject({ code: "SCOPE_NOT_WRITABLE" });
     expect(store.read(key)).toBeNull();
   });
   test("supports successful asynchronous writable-scope checks", async () => {
