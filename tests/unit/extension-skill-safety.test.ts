@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as deployment from "../../src/extensions/pi-skill-deployment.ts";
@@ -89,6 +89,21 @@ describe("static skill inventory and standard frontmatter", () => {
     expect(deploy(f.skillsRoot, value)[0]?.status).toBe("write_failed");
     expect(existsSync(f.destination)).toBe(false);
   });
+  test("rejects an oversized batch before reading any inventory values", () => {
+    const f = fixture(); let reads = 0;
+    const skills = new Array(33);
+    Object.defineProperty(skills, 0, { get() { reads++; return skill(); } });
+    let caught: unknown;
+    try { deployment.deployBundledPiSkills({ skillsRoot: f.skillsRoot, extensionId, skills }); } catch (error) { caught = error; }
+    expect(caught).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(reads).toBe(0);
+  });
+  test("rejects sparse batches before creating transaction state", () => {
+    const f = fixture(); let caught: unknown;
+    try { deployment.deployBundledPiSkills({ skillsRoot: f.skillsRoot, extensionId, skills: new Array(1) }); } catch (error) { caught = error; }
+    expect(caught).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(readdirSync(f.skillsRoot)).toEqual([]);
+  });
   test("rejects duplicate skill names in a batch before activation", () => {
     const f = fixture();
     expect(() => deployment.deployBundledPiSkills({ skillsRoot: f.skillsRoot, extensionId, skills: [skill(), skill("different")] })).toThrow();
@@ -157,6 +172,11 @@ describe("complete ownership checks and removal", () => {
     expect(readFileSync(join(f.destination, "SKILL.md"), "utf8")).toBe(f.content);
     expect(readFileSync(f.registry, "utf8")).toBe(text);
   });
+  test("preserves user-modified permissions on the owned root directory", () => {
+    const f = installed(); chmodSync(f.destination, 0o755);
+    expect(deploy(f.skillsRoot, skill("v2"))[0]?.status).toBe("modified");
+    expect(lstatSync(f.destination).mode & 0o777).toBe(0o755);
+  });
   test("refuses a root directory symlink instead of mutating its target", () => {
     const f = fixture(); const target = join(f.base, "real-skills"); renameSync(f.skillsRoot, target); symlinkSync(target, f.skillsRoot);
     expect(() => deploy(f.skillsRoot)).toThrow();
@@ -196,6 +216,31 @@ describe("failure-atomic per-skill transactions", () => {
     expect(readFileSync(f.registry, "utf8")).toBe(f.before);
     expect(readdirSync(f.base)).toEqual(["skills"]);
     expect(deploy(f.skillsRoot, skill("v2"))[0]?.status).toBe("installed");
+  });
+  test("a no-op registry writer cannot report a coherent committed update", () => {
+    const f = installed();
+    expect(deploy(f.skillsRoot, skill("v2"), { writeRegistry() {} })[0]?.status).toBe("write_failed");
+    expect(readFileSync(join(f.destination, "SKILL.md"), "utf8")).toBe(f.content);
+    expect(readFileSync(f.registry, "utf8")).toBe(f.before);
+  });
+  test("preserves edits observed in the parked old tree before registry commit", () => {
+    const f = installed();
+    expect(deploy(f.skillsRoot, skill("v2"), { rename(from, to) {
+      renameSync(from, to);
+      if (from === f.destination && to.endsWith("/old")) writeFileSync(join(to, "notes.txt"), "user edit");
+    } })[0]?.status).toBe("write_failed");
+    expect(readFileSync(join(f.destination, "notes.txt"), "utf8")).toBe("user edit");
+    expect(readFileSync(f.registry, "utf8")).toBe(f.before);
+  });
+  test("retains rather than deletes edits observed in backup after registry commit", () => {
+    const f = installed(); let backup = "";
+    const result = deploy(f.skillsRoot, skill("v2"), {
+      rename(from, to) { renameSync(from, to); if (from === f.destination) backup = to; },
+      writeRegistry(file, value) { writePrivateJsonFile(file, value); writeFileSync(join(backup, "notes.txt"), "late user edit"); },
+    })[0] as unknown as { status: string; cleanupDirectory?: string };
+    expect(result.status).toBe("installed");
+    expect(typeof result.cleanupDirectory).toBe("string");
+    expect(readFileSync(join(backup, "notes.txt"), "utf8")).toBe("late user edit");
   });
   test("failed first-install registry write leaves no activated directory", () => {
     const f = fixture();
