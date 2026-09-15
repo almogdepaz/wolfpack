@@ -20,12 +20,15 @@ workspace, or a user Pi installation.
   visited views and report fallback diagnostics.
 - `src/extensions/layout-contract.ts` freezes a finite placement language:
   at most 12 existing panes and 12 rows/columns; finite positive track values;
-  one non-overlapping placement for every known pane. It provides reusable
+  one non-overlapping placement for every known pane. Runtime validation rejects
+  malformed/sparse inputs with typed errors and returns detached geometry, not
+  plugin-owned mutable objects. It provides reusable
   equal-grid, lead-plus-stack, and vertical-stack recipes; recipes cannot drop,
   create, hide, reparent, or focus panes. Invalid results fall back to a
   previously valid/built-in host layout in phase 1.
 - `src/extensions/document-contract.ts` freezes keys
-  `(installationId, exact-session-UUID, extensionId, documentId)`, full-document
+  `(installationId, exact-session-UUID, extensionId, documentId)` with canonical
+  lowercase UUIDs and no extra key fields, full-document
   CAS revisions, UUID request IDs, retained idempotency receipts, and explicit
   errors. Revision 0 means absent. A duplicate request ID returns its receipt
   only for identical payload digest, base revision and schema version; reuse with changed input
@@ -36,22 +39,41 @@ workspace, or a user Pi installation.
 ## Document limits and durability
 
 Documents are JSON only: max 64 KiB canonical payload, depth 16, 16 KiB/string,
-1,000 object keys or array items, 256 documents and 16 MiB per installation.
+1,000 object keys or array items, 16,384 total JSON value nodes, 256 documents and
+16 MiB per installation root. Plain JSON is checked before serialization: cycles,
+accessors, non-JSON values and excessive work/bytes are refused. Persisted records
+have a separate 1-MiB physical cap, read through a no-follow bounded descriptor.
+Record identity, canonical payload digest and the exact contiguous window of up
+to 128 receipts are checked on reads and retries. Receipts require matching scope,
+positive bounded versions/revisions, unique request IDs and canonical timestamps.
+
 The store uses one owner-private atomic record per document containing content
 and retained receipts; it fsyncs the replacement file and best-effort parent
 directory through the existing persistence primitive. A single server-owned
-store serializes same-document writes. Corruption is surfaced as `STORE_CORRUPT`,
-never silently reset; quota/write failures leave the prior record intact.
-Future route wiring must call the authoritative live-scope check for writes;
-reads may retain documents after session exit. Schema resolution is limited to
-installed manifest allowlisted files and no network/dynamic `$ref` resolution.
+store serializes same-document writes and snapshots request values before any
+await. Authoritative live-scope hooks may be asynchronous and are awaited under
+the document lock; quota accounting and file replacement then run synchronously.
+Cross-process writers are not supported by this foundation. Corruption is
+`STORE_CORRUPT`, never silently reset. A failed pre-commit check leaves the prior
+record intact; if a response is lost after commit, retrying the same retained
+operation returns its receipt even after scope exit or a schema upgrade.
+Future routes must supply the authoritative live-scope check and installed-schema
+resolution; the helper alone is not backend authorization. Reads may retain
+documents after session exit.
 
 `ajv@8.17.1` is pinned as the maintained static JSON Schema compiler. The phase
 0 compiled-host smoke is intentionally isolated: `bun build --compile` imports
 and runs this module below; no extension schema is evaluated in a browser. This
 is compatible with the project Bun 1.4.2 compiled runtime and avoids an ad-hoc
-schema language. The schema uses static draft-2020-12 syntax and rejects refs.
-The minimal Agent Context v1 schema is
+schema language. Static draft-2020-12 object and boolean schemas are supported.
+The policy walks actual subschema positions (including `$defs`), not instance
+property names or `const`/`enum`/`default`/`examples` data. Refs, anchors, regex/format
+and async validators are refused. Installed schemas are capped at 64 KiB, 4,096
+JSON nodes, 48 JSON levels, 256 subschema nodes, 16 subschema levels and 16 branches
+per combinator. A conservative 2,000,000-unit schema/document work budget accounts
+for literal nodes and quadratic `uniqueItems`; it is admission control, not a
+wall-clock JavaScript sandbox. AJV remains the semantic validator. The minimal
+Agent Context v1 schema is
 `examples/extensions/agent-context/schemas/context.schema.json`; strings are
 data and must render as text, not HTML/Markdown.
 
@@ -94,8 +116,10 @@ or >4,000 files are refused. Extraction is into a fresh owner-private stage and
 checks realpath containment. **Open phase-0 blockers:** inspection still needs
 prompt expansion-abort; extraction must consume the identical immutable verified
 bytes and reapply the inventory filter. Existing double pathname hashing does not
-satisfy that contract. Canonical SemVer and portable filename handling also need
-closure. Activation/registry transactions are phase 4; no package code or
+satisfy that contract. Portable filename handling also needs closure. Canonical
+SemVer validation is now shared by manifest/npm source parsing, preserving legal
+prerelease/build metadata but rejecting prefixes, whitespace and invalid versions.
+Missing/mismatched SRI retains its actionable `INTEGRITY_MISMATCH` classification. Activation/registry transactions are phase 4; no package code or
 lifecycle script runs in this phase.
 
 ## Pi skill deployment decision
