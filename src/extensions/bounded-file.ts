@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 
 /** A bounded snapshot from one regular no-follow descriptor, not two pathname reads. */
-export function readBoundedRegularFile(path: string, maximumBytes: number): Buffer {
+export function readBoundedRegularFile(path: string, maximumBytes: number): Buffer<ArrayBuffer> {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0) throw new Error("file limit must be a nonnegative safe integer");
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
