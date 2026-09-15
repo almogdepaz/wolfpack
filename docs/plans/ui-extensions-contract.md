@@ -1,7 +1,7 @@
 # UI extensions phase-0 contract gate
 
-Status: **corrective candidate for independent review**. This artifact freezes phase-0
-interfaces only; it does not wire extension code into the server, CLI, browser
+Status: **phase-0 blocked; coordinator correcting remaining review findings**.
+This artifact records intended phase-0 interfaces and explicit implementation gaps; it does not wire extension code into the server, CLI, browser
 workspace, or a user Pi installation.
 
 ## Frozen public contracts
@@ -19,7 +19,7 @@ workspace, or a user Pi installation.
   rules are versioned there. Future host implementation must bound retained
   visited views and report fallback diagnostics.
 - `src/extensions/layout-contract.ts` freezes a finite placement language:
-  at most 64 existing panes and 12 rows/columns; finite positive track values;
+  at most 12 existing panes and 12 rows/columns; finite positive track values;
   one non-overlapping placement for every known pane. It provides reusable
   equal-grid, lead-plus-stack, and vertical-stack recipes; recipes cannot drop,
   create, hide, reparent, or focus panes. Invalid results fall back to a
@@ -28,7 +28,7 @@ workspace, or a user Pi installation.
   `(installationId, exact-session-UUID, extensionId, documentId)`, full-document
   CAS revisions, UUID request IDs, retained idempotency receipts, and explicit
   errors. Revision 0 means absent. A duplicate request ID returns its receipt
-  only for identical payload digest and base revision; reuse with changed input
+  only for identical payload digest, base revision and schema version; reuse with changed input
   fails. Receipt eviction after 128 receipts intentionally removes that
   idempotency guarantee. Receipts prove stored acceptance only, never rendering,
   agent authorship, execution, or verification.
@@ -59,10 +59,15 @@ data and must render as text, not HTML/Markdown.
 
 `public/extension-loader.ts` is a reusable, not-yet-integrated browser helper:
 it fetches an allowlisted asset using the existing origin-scoped bearer helper,
-checks its installed SHA-256, rejects bare/remote imports, imports the verified
-bytes from a Blob URL, and revokes the URL. Native `import(url)` remains
+checks its installed SHA-256, imports the verified bytes from a Blob URL, and
+revokes the URL. Packages must build self-contained ESM bundles; this helper does
+not scan JavaScript or enforce transitive-import isolation. Native `import(url)` remains
 unsuitable because it cannot attach the bearer header. There is no unauthenticated
-fallback and no token in an URL.
+fallback and no token in an URL. Acquisition and digest verification share a
+5-second deadline and 1-MiB source cap, reducible but not enlargeable by callers.
+Rejected responses and timed-out readers are cancelled without waiting for an
+uncooperative transport. These bounds do not terminate trusted JavaScript
+execution: module evaluation, including top-level await, cannot be cancelled.
 
 The isolated Playwright spike (`extension-loader-spike.e2e.ts`) serves a compiled
 copy of that helper with an authenticated asset and CSP:
@@ -86,8 +91,12 @@ not an assumption about a checkout or global Bun. It runs `npm pack --ignore-scr
 extracting. Archives must use `package/` paths and only regular files/directories;
 links, devices, traversal, backslashes, archive >32 MiB, extraction >128 MiB,
 or >4,000 files are refused. Extraction is into a fresh owner-private stage and
-checks realpath containment. Activation/registry transactions are phase 4; no
-package code or lifecycle script runs in this phase.
+checks realpath containment. **Open phase-0 blockers:** inspection still needs
+prompt expansion-abort; extraction must consume the identical immutable verified
+bytes and reapply the inventory filter. Existing double pathname hashing does not
+satisfy that contract. Canonical SemVer and portable filename handling also need
+closure. Activation/registry transactions are phase 4; no package code or
+lifecycle script runs in this phase.
 
 ## Pi skill deployment decision
 
@@ -96,10 +105,14 @@ integration. The future explicit `extensions install --skills pi` owns the
 consent prompt and passes Pi's supported `~/.pi/agent/skills` discovery root.
 It installs only static manifest-declared skill directories, records extension
 ownership/source digest/files in an installer-owned registry, rejects unowned
-name collisions and user-modified owned files, and atomically swaps a new owned
-directory. Browser activation and skill deployment must report separately;
-partial skill failure is retryable and is not package-install success. Removal
-may delete only unchanged owned files. Existing Pi sessions require their normal
+name collisions and user-modified owned files. User-added files now cause an
+update refusal rather than deletion. **Open phase-0 blockers:** canonical tree
+paths, validated registries/frontmatter, ownership-safe removal, and recovery of
+the old directory on every swap/registry failure. The current adapter is not yet
+failure-atomic and does not implement removal. Browser activation and skill
+deployment must report separately; partial skill failure is not package-install
+success. The required removal contract permits deleting only unchanged owned
+files. Existing Pi sessions require their normal
 `/reload` or a new session; no command is injected and no Pi Tasks/global config
 is touched.
 
@@ -123,15 +136,19 @@ creates no private localhost endpoint.
 Unit tests cover manifest ownership/path/version failures, three reusable layout
 recipes plus invalid geometry, static-schema/CAS/restart/corruption behavior,
 SRI/exact npm/archive inspection, and Pi ownership collision/modification.
-The browser spike verifies authenticated Blob import under the reviewed CSP in
-Chromium; the required WebKit rerun is blocked by the missing executable. The
-compiled smoke verifies AJV import/validation from a compiled executable. Full
-commands and private logs are recorded in the phase handoff at completion.
+Independent Chromium and WebKit runs passed at `0f4c4e3`; WebKit uses the private
+cache named in the phase handoff. The browser fixture covers real bearer rejection,
+safe-mode-before-fetch, digest rejection and successful Blob import; it is not
+coverage for every loader branch. The coordinator's separate loader unit suite
+exercises URL authority, credential rejection, HTTP/MIME/redirect failures,
+invalid/reducible/hard resource bounds, stalled headers/body, stream cleanup and
+typed errors. Its first run had 11 passes/27 failures; fixes must retain those
+regressions. Exact run IDs/results live in the phase handoff and closure matrix.
 
-The fixture enforces bearer rejection, no-token URL, same-origin `/api/extensions/`
-URL authority, safe-mode-before-fetch, response size/content-type/redirect policy,
-and digest rejection in Chromium and WebKit. It is a bounded Node-host feasibility
-fixture, not production server auth/CSP/SW evidence. Trusted same-thread bundle
+The existing compiled smoke proves AJV/SemVer dependency use outside a checkout,
+not archive extraction or an actual compiled browser asset host. Those two
+phase-0 feasibility proofs remain open. The browser spike is a Node-host fixture,
+not production server auth/CSP/SW evidence. Trusted same-thread bundle
 code remains trusted: restrictions are packaging compatibility controls, not a
 sandbox or a JavaScript security scanner.
 

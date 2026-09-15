@@ -21,7 +21,7 @@ test("authenticated bounded Blob loader rejects unsafe paths before import", asy
     const token = mode === "missing" ? "" : "sessionStorage.setItem('wpAuthTokens:v1', JSON.stringify({ [location.origin]: 'spike-token' }));";
     const safe = mode === "safe" ? "true" : "false"; const expected = mode === "digest" ? "'0'.repeat(64)" : `'${digest}'`;
     const html = `<body><output>pending</output><script type="module" nonce="spike">import { loadAuthenticatedExtensionBundle } from '/extension-loader.js'; ${token} try { const loaded = await loadAuthenticatedExtensionBundle('/api/extensions/bundle', ${expected}, {safeMode:${safe}, timeoutMs:500, maxBytes:1024}); document.querySelector('output').textContent = loaded.authenticatedModule; } catch (error) { document.querySelector('output').textContent = error.code; }</script></body>`;
-    response.writeHead(200, { "Content-Type": "text/html", "Content-Security-Policy": "default-src 'self'; script-src 'self' 'nonce-spike' blob:; connect-src 'self'; object-src 'none" }); response.end(html);
+    response.writeHead(200, { "Content-Type": "text/html", "Content-Security-Policy": "default-src 'self'; script-src 'self' 'nonce-spike' blob:; connect-src 'self'; object-src 'none'" }); response.end(html);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)); const port = (server.address() as { port: number }).port;
   try {
