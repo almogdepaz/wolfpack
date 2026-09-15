@@ -85,7 +85,7 @@ describe("static schema positions and bounded JSON", () => {
   test("rejects oversized literal schemas without compiling them", () => {
     typedFailure(() => compileStaticDocumentSchema({ const: "x".repeat(70 * 1024) }), "INVALID_DOCUMENT");
   });
-  test.each([new Date(), new Map(), [undefined], { nested: undefined }])("rejects non-JSON document values: %s", (value) => {
+  test.each([new Date(), new Map(), [undefined], { nested: undefined }].map((value) => [value]))("rejects non-JSON document values: %s", (value) => {
     typedFailure(() => validateDocumentPayload(value, { validate: () => true, errors: () => [] }), "INVALID_DOCUMENT");
   });
   test("does not execute accessors while inspecting JSON", () => {
