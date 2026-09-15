@@ -27,8 +27,19 @@ registry/CDN authentication. Local loopback is for isolated fixtures.
   rejects an oversized acquisition and checks cleanup, with poisoned npm and
   lifecycle-script markers proving neither ran. Tests never contact a real registry.
 - A small late-response elapsed-deadline check was included after that run. The
-  final frozen revision must rerun all required gates; results above are not reused
-  as final approval. No unrelated feature/security-nit expansion is in scope.
+  final frozen revision reran all required gates below; earlier results are not
+  reused as final approval. No unrelated feature/security-nit expansion is in scope.
+- Exact clean **`41d7f3a69144f14c24434af2a91fe2dccf6b5bb9`**: combined final gate
+  `6e593b04-14f9-40ba-b28b-2bf2abbbfcc4` passed in 26.818s: **282 focused pass**,
+  typecheck/context, compiled actual offline acquisition and extraction, Chromium
+  **2/2**, WebKit **2/2**, generated assets/budgets. Only browser color warnings.
+- Same-candidate broad `94dcdad0-756a-4a75-90f4-63f45e06c6c4` exited **1**,
+  128.741s: top-level **2040 pass / 1 skip / 1 fail**, 2042 tests in 179 files.
+  The failure is the unchanged 5000ms release-smoke timeout; the skip is the Linux
+  no-controlling-TTY fixture on macOS. Do not use nested aggregate 2057, erase the
+  failure, or expand this correction into the baseline smoke scripts.
+- Reviewer dependency preflight at the same clean candidate passed
+  (`0e04d211-d07a-491e-9071-37d41b467c83`); this is not test coverage.
 
 ## Previous independent final disposition at `34fec6e`
 
