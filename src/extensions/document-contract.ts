@@ -231,8 +231,8 @@ function isRecord(value: unknown): value is StoredExtensionDocument {
 export interface ExtensionDocumentStoreOptions {
   /** One owner-private root/instance per installation; no cross-process writer support. */
   readonly root: string;
-  /** Synchronous backend snapshot check. Async policy requires a future transaction API. */
-  readonly assertWritableScope?: (key: ExtensionDocumentKey) => void;
+  /** Await authoritative backend checks before entering the synchronous commit. */
+  readonly assertWritableScope?: (key: ExtensionDocumentKey) => void | Promise<void>;
   readonly now?: () => string;
 }
 
@@ -330,13 +330,10 @@ export class ExtensionDocumentStore {
       }
       // Retained acceptance survives scope exit or a later schema upgrade. Only
       // a genuinely new operation is checked against current writable policy.
-      const scopeResult: unknown = this.options.assertWritableScope?.(request.key);
-      if (scopeResult !== undefined) {
-        // A function returning Promise<void> is assignable to a TS void callback,
-        // but must never count as a completed authority check here.
-        void Promise.resolve(scopeResult).catch(() => {});
-        throw new ExtensionDocumentError("STORE_UNAVAILABLE", "writable-scope policy must complete synchronously");
-      }
+      // Hold the per-document lock while awaiting authority. Installation quota
+      // accounting and atomic replacement below contain no further await, so
+      // different documents cannot race the same-instance quota commit.
+      await this.options.assertWritableScope?.(request.key);
       assertSchema(request.document, validator);
       const revision = existing?.revision ?? 0;
       if (request.ifRevision !== revision) throw new ExtensionDocumentError("CONFLICT", "document revision conflict; read and reconcile before publishing", revision);

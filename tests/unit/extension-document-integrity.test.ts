@@ -187,11 +187,24 @@ describe("persisted document authority", () => {
     await expect(store.publish({ ...fixture.request, ifRevision: 1, requestId: randomUUID() }, objectSchema())).rejects.toMatchObject({ code: "STORE_UNAVAILABLE" });
     expect(readFileSync(fixture.file, "utf8")).toBe(fixture.original);
   });
-  test("does not accept asynchronous writable-scope hooks as completed authority checks", async () => {
+  test("waits for asynchronous writable-scope authority and preserves its rejection", async () => {
     const root = temp();
-    const store = new ExtensionDocumentStore({ root, assertWritableScope: async () => {} });
-    await expect(store.publish({ key, document: {}, requestId: randomUUID(), ifRevision: 0, schemaVersion: 1 }, objectSchema())).rejects.toMatchObject({ code: "STORE_UNAVAILABLE" });
+    let entered!: () => void;
+    const checking = new Promise<void>((resolve) => { entered = resolve; });
+    let deny!: (error: Error) => void;
+    const decision = new Promise<void>((_resolve, reject) => { deny = reject; });
+    const store = new ExtensionDocumentStore({ root, assertWritableScope: () => { entered(); return decision; } });
+    const publishing = store.publish({ key, document: {}, requestId: randomUUID(), ifRevision: 0, schemaVersion: 1 }, objectSchema());
+    const rejected = expect(publishing).rejects.toMatchObject({ code: "SCOPE_NOT_WRITABLE" });
+    await checking;
     expect(store.read(key)).toBeNull();
+    deny(new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "scope ended"));
+    await rejected;
+    expect(store.read(key)).toBeNull();
+  });
+  test("supports successful asynchronous writable-scope checks", async () => {
+    const store = new ExtensionDocumentStore({ root: temp(), assertWritableScope: async () => {} });
+    await expect(store.publish({ key, document: {}, requestId: randomUUID(), ifRevision: 0, schemaVersion: 1 }, objectSchema())).resolves.toMatchObject({ revision: 1 });
   });
   test("refuses revision overflow and preserves the last valid record", async () => {
     const fixture = await stored();
