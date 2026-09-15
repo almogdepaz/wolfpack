@@ -1,6 +1,6 @@
 # Phase-0 corrective closure matrix
 
-**Coordinator corrections verified; independent re-review pending. Broad gate retains the known smoke timeout. Phase 0 is not approved.** This is a finding/evidence report, not
+**New npm-acquisition blocker; independent re-review still active. Prior correction groups reportedly closed, pending final report. Phase 0 is not approved.** This is a finding/evidence report, not
 assignment state. The single current handoff is section 2 of
 `docs/plans/ui-extensions-context-skill.md`. Full findings remain in the immutable
 `.plans/review-ui-extensions-0f4c4e3.md`.
@@ -16,6 +16,7 @@ assignment state. The single current handoff is section 2 of
 | Skill removal and fault-atomic swap/registry recovery | Same suite: removal ownership, stage/swap/registry faults, post-commit errors, parked edits, failed rollback, no-op I/O, locking/cleanup | `7ed6674` + `d4561ec`; 61 safety cases, independent re-review pending |
 | Loader authority, header/body deadline, hard byte cap and cleanup | `extension-loader.test.ts`, 38 individually named/parameterized tests | Coordinator tests committed first as `d13c19b`; fixes committed as `761f2e8e001e5a12276d1291577a2ffdbde8d1f8`; **38/38 pass**, awaiting independent re-review |
 | Loader CSP typo and truthful branch evidence | Corrected CSP in `extension-loader-spike.e2e.ts`; both real browsers rerun | Chromium **1/1**, WebKit **1/1**; no production integration claim |
+| Npm acquisition child/disk bounds and supported preflight | Reviewer deadline probe `4ef7bc0a-cc84-408c-813a-5ba638cd72b0`, independently inspected alongside source | **Open:** no subprocess timeout, download disk cap only after return, unvalidated version output and no compiled acquisition execution proof. Timeout alone is insufficient for disk bounds |
 | Archive immutable source, prompt decompression abort and extraction policy | `extension-archive-safety.test.ts`: 43 cases; bounded independent gzip stream, aliases/types/metadata, SRI and pathname replacement, private output, injected write/cleanup failure | `d4561ec`; coordinator verified, independent re-review pending |
 | Canonical npm/manifest SemVer and preserved SRI error identity | `extension-version-layout-regressions.test.ts`: standard versions including build metadata; invalid prefixes/whitespace/versions; missing SRI | Fix `6810cda`; final tests pass; independent re-review pending |
 | Layout malformed object typed errors | Same suite: null/primitive/sparse inputs, bounded IDs/tracks/spans, zero/12/13 panes, selected lead, detached output | Fix `6810cda`; final tests pass; independent re-review pending |

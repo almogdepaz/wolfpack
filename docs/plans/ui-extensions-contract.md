@@ -1,6 +1,6 @@
 # UI extensions phase-0 contract gate
 
-Status: **independent phase-0 re-review pending; focused/browser/native/budget gates pass, broad gate retains the known intermittent smoke timeout**.
+Status: **phase 0 blocked on a newly identified npm-acquisition gap; independent re-review is still active**.
 This artifact records intended phase-0 interfaces and explicit implementation gaps; it does not wire extension code into the server, CLI, browser
 workspace, or a user Pi installation.
 
@@ -105,7 +105,17 @@ unauthenticated import.
 
 ## Package fetch/extraction decision
 
-Npm source syntax is exactly `npm:<name>@<semver>` (no range/tag). A compiled
+**Open acquisition blocker:** the current `fetchExactNpmPackage()` has no finite
+npm-child deadlines, applies its archive cap only after npm writes the download,
+and does not validate successful `npm --version` output against a supported
+version policy. Thus the bounded snapshot/extraction below does not bound npm's
+preceding network/disk work. The native smoke executes tar operations but not
+package acquisition/system npm. Correct these with test-first acquisition,
+termination/cleanup, preflight and compiled-execution evidence before approval;
+adding only a child timeout does not establish a download disk bound.
+
+Intended acquisition contract (not fully implemented): npm source syntax is
+exactly `npm:<name>@<semver>` (no range/tag). A compiled
 install preflights a supported system `npm`; this is an explicit prerequisite,
 not an assumption about a checkout or global Bun. It runs `npm pack --ignore-scripts
 --json` into a private staging directory, validates registry SRI (`sha512` or
