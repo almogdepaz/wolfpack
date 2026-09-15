@@ -7,7 +7,7 @@ import { canonicalJson } from "../../src/canonical-json.ts";
 import {
   compileStaticDocumentSchema, ExtensionDocumentError, ExtensionDocumentStore,
   validateDocumentKey, validateDocumentPayload,
-  type StoredExtensionDocument,
+  type StoredExtensionDocument, type ExtensionDocumentErrorCode,
 } from "../../src/extensions/document-contract.ts";
 
 const key = {
@@ -18,7 +18,7 @@ const key = {
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function temp(): string { const root = mkdtempSync(join(tmpdir(), "wolfpack-document-integrity-")); roots.push(root); return root; }
-function typedFailure(run: () => unknown, code: string): void {
+function typedFailure(run: () => unknown, code: ExtensionDocumentErrorCode): void {
   let caught: unknown;
   try { run(); } catch (error) { caught = error; }
   expect(caught).toBeInstanceOf(ExtensionDocumentError);
@@ -73,6 +73,14 @@ describe("static schema positions and bounded JSON", () => {
   });
   test("rejects schema width/work before invoking AJV", () => {
     typedFailure(() => compileStaticDocumentSchema({ allOf: Array.from({ length: 300 }, () => ({ type: "object" })) }), "INVALID_DOCUMENT");
+  });
+  test("rejects async schemas rather than accepting a Promise as validation truth", () => {
+    typedFailure(() => compileStaticDocumentSchema({ $async: true, type: "object" }), "INVALID_DOCUMENT");
+  });
+  test("admits validation work before potentially quadratic uniqueItems checks", () => {
+    const schema = compileStaticDocumentSchema({ type: "array", uniqueItems: true, items: { type: "object" } });
+    const document = Array.from({ length: 400 }, (_value, value) => ({ value }));
+    typedFailure(() => validateDocumentPayload(document, schema), "INVALID_DOCUMENT");
   });
   test("rejects oversized literal schemas without compiling them", () => {
     typedFailure(() => compileStaticDocumentSchema({ const: "x".repeat(70 * 1024) }), "INVALID_DOCUMENT");
@@ -178,6 +186,12 @@ describe("persisted document authority", () => {
     const store = new ExtensionDocumentStore({ root: fixture.root, now: () => "invalid" });
     await expect(store.publish({ ...fixture.request, ifRevision: 1, requestId: randomUUID() }, objectSchema())).rejects.toMatchObject({ code: "STORE_UNAVAILABLE" });
     expect(readFileSync(fixture.file, "utf8")).toBe(fixture.original);
+  });
+  test("does not accept asynchronous writable-scope hooks as completed authority checks", async () => {
+    const root = temp();
+    const store = new ExtensionDocumentStore({ root, assertWritableScope: async () => {} });
+    await expect(store.publish({ key, document: {}, requestId: randomUUID(), ifRevision: 0, schemaVersion: 1 }, objectSchema())).rejects.toMatchObject({ code: "STORE_UNAVAILABLE" });
+    expect(store.read(key)).toBeNull();
   });
   test("refuses revision overflow and preserves the last valid record", async () => {
     const fixture = await stored();
