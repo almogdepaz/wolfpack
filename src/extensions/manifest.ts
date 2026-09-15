@@ -18,7 +18,7 @@ export interface ExtensionManifest {
   readonly manifestVersion: typeof EXTENSION_MANIFEST_VERSION;
   readonly apiVersion: typeof EXTENSION_API_VERSION;
   readonly id: string;
-  readonly ui: string;
+  readonly ui?: string;
   readonly skills: readonly string[];
   readonly documents: readonly ExtensionDocumentDeclaration[];
 }
@@ -39,7 +39,7 @@ const packageSchema = {
     wolfpack: {
       type: "object",
       additionalProperties: false,
-      required: ["manifestVersion", "apiVersion", "id", "ui", "skills", "documents"],
+      required: ["manifestVersion", "apiVersion", "id", "skills", "documents"],
       properties: {
         manifestVersion: { const: EXTENSION_MANIFEST_VERSION },
         apiVersion: { const: EXTENSION_API_VERSION },
@@ -82,6 +82,8 @@ export function parseExtensionPackageManifest(value: unknown): ExtensionPackageM
     throw new ExtensionManifestError("INVALID_MANIFEST", `invalid Wolfpack extension manifest: ${detail}`);
   }
   const manifest = value as ExtensionPackageManifest;
+  const paths = [manifest.wolfpack.ui, ...manifest.wolfpack.skills, ...manifest.wolfpack.documents.map((document) => document.schema)].filter((path): path is string => Boolean(path));
+  if (paths.some((path) => path !== path.replace(/\/+/g, "/").replace(/^\.\//, "")) || new Set(paths).size !== paths.length) throw new ExtensionManifestError("INVALID_MANIFEST", "manifest paths must be canonical unique POSIX relative paths");
   const ids = new Set<string>();
   for (const document of manifest.wolfpack.documents) {
     if (ids.has(document.id)) {

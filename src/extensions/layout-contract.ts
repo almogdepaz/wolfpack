@@ -1,6 +1,6 @@
 export const LAYOUT_CONTRACT_VERSION = 1;
 export const MAX_LAYOUT_TRACKS = 12;
-export const MAX_LAYOUT_PANES = 64;
+export const MAX_LAYOUT_PANES = 12;
 
 export interface TerminalPaneReference { readonly id: string; }
 export interface LayoutTrack { readonly size: number; }
@@ -47,6 +47,7 @@ function span(value: number | undefined): number { return value ?? 1; }
  * controller lifetime, and resize ordering; recipes cannot create or hide panes.
  */
 export function validateTerminalLayout(layout: TerminalLayout, panes: readonly TerminalPaneReference[]): TerminalLayout {
+  if (!layout || typeof layout !== "object" || layout.version !== LAYOUT_CONTRACT_VERSION || !Array.isArray(layout.rows) || !Array.isArray(layout.columns) || !Array.isArray(layout.placements)) throw new LayoutValidationError("INVALID_PLACEMENT", "layout must use contract version 1 with arrays");
   if (panes.length > MAX_LAYOUT_PANES) throw new LayoutValidationError("TOO_MANY_PANES", `at most ${MAX_LAYOUT_PANES} panes are supported`);
   if (!Array.isArray(layout.rows) || !Array.isArray(layout.columns) || layout.rows.length === 0 || layout.columns.length === 0) {
     throw new LayoutValidationError("EMPTY_TRACKS", "layouts require at least one row and one column");

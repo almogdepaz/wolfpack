@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import * as tar from "tar";
+import { valid as validSemver } from "semver";
 
 export const PACKAGE_ARCHIVE_LIMITS = {
   maxArchiveBytes: 32 * 1024 * 1024,
@@ -20,8 +21,8 @@ export class ExtensionPackageError extends Error {
 
 /** Exact versions only: tags and ranges make activation non-reproducible. */
 export function parseExactNpmSpecifier(specifier: string): { readonly name: string; readonly version: string } {
-  const match = /^npm:((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)@([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/.exec(specifier);
-  if (!match) throw new ExtensionPackageError("INVALID_NPM_SPECIFIER", "npm extension sources must use npm:<package>@<exact-version>");
+  const match = /^npm:((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)@(.+)$/.exec(specifier);
+  if (!match || !validSemver(match[2]!)) throw new ExtensionPackageError("INVALID_NPM_SPECIFIER", "npm extension sources must use npm:<package>@<exact-semver>");
   return { name: match[1]!, version: match[2]! };
 }
 
@@ -36,14 +37,15 @@ export interface InspectedArchive { readonly files: number; readonly unpackedByt
 
 /** Inspects every tar entry before extraction. Links, devices and paths outside package/ are refused. */
 export async function inspectNpmTarball(path: string): Promise<InspectedArchive> {
-  const archive = readFileSync(path);
-  if (archive.byteLength > PACKAGE_ARCHIVE_LIMITS.maxArchiveBytes) throw new ExtensionPackageError("UNSAFE_ARCHIVE", "package archive exceeds compressed byte limit");
+  if (statSync(path).size > PACKAGE_ARCHIVE_LIMITS.maxArchiveBytes) throw new ExtensionPackageError("UNSAFE_ARCHIVE", "package archive exceeds compressed byte limit");
   let files = 0; let unpackedBytes = 0;
-  let unsafe: ExtensionPackageError | undefined;
+  const paths = new Set<string>(); let unsafe: ExtensionPackageError | undefined;
   try {
     await tar.t({ file: path, strict: true, onReadEntry(entry) {
       if (unsafe) return;
-      if (!safeArchivePath(entry.path) || (entry.type !== "File" && entry.type !== "Directory")) { unsafe = new ExtensionPackageError("UNSAFE_ARCHIVE", `unsafe archive entry: ${entry.path}`); return; }
+      const canonical = entry.path.normalize("NFC").toLocaleLowerCase("en-US");
+      if (!safeArchivePath(entry.path) || paths.has(canonical) || (entry.type !== "File" && entry.type !== "Directory")) { unsafe = new ExtensionPackageError("UNSAFE_ARCHIVE", `unsafe or duplicate archive entry: ${entry.path}`); return; }
+      paths.add(canonical);
       if (entry.type === "File") { files++; unpackedBytes += entry.size; }
       if (files > PACKAGE_ARCHIVE_LIMITS.maxFiles || unpackedBytes > PACKAGE_ARCHIVE_LIMITS.maxUnpackedBytes) unsafe = new ExtensionPackageError("UNSAFE_ARCHIVE", "package archive exceeds extraction quota");
     } });
@@ -66,9 +68,11 @@ export function verifyNpmIntegrity(path: string, integrity: string): void {
 /** Extract only a previously inspected archive into a private fresh staging directory. */
 export async function extractVerifiedNpmTarball(archive: string, destinationParent: string): Promise<string> {
   await inspectNpmTarball(archive);
+  const inspectedDigest = createHash("sha512").update(readFileSync(archive)).digest("hex");
   mkdirSync(destinationParent, { recursive: true, mode: 0o700 });
   const stage = mkdtempSync(join(destinationParent, ".extension-stage-"));
   try {
+    if (createHash("sha512").update(readFileSync(archive)).digest("hex") !== inspectedDigest) throw new ExtensionPackageError("UNSAFE_ARCHIVE", "archive changed after inspection");
     await tar.x({ file: archive, cwd: stage, strict: true, preservePaths: false, preserveOwner: false, noChmod: true, unlink: false });
     const packageDirectory = join(stage, "package");
     const root = realpathSync(stage); const extracted = realpathSync(packageDirectory);
@@ -81,7 +85,7 @@ export async function extractVerifiedNpmTarball(archive: string, destinationPare
   }
 }
 
-export interface NpmPackResult { readonly tarball: string; readonly integrity: string | undefined; }
+export interface NpmPackResult { readonly tarball: string; readonly integrity: string; }
 /**
  * Npm is an explicit compiled-install prerequisite. `npm pack --ignore-scripts`
  * fetches an exact registry tarball without evaluating package lifecycle code;
@@ -98,7 +102,9 @@ export function fetchExactNpmPackage(specifier: string, stagingDirectory: string
     const entry = output[0] as { filename: string; integrity?: unknown };
     const tarball = resolve(stagingDirectory, basename(entry.filename));
     if (!tarball.startsWith(`${resolve(stagingDirectory)}/`)) throw new Error("npm pack returned an escaping filename");
-    return { tarball, integrity: typeof entry.integrity === "string" ? entry.integrity : undefined };
+    if (typeof entry.integrity !== "string") throw new ExtensionPackageError("INTEGRITY_MISMATCH", "npm registry response omitted required integrity");
+    verifyNpmIntegrity(tarball, entry.integrity);
+    return { tarball, integrity: entry.integrity };
   } catch (error) { throw new ExtensionPackageError("NPM_FETCH_FAILED", `npm pack failed: ${(error as Error).message}`); }
 }
 

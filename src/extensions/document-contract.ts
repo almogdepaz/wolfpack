@@ -35,6 +35,7 @@ export interface ExtensionDocumentReceipt {
   readonly acceptedAt: string;
   readonly payloadDigest: string;
   readonly baseRevision: number;
+  readonly schemaVersion: number;
 }
 export interface StoredExtensionDocument {
   readonly version: typeof EXTENSION_DOCUMENT_STORE_VERSION;
@@ -48,6 +49,7 @@ export interface PublishExtensionDocumentRequest {
   readonly document: unknown;
   readonly ifRevision: number;
   readonly requestId: string;
+  readonly schemaVersion: number;
 }
 
 export const EXTENSION_DOCUMENT_ERROR = {
@@ -80,11 +82,17 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 /** Static installed schemas only: no remote/local $refs, dynamic anchors, or executable validators. */
 export function compileStaticDocumentSchema(schema: unknown): StaticSchemaValidator {
-  if (!isPlainObject(schema) || "$ref" in schema || "$dynamicRef" in schema || "$schema" in schema && schema.$schema !== "https://json-schema.org/draft/2020-12/schema") {
-    throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "document schema must be a static local JSON Schema without references");
-  }
+  const inspect = (value: unknown, depth = 0): void => {
+    if (depth > 16 || !isPlainObject(value)) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "schema must be a bounded object tree");
+    for (const [key, child] of Object.entries(value)) {
+      if (["$ref", "$dynamicRef", "$recursiveRef", "$id", "$anchor", "$dynamicAnchor", "pattern", "patternProperties", "format"].includes(key)) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, `unsupported static schema keyword: ${key}`);
+      if (key === "$schema" && child !== "https://json-schema.org/draft/2020-12/schema") throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "unsupported JSON Schema dialect");
+      if (Array.isArray(child)) child.forEach((item) => { if (isPlainObject(item)) inspect(item, depth + 1); }); else if (isPlainObject(child)) inspect(child, depth + 1);
+    }
+  };
+  inspect(schema);
   const ajv = new Ajv2020({ allErrors: true, strict: true, validateSchema: true });
-  const validate = ajv.compile(schema);
+  const validate = ajv.compile(schema as Record<string, unknown>);
   return {
     validate(document: unknown): boolean { return validate(document); },
     errors(): readonly string[] { return (validate.errors ?? []).map((error) => `${error.instancePath || "/"} ${error.message}`); },
@@ -117,7 +125,7 @@ function jsonBounds(value: unknown, depth = 0): void {
 }
 
 export function validateDocumentKey(key: ExtensionDocumentKey): void {
-  if (!IDENTIFIER.test(key.installationId) || !UUID.test(key.scopeSessionId) || !IDENTIFIER.test(key.extensionId) || !IDENTIFIER.test(key.documentId)) {
+  if (!UUID.test(key.installationId) || !UUID.test(key.scopeSessionId) || !IDENTIFIER.test(key.extensionId) || !IDENTIFIER.test(key.documentId)) {
     throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_KEY, "installation, extension and document IDs must be stable identifiers and scope must be an exact UUID");
   }
 }
@@ -133,7 +141,8 @@ export function validateDocumentPayload(document: unknown, validator: StaticSche
 
 function stableRecordKey(key: ExtensionDocumentKey): string { return createHash("sha256").update(canonicalJson(key)).digest("hex"); }
 function isRecord(value: unknown): value is StoredExtensionDocument {
-  return isPlainObject(value) && value.version === 1 && isPlainObject(value.key) && typeof value.revision === "number" && Number.isSafeInteger(value.revision) && value.revision >= 0 && Array.isArray(value.receipts);
+  if (!isPlainObject(value) || value.version !== 1 || !isPlainObject(value.key) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !Array.isArray(value.receipts)) return false;
+  try { validateDocumentKey(value.key as unknown as ExtensionDocumentKey); jsonBounds(value.document); for (const receipt of value.receipts) { if (!isPlainObject(receipt) || !UUID.test(String(receipt.requestId)) || !UUID.test(String(receipt.scopeSessionId)) || !IDENTIFIER.test(String(receipt.extensionId)) || !IDENTIFIER.test(String(receipt.documentId)) || !Number.isSafeInteger(receipt.revision) || !Number.isSafeInteger(receipt.baseRevision) || !Number.isSafeInteger(receipt.schemaVersion) || !/^[a-f0-9]{64}$/.test(String(receipt.payloadDigest)) || typeof receipt.acceptedAt !== "string") return false; } return true; } catch { return false; }
 }
 function recordSize(record: StoredExtensionDocument): number { return Buffer.byteLength(JSON.stringify(record), "utf8"); }
 
@@ -164,7 +173,7 @@ export class ExtensionDocumentStore {
   }
   async publish(request: PublishExtensionDocumentRequest, validator: StaticSchemaValidator): Promise<ExtensionDocumentReceipt> {
     validateDocumentKey(request.key);
-    if (!UUID.test(request.requestId) || !Number.isSafeInteger(request.ifRevision) || request.ifRevision < 0) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "request ID must be a UUID and ifRevision a non-negative integer");
+    if (!UUID.test(request.requestId) || !Number.isSafeInteger(request.ifRevision) || request.ifRevision < 0 || !Number.isSafeInteger(request.schemaVersion) || request.schemaVersion < 1) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.INVALID_DOCUMENT, "request ID must be a UUID and ifRevision a non-negative integer");
     const key = stableRecordKey(request.key);
     const previous = this.locks.get(key) ?? Promise.resolve();
     let release!: () => void;
@@ -173,17 +182,18 @@ export class ExtensionDocumentStore {
     this.locks.set(key, queued);
     await previous;
     try {
-      this.options.assertWritableScope?.(request.key);
       const payload = validateDocumentPayload(request.document, validator);
       const existing = this.read(request.key);
+      if (existing && canonicalJson(existing.key) !== canonicalJson(request.key)) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.STORE_CORRUPT, "stored document key does not match requested key");
       const duplicate = existing?.receipts.find((receipt) => receipt.requestId === request.requestId);
       if (duplicate && existing) {
-        if (duplicate.payloadDigest === payload.digest && duplicate.baseRevision === request.ifRevision) return duplicate;
+        if (duplicate.payloadDigest === payload.digest && duplicate.baseRevision === request.ifRevision && duplicate.schemaVersion === request.schemaVersion) return duplicate;
         throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.REQUEST_ID_REUSED, "request ID was retained for different payload or base revision", existing.revision);
       }
+      this.options.assertWritableScope?.(request.key);
       const currentRevision = existing?.revision ?? 0;
       if (request.ifRevision !== currentRevision) throw new ExtensionDocumentError(EXTENSION_DOCUMENT_ERROR.CONFLICT, "document revision conflict; read and reconcile before publishing", currentRevision);
-      const receipt: ExtensionDocumentReceipt = { requestId: request.requestId, scopeSessionId: request.key.scopeSessionId, extensionId: request.key.extensionId, documentId: request.key.documentId, revision: currentRevision + 1, acceptedAt: this.now(), payloadDigest: payload.digest, baseRevision: request.ifRevision };
+      const receipt: ExtensionDocumentReceipt = { requestId: request.requestId, scopeSessionId: request.key.scopeSessionId, extensionId: request.key.extensionId, documentId: request.key.documentId, revision: currentRevision + 1, acceptedAt: this.now(), payloadDigest: payload.digest, baseRevision: request.ifRevision, schemaVersion: request.schemaVersion };
       const record: StoredExtensionDocument = { version: 1, key: request.key, revision: receipt.revision, document: request.document, receipts: [...(existing?.receipts ?? []), receipt].slice(-EXTENSION_DOCUMENT_LIMITS.maxRetainedReceipts) };
       const usage = this.totalUsage();
       const nextBytes = usage.bytes - (existing ? recordSize(existing) : 0) + recordSize(record);

@@ -1,6 +1,6 @@
 # UI extensions phase-0 contract gate
 
-Status: **ready for independent contract review**. This artifact freezes phase-0
+Status: **corrective candidate for independent review**. This artifact freezes phase-0
 interfaces only; it does not wire extension code into the server, CLI, browser
 workspace, or a user Pi installation.
 
@@ -68,8 +68,8 @@ The isolated Playwright spike (`extension-loader-spike.e2e.ts`) serves a compile
 copy of that helper with an authenticated asset and CSP:
 `script-src 'self' 'nonce-…' blob:`. It must pass independently in Chromium and
 WebKit before phase 2 changes the production HTML CSP. Chromium passed locally;
-WebKit is currently **blocked**, not passed, because the pinned Playwright WebKit
-executable is absent and this assignment cannot install browsers. It neither
+WebKit passes the bounded fixture from the coordinator-provided private browser cache.
+This is feasibility evidence only, not production route/auth integration. It neither
 changes the current production CSP nor service-worker caching. Phase 2 must make the narrow
 reviewed production CSP addition (`blob:` only; no `unsafe-eval`) and mark
 extension asset/document responses `Cache-Control: no-store`/outside SW caching.
@@ -128,8 +128,16 @@ Chromium; the required WebKit rerun is blocked by the missing executable. The
 compiled smoke verifies AJV import/validation from a compiled executable. Full
 commands and private logs are recorded in the phase handoff at completion.
 
-Not yet covered: actual production CSP change/asset routes/SW exclusion,
-compiled npm availability on every target, real npm registry download,
-installation activation, backend exact-session verification, a real Pi skill
-round trip, browser terminal retention, and broker behavior. These are explicit
+The fixture enforces bearer rejection, no-token URL, same-origin `/api/extensions/`
+URL authority, safe-mode-before-fetch, response size/content-type/redirect policy,
+and digest rejection in Chromium and WebKit. It is a bounded Node-host feasibility
+fixture, not production server auth/CSP/SW evidence. Trusted same-thread bundle
+code remains trusted: restrictions are packaging compatibility controls, not a
+sandbox or a JavaScript security scanner.
+
+Not yet covered: actual production CSP change/asset routes/SW exclusion, package
+activation/crash lifecycle and cross-process locks, real npm registry download,
+backend exact-session verification, a real Pi skill round trip, browser terminal
+retention, and broker behavior. Geometry-only retention is a Phase-1 obligation;
+current collapse/suspend behavior does dispose controllers. These are explicit
 phase 1–6 gates, not passes from this artifact.
