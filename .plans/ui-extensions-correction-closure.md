@@ -1,9 +1,38 @@
 # Phase-0 corrective closure matrix
 
-**Acquisition correction implemented; follow-up verification/approval pending. All other prior finding groups are closed. Phase 0 is not approved.** This is a finding/evidence report, not
+**Phase-0 contracts and isolated feasibility independently APPROVED at `41d7f3a`. Acquisition and all prior finding groups are closed. Production phases 1–6 remain separate.** This is a finding/evidence report, not
 assignment state. The single current handoff is section 2 of
 `docs/plans/ui-extensions-context-skill.md`. Full findings remain in the immutable
 `.plans/review-ui-extensions-0f4c4e3.md`.
+
+## Final independent approval
+
+`.plans/review-ui-extensions-41d7f3a.md` approves the exact frozen source
+**`41d7f3a69144f14c24434af2a91fe2dccf6b5bb9`**. Parent inspected the full report,
+clean reviewer source, documentation-only later implementation diff, and
+independent focused/native/broad logs and broad provenance metadata. The copied
+report SHA-256 is `2edc24c27bd685f9a4b9742e8f13ab1fec0c5a2ec7409d129c9a6c0f9560746f`.
+There are no remaining phase-0 findings. This does not assert the integrated
+Agent Context feature or real-agent acceptance is implemented.
+
+Independent gates at the approved source:
+
+- Acquisition **19/19**: `4d1df9a0-1947-4114-a94b-4cbd5c9cfffa`.
+- All focused **282/282**, no skips: `07f4f5b8-5fbf-46bb-a945-c0fcd8054606`.
+- Typecheck/context: `5b2846c2-510b-4f9c-83fe-ba7d9bdb923a`, `80213c5e-34a1-4d34-94c6-18ee5d95d27f`.
+- Native actual offline acquisition/limits/cleanup/no-npm/no-scripts plus prior
+  filesystem foundations: `796e7a49-b078-4b68-8194-e83ec71f31cd`.
+- Chromium **2/2**: `75f476e7-31a2-48eb-be5b-5000b79c64a7`; WebKit **2/2**:
+  `633203cb-f9be-41e1-9413-cd785685756a`. Color-environment warnings only.
+- Generated assets/budgets: `7d57815c-9880-4a64-89eb-a5cdf336fd0d`.
+- Broad: `35a18958-5543-438a-928f-76c8b5e582e5`, exit **0**, 129.645s;
+  final top-level **2041 pass / 1 skip / 0 fail**, 2042 tests/179 files, not
+  nested aggregate 2058. The skip remains the Linux no-controlling-TTY fixture
+  on macOS. Full warning output and environment metadata are retained privately.
+
+The parent's exact-candidate broad **2040/1 skip/1 timeout** remains a failed
+run; independent success does not rewrite it or imply a baseline smoke fix.
+The current handoff alone records task acknowledgment and phase-role teardown.
 
 ## Acquisition correction after the independent review
 

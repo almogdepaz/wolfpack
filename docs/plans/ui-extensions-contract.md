@@ -1,6 +1,6 @@
 # UI extensions phase-0 contract gate
 
-Status: **acquisition correction implemented; final verification and independent approval pending. Other prior finding groups are closed**.
+Status: **phase-0 contracts and isolated feasibility independently APPROVED at `41d7f3a69144f14c24434af2a91fe2dccf6b5bb9`**. The acquisition blocker and prior finding groups are closed; production integration and real-agent acceptance remain later gates.
 This artifact records intended phase-0 interfaces and explicit implementation gaps; it does not wire extension code into the server, CLI, browser
 workspace, or a user Pi installation.
 
@@ -212,7 +212,7 @@ must reject publish explicitly; view disable never deletes data. Normal machine
 routing/auth remains the authority and will be wired in phase 3—this contract
 creates no private localhost endpoint.
 
-## Phase-0 verification and blockers
+## Phase-0 verification and remaining integration gates
 
 Unit tests cover manifest ownership/path/version failures, three reusable layout
 recipes plus invalid geometry, static-schema/CAS/restart/corruption behavior,
