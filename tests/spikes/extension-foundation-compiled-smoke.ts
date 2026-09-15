@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as tar from "tar";
 import { compileStaticDocumentSchema, ExtensionDocumentStore, validateDocumentPayload } from "../../src/extensions/document-contract.ts";
 import { extractVerifiedNpmTarball, inspectNpmTarball, parseExactNpmSpecifier } from "../../src/extensions/package-security.ts";
@@ -32,7 +32,11 @@ try {
   const archive = join(root, "example.tgz");
   await tar.c({ cwd: source, gzip: true, file: archive }, ["package"]);
   assert.equal((await inspectNpmTarball(archive)).files, 2);
-  const extracted = await extractVerifiedNpmTarball(archive, join(root, "extracted"));
+  await assert.rejects(inspectNpmTarball(archive, { limits: { maxFiles: 1 } }), { code: "UNSAFE_ARCHIVE" });
+  const integrity = `sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`;
+  const pending = extractVerifiedNpmTarball(archive, join(root, "extracted"), { integrity });
+  writeFileSync(archive, "pathname replaced after snapshot capture");
+  const extracted = await pending;
   assert.equal(readFileSync(join(extracted, "bundle.js"), "utf8"), "export const value = 'compiled';\n");
   console.log("compiled extension foundations: schema, document persistence, SemVer, YAML skill install/update/remove, tar inspect/extract OK");
 } finally {

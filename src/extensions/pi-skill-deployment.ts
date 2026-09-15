@@ -339,6 +339,7 @@ function transact(
         if (!nextOwner || !treeUnchanged(destination, nextOwner) || exists(staged)) throw recovery();
         operations.rename(destination, staged);
       } else if (previousOwner && !exists(destination)) throw recovery();
+      if (exists(backup) || (!previousOwner && exists(destination))) throw recovery();
     } catch { throw recovery(); }
   }
   let cleanupDirectory: string | undefined;
@@ -346,7 +347,7 @@ function transact(
   // Retain those bytes for inspection instead of treating them as disposable.
   if (committed && previousOwner && !treeUnchanged(backup, previousOwner)) cleanupDirectory = workspace;
   else {
-    try { operations.removeTree(workspace); }
+    try { operations.removeTree(workspace); if (exists(workspace)) cleanupDirectory = workspace; }
     catch { cleanupDirectory = workspace; }
   }
   if (!committed) {

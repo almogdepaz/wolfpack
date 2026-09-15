@@ -1,23 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { createHash, timingSafeEqual } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { closeSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import * as tar from "tar";
 import { isCanonicalPackageVersion } from "./package-version.ts";
-
-export const PACKAGE_ARCHIVE_LIMITS = {
-  maxArchiveBytes: 32 * 1024 * 1024,
-  maxUnpackedBytes: 128 * 1024 * 1024,
-  maxFiles: 4_000,
-} as const;
-
-export class ExtensionPackageError extends Error {
-  constructor(readonly code: "INVALID_NPM_SPECIFIER" | "NPM_UNAVAILABLE" | "NPM_FETCH_FAILED" | "INTEGRITY_MISMATCH" | "UNSAFE_ARCHIVE", message: string) {
-    super(message);
-    this.name = "ExtensionPackageError";
-  }
-}
+import { readBoundedRegularFile } from "./bounded-file.ts";
+import { ArchiveEntryPolicy, readArchiveBytes, snapshotArchive, verifyArchiveBytes, type ArchiveReadOptions, type InspectedArchive } from "./archive-snapshot.ts";
+import { ExtensionPackageError } from "./package-error.ts";
+export { ExtensionPackageError } from "./package-error.ts";
+export { PACKAGE_ARCHIVE_LIMITS, type ArchiveReadOptions, type InspectedArchive } from "./archive-snapshot.ts";
 
 /** Exact versions only: tags and ranges make activation non-reproducible. */
 export function parseExactNpmSpecifier(specifier: string): { readonly name: string; readonly version: string } {
@@ -30,62 +21,73 @@ export function parseExactNpmSpecifier(specifier: string): { readonly name: stri
   return { name: match[1]!, version: match[2]! };
 }
 
-function safeArchivePath(path: string): boolean {
-  const parts = path.split("/");
-  return path === "package/" || (path.startsWith("package/") && !path.includes("\\") && !path.includes("\0")
-    && !parts.slice(0, -1).some((part) => part === "" || part === "." || part === "..")
-    && ![".", ".."].includes(parts.at(-1) ?? ""));
-}
-
-export interface InspectedArchive { readonly files: number; readonly unpackedBytes: number; }
-
-/** Inspects every tar entry before extraction. Links, devices and paths outside package/ are refused. */
-export async function inspectNpmTarball(path: string): Promise<InspectedArchive> {
-  if (statSync(path).size > PACKAGE_ARCHIVE_LIMITS.maxArchiveBytes) throw new ExtensionPackageError("UNSAFE_ARCHIVE", "package archive exceeds compressed byte limit");
-  let files = 0; let unpackedBytes = 0;
-  const paths = new Set<string>(); let unsafe: ExtensionPackageError | undefined;
-  try {
-    await tar.t({ file: path, strict: true, onReadEntry(entry) {
-      if (unsafe) return;
-      const canonical = entry.path.normalize("NFC").toLocaleLowerCase("en-US");
-      if (!safeArchivePath(entry.path) || paths.has(canonical) || (entry.type !== "File" && entry.type !== "Directory")) { unsafe = new ExtensionPackageError("UNSAFE_ARCHIVE", `unsafe or duplicate archive entry: ${entry.path}`); return; }
-      paths.add(canonical);
-      if (entry.type === "File") { files++; unpackedBytes += entry.size; }
-      if (files > PACKAGE_ARCHIVE_LIMITS.maxFiles || unpackedBytes > PACKAGE_ARCHIVE_LIMITS.maxUnpackedBytes) unsafe = new ExtensionPackageError("UNSAFE_ARCHIVE", "package archive exceeds extraction quota");
-    } });
-    if (unsafe) throw unsafe;
-  } catch (error) {
-    if (error instanceof ExtensionPackageError) throw error;
-    throw new ExtensionPackageError("UNSAFE_ARCHIVE", `package archive could not be read safely: ${(error as Error).message}`);
-  }
-  return { files, unpackedBytes };
+/** Structural inspection only unless the caller also supplies expected registry SRI. */
+export async function inspectNpmTarball(path: string, options: ArchiveReadOptions = {}): Promise<InspectedArchive> {
+  return (await snapshotArchive(path, options)).summary;
 }
 
 export function verifyNpmIntegrity(path: string, integrity: string): void {
-  const match = /^(sha512|sha256)-([A-Za-z0-9+/]+={0,2})$/.exec(integrity);
-  if (!match) throw new ExtensionPackageError("INTEGRITY_MISMATCH", "package integrity must be sha512 or sha256 SRI");
-  const actual = createHash(match[1]).update(readFileSync(path)).digest();
-  const expected = Buffer.from(match[2]!, "base64");
-  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new ExtensionPackageError("INTEGRITY_MISMATCH", "downloaded package does not match registry integrity");
+  verifyArchiveBytes(readArchiveBytes(path), integrity);
 }
 
-/** Extract only a previously inspected archive into a private fresh staging directory. */
-export async function extractVerifiedNpmTarball(archive: string, destinationParent: string): Promise<string> {
-  await inspectNpmTarball(archive);
-  const inspectedDigest = createHash("sha512").update(readFileSync(archive)).digest("hex");
-  mkdirSync(destinationParent, { recursive: true, mode: 0o700 });
-  const stage = mkdtempSync(join(destinationParent, ".extension-stage-"));
+export interface ArchiveExtractOptions extends ArchiveReadOptions {
+  /** Trusted synchronous host/test I/O, never package or HTTP-provided callbacks. */
+  readonly operations?: {
+    readonly writeFile?: (path: string, bytes: Uint8Array) => void;
+    readonly removeTree?: (path: string) => void;
+  };
+}
+function writePrivateArchiveFile(path: string, bytes: Uint8Array): void {
+  const fd = openSync(path, "wx", 0o600);
+  try { writeFileSync(fd, bytes); fsyncSync(fd); }
+  finally { closeSync(fd); }
+}
+
+/**
+ * Maintained tar.Parser decodes a single private snapshot into bounded regular
+ * file bytes. Extraction rechecks that inventory, writes only those exact bytes
+ * with exclusive private files, and never reopens the archive pathname. Registry
+ * callers MUST forward NpmPackResult.integrity here; omission is for local input.
+ */
+export async function extractVerifiedNpmTarball(archive: string, destinationParent: string, options: ArchiveExtractOptions = {}): Promise<string> {
+  const snapshot = await snapshotArchive(archive, options, true);
+  const policy = new ArchiveEntryPolicy(snapshot.limits);
+  for (const entry of snapshot.entries) {
+    policy.add(entry.path, entry.type, entry.size);
+    if (entry.type === "File" && (!entry.content || entry.content.length !== entry.size || createHash("sha256").update(entry.content).digest("hex") !== entry.digest)) {
+      throw new ExtensionPackageError("UNSAFE_ARCHIVE", "extraction inventory differs from inspected bytes");
+    }
+  }
+  let stage: string;
   try {
-    if (createHash("sha512").update(readFileSync(archive)).digest("hex") !== inspectedDigest) throw new ExtensionPackageError("UNSAFE_ARCHIVE", "archive changed after inspection");
-    await tar.x({ file: archive, cwd: stage, strict: true, preservePaths: false, preserveOwner: false, noChmod: true, unlink: false });
-    const packageDirectory = join(stage, "package");
-    const root = realpathSync(stage); const extracted = realpathSync(packageDirectory);
-    if (relative(root, extracted).startsWith("..")) throw new ExtensionPackageError("UNSAFE_ARCHIVE", "archive extraction escaped staging root");
-    return packageDirectory;
-  } catch (error) {
-    rmSync(stage, { recursive: true, force: true });
-    if (error instanceof ExtensionPackageError) throw error;
-    throw new ExtensionPackageError("UNSAFE_ARCHIVE", `package extraction failed: ${(error as Error).message}`);
+    if (typeof destinationParent !== "string" || !isAbsolute(destinationParent)) throw new Error("absolute parent required");
+    mkdirSync(destinationParent, { recursive: true, mode: 0o700 });
+    if (!lstatSync(destinationParent).isDirectory()) throw new Error("non-symlink directory required");
+    stage = mkdtempSync(join(destinationParent, ".extension-stage-"));
+  } catch { throw new ExtensionPackageError("UNSAFE_ARCHIVE", "could not create a private stage under a non-symlink extraction parent"); }
+  try {
+    const write = options.operations?.writeFile ?? writePrivateArchiveFile;
+    for (const entry of snapshot.entries) {
+      const path = join(stage, entry.path);
+      if (entry.type === "Directory") mkdirSync(path, { recursive: true, mode: 0o700 });
+      else {
+        mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+        write(path, entry.content!);
+        const actual = readBoundedRegularFile(path, entry.size);
+        const stat = lstatSync(path);
+        if (actual.length !== entry.size || stat.nlink !== 1 || (stat.mode & 0o7777) !== 0o600 || createHash("sha256").update(actual).digest("hex") !== entry.digest) {
+          throw new ExtensionPackageError("UNSAFE_ARCHIVE", "extracted file differs from the private inspected inventory");
+        }
+      }
+    }
+    return join(stage, "package");
+  } catch {
+    try {
+      (options.operations?.removeTree ?? ((path: string) => rmSync(path, { recursive: true, force: true })))(stage);
+      try { lstatSync(stage); throw new Error("private stage remains"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    } catch { throw new ExtensionPackageError("UNSAFE_ARCHIVE", "extraction failed and private staging cleanup requires attention", { cleanupDirectory: stage }); }
+    throw new ExtensionPackageError("UNSAFE_ARCHIVE", "extraction failed; partial private stage removed");
   }
 }
 

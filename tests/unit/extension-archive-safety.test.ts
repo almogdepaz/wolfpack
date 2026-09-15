@@ -20,8 +20,9 @@ function fixture() { const root = mkdtempSync(join(tmpdir(), "wolfpack-archive-s
 function entry(path: string, body = "", type: tar.Header["type"] = "File", overrides: { size?: number; mode?: number; linkpath?: string } = {}) {
   const bytes = Buffer.from(body);
   const header = new tar.Header({ path, type, size: bytes.length, mode: 0o7777, ...overrides });
-  header.encode();
-  return Buffer.concat([header.block!, bytes, Buffer.alloc((512 - bytes.length % 512) % 512)]);
+  const needsPax = header.encode();
+  const extended = needsPax ? new tar.Pax({ path }).encode() : Buffer.alloc(0);
+  return Buffer.concat([extended, header.block!, bytes, Buffer.alloc((512 - bytes.length % 512) % 512)]);
 }
 function archive(root: string, entries: Buffer[], gzip = false, padding = 1024) {
   const path = join(root, "input.tar");
@@ -112,7 +113,7 @@ describe("portable bounded immutable archives", () => {
   test("rejects truncated content and invalid compressed input", async () => {
     const root = fixture();
     await expect(inspect(archive(root, [entry("package/a", "", "File", { size: 4096 })], false, 0))).rejects.toMatchObject({ code: "UNSAFE_ARCHIVE" });
-    const path = archive(root, [entry("package/a")], true); const bytes = readFileSync(path); bytes[bytes.length - 5] ^= 1; writeFileSync(path, bytes);
+    const path = archive(root, [entry("package/a")], true); const bytes = readFileSync(path); bytes[bytes.length - 5] = bytes[bytes.length - 5]! ^ 1; writeFileSync(path, bytes);
     await expect(inspect(path)).rejects.toMatchObject({ code: "UNSAFE_ARCHIVE" });
   });
   test("uses the exact verified snapshot even if the pathname is replaced during inspection", async () => {
@@ -153,6 +154,22 @@ describe("portable bounded immutable archives", () => {
       writes++; if (writes === 2) throw new Error("injected write failure"); writeFileSync(path, bytes, { mode: 0o600, flag: "wx" });
     } } })).rejects.toMatchObject({ code: "UNSAFE_ARCHIVE" });
     expect(writes).toBe(2); expect(readdirSync(out)).toEqual(["sentinel"]);
+  });
+  test("refuses a writer that silently persists different bytes", async () => {
+    const root = fixture(); const out = join(root, "out");
+    await expect(extract(archive(root, [entry("package/a", "safe")]), out, { operations: {
+      writeFile(path) { writeFileSync(path, "evil", { flag: "wx", mode: 0o600 }); },
+    } })).rejects.toMatchObject({ code: "UNSAFE_ARCHIVE" });
+    expect(readdirSync(out)).toEqual([]);
+  });
+  test("does not claim cleanup if a remover silently leaves the private stage", async () => {
+    const root = fixture();
+    const error = await failure(extract(archive(root, [entry("package/a")]), join(root, "out"), { operations: {
+      writeFile() { throw new Error("write failed"); }, removeTree() {},
+    } }));
+    expect(error).toMatchObject({ code: "UNSAFE_ARCHIVE" });
+    const directory = (error as { cleanupDirectory: string }).cleanupDirectory;
+    expect(typeof directory).toBe("string"); expect(existsSync(directory)).toBe(true);
   });
   test("reports a retained stage when failure cleanup cannot finish", async () => {
     const root = fixture();

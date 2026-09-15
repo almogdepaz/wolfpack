@@ -263,6 +263,24 @@ describe("failure-atomic per-skill transactions", () => {
     expect(fired).toBe(true);
     expect(deploy(f.skillsRoot, skill("v2"))[0]?.status).toBe("unchanged");
   });
+  test("reports a retained workspace when cleanup silently does nothing", () => {
+    const f = installed();
+    const result = deploy(f.skillsRoot, skill("v2"), { removeTree() {} })[0] as unknown as { status: string; cleanupDirectory?: string };
+    expect(result.status).toBe("installed");
+    expect(typeof result.cleanupDirectory).toBe("string");
+    expect(existsSync(result.cleanupDirectory!)).toBe(true);
+  });
+  test("does not delete the backup when rollback renames silently do nothing", () => {
+    const f = installed(); let restoring = false; let error: unknown;
+    try { deploy(f.skillsRoot, skill("v2"), {
+      rename(from, to) { if (!restoring) renameSync(from, to); },
+      writeRegistry() { restoring = true; throw new Error("registry failure"); },
+    }); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ code: "RECOVERY_REQUIRED" });
+    const directory = (error as { recoveryDirectory: string }).recoveryDirectory;
+    expect(readFileSync(join(directory, "old", "SKILL.md"), "utf8")).toBe(f.content);
+    expect(readFileSync(f.registry, "utf8")).toBe(f.before);
+  });
   test("preserves backup and reports cleanup location if post-commit cleanup fails", () => {
     const f = installed();
     const result = deploy(f.skillsRoot, skill("v2"), { removeTree() { throw new Error("cleanup failed"); } })[0] as unknown as { status: string; cleanupDirectory?: string };
