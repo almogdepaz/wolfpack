@@ -1,4 +1,5 @@
 import Ajv from "ajv";
+import { isCanonicalPackageVersion } from "./package-version.ts";
 
 export const EXTENSION_MANIFEST_VERSION = 1;
 export const EXTENSION_API_VERSION = 1;
@@ -35,7 +36,7 @@ const packageSchema = {
   required: ["name", "version", "wolfpack"],
   properties: {
     name: { type: "string", minLength: 1, maxLength: 214 },
-    version: { type: "string", pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$" },
+    version: { type: "string", minLength: 1, maxLength: 256 },
     wolfpack: {
       type: "object",
       additionalProperties: false,
@@ -82,6 +83,9 @@ export function parseExtensionPackageManifest(value: unknown): ExtensionPackageM
     throw new ExtensionManifestError("INVALID_MANIFEST", `invalid Wolfpack extension manifest: ${detail}`);
   }
   const manifest = value as ExtensionPackageManifest;
+  if (!isCanonicalPackageVersion(manifest.version)) {
+    throw new ExtensionManifestError("INVALID_MANIFEST", "package version must be canonical exact SemVer");
+  }
   const paths = [manifest.wolfpack.ui, ...manifest.wolfpack.skills, ...manifest.wolfpack.documents.map((document) => document.schema)].filter((path): path is string => Boolean(path));
   if (paths.some((path) => path !== path.replace(/\/+/g, "/").replace(/^\.\//, "")) || new Set(paths).size !== paths.length) throw new ExtensionManifestError("INVALID_MANIFEST", "manifest paths must be canonical unique POSIX relative paths");
   const ids = new Set<string>();

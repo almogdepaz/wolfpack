@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } 
 import { basename, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import * as tar from "tar";
-import { valid as validSemver } from "semver";
+import { isCanonicalPackageVersion } from "./package-version.ts";
 
 export const PACKAGE_ARCHIVE_LIMITS = {
   maxArchiveBytes: 32 * 1024 * 1024,
@@ -21,8 +21,12 @@ export class ExtensionPackageError extends Error {
 
 /** Exact versions only: tags and ranges make activation non-reproducible. */
 export function parseExactNpmSpecifier(specifier: string): { readonly name: string; readonly version: string } {
-  const match = /^npm:((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)@(.+)$/.exec(specifier);
-  if (!match || !validSemver(match[2]!)) throw new ExtensionPackageError("INVALID_NPM_SPECIFIER", "npm extension sources must use npm:<package>@<exact-semver>");
+  const match = typeof specifier === "string" && specifier.length <= 480
+    ? /^npm:((?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*)@(.+)$/.exec(specifier)
+    : null;
+  if (!match || match[1]!.length > 214 || !isCanonicalPackageVersion(match[2])) {
+    throw new ExtensionPackageError("INVALID_NPM_SPECIFIER", "npm extension sources must use npm:<package>@<canonical-exact-semver>");
+  }
   return { name: match[1]!, version: match[2]! };
 }
 
@@ -105,7 +109,10 @@ export function fetchExactNpmPackage(specifier: string, stagingDirectory: string
     if (typeof entry.integrity !== "string") throw new ExtensionPackageError("INTEGRITY_MISMATCH", "npm registry response omitted required integrity");
     verifyNpmIntegrity(tarball, entry.integrity);
     return { tarball, integrity: entry.integrity };
-  } catch (error) { throw new ExtensionPackageError("NPM_FETCH_FAILED", `npm pack failed: ${(error as Error).message}`); }
+  } catch (error) {
+    if (error instanceof ExtensionPackageError) throw error;
+    throw new ExtensionPackageError("NPM_FETCH_FAILED", "npm pack failed to produce a valid bounded package result");
+  }
 }
 
 /** Test-only helper for isolated callers that want a private npm staging root. */

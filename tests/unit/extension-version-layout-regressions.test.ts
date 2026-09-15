@@ -54,16 +54,20 @@ const panes = [{ id: "one" }];
 const layout: TerminalLayout = { version: 1, rows: [{ size: 1 }], columns: [{ size: 1 }], placements: [{ paneId: "one", row: 0, column: 0 }] };
 describe("runtime geometry validation", () => {
   test.each([null, undefined, 1, "row", [], {}].map((value) => [value]))("malformed track is typed: %j", (track) => {
-    expect(() => validateTerminalLayout({ ...layout, rows: [track] } as TerminalLayout, panes)).toThrow(LayoutValidationError);
+    expect(() => validateTerminalLayout({ ...layout, rows: [track] }, panes)).toThrow(LayoutValidationError);
   });
   test.each([null, undefined, 1, "pane", []].map((value) => [value]))("malformed placement is typed: %j", (placement) => {
-    expect(() => validateTerminalLayout({ ...layout, placements: [placement] } as TerminalLayout, panes)).toThrow(LayoutValidationError);
+    expect(() => validateTerminalLayout({ ...layout, placements: [placement] }, panes)).toThrow(LayoutValidationError);
   });
   test.each([null, undefined, {}, [null], [{ id: null }], [{ id: "" }], [{ id: "x".repeat(257) }]].map((value) => [value]))("malformed host panes are typed: %j", (input) => {
-    expect(() => validateTerminalLayout(layout, input as typeof panes)).toThrow(LayoutValidationError);
+    expect(() => validateTerminalLayout(layout, input)).toThrow(LayoutValidationError);
+  });
+  test("sparse track and host-pane arrays cannot bypass element validation", () => {
+    expect(() => validateTerminalLayout({ ...layout, rows: new Array(1) }, panes)).toThrow(LayoutValidationError);
+    expect(() => validateTerminalLayout(layout, new Array(1))).toThrow(LayoutValidationError);
   });
   test("null spans are not silently converted to the default span", () => {
-    expect(() => validateTerminalLayout({ ...layout, placements: [{ ...layout.placements[0], rowSpan: null }] } as unknown as TerminalLayout, panes)).toThrow(LayoutValidationError);
+    expect(() => validateTerminalLayout({ ...layout, placements: [{ ...layout.placements[0], rowSpan: null }] }, panes)).toThrow(LayoutValidationError);
   });
   test.each([equalGridLayout, leadStackLayout, verticalStackLayout])("built-in recipe handles empty, maximum and excessive pane counts", (arrange) => {
     const context = (count: number): LayoutContext => ({ panes: Array.from({ length: count }, (_value, index) => ({ id: `pane-${index}` })), selectedPaneId: "pane-11", viewport: { width: 1200, height: 800 } });

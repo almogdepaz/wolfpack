@@ -17,10 +17,11 @@ export class ExtensionContributionGate {
   private readonly contributions = new Map<string, RegisteredContribution>();
   constructor(private readonly extensionId: string) {}
   register(kind: ExtensionContributionKind, localId: string): RegisteredContribution {
+    if (kind !== "context-view" && kind !== "terminal-layout") throw new Error("unsupported extension contribution kind");
     const qualifiedId = qualifiedContributionId(this.extensionId, localId);
     if (this.contributions.has(qualifiedId)) throw new Error(`duplicate ${kind} registration: ${qualifiedId}`);
     if (this.contributions.size >= MAX_EXTENSION_CONTRIBUTIONS) throw new Error(`extension contribution limit exceeded (${MAX_EXTENSION_CONTRIBUTIONS})`);
-    const contribution = { kind, localId, qualifiedId } as const;
+    const contribution = Object.freeze({ kind, localId, qualifiedId });
     this.contributions.set(qualifiedId, contribution);
     return contribution;
   }
