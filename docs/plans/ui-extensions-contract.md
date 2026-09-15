@@ -1,6 +1,6 @@
 # UI extensions phase-0 contract gate
 
-Status: **phase-0 blocked; coordinator correcting remaining review findings**.
+Status: **coordinator corrections complete; final verification and independent phase-0 approval still required**.
 This artifact records intended phase-0 interfaces and explicit implementation gaps; it does not wire extension code into the server, CLI, browser
 workspace, or a user Pi installation.
 
@@ -109,14 +109,29 @@ Npm source syntax is exactly `npm:<name>@<semver>` (no range/tag). A compiled
 install preflights a supported system `npm`; this is an explicit prerequisite,
 not an assumption about a checkout or global Bun. It runs `npm pack --ignore-scripts
 --json` into a private staging directory, validates registry SRI (`sha512` or
-`sha256`), then uses pinned maintained `tar@7.4.3` to inspect every entry before
-extracting. Archives must use `package/` paths and only regular files/directories;
-links, devices, traversal, backslashes, archive >32 MiB, extraction >128 MiB,
-or >4,000 files are refused. Extraction is into a fresh owner-private stage and
-checks realpath containment. **Open phase-0 blockers:** inspection still needs
-prompt expansion-abort; extraction must consume the identical immutable verified
-bytes and reapply the inventory filter. Existing double pathname hashing does not
-satisfy that contract. Portable filename handling also needs closure. Canonical
+`sha256`). `archive-snapshot.ts` takes one bounded no-follow regular-file snapshot
+before its first await. Registry callers must forward the returned SRI to
+`extractVerifiedNpmTarball(..., { integrity })`; omitting SRI is structural
+validation for explicitly trusted local input, not registry authentication.
+Pinned maintained `tar@7.4.3` decodes headers/PAX and regular file bytes. A separate
+backpressured gzip stream counts all expanded tar bytes, including padding and
+bytes after EOF, and is destroyed on failure. Nested compression is refused.
+Limits (only reducible): 32 MiB source, 128 MiB payload and expanded tar,
+4,000 files, 8,000 entries/directory inventory, 16 KiB per metadata entry,
+64 KiB aggregate metadata, and a 5-second in-memory inspection deadline.
+These are format/work budgets, not a process-RSS or hostile-filesystem sandbox.
+
+Only `package/` regular files and zero-sized directories are accepted. Relative
+paths use a portable ASCII subset, max 256 characters, eight components and
+128 characters/component. Traversal, backslashes, device names, trailing dots,
+case/component aliases, duplicate entries and file/directory conflicts fail.
+Extraction revalidates the captured inventory and its content digests, then
+writes those exact private buffers with exclusive 0600 files/0700 directories.
+It never reopens the archive or uses a second pathname hash. It verifies written
+bytes, ignores archived ownership/modes, and removes partial stages on failure;
+a failed cleanup returns a typed error with `cleanupDirectory`. The injected
+filesystem callbacks are trusted synchronous test/host I/O, never package code.
+Package activation and crash recovery remain phase-4 responsibilities. Canonical
 SemVer validation is now shared by manifest/npm source parsing, preserving legal
 prerelease/build metadata but rejecting prefixes, whitespace and invalid versions.
 Missing/mismatched SRI retains its actionable `INTEGRITY_MISMATCH` classification. Activation/registry transactions are phase 4; no package code or
@@ -128,15 +143,37 @@ lifecycle script runs in this phase.
 integration. The future explicit `extensions install --skills pi` owns the
 consent prompt and passes Pi's supported `~/.pi/agent/skills` discovery root.
 It installs only static manifest-declared skill directories, records extension
-ownership/source digest/files in an installer-owned registry, rejects unowned
-name collisions and user-modified owned files. User-added files now cause an
-update refusal rather than deletion. **Open phase-0 blockers:** canonical tree
-paths, validated registries/frontmatter, ownership-safe removal, and recovery of
-the old directory on every swap/registry failure. The current adapter is not yet
-failure-atomic and does not implement removal. Browser activation and skill
-deployment must report separately; partial skill failure is not package-install
-success. The required removal contract permits deleting only unchanged owned
-files. Existing Pi sessions require their normal
+ownership/source digest/files in a validated bounded 0600 registry. Portable
+paths follow the same ASCII/length/component policy as archives. A complete
+owned-tree comparison refuses missing/edited files, changed modes, hard links,
+symlinks, untracked files and extra empty directories on update or removal.
+`removeBundledPiSkills` explicitly removes only unchanged matching-owned trees;
+a smaller replacement manifest never implicitly deletes a skill.
+
+Pinned `yaml@2.8.2` parses bounded YAML 1.2 frontmatter, including reordered keys,
+quoted/folded/literal text and CRLF. Duplicate keys, aliases and malformed YAML
+fail; the standard lowercase name must match the declared directory (max 64
+characters), and description must be nonblank and at most 1,024 characters.
+Inventory bounds are 256 files, 256 KiB/file, 1 MiB/skill; frontmatter is 16 KiB
+with bounded JSON depth/nodes. Batches have at most 32 unique skill names; the
+registry permits 128 skills and 8 MiB physical data. Hashes are computed by the
+host and registry owner/path/digest coherence is validated, never silently reset.
+
+A root directory lock serializes cooperating writers. Transactions are per skill,
+not all-or-nothing batches. Staging, old bytes and a before/after journal live
+outside the discovery root. Failed writes/swaps restore the old tree before
+cleanup; registry commit is read back, including when a writer throws after
+committing. A failed rollback retains recovery files, throws `RECOVERY_REQUIRED`
+with `recoveryDirectory`, and leaves the root locked. Post-commit cleanup trouble
+or observed edits to parked bytes return success with a workspace requiring
+inspection, not blind deletion. No automatic stale-lock recovery or full
+power-loss recovery is claimed; arbitrary concurrent user filesystem mutation is
+not prevented by an installer lock. Discovery collisions are checked only in the
+injected root; symlinks/uninspectable candidates fail closed, not a scan of all
+Pi global/project/CLI sources. Host/test filesystem callbacks are trusted,
+synchronous I/O, never part of the package interface.
+
+Browser activation and skill deployment report separately. Existing Pi sessions require their normal
 `/reload` or a new session; no command is injected and no Pi Tasks/global config
 is touched.
 
@@ -169,15 +206,22 @@ invalid/reducible/hard resource bounds, stalled headers/body, stream cleanup and
 typed errors. Its first run had 11 passes/27 failures; fixes must retain those
 regressions. Exact run IDs/results live in the phase handoff and closure matrix.
 
-The existing compiled smoke proves AJV/SemVer dependency use outside a checkout,
-not archive extraction or an actual compiled browser asset host. Those two
-phase-0 feasibility proofs remain open. The browser spike is a Node-host fixture,
-not production server auth/CSP/SW evidence. Trusted same-thread bundle
+`extension-foundation-compiled-smoke.ts` now executes schema validation, document
+persistence, SemVer, YAML skill install/update/remove, and actual tar
+inspection/extraction outside the checkout, including quota rejection and
+pathname replacement after snapshot capture. `extension-compiled-host.e2e.ts`
+starts a native Bun-compiled isolated host from an empty CWD. Its embedded browser
+loader reads runtime package assets behind a rejecting bearer fixture under the
+reviewed Blob CSP; Chromium and WebKit cover missing auth, safe mode, digest
+rejection, and explicit runtime package replacement. This host is not the
+production Wolfpack router/auth/CSP/SW implementation. Exact source/run results
+are in the handoff and closure matrix; these are feasibility proofs, not the
+real-agent data-publication acceptance story. Trusted same-thread bundle
 code remains trusted: restrictions are packaging compatibility controls, not a
 sandbox or a JavaScript security scanner.
 
 Not yet covered: actual production CSP change/asset routes/SW exclusion, package
-activation/crash lifecycle and cross-process locks, real npm registry download,
+activation/crash lifecycle and cross-process package-registry locks, real npm registry download,
 backend exact-session verification, a real Pi skill round trip, browser terminal
 retention, and broker behavior. Geometry-only retention is a Phase-1 obligation;
 current collapse/suspend behavior does dispose controllers. These are explicit

@@ -1,6 +1,6 @@
 # Phase-0 corrective closure matrix
 
-**Incomplete; phase-0 remains blocked.** This is a finding/evidence report, not
+**Coordinator corrections complete; final verification/re-review pending. Phase 0 is not approved.** This is a finding/evidence report, not
 assignment state. The single current handoff is section 2 of
 `docs/plans/ui-extensions-context-skill.md`. Full findings remain in the immutable
 `.plans/review-ui-extensions-0f4c4e3.md`.
@@ -12,15 +12,15 @@ assignment state. The single current handoff is section 2 of
 | Schema positions and JSON/work bounds | `extension-document-integrity.test.ts`: boolean schemas, every supported subschema position, literal/property data, typed invalid JSON, work/byte/node limits, no async validators | Coordinator fixes `f85ddef`; final tests pass; independent re-review pending |
 | Read key identity and complete receipt coherence | `extension-document-integrity.test.ts`: wrong scopes/IDs/versions/timestamps/bases/history, latest digest, canonical/physical payload caps, symlink rejection | Coordinator fixes `f85ddef`; final tests pass; independent re-review pending |
 | Revision overflow, idempotency and operation snapshot | Same suite: retained window/restart, dropped-response retry after scope exit/schema upgrade, immutable input, concurrent CAS, bad clock, asynchronous scope decisions | `f85ddef` + `8183596`; backend decisions are awaited, not treated as truthy promises. Final tests pass; independent re-review pending |
-| Skill update deletes user-added regular file | Same file: user-added `notes.txt` | Narrow repro fixed by refusal in `2587844`; symlinks/directories/aliases/registry/frontmatter bounds remain open |
-| Skill removal and fault-atomic swap/registry recovery | Not yet added | **Open** |
+| Skill inventory/frontmatter/registry and full owned-tree comparison | `extension-skill-safety.test.ts`: portable aliases, YAML fields/bounds, coherent registry, missing/edited/untracked files, modes, symlinks and empty directories | `7ed6674`; coordinator verified, independent re-review pending |
+| Skill removal and fault-atomic swap/registry recovery | Same suite: removal ownership, stage/swap/registry faults, post-commit errors, parked edits, failed rollback, no-op I/O, locking/cleanup | `7ed6674` + `d4561ec`; 61 safety cases, independent re-review pending |
 | Loader authority, header/body deadline, hard byte cap and cleanup | `extension-loader.test.ts`, 38 individually named/parameterized tests | Coordinator tests committed first as `d13c19b`; fixes committed as `761f2e8e001e5a12276d1291577a2ffdbde8d1f8`; **38/38 pass**, awaiting independent re-review |
 | Loader CSP typo and truthful branch evidence | Corrected CSP in `extension-loader-spike.e2e.ts`; both real browsers rerun | Chromium **1/1**, WebKit **1/1**; no production integration claim |
-| Archive immutable source, prompt decompression abort and extraction policy | Not yet added | **Open** |
+| Archive immutable source, prompt decompression abort and extraction policy | `extension-archive-safety.test.ts`: 43 cases; bounded independent gzip stream, aliases/types/metadata, SRI and pathname replacement, private output, injected write/cleanup failure | `d4561ec`; coordinator verified, independent re-review pending |
 | Canonical npm/manifest SemVer and preserved SRI error identity | `extension-version-layout-regressions.test.ts`: standard versions including build metadata; invalid prefixes/whitespace/versions; missing SRI | Fix `6810cda`; final tests pass; independent re-review pending |
 | Layout malformed object typed errors | Same suite: null/primitive/sparse inputs, bounded IDs/tracks/spans, zero/12/13 panes, selected lead, detached output | Fix `6810cda`; final tests pass; independent re-review pending |
 | Separate tab-only/layout-only package fixtures | Same suite: two manifest-bound contribution gates with independent registrations; unknown kinds refused | Fix `6810cda`; final tests pass; independent re-review pending |
-| Compiled asset-host and archive-extraction feasibility | Existing smoke covers AJV/SemVer only | **Open** |
+| Compiled asset-host and archive-extraction feasibility | Native empty-CWD host with real browser loader/runtime assets; native schema/store/SemVer/YAML/skill/tar operations | `a009ea8` + `d4561ec`; both browser projects passed; final expanded native smoke must rerun |
 | Contradictory/overstated docs | Corrected 12-pane bound, WebKit status, removed scanner/atomic-removal claims; explicitly documented current gaps | Current assertions narrowed, but final contract freeze/review remains open |
 
 ## Exact verification evidence
@@ -97,3 +97,54 @@ The loader deadline covers acquisition and digest verification. It does not
 promise to stop trusted extension code or top-level await during module evaluation.
 No browser-code sandbox, self-contained-JavaScript scanner, production asset
 route, real-terminal retention or real-agent skill acceptance is proved here.
+
+## Coordinator skill/archive and native feasibility correction
+
+- Skill test-first `d4c3f39f52492d0c3d6816c123b4f0d287541cfb`: source still at
+  `99dce31`, initial 50-case run **9 pass / 41 fail** (`f1a69b24-aff2-456c-978b-5205afc8f6e2`),
+  expanded 53-case run **8 pass / 45 fail** (`f3672147-facf-4e74-932b-8a5b8f4ebd30`).
+  YAML 2.8.2 was added exactly, with install scripts disabled, in this worktree only.
+- Initial implementation plus existing skill/correction tests: **57 pass**, typecheck
+  passed (`58d5420e-f3ab-413b-9adb-58ad94b941ff`). Six extra probes then produced
+  **54 pass / 5 fail** (`3aead7e1-297c-4190-8a7d-54c03a2d6264`): sparse/oversized batches,
+  changed root modes, silent registry no-op, and late parked-tree edits. The pre-commit
+  parked-edit case already passed. Fix `7ed6674853bcaeb94cbbb1c40be049e177cd81b4`:
+  full focused **218 pass**, typecheck/context passed (`fd9b59a6-2a67-4348-a5d9-51b6dbe7b239`).
+- Compiled feasibility `a009ea8b4f2b29f6bc544f785bea9af1292680b0` adds actual
+  schema/store/SemVer/YAML/skill/tar calls, plus a separate native fixture hosting
+  the browser loader and authenticated runtime package assets from an empty CWD.
+  Intermediate `a6b7fc83-e6f7-4d44-903b-790a634c87d6`: **218 tests pass**, typecheck
+  failed on a too-wide Buffer return annotation. Fixed without a cast. Run
+  `f796c672-6604-4385-bda3-b6e3a6b8cdc9`: typecheck/context/native smoke passed,
+  Chromium failed on macOS `/var` versus `/private/var` fixture CWD spelling.
+  The fixture now canonicalizes its owned temp root. Run
+  `2dbe70fb-b0a3-4e8a-b559-814a47823e1d`: Chromium **1/1**, WebKit found no tests
+  because its allowlist omitted the new fixture. Both the file and named test
+  were added to that project. Then **Chromium 1/1, WebKit 1/1** passed
+  (`ea9119a5-7a2d-4bd3-abd2-37b21bf313ae`); color-environment warnings only.
+- Archive test-first `97643557350d6fbf9ec46cff58dd0673f1a311e0`: **13 pass / 28 fail**
+  (`0633c702-843b-4e6a-9051-05a5237da503`). Initial implementation exposed a fixture
+  defect: `tar.Header.encode()` truncates long paths unless its required PAX record
+  is emitted (**83 pass / 1 fail**, `0cfea1fe-4ac4-4e33-802e-8e208c38d73f`).
+  Fixed the fixture to emit maintained `tar.Pax`, not relaxed path assertions.
+  Next **84 tests passed**, typecheck failed on stream-option/Buffer annotations
+  (`1bc1b734-5677-41be-b18a-dec112c12092`); both fixed.
+- Additional archive cleanup-no-op probe: **42 pass / 1 fail**
+  (`6a2dc5b5-0643-4174-9d11-ddabec056756`). Analogous skill rollback/cleanup
+  no-op probes: **0 pass / 2 fail**, 59 filtered (`fe1b5ee1-627e-4adb-9d90-9ac141c6b984`).
+  Fixes read back observable filesystem state before cleanup/success reporting;
+  failed rollback never deletes a still-parked old tree.
+- Authoritative corrected-fixture archive baseline: exported unchanged source
+  `a009ea8` into a private temp tree with the final 43-case suite and the same
+  installed dependencies. **13 pass / 30 fail**, `5696fbc8-9cd4-4024-821a-e30a50527acd`.
+  Temp tree was removed; neither the original checkout nor implementation source
+  was reset/mutated for this baseline probe.
+- Code correction `d4561ec8bf15cb708b621ff54a1dc7d9726feef6`: immediately preceding
+  focused run **263 pass / 0 fail / 0 skip**, typecheck/context and actual native
+  foundation smoke passed (`b5a7527d-69ee-498c-a94c-9fa886047819`). This commit also
+  extends the native smoke with quota rejection and pathname-replacement/SRI
+  assertions; the final gate must run that expanded smoke, both browser fixtures,
+  generated assets/budget and broad unit/snapshot tests on the final candidate.
+
+These are coordinator closures, not independent approval. See the single phase
+handoff for the current frozen candidate, verification and reviewer assignment.
