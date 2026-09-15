@@ -3,7 +3,7 @@ export class ExtensionPackageError extends Error {
   readonly inspection?: ArchiveInspectionProgress;
   readonly cleanupDirectory?: string;
   constructor(
-    readonly code: "INVALID_NPM_SPECIFIER" | "NPM_UNAVAILABLE" | "NPM_FETCH_FAILED" | "INTEGRITY_MISMATCH" | "UNSAFE_ARCHIVE",
+    readonly code: "INVALID_NPM_SPECIFIER" | "NPM_UNAVAILABLE" | "NPM_FETCH_TIMEOUT" | "NPM_FETCH_FAILED" | "INTEGRITY_MISMATCH" | "UNSAFE_ARCHIVE",
     message: string,
     details?: { readonly inspection?: ArchiveInspectionProgress; readonly cleanupDirectory?: string },
   ) {

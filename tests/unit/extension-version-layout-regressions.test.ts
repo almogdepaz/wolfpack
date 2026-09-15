@@ -21,12 +21,15 @@ describe("canonical package versions and independent contributions", () => {
     expect(parseExtensionPackageManifest(metadata(version)).version).toBe(version);
     expect(parseExactNpmSpecifier(`npm:example@${version}`).version).toBe(version);
   });
-  test("missing SRI retains actionable INTEGRITY_MISMATCH classification", () => {
+  test("missing SRI retains actionable INTEGRITY_MISMATCH classification", async () => {
     const root = mkdtempSync(join(tmpdir(), "wolfpack-missing-sri-"));
     try {
-      const mock = ((_command: string, args: readonly string[]) => args[0] === "--version" ? "10.9.8" : JSON.stringify([{ filename: "package.tgz" }])) as Parameters<typeof fetchExactNpmPackage>[2];
       let caught: unknown;
-      try { fetchExactNpmPackage("npm:example@1.0.0", root, mock); } catch (error) { caught = error; }
+      try {
+        await fetchExactNpmPackage("npm:example@1.0.0", root, {
+          fetch: async () => Response.json({ name: "example", version: "1.0.0", dist: { tarball: "https://registry.npmjs.org/example.tgz" } }),
+        });
+      } catch (error) { caught = error; }
       expect(caught).toBeInstanceOf(ExtensionPackageError);
       expect((caught as ExtensionPackageError).code).toBe("INTEGRITY_MISMATCH");
     } finally { rmSync(root, { recursive: true, force: true }); }
