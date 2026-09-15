@@ -1,11 +1,42 @@
 # Phase-0 corrective closure matrix
 
-**New npm-acquisition blocker; independent re-review still active. Prior correction groups reportedly closed, pending final report. Phase 0 is not approved.** This is a finding/evidence report, not
+**Independent re-review completed: CHANGES REQUIRED for npm acquisition. All other prior finding groups are closed. Phase 0 is not approved.** This is a finding/evidence report, not
 assignment state. The single current handoff is section 2 of
 `docs/plans/ui-extensions-context-skill.md`. Full findings remain in the immutable
 `.plans/review-ui-extensions-0f4c4e3.md`.
 
-## Coverage and remaining work
+## Independent final disposition at `34fec6e`
+
+The immutable `.plans/review-ui-extensions-34fec6e.md` closes the prior
+loader/schema/receipt/skill/archive-byte/SemVer/layout/contribution/compiled-host
+findings. One **P1** remains: external npm acquisition lacks finite child deadlines
+and download-time disk bounds; version preflight accepts arbitrary success output;
+the compiled smoke never executes the acquisition helper/system npm. Both child
+calls need bounded output and deterministic timeout cleanup. An owner-private
+acquisition mechanism must cap bytes before/during download, not only afterward.
+Correct this with failing-before tests and actual compiled local-fixture execution;
+real registry acceptance remains a separately authorized gate.
+
+Parent read the entire final report, checked clean exact reviewer source, confirmed
+implementation changes since that candidate are documentation-only, and inspected
+the deadline/version probes and independent closure/broad logs. Matching copied
+report SHA-256: `55d9c42b7336fcbeaafe46fe16a11872344f36f1e3a719e53c242ff13e64de32`.
+
+Independent verification (full command/revision metadata in the report): focused
+**263/263** (`d676af83-e8ff-4664-9555-6c22f8ea90aa`), typecheck/context, compiled
+foundation, Chromium **2/2**, WebKit **2/2**, generated assets/budgets and closure
+probe all passed. Broad `8c73174f-d67c-495d-857e-d3d5502740f7` passed with final
+top-level **2022 pass / 1 skip / 0 fail**, 128.72s; not the nested aggregate 2039.
+The parent's earlier **2021/1 skip/1 timeout** remains a genuine failed run.
+Version-preflight probe `8db7f834-d1b9-4ea3-aa61-9d33427280e4` and child-deadline
+probe `4ef7bc0a-cc84-408c-813a-5ba638cd72b0` both fail correct-behavior assertions.
+Reviewer setup/comparator failures and corrected runs remain recorded in the final
+report; none was suppressed or attributed to source incorrectly.
+
+### Historical coordinator evidence before final independent review
+
+The pending-review labels in this historical table are superseded by the final
+disposition above, not unresolved findings to reopen.
 
 | Finding | Regression/evidence | Result |
 | --- | --- | --- |

@@ -1,6 +1,6 @@
 # UI extensions phase-0 contract gate
 
-Status: **phase 0 blocked on a newly identified npm-acquisition gap; independent re-review is still active**.
+Status: **independent review completed CHANGES REQUIRED: npm acquisition remains blocking; other prior finding groups are closed**.
 This artifact records intended phase-0 interfaces and explicit implementation gaps; it does not wire extension code into the server, CLI, browser
 workspace, or a user Pi installation.
 
