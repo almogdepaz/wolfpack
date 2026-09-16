@@ -84,6 +84,15 @@ function trackList(tracks: readonly { readonly size: number }[]): string {
 }
 
 /** Apply geometry in stable existing cells only. It does not reorder or focus. */
+export function clearTerminalLayoutGeometry(container: HTMLElement, panes: readonly WorkspacePane[]): void {
+  container.style.gridTemplateRows = "";
+  container.style.gridTemplateColumns = "";
+  for (const pane of panes) {
+    pane.element.style.gridRow = "";
+    pane.element.style.gridColumn = "";
+  }
+}
+
 export function applyTerminalLayoutGeometry(container: HTMLElement, panes: readonly WorkspacePane[], layout: TerminalLayout): boolean {
   if (container.clientWidth <= 0 || container.clientHeight <= 0) return false;
   const byId = new Map(panes.map(pane => [pane.id, pane.element]));

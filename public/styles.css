@@ -1783,10 +1783,23 @@ body.no-animations, body.no-animations * {
 .workspace-context-collapsed #workspace-terminal-region { width: 100%; }
 #workspace-shell[data-full-view="context"] #workspace-terminal-region,
 #workspace-shell[data-full-view="terminals"] #workspace-context-region { display: none; }
+/* Full context clears every split/bottom/mobile cap but leaves preferences intact for restore. */
+#workspace-shell[data-full-view="context"] #workspace-context-region {
+  display: flex;
+  order: 0;
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  height: auto;
+  border: 0;
+}
 #workspace-shell[data-full-view="context"] + #input-bar { display: none; }
 .workspace-restore {
   position: absolute;
-  z-index: 12;
+  z-index: 22;
   right: 10px;
   bottom: 10px;
   min-height: 34px;
@@ -1811,6 +1824,12 @@ body.no-animations, body.no-animations * {
     max-height: 42%;
     border: 0;
     border-top: 1px solid var(--border);
+  }
+  #workspace-shell[data-full-view="context"] #workspace-context-region {
+    flex: 1 1 auto;
+    width: auto;
+    max-height: none;
+    min-height: 0;
   }
   .workspace-terminal-toolbar { padding: 5px 8px; }
 }

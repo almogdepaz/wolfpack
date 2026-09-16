@@ -33,10 +33,12 @@ import type { OrderedResizeSettlement } from "./ordered-resize";
 import type { SessionInspectorTarget } from "./session-inspector";
 import {
   applyTerminalLayoutGeometry,
+  clearTerminalLayoutGeometry,
   nearestPaneInDirection,
   TerminalLayoutRegistry,
   type BuiltinTerminalLayoutId,
 } from "./terminal-layout-registry";
+import type { TerminalLayout } from "../src/extensions/layout-contract";
 
 // ── Dependency injection ──
 
@@ -112,6 +114,12 @@ interface GridDeps {
 
 let deps: GridDeps;
 let workspaceTerminalLayouts: TerminalLayoutRegistry | null = null;
+interface AppliedTerminalGeometry {
+  readonly paneIds: readonly string[];
+  readonly layout: TerminalLayout;
+}
+let manualAppliedGeometry: AppliedTerminalGeometry | null = null;
+let delegationAppliedGeometry: AppliedTerminalGeometry | null = null;
 let reportedGridIsolationFailure = false;
 
 /** Host-only seam for phase 2 contribution registration. */
@@ -211,26 +219,67 @@ function workspacePaneId(session: GridSession): string {
   return `${session.machine || "local"}|${session.sessionId || session.session}`;
 }
 
-function applyTerminalGeometry(container: HTMLElement | null, sessions: readonly GridSession[], focusIndex: number): void {
-  if (!container || !workspaceTerminalLayouts || sessions.length === 0) return;
-  const visible = sessions.filter(session => !session._collapsed && !!session._cellElement);
-  if (visible.length === 0) return;
-  const selected = visible[Math.max(0, Math.min(focusIndex, visible.length - 1))];
-  const layout = workspaceTerminalLayouts.arrange(
-    visible.map(workspacePaneId),
-    selected ? workspacePaneId(selected) : null,
-    { width: container.clientWidth, height: container.clientHeight },
-  );
-  applyTerminalLayoutGeometry(container, visible.map(session => ({ id: workspacePaneId(session), element: session._cellElement! })), layout);
+type GridSurface = "manual" | "delegation";
+
+function setAppliedGeometry(surface: GridSurface, geometry: AppliedTerminalGeometry): void {
+  if (surface === "manual") manualAppliedGeometry = geometry;
+  else delegationAppliedGeometry = geometry;
+}
+
+function appliedGeometry(surface: GridSurface): AppliedTerminalGeometry | null {
+  return surface === "manual" ? manualAppliedGeometry : delegationAppliedGeometry;
+}
+
+/** Existing CSS cardinalities are the host's equal-grid built-in, not the SDK's generic helper. */
+function existingGridGeometry(paneIds: readonly string[], surface: GridSurface): TerminalLayout {
+  const count = paneIds.length;
+  const tracks = (length: number) => Array.from({ length: Math.max(1, length) }, () => ({ size: 1 }));
+  const placement = (paneId: string, row: number, column: number, rowSpan?: number, columnSpan?: number) => ({ paneId, row, column, rowSpan, columnSpan });
+  if (surface === "manual") {
+    if (count === 3) return { version: 1, rows: tracks(2), columns: tracks(2), placements: [placement(paneIds[0]!, 0, 0), placement(paneIds[1]!, 0, 1), placement(paneIds[2]!, 1, 0, 1, 2)] };
+    if (count === 5) return { version: 1, rows: tracks(2), columns: tracks(6), placements: [placement(paneIds[0]!, 0, 0, 1, 2), placement(paneIds[1]!, 0, 2, 1, 2), placement(paneIds[2]!, 0, 4, 1, 2), placement(paneIds[3]!, 1, 0, 1, 3), placement(paneIds[4]!, 1, 3, 1, 3)] };
+    const columns = count === 2 ? 2 : count === 6 ? 3 : count === 4 ? 2 : 1;
+    return { version: 1, rows: tracks(Math.ceil(count / columns)), columns: tracks(columns), placements: paneIds.map((paneId, index) => placement(paneId, Math.floor(index / columns), index % columns)) };
+  }
+  const columns = count === 3 || count >= 5 ? 3 : count === 2 || count === 4 ? 2 : 1;
+  return { version: 1, rows: tracks(Math.ceil(count / columns)), columns: tracks(columns), placements: paneIds.map((paneId, index) => placement(paneId, Math.floor(index / columns), index % columns)) };
+}
+
+function visibleGridSessions(sessions: readonly GridSession[]): GridSession[] {
+  return sessions.filter(session => !session._collapsed && !!session._cellElement);
+}
+
+function applyTerminalGeometry(container: HTMLElement | null, sessions: readonly GridSession[], focusIndex: number, surface: GridSurface): AppliedTerminalGeometry | null {
+  if (!container || !workspaceTerminalLayouts || sessions.length === 0) return null;
+  const visible = visibleGridSessions(sessions);
+  if (visible.length === 0) return null;
+  const panes = visible.map(session => ({ id: workspacePaneId(session), element: session._cellElement! }));
+  const focused = sessions[focusIndex];
+  const selectedPaneId = focused && visible.includes(focused) ? workspacePaneId(focused) : panes[0]!.id;
+  const layout = workspaceTerminalLayouts.selectedId === "equal-grid"
+    ? existingGridGeometry(panes.map(pane => pane.id), surface)
+    : workspaceTerminalLayouts.arrange(panes.map(pane => pane.id), selectedPaneId, { width: container.clientWidth, height: container.clientHeight });
+  if (workspaceTerminalLayouts.selectedId === "equal-grid") clearTerminalLayoutGeometry(container, panes);
+  else applyTerminalLayoutGeometry(container, panes, layout);
+  const geometry = { paneIds: panes.map(pane => pane.id), layout };
+  setAppliedGeometry(surface, geometry);
+  return geometry;
+}
+
+function currentTerminalGeometry(container: HTMLElement | null, sessions: readonly GridSession[], focusIndex: number, surface: GridSurface): AppliedTerminalGeometry | null {
+  const visibleIds = visibleGridSessions(sessions).map(workspacePaneId);
+  const current = appliedGeometry(surface);
+  if (current && current.paneIds.length === visibleIds.length && current.paneIds.every((id, index) => id === visibleIds[index])) return current;
+  return applyTerminalGeometry(container, sessions, focusIndex, surface);
 }
 
 /** Geometry changes only style existing cells; no controller is mounted, disposed, or focused. */
 export function applyWorkspaceTerminalGeometry(): void {
   if (state.activeDelegationRoot && !state.focusedDelegationSession) {
-    applyTerminalGeometry(document.getElementById("delegation-grid-container"), state.delegationGridSessions, state.delegationGridFocusIndex);
+    applyTerminalGeometry(document.getElementById("delegation-grid-container"), state.delegationGridSessions, state.delegationGridFocusIndex, "delegation");
     return;
   }
-  if (isGridActive()) applyTerminalGeometry(document.getElementById("desktop-grid-container"), state.gridSessions, state.gridFocusIndex);
+  if (isGridActive()) applyTerminalGeometry(document.getElementById("desktop-grid-container"), state.gridSessions, state.gridFocusIndex, "manual");
 }
 
 function gridLayoutClass(count) {
@@ -254,7 +303,7 @@ export function updateGridLayout() {
   document.getElementById("input-bar").style.display = "none";
   document.getElementById("cmd-palette").classList.remove("visible");
   document.getElementById("kb-accessory").classList.remove("visible");
-  applyTerminalGeometry(container, state.gridSessions, state.gridFocusIndex);
+  applyTerminalGeometry(container, state.gridSessions, state.gridFocusIndex, "manual");
 }
 
 function createGridCell(gs: GridSession, idx: number): HTMLElement {
@@ -601,7 +650,7 @@ export function renderDelegationGridCells(): void {
   renderGridSessionCells(state.delegationGridSessions, container, state.delegationGridFocusIndex, () => {
     const visibleCount = state.delegationGridSessions.filter(session => !session._collapsed).length;
     container.className = visibleCount > 0 ? `active ${gridLayoutClass(visibleCount)}` : "";
-    applyTerminalGeometry(container, state.delegationGridSessions, state.delegationGridFocusIndex);
+    applyTerminalGeometry(container, state.delegationGridSessions, state.delegationGridFocusIndex, "delegation");
     renderDelegationCollapsedStrip();
   }, false);
 }
@@ -858,28 +907,39 @@ export function setDelegationGridFocus(idx: number): void {
   });
 }
 
+function geometryFocusIndex(
+  sessions: readonly GridSession[],
+  focusIndex: number,
+  surface: GridSurface,
+  container: HTMLElement | null,
+  direction: "left" | "right" | "up" | "down",
+): number | null {
+  const visible = visibleGridSessions(sessions);
+  if (visible.length === 0) return null;
+  const focused = sessions[focusIndex];
+  const selected = focused && visible.includes(focused) ? focused : visible[0]!;
+  const geometry = currentTerminalGeometry(container, sessions, focusIndex, surface);
+  const targetPane = geometry ? nearestPaneInDirection(geometry.layout, workspacePaneId(selected), direction) : null;
+  if (targetPane) {
+    const target = sessions.findIndex(session => workspacePaneId(session) === targetPane && visible.includes(session));
+    if (target >= 0) return target;
+  }
+  const selectedVisibleIndex = visible.indexOf(selected);
+  const fallback = visible[gridArrowNav(direction, selectedVisibleIndex, visible.length)];
+  return fallback ? sessions.indexOf(fallback) : null;
+}
+
 export function moveGridFocusByArrow(direction: "left" | "right" | "up" | "down"): boolean {
   if (state.activeDelegationRoot && !state.focusedDelegationSession) {
-    const visibleIndices = state.delegationGridSessions.flatMap((session, index) =>
-      session._collapsed ? [] : [index]);
-    if (visibleIndices.length === 0) return false;
-    const visibleFocusIndex = visibleIndices.indexOf(state.delegationGridFocusIndex);
-    const targetVisibleIndex = visibleFocusIndex === -1
-      ? (direction === "left" || direction === "up" ? visibleIndices.length - 1 : 0)
-      : gridArrowNav(direction, visibleFocusIndex, visibleIndices.length);
-    const targetIndex = visibleIndices[targetVisibleIndex];
-    if (targetIndex === undefined) return false;
-    setDelegationGridFocus(targetIndex);
+    const target = geometryFocusIndex(state.delegationGridSessions, state.delegationGridFocusIndex, "delegation", document.getElementById("delegation-grid-container"), direction);
+    if (target === null) return false;
+    setDelegationGridFocus(target);
     return true;
   }
   if (!isGridActive()) return false;
-  const selected = state.gridSessions[state.gridFocusIndex];
-  const layout = selected && workspaceTerminalLayouts
-    ? workspaceTerminalLayouts.arrange(state.gridSessions.map(workspacePaneId), workspacePaneId(selected), { width: window.innerWidth, height: window.innerHeight })
-    : null;
-  const targetPane = layout && selected ? nearestPaneInDirection(layout, workspacePaneId(selected), direction) : null;
-  const targetIndex = targetPane ? state.gridSessions.findIndex(session => workspacePaneId(session) === targetPane) : -1;
-  setGridFocus(targetIndex >= 0 ? targetIndex : gridArrowNav(direction, state.gridFocusIndex, state.gridSessions.length));
+  const target = geometryFocusIndex(state.gridSessions, state.gridFocusIndex, "manual", document.getElementById("desktop-grid-container"), direction);
+  if (target === null) return false;
+  setGridFocus(target);
   return true;
 }
 
