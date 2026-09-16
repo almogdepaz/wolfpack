@@ -1,4 +1,5 @@
 // src/extensions/sdk.ts
+var MAX_RETAINED_CONTEXT_VIEWS_PER_SCOPE = 32;
 var EXTENSION_LIFECYCLE_RULES_VERSION = 1;
 // src/extensions/layout-contract.ts
 var LAYOUT_CONTRACT_VERSION = 1;
@@ -148,6 +149,7 @@ export {
   LayoutValidationError,
   MAX_LAYOUT_PANES,
   MAX_LAYOUT_TRACKS,
+  MAX_RETAINED_CONTEXT_VIEWS_PER_SCOPE,
   equalGridLayout,
   leadStackLayout,
   validateTerminalLayout,

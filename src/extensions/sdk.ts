@@ -5,6 +5,8 @@ export interface ContextViewController {
   dispose(): void;
   setVisible?(visible: boolean): void;
 }
+export const MAX_RETAINED_CONTEXT_VIEWS_PER_SCOPE = 32;
+
 export interface ExtensionViewContext {
   readonly signal: AbortSignal;
   readonly scope: Readonly<{ installationId: string; sessionId: string }>;
@@ -16,8 +18,10 @@ export interface ExtensionViewContext {
     remove(key: string): void;
   }>;
   readonly documents: Readonly<{
-    read(documentId: string): Promise<unknown>;
-    subscribe(documentId: string, listener: (value: unknown, revision: number) => void): () => void;
+    /** Resolves the current plain document, or null when this exact scope has none. */
+    read(documentId: string): Promise<unknown | null>;
+    /** Delivers (document, revision), including the current initial state. */
+    subscribe(documentId: string, listener: (value: unknown | null, revision: number) => void): () => void;
   }>;
 }
 export interface ContextViewContribution {
@@ -37,7 +41,7 @@ export type ExtensionRegistration = (host: ExtensionRegistrationHost) => void | 
 
 /** Lifecycle contract enforced by the future host implementation.
  * Registration is scoped to one loaded bundle. Views lazy-mount once per scope;
- * visited views remain mounted-but-hidden up to the declared host bound. Scope
+ * visited views remain mounted-but-hidden up to MAX_RETAINED_CONTEXT_VIEWS_PER_SCOPE. Scope
  * changes abort then dispose old resources before a replacement mounts. Disable,
  * remove, and failed registration dispose exactly once. Late async work must
  * observe `signal`/scope generation and cannot repaint a replacement scope.

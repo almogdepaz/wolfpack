@@ -13,7 +13,9 @@ test("builds a self-contained public extensions SDK with generated declarations"
   const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
   expect(manifest.exports["./extensions"]).toEqual({ types: "./sdk/types/public-sdk.d.ts", import: "./sdk/extensions.js" });
   expect(readFileSync(join(root, "sdk", "extensions.js"), "utf8")).not.toMatch(/from\s+['"]/);
-  expect(readFileSync(join(root, "sdk", "types", "public-sdk.d.ts"), "utf8")).toContain("ContextViewContribution");
+  const declarations = readFileSync(join(root, "sdk", "types", "public-sdk.d.ts"), "utf8");
+  expect(declarations).toContain("ContextViewContribution");
+  expect(declarations).toContain("MAX_RETAINED_CONTEXT_VIEWS_PER_SCOPE");
 });
 
 test("packs a consumer-importable SDK without installation scripts or checkout source resolution", async () => {
