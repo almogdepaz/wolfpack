@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ExtensionRuntime } from "../../src/extensions/runtime.ts";
@@ -30,6 +30,16 @@ describe("extension runtime integration", () => {
     expect(reinstalled.installation.installationId).toBe(first.installation.installationId);
     runtime.remove("fixture"); runtime.purge("fixture");
     expect(runtime.catalog().installations).toEqual([]);
+  });
+  test("qualifies same relative UI asset names by extension and immutable package digest", async () => {
+    const base = root(); const runtime = new ExtensionRuntime({ root: join(base, "runtime") });
+    const first = await runtime.install({ source: fixture(base, "1.0.0", "one"), trustBrowserCode: true });
+    const secondSource = fixture(base, "1.0.1", "two");
+    const packageJson = JSON.parse(readFileSync(join(secondSource, "package.json"), "utf8")); packageJson.name = "second-fixture"; packageJson.wolfpack.id = "second-fixture"; writeFileSync(join(secondSource, "package.json"), JSON.stringify(packageJson));
+    const second = await runtime.install({ source: secondSource, trustBrowserCode: true });
+    const catalog = runtime.catalog().installations; expect(catalog[0]!.ui!.url).not.toBe(catalog[1]!.ui!.url);
+    expect(runtime.asset("fixture", first.installation.package.digest, "dist/ui.js").bytes.toString()).toContain("one");
+    expect(runtime.asset("second-fixture", second.installation.package.digest, "dist/ui.js").bytes.toString()).toContain("two");
   });
   test("server document service uses installation and exact live UUID, retains reads after exit and blocks disable", async () => {
     const base = root(); const runtime = new ExtensionRuntime({ root: join(base, "runtime") }); const { installation: installed } = await runtime.install({ source: fixture(base), trustBrowserCode: true }); const service = new ExtensionRouteService({ runtime, backend });
