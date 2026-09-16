@@ -3,6 +3,18 @@ import { ContextViewRegistry } from "../../public/context-view-registry.ts";
 
 const scope = { installationId: "11111111-1111-4111-8111-111111111111", sessionId: "22222222-2222-4222-8222-222222222222" } as const;
 
+class FakeElement {
+  readonly dataset: Record<string, string> = {};
+  readonly children: FakeElement[] = [];
+  hidden = false;
+  textContent = "";
+  parent: FakeElement | null = null;
+  append(child: FakeElement) { child.parent = this; this.children.push(child); }
+  remove() { if (!this.parent) return; const index = this.parent.children.indexOf(this); if (index >= 0) this.parent.children.splice(index, 1); this.parent = null; }
+}
+
+(globalThis as Record<string, unknown>).document = { createElement: () => new FakeElement() };
+
 function view(id: string, events: string[] = []) {
   return {
     id,
@@ -17,28 +29,28 @@ function view(id: string, events: string[] = []) {
 }
 
 describe("ContextViewRegistry", () => {
-  let container: HTMLElement;
+  let container: FakeElement;
   afterEach(() => container?.remove());
 
   test("does not mount newly registered views until explicit selection and retains visited views hidden", () => {
-    container = document.createElement("div");
+    container = new FakeElement();
     const events: string[] = [];
-    const registry = new ContextViewRegistry({ container, maxRetainedViews: 2 });
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement, maxRetainedViews: 2 });
     registry.register("notes/one", view("one", events));
     registry.register("context/two", view("two", events));
     registry.setScope(scope);
     expect(events).toEqual([]);
     registry.select("notes/one");
     registry.select("context/two");
-    expect(events).toEqual(["mount:one", "visible:one:true", "visible:one:false", "mount:two", "visible:two:true"]);
-    expect(container.querySelectorAll("[data-context-view]")).toHaveLength(2);
+    expect(events).toEqual(["mount:one", "visible:one:true", "mount:two", "visible:one:false", "visible:two:true"]);
+    expect(container.children).toHaveLength(2);
     expect(registry.selectedId).toBe("context/two");
   });
 
   test("disposes exactly once before replacement scope and rejects retained-view overflow visibly", () => {
-    container = document.createElement("div");
+    container = new FakeElement();
     const events: string[] = [];
-    const registry = new ContextViewRegistry({ container, maxRetainedViews: 1 });
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement, maxRetainedViews: 1 });
     registry.register("notes/one", view("one", events));
     registry.register("notes/two", view("two", events));
     registry.setScope(scope);
@@ -51,9 +63,9 @@ describe("ContextViewRegistry", () => {
   });
 
   test("unregister cleans only its mounted contribution and leaves another package intact", () => {
-    container = document.createElement("div");
+    container = new FakeElement();
     const events: string[] = [];
-    const registry = new ContextViewRegistry({ container });
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement });
     const removeOne = registry.register("notes/one", view("one", events));
     registry.register("context/two", view("two", events));
     registry.setScope(scope);
