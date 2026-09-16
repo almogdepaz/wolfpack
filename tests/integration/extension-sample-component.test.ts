@@ -29,10 +29,13 @@ type ComponentDependencies = { launch?: () => Promise<Browser>; onServer?: (url:
 
 async function component({ launch = () => chromium.launch({ headless: true }), onServer }: ComponentDependencies = {}) {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) { return new URL(request.url).pathname === "/ui.js" ? new Response(Bun.file(join(root, "examples", "extensions", "agent-context", "dist", "ui.js")), { headers: { "content-type": "text/javascript" } }) : new Response("<main></main>", { headers: { "content-type": "text/html" } }); } });
-  onServer?.(server.url.toString());
-  const browser = await launch(); const page = await browser.newPage(); await page.goto(server.url.toString());
-  await page.evaluate(async () => { const asset = "/ui.js"; const module = await import(asset); let contribution: any; let publish: any; let releases = 0; module.default({ registerContextView(value: any) { contribution = value; }, registerTerminalLayout() {} }); const abort = new AbortController(); const storage = new Map<string, string>(); const controller = contribution.mount(document.querySelector("main"), { signal: abort.signal, scope: { installationId: "installation", sessionId: "11111111-1111-4111-8111-111111111111" }, selection: { selectedSessionId: null }, theme: {}, storage: { get: (key: string) => storage.get(key) ?? null, set: (key: string, value: string) => storage.set(key, value), remove: (key: string) => storage.delete(key) }, documents: { read: async () => null, subscribe(_id: string, listener: any) { publish = listener; listener(null, 0); return () => { releases++; }; } } }); (globalThis as any).__sample = { abort, controller, publish, releases: () => releases }; });
-  return { page, async close() { await browser.close(); server.stop(true); } };
+  let browser: Browser | undefined;
+  try {
+    onServer?.(server.url.toString());
+    browser = await launch(); const page = await browser.newPage(); await page.goto(server.url.toString());
+    await page.evaluate(async () => { const asset = "/ui.js"; const module = await import(asset); let contribution: any; let publish: any; let releases = 0; module.default({ registerContextView(value: any) { contribution = value; }, registerTerminalLayout() {} }); const abort = new AbortController(); const storage = new Map<string, string>(); const controller = contribution.mount(document.querySelector("main"), { signal: abort.signal, scope: { installationId: "installation", sessionId: "11111111-1111-4111-8111-111111111111" }, selection: { selectedSessionId: null }, theme: {}, storage: { get: (key: string) => storage.get(key) ?? null, set: (key: string, value: string) => storage.set(key, value), remove: (key: string) => storage.delete(key) }, documents: { read: async () => null, subscribe(_id: string, listener: any) { publish = listener; listener(null, 0); return () => { releases++; }; } } }); (globalThis as any).__sample = { abort, controller, publish, releases: () => releases }; });
+    return { page, async close() { await browser!.close(); server.stop(true); } };
+  } catch (error) { await browser?.close(); server.stop(true); throw error; }
 }
 
 test("component fixture releases server and partial browser after later startup rejection", async () => {
