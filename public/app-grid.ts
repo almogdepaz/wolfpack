@@ -31,6 +31,12 @@ import {
 } from "../src/take-control-logic";
 import type { OrderedResizeSettlement } from "./ordered-resize";
 import type { SessionInspectorTarget } from "./session-inspector";
+import {
+  applyTerminalLayoutGeometry,
+  nearestPaneInDirection,
+  TerminalLayoutRegistry,
+  type BuiltinTerminalLayoutId,
+} from "./terminal-layout-registry";
 
 // ── Dependency injection ──
 
@@ -105,7 +111,19 @@ interface GridDeps {
 }
 
 let deps: GridDeps;
+let workspaceTerminalLayouts: TerminalLayoutRegistry | null = null;
 let reportedGridIsolationFailure = false;
+
+/** Host-only seam for phase 2 contribution registration. */
+export function initWorkspaceTerminalLayouts(registry: TerminalLayoutRegistry): void {
+  workspaceTerminalLayouts = registry;
+}
+
+export function selectWorkspaceTerminalLayout(id: BuiltinTerminalLayoutId): void {
+  workspaceTerminalLayouts?.select(id);
+  applyWorkspaceTerminalGeometry();
+  scheduleGridStabilizedFit();
+}
 const pendingGridMountCells = new WeakMap<GridSession, HTMLElement>();
 
 export function initGridDeps(d: GridDeps) {
@@ -189,6 +207,32 @@ function setGridSessionFocus(gs: GridSession, index: number): void {
   else setGridFocus(index);
 }
 
+function workspacePaneId(session: GridSession): string {
+  return `${session.machine || "local"}|${session.sessionId || session.session}`;
+}
+
+function applyTerminalGeometry(container: HTMLElement | null, sessions: readonly GridSession[], focusIndex: number): void {
+  if (!container || !workspaceTerminalLayouts || sessions.length === 0) return;
+  const visible = sessions.filter(session => !session._collapsed && !!session._cellElement);
+  if (visible.length === 0) return;
+  const selected = visible[Math.max(0, Math.min(focusIndex, visible.length - 1))];
+  const layout = workspaceTerminalLayouts.arrange(
+    visible.map(workspacePaneId),
+    selected ? workspacePaneId(selected) : null,
+    { width: container.clientWidth, height: container.clientHeight },
+  );
+  applyTerminalLayoutGeometry(container, visible.map(session => ({ id: workspacePaneId(session), element: session._cellElement! })), layout);
+}
+
+/** Geometry changes only style existing cells; no controller is mounted, disposed, or focused. */
+export function applyWorkspaceTerminalGeometry(): void {
+  if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+    applyTerminalGeometry(document.getElementById("delegation-grid-container"), state.delegationGridSessions, state.delegationGridFocusIndex);
+    return;
+  }
+  if (isGridActive()) applyTerminalGeometry(document.getElementById("desktop-grid-container"), state.gridSessions, state.gridFocusIndex);
+}
+
 function gridLayoutClass(count) {
   if (count <= 1) return "grid-1";
   if (count >= 2 && count <= 6) return "grid-" + count;
@@ -210,6 +254,7 @@ export function updateGridLayout() {
   document.getElementById("input-bar").style.display = "none";
   document.getElementById("cmd-palette").classList.remove("visible");
   document.getElementById("kb-accessory").classList.remove("visible");
+  applyTerminalGeometry(container, state.gridSessions, state.gridFocusIndex);
 }
 
 function createGridCell(gs: GridSession, idx: number): HTMLElement {
@@ -449,11 +494,11 @@ function renderGridSessionCells(
       gs._cellElement.classList.toggle("collapsed", !!gs._collapsed);
       if (wasCollapsed !== !!gs._collapsed) topologyChanged = true;
       if (gs._collapsed) {
+        // Collapse is a reversible geometry-only hide. Keep the controller,
+        // canvas, broker session and buffer in its stable cell; zero-sized
+        // hidden geometry is never sent because this cell is excluded below.
         clearPendingGridMount(gs, gs._cellElement);
-        clearGridCellTakeControlTimer(gs);
         gs._slowLoad?.stop();
-        gs.controller?.dispose();
-        gs.controller = null;
         gs._loading = false;
       }
       const statusBadge = gs._cellElement.querySelector<HTMLElement>(".triage-badge");
@@ -556,6 +601,7 @@ export function renderDelegationGridCells(): void {
   renderGridSessionCells(state.delegationGridSessions, container, state.delegationGridFocusIndex, () => {
     const visibleCount = state.delegationGridSessions.filter(session => !session._collapsed).length;
     container.className = visibleCount > 0 ? `active ${gridLayoutClass(visibleCount)}` : "";
+    applyTerminalGeometry(container, state.delegationGridSessions, state.delegationGridFocusIndex);
     renderDelegationCollapsedStrip();
   }, false);
 }
@@ -827,7 +873,13 @@ export function moveGridFocusByArrow(direction: "left" | "right" | "up" | "down"
     return true;
   }
   if (!isGridActive()) return false;
-  setGridFocus(gridArrowNav(direction, state.gridFocusIndex, state.gridSessions.length));
+  const selected = state.gridSessions[state.gridFocusIndex];
+  const layout = selected && workspaceTerminalLayouts
+    ? workspaceTerminalLayouts.arrange(state.gridSessions.map(workspacePaneId), workspacePaneId(selected), { width: window.innerWidth, height: window.innerHeight })
+    : null;
+  const targetPane = layout && selected ? nearestPaneInDirection(layout, workspacePaneId(selected), direction) : null;
+  const targetIndex = targetPane ? state.gridSessions.findIndex(session => workspacePaneId(session) === targetPane) : -1;
+  setGridFocus(targetIndex >= 0 ? targetIndex : gridArrowNav(direction, state.gridFocusIndex, state.gridSessions.length));
   return true;
 }
 
@@ -1172,6 +1224,7 @@ export function revealGridCellsWithoutResize() {
 
 export function scheduleGridStabilizedFit(onSettled?: (acknowledged: boolean) => void) {
   if (state.activeDelegationRoot && !state.focusedDelegationSession) {
+    applyWorkspaceTerminalGeometry();
     scheduleGridRelayoutFit(
       state.delegationGridSessions,
       true,
@@ -1181,7 +1234,10 @@ export function scheduleGridStabilizedFit(onSettled?: (acknowledged: boolean) =>
     );
     return;
   }
-  if (isGridActive()) scheduleGridRelayoutFit(state.gridSessions, true, "desktop-grid-container", state.gridSessions, onSettled);
+  if (isGridActive()) {
+    applyWorkspaceTerminalGeometry();
+    scheduleGridRelayoutFit(state.gridSessions, true, "desktop-grid-container", state.gridSessions, onSettled);
+  }
   else onSettled?.(true);
 }
 

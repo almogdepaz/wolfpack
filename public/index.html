@@ -387,6 +387,34 @@
       >
         Reconnecting...
       </div>
+      <div id="workspace-shell" data-context-placement="right" data-full-view="none">
+        <aside id="workspace-context-region" aria-label="Context workspace">
+          <div class="workspace-context-header">
+            <strong>Context</strong>
+            <div class="workspace-context-actions">
+              <button id="workspace-context-collapse" type="button" aria-expanded="true">collapse</button>
+              <button id="workspace-context-full" type="button" aria-pressed="false">full view</button>
+            </div>
+          </div>
+          <div id="workspace-context-container" aria-live="polite">
+            <p>Context views appear here when enabled.</p>
+          </div>
+          <label class="workspace-control">Placement
+            <select id="workspace-context-placement" aria-label="Context placement">
+              <option value="right">Right</option>
+              <option value="left">Left</option>
+              <option value="bottom">Bottom</option>
+            </select>
+          </label>
+          <label class="workspace-control">Size
+            <input id="workspace-context-size" type="range" min="220" max="560" step="10" aria-label="Context size">
+          </label>
+        </aside>
+        <main id="workspace-terminal-region" aria-label="Terminal workspace">
+          <div class="workspace-terminal-toolbar">
+            <label>Layout <select id="workspace-terminal-layout" aria-label="Terminal layout"><option value="equal-grid">Equal grid</option><option value="lead-stack">Lead + stack</option><option value="vertical-stack">Vertical stack</option></select></label>
+            <button id="workspace-terminal-full" type="button" aria-pressed="false">terminal full view</button>
+          </div>
       <div id="delegation-focus-toolbar" class="delegation-focus-return">
         <button id="delegation-focus-back" type="button">← Back to session grid</button>
         <span id="delegation-focus-label"></span>
@@ -417,6 +445,9 @@
         <button class="kb-key kb-git" type="button" aria-label="Show git status">git</button>
         <button class="kb-key kb-copy" type="button" aria-label="Copy session">copy</button>
         <button class="kb-key kb-open" id="kb-open-btn" type="button" aria-label="Show keyboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2.5"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg></button>
+      </div>
+        </main>
+        <button id="workspace-restore" class="workspace-restore" type="button" hidden>Restore workspace</button>
       </div>
       <div id="input-bar">
         <textarea

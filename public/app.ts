@@ -18,8 +18,11 @@ import {
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
   canOpenMultiTerminalGrid, disposeDelegationGrid, gridInspectionTarget,
   renderDelegationGridCells, setDelegationGridMembers, suspendDelegationGridTerminals,
+  initWorkspaceTerminalLayouts, selectWorkspaceTerminalLayout,
 } from "./app-grid";
 import type { DelegationGridMember } from "./app-grid";
+import { TerminalLayoutRegistry, type BuiltinTerminalLayoutId } from "./terminal-layout-registry";
+import { createWorkspaceShell } from "./workspace-shell";
 
 import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-controller";
 import type { SessionCardView } from "./app-action-controller";
@@ -5281,6 +5284,10 @@ function bindHtmlEventListeners(): void {
 
   // Delegation workspace
   on("delegation-focus-back", "click", () => returnToDelegationGrid());
+  const layoutPicker = $("workspace-terminal-layout") as HTMLSelectElement | null;
+  layoutPicker?.addEventListener("change", () => {
+    selectWorkspaceTerminalLayout(layoutPicker.value as BuiltinTerminalLayoutId);
+  });
 
   // Drawer / overlays
   on("drawer-backdrop", "click", () => closeDrawer());
@@ -5398,6 +5405,13 @@ initGridDeps({
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
 });
+
+const workspaceTerminalLayouts = new TerminalLayoutRegistry();
+initWorkspaceTerminalLayouts(workspaceTerminalLayouts);
+const workspaceLayoutPicker = document.getElementById("workspace-terminal-layout") as HTMLSelectElement | null;
+if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
+createWorkspaceShell({ onTerminalGeometryChange: () => scheduleGridStabilizedFit() });
+window.addEventListener("resize", () => scheduleGridStabilizedFit());
 
 initSettings();
 const sessionDashboardControls = document.getElementById("session-dashboard-controls");

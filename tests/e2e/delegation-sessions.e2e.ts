@@ -129,7 +129,7 @@ test("desktop parent grid opens every child session expanded", async ({ page }, 
   await expect.poll(focusedSession).toBe(visualSessions[1]);
 });
 
-test("collapsed delegation child remounts once when expanded", async ({ page }, testInfo) => {
+test("collapsed delegation child retains its controller and broker attach when expanded", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop delegation grid behavior only");
 
   const attachCounts = new Map<string, number>();
@@ -168,11 +168,81 @@ test("collapsed delegation child remounts once when expanded", async ({ page }, 
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(1);
   await page.keyboard.press("Meta+Shift+ArrowRight");
   await expect.poll(focusedSession).toBe("parent");
-  await expect.poll(() => closeCounts.get("child") ?? 0).toBe(1);
+  await expect.poll(() => closeCounts.get("child") ?? 0).toBe(0);
   await page.getByRole("button", { name: "Expand child" }).click();
 
   await expect(childCell).toHaveAttribute("data-terminal-load-state", "live");
-  expect(attachCounts.get("child")).toBe(2);
+  expect(attachCounts.get("child")).toBe(1);
+});
+
+test("explicit workspace shell changes retain delegation panes and focus", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop workspace geometry behavior only");
+  const attachCounts = new Map<string, number>();
+  await page.routeWebSocket(/\/ws\/pty/, (ws: WebSocketRoute) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (frame.type === "resize") {
+        ws.send(JSON.stringify({ ...frame, type: "resize_ack" }));
+        return;
+      }
+      if (frame.type !== "attach") return;
+      attachCounts.set(session, (attachCounts.get(session) ?? 0) + 1);
+      ws.send(JSON.stringify({ type: "attach_ack", capabilities: ["ordered-resize-ack"] }));
+      ws.send(Buffer.from(`${session}-WORKSPACE\r\n`));
+      if (frame.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await routeDelegationSessions(page, [
+    fakeSession("parent", "parent-id"),
+    fakeSession("child", "child-id", { id: "parent-id", name: "parent" }),
+  ]);
+  await page.goto(srv.baseUrl);
+  await openSessionFromUi(page, "parent", "");
+  const child = page.locator('#delegation-grid-container .delegation-grid-cell[data-session="child"]');
+  await expect(child).toHaveAttribute("data-terminal-load-state", "live");
+  await child.click();
+  await expect(child).toHaveClass(/grid-focused/);
+  await page.locator("#workspace-terminal-layout").selectOption("lead-stack");
+  await expect(page.locator("#delegation-grid-container")).toHaveAttribute("style", /grid-template-columns/);
+  await page.locator("#workspace-context-collapse").click();
+  await expect(page.locator("#workspace-restore")).toBeVisible();
+  await page.locator("#workspace-restore").click();
+  await page.locator("#workspace-context-full").click();
+  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+  await page.locator("#workspace-restore").click();
+  await expect(child).toHaveClass(/grid-focused/);
+  expect(attachCounts.get("parent")).toBe(1);
+  expect(attachCounts.get("child")).toBe(1);
+});
+
+test("workspace shell mobile recovery keeps a visible terminal usable", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-webkit", "mobile WebKit workspace behavior only");
+  let attaches = 0;
+  await page.routeWebSocket(/\/ws\/pty/, (ws: WebSocketRoute) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message) as { readonly type?: string };
+      if (frame.type !== "attach") return;
+      attaches++;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from("MOBILE-WORKSPACE\r\n"));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await routeDelegationSessions(page, [fakeSession("parent", "parent-id")]);
+  await page.goto(srv.baseUrl);
+  await openSessionFromUi(page, "parent", "");
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
+  await page.locator("#workspace-context-full").click();
+  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+  await page.locator("#workspace-restore").click();
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
+  expect(attaches).toBe(1);
 });
 
 test("manual card order persists by stable identity and resets to server order", async ({ page }, testInfo) => {
