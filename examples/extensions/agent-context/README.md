@@ -16,4 +16,8 @@ wolfpack extensions install /absolute/path/to/agent-context --trust-browser-code
 
 The installer reports skill ownership separately. A collision or user-modified deployed skill is not overwritten; inspect that status before retrying. Remove the package with the same explicit skills root when needed. Existing Pi sessions need normal `/reload` or a new session before discovery changes apply; do not steer a live agent automatically.
 
-See `skills/wolfpack-agent-context/SKILL.md` for exact-scope CAS publication guidance. This sample does not claim browser/real-agent acceptance by itself.
+See `skills/wolfpack-agent-context/SKILL.md` for exact-scope CAS publication guidance.
+
+## Opt-in real-agent acceptance (not run here)
+
+The real-agent gate requires explicit approval for a provider/model invocation, a disposable Wolfpack HOME/broker/server/browser, a fixed exact scope UUID, and a normal Pi session that has loaded this installed skill. Capture structured Pi tool records for the public CLI read/publish calls, then independently verify the accepted revision through CLI/API and browser DOM. Do not substitute a scripted harness or terminal text for that evidence, and redact credentials/tool payloads before any handoff. This package/component coverage does not claim that gate.
