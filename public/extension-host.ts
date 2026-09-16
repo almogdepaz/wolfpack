@@ -6,7 +6,7 @@ import { ContextViewRegistry, type ContextViewScope } from "./context-view-regis
 import { SharedDocumentPoller } from "./extension-document-polling.ts";
 import { loadAuthenticatedExtensionBundle } from "./extension-loader.ts";
 
-export interface SelectedExtensionScope { readonly sessionId: string; readonly origin: string | null; }
+export interface SelectedExtensionScope { readonly sessionId: string | null; readonly unavailable?: string; }
 export interface ExtensionHostOptions {
   readonly container: HTMLElement;
   readonly scope: () => SelectedExtensionScope | null;
@@ -18,7 +18,6 @@ export interface ExtensionHostOptions {
 interface LoadedPackage { readonly digest: string; readonly cleanup: () => void; }
 interface ViewOwner { readonly extension: ExtensionCatalogInstallation; readonly unregister: () => void; }
 
-function apiUrl(origin: string | null, path: string): string { return origin ? new URL(path, origin).href : path; }
 function keyFor(installationId: string, extensionId: string, scopeId: string, suffix: string): string {
   return `wolfpack-extension-ui:v1:${installationId}:${extensionId}:${scopeId}:${suffix}`;
 }
@@ -63,10 +62,15 @@ export class ExtensionHost {
     const generation = ++this.generation;
     const scope = this.options.scope();
     this.currentScope = scope;
-    if (!scope) { this.registry.setScope(null); this.cleanupAll(); return; }
+    if (!scope || !scope.sessionId || scope.unavailable) {
+      this.registry.setScope(null);
+      this.cleanupAll();
+      this.render(scope?.unavailable ?? "Select a live terminal with an exact session identity to view extension context.");
+      return;
+    }
     if (this.options.safeMode?.()) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
     try {
-      const response = await browserAuthFetch(apiUrl(scope.origin, "/api/extensions"), { cache: "no-store" });
+      const response = await browserAuthFetch("/api/extensions", { cache: "no-store" });
       if (!response.ok) throw new Error(`catalog request failed (${response.status})`);
       const catalog = await response.json() as ExtensionCatalogEnvelope;
       if (this.disposed || generation !== this.generation) return;
@@ -150,7 +154,7 @@ export class ExtensionHost {
   private async readDocument(extensionId: string, documentId: string, scope: ContextViewScope, signal: AbortSignal): Promise<{ document: unknown | null; revision: number }> {
     const selected = this.currentScope;
     if (!selected || selected.sessionId !== scope.sessionId || this.currentInstallationId !== scope.installationId) throw new Error("stale extension scope");
-    const url = apiUrl(selected.origin, `/api/extensions/documents/${encodeURIComponent(extensionId)}/${encodeURIComponent(documentId)}?session=${encodeURIComponent(scope.sessionId)}`);
+    const url = `/api/extensions/documents/${encodeURIComponent(extensionId)}/${encodeURIComponent(documentId)}?session=${encodeURIComponent(scope.sessionId)}`;
     const response = await browserAuthFetch(url, { cache: "no-store", signal });
     if (!response.ok) throw new Error("extension document unavailable");
     const value = await response.json() as ExtensionDocumentReadEnvelope;

@@ -5415,15 +5415,16 @@ if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayout
 createWorkspaceShell({ onTerminalGeometryChange: () => scheduleGridStabilizedFit() });
 window.addEventListener("resize", () => scheduleGridStabilizedFit());
 
-function selectedExtensionScope(): { readonly sessionId: string; readonly origin: string | null } | null {
+function selectedExtensionScope(): { readonly sessionId: string | null; readonly unavailable?: string } | null {
   const grid = state.activeDelegationRoot && !state.focusedDelegationSession
     ? state.delegationGridSessions[state.delegationGridFocusIndex]
     : isGridActive() ? state.gridSessions[state.gridFocusIndex] : null;
   const target = grid?.sessionId ? { sessionId: grid.sessionId, machine: grid.machine || "" } : state.termTarget;
   if (!target?.sessionId) return null;
-  const origin = resolveReadyMachineOrigin(target.machine);
-  if (target.machine && target.machine !== LOCAL_MACHINE_IDENTITY && !origin) return null;
-  return { sessionId: target.sessionId, origin: origin ?? null };
+  if (target.machine && target.machine !== LOCAL_MACHINE_IDENTITY) {
+    return { sessionId: null, unavailable: "Extension context is unavailable for a terminal served by another machine." };
+  }
+  return { sessionId: target.sessionId };
 }
 
 const extensionHostContainer = document.getElementById("workspace-context-container");
