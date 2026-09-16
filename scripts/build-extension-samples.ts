@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 /** Builds checked-in, self-contained example extension UI bundles. Never runs at package install time. */
-import { existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, rmdirSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const root = join(import.meta.dirname, "..");
 const modules = join(root, "examples", "extensions", "node_modules");
+const createdModules = !existsSync(modules);
 const bridge = join(modules, "wolfpack-bridge");
 if (existsSync(bridge)) throw new Error("refusing to replace an existing sample build dependency");
 mkdirSync(modules, { recursive: true });
@@ -26,5 +27,5 @@ try {
   }
 } finally {
   rmSync(bridge, { force: true });
-  rmSync(modules, { recursive: true, force: true });
+  if (createdModules) { try { rmdirSync(modules); } catch { /* a concurrent owner populated it; retain it */ } }
 }
