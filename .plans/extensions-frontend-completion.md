@@ -3,7 +3,7 @@
 Status: **partial frontend candidate; not approval or final-gate closure.**
 
 - Assignment/base/prepared commit: `4f943d175e3368fe60b093333d5cc35034b259a9`
-- Initial candidate commit: `de067398b46fc804de6ee5c2a82ac37ab3d1bb8b`; current follow-up is recorded below after commit.
+- Initial candidate commit: `de067398b46fc804de6ee5c2a82ac37ab3d1bb8b`; current candidate: `1c8ba2c093d6c6babd37503b2edab52f4bcb3689`.
 - Worktree/branch: `/Users/almog/Dev/wolfpack-ui-extensions-workspace` / `feat/ui-extensions-frontend-completion`
 
 ## Implemented and exercised
