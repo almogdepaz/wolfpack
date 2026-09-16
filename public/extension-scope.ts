@@ -8,6 +8,8 @@ export interface SelectedTerminalIdentity {
 }
 
 export interface WorkspaceExtensionScopeInput {
+  /** False when the terminal workspace is not the active application surface. */
+  readonly workspaceActive?: boolean;
   readonly activeSurface: "single" | "manual-grid" | "delegation-grid";
   readonly selectedGridPane?: SelectedTerminalIdentity;
   readonly singleTerminal?: SelectedTerminalIdentity | null;
@@ -27,6 +29,7 @@ export function resolveSelectedExtensionScope(
 
 /** The active surface is authoritative: an identity-less grid pane cannot inherit a previous single-terminal scope. */
 export function resolveWorkspaceExtensionScope(input: WorkspaceExtensionScopeInput, localMachineIdentity: string): SelectedExtensionScope | null {
+  if (input.workspaceActive === false) return null;
   return input.activeSurface === "single"
     ? resolveSelectedExtensionScope(input.singleTerminal, localMachineIdentity)
     : resolveSelectedExtensionScope(input.selectedGridPane, localMachineIdentity);

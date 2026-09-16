@@ -40,6 +40,16 @@ describe("phase-1 host workspace layout", () => {
     expect(nearestPaneInDirection(layout, "two", "left")).toBeNull();
   });
 
+  test("contains throwing extension layout recipes and recovers with equal-grid geometry", () => {
+    const registry = new TerminalLayoutRegistry(memoryStorage());
+    registry.register({ id: "notes/broken", title: "Broken", arrange: () => { throw new Error("package failure"); } });
+    registry.select("notes/broken");
+    const layout = registry.arrange(["one", "two", "three"], "two", { width: 1200, height: 700 });
+    expect(layout.placements.map(placement => placement.paneId).sort()).toEqual(["one", "three", "two"]);
+    expect(layout.rows).toHaveLength(2);
+    expect(registry.selectedId).toBe("notes/broken");
+  });
+
   test("bounds and repairs browser-local shell preferences while retaining recovery state", () => {
     expect(normalizeWorkspaceShellPreferences({ placement: "bottom", splitSize: 9999, contextCollapsed: true, fullView: "context" })).toEqual({
       placement: "bottom", splitSize: 560, contextCollapsed: true, fullView: "context",

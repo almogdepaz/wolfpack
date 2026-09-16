@@ -1422,6 +1422,7 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
   stopDebugPanelRefresh(previousView, viewName);
   teardownTerminalForViewChange(previousView, viewName);
   setState({ currentView: viewName });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   applyViewVisibility(previousElement, nextElement, animate, goingForward);
 
   // Stop timers immediately (don't defer these).
@@ -5351,6 +5352,10 @@ function bindHtmlEventListeners(): void {
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
+  on("setting-extensionSafeMode", "change", function(this: HTMLInputElement) {
+    toggleSetting("extensionSafeMode", this.checked);
+    document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
+  });
 
   // Term font size buttons
   document.querySelectorAll(".term-size-btn").forEach((btn) => {
@@ -5427,6 +5432,7 @@ function selectedExtensionScope(): { readonly sessionId: string | null; readonly
     ? state.delegationGridSessions[state.delegationGridFocusIndex]
     : manualGrid ? state.gridSessions[state.gridFocusIndex] : undefined;
   return resolveWorkspaceExtensionScope({
+    workspaceActive: state.currentView === "terminal",
     activeSurface: delegationGrid ? "delegation-grid" : manualGrid ? "manual-grid" : "single",
     selectedGridPane: grid ? { sessionId: grid.sessionId, machine: grid.machine || "" } : undefined,
     singleTerminal: state.termTarget,
@@ -5437,6 +5443,7 @@ const extensionHostContainer = document.getElementById("workspace-context-contai
 const extensionHost = extensionHostContainer ? new ExtensionHost({
   container: extensionHostContainer,
   scope: selectedExtensionScope,
+  safeMode: () => wpSettings.extensionSafeMode,
   registerLayout: contribution => {
     const unregister = workspaceTerminalLayouts.register(contribution);
     const option = document.createElement("option");
@@ -5452,6 +5459,9 @@ const extensionHost = extensionHostContainer ? new ExtensionHost({
   },
 }) : null;
 document.addEventListener("wolfpack-extension-scope-change", () => { void extensionHost?.refresh(); });
+window.addEventListener("pagehide", event => {
+  if (!(event as PageTransitionEvent).persisted) extensionHost?.dispose();
+});
 void extensionHost?.refresh();
 
 initSettings();

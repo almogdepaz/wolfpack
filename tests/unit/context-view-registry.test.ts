@@ -62,6 +62,56 @@ describe("ContextViewRegistry", () => {
     expect(events.filter(event => event === "abort:one")).toHaveLength(1);
   });
 
+  test("keeps bounded visibility diagnostics and lets another view recover", () => {
+    container = new FakeElement();
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement });
+    registry.register("broken/tab", {
+      id: "tab",
+      title: "Broken",
+      mount: () => ({ dispose() {}, setVisible: () => { throw new Error("package detail must not leak"); } }),
+    });
+    registry.register("healthy/tab", view("healthy"));
+    registry.setScope(scope);
+    registry.select("broken/tab");
+    expect(registry.diagnostic).toBe("Visibility update failed for broken/tab.");
+    registry.select("healthy/tab");
+    expect(registry.selectedId).toBe("healthy/tab");
+    expect(registry.diagnostic).toBe("");
+  });
+
+  test("retains exactly 32 visited views without eviction and visibly rejects the 33rd", () => {
+    container = new FakeElement();
+    const events: string[] = [];
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement, maxRetainedViews: 99 });
+    for (let index = 0; index < 33; index++) registry.register(`notes/${index}`, view(String(index), events));
+    registry.setScope(scope);
+    for (let index = 0; index < 32; index++) registry.select(`notes/${index}`);
+    const firstNode = container.children[0];
+    registry.select("notes/32");
+    expect(container.children).toHaveLength(32);
+    expect(container.children[0]).toBe(firstNode);
+    expect(events).not.toContain("dispose:0");
+    expect(registry.selectedId).toBe("notes/31");
+    expect(registry.diagnostic).toContain("retained view limit (32) reached");
+  });
+
+  test("contains mount and dispose failures while another registered view remains usable", () => {
+    container = new FakeElement();
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement });
+    registry.register("broken/mount", { id: "mount", title: "Mount failure", mount: () => { throw new Error("bounded package failure"); } });
+    const removeCleanupFailure = registry.register("broken/cleanup", { id: "cleanup", title: "Cleanup failure", mount: () => ({ dispose: () => { throw new Error("cleanup failure"); } }) });
+    registry.register("healthy/tab", view("healthy"));
+    registry.setScope(scope);
+    registry.select("broken/mount");
+    expect(registry.diagnostic).toContain("Could not mount Mount failure: bounded package failure");
+    registry.select("broken/cleanup");
+    removeCleanupFailure();
+    expect(registry.diagnostic).toBe("Cleanup failed for broken/cleanup.");
+    registry.select("healthy/tab");
+    expect(registry.selectedId).toBe("healthy/tab");
+    expect(registry.diagnostic).toBe("");
+  });
+
   test("unregister cleans only its mounted contribution and leaves another package intact", () => {
     container = new FakeElement();
     const events: string[] = [];

@@ -113,9 +113,13 @@ export class ContextViewRegistry {
       mounted = this.mount(entry);
       if (!mounted) return;
     }
-    for (const item of this.mountedById.values()) this.setVisible(item, item.id === id);
+    let selectedVisibilityFailed = false;
+    for (const item of this.mountedById.values()) {
+      const visible = item.id === id;
+      if (!this.setVisible(item, visible) && visible) selectedVisibilityFailed = true;
+    }
     this.selectedValue = id;
-    this.diagnosticValue = "";
+    if (!selectedVisibilityFailed) this.diagnosticValue = "";
     this.changed();
   }
 
@@ -158,11 +162,13 @@ export class ContextViewRegistry {
     }
   }
 
-  private setVisible(mounted: MountedContextView, visible: boolean): void {
+  private setVisible(mounted: MountedContextView, visible: boolean): boolean {
     mounted.element.hidden = !visible;
+    let succeeded = true;
     try { mounted.controller.setVisible?.(visible); }
-    catch { this.diagnosticValue = `Visibility update failed for ${mounted.id}.`; }
+    catch { this.diagnosticValue = `Visibility update failed for ${mounted.id}.`; succeeded = false; }
     this.options.onVisibilityChange?.(mounted.id, visible);
+    return succeeded;
   }
 
   private disposeMounted(id: string): void {

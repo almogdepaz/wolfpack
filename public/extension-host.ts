@@ -21,6 +21,7 @@ export interface ExtensionHostOptions {
 
 interface LoadedPackage { readonly fingerprint: string; readonly cleanup: () => void; }
 interface ViewOwner { readonly extension: ExtensionCatalogInstallation; readonly unregister: () => void; }
+type DocumentPollState = "fresh" | "stale" | "paused" | "error";
 
 type JsonRecord = Record<string, unknown>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -32,7 +33,7 @@ function keyFor(installationId: string, extensionId: string, scopeId: string, su
 function record(value: unknown): value is JsonRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function text(value: unknown): value is string { return typeof value === "string"; }
 function positiveSafeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 1; }
-function safeRelativeAssetPath(value: unknown): value is string { return text(value) && value.length <= 256 && /^[A-Za-z0-9._/-]+$/.test(value) && !value.split("/").some(part => !part || part === "." || part === ".."); }
+function safeRelativeAssetPath(value: unknown): value is string { return text(value) && value.length <= 256 && /^[A-Za-z0-9._@+/-]+$/.test(value) && !value.split("/").some(part => !part || part === "." || part === ".."); }
 function nonNegativeSafeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
 function catalogFailure(): never { throw new Error("invalid extension catalog envelope"); }
 
@@ -79,7 +80,10 @@ export class ExtensionHost {
   /** Subscriber counts by exact document key/view: hidden views must not keep another key polling. */
   private readonly pollerViewCounts = new Map<string, Map<string, number>>();
   private readonly viewPollerKeys = new Map<string, Set<string>>();
+  /** Document keys observed by each mounted view, including one-shot reads. */
+  private readonly viewDocumentKeys = new Map<string, Set<string>>();
   private readonly visibleViews = new Set<string>();
+  private readonly documentStates = new Map<string, DocumentPollState>();
   private generation = 0;
   private currentScope: SelectedExtensionScope | null = null;
   private currentInstallationId: string | null = null;
@@ -100,9 +104,17 @@ export class ExtensionHost {
   get selectedId(): string | null { return this.registry.selectedId; }
 
   async refresh(): Promise<void> {
+    if (this.disposed) return;
     const generation = ++this.generation;
     const scope = this.options.scope();
     const previousScope = this.currentScope;
+    if (previousScope?.sessionId !== scope?.sessionId) {
+      // Scope identity is an immediate ownership boundary. Do not leave the old
+      // mounted package alive while replacement catalog I/O is pending.
+      this.registry.setScope(null);
+      this.cleanupAll();
+      this.currentInstallationId = null;
+    }
     this.currentScope = scope;
     if (!scope || !scope.sessionId || scope.unavailable) {
       this.registry.setScope(null);
@@ -145,6 +157,20 @@ export class ExtensionHost {
     if (existing?.fingerprint === fingerprint) return;
     if (existing) this.cleanupPackage(item.extensionId);
     const cleanups: Array<() => void> = [];
+    let registrationOpen = true;
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      registrationOpen = false;
+      while (cleanups.length > 0) {
+        const callback = cleanups.pop()!;
+        try { callback(); } catch {}
+      }
+    };
+    const requireActiveRegistration = (): void => {
+      if (!registrationOpen || this.disposed || generation !== this.generation) throw new Error("extension registration is no longer active");
+    };
     try {
       const module = await (this.options.bundleLoader ?? loadAuthenticatedExtensionBundle)<{ default?: ExtensionRegistration }>(item.ui!.url, item.ui!.digest, { safeMode: false });
       if (this.disposed || generation !== this.generation) return;
@@ -152,22 +178,29 @@ export class ExtensionHost {
       const gate = new ExtensionContributionGate(item.extensionId);
       const registrationCleanup = module.default({
         registerContextView: contribution => {
+          requireActiveRegistration();
           const viewId = gate.register("context-view", contribution.id).qualifiedId;
           const unregister = this.registry.register(viewId, contribution);
           this.owners.set(viewId, { extension: item, unregister });
           cleanups.push(() => { this.owners.delete(viewId); unregister(); });
         },
         registerTerminalLayout: contribution => {
+          requireActiveRegistration();
           const qualifiedId = gate.register("terminal-layout", contribution.id).qualifiedId;
           // Layout integration is injected by app.ts; errors are contained with this package.
           const unregister = this.options.registerLayout?.({ ...contribution, id: qualifiedId }) ?? (() => {});
           cleanups.push(unregister);
         },
       });
+      // The SDK registration surface is deliberately synchronous. Closing it
+      // here prevents delayed callbacks from adding contributions even before
+      // a later disable/update/dispose transition.
+      registrationOpen = false;
       if (typeof registrationCleanup === "function") cleanups.push(registrationCleanup);
-      this.loaded.set(item.extensionId, { fingerprint, cleanup: () => { for (const cleanup of cleanups.reverse()) { try { cleanup(); } catch {} } } });
+      this.loaded.set(item.extensionId, { fingerprint, cleanup });
     } catch {
-      for (const cleanup of cleanups.reverse()) { try { cleanup(); } catch {} }
+      registrationOpen = false;
+      cleanup();
       this.render(`Extension ${item.extensionId} could not be registered.`);
     }
   }
@@ -180,9 +213,11 @@ export class ExtensionHost {
       set: (key: string, value: string) => localStorage.setItem(keyFor(scope.installationId, extensionId, scope.sessionId, `storage:${key}`), value),
       remove: (key: string) => localStorage.removeItem(keyFor(scope.installationId, extensionId, scope.sessionId, `storage:${key}`)),
     };
-    const read = async (documentId: string): Promise<unknown> => this.readDocument(extensionId, documentId, scope, signal).then(value => value.document);
+    const read = async (documentId: string): Promise<unknown> => this.readOnce(extensionId, documentId, scope, signal, viewId).then(value => value.document);
     const subscribe = (documentId: string, listener: (value: unknown, revision: number) => void): (() => void) => {
+      this.assertDeclaredDocument(owner, documentId);
       const pollerKey = keyFor(scope.installationId, extensionId, scope.sessionId, `document:${documentId}`);
+      this.linkDocumentView(viewId, pollerKey);
       const poller = this.poller(extensionId, documentId, scope, viewId, pollerKey);
       const unsubscribe = poller.subscribe(listener);
       let released = false;
@@ -195,15 +230,29 @@ export class ExtensionHost {
       signal.addEventListener("abort", release, { once: true });
       return release;
     };
+    signal.addEventListener("abort", () => this.viewDocumentKeys.delete(viewId), { once: true });
     return Object.freeze({ signal, scope: Object.freeze({ ...scope }), selection: Object.freeze({ selectedSessionId: scope.sessionId }), theme: Object.freeze({}), storage: Object.freeze(storage), documents: Object.freeze({ read, subscribe }) });
   }
 
-  private poller(extensionId: string, documentId: string, scope: ContextViewScope, viewId: string, key: string): SharedDocumentPoller {
+  private assertDeclaredDocument(owner: ExtensionCatalogInstallation | undefined, documentId: string): void {
+    if (!owner?.documents.some(document => document.id === documentId)) throw new Error("extension document is not declared by this package");
+  }
+  private pollerFor(extensionId: string, documentId: string, scope: ContextViewScope, key: string): SharedDocumentPoller {
     let poller = this.pollers.get(key);
     if (!poller) {
-      poller = new SharedDocumentPoller({ read: signal => this.readDocument(extensionId, documentId, scope, signal) });
+      poller = new SharedDocumentPoller({
+        read: signal => this.readDocument(extensionId, documentId, scope, signal),
+        onState: state => {
+          this.documentStates.set(key, state);
+          this.render();
+        },
+      });
       this.pollers.set(key, poller);
     }
+    return poller;
+  }
+  private poller(extensionId: string, documentId: string, scope: ContextViewScope, viewId: string, key: string): SharedDocumentPoller {
+    const poller = this.pollerFor(extensionId, documentId, scope, key);
     const counts = this.pollerViewCounts.get(key) ?? new Map<string, number>();
     counts.set(viewId, (counts.get(viewId) ?? 0) + 1);
     this.pollerViewCounts.set(key, counts);
@@ -213,14 +262,30 @@ export class ExtensionHost {
     this.pausePoller(key);
     return poller;
   }
+  private readOnce(extensionId: string, documentId: string, scope: ContextViewScope, signal: AbortSignal, viewId: string): Promise<{ document: unknown | null; revision: number }> {
+    const owner = [...this.owners.values()].find(candidate => candidate.extension.extensionId === extensionId)?.extension;
+    this.assertDeclaredDocument(owner, documentId);
+    const key = keyFor(scope.installationId, extensionId, scope.sessionId, `document:${documentId}`);
+    this.linkDocumentView(viewId, key);
+    return this.pollerFor(extensionId, documentId, scope, key).readOnce(signal);
+  }
+  private linkDocumentView(viewId: string, key: string): void {
+    const keys = this.viewDocumentKeys.get(viewId) ?? new Set<string>();
+    keys.add(key);
+    this.viewDocumentKeys.set(viewId, keys);
+  }
 
+  private scopeIsCurrent(scope: ContextViewScope, signal: AbortSignal): boolean {
+    return !this.disposed && !signal.aborted && this.currentScope?.sessionId === scope.sessionId && this.currentInstallationId === scope.installationId;
+  }
   private async readDocument(extensionId: string, documentId: string, scope: ContextViewScope, signal: AbortSignal): Promise<{ document: unknown | null; revision: number }> {
-    const selected = this.currentScope;
-    if (!selected || selected.sessionId !== scope.sessionId || this.currentInstallationId !== scope.installationId) throw new Error("stale extension scope");
+    if (!this.scopeIsCurrent(scope, signal)) throw new Error("stale extension scope");
     const url = `/api/extensions/documents/${encodeURIComponent(extensionId)}/${encodeURIComponent(documentId)}?session=${encodeURIComponent(scope.sessionId)}`;
     const response = await (this.options.authFetch ?? browserAuthFetch)(url, { cache: "no-store", signal });
+    if (!this.scopeIsCurrent(scope, signal)) throw new Error("stale extension scope");
     if (!response.ok) throw new Error("extension document unavailable");
     const value = parseDocumentEnvelope(await response.json());
+    if (!this.scopeIsCurrent(scope, signal)) throw new Error("stale extension scope");
     if (value.installationId !== scope.installationId || value.scopeSessionId !== scope.sessionId || value.extensionId !== extensionId || value.documentId !== documentId) throw new Error("extension document identity mismatch");
     return { document: value.document, revision: value.revision };
   }
@@ -237,13 +302,18 @@ export class ExtensionHost {
   }
   private unlinkPollerView(key: string, viewId: string): void {
     const counts = this.pollerViewCounts.get(key);
+    const remainingForView = counts ? Math.max(0, (counts.get(viewId) ?? 1) - 1) : 0;
     if (counts) {
-      const remaining = (counts.get(viewId) ?? 1) - 1;
-      if (remaining > 0) counts.set(viewId, remaining); else counts.delete(viewId);
-      if (counts.size === 0) this.pollerViewCounts.delete(key);
+      if (remainingForView > 0) counts.set(viewId, remainingForView); else counts.delete(viewId);
+      if (counts.size === 0) {
+        this.pollerViewCounts.delete(key);
+        this.pollers.get(key)?.dispose();
+        this.pollers.delete(key);
+        this.documentStates.delete(key);
+      }
     }
     const keys = this.viewPollerKeys.get(viewId);
-    keys?.delete(key);
+    if (remainingForView === 0) keys?.delete(key);
     if (keys?.size === 0) this.viewPollerKeys.delete(viewId);
     this.pausePoller(key);
   }
@@ -251,7 +321,7 @@ export class ExtensionHost {
   private cleanupAll(): void {
     for (const id of [...this.loaded.keys()]) this.cleanupPackage(id);
     for (const poller of this.pollers.values()) poller.dispose();
-    this.pollers.clear(); this.pollerViewCounts.clear(); this.viewPollerKeys.clear(); this.visibleViews.clear();
+    this.pollers.clear(); this.pollerViewCounts.clear(); this.viewPollerKeys.clear(); this.viewDocumentKeys.clear(); this.visibleViews.clear(); this.documentStates.clear();
   }
   private render(message = this.registry.diagnostic): void {
     const tabs = this.options.container.querySelector<HTMLElement>("[data-extension-tabs]") ?? document.createElement("div");
@@ -260,7 +330,16 @@ export class ExtensionHost {
     for (const entry of this.registry.entries()) { const button = document.createElement("button"); button.type = "button"; button.textContent = entry.contribution.title; button.setAttribute("role", "tab"); button.setAttribute("aria-selected", String(entry.id === this.registry.selectedId)); button.addEventListener("click", () => this.select(entry.id)); tabs.append(button); }
     let status = this.options.container.querySelector<HTMLElement>("[data-extension-status]");
     if (!status) { status = document.createElement("p"); status.dataset.extensionStatus = ""; status.setAttribute("role", "status"); this.options.container.prepend(status); }
-    status.textContent = message || (this.registry.entries().length ? "Select a context view." : "No enabled context views for this scope.");
+    status.textContent = message || this.selectedDocumentStatus() || (this.registry.entries().length ? "Select a context view." : "No enabled context views for this scope.");
     this.options.onChange?.();
+  }
+  private selectedDocumentStatus(): string | null {
+    const selected = this.registry.selectedId;
+    if (!selected) return null;
+    const states = [...(this.viewDocumentKeys.get(selected) ?? [])].map(key => this.documentStates.get(key));
+    if (states.includes("error")) return "Extension context data is unavailable.";
+    if (states.includes("stale")) return "Showing stale extension context data.";
+    if (states.includes("paused")) return "Extension context updates are paused.";
+    return null;
   }
 }
