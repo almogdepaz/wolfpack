@@ -261,7 +261,9 @@ export function generateCspNonce(): string {
 function buildCsp(nonce: string): string {
   return [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}'`,
+    // Authenticated extension modules are fetched as verified bytes and imported
+    // from Blob URLs; no unsafe-eval or remote script source is permitted.
+    `script-src 'self' 'nonce-${nonce}' blob:`,
     "style-src 'self' 'unsafe-inline'",
     "connect-src 'self' wss: https:",
     "img-src 'self' data:",

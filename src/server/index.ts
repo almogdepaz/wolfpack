@@ -35,6 +35,7 @@ import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
 import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
+import { getExtensionRouteService } from "./extension-routes.ts";
 
 const log = createLogger("server");
 
@@ -178,6 +179,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
       return;
     }
 
+    if (await getExtensionRouteService().handle(req, res, url)) return;
     const key = `${req.method ?? "GET"} ${url.pathname}`;
     const handler = routes[key];
     if (handler) {

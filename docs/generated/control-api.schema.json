@@ -80,6 +80,200 @@
         "503 ErrorEnvelope"
       ]
     },
+    "listInstalledExtensions": {
+      "route": "GET /api/extensions",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:listInstalledExtensions:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listInstalledExtensions response",
+        "type": "object",
+        "properties": {
+          "safeMode": {
+            "type": "boolean"
+          },
+          "installations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ExtensionCatalogInstallation"
+            }
+          }
+        },
+        "required": [
+          "safeMode",
+          "installations"
+        ],
+        "additionalProperties": false
+      },
+      "errors": []
+    },
+    "getInstalledExtensionAsset": {
+      "route": "GET /api/extensions/assets/{installationId}/{assetPath}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:getInstalledExtensionAsset:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getInstalledExtensionAsset request",
+        "type": "object",
+        "properties": {
+          "installationId": {
+            "$ref": "#/$defs/ExtensionInstallationId"
+          },
+          "assetPath": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "installationId",
+          "assetPath"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:getInstalledExtensionAsset:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getInstalledExtensionAsset response",
+        "type": "string",
+        "contentMediaType": "text/javascript"
+      },
+      "errors": [
+        "404 ExtensionApiErrorEnvelope",
+        "409 ExtensionApiErrorEnvelope"
+      ]
+    },
+    "readExtensionDocument": {
+      "route": "GET /api/extensions/documents/{extensionId}/{documentId}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readExtensionDocument:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readExtensionDocument request",
+        "type": "object",
+        "properties": {
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "documentId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "session": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "extensionId",
+          "documentId",
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readExtensionDocument:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readExtensionDocument response",
+        "type": "object",
+        "properties": {
+          "installationId": {
+            "$ref": "#/$defs/ExtensionInstallationId"
+          },
+          "scopeSessionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "documentId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "document": {}
+        },
+        "required": [
+          "installationId",
+          "scopeSessionId",
+          "extensionId",
+          "documentId",
+          "revision",
+          "document"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ExtensionApiErrorEnvelope",
+        "404 ExtensionApiErrorEnvelope",
+        "503 ExtensionApiErrorEnvelope"
+      ]
+    },
+    "publishExtensionDocument": {
+      "route": "POST /api/extensions/documents/{extensionId}/{documentId}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:publishExtensionDocument:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "publishExtensionDocument request",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "document": {},
+          "ifRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "schemaVersion": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "sessionId",
+          "document",
+          "ifRevision",
+          "requestId",
+          "schemaVersion"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:publishExtensionDocument:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "publishExtensionDocument response",
+        "type": "object",
+        "properties": {
+          "receipt": {
+            "$ref": "#/$defs/ExtensionDocumentReceipt"
+          }
+        },
+        "required": [
+          "receipt"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ExtensionApiErrorEnvelope",
+        "404 ExtensionApiErrorEnvelope",
+        "409 ExtensionApiErrorEnvelope",
+        "413 ExtensionApiErrorEnvelope",
+        "422 ExtensionApiErrorEnvelope",
+        "503 ExtensionApiErrorEnvelope"
+      ]
+    },
     "getTaskRelayProfile": {
       "route": "GET /api/task-relay/profile",
       "stable": false,
@@ -3569,6 +3763,183 @@
         "error"
       ],
       "additionalProperties": true
+    },
+    "ExtensionId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "ExtensionInstallationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "ExtensionDocumentCatalog": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ExtensionId"
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "id",
+        "schemaVersion"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionCatalogInstallation": {
+      "type": "object",
+      "properties": {
+        "installationId": {
+          "$ref": "#/$defs/ExtensionInstallationId"
+        },
+        "extensionId": {
+          "$ref": "#/$defs/ExtensionId"
+        },
+        "package": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "name",
+            "version",
+            "digest"
+          ],
+          "additionalProperties": false
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "ui": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "mime": {
+              "const": "text/javascript"
+            }
+          },
+          "required": [
+            "path",
+            "digest",
+            "mime"
+          ],
+          "additionalProperties": false
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExtensionDocumentCatalog"
+          }
+        }
+      },
+      "required": [
+        "installationId",
+        "extensionId",
+        "package",
+        "enabled",
+        "documents"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionApiError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "currentRevision": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionApiErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "$ref": "#/$defs/ExtensionApiError"
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionDocumentReceipt": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "scopeSessionId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "extensionId": {
+          "$ref": "#/$defs/ExtensionId"
+        },
+        "documentId": {
+          "$ref": "#/$defs/ExtensionId"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "acceptedAt": {
+          "type": "string"
+        },
+        "payloadDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "baseRevision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "requestId",
+        "scopeSessionId",
+        "extensionId",
+        "documentId",
+        "revision",
+        "acceptedAt",
+        "payloadDigest",
+        "baseRevision",
+        "schemaVersion"
+      ],
+      "additionalProperties": false
     },
     "TaskWorkerCreatedSession": {
       "type": "object",

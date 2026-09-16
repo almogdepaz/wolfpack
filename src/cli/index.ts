@@ -28,6 +28,8 @@ import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { applyServiceAuthFile } from "./service-auth.js";
 import { logsCommand } from "./logs.js";
 import { issueJwt } from "./api.js";
+import { extensionsCommand } from "./extensions.ts";
+import { extensionDataCommand, extensionDataUsage } from "./extension-data.ts";
 import {
   extractMachineSelector,
   verifyMachineTarget,
@@ -89,6 +91,8 @@ Commands:
   wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack logs [--follow|--json]  Read or follow service logs
+  wolfpack extensions <action>     Install and manage local extension packages
+  wolfpack extension-data <action> Read or publish installed extension documents
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
   wolfpack --version               Print the installed version
 
@@ -234,6 +238,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
       "create", "open", "status", "read", "send", "wait", "prompt",
     ].includes(action ?? ""));
   }
+  if (family === "extension-data") return command.length === 1 || (command.length === 2 && ["read", "publish"].includes(action ?? ""));
   return family === "agent"
     && (command.length === 1 || (command.length === 2 && action === "spawn"));
 }
@@ -244,6 +249,7 @@ function isMachineCommandSupported(argv: readonly string[]): boolean {
   if (family === "session") {
     return ["create", "open", "status", "read", "send", "wait", "prompt"].includes(action ?? "");
   }
+  if (family === "extension-data") return action === "read" || action === "publish";
   return family === "agent" && action === "spawn";
 }
 
@@ -336,6 +342,12 @@ async function dispatchCommand(
   if (cmd === "session") process.exit(await runSessionCommand(argv.slice(1), target));
   if (cmd === "agent") process.exit(await runAgentCommand(argv.slice(1), target));
   if (cmd === "kill") process.exit(await killSession(argv.slice(1), target));
+  if (cmd === "extensions") process.exit(await extensionsCommand(argv.slice(1)));
+  if (cmd === "extension-data") {
+    if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print(extensionDataUsage());
+    else process.exit(await extensionDataCommand(argv.slice(1), target));
+    return;
+  }
   if (cmd === "logs") {
     if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print("Usage: wolfpack logs [--follow] [--json] [--broker]");
     else process.exit(await logsCommand(argv.slice(1)));
