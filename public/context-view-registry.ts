@@ -69,7 +69,15 @@ export class ContextViewRegistry {
   }
 
   setScope(scope: ContextViewScope | null): void {
-    if (this.scopeValue?.installationId === scope?.installationId && this.scopeValue?.sessionId === scope?.sessionId) return;
+    if (this.scopeValue?.installationId === scope?.installationId && this.scopeValue?.sessionId === scope?.sessionId) {
+      // The initial unavailable/error path has no previous scope to replace but
+      // still needs host-owned chrome instead of a silent empty region.
+      if (!scope && !this.diagnosticValue) {
+        this.diagnosticValue = "Select a live terminal with an exact session identity to view extension context.";
+        this.changed();
+      }
+      return;
+    }
     this.disposeAllMounted();
     this.scopeValue = scope;
     this.selectedValue = null;

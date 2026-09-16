@@ -35,6 +35,78 @@ let container: FakeElement;
 afterEach(() => { container?.remove(); documentListeners.clear(); });
 
 describe("ExtensionHost", () => {
+  test("pauses document polling for a hidden view even while another view remains visible", async () => {
+    container = new FakeElement();
+    let documentReads = 0;
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      authFetch: async (input) => {
+        const url = String(input);
+        if (url.includes("/documents/")) {
+          documentReads++;
+          return Response.json({ installationId, scopeSessionId: "22222222-2222-4222-8222-222222222222", extensionId: "notes", documentId: "one", revision: documentReads, document: { revision: documentReads } });
+        }
+        return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: "/api/extensions/assets/notes/a/dist/ui.js", digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
+      },
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => {
+        register.registerContextView({ id: "first", title: "First", mount: (_container, context) => { context.documents.subscribe("one", () => {}); return { dispose() {} }; } });
+        register.registerContextView({ id: "second", title: "Second", mount: () => ({ dispose() {} }) });
+      } })) as never,
+    });
+    await host.refresh();
+    host.select("notes/first");
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(documentReads).toBe(1);
+    host.select("notes/second");
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(documentReads).toBe(1);
+    host.dispose();
+  });
+
+  test("rejects a catalog that claims more than one host installation identity before loading packages", async () => {
+    container = new FakeElement();
+    let loads = 0;
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      authFetch: async () => Response.json({ safeMode: false, installations: [
+        { installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: "/api/extensions/assets/notes/a/dist/ui.js", digest: "b".repeat(64), mime: "text/javascript" }, documents: [] },
+        { installationId: "33333333-3333-4333-8333-333333333333", extensionId: "other", enabled: true, package: { name: "other", version: "1.0.0", digest: "c".repeat(64) }, ui: { path: "dist/ui.js", url: "/api/extensions/assets/other/c/dist/ui.js", digest: "d".repeat(64), mime: "text/javascript" }, documents: [] },
+      ] }),
+      bundleLoader: (async () => { loads++; return {}; }) as never,
+    });
+    await host.refresh();
+    expect(loads).toBe(0);
+    expect(container.children.find(child => "extensionStatus" in child.dataset)?.textContent).toContain("catalog unavailable");
+    host.dispose();
+  });
+
+  test("disabling one package cleans only its owned mounted view", async () => {
+    container = new FakeElement();
+    let notesEnabled = true;
+    const events: string[] = [];
+    const installation = (extensionId: string, enabled: boolean) => ({ installationId, extensionId, enabled, package: { name: extensionId, version: "1.0.0", digest: extensionId === "notes" ? "a".repeat(64) : "c".repeat(64) }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/${extensionId}/${extensionId === "notes" ? "a".repeat(64) : "c".repeat(64)}/dist/ui.js`, digest: "b".repeat(64), mime: "text/javascript" as const }, documents: [] });
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      authFetch: async () => Response.json({ safeMode: false, installations: [installation("notes", notesEnabled), installation("tasks", true)] }),
+      bundleLoader: (async (url: string) => ({ default: (register: ExtensionRegistrationHost) => {
+        const extensionId = url.includes("/notes/") ? "notes" : "tasks";
+        register.registerContextView({ id: "tab", title: extensionId, mount: () => ({ dispose: () => events.push(`dispose:${extensionId}`) }) });
+      } })) as never,
+    });
+    await host.refresh();
+    host.select("notes/tab");
+    host.select("tasks/tab");
+    notesEnabled = false;
+    await host.refresh();
+    expect(events).toEqual(["dispose:notes"]);
+    expect(host.selectedId).toBe("tasks/tab");
+    host.dispose();
+    expect(events).toEqual(["dispose:notes", "dispose:tasks"]);
+  });
+
   test("registration is inert until user selection and scope replacement aborts/disposes the old mount", async () => {
     container = new FakeElement();
     let scope = "22222222-2222-4222-8222-222222222222";
