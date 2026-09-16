@@ -28,9 +28,10 @@ const view: ContextViewContribution = {
     let unsubscribe = () => {};
     try { unsubscribe = context.documents.subscribe("context", render); }
     catch { render(undefined, 0); }
-    const abort = () => { stopped = true; unsubscribe(); };
-    context.signal.addEventListener("abort", abort, { once: true });
-    return { setVisible(visible) { root.hidden = !visible; }, dispose() { abort(); context.signal.removeEventListener("abort", abort); root.remove(); } };
+    let released = false;
+    const cleanup = () => { if (released) return; released = true; stopped = true; unsubscribe(); };
+    context.signal.addEventListener("abort", cleanup, { once: true });
+    return { setVisible(visible) { root.hidden = !visible; }, dispose() { cleanup(); context.signal.removeEventListener("abort", cleanup); root.remove(); } };
   },
 };
 
