@@ -5422,7 +5422,11 @@ const workspaceTerminalLayouts = new TerminalLayoutRegistry();
 initWorkspaceTerminalLayouts(workspaceTerminalLayouts);
 const workspaceLayoutPicker = document.getElementById("workspace-terminal-layout") as HTMLSelectElement | null;
 if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
-createWorkspaceShell({ onTerminalGeometryChange: () => scheduleGridStabilizedFit() });
+let extensionHost: ExtensionHost | null = null;
+const workspaceShell = createWorkspaceShell({
+  onTerminalGeometryChange: () => scheduleGridStabilizedFit(),
+  onContextVisibilityChange: visible => extensionHost?.setShellVisible(visible),
+});
 window.addEventListener("resize", () => scheduleGridStabilizedFit());
 
 function selectedExtensionScope(): { readonly sessionId: string | null; readonly unavailable?: string } | null {
@@ -5440,7 +5444,7 @@ function selectedExtensionScope(): { readonly sessionId: string | null; readonly
 }
 
 const extensionHostContainer = document.getElementById("workspace-context-container");
-const extensionHost = extensionHostContainer ? new ExtensionHost({
+extensionHost = extensionHostContainer ? new ExtensionHost({
   container: extensionHostContainer,
   scope: selectedExtensionScope,
   safeMode: () => wpSettings.extensionSafeMode,
@@ -5458,6 +5462,7 @@ const extensionHost = extensionHostContainer ? new ExtensionHost({
     };
   },
 }) : null;
+extensionHost?.setShellVisible(workspaceShell?.contextVisible ?? true);
 document.addEventListener("wolfpack-extension-scope-change", () => { void extensionHost?.refresh(); });
 window.addEventListener("pagehide", event => {
   if (!(event as PageTransitionEvent).persisted) extensionHost?.dispose();

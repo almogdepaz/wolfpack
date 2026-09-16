@@ -37,8 +37,13 @@ export function loadWorkspaceShellPreferences(storage: Pick<Storage, "getItem">)
   catch { return DEFAULT_WORKSPACE_SHELL_PREFERENCES; }
 }
 
+export function workspaceContextIsVisible(preferences: WorkspaceShellPreferences): boolean {
+  return preferences.fullView === "context" || (preferences.fullView === "none" && !preferences.contextCollapsed);
+}
+
 export interface WorkspaceShell {
   readonly preferences: WorkspaceShellPreferences;
+  readonly contextVisible: boolean;
   setPreferences(next: Partial<WorkspaceShellPreferences>): void;
   dispose(): void;
 }
@@ -51,6 +56,7 @@ export function createWorkspaceShell(options: {
   readonly root?: HTMLElement | null;
   readonly storage?: Pick<Storage, "getItem" | "setItem">;
   readonly onTerminalGeometryChange?: () => void;
+  readonly onContextVisibilityChange?: (visible: boolean) => void;
 } = {}): WorkspaceShell | null {
   const root = options.root ?? document.getElementById("workspace-shell");
   if (!root) return null;
@@ -84,6 +90,7 @@ export function createWorkspaceShell(options: {
     if (contextFullButton) contextFullButton.setAttribute("aria-pressed", String(current.fullView === "context"));
     if (terminalFullButton) terminalFullButton.setAttribute("aria-pressed", String(current.fullView === "terminals"));
     if (restoreButton) restoreButton.hidden = current.fullView === "none" && !current.contextCollapsed;
+    options.onContextVisibilityChange?.(workspaceContextIsVisible(current));
     if (geometryChanged) notifyGeometry();
   };
   const setPreferences = (next: Partial<WorkspaceShellPreferences>): void => {
@@ -108,6 +115,7 @@ export function createWorkspaceShell(options: {
 
   return {
     get preferences() { return current; },
+    get contextVisible() { return workspaceContextIsVisible(current); },
     setPreferences,
     dispose(): void {
       if (geometryFrame !== null) cancelAnimationFrame(geometryFrame);

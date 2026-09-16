@@ -53,11 +53,12 @@ function token(): string {
   return `${header}.${payload}.${createHmac("sha256", SECRET).update(`${header}.${payload}`).digest("base64url")}`;
 }
 
-function writeGenericPackage(id: string, title: string, version = "1.0.0"): string {
+function writeGenericPackage(id: string, title: string, version = "1.0.0", withLayout = false): string {
   const source = join(root, id);
   mkdirSync(join(source, "dist"), { recursive: true, mode: 0o700 });
   writeFileSync(join(source, "package.json"), JSON.stringify({ name: `wolfpack-${id}`, version, wolfpack: { manifestVersion: 1, apiVersion: 1, id, ui: "dist/ui.js", skills: [], documents: [] } }));
-  writeFileSync(join(source, "dist", "ui.js"), `export default host => host.registerContextView({ id: "shared", title: ${JSON.stringify(title)}, mount(container) { container.textContent = ${JSON.stringify(`${title} mounted`)}; return { dispose() {} }; } });\n`);
+  const layout = withLayout ? `host.registerTerminalLayout({ id: "recipe", title: ${JSON.stringify(`${title} recipe`)}, arrange(context) { return { version: 1, rows: Array.from({ length: Math.max(1, context.panes.length) }, () => ({ size: 1 })), columns: [{ size: 1 }], placements: context.panes.map((pane, row) => ({ paneId: pane.id, row, column: 0 })) }; } });` : "";
+  writeFileSync(join(source, "dist", "ui.js"), `export default host => { host.registerContextView({ id: "shared", title: ${JSON.stringify(title)}, mount(container) { container.textContent = ${JSON.stringify(`${title} mounted`)}; return { dispose() {} }; } }); ${layout} };\n`);
   return source;
 }
 
@@ -140,7 +141,7 @@ test.beforeAll(async () => {
   cli = join(root, "bin", "wolfpack");
   const build = spawnSync("bun", ["build", "--compile", join(ROOT, "src", "cli", "index.ts"), "--outfile", cli], { cwd: ROOT, env: environment(), stdio: ["ignore", "pipe", "pipe"] });
   expect(build.status, build.stderr.toString()).toBe(0);
-  alphaSource = writeGenericPackage("alpha", "Alpha");
+  alphaSource = writeGenericPackage("alpha", "Alpha", "1.0.0", true);
   const beta = writeGenericPackage("beta", "Beta");
   runCli(["extensions", "install", alphaSource, "--trust-browser-code"]);
   runCli(["extensions", "install", beta, "--trust-browser-code"]);
@@ -268,7 +269,7 @@ test("installed package disable re-enable remove reinstall and update preserve a
   await refreshThroughSessionSwitch(page, testInfo);
   await expect(page.getByRole("tab", { name: "Alpha" })).toBeVisible();
 
-  writeGenericPackage("alpha", "Alpha Updated", "1.1.0");
+  writeGenericPackage("alpha", "Alpha Updated", "1.1.0", true);
   runCli(["extensions", "update", alphaSource, "--trust-browser-code"]);
   await refreshThroughSessionSwitch(page, testInfo);
   await expect(page.getByRole("tab", { name: "Alpha Updated" })).toBeVisible();
@@ -333,6 +334,69 @@ test("extension safe mode uses the real settings control and makes no extension 
   if (testInfo.project.name === "mobile-webkit") await openSession(page, SESSION_A);
   await expect(page.getByRole("tab", { name: /Agent Context/ })).toBeVisible({ timeout: 5_000 });
   expect(extensionRequests.some(url => new URL(url).pathname === "/api/extensions")).toBe(true);
+});
+
+test("installed extension recipe and terminal instances survive exact grid-scope focus changes", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop installed recipe scope transition");
+  await authorize(page);
+  const sockets: string[] = [];
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets.push(socket.url()); });
+  await page.goto(server!.baseUrl);
+  await openSession(page, SESSION_A);
+  await expect(page.locator("#workspace-terminal-layout option[value='alpha/recipe']")).toHaveCount(1, { timeout: 5_000 });
+  await page.locator("#workspace-terminal-layout").selectOption("alpha/recipe");
+  await page.locator(`[data-action="toggle-grid"][data-session="${SESSION_B}"]`).filter({ visible: true }).click();
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 10_000 });
+  const first = page.locator(`#desktop-grid-container .grid-cell[data-session="${SESSION_A}"]`);
+  const second = page.locator(`#desktop-grid-container .grid-cell[data-session="${SESSION_B}"]`);
+  await first.locator("canvas").evaluate(node => { (window as unknown as { __extensionRecipeFirst?: Element }).__extensionRecipeFirst = node; });
+  await second.locator("canvas").evaluate(node => { (window as unknown as { __extensionRecipeSecond?: Element }).__extensionRecipeSecond = node; });
+  const attached = sockets.length;
+  await second.click();
+  await expect(page.locator("#workspace-terminal-layout")).toHaveValue("alpha/recipe");
+  expect(await first.locator("canvas").evaluate(node => node === (window as unknown as { __extensionRecipeFirst?: Element }).__extensionRecipeFirst)).toBe(true);
+  expect(await second.locator("canvas").evaluate(node => node === (window as unknown as { __extensionRecipeSecond?: Element }).__extensionRecipeSecond)).toBe(true);
+  expect(sockets).toHaveLength(attached);
+});
+
+test("ordinary context-hide controls pause polling and preserve retained workspace state", async ({ page }, testInfo) => {
+  test.skip(!["desktop", "mobile-webkit"].includes(testInfo.project.name), "Chromium and WebKit shell visibility boundary");
+  await authorize(page);
+  let reads = 0;
+  const sockets: string[] = [];
+  page.on("request", request => { if (new URL(request.url()).pathname === "/api/extensions/documents/agent-context/context") reads++; });
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets.push(socket.url()); });
+  await page.goto(server!.baseUrl);
+  await openSession(page, SESSION_A);
+  await selectAgentContext(page);
+  const contextView = page.locator("[data-context-view='agent-context/context']");
+  const current = JSON.parse(runCli(["extension-data", "read", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port)) as { document: { goal: string } };
+  await expect(contextView.locator("h2")).toContainText(current.document.goal);
+  await contextView.evaluate(node => { (window as unknown as { __extensionRetainedContext?: Element }).__extensionRetainedContext = node; });
+  const canvas = page.locator("#desktop-terminal-container canvas");
+  await canvas.evaluate(node => { (window as unknown as { __extensionRetainedShellCanvas?: Element }).__extensionRetainedShellCanvas = node; });
+  const selectedLayout = await page.locator("#workspace-terminal-layout").inputValue();
+  const attached = sockets.length;
+
+  for (const control of ["#workspace-context-collapse", "#workspace-terminal-full"]) {
+    const button = page.locator(control);
+    if (testInfo.project.name === "mobile-webkit") {
+      await button.focus();
+      await page.keyboard.press("Enter");
+    } else {
+      await button.click();
+    }
+    await expect(page.locator("#workspace-context-region")).toBeHidden();
+    const atHide = reads;
+    await page.waitForTimeout(2_300);
+    expect(reads, `${control} must pause selected context polling`).toBe(atHide);
+    await page.locator("#workspace-restore").click();
+    await expect.poll(() => reads).toBeGreaterThan(atHide);
+    expect(await contextView.evaluate(node => node === (window as unknown as { __extensionRetainedContext?: Element }).__extensionRetainedContext)).toBe(true);
+    expect(await canvas.evaluate(node => node === (window as unknown as { __extensionRetainedShellCanvas?: Element }).__extensionRetainedShellCanvas)).toBe(true);
+    await expect(page.locator("#workspace-terminal-layout")).toHaveValue(selectedLayout);
+    expect(sockets).toHaveLength(attached);
+  }
 });
 
 test("delegation grid and focused terminal scope follow the exact selected broker UUID", async ({ page }, testInfo) => {

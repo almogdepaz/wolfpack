@@ -29,6 +29,9 @@ export class SharedDocumentPoller {
     this.maxBackoffMs = Math.max(this.intervalMs, options.maxBackoffMs ?? 16_000);
   }
 
+  /** Host ownership may outlive one subscriber while another reader still shares this poller. */
+  get hasActiveConsumers(): boolean { return this.hasConsumers(); }
+
   /** One-shot SDK reads share an in-flight poll with subscriptions for this exact key. */
   readOnce(signal?: AbortSignal): Promise<PolledExtensionDocument> {
     if (this.disposed) return Promise.reject(new Error("extension document polling disposed"));

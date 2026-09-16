@@ -88,6 +88,7 @@ export class ExtensionHost {
   private currentScope: SelectedExtensionScope | null = null;
   private currentInstallationId: string | null = null;
   private catalog: ExtensionCatalogEnvelope | null = null;
+  private shellVisible = true;
   private disposed = false;
 
   constructor(private readonly options: ExtensionHostOptions) {
@@ -109,16 +110,16 @@ export class ExtensionHost {
     const scope = this.options.scope();
     const previousScope = this.currentScope;
     if (previousScope?.sessionId !== scope?.sessionId) {
-      // Scope identity is an immediate ownership boundary. Do not leave the old
-      // mounted package alive while replacement catalog I/O is pending.
+      // Exact document/view scope changes immediately release their mounted and
+      // polling resources, but installed package/layout registrations belong to
+      // the catalog installation and remain stable across ordinary pane focus.
       this.registry.setScope(null);
-      this.cleanupAll();
-      this.currentInstallationId = null;
+      this.cleanupScopeResources();
     }
     this.currentScope = scope;
     if (!scope || !scope.sessionId || scope.unavailable) {
       this.registry.setScope(null);
-      this.cleanupAll();
+      this.cleanupScopeResources();
       this.render(scope?.unavailable ?? "Select a live terminal with an exact session identity to view extension context.");
       return;
     }
@@ -131,9 +132,10 @@ export class ExtensionHost {
       if (catalog.safeMode) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
       this.catalog = catalog;
       const installationId = catalog.installations[0]?.installationId ?? null;
-      // A scope is a resource boundary, not just a fetch argument. Abort and
-      // dispose old view/poll resources before exposing any replacement scope.
-      if (previousScope?.sessionId !== scope.sessionId || this.currentInstallationId !== installationId) {
+      // A changed installation owns different trusted registrations. Ordinary
+      // session scope changes were already cleaned above without unregistering
+      // this installation's stable package/layout contributions.
+      if (this.currentInstallationId !== installationId) {
         this.registry.setScope(null);
         this.cleanupAll();
       }
@@ -144,11 +146,20 @@ export class ExtensionHost {
       for (const item of catalog.installations) if (item.enabled && item.ui) await this.load(item, generation);
       if (generation === this.generation) this.render();
     } catch {
-      if (generation === this.generation) { this.registry.setScope(null); this.cleanupAll(); this.render("Extension catalog unavailable for the selected scope."); }
+      if (generation === this.generation) {
+        this.registry.setScope(null);
+        this.cleanupScopeResources();
+        this.render("Extension catalog unavailable for the selected scope.");
+      }
     }
   }
 
   select(id: string): void { this.registry.select(id); }
+  setShellVisible(visible: boolean): void {
+    if (this.disposed || this.shellVisible === visible) return;
+    this.shellVisible = visible;
+    this.pausePollers();
+  }
   dispose(): void { if (this.disposed) return; this.disposed = true; ++this.generation; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(); this.registry.dispose(); }
 
   private async load(item: ExtensionCatalogInstallation, generation: number): Promise<void> {
@@ -230,7 +241,7 @@ export class ExtensionHost {
       signal.addEventListener("abort", release, { once: true });
       return release;
     };
-    signal.addEventListener("abort", () => this.viewDocumentKeys.delete(viewId), { once: true });
+    signal.addEventListener("abort", () => this.releaseViewDocuments(viewId), { once: true });
     return Object.freeze({ signal, scope: Object.freeze({ ...scope }), selection: Object.freeze({ selectedSessionId: scope.sessionId }), theme: Object.freeze({}), storage: Object.freeze(storage), documents: Object.freeze({ read, subscribe }) });
   }
 
@@ -267,7 +278,10 @@ export class ExtensionHost {
     this.assertDeclaredDocument(owner, documentId);
     const key = keyFor(scope.installationId, extensionId, scope.sessionId, `document:${documentId}`);
     this.linkDocumentView(viewId, key);
-    return this.pollerFor(extensionId, documentId, scope, key).readOnce(signal);
+    const poller = this.pollerFor(extensionId, documentId, scope, key);
+    const read = poller.readOnce(signal);
+    this.pausePoller(key);
+    return read.finally(() => this.releasePollerIfUnowned(key));
   }
   private linkDocumentView(viewId: string, key: string): void {
     const keys = this.viewDocumentKeys.get(viewId) ?? new Set<string>();
@@ -292,36 +306,51 @@ export class ExtensionHost {
 
   private setViewVisible(viewId: string, visible: boolean): void {
     if (visible) this.visibleViews.add(viewId); else this.visibleViews.delete(viewId);
-    for (const key of this.viewPollerKeys.get(viewId) ?? []) this.pausePoller(key);
+    for (const key of this.viewDocumentKeys.get(viewId) ?? []) this.pausePoller(key);
   }
   private onDocumentVisibility = (): void => this.pausePollers();
   private pausePollers(): void { for (const key of this.pollers.keys()) this.pausePoller(key); }
   private pausePoller(key: string): void {
-    const hasVisibleSubscriber = [...(this.pollerViewCounts.get(key)?.keys() ?? [])].some(viewId => this.visibleViews.has(viewId));
-    this.pollers.get(key)?.setPaused(document.visibilityState !== "visible" || !hasVisibleSubscriber);
+    const hasVisibleConsumer = [...this.viewDocumentKeys].some(([viewId, keys]) => keys.has(key) && this.visibleViews.has(viewId));
+    this.pollers.get(key)?.setPaused(document.visibilityState !== "visible" || !this.shellVisible || !hasVisibleConsumer);
   }
   private unlinkPollerView(key: string, viewId: string): void {
     const counts = this.pollerViewCounts.get(key);
     const remainingForView = counts ? Math.max(0, (counts.get(viewId) ?? 1) - 1) : 0;
     if (counts) {
       if (remainingForView > 0) counts.set(viewId, remainingForView); else counts.delete(viewId);
-      if (counts.size === 0) {
-        this.pollerViewCounts.delete(key);
-        this.pollers.get(key)?.dispose();
-        this.pollers.delete(key);
-        this.documentStates.delete(key);
-      }
+      if (counts.size === 0) this.pollerViewCounts.delete(key);
     }
     const keys = this.viewPollerKeys.get(viewId);
     if (remainingForView === 0) keys?.delete(key);
     if (keys?.size === 0) this.viewPollerKeys.delete(viewId);
-    this.pausePoller(key);
+    this.releasePollerIfUnowned(key);
+  }
+  private releaseViewDocuments(viewId: string): void {
+    const keys = [...(this.viewDocumentKeys.get(viewId) ?? [])];
+    this.viewDocumentKeys.delete(viewId);
+    this.visibleViews.delete(viewId);
+    for (const key of keys) this.releasePollerIfUnowned(key);
+  }
+  private releasePollerIfUnowned(key: string): void {
+    const hasViewOwner = [...this.viewDocumentKeys.values()].some(keys => keys.has(key));
+    const poller = this.pollers.get(key);
+    if (hasViewOwner || this.pollerViewCounts.has(key) || poller?.hasActiveConsumers) {
+      this.pausePoller(key);
+      return;
+    }
+    poller?.dispose();
+    this.pollers.delete(key);
+    this.documentStates.delete(key);
   }
   private cleanupPackage(extensionId: string): void { const loaded = this.loaded.get(extensionId); if (!loaded) return; this.loaded.delete(extensionId); loaded.cleanup(); }
-  private cleanupAll(): void {
-    for (const id of [...this.loaded.keys()]) this.cleanupPackage(id);
+  private cleanupScopeResources(): void {
     for (const poller of this.pollers.values()) poller.dispose();
     this.pollers.clear(); this.pollerViewCounts.clear(); this.viewPollerKeys.clear(); this.viewDocumentKeys.clear(); this.visibleViews.clear(); this.documentStates.clear();
+  }
+  private cleanupAll(): void {
+    for (const id of [...this.loaded.keys()]) this.cleanupPackage(id);
+    this.cleanupScopeResources();
   }
   private render(message = this.registry.diagnostic): void {
     const tabs = this.options.container.querySelector<HTMLElement>("[data-extension-tabs]") ?? document.createElement("div");

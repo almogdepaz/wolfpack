@@ -3,6 +3,7 @@ import { TerminalLayoutRegistry, nearestPaneInDirection } from "../../public/ter
 import {
   DEFAULT_WORKSPACE_SHELL_PREFERENCES,
   normalizeWorkspaceShellPreferences,
+  workspaceContextIsVisible,
 } from "../../public/workspace-shell.ts";
 
 function memoryStorage(initial: Record<string, string> = {}): Pick<Storage, "getItem" | "setItem"> {
@@ -55,5 +56,12 @@ describe("phase-1 host workspace layout", () => {
       placement: "bottom", splitSize: 560, contextCollapsed: true, fullView: "context",
     });
     expect(normalizeWorkspaceShellPreferences({ placement: "bad", splitSize: Number.NaN, fullView: "bad" })).toEqual(DEFAULT_WORKSPACE_SHELL_PREFERENCES);
+  });
+
+  test("reports actual context-region visibility for collapse and both full-view modes", () => {
+    expect(workspaceContextIsVisible(DEFAULT_WORKSPACE_SHELL_PREFERENCES)).toBe(true);
+    expect(workspaceContextIsVisible({ ...DEFAULT_WORKSPACE_SHELL_PREFERENCES, contextCollapsed: true })).toBe(false);
+    expect(workspaceContextIsVisible({ ...DEFAULT_WORKSPACE_SHELL_PREFERENCES, fullView: "terminals" })).toBe(false);
+    expect(workspaceContextIsVisible({ ...DEFAULT_WORKSPACE_SHELL_PREFERENCES, contextCollapsed: true, fullView: "context" })).toBe(true);
   });
 });
