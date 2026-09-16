@@ -47,7 +47,7 @@ describe("ExtensionHost", () => {
           documentReads++;
           return Response.json({ installationId, scopeSessionId: "22222222-2222-4222-8222-222222222222", extensionId: "notes", documentId: "one", revision: documentReads, document: { revision: documentReads } });
         }
-        return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: "/api/extensions/assets/notes/a/dist/ui.js", digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
+        return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/dist/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
       },
       bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => {
         register.registerContextView({ id: "first", title: "First", mount: (_container, context) => { context.documents.subscribe("one", () => {}); return { dispose() {} }; } });
@@ -71,14 +71,28 @@ describe("ExtensionHost", () => {
       container: container as unknown as HTMLElement,
       scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
       authFetch: async () => Response.json({ safeMode: false, installations: [
-        { installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: "/api/extensions/assets/notes/a/dist/ui.js", digest: "b".repeat(64), mime: "text/javascript" }, documents: [] },
-        { installationId: "33333333-3333-4333-8333-333333333333", extensionId: "other", enabled: true, package: { name: "other", version: "1.0.0", digest: "c".repeat(64) }, ui: { path: "dist/ui.js", url: "/api/extensions/assets/other/c/dist/ui.js", digest: "d".repeat(64), mime: "text/javascript" }, documents: [] },
+        { installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/dist/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] },
+        { installationId: "33333333-3333-4333-8333-333333333333", extensionId: "other", enabled: true, package: { name: "other", version: "1.0.0", digest: "c".repeat(64) }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/other/${"c".repeat(64)}/dist/ui.js`, digest: "d".repeat(64), mime: "text/javascript" }, documents: [] },
       ] }),
       bundleLoader: (async () => { loads++; return {}; }) as never,
     });
     await host.refresh();
     expect(loads).toBe(0);
     expect(container.children.find(child => "extensionStatus" in child.dataset)?.textContent).toContain("catalog unavailable");
+    host.dispose();
+  });
+
+  test("rejects an asset URL that is not owned by the catalog package", async () => {
+    container = new FakeElement();
+    let loads = 0;
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      authFetch: async () => Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: "/api/extensions/assets/other/c/dist/ui.js", digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }),
+      bundleLoader: (async () => { loads++; return {}; }) as never,
+    });
+    await host.refresh();
+    expect(loads).toBe(0);
     host.dispose();
   });
 
@@ -114,7 +128,7 @@ describe("ExtensionHost", () => {
     const host = new ExtensionHost({
       container: container as unknown as HTMLElement,
       scope: () => ({ sessionId: scope }),
-      authFetch: async () => Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: "/api/extensions/assets/notes/a/dist/ui.js", digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }),
+      authFetch: async () => Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/dist/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }),
       bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => register.registerContextView({ id: "tab", title: "Notes", mount: (_container: HTMLElement, context: ExtensionViewContext) => { events.push(`mount:${context.scope.sessionId}`); context.signal.addEventListener("abort", () => events.push("abort")); return { dispose: () => events.push("dispose") }; } }) })) as never,
     });
     await host.refresh();

@@ -32,6 +32,7 @@ function keyFor(installationId: string, extensionId: string, scopeId: string, su
 function record(value: unknown): value is JsonRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function text(value: unknown): value is string { return typeof value === "string"; }
 function positiveSafeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 1; }
+function safeRelativeAssetPath(value: unknown): value is string { return text(value) && value.length <= 256 && /^[A-Za-z0-9._/-]+$/.test(value) && !value.split("/").some(part => !part || part === "." || part === ".."); }
 function nonNegativeSafeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
 function catalogFailure(): never { throw new Error("invalid extension catalog envelope"); }
 
@@ -53,7 +54,7 @@ function parseCatalog(value: unknown): ExtensionCatalogEnvelope {
     if (documents.length > 32) return catalogFailure();
     let ui: ExtensionCatalogInstallation["ui"];
     if (candidate.ui !== undefined) {
-      if (!record(candidate.ui) || !text(candidate.ui.path) || !text(candidate.ui.url) || !text(candidate.ui.digest) || !SHA256.test(candidate.ui.digest) || candidate.ui.mime !== "text/javascript") return catalogFailure();
+      if (!record(candidate.ui) || !safeRelativeAssetPath(candidate.ui.path) || !text(candidate.ui.url) || candidate.ui.url !== `/api/extensions/assets/${candidate.extensionId}/${candidate.package.digest}/${candidate.ui.path}` || !text(candidate.ui.digest) || !SHA256.test(candidate.ui.digest) || candidate.ui.mime !== "text/javascript") return catalogFailure();
       ui = Object.freeze({ path: candidate.ui.path, url: candidate.ui.url, digest: candidate.ui.digest, mime: "text/javascript" });
     }
     return Object.freeze({ installationId: candidate.installationId, extensionId: candidate.extensionId, package: Object.freeze({ name: candidate.package.name, version: candidate.package.version, digest: candidate.package.digest }), enabled: candidate.enabled, ...(ui ? { ui } : {}), documents: Object.freeze(documents) });
