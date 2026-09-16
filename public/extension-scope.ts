@@ -1,5 +1,7 @@
 import type { SelectedExtensionScope } from "./extension-host.ts";
 
+const EXACT_BROKER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 export interface SelectedTerminalIdentity {
   readonly sessionId: string | null | undefined;
   readonly machine: string | null | undefined;
@@ -16,7 +18,7 @@ export function resolveSelectedExtensionScope(
   target: SelectedTerminalIdentity | null | undefined,
   localMachineIdentity: string,
 ): SelectedExtensionScope | null {
-  if (!target?.sessionId) return null;
+  if (!target?.sessionId || !EXACT_BROKER_UUID.test(target.sessionId)) return null;
   if (target.machine && target.machine !== localMachineIdentity) {
     return { sessionId: null, unavailable: "Extension context is unavailable for a terminal served by another machine." };
   }

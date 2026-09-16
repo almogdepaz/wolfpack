@@ -32,6 +32,7 @@ function keyFor(installationId: string, extensionId: string, scopeId: string, su
 function record(value: unknown): value is JsonRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function text(value: unknown): value is string { return typeof value === "string"; }
 function positiveSafeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 1; }
+function nonNegativeSafeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
 function catalogFailure(): never { throw new Error("invalid extension catalog envelope"); }
 
 /** Treat server JSON as hostile until every identity used for storage or loading is checked. */
@@ -61,6 +62,10 @@ function parseCatalog(value: unknown): ExtensionCatalogEnvelope {
 }
 function packageFingerprint(item: ExtensionCatalogInstallation): string {
   return `${item.installationId}:${item.extensionId}:${item.package.digest}:${item.ui?.url ?? ""}:${item.ui?.digest ?? ""}`;
+}
+function parseDocumentEnvelope(value: unknown): ExtensionDocumentReadEnvelope {
+  if (!record(value) || !text(value.installationId) || !UUID.test(value.installationId) || !text(value.scopeSessionId) || !UUID.test(value.scopeSessionId) || !text(value.extensionId) || !isExtensionIdentifier(value.extensionId) || !text(value.documentId) || !isExtensionIdentifier(value.documentId) || !nonNegativeSafeInteger(value.revision) || !("document" in value)) return catalogFailure();
+  return Object.freeze({ installationId: value.installationId, scopeSessionId: value.scopeSessionId, extensionId: value.extensionId, documentId: value.documentId, revision: value.revision, document: value.document });
 }
 
 
@@ -214,7 +219,7 @@ export class ExtensionHost {
     const url = `/api/extensions/documents/${encodeURIComponent(extensionId)}/${encodeURIComponent(documentId)}?session=${encodeURIComponent(scope.sessionId)}`;
     const response = await (this.options.authFetch ?? browserAuthFetch)(url, { cache: "no-store", signal });
     if (!response.ok) throw new Error("extension document unavailable");
-    const value = await response.json() as ExtensionDocumentReadEnvelope;
+    const value = parseDocumentEnvelope(await response.json());
     if (value.installationId !== scope.installationId || value.scopeSessionId !== scope.sessionId || value.extensionId !== extensionId || value.documentId !== documentId) throw new Error("extension document identity mismatch");
     return { document: value.document, revision: value.revision };
   }

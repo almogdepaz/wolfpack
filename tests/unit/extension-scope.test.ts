@@ -15,6 +15,7 @@ describe("selected extension scope", () => {
 
   test("does not turn a name/project-like fallback into an extension scope", () => {
     expect(resolveSelectedExtensionScope({ sessionId: null, machine: "" }, "local-machine")).toBeNull();
+    expect(resolveSelectedExtensionScope({ sessionId: "session-name", machine: "" }, "local-machine")).toBeNull();
   });
 
   test("active grid authority never falls back to the prior single-terminal UUID", () => {
