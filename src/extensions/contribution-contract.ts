@@ -1,4 +1,4 @@
-import { MAX_EXTENSION_CONTRIBUTIONS, qualifiedContributionId } from "./manifest.ts";
+import { MAX_EXTENSION_CONTRIBUTIONS, qualifiedContributionId } from "./contribution-metadata.ts";
 
 export type ExtensionContributionKind = "context-view" | "terminal-layout";
 export interface RegisteredContribution {

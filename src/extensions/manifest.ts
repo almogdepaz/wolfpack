@@ -1,12 +1,19 @@
 import Ajv from "ajv";
 import { isCanonicalPackageVersion } from "./package-version.ts";
+import {
+  EXTENSION_IDENTIFIER_SOURCE,
+  ExtensionManifestError,
+  MAX_EXTENSION_CONTRIBUTIONS,
+  MAX_EXTENSION_DOCUMENTS,
+  qualifiedContributionId,
+} from "./contribution-metadata.ts";
+
+export { ExtensionManifestError, MAX_EXTENSION_CONTRIBUTIONS, MAX_EXTENSION_DOCUMENTS, qualifiedContributionId } from "./contribution-metadata.ts";
 
 export const EXTENSION_MANIFEST_VERSION = 1;
 export const EXTENSION_API_VERSION = 1;
-export const MAX_EXTENSION_CONTRIBUTIONS = 32;
-export const MAX_EXTENSION_DOCUMENTS = 32;
 
-const IDENTIFIER = "^[a-z][a-z0-9-]{0,63}$";
+const IDENTIFIER = EXTENSION_IDENTIFIER_SOURCE;
 const SAFE_RELATIVE_PATH = "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\\\)[A-Za-z0-9._@/+-]+$";
 
 export interface ExtensionDocumentDeclaration {
@@ -69,13 +76,6 @@ const packageSchema = {
 
 const validatePackage = new Ajv({ allErrors: true, strict: true }).compile(packageSchema);
 
-export class ExtensionManifestError extends Error {
-  constructor(readonly code: "INVALID_MANIFEST" | "DUPLICATE_DOCUMENT_ID", message: string) {
-    super(message);
-    this.name = "ExtensionManifestError";
-  }
-}
-
 /** Validates metadata only. It never imports or executes package browser code. */
 export function parseExtensionPackageManifest(value: unknown): ExtensionPackageManifest {
   if (!validatePackage(value)) {
@@ -98,9 +98,3 @@ export function parseExtensionPackageManifest(value: unknown): ExtensionPackageM
   return manifest;
 }
 
-export function qualifiedContributionId(extensionId: string, contributionId: string): string {
-  if (!new RegExp(IDENTIFIER).test(extensionId) || !new RegExp(IDENTIFIER).test(contributionId)) {
-    throw new ExtensionManifestError("INVALID_MANIFEST", "extension and contribution IDs must be stable lowercase identifiers");
-  }
-  return `${extensionId}/${contributionId}`;
-}

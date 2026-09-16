@@ -1,3 +1,4 @@
+import { ExtensionContributionGate } from "../src/extensions/contribution-contract.ts";
 import type { TerminalLayoutContribution } from "../src/extensions/layout-contract.ts";
 import type { ExtensionRegistration, ExtensionViewContext } from "../src/extensions/sdk.ts";
 import type { ExtensionCatalogEnvelope, ExtensionCatalogInstallation, ExtensionDocumentReadEnvelope } from "../src/extensions/runtime-contract.ts";
@@ -22,15 +23,6 @@ function keyFor(installationId: string, extensionId: string, scopeId: string, su
   return `wolfpack-extension-ui:v1:${installationId}:${extensionId}:${scopeId}:${suffix}`;
 }
 
-const EXTENSION_CONTRIBUTION_LIMIT = 32;
-const CONTRIBUTION_ID = /^[a-z][a-z0-9-]{0,63}$/;
-function qualifiedContribution(extensionId: string, localId: string, registered: Set<string>): string {
-  if (!CONTRIBUTION_ID.test(localId) || registered.size >= EXTENSION_CONTRIBUTION_LIMIT) throw new Error("invalid or excessive extension contribution");
-  const id = `${extensionId}/${localId}`;
-  if (registered.has(id)) throw new Error(`duplicate extension contribution: ${id}`);
-  registered.add(id);
-  return id;
-}
 
 /** Browser host boundary: catalog/auth/loader/view cleanup are host-owned; package code receives only SDK context. */
 export class ExtensionHost {
@@ -99,17 +91,17 @@ export class ExtensionHost {
       const module = await loadAuthenticatedExtensionBundle<{ default?: ExtensionRegistration }>(item.ui!.url, item.ui!.digest, { safeMode: false });
       if (this.disposed || generation !== this.generation) return;
       if (typeof module.default !== "function") throw new Error("extension bundle has no registration function");
-      const registered = new Set<string>();
+      const gate = new ExtensionContributionGate(item.extensionId);
       const cleanups: Array<() => void> = [];
       const registrationCleanup = module.default({
         registerContextView: contribution => {
-          const viewId = qualifiedContribution(item.extensionId, contribution.id, registered);
+          const viewId = gate.register("context-view", contribution.id).qualifiedId;
           const unregister = this.registry.register(viewId, contribution);
           this.owners.set(viewId, { extension: item, unregister });
           cleanups.push(() => { this.owners.delete(viewId); unregister(); });
         },
         registerTerminalLayout: contribution => {
-          const qualifiedId = qualifiedContribution(item.extensionId, contribution.id, registered);
+          const qualifiedId = gate.register("terminal-layout", contribution.id).qualifiedId;
           // Layout integration is injected by app.ts; errors are contained with this package.
           const unregister = this.options.registerLayout?.({ ...contribution, id: qualifiedId }) ?? (() => {});
           cleanups.push(unregister);
