@@ -11,8 +11,15 @@
     "wolfpack": "./bin/run.cjs",
     "wolfpack-bridge": "./bin/run.cjs"
   },
+  "exports": {
+    "./extensions": {
+      "types": "./sdk/types/public-sdk.d.ts",
+      "import": "./sdk/extensions.js"
+    }
+  },
   "files": [
     "bin/run.cjs",
+    "sdk",
     "THIRD_PARTY_NOTICES",
     "CONTRIBUTING.md",
     "SECURITY.md",
