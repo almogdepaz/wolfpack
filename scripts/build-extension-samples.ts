@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, rmSync, rmdirSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const root = join(import.meta.dirname, "..");
+const typecheck = Bun.spawnSync(["bunx", "tsc", "--noEmit", "--project", join(root, "scripts", "extensions-samples.tsconfig.json")], { cwd: root, stdout: "inherit", stderr: "inherit" });
+if (typecheck.exitCode !== 0) throw new Error("extension sample typecheck failed");
 const modules = join(root, "examples", "extensions", "node_modules");
 const createdModules = !existsSync(modules);
 const bridge = join(modules, "wolfpack-bridge");
