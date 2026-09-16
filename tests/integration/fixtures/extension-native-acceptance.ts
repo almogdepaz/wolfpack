@@ -7,9 +7,9 @@
  * create/retire harmless shell sessions; package installation and document
  * traffic always go through the compiled public CLI and compiled HTTP server.
  */
-import { randomUUID, createHmac } from "node:crypto";
+import { randomUUID, createHash, createHmac } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { BrokerClient } from "../../../src/broker/client.ts";
@@ -49,6 +49,7 @@ function childEnv(port?: number): Record<string, string> {
     WOLFPACK_SETTINGS_PATH: join(home, ".wolfpack", "settings.json"),
     WOLFPACK_TASK_ROOT: join(home, ".wolfpack", "tasks"),
     WOLFPACK_TASK_RELAY_ROOT: join(home, ".wolfpack", "relay"),
+    WOLFPACK_PI_SKILLS_ROOT: join(home, ".pi", "agent", "skills"),
     ...(port === undefined ? {} : { WOLFPACK_PORT: String(port) }),
   };
 }
@@ -59,7 +60,7 @@ function assertOwned(path: string, label: string): void {
 function configureOuterEnvironment(): void {
   for (const [name, value] of Object.entries(childEnv())) process.env[name] = value;
   assertOwned(home, "HOME"); assertOwned(project, "WOLFPACK_DEV_DIR"); assertOwned(socket, "WOLFPACK_BROKER_SOCKET");
-  for (const name of ["WOLFPACK_MACHINE_ID_PATH", "WOLFPACK_SESSION_IDENTITY_PATH", "WOLFPACK_SETTINGS_PATH", "WOLFPACK_TASK_ROOT", "WOLFPACK_TASK_RELAY_ROOT"]) assertOwned(process.env[name]!, name);
+  for (const name of ["WOLFPACK_MACHINE_ID_PATH", "WOLFPACK_SESSION_IDENTITY_PATH", "WOLFPACK_SETTINGS_PATH", "WOLFPACK_TASK_ROOT", "WOLFPACK_TASK_RELAY_ROOT", "WOLFPACK_PI_SKILLS_ROOT"]) assertOwned(process.env[name]!, name);
 }
 async function assertOwnedPersistentPaths(): Promise<void> {
   configureOuterEnvironment();
@@ -136,8 +137,20 @@ async function createShell(name: string) {
   if (!backend) fail("broker backend unavailable");
   return backend.createSession(name, project, "shell", () => ({ agentCmd: "shell" }));
 }
+async function packagedSampleSource(): Promise<string> {
+  const source = join(ROOT, "examples", "extensions", "agent-context"); const packs = join(sandbox, "packs"); mkdirSync(packs, { recursive: true, mode: 0o700 });
+  const packed = Bun.spawnSync(["npm", "pack", "--ignore-scripts", "--json", "--pack-destination", packs], { cwd: source, env: childEnv(), stdout: "pipe", stderr: "pipe" });
+  if (packed.exitCode !== 0) fail(`sample package pack failed: ${packed.stderr.toString().slice(-1000)}`);
+  const value = JSON.parse(packed.stdout.toString()) as Array<{ filename?: string }>; const filename = value[0]?.filename;
+  if (!filename) fail("sample package pack returned no filename"); const archive = join(packs, filename); const integrity = `sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`;
+  const { inspectNpmTarball, extractVerifiedNpmTarball } = await import("../../../src/extensions/package-security.ts");
+  await inspectNpmTarball(archive); const extracted = await extractVerifiedNpmTarball(archive, join(sandbox, "sample-extract"), { integrity });
+  const required = ["dist/ui.js", "schemas/context.schema.json", "skills/wolfpack-agent-context/SKILL.md"];
+  if (!required.every((path) => existsSync(join(extracted, path)))) fail("packed sample omitted a declared UI/schema/skill file");
+  return extracted;
+}
 async function expectRead(cli: string, port: number, sessionId: string, revision: number, goal: string | null): Promise<void> {
-  const data = JSON.parse(runCli(cli, ["extension-data", "read", "native/context", "--session", sessionId, "--json"], port));
+  const data = JSON.parse(runCli(cli, ["extension-data", "read", "agent-context/context", "--session", sessionId, "--json"], port));
   if (data.revision !== revision || (goal === null ? data.document !== null : data.document?.goal !== goal)) fail(`unexpected read response ${JSON.stringify(data)}`);
 }
 
@@ -146,24 +159,18 @@ try {
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   mkdirSync(project, { recursive: true, mode: 0o700 });
   await assertOwnedPersistentPaths();
-  const source = join(sandbox, "extension");
-  mkdirSync(join(source, "dist"), { recursive: true });
-  mkdirSync(join(source, "schemas"), { recursive: true });
-  writeFileSync(join(source, "package.json"), JSON.stringify({
-    name: "native-extension-fixture", version: "1.0.0",
-    wolfpack: { manifestVersion: 1, apiVersion: 1, id: "native", ui: "dist/ui.js", skills: [], documents: [{ id: "context", schemaVersion: 7, schema: "schemas/context.json" }] },
-  }));
-  writeFileSync(join(source, "dist", "ui.js"), "export const nativeFixture = true;\n");
-  writeFileSync(join(source, "schemas", "context.json"), JSON.stringify({ type: "object", required: ["goal"], properties: { goal: { type: "string" } }, additionalProperties: false }));
+  const source = await packagedSampleSource();
   const firstDocument = join(sandbox, "first.json");
   const secondDocument = join(sandbox, "second.json");
-  writeFileSync(firstDocument, JSON.stringify({ goal: "retained across compiled server restart" }));
-  writeFileSync(secondDocument, JSON.stringify({ goal: "revision two" }));
+  const document = (goal: string) => ({ schemaVersion: 1, goal, planItems: [], decisions: [], blockers: [], nextSteps: [] });
+  writeFileSync(firstDocument, JSON.stringify(document("retained across compiled server restart")));
+  writeFileSync(secondDocument, JSON.stringify(document("revision two")));
   const cli = join(bin, "wolfpack");
   const serverBin = join(bin, "wolfpack-extension-server");
   run([process.execPath, "build", "--compile", join(ROOT, "src", "cli", "index.ts"), "--outfile", cli]);
   run([process.execPath, "build", "--compile", join(ROOT, "tests", "integration", "fixtures", "extension-native-server.ts"), "--outfile", serverBin]);
-  runCli(cli, ["extensions", "install", source, "--trust-browser-code"], 18790);
+  runCli(cli, ["extensions", "install", source, "--trust-browser-code", "--skills", "pi"], 18790);
+  if (!existsSync(join(home, ".pi", "agent", "skills", "wolfpack-agent-context", "SKILL.md"))) fail("installed sample skill was not deployed into the owned discovery root");
   await startBroker();
   const original = await createShell("native-scope");
   let port = await startServer(serverBin);
@@ -172,33 +179,33 @@ try {
   if (unauthenticated.status !== 401) fail(`catalog accepted unauthenticated request (${unauthenticated.status})`);
   const catalogResponse = await fetch(`http://127.0.0.1:${port}/api/extensions`, { headers: { Authorization: `Bearer ${jwt()}` } });
   const catalog = await catalogResponse.json() as any;
-  const installed = catalog.installations?.find((item: any) => item.extensionId === "native");
-  if (!catalogResponse.ok || installed?.documents?.[0]?.schemaVersion !== 7 || typeof installed?.ui?.url !== "string") fail(`catalog did not expose installed declaration: ${JSON.stringify(catalog)}`);
+  const installed = catalog.installations?.find((item: any) => item.extensionId === "agent-context");
+  if (!catalogResponse.ok || installed?.documents?.[0]?.schemaVersion !== 1 || typeof installed?.ui?.url !== "string") fail(`catalog did not expose installed declaration: ${JSON.stringify(catalog)}`);
   const asset = await fetch(`http://127.0.0.1:${port}${installed.ui.url}`, { headers: { Authorization: `Bearer ${jwt()}` } });
-  if (!asset.ok || await asset.text() !== "export const nativeFixture = true;\n") fail("authenticated qualified asset was not served from installed snapshot");
+  if (!asset.ok || (await asset.text()).includes("wolfpack-bridge/extensions")) fail("authenticated sample asset was not served as a self-contained installed bundle");
 
   const requestId = randomUUID();
-  runCli(cli, ["extension-data", "publish", "native/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port);
+  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port);
   await expectRead(cli, port, original.wolfpackSessionId, 1, "retained across compiled server restart");
-  runCli(cli, ["extension-data", "publish", "native/context", "--session", "not-a-uuid", "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 2);
-  runCli(cli, ["extension-data", "publish", "native/context", "--session", randomUUID(), "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
+  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", "not-a-uuid", "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 2);
+  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", randomUUID(), "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
 
   await stop(server); server = undefined;
   port = await startServer(serverBin);
-  const retry = JSON.parse(runCli(cli, ["extension-data", "publish", "native/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
+  const retry = JSON.parse(runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
   if (retry.receipt?.revision !== 1 || retry.receipt?.requestId !== requestId) fail(`identical retry did not return retained receipt: ${JSON.stringify(retry)}`);
-  runCli(cli, ["extension-data", "publish", "native/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
-  runCli(cli, ["extension-data", "publish", "native/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "1", "--request-id", randomUUID(), "--json"], port);
+  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
+  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "1", "--request-id", randomUUID(), "--json"], port);
   await expectRead(cli, port, original.wolfpackSessionId, 2, "revision two");
 
   await backend!.killSessionById(original.wolfpackSessionId);
-  const retainedAfterExit = JSON.parse(runCli(cli, ["extension-data", "publish", "native/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
+  const retainedAfterExit = JSON.parse(runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
   if (retainedAfterExit.receipt?.revision !== 1) fail("retained retry was revalidated after terminal exit");
-  runCli(cli, ["extension-data", "publish", "native/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "2", "--request-id", randomUUID(), "--json"], port, 1);
+  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "2", "--request-id", randomUUID(), "--json"], port, 1);
   const replacement = await createShell("native-scope");
   if (replacement.wolfpackSessionId === original.wolfpackSessionId) fail("same-name shell did not receive a new broker UUID");
   await expectRead(cli, port, replacement.wolfpackSessionId, 0, null);
-  const replacementPublish = runCli(cli, ["extension-data", "publish", "native/context", "--session", replacement.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port);
+  const replacementPublish = runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", replacement.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port);
   try { await expectRead(cli, port, replacement.wolfpackSessionId, 1, "retained across compiled server restart"); }
   catch (error) { fail(`${error instanceof Error ? error.message : String(error)}; replacement publish=${replacementPublish}`); }
   process.stdout.write("extension-native-acceptance: compiled CLI/server + real broker UUID/restart/CAS/isolation OK\n");
