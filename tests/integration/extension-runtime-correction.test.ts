@@ -155,7 +155,8 @@ test("successful npm installation cleans owned acquisition and extraction interm
   const bytes = readFileSync(archive);
   const { createHash } = await import("node:crypto");
   const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
-  const registry = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
+  let registry!: ReturnType<typeof Bun.serve>;
+  registry = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request): Response {
     if (new URL(request.url).pathname === "/fixture.tgz") return new Response(bytes);
     return Response.json({ name: "review-extension", version: "1.0.0", dist: { tarball: `${registry.url.origin}/fixture.tgz`, integrity } });
   } });

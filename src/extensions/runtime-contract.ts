@@ -20,7 +20,7 @@ export interface ExtensionCatalogInstallation {
   readonly extensionId: string;
   readonly package: { readonly name: string; readonly version: string; readonly digest: string };
   readonly enabled: boolean;
-  readonly ui?: { readonly path: string; readonly digest: string; readonly mime: "text/javascript" };
+  readonly ui?: { readonly path: string; readonly url: string; readonly digest: string; readonly mime: "text/javascript" };
   readonly documents: readonly ExtensionCatalogDocument[];
 }
 export interface ExtensionCatalogEnvelope { readonly safeMode: boolean; readonly installations: readonly ExtensionCatalogInstallation[]; }

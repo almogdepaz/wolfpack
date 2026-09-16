@@ -14,7 +14,17 @@ export async function extensionDataCommand(argv: readonly string[], target?: Ver
   if (!name || !flags || (action !== "read" && action !== "publish") || typeof flags["--session"] !== "string" || !UUID.test(flags["--session"] as string) || !readFlagsValid && !publishFlagsValid) { printError(extensionDataUsage()); return 2; }
   const path = `/api/extensions/documents/${name.extensionId}/${name.documentId}`;
   let response: Response;
-  try { response = action === "read" ? await call(`${path}?session=${encodeURIComponent(flags["--session"] as string)}`, {}, target) : await call(path, { method: "POST", body: JSON.stringify({ sessionId: flags["--session"], document: JSON.parse(readFileSync(flags["--file"] as string, "utf8")), ifRevision: Number(flags["--if-revision"]), requestId: flags["--request-id"], schemaVersion: 1 }) }, target); } catch (error) { printError(`extension-data request failed: ${error instanceof Error ? error.message : String(error)}`); return 1; }
+  try {
+    if (action === "read") response = await call(`${path}?session=${encodeURIComponent(flags["--session"] as string)}`, {}, target);
+    else {
+      const catalog = await call("/api/extensions", {}, target);
+      const value: unknown = await catalog.json();
+      const installation = value && typeof value === "object" && Array.isArray((value as any).installations) ? (value as any).installations.find((item: any) => item.extensionId === name.extensionId) : undefined;
+      const declaration = installation?.documents?.find((item: any) => item.id === name.documentId);
+      if (!catalog.ok || !declaration || !Number.isSafeInteger(declaration.schemaVersion)) throw new Error("installed document declaration is unavailable");
+      response = await call(path, { method: "POST", body: JSON.stringify({ sessionId: flags["--session"], document: JSON.parse(readFileSync(flags["--file"] as string, "utf8")), ifRevision: Number(flags["--if-revision"]), requestId: flags["--request-id"], schemaVersion: declaration.schemaVersion }) }, target);
+    }
+  } catch (error) { printError(`extension-data request failed: ${error instanceof Error ? error.message : String(error)}`); return 1; }
   const value: unknown = await response.json().catch(() => ({ error: { code: "INVALID_RESPONSE", message: "server returned invalid JSON" } }));
   if (!response.ok) { if (flags["--json"]) printApiJson({ ok: false, ...((value && typeof value === "object") ? value : {}) }, target); else printError(JSON.stringify(value)); return response.status === 401 ? 5 : 1; }
   if (flags["--json"]) printApiJson(value, target); else print(JSON.stringify(value, null, 2)); return 0;

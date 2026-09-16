@@ -118,15 +118,20 @@
         "title": "getInstalledExtensionAsset request",
         "type": "object",
         "properties": {
-          "installationId": {
-            "$ref": "#/$defs/ExtensionInstallationId"
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "packageDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
           },
           "assetPath": {
             "type": "string"
           }
         },
         "required": [
-          "installationId",
+          "extensionId",
+          "packageDigest",
           "assetPath"
         ],
         "additionalProperties": false
@@ -3828,6 +3833,9 @@
             "path": {
               "type": "string"
             },
+            "url": {
+              "type": "string"
+            },
             "digest": {
               "type": "string",
               "pattern": "^[a-f0-9]{64}$"
@@ -3838,6 +3846,7 @@
           },
           "required": [
             "path",
+            "url",
             "digest",
             "mime"
           ],

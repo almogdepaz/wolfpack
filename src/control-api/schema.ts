@@ -381,7 +381,7 @@ export const controlApiSource: ControlApiSource = {
     ExtensionCatalogInstallation: object({
       installationId: ref("ExtensionInstallationId"), extensionId: ref("ExtensionId"),
       package: object({ name: string(), version: string(), digest: { type: "string", pattern: "^[a-f0-9]{64}$" } }, ["name", "version", "digest"]),
-      enabled: boolean(), ui: object({ path: string(), digest: { type: "string", pattern: "^[a-f0-9]{64}$" }, mime: { const: "text/javascript" } }, ["path", "digest", "mime"]),
+      enabled: boolean(), ui: object({ path: string(), url: string(), digest: { type: "string", pattern: "^[a-f0-9]{64}$" }, mime: { const: "text/javascript" } }, ["path", "url", "digest", "mime"]),
       documents: arrayOf(ref("ExtensionDocumentCatalog")),
     }, ["installationId", "extensionId", "package", "enabled", "documents"]),
     ExtensionApiError: object({ code: string(), message: string(), currentRevision: { type: "integer", minimum: 0 } }, ["code", "message"]),
@@ -856,7 +856,7 @@ export const controlApiSource: ControlApiSource = {
     },
     "GET /api/extensions/assets/{installationId}/{assetPath}": {
       operationId: "getInstalledExtensionAsset", stable: true, auth: "jwt-when-configured",
-      request: object({ installationId: ref("ExtensionInstallationId"), assetPath: string() }, ["installationId", "assetPath"]), response: { type: "string", contentMediaType: "text/javascript" }, errors: ["404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope"],
+      request: object({ extensionId: ref("ExtensionId"), packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, assetPath: string() }, ["extensionId", "packageDigest", "assetPath"]), response: { type: "string", contentMediaType: "text/javascript" }, errors: ["404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope"],
     },
     "GET /api/extensions/documents/{extensionId}/{documentId}": {
       operationId: "readExtensionDocument", stable: true, auth: "jwt-when-configured",

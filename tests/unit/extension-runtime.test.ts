@@ -18,10 +18,10 @@ describe("extension runtime integration", () => {
     const base = root(); const runtime = new ExtensionRuntime({ root: join(base, "runtime") }); const source = fixture(base);
     const first = await runtime.install({ source, trustBrowserCode: true });
     expect(runtime.catalog().installations).toMatchObject([{ installationId: first.installation.installationId, enabled: true, package: { version: "1.0.0" } }]);
-    expect(runtime.asset(first.installation.installationId, "dist/ui.js").bytes.toString()).toContain("first");
-    expect(() => runtime.asset(first.installation.installationId, "package.json")).toThrow();
+    expect(runtime.asset("fixture", first.installation.package.digest, "dist/ui.js").bytes.toString()).toContain("first");
+    expect(() => runtime.asset("fixture", first.installation.package.digest, "package.json")).toThrow();
     writeFileSync(join(source, "dist", "ui.js"), "changed without update");
-    expect(runtime.asset(first.installation.installationId, "dist/ui.js").bytes.toString()).toContain("first");
+    expect(runtime.asset("fixture", first.installation.package.digest, "dist/ui.js").bytes.toString()).toContain("first");
     await runtime.install({ source: fixture(base, "1.1.0", "second"), trustBrowserCode: true });
     expect(runtime.get("fixture").package.version).toBe("1.1.0");
     expect(runtime.rollback("fixture").package.version).toBe("1.0.0");
