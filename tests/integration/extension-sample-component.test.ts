@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium } from "@playwright/test";
+import { chromium, type Browser } from "@playwright/test";
 
 const root = join(import.meta.dirname, "..", "..");
 
@@ -25,12 +25,23 @@ leadStackLayout({ panes: [{ id: "one" }], selectedPaneId: "one", viewport: { wid
   } finally { rmSync(stage, { recursive: true, force: true }); }
 }, 20_000);
 
-async function component() {
+type ComponentDependencies = { launch?: () => Promise<Browser>; onServer?: (url: string) => void };
+
+async function component({ launch = () => chromium.launch({ headless: true }), onServer }: ComponentDependencies = {}) {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) { return new URL(request.url).pathname === "/ui.js" ? new Response(Bun.file(join(root, "examples", "extensions", "agent-context", "dist", "ui.js")), { headers: { "content-type": "text/javascript" } }) : new Response("<main></main>", { headers: { "content-type": "text/html" } }); } });
-  const browser = await chromium.launch({ headless: true }); const page = await browser.newPage(); await page.goto(server.url.toString());
+  onServer?.(server.url.toString());
+  const browser = await launch(); const page = await browser.newPage(); await page.goto(server.url.toString());
   await page.evaluate(async () => { const asset = "/ui.js"; const module = await import(asset); let contribution: any; let publish: any; let releases = 0; module.default({ registerContextView(value: any) { contribution = value; }, registerTerminalLayout() {} }); const abort = new AbortController(); const storage = new Map<string, string>(); const controller = contribution.mount(document.querySelector("main"), { signal: abort.signal, scope: { installationId: "installation", sessionId: "11111111-1111-4111-8111-111111111111" }, selection: { selectedSessionId: null }, theme: {}, storage: { get: (key: string) => storage.get(key) ?? null, set: (key: string, value: string) => storage.set(key, value), remove: (key: string) => storage.delete(key) }, documents: { read: async () => null, subscribe(_id: string, listener: any) { publish = listener; listener(null, 0); return () => { releases++; }; } } }); (globalThis as any).__sample = { abort, controller, publish, releases: () => releases }; });
   return { page, async close() { await browser.close(); server.stop(true); } };
 }
+
+test("component fixture releases server and partial browser after later startup rejection", async () => {
+  let serverUrl = ""; let closes = 0;
+  const partial = { close: async () => { closes++; }, newPage: async () => { throw new Error("new page failed"); } } as unknown as Browser;
+  await expect(component({ launch: async () => partial, onServer: (url) => { serverUrl = url; } })).rejects.toThrow("new page failed");
+  expect(closes).toBe(1);
+  await expect(fetch(serverUrl)).rejects.toThrow();
+});
 
 test("generated Agent Context component preserves focused drafts and ignores late stale revisions", async () => {
   const fixture = await component(); try { const { page } = fixture; expect(await page.locator("h2").textContent()).toContain("No context"); await page.locator("textarea").fill("draft"); await page.locator("textarea").evaluate((node: HTMLTextAreaElement) => { node.focus(); node.setSelectionRange(1, 4); (globalThis as any).editor = node; }); await page.evaluate(() => { const sample = (globalThis as any).__sample; const value = { schemaVersion: 1, goal: "<img src=x onerror=alert(1)>", planItems: [], decisions: [], blockers: [], nextSteps: [] }; sample.publish(value, 2); sample.publish({ ...value, goal: "stale" }, 1); }); expect(await page.locator("h2").textContent()).toBe("<img src=x onerror=alert(1)>"); expect(await page.locator("img").count()).toBe(0); expect(await page.locator("textarea").inputValue()).toBe("draft"); expect(await page.evaluate(() => { const node = (globalThis as any).editor; return [node === document.querySelector("textarea"), document.activeElement === node, node.selectionStart, node.selectionEnd]; })).toEqual([true, true, 1, 4]); } finally { await fixture.close(); }
