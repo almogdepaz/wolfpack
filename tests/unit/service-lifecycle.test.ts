@@ -15,6 +15,7 @@ const fs = await import("node:fs");
 const originalCopyFileSync = fs.copyFileSync;
 let failedCopyDestination: string | undefined;
 let ttyConsent = false;
+let ttyInput = "y";
 let ttyWrites = "";
 let trackActivationHealth = false;
 await mock.module("node:fs", () => ({
@@ -27,7 +28,13 @@ await mock.module("node:fs", () => ({
     if (!ttyConsent) throw new Error("fixture has no controlling tty");
     return 99;
   }),
-  readSync: mock((_fd, buffer) => { buffer.write("y"); return 1; }),
+  readSync: mock((_fd: number, buffer: Buffer, offset: number, length: number) => {
+    const line = ttyInput.includes("\n") ? ttyInput.slice(0, ttyInput.indexOf("\n") + 1) : ttyInput;
+    const chunk = line.slice(0, length);
+    buffer.write(chunk, offset, "utf-8");
+    ttyInput = ttyInput.slice(chunk.length);
+    return chunk.length;
+  }),
   writeSync: mock((_fd, message) => { ttyWrites += String(message); return String(message).length; }),
   closeSync: mock(() => undefined),
 }));
@@ -314,6 +321,7 @@ describe.serial("package-runner pair staging", () => {
       serviceActive = true;
       brokerActive = true;
       ttyConsent = true;
+      ttyInput = "y" + " ".repeat(1024) + "\n";
       ttyWrites = "";
       const lines: string[] = [];
       const output = spyOn(process.stdout, "write").mockImplementation((chunk) => { lines.push(String(chunk)); return true; });
@@ -323,8 +331,10 @@ describe.serial("package-runner pair staging", () => {
         output.mockRestore();
       }
       expect((lines.join("") + ttyWrites).match(/broker-owned sessions will end/gi)).toHaveLength(1);
+      expect(ttyInput).toBe("");
     } finally {
       ttyConsent = false;
+      ttyInput = "y";
       ttyWrites = "";
       serviceActive = false;
       brokerActive = true;
@@ -636,19 +646,28 @@ describe("serviceRestart", () => {
 `;
 
 const macInnerTest = String.raw`import { expect, mock, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
 const execCommands: string[] = [];
+let serverActive = false;
+let brokerActive = true;
 await mock.module("node:child_process", () => ({
   execFile: mock(() => undefined),
   execFileSync: mock(() => ""),
   execSync: mock((command: string) => {
     execCommands.push(command);
-    // A loaded KeepAlive launchd job can legitimately be between process
-    // instances and therefore have no pid in launchctl's output.
-    if (command.includes("launchctl print gui/")) return "state = waiting\n";
+    if (command.includes("launchctl print gui/") && command.includes("com.wolfpack.broker")) {
+      return brokerActive ? "pid = 123\n" : "state = waiting\n";
+    }
+    if (command.includes("launchctl print gui/") && command.includes("com.wolfpack.server")) {
+      return serverActive ? "pid = 456\n" : "state = waiting\n";
+    }
+    if (command.includes("launchctl bootout gui/") && command.includes("com.wolfpack.broker")) brokerActive = false;
+    if (command.includes("launchctl bootout gui/") && command.includes("com.wolfpack.server")) serverActive = false;
+    if (command.includes("launchctl bootstrap gui/") && command.includes("com.wolfpack.broker.plist")) brokerActive = true;
+    if (command.includes("launchctl bootstrap gui/") && command.includes("com.wolfpack.server.plist")) serverActive = true;
     return "";
   }),
   spawn: mock(() => undefined),
@@ -667,7 +686,7 @@ await mock.module("../../src/cli/config.js", () => ({
   waitForPortFree: mock(() => undefined),
 }));
 
-const { refreshInstalledServerService, serviceInstall } = await import("../../src/cli/service.ts");
+const { activatePackageRunnerPair, refreshInstalledServerService, replacePackageRunnerPair, serviceInstall } = await import("../../src/cli/service.ts");
 
 function launchdLifecycleCommands(): readonly string[] {
   return execCommands.filter(command =>
@@ -704,8 +723,46 @@ test("writes and starts the broker before the server on macOS", () => {
   ]);
 });
 
+test("matching partial package activation retains a live broker while creating descriptors and starting the server", () => {
+  execCommands.length = 0;
+  serverActive = false;
+  brokerActive = true;
+  const plistDir = join(homedir(), "Library", "LaunchAgents");
+  const stableDir = join(homedir(), ".wolfpack", "bin");
+  const brokerBin = join(stableDir, "wolfpack-broker");
+  const packageDir = join(homedir(), "node_modules", "wolfpack-bridge-darwin-arm64");
+  const packageServer = join(packageDir, "wolfpack");
+  const packageBroker = join(packageDir, "wolfpack-broker");
+  const domain = "gui/" + process.getuid!();
+  mkdirSync(stableDir, { recursive: true });
+  mkdirSync(packageDir, { recursive: true });
+  for (const [stable, packagePayload, content] of [
+    [join(stableDir, "wolfpack"), packageServer, "server\n"],
+    [brokerBin, packageBroker, "broker\n"],
+  ] as const) {
+    writeFileSync(stable, content);
+    writeFileSync(packagePayload, content);
+    chmodSync(packagePayload, 0o755);
+  }
+
+  expect(replacePackageRunnerPair(packageServer)).toEqual({ replaced: false, hadServices: true });
+  activatePackageRunnerPair();
+
+  expect(readFileSync(join(plistDir, "com.wolfpack.broker.plist"), "utf-8")).toContain(brokerBin);
+  expect(serverActive).toBe(true);
+  expect(brokerActive).toBe(true);
+  expect(execCommands).not.toContain("launchctl bootout " + domain + "/com.wolfpack.broker 2>/dev/null");
+  expect(execCommands.some(command => command.includes("com.wolfpack.broker.plist"))).toBe(false);
+  expect(execCommands).toEqual(expect.arrayContaining([
+    "launchctl bootout " + domain + "/com.wolfpack.server 2>/dev/null",
+    "launchctl bootstrap " + domain + " \"" + join(plistDir, "com.wolfpack.server.plist") + "\"",
+    "launchctl kickstart " + domain + "/com.wolfpack.server",
+  ]));
+});
+
 test("re-bootstraps a loaded launchd KeepAlive job even when it has no pid", () => {
   execCommands.length = 0;
+  serverActive = false;
   const plistDir = join(homedir(), "Library", "LaunchAgents");
   const plistPath = join(plistDir, "com.wolfpack.server.plist");
   mkdirSync(plistDir, { recursive: true });

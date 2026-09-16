@@ -28,6 +28,7 @@ SEMVER_CORE_IDENTIFIER='(0|[1-9][0-9]*)'
 SEMVER_PRERELEASE_IDENTIFIER='(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)'
 SEMVER_BUILD_IDENTIFIER='[0-9A-Za-z-]+'
 SEMVER_RELEASE_TAG_PATTERN="^v${SEMVER_CORE_IDENTIFIER}\\.${SEMVER_CORE_IDENTIFIER}\\.${SEMVER_CORE_IDENTIFIER}(-${SEMVER_PRERELEASE_IDENTIFIER}(\\.${SEMVER_PRERELEASE_IDENTIFIER})*)?(\\+${SEMVER_BUILD_IDENTIFIER}(\\.${SEMVER_BUILD_IDENTIFIER})*)?$"
+SEMVER_VERSION_PATTERN="^${SEMVER_RELEASE_TAG_PATTERN#^v}"
 
 if [ "${WOLFPACK_RELEASE_TAG+x}" = "x" ]; then
   if [[ ! "$WOLFPACK_RELEASE_TAG" =~ $SEMVER_RELEASE_TAG_PATTERN ]]; then
@@ -227,6 +228,16 @@ if $IS_MACOS; then
   done
 fi
 
+SELECTED_RELEASE_TAG="${WOLFPACK_RELEASE_TAG:-}"
+if [ -z "$SELECTED_RELEASE_TAG" ]; then
+  if ! SELECTED_VERSION="$("$STAGED_WOLFPACK" --version 2>/dev/null)" \
+    || [[ ! "$SELECTED_VERSION" =~ $SEMVER_VERSION_PATTERN ]]; then
+    echo "  $(red 'Downloaded wolfpack binary did not report a valid machine-readable version.')"
+    exit 1
+  fi
+  SELECTED_RELEASE_TAG="v${SELECTED_VERSION}"
+fi
+
 MANAGED_BINARY="${INSTALL_DIR}/${BINARY_NAME}"
 MANAGED_BROKER="${INSTALL_DIR}/${BROKER_BINARY_NAME}"
 SERVICE_EXISTS=false
@@ -246,6 +257,17 @@ fi
 if [ -f "$SERVER_SERVICE_PATH" ] || [ -f "$BROKER_SERVICE_PATH" ]; then
   SERVICE_EXISTS=true
 fi
+
+INSTALL_SKIP_SETUP=0
+if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" = "1" ]; then
+  INSTALL_SKIP_SETUP=1
+fi
+
+if [ "$INSTALL_SKIP_SETUP" != "1" ] && { [ ! -t 1 ] || ! { : < /dev/tty; } 2>/dev/null; }; then
+  echo "  $(red 'Setup requires an interactive TTY.')"
+  exit 1
+fi
+
 server_service_running() {
   if $IS_MACOS; then
     launchctl print "gui/$(id -u)/com.wolfpack.server" 2>/dev/null | grep -Eq 'pid[[:space:]]*=[[:space:]]*[0-9]+'
@@ -291,10 +313,10 @@ managed_services_inactive() {
 }
 
 print_reinstall_command() {
-  if [ -n "${WOLFPACK_RELEASE_TAG:-}" ]; then
-    echo "  Reinstall: curl -fsSL \"https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${WOLFPACK_RELEASE_TAG}/install.sh\" | WOLFPACK_RELEASE_TAG=\"${WOLFPACK_RELEASE_TAG}\" bash"
+  if [ "$INSTALL_SKIP_SETUP" = "1" ]; then
+    echo "  Reinstall: curl -fsSL \"https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${SELECTED_RELEASE_TAG}/install.sh\" | WOLFPACK_RELEASE_TAG=\"${SELECTED_RELEASE_TAG}\" WOLFPACK_INSTALL_SKIP_SETUP=\"1\" WOLFPACK_INSTALL_RETRY_ACTIVATION=\"1\" bash"
   else
-    echo "  Reinstall: curl -fsSL https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/install.sh | bash"
+    echo "  Reinstall: curl -fsSL \"https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${SELECTED_RELEASE_TAG}/install.sh\" | WOLFPACK_RELEASE_TAG=\"${SELECTED_RELEASE_TAG}\" WOLFPACK_INSTALL_RETRY_ACTIVATION=\"1\" bash"
   fi
 }
 
@@ -384,8 +406,13 @@ else
 fi
 
 activate_replaced_services() {
-  if $SERVICE_EXISTS; then
-    if ! "$MANAGED_BINARY" service install || ! managed_services_running; then
+  if $SERVICE_EXISTS || [ "${WOLFPACK_INSTALL_RETRY_ACTIVATION:-0}" = "1" ]; then
+    if ! managed_services_running && ! "$MANAGED_BINARY" service install; then
+      echo "  $(red 'Managed service activation failed.')"
+      print_reinstall_command
+      return 1
+    fi
+    if ! managed_services_running; then
       echo "  $(red 'Managed service activation failed.')"
       print_reinstall_command
       return 1
@@ -445,7 +472,7 @@ echo ""
 
 # ── Run setup ──
 
-if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" != "1" ]; then
+if [ "$INSTALL_SKIP_SETUP" != "1" ]; then
   if [ ! -x "$MANAGED_BINARY" ]; then
     echo "  $(red '✗') wolfpack binary not found after install"
     exit 1
@@ -457,12 +484,15 @@ if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" != "1" ]; then
   echo ""
   if $SERVICE_EXISTS; then
     "$MANAGED_BINARY" setup --defer-service-restart < /dev/tty || exit "$?"
-    if $PAIR_REPLACED; then
+    if $PAIR_REPLACED || [ "${WOLFPACK_INSTALL_RETRY_ACTIVATION:-0}" = "1" ]; then
       activate_replaced_services || exit 1
     fi
+  elif [ "${WOLFPACK_INSTALL_RETRY_ACTIVATION:-0}" = "1" ]; then
+    "$MANAGED_BINARY" setup < /dev/tty || exit "$?"
+    activate_replaced_services || exit 1
   else
     exec "$MANAGED_BINARY" setup < /dev/tty
   fi
-elif $PAIR_REPLACED; then
+elif $PAIR_REPLACED || [ "${WOLFPACK_INSTALL_RETRY_ACTIVATION:-0}" = "1" ]; then
   activate_replaced_services || exit 1
 fi

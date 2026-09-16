@@ -18,6 +18,8 @@ import {
   serviceStatus,
   isServiceInstalled,
   isServiceRunning,
+  isBrokerServiceRunning,
+  isPackageRunnerPairExecutable,
   replacePackageRunnerPair,
   activatePackageRunnerPair,
   updateStableBinary,
@@ -281,9 +283,13 @@ function runServiceCommand(argv: readonly string[]): void {
     process.exit(1);
   }
   if (serviceCommand.action === "install") {
+    if (!isPackageRunnerPairExecutable(process.execPath)) {
+      serviceInstall();
+      return;
+    }
     const packageReplacement = replacePackageRunnerPair();
     if (packageReplacement.replaced) activatePackageRunnerPair();
-    else serviceInstall();
+    else if (!packageReplacement.hadServices || !isServiceRunning() || !isBrokerServiceRunning()) activatePackageRunnerPair();
   }
   else if (serviceCommand.action === "uninstall") serviceUninstall();
   else if (serviceCommand.action === "stop") serviceStop(serviceCommand.broker ? { broker: true } : {});

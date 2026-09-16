@@ -197,9 +197,12 @@ function packageRunnerSource(): PackageRunnerSource {
 
 function packageRetryCommand(): string {
   return packageRunnerSource() === PACKAGE_RUNNER_SOURCE.NPX
-    ? `npx --yes wolfpack-bridge@${VERSION}`
-    : `bunx --bun wolfpack-bridge@${VERSION}`;
+    ? `npx --yes wolfpack-bridge@${VERSION} service install`
+    : `bunx --bun wolfpack-bridge@${VERSION} service install`;
 }
+
+const PACKAGE_CONSENT_CHUNK_BYTES = 256;
+const PACKAGE_CONSENT_MAX_BYTES = 1024;
 
 function confirmPackageBrokerLoss(): void {
   print(yellow("  Warning: broker-owned sessions will end when the broker is replaced."));
@@ -212,9 +215,21 @@ function confirmPackageBrokerLoss(): void {
   }
   try {
     writeSync(tty, "  Continue with session loss? [y/N] ");
-    const answer = Buffer.alloc(1);
-    readSync(tty, answer, 0, 1, null);
-    if (answer.toString().toLowerCase() !== "y") throw new Error("Broker replacement aborted.");
+    const buffer = Buffer.alloc(PACKAGE_CONSENT_CHUNK_BYTES);
+    let answer = "";
+    let discardedNonWhitespace = false;
+    while (true) {
+      const bytesRead = readSync(tty, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      const chunk = buffer.subarray(0, bytesRead).toString();
+      const newline = chunk.indexOf("\n");
+      const line = newline === -1 ? chunk : chunk.slice(0, newline);
+      const remaining = PACKAGE_CONSENT_MAX_BYTES - answer.length;
+      answer += line.slice(0, remaining);
+      if (line.slice(remaining).trim() !== "") discardedNonWhitespace = true;
+      if (newline !== -1) break;
+    }
+    if (discardedNonWhitespace || answer.trim().toLowerCase() !== "y") throw new Error("Broker replacement aborted.");
   } finally {
     closeSync(tty);
   }
@@ -283,7 +298,7 @@ export function replacePackageRunnerPair(executable: string = process.execPath):
 
 export function activatePackageRunnerPair(): void {
   try {
-    serviceInstall({ failureMode: "throw" });
+    serviceInstall({ failureMode: "throw", preserveRunningBroker: true });
     if (!isServiceRunning() || !isBrokerServiceRunning()) {
       throw new Error("managed service activation did not start both server and broker");
     }
@@ -523,6 +538,7 @@ export function ensureBrokerBinary(): string | null {
 
 interface ServiceInstallOptions {
   readonly failureMode?: "exit" | "throw";
+  readonly preserveRunningBroker?: boolean;
 }
 
 function failServiceInstall(options: ServiceInstallOptions): never {
@@ -533,6 +549,7 @@ function failServiceInstall(options: ServiceInstallOptions): never {
 /** Install the broker as a service (launchd / systemd). Must run before
  *  the wolfpack server is bootstrapped so the socket is ready. */
 function brokerServiceInstall(options: ServiceInstallOptions = {}): void {
+  const preserveRunningBroker = options.preserveRunningBroker === true && isBrokerServiceRunning();
   const brokerBin = ensureBrokerBinary();
   if (!brokerBin) {
     print(red("  Could not locate wolfpack-broker binary."));
@@ -552,11 +569,13 @@ function brokerServiceInstall(options: ServiceInstallOptions = {}): void {
       print(red(`  Failed to write broker plist: ${errMsg(e)}`));
       failServiceInstall(options);
     }
-    launchdBootoutBroker();
-    try { launchdBootstrapBroker(); } catch (e: unknown) {
-      log.error("broker launchctl bootstrap failed", { error: errMsg(e) });
-      print(red(`  Failed to register broker with launchd: ${errMsg(e)}`));
-      failServiceInstall(options);
+    if (!preserveRunningBroker) {
+      launchdBootoutBroker();
+      try { launchdBootstrapBroker(); } catch (e: unknown) {
+        log.error("broker launchctl bootstrap failed", { error: errMsg(e) });
+        print(red(`  Failed to register broker with launchd: ${errMsg(e)}`));
+        failServiceInstall(options);
+      }
     }
     print(dim(`  Broker plist: ${BROKER_PLIST_PATH}`));
   } else if (IS_LINUX) {
@@ -571,7 +590,7 @@ function brokerServiceInstall(options: ServiceInstallOptions = {}): void {
     try {
       execSync("systemctl --user daemon-reload");
       execSync(`systemctl --user enable ${BROKER_SYSTEMD_SERVICE}`);
-      execSync(`systemctl --user start ${BROKER_SYSTEMD_SERVICE}`);
+      if (!preserveRunningBroker) execSync(`systemctl --user start ${BROKER_SYSTEMD_SERVICE}`);
     } catch (e: unknown) {
       log.error("broker systemctl enable/start failed", { error: errMsg(e) });
       print(red(`  Failed to enable/start broker: ${errMsg(e)}`));

@@ -178,7 +178,7 @@ function prepareFixture(): {
   writeFileSync(commandLog, "");
   writeFileSync(serviceLog, "");
   writeFileSync(ttyStdout, "");
-  const serverAssetContent = "#!/bin/sh\n[ -z \"$INSTALL_TEST_COMMAND_LOG\" ] || printf \"%s\\n\" \"$*\" >> \"$INSTALL_TEST_COMMAND_LOG\"\nif [ \"$INSTALL_TEST_FAIL_SETUP\" = \"1\" ] && [ \"$1\" = \"setup\" ]; then exit 42; fi\nif [ \"$INSTALL_TEST_FAIL_ACTIVATION\" = \"1\" ] && [ \"$1\" = \"service\" ] && [ \"$2\" = \"install\" ]; then exit 43; fi\nif [ \"$1\" = \"service\" ] && [ \"$2\" = \"install\" ]; then printf active > \"${INSTALL_TEST_SERVICE_STATE}.server\"; printf active > \"${INSTALL_TEST_SERVICE_STATE}.broker\"; fi\nprintf \"new server\\n\"\n";
+  const serverAssetContent = "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf '%s\\n' \"$INSTALL_TEST_RELEASE_VERSION\"; exit 0; fi\n[ -z \"$INSTALL_TEST_COMMAND_LOG\" ] || printf \"%s\\n\" \"$*\" >> \"$INSTALL_TEST_COMMAND_LOG\"\nif [ \"$INSTALL_TEST_REQUIRE_SETUP_STDOUT_TTY\" = \"1\" ] && [ \"$1\" = \"setup\" ] && [ ! -t 1 ]; then exit 48; fi\nif [ \"$INSTALL_TEST_FAIL_SETUP\" = \"1\" ] && [ \"$1\" = \"setup\" ]; then exit 42; fi\nif [ \"$INSTALL_TEST_FAIL_ACTIVATION\" = \"1\" ] && [ \"$1\" = \"service\" ] && [ \"$2\" = \"install\" ]; then exit 43; fi\nif [ \"$1\" = \"service\" ] && [ \"$2\" = \"install\" ]; then printf active > \"${INSTALL_TEST_SERVICE_STATE}.server\"; printf active > \"${INSTALL_TEST_SERVICE_STATE}.broker\"; fi\nprintf \"new server\\n\"\n";
   const brokerAssetContent = "#!/bin/sh\nprintf \"new broker\\n\"\n";
   writeFileSync(serverAsset, serverAssetContent);
   writeFileSync(brokerAsset, brokerAssetContent);
@@ -280,6 +280,8 @@ function installerEnvironment(
     INSTALL_TEST_DESCRIPTOR_REMOVED: fixture.descriptorRemoved,
     INSTALL_TEST_REQUIRE_DESCRIPTOR_BEFORE_BINARY: "0",
     INSTALL_TEST_STALL_TTY: "0",
+    INSTALL_TEST_REQUIRE_SETUP_STDOUT_TTY: "0",
+    INSTALL_TEST_RELEASE_VERSION: "1.6.20",
     WOLFPACK_SYMLINK_DIR: fixture.systemBin,
     WOLFPACK_INSTALL_SKIP_SETUP: "1",
     ...extraEnv,
@@ -766,7 +768,7 @@ describe("install.sh release binary staging", () => {
     expect(readFileSync(fixture.serviceLog, "utf-8")).not.toMatch(/--user (stop|start|restart)/);
   }, 10_000);
 
-  test.skipIf(!setsidPath)("does not invoke setup or restart without a controlling tty on Linux", () => {
+  test("does not replace managed state before setup fails without a controlling tty", () => {
     const fixture = prepareFixture();
     const serviceDir = join(fixture.home, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
@@ -776,14 +778,14 @@ describe("install.sh release binary staging", () => {
       port: 18790,
     }));
 
-    const result = spawnSync(setsidPath!, ["--wait", "bash", join(process.cwd(), "install.sh")], {
-      encoding: "utf-8",
-      env: installerEnvironment(fixture, { WOLFPACK_INSTALL_SKIP_SETUP: "0" }),
-    });
+    const result = runInstaller(fixture, { WOLFPACK_INSTALL_SKIP_SETUP: "0" });
 
     expect(result.status).not.toBe(0);
     expect(readFileSync(fixture.log, "utf-8")).toContain("wolfpack-linux-x64");
     expect(readFileSync(fixture.commandLog, "utf-8")).toBe("");
+    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("old server\n");
+    expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("old broker\n");
+    expect(existsSync(join(serviceDir, "wolfpack.service"))).toBe(true);
   });
 
   test("does not restart the replacement pair when deferred setup fails", () => {
@@ -815,6 +817,30 @@ describe("install.sh release binary staging", () => {
       "setup --defer-service-restart",
       "service install",
     ]);
+  });
+
+  test("retries failed activation against a stopped matching pair", () => {
+    const fixture = prepareFixture();
+    prepareInstalledServices(fixture);
+
+    const initial = runInstaller(fixture, {
+      WOLFPACK_INSTALL_ALLOW_SESSION_LOSS: "1",
+      INSTALL_TEST_FAIL_ACTIVATION: "1",
+    });
+
+    expect(initial.status).not.toBe(0);
+    expect(String(initial.stdout)).toContain("WOLFPACK_INSTALL_SKIP_SETUP=\"1\"");
+    expect(String(initial.stdout)).toContain("WOLFPACK_INSTALL_RETRY_ACTIVATION=\"1\"");
+    writeFileSync(fixture.commandLog, "");
+    writeFileSync(fixture.serviceLog, "");
+
+    const retry = runInstaller(fixture, { WOLFPACK_INSTALL_RETRY_ACTIVATION: "1" });
+
+    expect(retry.status, `${retry.stdout}\n${retry.stderr}`).toBe(0);
+    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service install");
+    expect(existsSync(`${fixture.serviceState}.server`)).toBe(true);
+    expect(existsSync(`${fixture.serviceState}.broker`)).toBe(true);
+    expect(readFileSync(fixture.serviceLog, "utf-8")).not.toContain("--user stop");
   });
 
   test("a skip-setup upgrade activates both replacement services through the managed binary", () => {
@@ -876,6 +902,25 @@ describe("install.sh release binary staging", () => {
     expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
   });
 
+  test.each([
+    "release 3.4.5",
+    "decorated\n3.4.5",
+  ])("rejects decorated staged machine-readable version output %p before mutation", (version) => {
+    const fixture = prepareFixture();
+    prepareInstalledServices(fixture);
+
+    const result = runInstaller(fixture, {
+      WOLFPACK_INSTALL_ALLOW_SESSION_LOSS: "1",
+      INSTALL_TEST_RELEASE_VERSION: version,
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("did not report a valid machine-readable version");
+    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("old server\n");
+    expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("old broker\n");
+    expect(readFileSync(fixture.serviceLog, "utf-8")).not.toContain("--user stop");
+  });
+
   test("rejects a checksum mismatch before either binary is replaced", () => {
     const fixture = prepareFixture();
     const result = runInstaller(fixture, { INSTALL_TEST_CORRUPT_CHECKSUM: "1" });
@@ -933,6 +978,21 @@ describe("install.sh release binary staging", () => {
     expect(readFileSync(fixture.serviceLog, "utf-8")).not.toContain("--user stop");
     expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("old server\n");
     expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("old broker\n");
+  });
+
+  test("preflights redirected setup stdout before managed mutation with a controlling TTY", () => {
+    const fixture = prepareFixture();
+    prepareInstalledServices(fixture);
+
+    const result = runPipedInstallerWithTty(fixture, {
+      WOLFPACK_INSTALL_SKIP_SETUP: "0",
+      INSTALL_TEST_REQUIRE_SETUP_STDOUT_TTY: "1",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("old server\n");
+    expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("old broker\n");
+    expect(readFileSync(fixture.serviceLog, "utf-8")).not.toContain("--user stop");
   });
 
   test("confirms session loss through the controlling TTY for a curl pipeline", () => {
@@ -1139,6 +1199,22 @@ describe("install.sh release binary staging", () => {
     expect(result.status, String(result.stderr)).toBe(0);
     expect(readFileSync(fixture.serviceLog, "utf-8")).not.toContain("--user stop");
     expect(readFileSync(fixture.commandLog, "utf-8")).not.toContain("service install");
+  });
+
+  test("pins the default activation retry to the staged executable version", () => {
+    const fixture = prepareFixture();
+    prepareInstalledServices(fixture);
+
+    const result = runInstaller(fixture, {
+      WOLFPACK_INSTALL_ALLOW_SESSION_LOSS: "1",
+      INSTALL_TEST_FAIL_ACTIVATION: "1",
+      INSTALL_TEST_RELEASE_VERSION: "3.4.5",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toContain("WOLFPACK_RELEASE_TAG=\"v3.4.5\"");
+    expect(result.stdout).toContain("raw.githubusercontent.com/almogdepaz/wolfpack/v3.4.5/install.sh");
+    expect(result.stdout).not.toContain("wolfpack/main/install.sh");
   });
 
   test("reports the exact selected release reinstall command when activation fails", () => {

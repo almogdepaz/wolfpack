@@ -54,6 +54,7 @@ function runPackageRunnerReadOnlyCli(args: readonly string[]): { readonly result
       serviceStatus: () => {},
       isServiceInstalled: () => false,
       isServiceRunning: () => false,
+      isBrokerServiceRunning: () => false,
       isPackageRunnerPairExecutable: () => true,
       replacePackageRunnerPair: () => ({ replaced: false, hadServices: false }),
       activatePackageRunnerPair: () => {},
@@ -99,7 +100,7 @@ function runMatchingPackageSetupCli(
       serviceInstall: () => { throw new Error("unexpected lifecycle activation"); },
       serviceUninstall: () => {}, serviceStop: () => true, serviceStart: () => true,
       serviceRestart: () => true, serviceStatus: () => {}, isServiceInstalled: () => ${JSON.stringify(serviceInstalled)},
-      isServiceRunning: () => true, isPackageRunnerPairExecutable: () => ${JSON.stringify(packageRunner)},
+      isServiceRunning: () => true, isBrokerServiceRunning: () => true, isPackageRunnerPairExecutable: () => ${JSON.stringify(packageRunner)},
       replacePackageRunnerPair: () => ({ replaced: false, hadServices: ${JSON.stringify(hadServices)} }),
       activatePackageRunnerPair: () => { throw new Error("unexpected pair activation"); },
       updateStableBinary: () => false, uninstall: () => {}, generatePlist: () => "", generateSystemdUnit: () => "",
@@ -118,6 +119,50 @@ function runMatchingPackageSetupCli(
     return {
       result: { exitCode: child.exitCode, stdout: child.stdout.toString(), stderr: child.stderr.toString() },
       setupOptions: readFileSync(marker, "utf-8"),
+    };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+function runMatchingPackageServiceInstallCli(
+  hadServices: boolean,
+  serverRunning: boolean,
+  brokerRunning: boolean,
+  packageRunner: boolean = true,
+): { readonly result: CliResult; readonly activation: string | null } {
+  const home = mkdtempSync(join(tmpdir(), "wolfpack-cli-package-service-install-"));
+  const marker = join(home, "service-install");
+  const preloadPath = join(home, "matching-package-service-install-fixture.ts");
+  const executable = packageRunner
+    ? join(home, "node_modules", `wolfpack-bridge-${process.platform}-${process.arch}`, "wolfpack")
+    : join(home, "direct", "wolfpack");
+  writeFileSync(preloadPath, `
+    import { mock } from "bun:test";
+    import { writeFileSync } from "node:fs";
+    Object.defineProperty(process, "execPath", { configurable: true, value: ${JSON.stringify(executable)} });
+    mock.module(${JSON.stringify(join(root, "src", "cli", "service.ts"))}, () => ({
+      serviceInstall: () => writeFileSync(${JSON.stringify(marker)}, "raw"),
+      serviceUninstall: () => {}, serviceStop: () => true, serviceStart: () => true,
+      serviceRestart: () => true, serviceStatus: () => {}, isServiceInstalled: () => ${JSON.stringify(hadServices)},
+      isServiceRunning: () => ${JSON.stringify(serverRunning)},
+      isBrokerServiceRunning: () => ${JSON.stringify(brokerRunning)},
+      isPackageRunnerPairExecutable: () => ${JSON.stringify(packageRunner)},
+      replacePackageRunnerPair: () => ({ replaced: false, hadServices: ${JSON.stringify(hadServices)} }),
+      activatePackageRunnerPair: () => writeFileSync(${JSON.stringify(marker)}, "activation"), updateStableBinary: () => false, uninstall: () => {},
+      generatePlist: () => "", generateSystemdUnit: () => "",
+    }));
+  `);
+  try {
+    const child = Bun.spawnSync([process.execPath, "--preload", preloadPath, cliEntry, "service", "install"], {
+      cwd: root,
+      env: { ...process.env, HOME: home, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return {
+      result: { exitCode: child.exitCode, stdout: child.stdout.toString(), stderr: child.stderr.toString() },
+      activation: existsSync(marker) ? readFileSync(marker, "utf-8") : null,
     };
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -211,6 +256,7 @@ function runServiceRestartCli(serviceRestartResult: boolean): CliResult {
       serviceStatus: () => {},
       isServiceInstalled: () => true,
       isServiceRunning: () => true,
+      isBrokerServiceRunning: () => true,
       isPackageRunnerPairExecutable: () => false,
       replacePackageRunnerPair: () => ({ replaced: false, hadServices: false }),
       activatePackageRunnerPair: () => {},
@@ -261,6 +307,7 @@ function runDashboard(fixture: DashboardServiceFixture): CliResult {
       serviceStatus: () => {},
       isServiceInstalled: () => true,
       isServiceRunning: () => running[runningCall++] ?? false,
+      isBrokerServiceRunning: () => true,
       isPackageRunnerPairExecutable: () => false,
       replacePackageRunnerPair: () => ({ replaced: false, hadServices: false }),
       activatePackageRunnerPair: () => {},
@@ -488,6 +535,29 @@ describe("cli help dispatch", () => {
     });
   });
 
+  test("matching package service install skips a healthy pair but activates fresh and partial state", () => {
+    const healthy = runMatchingPackageServiceInstallCli(true, true, true);
+    expect(healthy.result.exitCode, healthy.result.stderr).toBe(0);
+    expect(healthy.activation).toBeNull();
+
+    for (const state of [
+      [false, false, false],
+      [true, false, true],
+      [true, true, false],
+    ] as const) {
+      const partial = runMatchingPackageServiceInstallCli(state[0], state[1], state[2]);
+      expect(partial.result.exitCode, partial.result.stderr).toBe(0);
+      expect(partial.activation).toBe("activation");
+    }
+  });
+
+  test("direct service install stays on the ordinary direct-executable path", () => {
+    const direct = runMatchingPackageServiceInstallCli(false, false, false, false);
+
+    expect(direct.result.exitCode, direct.result.stderr).toBe(0);
+    expect(direct.activation).toBe("raw");
+  });
+
   test.each([
     [[], false],
     [["--defer-service-restart"], true],
@@ -511,8 +581,8 @@ describe("cli help dispatch", () => {
   ] as const)("package %s activation failure exits nonzero with the exact %s retry", (args, source, failure) => {
     const child = runPackageActivationCli(args, source, failure);
     const retry = source === "npx"
-      ? `npx --yes wolfpack-bridge@${pkg.version}`
-      : `bunx --bun wolfpack-bridge@${pkg.version}`;
+      ? `npx --yes wolfpack-bridge@${pkg.version} service install`
+      : `bunx --bun wolfpack-bridge@${pkg.version} service install`;
 
     expect(child.exitCode, `${child.stdout}\n${child.stderr}`).toBe(1);
     expect(`${child.stdout}\n${child.stderr}`).toContain("Package pair activation failed:");
