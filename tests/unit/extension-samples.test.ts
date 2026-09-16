@@ -19,7 +19,10 @@ test("Agent Context and Notes are independently packaged self-contained extensio
 });
 
 test("Agent Context view models keep hostile text inert and distinguish empty and failed data", async () => {
-  const { contextViewModel } = await import("../../examples/extensions/agent-context/src/model.ts");
+  const { acceptsRevision, contextViewModel } = await import("../../examples/extensions/agent-context/src/model.ts");
+  expect(acceptsRevision(4, 3)).toBe(false);
+  expect(acceptsRevision(4, 4)).toBe(true);
+  expect(acceptsRevision(4, 5)).toBe(true);
   expect(contextViewModel(null)).toMatchObject({ state: "empty", revision: 0 });
   expect(contextViewModel({ schemaVersion: 1, goal: "<img src=x onerror=alert(1)>", planItems: [], decisions: [], blockers: [], nextSteps: [] }, 3)).toMatchObject({ state: "ready", revision: 3, goal: "<img src=x onerror=alert(1)>" });
   expect(contextViewModel({ bad: true }, 4)).toMatchObject({ state: "error", revision: 4 });

@@ -1,5 +1,5 @@
 import { leadStackLayout, type ContextViewContribution, type ExtensionRegistrationHost, type ExtensionViewContext } from "wolfpack-bridge/extensions";
-import { contextViewModel } from "./model.ts";
+import { acceptsRevision, contextViewModel } from "./model.ts";
 
 function text(tag: string, value = ""): HTMLElement { const node = document.createElement(tag); node.textContent = value; return node; }
 function list(container: HTMLElement, values: readonly string[]): void { container.replaceChildren(...values.map((value) => text("li", value))); }
@@ -18,7 +18,7 @@ const view: ContextViewContribution = {
     container.replaceChildren(root);
     let latest = -1; let stopped = false;
     const render = (value: unknown, revision: number) => {
-      if (stopped || revision < latest) return; latest = revision;
+      if (stopped || !acceptsRevision(latest, revision)) return; latest = revision;
       const model = contextViewModel(value, revision);
       scope.textContent = `Scope ${context.scope.sessionId} · revision ${model.revision}`;
       if (model.state === "empty") { goal.textContent = "No context has been published for this exact scope."; list(plan, []); list(decisions, []); list(blockers, []); list(nextSteps, []); return; }

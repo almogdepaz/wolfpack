@@ -142,6 +142,9 @@ function document2(value) {
   const item = value;
   return item.schemaVersion === 1 && typeof item.goal === "string" && strings(item.decisions) && strings(item.blockers) && strings(item.nextSteps) && Array.isArray(item.planItems) && item.planItems.every((plan) => plan && typeof plan === "object" && typeof plan.id === "string" && typeof plan.text === "string" && ["pending", "in_progress", "complete", "blocked"].includes(plan.status));
 }
+function acceptsRevision(previous, next) {
+  return Number.isSafeInteger(next) && next >= previous;
+}
 function contextViewModel(value, revision = 0) {
   if (value === null)
     return { state: "empty", revision: 0 };
@@ -181,7 +184,7 @@ var view = {
     let latest = -1;
     let stopped = false;
     const render = (value, revision) => {
-      if (stopped || revision < latest)
+      if (stopped || !acceptsRevision(latest, revision))
         return;
       latest = revision;
       const model = contextViewModel(value, revision);

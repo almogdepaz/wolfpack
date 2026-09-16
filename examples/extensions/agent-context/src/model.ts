@@ -19,6 +19,8 @@ function document(value: unknown): value is AgentContextDocument {
   return item.schemaVersion === 1 && typeof item.goal === "string" && strings(item.decisions) && strings(item.blockers) && strings(item.nextSteps)
     && Array.isArray(item.planItems) && item.planItems.every((plan) => plan && typeof plan === "object" && typeof (plan as Record<string, unknown>).id === "string" && typeof (plan as Record<string, unknown>).text === "string" && ["pending", "in_progress", "complete", "blocked"].includes((plan as Record<string, unknown>).status as string));
 }
+/** A stale scope/subscription revision must not repaint newer retained UI state. */
+export function acceptsRevision(previous: number, next: number): boolean { return Number.isSafeInteger(next) && next >= previous; }
 /** Keeps untrusted document strings as values; UI rendering always assigns textContent. */
 export function contextViewModel(value: unknown, revision = 0): AgentContextViewModel {
   if (value === null) return { state: "empty", revision: 0 };
