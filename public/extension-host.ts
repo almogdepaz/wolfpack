@@ -87,12 +87,12 @@ export class ExtensionHost {
     const existing = this.loaded.get(item.extensionId);
     if (existing?.digest === item.package.digest) return;
     if (existing) this.cleanupPackage(item.extensionId);
+    const cleanups: Array<() => void> = [];
     try {
       const module = await loadAuthenticatedExtensionBundle<{ default?: ExtensionRegistration }>(item.ui!.url, item.ui!.digest, { safeMode: false });
       if (this.disposed || generation !== this.generation) return;
       if (typeof module.default !== "function") throw new Error("extension bundle has no registration function");
       const gate = new ExtensionContributionGate(item.extensionId);
-      const cleanups: Array<() => void> = [];
       const registrationCleanup = module.default({
         registerContextView: contribution => {
           const viewId = gate.register("context-view", contribution.id).qualifiedId;
@@ -110,6 +110,7 @@ export class ExtensionHost {
       if (typeof registrationCleanup === "function") cleanups.push(registrationCleanup);
       this.loaded.set(item.extensionId, { digest: item.package.digest, cleanup: () => { for (const cleanup of cleanups.reverse()) { try { cleanup(); } catch {} } } });
     } catch {
+      for (const cleanup of cleanups.reverse()) { try { cleanup(); } catch {} }
       this.render(`Extension ${item.extensionId} could not be registered.`);
     }
   }
