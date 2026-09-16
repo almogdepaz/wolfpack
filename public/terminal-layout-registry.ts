@@ -27,7 +27,7 @@ function isBuiltinLayoutId(value: string | null): value is BuiltinTerminalLayout
  */
 export class TerminalLayoutRegistry {
   private readonly contributions = new Map<string, TerminalLayoutContribution>();
-  private selected: BuiltinTerminalLayoutId;
+  private selected: string;
 
   constructor(storage: Pick<Storage, "getItem" | "setItem"> = localStorage) {
     this.storage = storage;
@@ -48,13 +48,17 @@ export class TerminalLayoutRegistry {
   register(contribution: TerminalLayoutContribution): () => void {
     if (this.contributions.has(contribution.id)) throw new Error(`terminal layout already registered: ${contribution.id}`);
     this.contributions.set(contribution.id, contribution);
-    return () => { if (this.contributions.get(contribution.id) === contribution) this.contributions.delete(contribution.id); };
+    return () => {
+      if (this.contributions.get(contribution.id) !== contribution) return;
+      this.contributions.delete(contribution.id);
+      if (this.selected === contribution.id) this.select("equal-grid");
+    };
   }
 
-  get selectedId(): BuiltinTerminalLayoutId { return this.selected; }
+  get selectedId(): string { return this.selected; }
 
-  select(id: BuiltinTerminalLayoutId): void {
-    if (!isBuiltinLayoutId(id)) return;
+  select(id: string): void {
+    if (!this.contributions.has(id)) return;
     this.selected = id;
     this.storage.setItem(TERMINAL_LAYOUT_PREFERENCE_KEY, id);
   }

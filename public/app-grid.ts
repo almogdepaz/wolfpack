@@ -36,7 +36,6 @@ import {
   clearTerminalLayoutGeometry,
   nearestPaneInDirection,
   TerminalLayoutRegistry,
-  type BuiltinTerminalLayoutId,
 } from "./terminal-layout-registry";
 import type { TerminalLayout } from "../src/extensions/layout-contract";
 
@@ -127,7 +126,7 @@ export function initWorkspaceTerminalLayouts(registry: TerminalLayoutRegistry): 
   workspaceTerminalLayouts = registry;
 }
 
-export function selectWorkspaceTerminalLayout(id: BuiltinTerminalLayoutId): void {
+export function selectWorkspaceTerminalLayout(id: string): void {
   workspaceTerminalLayouts?.select(id);
   applyWorkspaceTerminalGeometry();
   scheduleGridStabilizedFit();
@@ -893,6 +892,7 @@ function applyGridFocus(
   const focusedSession = sessions[idx];
   if (!focusedSession) return;
   setState({ currentSession: focusedSession.session, currentMachine: focusedSession.machine || "" });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   deps.renderSidebar();
   focusedSession.controller?.focus();
 }

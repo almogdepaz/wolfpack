@@ -8,8 +8,9 @@ export interface ContextViewScope {
 export interface ContextViewRegistryOptions {
   readonly container: HTMLElement;
   readonly maxRetainedViews?: number;
-  readonly createContext?: (scope: ContextViewScope, signal: AbortSignal) => ExtensionViewContext;
+  readonly createContext?: (scope: ContextViewScope, signal: AbortSignal, viewId: string) => ExtensionViewContext;
   readonly onChange?: () => void;
+  readonly onVisibilityChange?: (viewId: string, visible: boolean) => void;
 }
 
 export interface RegisteredContextView {
@@ -135,7 +136,7 @@ export class ContextViewRegistry {
         storage: Object.freeze({ get: () => null, set: () => {}, remove: () => {} }),
         documents: Object.freeze({ read: async () => null, subscribe: () => () => {} }),
       }) as ExtensionViewContext;
-      const controller = entry.contribution.mount(element, this.options.createContext?.(scope, abort.signal) ?? fallbackContext);
+      const controller = entry.contribution.mount(element, this.options.createContext?.(scope, abort.signal, entry.id) ?? fallbackContext);
       if (!controller || typeof controller.dispose !== "function") throw new Error("context view mount did not return a controller");
       const mounted: MountedContextView = { id: entry.id, element, controller, abort, disposed: false };
       this.mountedById.set(entry.id, mounted);
@@ -153,6 +154,7 @@ export class ContextViewRegistry {
     mounted.element.hidden = !visible;
     try { mounted.controller.setVisible?.(visible); }
     catch { this.diagnosticValue = `Visibility update failed for ${mounted.id}.`; }
+    this.options.onVisibilityChange?.(mounted.id, visible);
   }
 
   private disposeMounted(id: string): void {

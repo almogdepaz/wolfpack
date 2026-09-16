@@ -1777,6 +1777,11 @@ body.no-animations, body.no-animations * {
 .workspace-terminal-toolbar label { display: flex; align-items: center; gap: 5px; }
 #workspace-context-container { padding: 10px; color: var(--text-dim); font-size: 12px; line-height: 1.45; }
 #workspace-context-container p { margin: 0; }
+#workspace-context-container [data-extension-tabs] { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+#workspace-context-container [data-extension-tabs] button { border: 1px solid var(--border-hover); border-radius: var(--radius-sm); background: var(--bg-inset); color: var(--text-secondary); padding: 4px 7px; font: inherit; cursor: pointer; }
+#workspace-context-container [data-extension-tabs] button[aria-selected="true"] { border-color: var(--accent-border); color: var(--accent); }
+#workspace-context-container [data-extension-status] { margin: 0 0 8px; color: var(--text-dim); }
+#workspace-context-container [data-context-view][hidden] { display: none; }
 .workspace-control { display: grid; gap: 4px; padding: 8px 10px; color: var(--text-dim); font-size: 10px; }
 .workspace-control input { width: 100%; accent-color: var(--accent); }
 .workspace-context-collapsed #workspace-context-region { display: none; }
