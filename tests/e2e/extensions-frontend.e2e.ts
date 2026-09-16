@@ -357,6 +357,11 @@ test("installed extension recipe and terminal instances survive exact grid-scope
   expect(await first.locator("canvas").evaluate(node => node === (window as unknown as { __extensionRecipeFirst?: Element }).__extensionRecipeFirst)).toBe(true);
   expect(await second.locator("canvas").evaluate(node => node === (window as unknown as { __extensionRecipeSecond?: Element }).__extensionRecipeSecond)).toBe(true);
   expect(sockets).toHaveLength(attached);
+
+  await page.reload();
+  await openSession(page, SESSION_A);
+  await expect(page.locator("#workspace-terminal-layout option[value='alpha/recipe']")).toHaveCount(1, { timeout: 5_000 });
+  await expect(page.locator("#workspace-terminal-layout")).toHaveValue("alpha/recipe");
 });
 
 test("ordinary context-hide controls pause polling and preserve retained workspace state", async ({ page }, testInfo) => {
@@ -380,12 +385,8 @@ test("ordinary context-hide controls pause polling and preserve retained workspa
 
   for (const control of ["#workspace-context-collapse", "#workspace-terminal-full"]) {
     const button = page.locator(control);
-    if (testInfo.project.name === "mobile-webkit") {
-      await button.focus();
-      await page.keyboard.press("Enter");
-    } else {
-      await button.click();
-    }
+    if (testInfo.project.name === "mobile-webkit") await button.tap();
+    else await button.click();
     await expect(page.locator("#workspace-context-region")).toBeHidden();
     const atHide = reads;
     await page.waitForTimeout(2_300);
@@ -396,6 +397,11 @@ test("ordinary context-hide controls pause polling and preserve retained workspa
     expect(await canvas.evaluate(node => node === (window as unknown as { __extensionRetainedShellCanvas?: Element }).__extensionRetainedShellCanvas)).toBe(true);
     await expect(page.locator("#workspace-terminal-layout")).toHaveValue(selectedLayout);
     expect(sockets).toHaveLength(attached);
+  }
+  if (testInfo.project.name === "mobile-webkit") {
+    await page.locator("#terminal-transcript-btn").tap();
+    await expect(page.locator("#terminal-transcript-dialog")).toBeVisible();
+    await page.locator("#terminal-transcript-close").tap();
   }
 });
 

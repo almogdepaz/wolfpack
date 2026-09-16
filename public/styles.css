@@ -3284,6 +3284,8 @@ body.no-animations, body.no-animations * {
   box-shadow: none;
 }
 @media (max-width: 768px) {
+  #terminal-view .terminal-transcript-btn { top: 48px; }
+  #terminal-view:has(#desktop-grid-container.active) .terminal-transcript-btn { top: 80px; }
   .session-card-view-button { min-height: 44px; }
   .list { padding: 12px; }
   .card { margin-bottom: 10px; }

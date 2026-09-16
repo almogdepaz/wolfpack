@@ -28,6 +28,28 @@ describe("SharedDocumentPoller", () => {
     unsubscribeFirst(); unsubscribeSecond(); poller.dispose();
   });
 
+  test("rolls back a subscription when its initial delivery throws", async () => {
+    let reads = 0;
+    const poller = new SharedDocumentPoller({ intervalMs: 250, read: async () => ({ document: { answer: 42 }, revision: ++reads }) });
+    expect(() => poller.subscribe(() => { throw new Error("initial listener failed"); })).toThrow("initial listener failed");
+    const values: unknown[] = [];
+    const release = poller.subscribe(value => { if (value !== null) values.push(value); });
+    await wait(); await wait();
+    expect(reads).toBe(1);
+    expect(values).toEqual([{ answer: 42 }]);
+    release(); poller.dispose();
+  });
+
+  test("contains a later throwing listener without blocking a peer consumer", async () => {
+    const poller = new SharedDocumentPoller({ intervalMs: 250, read: async () => ({ document: { answer: 42 }, revision: 1 }) });
+    const peer: unknown[] = [];
+    const releaseThrowing = poller.subscribe((_value, revision) => { if (revision > 0) throw new Error("listener failed"); });
+    const releasePeer = poller.subscribe((value, revision) => { if (revision > 0) peer.push(value); });
+    await wait(); await wait();
+    expect(peer).toEqual([{ answer: 42 }]);
+    releaseThrowing(); releasePeer(); poller.dispose();
+  });
+
   test("treats repeated subscriptions of the same listener as independent consumers", async () => {
     let reads = 0;
     const values: number[] = [];

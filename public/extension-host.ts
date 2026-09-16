@@ -9,17 +9,19 @@ import { SharedDocumentPoller } from "./extension-document-polling.ts";
 import { loadAuthenticatedExtensionBundle } from "./extension-loader.ts";
 
 export interface SelectedExtensionScope { readonly sessionId: string | null; readonly unavailable?: string; }
+export interface ExtensionLayoutUnregisterOptions { readonly preservePreference?: boolean; }
 export interface ExtensionHostOptions {
   readonly container: HTMLElement;
   readonly scope: () => SelectedExtensionScope | null;
   readonly safeMode?: () => boolean;
-  readonly registerLayout?: (contribution: TerminalLayoutContribution) => (() => void);
+  readonly registerLayout?: (contribution: TerminalLayoutContribution) => ((options?: ExtensionLayoutUnregisterOptions) => void);
+  readonly onCatalogReady?: () => void;
   readonly authFetch?: typeof browserAuthFetch;
   readonly bundleLoader?: typeof loadAuthenticatedExtensionBundle;
   readonly onChange?: () => void;
 }
 
-interface LoadedPackage { readonly fingerprint: string; readonly cleanup: () => void; }
+interface LoadedPackage { readonly fingerprint: string; readonly cleanup: (options?: { readonly preserveLayoutPreference?: boolean }) => void; }
 interface ViewOwner { readonly extension: ExtensionCatalogInstallation; readonly unregister: () => void; }
 type DocumentPollState = "fresh" | "stale" | "paused" | "error";
 
@@ -79,6 +81,7 @@ export class ExtensionHost {
   private readonly pollers = new Map<string, SharedDocumentPoller>();
   /** Subscriber counts by exact document key/view: hidden views must not keep another key polling. */
   private readonly pollerViewCounts = new Map<string, Map<string, number>>();
+  private readonly pollerReaderViewCounts = new Map<string, Map<string, number>>();
   private readonly viewPollerKeys = new Map<string, Set<string>>();
   /** Document keys observed by each mounted view, including one-shot reads. */
   private readonly viewDocumentKeys = new Map<string, Set<string>>();
@@ -144,7 +147,10 @@ export class ExtensionHost {
       const active = new Set(catalog.installations.filter(item => item.enabled && item.ui).map(item => item.extensionId));
       for (const id of [...this.loaded.keys()]) if (!active.has(id)) this.cleanupPackage(id);
       for (const item of catalog.installations) if (item.enabled && item.ui) await this.load(item, generation);
-      if (generation === this.generation) this.render();
+      if (generation === this.generation) {
+        try { this.options.onCatalogReady?.(); } catch {}
+        this.render();
+      }
     } catch {
       if (generation === this.generation) {
         this.registry.setScope(null);
@@ -160,7 +166,7 @@ export class ExtensionHost {
     this.shellVisible = visible;
     this.pausePollers();
   }
-  dispose(): void { if (this.disposed) return; this.disposed = true; ++this.generation; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(); this.registry.dispose(); }
+  dispose(): void { if (this.disposed) return; this.disposed = true; ++this.generation; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(true); this.registry.dispose(); }
 
   private async load(item: ExtensionCatalogInstallation, generation: number): Promise<void> {
     const existing = this.loaded.get(item.extensionId);
@@ -168,15 +174,20 @@ export class ExtensionHost {
     if (existing?.fingerprint === fingerprint) return;
     if (existing) this.cleanupPackage(item.extensionId);
     const cleanups: Array<() => void> = [];
+    const layoutCleanups: Array<(options?: ExtensionLayoutUnregisterOptions) => void> = [];
     let registrationOpen = true;
     let cleaned = false;
-    const cleanup = () => {
+    const cleanup = (options: { readonly preserveLayoutPreference?: boolean } = {}) => {
       if (cleaned) return;
       cleaned = true;
       registrationOpen = false;
       while (cleanups.length > 0) {
         const callback = cleanups.pop()!;
         try { callback(); } catch {}
+      }
+      while (layoutCleanups.length > 0) {
+        const callback = layoutCleanups.pop()!;
+        try { callback({ preservePreference: options.preserveLayoutPreference }); } catch {}
       }
     };
     const requireActiveRegistration = (): void => {
@@ -200,7 +211,7 @@ export class ExtensionHost {
           const qualifiedId = gate.register("terminal-layout", contribution.id).qualifiedId;
           // Layout integration is injected by app.ts; errors are contained with this package.
           const unregister = this.options.registerLayout?.({ ...contribution, id: qualifiedId }) ?? (() => {});
-          cleanups.push(unregister);
+          layoutCleanups.push(unregister);
         },
       });
       // The SDK registration surface is deliberately synchronous. Closing it
@@ -230,7 +241,12 @@ export class ExtensionHost {
       const pollerKey = keyFor(scope.installationId, extensionId, scope.sessionId, `document:${documentId}`);
       this.linkDocumentView(viewId, pollerKey);
       const poller = this.poller(extensionId, documentId, scope, viewId, pollerKey);
-      const unsubscribe = poller.subscribe(listener);
+      let unsubscribe: () => void;
+      try { unsubscribe = poller.subscribe(listener); }
+      catch (error) {
+        this.unlinkPollerView(pollerKey, viewId);
+        throw error;
+      }
       let released = false;
       const release = () => {
         if (released) return;
@@ -279,14 +295,29 @@ export class ExtensionHost {
     const key = keyFor(scope.installationId, extensionId, scope.sessionId, `document:${documentId}`);
     this.linkDocumentView(viewId, key);
     const poller = this.pollerFor(extensionId, documentId, scope, key);
+    this.linkPollerReader(key, viewId);
     const read = poller.readOnce(signal);
     this.pausePoller(key);
-    return read.finally(() => this.releasePollerIfUnowned(key));
+    return read.finally(() => this.unlinkPollerReader(key, viewId));
   }
   private linkDocumentView(viewId: string, key: string): void {
     const keys = this.viewDocumentKeys.get(viewId) ?? new Set<string>();
     keys.add(key);
     this.viewDocumentKeys.set(viewId, keys);
+  }
+  private linkPollerReader(key: string, viewId: string): void {
+    const counts = this.pollerReaderViewCounts.get(key) ?? new Map<string, number>();
+    counts.set(viewId, (counts.get(viewId) ?? 0) + 1);
+    this.pollerReaderViewCounts.set(key, counts);
+  }
+  private unlinkPollerReader(key: string, viewId: string): void {
+    const counts = this.pollerReaderViewCounts.get(key);
+    if (counts) {
+      const remaining = Math.max(0, (counts.get(viewId) ?? 1) - 1);
+      if (remaining > 0) counts.set(viewId, remaining); else counts.delete(viewId);
+      if (counts.size === 0) this.pollerReaderViewCounts.delete(key);
+    }
+    this.releasePollerIfUnowned(key);
   }
 
   private scopeIsCurrent(scope: ContextViewScope, signal: AbortSignal): boolean {
@@ -311,7 +342,14 @@ export class ExtensionHost {
   private onDocumentVisibility = (): void => this.pausePollers();
   private pausePollers(): void { for (const key of this.pollers.keys()) this.pausePoller(key); }
   private pausePoller(key: string): void {
-    const hasVisibleConsumer = [...this.viewDocumentKeys].some(([viewId, keys]) => keys.has(key) && this.visibleViews.has(viewId));
+    const activeViews = new Set<string>([
+      ...(this.pollerViewCounts.get(key)?.keys() ?? []),
+      ...(this.pollerReaderViewCounts.get(key)?.keys() ?? []),
+    ]);
+    // Historical document interest drives status only. With no active consumer
+    // the poller already has no cadence, so do not manufacture a paused state.
+    if (activeViews.size === 0) return;
+    const hasVisibleConsumer = [...activeViews].some(viewId => this.visibleViews.has(viewId));
     this.pollers.get(key)?.setPaused(document.visibilityState !== "visible" || !this.shellVisible || !hasVisibleConsumer);
   }
   private unlinkPollerView(key: string, viewId: string): void {
@@ -335,7 +373,7 @@ export class ExtensionHost {
   private releasePollerIfUnowned(key: string): void {
     const hasViewOwner = [...this.viewDocumentKeys.values()].some(keys => keys.has(key));
     const poller = this.pollers.get(key);
-    if (hasViewOwner || this.pollerViewCounts.has(key) || poller?.hasActiveConsumers) {
+    if (hasViewOwner || this.pollerViewCounts.has(key) || this.pollerReaderViewCounts.has(key) || poller?.hasActiveConsumers) {
       this.pausePoller(key);
       return;
     }
@@ -343,13 +381,13 @@ export class ExtensionHost {
     this.pollers.delete(key);
     this.documentStates.delete(key);
   }
-  private cleanupPackage(extensionId: string): void { const loaded = this.loaded.get(extensionId); if (!loaded) return; this.loaded.delete(extensionId); loaded.cleanup(); }
+  private cleanupPackage(extensionId: string, preserveLayoutPreference = false): void { const loaded = this.loaded.get(extensionId); if (!loaded) return; this.loaded.delete(extensionId); loaded.cleanup({ preserveLayoutPreference }); }
   private cleanupScopeResources(): void {
     for (const poller of this.pollers.values()) poller.dispose();
-    this.pollers.clear(); this.pollerViewCounts.clear(); this.viewPollerKeys.clear(); this.viewDocumentKeys.clear(); this.visibleViews.clear(); this.documentStates.clear();
+    this.pollers.clear(); this.pollerViewCounts.clear(); this.pollerReaderViewCounts.clear(); this.viewPollerKeys.clear(); this.viewDocumentKeys.clear(); this.visibleViews.clear(); this.documentStates.clear();
   }
-  private cleanupAll(): void {
-    for (const id of [...this.loaded.keys()]) this.cleanupPackage(id);
+  private cleanupAll(preserveLayoutPreference = false): void {
+    for (const id of [...this.loaded.keys()]) this.cleanupPackage(id, preserveLayoutPreference);
     this.cleanupScopeResources();
   }
   private render(message = this.registry.diagnostic): void {

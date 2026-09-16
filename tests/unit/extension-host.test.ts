@@ -526,6 +526,71 @@ describe("ExtensionHost", () => {
     host.dispose();
   });
 
+  test("does not let a released visible owner keep a hidden same-key subscriber polling", async () => {
+    container = new FakeElement();
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    let reads = 0;
+    let releaseVisible = () => {};
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId }),
+      authFetch: async input => String(input).includes("/documents/")
+        ? Response.json({ installationId, scopeSessionId: sessionId, extensionId: "notes", documentId: "one", revision: ++reads, document: { reads } })
+        : Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/dist/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [{ id: "one", schemaVersion: 1 }] }] }),
+      bundleLoader: (async () => ({ default: (registration: ExtensionRegistrationHost) => {
+        registration.registerContextView({ id: "first", title: "First", mount: (_node, context) => { releaseVisible = context.documents.subscribe("one", () => {}); return { dispose() {} }; } });
+        registration.registerContextView({ id: "second", title: "Second", mount: (_node, context) => { context.documents.subscribe("one", () => {}); return { dispose() {} }; } });
+      } })) as never,
+    });
+    await host.refresh(); host.select("notes/first"); await new Promise(resolve => setTimeout(resolve, 20));
+    host.select("notes/second"); await new Promise(resolve => setTimeout(resolve, 20));
+    host.select("notes/first"); await new Promise(resolve => setTimeout(resolve, 20));
+    releaseVisible();
+    const atRelease = reads;
+    await new Promise(resolve => setTimeout(resolve, 2_200));
+    expect(reads).toBe(atRelease);
+    host.dispose();
+  });
+
+  test("rolls back a throwing initial subscription before retrying the failed view mount", async () => {
+    container = new FakeElement();
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    let firstMount = true;
+    const values: unknown[] = [];
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId }),
+      authFetch: async input => String(input).includes("/documents/")
+        ? Response.json({ installationId, scopeSessionId: sessionId, extensionId: "notes", documentId: "one", revision: 1, document: { answer: 42 } })
+        : Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/dist/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [{ id: "one", schemaVersion: 1 }] }] }),
+      bundleLoader: (async () => ({ default: (registration: ExtensionRegistrationHost) => registration.registerContextView({ id: "tab", title: "Notes", mount: (_node, context) => {
+        const fails = firstMount; firstMount = false;
+        context.documents.subscribe("one", value => { if (fails) throw new Error("initial listener failed"); if (value !== null) values.push(value); });
+        return { dispose() {} };
+      } }) })) as never,
+    });
+    await host.refresh(); host.select("notes/tab");
+    expect(host.diagnostic).toContain("initial listener failed");
+    host.select("notes/tab"); await new Promise(resolve => setTimeout(resolve, 50));
+    expect(values).toEqual([{ answer: 42 }]);
+    host.dispose();
+  });
+
+  test("host disposal preserves a selected installed recipe preference for reload", async () => {
+    container = new FakeElement();
+    const values = new Map<string, string>();
+    const layouts = new TerminalLayoutRegistry({ getItem: key => values.get(key) ?? null, setItem: (key, value) => { values.set(key, value); } });
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      authFetch: async () => Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1.0.0", digest: "a".repeat(64) }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/dist/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }),
+      registerLayout: contribution => layouts.register(contribution),
+      bundleLoader: (async () => ({ default: (registration: ExtensionRegistrationHost) => registration.registerTerminalLayout({ id: "recipe", title: "Recipe", arrange: equalGridLayout }) })) as never,
+    });
+    await host.refresh(); layouts.select("notes/recipe"); host.dispose();
+    expect(values.get("wolfpack-terminal-layout")).toBe("notes/recipe");
+  });
+
   test("keeps a coalesced one-shot reader alive when the last subscription releases", async () => {
     container = new FakeElement();
     const sessionId = "22222222-2222-4222-8222-222222222222";

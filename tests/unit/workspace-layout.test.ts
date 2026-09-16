@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { TerminalLayoutRegistry, nearestPaneInDirection } from "../../public/terminal-layout-registry.ts";
+import { TERMINAL_LAYOUT_PREFERENCE_KEY, TerminalLayoutRegistry, nearestPaneInDirection } from "../../public/terminal-layout-registry.ts";
+import { equalGridLayout } from "../../src/extensions/layout-contract.ts";
 import {
   DEFAULT_WORKSPACE_SHELL_PREFERENCES,
   normalizeWorkspaceShellPreferences,
@@ -18,6 +19,29 @@ describe("phase-1 host workspace layout", () => {
     expect(registry.selectedId).toBe("equal-grid");
     registry.select("lead-stack");
     expect(new TerminalLayoutRegistry(storage).selectedId).toBe("lead-stack");
+  });
+
+  test("restores only an existing saved extension recipe and falls back when it is removed", () => {
+    const storage = memoryStorage({ [TERMINAL_LAYOUT_PREFERENCE_KEY]: "notes/recipe" });
+    const registry = new TerminalLayoutRegistry(storage);
+    expect(registry.selectedId).toBe("equal-grid");
+    const unregister = registry.register({ id: "notes/recipe", title: "Recipe", arrange: equalGridLayout });
+    expect(registry.selectedId).toBe("notes/recipe");
+    unregister();
+    expect(registry.selectedId).toBe("equal-grid");
+    expect(storage.getItem(TERMINAL_LAYOUT_PREFERENCE_KEY)).toBe("equal-grid");
+
+    const freshStorage = memoryStorage();
+    const fresh = new TerminalLayoutRegistry(freshStorage);
+    fresh.register({ id: "notes/recipe", title: "Recipe", arrange: equalGridLayout });
+    expect(fresh.selectedId).toBe("equal-grid");
+    expect(freshStorage.getItem(TERMINAL_LAYOUT_PREFERENCE_KEY)).toBeNull();
+
+    const missingStorage = memoryStorage({ [TERMINAL_LAYOUT_PREFERENCE_KEY]: "missing/recipe" });
+    const missing = new TerminalLayoutRegistry(missingStorage);
+    expect(missing.finalizeRestoration()).toBe(true);
+    expect(missing.selectedId).toBe("equal-grid");
+    expect(missingStorage.getItem(TERMINAL_LAYOUT_PREFERENCE_KEY)).toBe("equal-grid");
   });
 
   test("uses a vertical recovery layout on narrow viewports without changing the chosen desktop recipe", () => {

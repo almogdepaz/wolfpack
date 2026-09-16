@@ -5454,12 +5454,23 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
     option.value = contribution.id;
     option.textContent = contribution.title;
     workspaceLayoutPicker?.append(option);
-    return () => {
+    if (workspaceTerminalLayouts.selectedId === contribution.id) {
+      if (workspaceLayoutPicker) workspaceLayoutPicker.value = contribution.id;
+      selectWorkspaceTerminalLayout(contribution.id);
+    }
+    return options => {
       option.remove();
-      unregister();
+      unregister(options);
       if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
-      selectWorkspaceTerminalLayout(workspaceTerminalLayouts.selectedId);
+      // Page teardown preserves the saved qualified preference for the next
+      // verified catalog load; no dying-page geometry update may overwrite it.
+      if (!options?.preservePreference) selectWorkspaceTerminalLayout(workspaceTerminalLayouts.selectedId);
     };
+  },
+  onCatalogReady: () => {
+    if (!workspaceTerminalLayouts.finalizeRestoration()) return;
+    if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
+    selectWorkspaceTerminalLayout(workspaceTerminalLayouts.selectedId);
   },
 }) : null;
 extensionHost?.setShellVisible(workspaceShell?.contextVisible ?? true);

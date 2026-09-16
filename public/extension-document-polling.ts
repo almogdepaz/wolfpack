@@ -59,7 +59,15 @@ export class SharedDocumentPoller {
     // callback function for multiple subscriptions.
     const subscription = (document: unknown | null, revision: number) => listener(document, revision);
     this.subscribers.add(subscription);
-    subscription(this.current.document, this.current.revision);
+    try {
+      subscription(this.current.document, this.current.revision);
+    } catch (error) {
+      // Acquisition is transactional: callers cannot release a subscription
+      // whose initial delivery threw before the cleanup function was returned.
+      this.subscribers.delete(subscription);
+      if (!this.hasConsumers()) this.stop();
+      throw error;
+    }
     this.schedule(0);
     return () => {
       this.subscribers.delete(subscription);
@@ -119,7 +127,10 @@ export class SharedDocumentPoller {
       this.failures = 0;
       if (next.revision >= this.current.revision) this.current = next;
       this.options.onState?.("fresh");
-      for (const listener of this.subscribers) listener(this.current.document, this.current.revision);
+      for (const listener of this.subscribers) {
+        try { listener(this.current.document, this.current.revision); }
+        catch { /* one package callback cannot block peer consumers */ }
+      }
       this.resolveReaders(this.current);
     } catch {
       if (!this.disposed && !controller.signal.aborted) {
