@@ -13,6 +13,8 @@ export interface ExtensionHostOptions {
   readonly scope: () => SelectedExtensionScope | null;
   readonly safeMode?: () => boolean;
   readonly registerLayout?: (contribution: TerminalLayoutContribution) => (() => void);
+  readonly authFetch?: typeof browserAuthFetch;
+  readonly bundleLoader?: typeof loadAuthenticatedExtensionBundle;
   readonly onChange?: () => void;
 }
 
@@ -62,7 +64,7 @@ export class ExtensionHost {
     }
     if (this.options.safeMode?.()) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
     try {
-      const response = await browserAuthFetch("/api/extensions", { cache: "no-store" });
+      const response = await (this.options.authFetch ?? browserAuthFetch)("/api/extensions", { cache: "no-store" });
       if (!response.ok) throw new Error(`catalog request failed (${response.status})`);
       const catalog = await response.json() as ExtensionCatalogEnvelope;
       if (this.disposed || generation !== this.generation) return;
@@ -89,7 +91,7 @@ export class ExtensionHost {
     if (existing) this.cleanupPackage(item.extensionId);
     const cleanups: Array<() => void> = [];
     try {
-      const module = await loadAuthenticatedExtensionBundle<{ default?: ExtensionRegistration }>(item.ui!.url, item.ui!.digest, { safeMode: false });
+      const module = await (this.options.bundleLoader ?? loadAuthenticatedExtensionBundle)<{ default?: ExtensionRegistration }>(item.ui!.url, item.ui!.digest, { safeMode: false });
       if (this.disposed || generation !== this.generation) return;
       if (typeof module.default !== "function") throw new Error("extension bundle has no registration function");
       const gate = new ExtensionContributionGate(item.extensionId);
@@ -148,7 +150,7 @@ export class ExtensionHost {
     const selected = this.currentScope;
     if (!selected || selected.sessionId !== scope.sessionId || this.currentInstallationId !== scope.installationId) throw new Error("stale extension scope");
     const url = `/api/extensions/documents/${encodeURIComponent(extensionId)}/${encodeURIComponent(documentId)}?session=${encodeURIComponent(scope.sessionId)}`;
-    const response = await browserAuthFetch(url, { cache: "no-store", signal });
+    const response = await (this.options.authFetch ?? browserAuthFetch)(url, { cache: "no-store", signal });
     if (!response.ok) throw new Error("extension document unavailable");
     const value = await response.json() as ExtensionDocumentReadEnvelope;
     if (value.installationId !== scope.installationId || value.scopeSessionId !== scope.sessionId || value.extensionId !== extensionId || value.documentId !== documentId) throw new Error("extension document identity mismatch");
