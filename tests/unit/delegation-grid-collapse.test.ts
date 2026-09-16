@@ -39,6 +39,7 @@ beforeAll(async () => {
       querySelectorAll() { return []; },
       addEventListener() {},
       removeEventListener() {},
+      dispatchEvent() { return true; },
     },
     localStorage: {
       getItem() { return null; },
