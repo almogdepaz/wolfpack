@@ -140,6 +140,14 @@ function inventory(skill: BundledPiSkill, extensionId: string): SkillOwnership {
   return { extensionId, sourceDigest: hash(canonicalJson(files)), files };
 }
 
+/** Validates package-declared skill bytes without inspecting or mutating a discovery root. */
+export function validateBundledPiSkills(extensionId: string, skills: readonly BundledPiSkill[]): void {
+  if (typeof extensionId !== "string" || !EXTENSION_ID.test(extensionId)) throw new PiSkillDeploymentError("INVALID_REQUEST", "extension ID must be stable");
+  if (!Array.isArray(skills) || skills.length > PI_SKILL_LIMITS.maxBatchSkills) throw new PiSkillDeploymentError("INVALID_REQUEST", "skills must be a bounded array");
+  validateNames(skills.map((skill) => skill?.name));
+  for (const skill of skills) inventory(skill, extensionId);
+}
+
 function validRegistry(value: unknown): value is OwnershipRegistry {
   if (!isPlainJsonObject(value) || !fields(value, ["version", "skills"]) || value.version !== 1 || !isPlainJsonObject(value.skills)) return false;
   const entries = Object.entries(value.skills);
