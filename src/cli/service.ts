@@ -6,6 +6,10 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  closeSync,
+  openSync,
+  readSync,
+  writeSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -15,7 +19,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { xmlEsc, systemdEsc } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
@@ -77,21 +81,20 @@ const INSTALLER_ENTRYPOINTS = ["/usr/local/bin/wolfpack"] as const;
 function programArgs(): string[] {
   const exe = process.execPath;
   const isBunRuntime = exe.endsWith("/bun") || exe.endsWith("/bun.exe");
-  if (isBunRuntime && process.argv[1]) {
-    return [exe, resolve(process.argv[1])];
-  }
+  if (isBunRuntime && process.argv[1]) return [exe, resolve(process.argv[1])];
   const stableBin = join(WOLFPACK_DIR, "bin", "wolfpack");
+  if (isPackageRunnerPairExecutable(exe)) return [stableBin];
   if (exe !== stableBin && existsSync(exe)) {
     try {
       mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
       copyFileSync(exe, stableBin);
       chmodSync(stableBin, 0o755);
       return [stableBin];
-    } catch (e: unknown) {
-      log.warn("programArgs: failed to copy binary to stable location", { error: errMsg(e) });
+    } catch (error: unknown) {
+      log.warn("programArgs: failed to copy binary to stable location", { error: errMsg(error) });
     }
   }
-  return [exe];
+  return existsSync(stableBin) ? [stableBin] : [exe];
 }
 
 const STABLE_BROKER_PATH = join(WOLFPACK_DIR, "bin", "wolfpack-broker");
@@ -107,10 +110,14 @@ const STABLE_BROKER_PATH = join(WOLFPACK_DIR, "bin", "wolfpack-broker");
  *  3. `broker/target/release/wolfpack-broker` under the cwd (dev tree).
  */
 export function brokerProgramPath(): string | null {
+  const exe = process.execPath;
   if (existsSync(STABLE_BROKER_PATH)) return STABLE_BROKER_PATH;
+  if (isPackageRunnerPairExecutable(exe)) {
+    const packageBroker = join(dirname(exe), "wolfpack-broker");
+    return existsSync(packageBroker) ? packageBroker : null;
+  }
 
   const candidates: string[] = [];
-  const exe = process.execPath;
   if (exe && exe !== "/usr/local/bin/bun" && !exe.endsWith("/bun")) {
     // Beside the compiled wolfpack binary
     const dir = exe.substring(0, exe.lastIndexOf("/"));
@@ -138,29 +145,152 @@ export function brokerProgramPath(): string | null {
  * differs from what's already there.  Returns true when the stable binary
  * was actually replaced (i.e. an upgrade happened).
  */
-export function updateStableBinary(): boolean {
-  const exe = process.execPath;
-  if (exe.endsWith("/bun") || exe.endsWith("/bun.exe")) return false;
+export function isPackageRunnerPairExecutable(executable: string): boolean {
+  return /^wolfpack-bridge-(darwin|linux)-(arm64|x64)$/.test(basename(dirname(executable)));
+}
+
+function isRegularExecutable(path: string): boolean {
+  const stat = lstatSync(path);
+  return stat.isFile() && !stat.isSymbolicLink() && (stat.mode & 0o100) !== 0;
+}
+
+function filesMatch(source: string, destination: string): boolean {
+  if (!existsSync(destination)) return false;
+  const destinationStat = lstatSync(destination);
+  if (!destinationStat.isFile() || destinationStat.isSymbolicLink()) return false;
+  return statSync(source).size === destinationStat.size
+    && readFileSync(source).equals(readFileSync(destination));
+}
+
+export function updateStableBinary(executable: string = process.execPath): boolean {
+  const exe = executable;
+  if (exe.endsWith("/bun") || exe.endsWith("/bun.exe") || isPackageRunnerPairExecutable(exe)) return false;
 
   const stableBin = join(WOLFPACK_DIR, "bin", "wolfpack");
-  if (exe === stableBin) return false;
-  if (!existsSync(exe)) return false;
+  if (exe === stableBin || !existsSync(exe)) return false;
+  if (filesMatch(exe, stableBin)) {
+    chmodSync(stableBin, 0o755);
+    return false;
+  }
+  mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
+  copyFileSync(exe, stableBin);
+  chmodSync(stableBin, 0o755);
+  return true;
+}
 
+export interface PackagePairReplacement {
+  readonly replaced: boolean;
+  readonly hadServices: boolean;
+}
+
+const PACKAGE_RUNNER_SOURCE = {
+  BUNX: "bunx",
+  NPX: "npx",
+} as const;
+type PackageRunnerSource = (typeof PACKAGE_RUNNER_SOURCE)[keyof typeof PACKAGE_RUNNER_SOURCE];
+
+function packageRunnerSource(): PackageRunnerSource {
+  return process.env.WOLFPACK_PACKAGE_RUNNER === PACKAGE_RUNNER_SOURCE.NPX
+    ? PACKAGE_RUNNER_SOURCE.NPX
+    : PACKAGE_RUNNER_SOURCE.BUNX;
+}
+
+function packageRetryCommand(): string {
+  return packageRunnerSource() === PACKAGE_RUNNER_SOURCE.NPX
+    ? `npx --yes wolfpack-bridge@${VERSION}`
+    : `bunx --bun wolfpack-bridge@${VERSION}`;
+}
+
+function confirmPackageBrokerLoss(): void {
+  print(yellow("  Warning: broker-owned sessions will end when the broker is replaced."));
+  if (process.env.WOLFPACK_INSTALL_ALLOW_SESSION_LOSS === "1") return;
+  let tty: number;
   try {
-    if (existsSync(stableBin)) {
-      const a = statSync(exe).size;
-      const b = statSync(stableBin).size;
-      if (a === b && readFileSync(exe).equals(readFileSync(stableBin))) {
-        return false;
+    tty = openSync("/dev/tty", "r+");
+  } catch {
+    throw new Error("Refusing unattended broker replacement without WOLFPACK_INSTALL_ALLOW_SESSION_LOSS=1.");
+  }
+  try {
+    writeSync(tty, "  Continue with session loss? [y/N] ");
+    const answer = Buffer.alloc(1);
+    readSync(tty, answer, 0, 1, null);
+    if (answer.toString().toLowerCase() !== "y") throw new Error("Broker replacement aborted.");
+  } finally {
+    closeSync(tty);
+  }
+}
+
+function removePackageManagedDescriptors(): void {
+  if (IS_MACOS) {
+    launchdBootout();
+    launchdBootoutBroker();
+    for (const path of [PLIST_PATH, BROKER_PLIST_PATH]) {
+      try { unlinkSync(path); } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
     }
-    mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
-    copyFileSync(exe, stableBin);
-    chmodSync(stableBin, 0o755);
-    return true;
-  } catch (e: unknown) {
-    log.warn("failed to update stable binary", { error: errMsg(e) });
-    return false;
+  } else if (IS_LINUX) {
+    for (const path of [SYSTEMD_PATH, BROKER_SYSTEMD_PATH]) {
+      try { unlinkSync(path); } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+  }
+}
+
+export function replacePackageRunnerPair(executable: string = process.execPath): PackagePairReplacement {
+  if (!isPackageRunnerPairExecutable(executable)) return { replaced: false, hadServices: false };
+  const packageBroker = join(dirname(executable), "wolfpack-broker");
+  if (!isRegularExecutable(executable) || !isRegularExecutable(packageBroker)) {
+    throw new Error("Package runner payload is not a regular executable pair.");
+  }
+  const serverMatches = filesMatch(executable, join(WOLFPACK_DIR, "bin", "wolfpack"));
+  const brokerMatches = filesMatch(packageBroker, STABLE_BROKER_PATH);
+  const serverRunning = isServiceRunning();
+  const brokerRunning = isBrokerServiceRunning();
+  const hadServices = isServiceInstalled()
+    || existsSync(BROKER_PLIST_PATH)
+    || existsSync(BROKER_SYSTEMD_PATH)
+    || serverRunning
+    || brokerRunning;
+  if (serverMatches && brokerMatches) {
+    chmodSync(join(WOLFPACK_DIR, "bin", "wolfpack"), 0o755);
+    chmodSync(STABLE_BROKER_PATH, 0o755);
+    return { replaced: false, hadServices };
+  }
+  if (brokerRunning) confirmPackageBrokerLoss();
+  if (serverRunning) {
+    if (IS_MACOS) launchdBootout();
+    else if (IS_LINUX) execSync(`systemctl --user stop ${SYSTEMD_SERVICE}`);
+  }
+  if (brokerRunning) {
+    if (IS_MACOS) launchdBootoutBroker();
+    else if (IS_LINUX) execSync(`systemctl --user stop ${BROKER_SYSTEMD_SERVICE}`);
+  }
+  if (isServiceRunning() || isBrokerServiceRunning()) {
+    throw new Error("Managed services are still active; refusing package replacement.");
+  }
+  removePackageManagedDescriptors();
+  rmSync(join(WOLFPACK_DIR, "bin", "wolfpack"), { force: true });
+  rmSync(STABLE_BROKER_PATH, { force: true });
+  mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
+  copyFileSync(packageBroker, STABLE_BROKER_PATH);
+  copyFileSync(executable, join(WOLFPACK_DIR, "bin", "wolfpack"));
+  chmodSync(join(WOLFPACK_DIR, "bin", "wolfpack"), 0o755);
+  chmodSync(STABLE_BROKER_PATH, 0o755);
+  return { replaced: true, hadServices };
+}
+
+export function activatePackageRunnerPair(): void {
+  try {
+    serviceInstall({ failureMode: "throw" });
+    if (!isServiceRunning() || !isBrokerServiceRunning()) {
+      throw new Error("managed service activation did not start both server and broker");
+    }
+  } catch (error: unknown) {
+    print(red(`  Package pair activation failed: ${errMsg(error)}`));
+    print(dim(`  Reinstall: ${packageRetryCommand()}`));
+    throw error;
   }
 }
 
@@ -391,9 +521,18 @@ export function ensureBrokerBinary(): string | null {
   return brokerProgramPath();
 }
 
+interface ServiceInstallOptions {
+  readonly failureMode?: "exit" | "throw";
+}
+
+function failServiceInstall(options: ServiceInstallOptions): never {
+  if (options.failureMode === "throw") throw new Error("service installation failed");
+  process.exit(1);
+}
+
 /** Install the broker as a service (launchd / systemd). Must run before
  *  the wolfpack server is bootstrapped so the socket is ready. */
-function brokerServiceInstall(): void {
+function brokerServiceInstall(options: ServiceInstallOptions = {}): void {
   const brokerBin = ensureBrokerBinary();
   if (!brokerBin) {
     print(red("  Could not locate wolfpack-broker binary."));
@@ -401,7 +540,7 @@ function brokerServiceInstall(): void {
     print(dim(`    - ${STABLE_BROKER_PATH} (already-installed)`));
     print(dim(`    - co-located with the wolfpack binary`));
     print(dim(`    - ./broker/target/release/wolfpack-broker (dev tree, run \`cargo build --release --manifest-path broker/Cargo.toml\`)`));
-    process.exit(1);
+    failServiceInstall(options);
   }
 
   if (IS_MACOS) {
@@ -411,13 +550,13 @@ function brokerServiceInstall(): void {
     } catch (e: unknown) {
       log.error("failed to write broker plist", { error: errMsg(e) });
       print(red(`  Failed to write broker plist: ${errMsg(e)}`));
-      process.exit(1);
+      failServiceInstall(options);
     }
     launchdBootoutBroker();
     try { launchdBootstrapBroker(); } catch (e: unknown) {
       log.error("broker launchctl bootstrap failed", { error: errMsg(e) });
       print(red(`  Failed to register broker with launchd: ${errMsg(e)}`));
-      process.exit(1);
+      failServiceInstall(options);
     }
     print(dim(`  Broker plist: ${BROKER_PLIST_PATH}`));
   } else if (IS_LINUX) {
@@ -427,7 +566,7 @@ function brokerServiceInstall(): void {
     } catch (e: unknown) {
       log.error("failed to write broker systemd unit", { error: errMsg(e) });
       print(red(`  Failed to write broker unit: ${errMsg(e)}`));
-      process.exit(1);
+      failServiceInstall(options);
     }
     try {
       execSync("systemctl --user daemon-reload");
@@ -436,7 +575,7 @@ function brokerServiceInstall(): void {
     } catch (e: unknown) {
       log.error("broker systemctl enable/start failed", { error: errMsg(e) });
       print(red(`  Failed to enable/start broker: ${errMsg(e)}`));
-      process.exit(1);
+      failServiceInstall(options);
     }
     print(dim(`  Broker unit:  ${BROKER_SYSTEMD_PATH}`));
   }
@@ -586,7 +725,7 @@ function configureLinger(): void {
   }
 }
 
-export function serviceInstall() {
+export function serviceInstall(options: ServiceInstallOptions = {}): void {
   if (IS_MACOS) {
     rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
     rotateLogFile(BROKER_LOG_PATH);
@@ -594,7 +733,7 @@ export function serviceInstall() {
   const config = loadConfig();
   if (!config) {
     print(red("  Run 'wolfpack setup' first."));
-    process.exit(1);
+    failServiceInstall(options);
   }
 
   let serviceAuthPath: string | undefined;
@@ -604,7 +743,7 @@ export function serviceInstall() {
   } catch (e: unknown) {
     log.error("failed to prepare service authentication", { error: errMsg(e) });
     print(red(`  Failed to install service authentication: ${errMsg(e)}`));
-    process.exit(1);
+    failServiceInstall(options);
   }
 
   if (isServiceRunning()) {
@@ -616,7 +755,7 @@ export function serviceInstall() {
 
   // Bootstrap the broker first — wolfpack server fails to start if the
   // broker socket isn't reachable.
-  brokerServiceInstall();
+  brokerServiceInstall(options);
 
   if (IS_MACOS) {
     const plist = generatePlist(serviceAuthPath);
@@ -625,7 +764,7 @@ export function serviceInstall() {
     } catch (e: unknown) {
       log.error("failed to create LaunchAgents directory", { error: errMsg(e) });
       print(red(`  Failed to create ~/Library/LaunchAgents: ${errMsg(e)}`));
-      process.exit(1);
+      failServiceInstall(options);
     }
     try {
       writeFileSync(PLIST_PATH, plist);
@@ -633,7 +772,7 @@ export function serviceInstall() {
       log.error("failed to write plist", { path: PLIST_PATH, error: errMsg(e) });
       print(red(`  Failed to write plist: ${errMsg(e)}`));
       print(dim("  Check permissions on ~/Library/LaunchAgents or run with sudo."));
-      process.exit(1);
+      failServiceInstall(options);
     }
     launchdBootout();
     try {
@@ -643,7 +782,7 @@ export function serviceInstall() {
       print(red(`  Failed to register service with launchd: ${errMsg(e)}`));
       print(dim("  The plist was written but launchctl bootstrap/kickstart failed."));
       print(dim(`  Try manually: launchctl bootstrap gui/$(id -u) "${PLIST_PATH}"`));
-      process.exit(1);
+      failServiceInstall(options);
     }
     print("");
     print(green("  Wolfpack service installed and started."));
@@ -655,7 +794,7 @@ export function serviceInstall() {
     } catch (e: unknown) {
       log.error("failed to create systemd user directory", { error: errMsg(e) });
       print(red(`  Failed to create ~/.config/systemd/user: ${errMsg(e)}`));
-      process.exit(1);
+      failServiceInstall(options);
     }
     try {
       writeFileSync(SYSTEMD_PATH, unit);
@@ -663,7 +802,7 @@ export function serviceInstall() {
       log.error("failed to write systemd unit", { path: SYSTEMD_PATH, error: errMsg(e) });
       print(red(`  Failed to write unit file: ${errMsg(e)}`));
       print(dim("  Check permissions on ~/.config/systemd/user/."));
-      process.exit(1);
+      failServiceInstall(options);
     }
     try {
       execSync("systemctl --user daemon-reload");
@@ -671,14 +810,14 @@ export function serviceInstall() {
       log.error("systemctl daemon-reload failed", { error: errMsg(e) });
       print(red(`  Failed to reload systemd: ${errMsg(e)}`));
       print(dim("  Is systemd --user running? Check: systemctl --user status"));
-      process.exit(1);
+      failServiceInstall(options);
     }
     try {
       execSync(`systemctl --user enable ${SYSTEMD_SERVICE}`);
     } catch (e: unknown) {
       log.error("systemctl enable failed", { error: errMsg(e) });
       print(red(`  Failed to enable service: ${errMsg(e)}`));
-      process.exit(1);
+      failServiceInstall(options);
     }
     try {
       execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
@@ -686,7 +825,7 @@ export function serviceInstall() {
       log.error("systemctl start failed", { error: errMsg(e) });
       print(red(`  Failed to start service: ${errMsg(e)}`));
       print(dim(`  Check logs: journalctl --user -u ${SYSTEMD_SERVICE}`));
-      process.exit(1);
+      failServiceInstall(options);
     }
     configureLinger();
     print("");
@@ -694,7 +833,7 @@ export function serviceInstall() {
     print(dim(`  Unit: ${SYSTEMD_PATH}`));
   } else {
     print(red("  Service install not supported on this platform."));
-    process.exit(1);
+    failServiceInstall(options);
   }
 
   print(dim(`  Log:   ~/.wolfpack/wolfpack.log`));
@@ -735,8 +874,9 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
   const config = loadConfig();
   const stopBroker = options.broker ?? (ask("  Stop broker too? This kills broker-owned sessions. (y/n) ").toLowerCase() === "y");
 
-  // Warn about active sessions before stopping
-  if (!options.skipBrokerSessionWarning && config && isPortInUse(config.port)) {
+  // Warn about active sessions before stopping. An explicit installer override
+  // is consent for the broker-session loss and permits unattended replacement.
+  if (!options.skipBrokerSessionWarning && process.env.WOLFPACK_INSTALL_ALLOW_SESSION_LOSS !== "1" && config && isPortInUse(config.port)) {
     try {
       const res = execFileSync(
         "curl", ["-s", "--max-time", "3", `http://127.0.0.1:${config.port}/api/backend`],
@@ -785,7 +925,13 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
     killPortHolder(config.port);
     waitForPortFree(config.port, 5000);
   }
-  if (stopBroker) brokerServiceStop();
+  if (stopBroker) {
+    brokerServiceStop();
+    if (isBrokerServiceRunning()) {
+      print(red("  Failed to stop broker service."));
+      return false;
+    }
+  }
   return serverStopped;
 }
 

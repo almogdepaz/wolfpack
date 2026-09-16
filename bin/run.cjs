@@ -109,6 +109,7 @@ function findBinary() {
 }
 
 const binary = findBinary();
+process.env.WOLFPACK_PACKAGE_RUNNER = process.versions.bun ? "bunx" : "npx";
 
 try {
   execFileSync(binary, process.argv.slice(2), { stdio: "inherit" });

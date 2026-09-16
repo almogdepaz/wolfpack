@@ -18,6 +18,8 @@ import {
   serviceStatus,
   isServiceInstalled,
   isServiceRunning,
+  replacePackageRunnerPair,
+  activatePackageRunnerPair,
   updateStableBinary,
   uninstall,
 } from "./service.js";
@@ -137,8 +139,14 @@ export function parseSetupOptions(argv: readonly string[]): ParsedSetupOptions |
 async function runSetup(args: readonly string[] = []): Promise<void> {
   const options = parseSetupOptions(args);
   if (!options) throw new Error(`invalid setup options. ${setupUsage()}`);
+  const packageReplacement = replacePackageRunnerPair();
+  const serviceNeedsActivation = packageReplacement.replaced && packageReplacement.hadServices;
   const { setup } = await import("./setup.js");
-  await setup(options);
+  await setup({
+    ...options,
+    ...(packageReplacement.hadServices && { deferServiceRestart: true }),
+  });
+  if (serviceNeedsActivation) activatePackageRunnerPair();
 }
 
 export function shouldStartDashboard(argv: readonly string[]): boolean {
@@ -189,17 +197,23 @@ async function start() {
 
   // CLI invocation — ensure service is running the current version
   const url = remoteUrl(config);
-  const binaryUpdated = updateStableBinary();
+  const packageReplacement = replacePackageRunnerPair();
+  const binaryUpdated = packageReplacement.replaced ? false : updateStableBinary();
   const wasRunning = isServiceRunning();
   try {
-    const action = planBinaryUpdateAction(binaryUpdated, wasRunning, isServiceInstalled());
-    if (action === "server-restart") {
-      print(dim("  Updated server binary; restarting server only so broker sessions stay attached to the broker."));
-      serviceRestart({ broker: false, skipBrokerSessionWarning: true });
-    } else if (action === "start") serviceStart();
-    else if (action === "install") serviceInstall();
-  } catch (e) {
-    printError(red(`  Service startup failed: ${e}`));
+    if (packageReplacement.replaced) {
+      activatePackageRunnerPair();
+    } else {
+      const action = planBinaryUpdateAction(binaryUpdated, wasRunning, isServiceInstalled());
+      if (action === "server-restart") {
+        print(dim("  Updated server binary; restarting server only so broker sessions stay attached to the broker."));
+        serviceRestart({ broker: false, skipBrokerSessionWarning: true });
+      } else if (action === "start") serviceStart();
+      else if (action === "install") serviceInstall();
+    }
+  } catch (error) {
+    printError(red(`  Service startup failed: ${error}`));
+    if (packageReplacement.replaced) throw error;
     printError(dim("  Run 'wolfpack service install' to retry."));
   }
   if (wasRunning && !isServiceRunning()) {
@@ -266,7 +280,11 @@ function runServiceCommand(argv: readonly string[]): void {
     printError(`  ${SERVICE_USAGE}`);
     process.exit(1);
   }
-  if (serviceCommand.action === "install") serviceInstall();
+  if (serviceCommand.action === "install") {
+    const packageReplacement = replacePackageRunnerPair();
+    if (packageReplacement.replaced) activatePackageRunnerPair();
+    else serviceInstall();
+  }
   else if (serviceCommand.action === "uninstall") serviceUninstall();
   else if (serviceCommand.action === "stop") serviceStop(serviceCommand.broker ? { broker: true } : {});
   else if (serviceCommand.action === "start") serviceStart();

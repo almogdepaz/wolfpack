@@ -21,6 +21,7 @@ BINARY_NAME="wolfpack"
 bold() { printf "\033[1m%s\033[0m" "$1"; }
 green() { printf "\033[32m%s\033[0m" "$1"; }
 red() { printf "\033[31m%s\033[0m" "$1"; }
+yellow() { printf "\033[33m%s\033[0m" "$1"; }
 dim() { printf "\033[2m%s\033[0m" "$1"; }
 
 SEMVER_CORE_IDENTIFIER='(0|[1-9][0-9]*)'
@@ -167,6 +168,14 @@ if ! download_asset "$BROKER_DOWNLOAD_URL" "$STAGED_BROKER"; then
 fi
 
 for artifact in "$STAGED_WOLFPACK" "$STAGED_BROKER"; do
+  if [ ! -e "$artifact" ]; then
+    echo "  $(red 'Downloaded artifact is empty.')"
+    exit 1
+  fi
+  if [ -L "$artifact" ] || [ ! -f "$artifact" ]; then
+    echo "  $(red 'Downloaded artifact is not a regular file.')"
+    exit 1
+  fi
   if [ ! -s "$artifact" ]; then
     echo "  $(red 'Downloaded artifact is empty.')"
     exit 1
@@ -218,20 +227,171 @@ if $IS_MACOS; then
   done
 fi
 
-mv -f "$STAGED_WOLFPACK" "${INSTALL_DIR}/${BINARY_NAME}" || exit 1
-mv -f "$STAGED_BROKER" "${INSTALL_DIR}/${BROKER_BINARY_NAME}" || exit 1
-
-echo "  $(green '✓') Binary installed to ${INSTALL_DIR}/${BINARY_NAME}"
-echo "  $(green '✓') Broker installed to ${INSTALL_DIR}/${BROKER_BINARY_NAME}"
-
-# ── Detect an existing service (upgrade path) ──
-
+MANAGED_BINARY="${INSTALL_DIR}/${BINARY_NAME}"
+MANAGED_BROKER="${INSTALL_DIR}/${BROKER_BINARY_NAME}"
 SERVICE_EXISTS=false
-if $IS_MACOS && [ -f "$HOME/Library/LaunchAgents/com.wolfpack.server.plist" ]; then
-  SERVICE_EXISTS=true
-elif $IS_LINUX && [ -f "$HOME/.config/systemd/user/wolfpack.service" ]; then
+BROKER_WAS_RUNNING=false
+SERVER_WAS_RUNNING=false
+PAIR_REPLACED=false
+PAIR_ALREADY_MATCHED=false
+
+if $IS_MACOS; then
+  SERVER_SERVICE_PATH="$HOME/Library/LaunchAgents/com.wolfpack.server.plist"
+  BROKER_SERVICE_PATH="$HOME/Library/LaunchAgents/com.wolfpack.broker.plist"
+elif $IS_LINUX; then
+  SERVER_SERVICE_PATH="$HOME/.config/systemd/user/wolfpack.service"
+  BROKER_SERVICE_PATH="$HOME/.config/systemd/user/wolfpack-broker.service"
+fi
+
+if [ -f "$SERVER_SERVICE_PATH" ] || [ -f "$BROKER_SERVICE_PATH" ]; then
   SERVICE_EXISTS=true
 fi
+server_service_running() {
+  if $IS_MACOS; then
+    launchctl print "gui/$(id -u)/com.wolfpack.server" 2>/dev/null | grep -Eq 'pid[[:space:]]*=[[:space:]]*[0-9]+'
+  elif $IS_LINUX; then
+    systemctl --user is-active wolfpack >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+broker_service_running() {
+  if $IS_MACOS; then
+    launchctl print "gui/$(id -u)/com.wolfpack.broker" 2>/dev/null | grep -Eq 'pid[[:space:]]*=[[:space:]]*[0-9]+'
+  elif $IS_LINUX; then
+    systemctl --user is-active wolfpack-broker >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+managed_services_running() {
+  if $IS_MACOS; then
+    launchctl print "gui/$(id -u)/com.wolfpack.broker" 2>/dev/null | grep -Eq 'pid[[:space:]]*=[[:space:]]*[0-9]+' \
+      && launchctl print "gui/$(id -u)/com.wolfpack.server" 2>/dev/null | grep -Eq 'pid[[:space:]]*=[[:space:]]*[0-9]+'
+  elif $IS_LINUX; then
+    systemctl --user is-active wolfpack-broker >/dev/null 2>&1 \
+      && systemctl --user is-active wolfpack >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+managed_services_inactive() {
+  if $IS_MACOS; then
+    ! launchctl print "gui/$(id -u)/com.wolfpack.server" 2>/dev/null | grep -Eq 'pid[[:space:]]*=[[:space:]]*[0-9]+' \
+      && ! launchctl print "gui/$(id -u)/com.wolfpack.broker" 2>/dev/null | grep -Eq 'pid[[:space:]]*=[[:space:]]*[0-9]+'
+  elif $IS_LINUX; then
+    ! systemctl --user is-active wolfpack >/dev/null 2>&1 \
+      && ! systemctl --user is-active wolfpack-broker >/dev/null 2>&1
+  else
+    return 1
+  fi
+}
+
+print_reinstall_command() {
+  if [ -n "${WOLFPACK_RELEASE_TAG:-}" ]; then
+    echo "  Reinstall: curl -fsSL \"https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/${WOLFPACK_RELEASE_TAG}/install.sh\" | WOLFPACK_RELEASE_TAG=\"${WOLFPACK_RELEASE_TAG}\" bash"
+  else
+    echo "  Reinstall: curl -fsSL https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/install.sh | bash"
+  fi
+}
+
+remove_managed_service_descriptors() {
+  if $IS_MACOS; then
+    launchctl bootout "gui/$(id -u)/com.wolfpack.server" 2>/dev/null || true
+    launchctl bootout "gui/$(id -u)/com.wolfpack.broker" 2>/dev/null || true
+    if ! rm -f "$SERVER_SERVICE_PATH" "$BROKER_SERVICE_PATH"; then
+      echo "  $(red 'Failed to remove managed service descriptors.')"
+      return 1
+    fi
+  elif $IS_LINUX; then
+    systemctl --user disable wolfpack 2>/dev/null || true
+    systemctl --user disable wolfpack-broker 2>/dev/null || true
+    if ! rm -f "$SERVER_SERVICE_PATH" "$BROKER_SERVICE_PATH"; then
+      echo "  $(red 'Failed to remove managed service descriptors.')"
+      return 1
+    fi
+  fi
+}
+
+managed_pair_matches() {
+  [ ! -L "$MANAGED_BINARY" ] && [ -f "$MANAGED_BINARY" ] && [ -x "$MANAGED_BINARY" ] \
+    && [ ! -L "$MANAGED_BROKER" ] && [ -f "$MANAGED_BROKER" ] && [ -x "$MANAGED_BROKER" ] \
+    && cmp -s "$STAGED_WOLFPACK" "$MANAGED_BINARY" \
+    && cmp -s "$STAGED_BROKER" "$MANAGED_BROKER"
+}
+
+if managed_pair_matches; then
+  chmod 0755 "$MANAGED_BINARY" "$MANAGED_BROKER" || exit 1
+  PAIR_ALREADY_MATCHED=true
+  echo "  $(green '✓') Managed wolfpack and broker pair already matches the selected release."
+else
+  if broker_service_running; then
+    BROKER_WAS_RUNNING=true
+    SERVICE_EXISTS=true
+    echo "  $(yellow 'Warning: broker-owned sessions will end when the broker is replaced.')"
+    if [ "${WOLFPACK_INSTALL_ALLOW_SESSION_LOSS:-0}" = "1" ]; then
+      :
+    elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
+      printf "  Continue with session loss? [y/N] " > /dev/tty
+      read -r INSTALL_CONFIRMATION < /dev/tty
+      if [[ "$INSTALL_CONFIRMATION" != "y" && "$INSTALL_CONFIRMATION" != "Y" ]]; then
+        echo "  $(dim 'Aborted.')"
+        exit 1
+      fi
+    else
+      echo "  $(red 'Refusing unattended broker replacement without WOLFPACK_INSTALL_ALLOW_SESSION_LOSS=1.')"
+      exit 1
+    fi
+  fi
+
+  if server_service_running; then
+    SERVER_WAS_RUNNING=true
+    SERVICE_EXISTS=true
+  fi
+
+  # Broker-owned PTYs make pair replacement deliberately destructive. Stop
+  # server then broker before removing only those descriptors.
+  if $SERVER_WAS_RUNNING || $BROKER_WAS_RUNNING; then
+    if $IS_MACOS; then
+      launchctl bootout "gui/$(id -u)/com.wolfpack.server" 2>/dev/null || true
+      launchctl bootout "gui/$(id -u)/com.wolfpack.broker" 2>/dev/null || true
+    elif $IS_LINUX; then
+      systemctl --user stop wolfpack || true
+      systemctl --user stop wolfpack-broker || true
+    fi
+    if ! managed_services_inactive; then
+      echo "  $(red 'Managed services are still active; refusing replacement.')"
+      exit 1
+    fi
+  fi
+
+  if $SERVICE_EXISTS && ! remove_managed_service_descriptors; then
+    exit 1
+  fi
+
+  rm -f "$MANAGED_BINARY" "$MANAGED_BROKER"
+  mv -f "$STAGED_WOLFPACK" "$MANAGED_BINARY" || exit 1
+  mv -f "$STAGED_BROKER" "$MANAGED_BROKER" || exit 1
+  chmod 0755 "$MANAGED_BINARY" "$MANAGED_BROKER" || exit 1
+  PAIR_REPLACED=true
+
+  echo "  $(green '✓') Binary installed to ${MANAGED_BINARY}"
+  echo "  $(green '✓') Broker installed to ${MANAGED_BROKER}"
+
+fi
+
+activate_replaced_services() {
+  if $SERVICE_EXISTS; then
+    if ! "$MANAGED_BINARY" service install || ! managed_services_running; then
+      echo "  $(red 'Managed service activation failed.')"
+      print_reinstall_command
+      return 1
+    fi
+  fi
+}
 
 echo ""
 
@@ -286,30 +446,23 @@ echo ""
 # ── Run setup ──
 
 if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" != "1" ]; then
-  if [ -x "$MANAGED_BINARY" ]; then
-    echo "  $(green '✓') $(bold 'wolfpack') installed"
-    echo ""
-    echo "  Run $(bold 'wolfpack') to start."
-    echo ""
-    if $SERVICE_EXISTS && [ -f "$HOME/.wolfpack/config.json" ]; then
-      "$MANAGED_BINARY" setup --defer-service-restart < /dev/tty || exit "$?"
-    else
-      exec "$MANAGED_BINARY" setup < /dev/tty
-    fi
-  else
+  if [ ! -x "$MANAGED_BINARY" ]; then
     echo "  $(red '✗') wolfpack binary not found after install"
     exit 1
   fi
-fi
 
-# ── Restart service after successful setup (upgrade path) ──
-
-if $SERVICE_EXISTS && [ -f "$HOME/.wolfpack/config.json" ]; then
-  echo "  Restarting service with new binary..."
-  if "$MANAGED_BINARY" service restart --server-only 2>/dev/null; then
-    echo "  $(green '✓') Server service restarted"
+  echo "  $(green '✓') $(bold 'wolfpack') installed"
+  echo ""
+  echo "  Run $(bold 'wolfpack') to start."
+  echo ""
+  if $SERVICE_EXISTS; then
+    "$MANAGED_BINARY" setup --defer-service-restart < /dev/tty || exit "$?"
+    if $PAIR_REPLACED; then
+      activate_replaced_services || exit 1
+    fi
   else
-    echo "  $(dim 'Server restart failed — run: wolfpack service restart')"
-    exit 1
+    exec "$MANAGED_BINARY" setup < /dev/tty
   fi
+elif $PAIR_REPLACED; then
+  activate_replaced_services || exit 1
 fi
