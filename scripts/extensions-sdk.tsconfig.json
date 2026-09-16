@@ -1,0 +1,16 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "declarationMap": false,
+    "outDir": "../sdk/types",
+    "rootDir": "../src/extensions"
+  },
+  "include": [
+    "../src/extensions/public-sdk.ts",
+    "../src/extensions/sdk.ts",
+    "../src/extensions/layout-contract.ts"
+  ]
+}
