@@ -160,6 +160,13 @@ try {
   mkdirSync(project, { recursive: true, mode: 0o700 });
   await assertOwnedPersistentPaths();
   const source = await packagedSampleSource();
+  // Keep a second compiled declaration at a non-1 schema version. This proves
+  // extension-data resolves the installed declaration rather than hardcoding 1.
+  const nonOneSource = join(sandbox, "non-one-extension"); mkdirSync(join(nonOneSource, "dist"), { recursive: true }); mkdirSync(join(nonOneSource, "schemas"), { recursive: true });
+  writeFileSync(join(nonOneSource, "package.json"), JSON.stringify({ name: "native-version-fixture", version: "1.0.0", wolfpack: { manifestVersion: 1, apiVersion: 1, id: "native", ui: "dist/ui.js", skills: [], documents: [{ id: "context", schemaVersion: 7, schema: "schemas/context.json" }] } }));
+  writeFileSync(join(nonOneSource, "dist", "ui.js"), "export const nativeVersionFixture = true;\n");
+  writeFileSync(join(nonOneSource, "schemas", "context.json"), JSON.stringify({ type: "object", required: ["goal"], properties: { goal: { type: "string" } }, additionalProperties: false }));
+  const nonOneDocument = join(sandbox, "non-one.json"); writeFileSync(nonOneDocument, JSON.stringify({ goal: "non-one declaration version" }));
   const firstDocument = join(sandbox, "first.json");
   const secondDocument = join(sandbox, "second.json");
   const document = (goal: string) => ({ schemaVersion: 1, goal, planItems: [], decisions: [], blockers: [], nextSteps: [] });
@@ -170,6 +177,7 @@ try {
   run([process.execPath, "build", "--compile", join(ROOT, "src", "cli", "index.ts"), "--outfile", cli]);
   run([process.execPath, "build", "--compile", join(ROOT, "tests", "integration", "fixtures", "extension-native-server.ts"), "--outfile", serverBin]);
   runCli(cli, ["extensions", "install", source, "--trust-browser-code", "--skills", "pi"], 18790);
+  runCli(cli, ["extensions", "install", nonOneSource, "--trust-browser-code"], 18790);
   if (!existsSync(join(home, ".pi", "agent", "skills", "wolfpack-agent-context", "SKILL.md"))) fail("installed sample skill was not deployed into the owned discovery root");
   await startBroker();
   const original = await createShell("native-scope");
@@ -179,13 +187,16 @@ try {
   if (unauthenticated.status !== 401) fail(`catalog accepted unauthenticated request (${unauthenticated.status})`);
   const catalogResponse = await fetch(`http://127.0.0.1:${port}/api/extensions`, { headers: { Authorization: `Bearer ${jwt()}` } });
   const catalog = await catalogResponse.json() as any;
-  const installed = catalog.installations?.find((item: any) => item.extensionId === "agent-context");
-  if (!catalogResponse.ok || installed?.documents?.[0]?.schemaVersion !== 1 || typeof installed?.ui?.url !== "string") fail(`catalog did not expose installed declaration: ${JSON.stringify(catalog)}`);
+  const installed = catalog.installations?.find((item: any) => item.extensionId === "agent-context"); const nonOne = catalog.installations?.find((item: any) => item.extensionId === "native");
+  if (!catalogResponse.ok || installed?.documents?.[0]?.schemaVersion !== 1 || nonOne?.documents?.[0]?.schemaVersion !== 7 || typeof installed?.ui?.url !== "string") fail(`catalog did not expose installed declaration: ${JSON.stringify(catalog)}`);
   const asset = await fetch(`http://127.0.0.1:${port}${installed.ui.url}`, { headers: { Authorization: `Bearer ${jwt()}` } });
   if (!asset.ok || (await asset.text()).includes("wolfpack-bridge/extensions")) fail("authenticated sample asset was not served as a self-contained installed bundle");
 
+  // This must be the first compiled publication so an extension-data mutant
+  // that sends schemaVersion: 1 is rejected before sample coverage can mask it.
+  runCli(cli, ["extension-data", "publish", "native/context", "--session", original.wolfpackSessionId, "--file", nonOneDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port);
   const requestId = randomUUID();
-  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port);
+  runCli(cli, ["extension-data", "publish", "agent-context/context",  "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port);
   await expectRead(cli, port, original.wolfpackSessionId, 1, "retained across compiled server restart");
   runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", "not-a-uuid", "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 2);
   runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", randomUUID(), "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
