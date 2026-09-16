@@ -31,6 +31,12 @@ describe("extension runtime integration", () => {
     runtime.remove("fixture"); runtime.purge("fixture");
     expect(runtime.catalog().installations).toEqual([]);
   });
+  test("rejects a registry snapshot whose copied bytes no longer match its immutable digest", async () => {
+    const base = root(); const runtime = new ExtensionRuntime({ root: join(base, "runtime") });
+    const installed = await runtime.install({ source: fixture(base), trustBrowserCode: true });
+    writeFileSync(join(installed.installation.snapshot, "dist", "ui.js"), "copied bytes changed after admission");
+    expect(() => runtime.catalog()).toThrow("coherent owned registry");
+  });
   test("qualifies same relative UI asset names by extension and immutable package digest", async () => {
     const base = root(); const runtime = new ExtensionRuntime({ root: join(base, "runtime") });
     const first = await runtime.install({ source: fixture(base, "1.0.0", "one"), trustBrowserCode: true });

@@ -49,7 +49,7 @@ function childEnv(port?: number): Record<string, string> {
   };
 }
 function run(command: readonly string[], env = childEnv()): string {
-  const result = Bun.spawnSync(command, { cwd: sandbox, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const result = Bun.spawnSync([...command], { cwd: sandbox, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) fail(`${command.join(" ")} exited ${result.exitCode}: ${result.stderr.toString().slice(-1000)}`);
   return result.stdout.toString();
 }
