@@ -217,16 +217,20 @@ var view = {
     } catch {
       render(undefined, 0);
     }
-    const abort = () => {
+    let released = false;
+    const cleanup = () => {
+      if (released)
+        return;
+      released = true;
       stopped = true;
       unsubscribe();
     };
-    context.signal.addEventListener("abort", abort, { once: true });
+    context.signal.addEventListener("abort", cleanup, { once: true });
     return { setVisible(visible) {
       root.hidden = !visible;
     }, dispose() {
-      abort();
-      context.signal.removeEventListener("abort", abort);
+      cleanup();
+      context.signal.removeEventListener("abort", cleanup);
       root.remove();
     } };
   }
