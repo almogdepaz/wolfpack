@@ -24,6 +24,7 @@ import type { DelegationGridMember } from "./app-grid";
 import { TerminalLayoutRegistry } from "./terminal-layout-registry";
 import { createWorkspaceShell } from "./workspace-shell";
 import { ExtensionHost } from "./extension-host";
+import { resolveSelectedExtensionScope } from "./extension-scope";
 
 import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-controller";
 import type { SessionCardView } from "./app-action-controller";
@@ -1940,6 +1941,7 @@ function openDelegationGrid(rootSession: string, machineUrl = ""): void {
     currentSession: context.root.name,
     currentMachine: machineUrl,
   });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   setDelegationWorkspaceDisplay("grid");
   showView("terminal", true);
   renderDelegationGridCells();
@@ -1963,6 +1965,7 @@ function focusDelegationSession(sessionName: string, machineUrl = ""): void {
     currentSession: sessionName,
     currentMachine: machineUrl,
   });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   const label = document.getElementById("delegation-focus-label");
   if (label) label.textContent = `${sessionName} terminal`;
   setDelegationWorkspaceDisplay("focus");
@@ -3903,6 +3906,7 @@ async function switchSession(val) {
       state.termTarget = currentTarget?.session === name && currentTarget.machine === machineUrl
         ? currentTarget
         : pinnedSessionInspectionTarget(name, machineUrl);
+      document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
       void initTerminal();
     }
     return;
@@ -3917,6 +3921,7 @@ async function switchSession(val) {
   destroyTerminal();
   state.termTarget = inspectionTarget;
   setState({ currentSession: name, currentMachine: machineUrl });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   recordRecent(machineUrl, name);
   restoreDraft();
   loadSessionSwitcher();
@@ -5420,11 +5425,7 @@ function selectedExtensionScope(): { readonly sessionId: string | null; readonly
     ? state.delegationGridSessions[state.delegationGridFocusIndex]
     : isGridActive() ? state.gridSessions[state.gridFocusIndex] : null;
   const target = grid?.sessionId ? { sessionId: grid.sessionId, machine: grid.machine || "" } : state.termTarget;
-  if (!target?.sessionId) return null;
-  if (target.machine && target.machine !== LOCAL_MACHINE_IDENTITY) {
-    return { sessionId: null, unavailable: "Extension context is unavailable for a terminal served by another machine." };
-  }
-  return { sessionId: target.sessionId };
+  return resolveSelectedExtensionScope(target, LOCAL_MACHINE_IDENTITY);
 }
 
 const extensionHostContainer = document.getElementById("workspace-context-container");
