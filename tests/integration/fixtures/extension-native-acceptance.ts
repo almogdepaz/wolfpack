@@ -11,13 +11,13 @@ import { randomUUID, createHmac } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { BrokerClient } from "../../../src/broker/client.ts";
-import { BrokerBackend } from "../../../src/server/broker-backend.ts";
+import { join, resolve } from "node:path";
+import type { BrokerClient } from "../../../src/broker/client.ts";
+import type { BrokerBackend } from "../../../src/server/broker-backend.ts";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
-const EXPECTED_BROKER_SHA256 = "21c124a6f5251759c4b87e588eb2e4d2fbcfb2ed9557d29e36ce1f517eb42029";
-const brokerBin = process.env.WOLFPACK_BROKER_BIN ?? "/private/tmp/wolfpack-extensions-native.DCYC5T/wolfpack-broker";
+const brokerBin = process.env.WOLFPACK_BROKER_BIN ?? join(ROOT, "broker", "target", "release", "wolfpack-broker");
+const expectedBrokerSha256 = process.env.WOLFPACK_BROKER_SHA256;
 const sandbox = mkdtempSync(join(tmpdir(), "wolfpack-extension-native-"));
 const home = join(sandbox, "home");
 const socket = join(sandbox, "broker.sock");
@@ -26,6 +26,8 @@ const project = join(sandbox, "project");
 const secret = "extension-native-acceptance-secret-1234567890";
 let broker: ChildProcess | undefined;
 let server: ChildProcess | undefined;
+let BrokerClientClass: typeof BrokerClient;
+let BrokerBackendClass: typeof BrokerBackend;
 let client: BrokerClient | undefined;
 let backend: BrokerBackend | undefined;
 
@@ -38,8 +40,10 @@ function childEnv(port?: number): Record<string, string> {
     HOME: home,
     TMPDIR: sandbox,
     WOLFPACK_TEST: "1",
+    WOLFPACK_LOG_LEVEL: "error",
     WOLFPACK_BROKER_SOCKET: socket,
     WOLFPACK_MACHINE_ID_PATH: join(home, ".wolfpack", "machine-id"),
+    WOLFPACK_SESSION_IDENTITY_PATH: join(home, ".wolfpack", "session-identities.json"),
     WOLFPACK_JWT_SECRET: secret,
     WOLFPACK_DEV_DIR: project,
     WOLFPACK_SETTINGS_PATH: join(home, ".wolfpack", "settings.json"),
@@ -47,6 +51,24 @@ function childEnv(port?: number): Record<string, string> {
     WOLFPACK_TASK_RELAY_ROOT: join(home, ".wolfpack", "relay"),
     ...(port === undefined ? {} : { WOLFPACK_PORT: String(port) }),
   };
+}
+function assertOwned(path: string, label: string): void {
+  const root = `${resolve(sandbox)}/`; const value = resolve(path);
+  if (!value.startsWith(root)) fail(`${label} escapes the owned native sandbox: ${value}`);
+}
+function configureOuterEnvironment(): void {
+  for (const [name, value] of Object.entries(childEnv())) process.env[name] = value;
+  assertOwned(home, "HOME"); assertOwned(project, "WOLFPACK_DEV_DIR"); assertOwned(socket, "WOLFPACK_BROKER_SOCKET");
+  for (const name of ["WOLFPACK_MACHINE_ID_PATH", "WOLFPACK_SESSION_IDENTITY_PATH", "WOLFPACK_SETTINGS_PATH", "WOLFPACK_TASK_ROOT", "WOLFPACK_TASK_RELAY_ROOT"]) assertOwned(process.env[name]!, name);
+}
+async function assertOwnedPersistentPaths(): Promise<void> {
+  configureOuterEnvironment();
+  const { sessionIdentityStorePath } = await import("../../../src/server/session-identity.ts");
+  assertOwned(sessionIdentityStorePath(), "session identity store");
+  const clientModule = await import("../../../src/broker/client.ts");
+  const backendModule = await import("../../../src/server/broker-backend.ts");
+  BrokerClientClass = clientModule.BrokerClient;
+  BrokerBackendClass = backendModule.BrokerBackend;
 }
 function run(command: readonly string[], env = childEnv()): string {
   const result = Bun.spawnSync([...command], { cwd: sandbox, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -71,23 +93,28 @@ async function waitForSocket(): Promise<void> {
 }
 async function startBroker(): Promise<void> {
   const checksum = run(["shasum", "-a", "256", brokerBin]).trim().split(/\s+/)[0];
-  if (checksum !== EXPECTED_BROKER_SHA256) fail(`authorized broker digest mismatch: ${checksum}`);
+  if (expectedBrokerSha256 !== undefined && checksum !== expectedBrokerSha256) fail(`configured broker digest mismatch: ${checksum}`);
   broker = spawn(brokerBin, [], { env: { ...childEnv(), WOLFPACK_BROKER_SOCKET: socket }, stdio: ["ignore", "ignore", "pipe"] });
   await waitForSocket();
   let connected = false;
-  client = new BrokerClient({ socketPath: socket, requestTimeoutMs: 5_000, onConnect: () => { connected = true; } });
+  client = new BrokerClientClass({ socketPath: socket, requestTimeoutMs: 5_000, onConnect: () => { connected = true; } });
   client.start();
   const deadline = Date.now() + 5_000;
   while (!connected && Date.now() < deadline) await wait(25);
   if (!connected) fail("broker client did not connect");
   if ((await client.request("list_sessions", {})).status !== "ok") fail("broker did not accept list_sessions");
-  backend = new BrokerBackend(client);
+  backend = new BrokerBackendClass(client);
+}
+async function waitForExit(child: ChildProcess, timeout: number): Promise<boolean> {
+  if (child.exitCode !== null) return true;
+  return await new Promise((resolve) => { const timer = setTimeout(() => resolve(false), timeout); child.once("exit", () => { clearTimeout(timer); resolve(true); }); });
 }
 async function stop(child: ChildProcess | undefined): Promise<void> {
   if (!child || child.exitCode !== null) return;
   child.kill("SIGTERM");
-  await Promise.race([new Promise<void>((resolve) => child!.once("exit", () => resolve())), wait(3_000)]);
-  if (child.exitCode === null) child.kill("SIGKILL");
+  if (await waitForExit(child, 3_000)) return;
+  child.kill("SIGKILL");
+  if (!await waitForExit(child, 3_000)) fail("owned child did not exit after SIGKILL");
 }
 async function startServer(serverBin: string): Promise<number> {
   let output = "";
@@ -118,6 +145,7 @@ try {
   mkdirSync(home, { recursive: true, mode: 0o700 });
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   mkdirSync(project, { recursive: true, mode: 0o700 });
+  await assertOwnedPersistentPaths();
   const source = join(sandbox, "extension");
   mkdirSync(join(source, "dist"), { recursive: true });
   mkdirSync(join(source, "schemas"), { recursive: true });
