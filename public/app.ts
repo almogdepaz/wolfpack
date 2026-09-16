@@ -24,7 +24,7 @@ import type { DelegationGridMember } from "./app-grid";
 import { TerminalLayoutRegistry } from "./terminal-layout-registry";
 import { createWorkspaceShell } from "./workspace-shell";
 import { ExtensionHost } from "./extension-host";
-import { resolveSelectedExtensionScope } from "./extension-scope";
+import { resolveWorkspaceExtensionScope } from "./extension-scope";
 
 import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-controller";
 import type { SessionCardView } from "./app-action-controller";
@@ -5421,11 +5421,16 @@ createWorkspaceShell({ onTerminalGeometryChange: () => scheduleGridStabilizedFit
 window.addEventListener("resize", () => scheduleGridStabilizedFit());
 
 function selectedExtensionScope(): { readonly sessionId: string | null; readonly unavailable?: string } | null {
-  const grid = state.activeDelegationRoot && !state.focusedDelegationSession
+  const delegationGrid = state.activeDelegationRoot && !state.focusedDelegationSession;
+  const manualGrid = !delegationGrid && isGridActive();
+  const grid = delegationGrid
     ? state.delegationGridSessions[state.delegationGridFocusIndex]
-    : isGridActive() ? state.gridSessions[state.gridFocusIndex] : null;
-  const target = grid?.sessionId ? { sessionId: grid.sessionId, machine: grid.machine || "" } : state.termTarget;
-  return resolveSelectedExtensionScope(target, LOCAL_MACHINE_IDENTITY);
+    : manualGrid ? state.gridSessions[state.gridFocusIndex] : undefined;
+  return resolveWorkspaceExtensionScope({
+    activeSurface: delegationGrid ? "delegation-grid" : manualGrid ? "manual-grid" : "single",
+    selectedGridPane: grid ? { sessionId: grid.sessionId, machine: grid.machine || "" } : undefined,
+    singleTerminal: state.termTarget,
+  }, LOCAL_MACHINE_IDENTITY);
 }
 
 const extensionHostContainer = document.getElementById("workspace-context-container");
