@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { start, skipIfNoBroker, type BrokerTestServer } from "./broker-helpers.ts";
+import { openSessionFromUi } from "./helpers.ts";
 import {
   createOwnedTestServerHome,
   removeOwnedTestServerHome,
@@ -24,6 +25,15 @@ async function createShellSession(name: string): Promise<void> {
     body: JSON.stringify({ project: PROJECT_NAME, cmd: "shell", sessionName: name }),
   });
   expect(response.ok, `create ${name}`).toBeTruthy();
+}
+
+async function createChildSession(parentSession: string, sessionName: string): Promise<void> {
+  const response = await fetch(`${server!.baseUrl}/api/create`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project: PROJECT_NAME, cmd: "shell", parentSession, sessionName }),
+  });
+  expect(response.ok, `open child ${sessionName}`).toBeTruthy();
 }
 
 async function openGrid(page: Page, names: readonly string[]): Promise<void> {
@@ -131,6 +141,36 @@ test("real broker desktop keyboard follows the rendered narrow vertical layout",
   await expect(second).toHaveClass(/grid-focused/);
 });
 
+test("real broker delegation collapse retains the child controller and canvas", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation retention contract");
+  const parent = "workspace-parent";
+  const child = "workspace-child";
+  await createShellSession(parent);
+  await createChildSession(parent, child);
+  await expect.poll(async () => {
+    const response = await fetch(`${server!.baseUrl}/api/sessions`);
+    const payload = await response.json() as { readonly sessions?: readonly { readonly name?: string; readonly identity?: { readonly parentSession?: { readonly wolfpackSessionName?: string } } }[] };
+    return payload.sessions?.find(session => session.name === child)?.identity?.parentSession?.wolfpackSessionName;
+  }).toBe(parent);
+  const sockets: string[] = [];
+  page.on("websocket", socket => {
+    if (socket.url().includes("/ws/pty")) sockets.push(socket.url());
+  });
+  await page.goto(server!.baseUrl);
+  await expect(page.locator(".delegation-parent-card", { hasText: parent }).first()).toBeVisible();
+  await openSessionFromUi(page, parent, "");
+  const childCell = page.locator(`#delegation-grid-container .grid-cell[data-session="${child}"]`);
+  await expect(childCell).toHaveClass(/hydrated/);
+  await childCell.locator("canvas").evaluate(canvas => canvas.setAttribute("data-workspace-collapse-canvas", "retained"));
+  const attachesBefore = sockets.length;
+  await page.getByRole("button", { name: `Collapse ${child}` }).click();
+  await expect(childCell).toHaveClass(/collapsed/);
+  await page.getByRole("button", { name: `Expand ${child}` }).click();
+  await expect(childCell).toHaveClass(/hydrated/);
+  await expect(childCell.locator("canvas")).toHaveAttribute("data-workspace-collapse-canvas", "retained");
+  expect(sockets).toHaveLength(attachesBefore);
+});
+
 test("real broker mobile workspace recovery keeps the terminal attached", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile-webkit", "mobile WebKit workspace recovery contract");
   const session = "workspace-mobile";
@@ -142,11 +182,18 @@ test("real broker mobile workspace recovery keeps the terminal attached", async 
   await page.goto(server!.baseUrl);
   await page.locator(".card", { hasText: session }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
+  const draft = page.locator("#msg-input");
+  await draft.evaluate((input: HTMLTextAreaElement) => {
+    input.value = "retain mobile draft";
+    input.setSelectionRange(7, 13);
+  });
   const attachesBefore = sockets.length;
   await page.locator("#workspace-context-full").click();
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
   await expect(page.locator("#workspace-restore")).toBeVisible();
   await page.locator("#workspace-restore").click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
+  await expect(draft).toHaveValue("retain mobile draft");
+  expect(await draft.evaluate((input: HTMLTextAreaElement) => [input.selectionStart, input.selectionEnd])).toEqual([7, 13]);
   expect(sockets).toHaveLength(attachesBefore);
 });
