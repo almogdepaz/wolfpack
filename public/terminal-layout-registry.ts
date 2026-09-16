@@ -20,6 +20,12 @@ export interface WorkspacePane {
 function isBuiltinLayoutId(value: string | null): value is BuiltinTerminalLayoutId {
   return value !== null && (BUILTIN_TERMINAL_LAYOUT_IDS as readonly string[]).includes(value);
 }
+function isQualifiedLayoutId(value: string | null): value is string {
+  return value !== null && /^[a-z][a-z0-9-]{0,63}\/[a-z][a-z0-9-]{0,63}$/.test(value);
+}
+
+export interface TerminalLayoutUnregisterOptions { readonly preservePreference?: boolean; }
+export type UnregisterTerminalLayout = (options?: TerminalLayoutUnregisterOptions) => void;
 
 /**
  * Host-owned registration seam. Contributions can only describe finite geometry;
@@ -27,12 +33,14 @@ function isBuiltinLayoutId(value: string | null): value is BuiltinTerminalLayout
  */
 export class TerminalLayoutRegistry {
   private readonly contributions = new Map<string, TerminalLayoutContribution>();
-  private selected: BuiltinTerminalLayoutId;
+  private selected: string;
+  private pendingStoredSelection: string | null;
 
   constructor(storage: Pick<Storage, "getItem" | "setItem"> = localStorage) {
     this.storage = storage;
     const stored = storage.getItem(TERMINAL_LAYOUT_PREFERENCE_KEY);
     this.selected = isBuiltinLayoutId(stored) ? stored : "equal-grid";
+    this.pendingStoredSelection = isQualifiedLayoutId(stored) ? stored : null;
     this.registerBuiltin("equal-grid", "Equal grid", equalGridLayout);
     this.registerBuiltin("lead-stack", "Lead + stack", leadStackLayout);
     this.registerBuiltin("vertical-stack", "Vertical stack", verticalStackLayout);
@@ -45,16 +53,40 @@ export class TerminalLayoutRegistry {
   }
 
   /** Reserved for phase-2 extension registration; duplicate IDs fail closed. */
-  register(contribution: TerminalLayoutContribution): () => void {
+  register(contribution: TerminalLayoutContribution): UnregisterTerminalLayout {
     if (this.contributions.has(contribution.id)) throw new Error(`terminal layout already registered: ${contribution.id}`);
     this.contributions.set(contribution.id, contribution);
-    return () => { if (this.contributions.get(contribution.id) === contribution) this.contributions.delete(contribution.id); };
+    if (this.pendingStoredSelection === contribution.id) {
+      this.selected = contribution.id;
+      this.pendingStoredSelection = null;
+    }
+    return options => {
+      if (this.contributions.get(contribution.id) !== contribution) return;
+      this.contributions.delete(contribution.id);
+      if (this.selected !== contribution.id) return;
+      this.selected = "equal-grid";
+      if (options?.preservePreference) {
+        this.pendingStoredSelection = contribution.id;
+      } else {
+        this.pendingStoredSelection = null;
+        this.storage.setItem(TERMINAL_LAYOUT_PREFERENCE_KEY, "equal-grid");
+      }
+    };
   }
 
-  get selectedId(): BuiltinTerminalLayoutId { return this.selected; }
+  /** Resolve a saved qualified ID only after the complete installed catalog registered. */
+  finalizeRestoration(): boolean {
+    if (!this.pendingStoredSelection) return false;
+    this.pendingStoredSelection = null;
+    this.select("equal-grid");
+    return true;
+  }
 
-  select(id: BuiltinTerminalLayoutId): void {
-    if (!isBuiltinLayoutId(id)) return;
+  get selectedId(): string { return this.selected; }
+
+  select(id: string): void {
+    if (!this.contributions.has(id)) return;
+    this.pendingStoredSelection = null;
     this.selected = id;
     this.storage.setItem(TERMINAL_LAYOUT_PREFERENCE_KEY, id);
   }

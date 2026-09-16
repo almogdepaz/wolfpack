@@ -21,8 +21,10 @@ import {
   initWorkspaceTerminalLayouts, selectWorkspaceTerminalLayout,
 } from "./app-grid";
 import type { DelegationGridMember } from "./app-grid";
-import { TerminalLayoutRegistry, type BuiltinTerminalLayoutId } from "./terminal-layout-registry";
+import { TerminalLayoutRegistry } from "./terminal-layout-registry";
 import { createWorkspaceShell } from "./workspace-shell";
+import { ExtensionHost } from "./extension-host";
+import { resolveWorkspaceExtensionScope } from "./extension-scope";
 
 import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-controller";
 import type { SessionCardView } from "./app-action-controller";
@@ -1420,6 +1422,7 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
   stopDebugPanelRefresh(previousView, viewName);
   teardownTerminalForViewChange(previousView, viewName);
   setState({ currentView: viewName });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   applyViewVisibility(previousElement, nextElement, animate, goingForward);
 
   // Stop timers immediately (don't defer these).
@@ -1939,6 +1942,7 @@ function openDelegationGrid(rootSession: string, machineUrl = ""): void {
     currentSession: context.root.name,
     currentMachine: machineUrl,
   });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   setDelegationWorkspaceDisplay("grid");
   showView("terminal", true);
   renderDelegationGridCells();
@@ -1962,6 +1966,7 @@ function focusDelegationSession(sessionName: string, machineUrl = ""): void {
     currentSession: sessionName,
     currentMachine: machineUrl,
   });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   const label = document.getElementById("delegation-focus-label");
   if (label) label.textContent = `${sessionName} terminal`;
   setDelegationWorkspaceDisplay("focus");
@@ -2278,6 +2283,7 @@ async function openSession(name, machineUrl) {
   destroyTerminal();
   state.termTarget = inspectionTarget;
   setState({ currentSession: name, currentMachine: machineUrl || "" });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   recordRecent(state.currentMachine, name);
   wpMetrics.reset();
   restoreDraft();
@@ -3901,6 +3907,7 @@ async function switchSession(val) {
       state.termTarget = currentTarget?.session === name && currentTarget.machine === machineUrl
         ? currentTarget
         : pinnedSessionInspectionTarget(name, machineUrl);
+      document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
       void initTerminal();
     }
     return;
@@ -3915,6 +3922,7 @@ async function switchSession(val) {
   destroyTerminal();
   state.termTarget = inspectionTarget;
   setState({ currentSession: name, currentMachine: machineUrl });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   recordRecent(machineUrl, name);
   restoreDraft();
   loadSessionSwitcher();
@@ -5286,7 +5294,7 @@ function bindHtmlEventListeners(): void {
   on("delegation-focus-back", "click", () => returnToDelegationGrid());
   const layoutPicker = $("workspace-terminal-layout") as HTMLSelectElement | null;
   layoutPicker?.addEventListener("change", () => {
-    selectWorkspaceTerminalLayout(layoutPicker.value as BuiltinTerminalLayoutId);
+    selectWorkspaceTerminalLayout(layoutPicker.value);
   });
 
   // Drawer / overlays
@@ -5344,6 +5352,10 @@ function bindHtmlEventListeners(): void {
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
+  on("setting-extensionSafeMode", "change", function(this: HTMLInputElement) {
+    toggleSetting("extensionSafeMode", this.checked);
+    document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
+  });
 
   // Term font size buttons
   document.querySelectorAll(".term-size-btn").forEach((btn) => {
@@ -5410,8 +5422,63 @@ const workspaceTerminalLayouts = new TerminalLayoutRegistry();
 initWorkspaceTerminalLayouts(workspaceTerminalLayouts);
 const workspaceLayoutPicker = document.getElementById("workspace-terminal-layout") as HTMLSelectElement | null;
 if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
-createWorkspaceShell({ onTerminalGeometryChange: () => scheduleGridStabilizedFit() });
+let extensionHost: ExtensionHost | null = null;
+const workspaceShell = createWorkspaceShell({
+  onTerminalGeometryChange: () => scheduleGridStabilizedFit(),
+  onContextVisibilityChange: visible => extensionHost?.setShellVisible(visible),
+});
 window.addEventListener("resize", () => scheduleGridStabilizedFit());
+
+function selectedExtensionScope(): { readonly sessionId: string | null; readonly unavailable?: string } | null {
+  const delegationGrid = state.activeDelegationRoot && !state.focusedDelegationSession;
+  const manualGrid = !delegationGrid && isGridActive();
+  const grid = delegationGrid
+    ? state.delegationGridSessions[state.delegationGridFocusIndex]
+    : manualGrid ? state.gridSessions[state.gridFocusIndex] : undefined;
+  return resolveWorkspaceExtensionScope({
+    workspaceActive: state.currentView === "terminal",
+    activeSurface: delegationGrid ? "delegation-grid" : manualGrid ? "manual-grid" : "single",
+    selectedGridPane: grid ? { sessionId: grid.sessionId, machine: grid.machine || "" } : undefined,
+    singleTerminal: state.termTarget,
+  }, LOCAL_MACHINE_IDENTITY);
+}
+
+const extensionHostContainer = document.getElementById("workspace-context-container");
+extensionHost = extensionHostContainer ? new ExtensionHost({
+  container: extensionHostContainer,
+  scope: selectedExtensionScope,
+  safeMode: () => wpSettings.extensionSafeMode,
+  registerLayout: contribution => {
+    const unregister = workspaceTerminalLayouts.register(contribution);
+    const option = document.createElement("option");
+    option.value = contribution.id;
+    option.textContent = contribution.title;
+    workspaceLayoutPicker?.append(option);
+    if (workspaceTerminalLayouts.selectedId === contribution.id) {
+      if (workspaceLayoutPicker) workspaceLayoutPicker.value = contribution.id;
+      selectWorkspaceTerminalLayout(contribution.id);
+    }
+    return options => {
+      option.remove();
+      unregister(options);
+      if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
+      // Page teardown preserves the saved qualified preference for the next
+      // verified catalog load; no dying-page geometry update may overwrite it.
+      if (!options?.preservePreference) selectWorkspaceTerminalLayout(workspaceTerminalLayouts.selectedId);
+    };
+  },
+  onCatalogReady: () => {
+    if (!workspaceTerminalLayouts.finalizeRestoration()) return;
+    if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
+    selectWorkspaceTerminalLayout(workspaceTerminalLayouts.selectedId);
+  },
+}) : null;
+extensionHost?.setShellVisible(workspaceShell?.contextVisible ?? true);
+document.addEventListener("wolfpack-extension-scope-change", () => { void extensionHost?.refresh(); });
+window.addEventListener("pagehide", event => {
+  if (!(event as PageTransitionEvent).persisted) extensionHost?.dispose();
+});
+void extensionHost?.refresh();
 
 initSettings();
 const sessionDashboardControls = document.getElementById("session-dashboard-controls");

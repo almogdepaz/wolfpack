@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { TerminalLayoutRegistry, nearestPaneInDirection } from "../../public/terminal-layout-registry.ts";
+import { TERMINAL_LAYOUT_PREFERENCE_KEY, TerminalLayoutRegistry, nearestPaneInDirection } from "../../public/terminal-layout-registry.ts";
+import { equalGridLayout } from "../../src/extensions/layout-contract.ts";
 import {
   DEFAULT_WORKSPACE_SHELL_PREFERENCES,
   normalizeWorkspaceShellPreferences,
+  workspaceContextIsVisible,
 } from "../../public/workspace-shell.ts";
 
 function memoryStorage(initial: Record<string, string> = {}): Pick<Storage, "getItem" | "setItem"> {
@@ -17,6 +19,29 @@ describe("phase-1 host workspace layout", () => {
     expect(registry.selectedId).toBe("equal-grid");
     registry.select("lead-stack");
     expect(new TerminalLayoutRegistry(storage).selectedId).toBe("lead-stack");
+  });
+
+  test("restores only an existing saved extension recipe and falls back when it is removed", () => {
+    const storage = memoryStorage({ [TERMINAL_LAYOUT_PREFERENCE_KEY]: "notes/recipe" });
+    const registry = new TerminalLayoutRegistry(storage);
+    expect(registry.selectedId).toBe("equal-grid");
+    const unregister = registry.register({ id: "notes/recipe", title: "Recipe", arrange: equalGridLayout });
+    expect(registry.selectedId).toBe("notes/recipe");
+    unregister();
+    expect(registry.selectedId).toBe("equal-grid");
+    expect(storage.getItem(TERMINAL_LAYOUT_PREFERENCE_KEY)).toBe("equal-grid");
+
+    const freshStorage = memoryStorage();
+    const fresh = new TerminalLayoutRegistry(freshStorage);
+    fresh.register({ id: "notes/recipe", title: "Recipe", arrange: equalGridLayout });
+    expect(fresh.selectedId).toBe("equal-grid");
+    expect(freshStorage.getItem(TERMINAL_LAYOUT_PREFERENCE_KEY)).toBeNull();
+
+    const missingStorage = memoryStorage({ [TERMINAL_LAYOUT_PREFERENCE_KEY]: "missing/recipe" });
+    const missing = new TerminalLayoutRegistry(missingStorage);
+    expect(missing.finalizeRestoration()).toBe(true);
+    expect(missing.selectedId).toBe("equal-grid");
+    expect(missingStorage.getItem(TERMINAL_LAYOUT_PREFERENCE_KEY)).toBe("equal-grid");
   });
 
   test("uses a vertical recovery layout on narrow viewports without changing the chosen desktop recipe", () => {
@@ -40,10 +65,27 @@ describe("phase-1 host workspace layout", () => {
     expect(nearestPaneInDirection(layout, "two", "left")).toBeNull();
   });
 
+  test("contains throwing extension layout recipes and recovers with equal-grid geometry", () => {
+    const registry = new TerminalLayoutRegistry(memoryStorage());
+    registry.register({ id: "notes/broken", title: "Broken", arrange: () => { throw new Error("package failure"); } });
+    registry.select("notes/broken");
+    const layout = registry.arrange(["one", "two", "three"], "two", { width: 1200, height: 700 });
+    expect(layout.placements.map(placement => placement.paneId).sort()).toEqual(["one", "three", "two"]);
+    expect(layout.rows).toHaveLength(2);
+    expect(registry.selectedId).toBe("notes/broken");
+  });
+
   test("bounds and repairs browser-local shell preferences while retaining recovery state", () => {
     expect(normalizeWorkspaceShellPreferences({ placement: "bottom", splitSize: 9999, contextCollapsed: true, fullView: "context" })).toEqual({
       placement: "bottom", splitSize: 560, contextCollapsed: true, fullView: "context",
     });
     expect(normalizeWorkspaceShellPreferences({ placement: "bad", splitSize: Number.NaN, fullView: "bad" })).toEqual(DEFAULT_WORKSPACE_SHELL_PREFERENCES);
+  });
+
+  test("reports actual context-region visibility for collapse and both full-view modes", () => {
+    expect(workspaceContextIsVisible(DEFAULT_WORKSPACE_SHELL_PREFERENCES)).toBe(true);
+    expect(workspaceContextIsVisible({ ...DEFAULT_WORKSPACE_SHELL_PREFERENCES, contextCollapsed: true })).toBe(false);
+    expect(workspaceContextIsVisible({ ...DEFAULT_WORKSPACE_SHELL_PREFERENCES, fullView: "terminals" })).toBe(false);
+    expect(workspaceContextIsVisible({ ...DEFAULT_WORKSPACE_SHELL_PREFERENCES, contextCollapsed: true, fullView: "context" })).toBe(true);
   });
 });

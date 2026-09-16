@@ -36,7 +36,6 @@ import {
   clearTerminalLayoutGeometry,
   nearestPaneInDirection,
   TerminalLayoutRegistry,
-  type BuiltinTerminalLayoutId,
 } from "./terminal-layout-registry";
 import type { TerminalLayout } from "../src/extensions/layout-contract";
 
@@ -127,7 +126,7 @@ export function initWorkspaceTerminalLayouts(registry: TerminalLayoutRegistry): 
   workspaceTerminalLayouts = registry;
 }
 
-export function selectWorkspaceTerminalLayout(id: BuiltinTerminalLayoutId): void {
+export function selectWorkspaceTerminalLayout(id: string): void {
   workspaceTerminalLayouts?.select(id);
   applyWorkspaceTerminalGeometry();
   scheduleGridStabilizedFit();
@@ -660,6 +659,8 @@ function gridSessionKey(session: string, machine: string, sessionId: string | nu
 }
 
 export function setDelegationGridMembers(members: readonly DelegationGridMember[]): void {
+  const previouslyFocused = state.delegationGridSessions[state.delegationGridFocusIndex];
+  const previousFocusKey = previouslyFocused ? gridSessionKey(previouslyFocused.session, previouslyFocused.machine || "", previouslyFocused.sessionId ?? null) : null;
   const previous = new Map(
     state.delegationGridSessions.map(gs => [gridSessionKey(gs.session, gs.machine || "", gs.sessionId ?? null), gs]),
   );
@@ -692,6 +693,9 @@ export function setDelegationGridMembers(members: readonly DelegationGridMember[
   }
   state.delegationGridSessions = next;
   state.delegationGridFocusIndex = Math.max(0, Math.min(state.delegationGridFocusIndex, next.length - 1));
+  const focused = next[state.delegationGridFocusIndex];
+  const focusKey = focused ? gridSessionKey(focused.session, focused.machine || "", focused.sessionId ?? null) : null;
+  if (focusKey !== previousFocusKey) document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
 }
 
 export function suspendDelegationGridTerminals(): void {
@@ -719,6 +723,7 @@ export function disposeDelegationGrid(): void {
     strip.classList.remove("visible");
     strip.innerHTML = "";
   }
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
 }
 
 export function getGridCellElement(gs: GridSession): HTMLElement | null {
@@ -893,6 +898,7 @@ function applyGridFocus(
   const focusedSession = sessions[idx];
   if (!focusedSession) return;
   setState({ currentSession: focusedSession.session, currentMachine: focusedSession.machine || "" });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   deps.renderSidebar();
   focusedSession.controller?.focus();
 }
@@ -992,6 +998,7 @@ export function restorePreservedGrid() {
   clearPreservedGrid();
   setCurrentSessionFromGridFocus(state.gridSessions, state.gridFocusIndex);
   renderGridCells();
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   deps.renderSidebar();
   return true;
 }
@@ -1093,6 +1100,7 @@ export function addToGrid(session: string, machine?: string): void {
     deps.destroyTerminal();
     state.gridFocusIndex = state.gridSessions.length - 1;
     renderGridCells();
+    document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
     deps.renderSidebar();
   } else {
     // Only 1 session queued — no current session to pair with.
@@ -1174,6 +1182,7 @@ export function exitGridMode(skipRestore?) {
     deps.initTerminal(undefined, restoreInspectionTarget);
     deps.renderSidebar();
   }
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
 }
 
 function scheduleGridRelayoutFit(
