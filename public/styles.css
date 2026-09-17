@@ -3057,8 +3057,7 @@ body.no-animations, body.no-animations * {
 .about-icon { width: 48px; height: 48px; opacity: 0.15; margin-bottom: 8px; }
 .settings-version { font-size: 10px; color: var(--text-dim); padding: 2px 0; }
 .conn-status { display: none; background: var(--danger); color: #fff; text-align: center; padding: 6px; font-size: 11px; font-family: inherit; text-transform: uppercase; letter-spacing: 1px; flex-shrink: 0; }
-.terminal-transcript-btn { position: absolute; top: 8px; right: 8px; z-index: 20; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: rgba(17,17,17,0.9); color: var(--text-muted); font: inherit; font-size: 10px; text-transform: uppercase; cursor: pointer; }
-#terminal-view:has(#desktop-grid-container.active) .terminal-transcript-btn { top: 40px; }
+.terminal-transcript-btn { align-self: flex-end; flex: 0 0 auto; margin: 4px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: rgba(17,17,17,0.9); color: var(--text-muted); font: inherit; font-size: 10px; text-transform: uppercase; cursor: pointer; }
 .terminal-transcript-btn:hover, .terminal-transcript-btn:focus-visible { color: var(--accent); border-color: var(--accent-border); }
 .session-inspector-dialog,
 .terminal-transcript-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(80vh, 720px); margin: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.7); }
@@ -3284,8 +3283,6 @@ body.no-animations, body.no-animations * {
   box-shadow: none;
 }
 @media (max-width: 768px) {
-  #terminal-view .terminal-transcript-btn { top: 48px; }
-  #terminal-view:has(#desktop-grid-container.active) .terminal-transcript-btn { top: 80px; }
   .session-card-view-button { min-height: 44px; }
   .list { padding: 12px; }
   .card { margin-bottom: 10px; }

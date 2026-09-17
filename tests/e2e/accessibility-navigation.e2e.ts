@@ -134,15 +134,40 @@ test("sidebar details and actions remain independently pointer-accessible", asyn
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
 });
 
-test("terminal transcript exposes authoritative plain text without a second parser", async ({ page }) => {
+test("terminal transcript exposes authoritative plain text without a second parser", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "Open test-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 
-  await page.getByRole("button", { name: "Read session transcript" }).click();
+  const transcript = page.getByRole("button", { name: "Read session transcript" });
+  const contextFull = page.locator("#workspace-context-full");
+  const activate = async (control: typeof transcript) => {
+    if (testInfo.project.name === "desktop") await control.click();
+    else await control.tap();
+  };
+
+  await activate(transcript);
   const dialog = page.getByRole("dialog", { name: "Session transcript" });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("log")).toContainText("mock-terminal-ready");
 
-  await dialog.getByRole("button", { name: "Close transcript" }).click();
+  await activate(dialog.getByRole("button", { name: "Close transcript" }));
   await expect(dialog).toBeHidden();
+
+  const [transcriptBox, contextFullBox] = await Promise.all([transcript.boundingBox(), contextFull.boundingBox()]);
+  expect(transcriptBox).not.toBeNull();
+  expect(contextFullBox).not.toBeNull();
+  expect(
+    transcriptBox!.x + transcriptBox!.width <= contextFullBox!.x
+      || contextFullBox!.x + contextFullBox!.width <= transcriptBox!.x
+      || transcriptBox!.y + transcriptBox!.height <= contextFullBox!.y
+      || contextFullBox!.y + contextFullBox!.height <= transcriptBox!.y,
+  ).toBe(true);
+
+  await activate(contextFull);
+  await expect(contextFull).toHaveAttribute("aria-pressed", "true");
+  await activate(transcript);
+  await expect(dialog).toBeVisible();
+  await activate(dialog.getByRole("button", { name: "Close transcript" }));
+  await activate(contextFull);
+  await expect(contextFull).toHaveAttribute("aria-pressed", "false");
 });
