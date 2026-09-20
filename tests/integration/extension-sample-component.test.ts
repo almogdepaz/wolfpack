@@ -46,6 +46,18 @@ test("component fixture releases server and partial browser after later startup 
   await expect(fetch(serverUrl)).rejects.toThrow();
 });
 
+test("empty Agent Context explains skill publication for the exact scope and hides guidance after publication", async () => {
+  const fixture = await component();
+  try {
+    const { page } = fixture;
+    const guidance = page.getByText(/Ask your agent to use the wolfpack-agent-context skill/);
+    expect(await guidance.isVisible()).toBe(true);
+    expect(await guidance.textContent()).toContain("11111111-1111-4111-8111-111111111111");
+    await page.evaluate(() => (globalThis as any).__sample.publish({ schemaVersion: 1, goal: "A real document", planItems: [], decisions: [], blockers: [], nextSteps: [] }, 1));
+    expect(await guidance.isVisible()).toBe(false);
+  } finally { await fixture.close(); }
+});
+
 test("generated Agent Context component preserves focused drafts and ignores late stale revisions", async () => {
   const fixture = await component(); try { const { page } = fixture; expect(await page.locator("h2").textContent()).toContain("No context"); await page.locator("textarea").fill("draft"); await page.locator("textarea").evaluate((node: HTMLTextAreaElement) => { node.focus(); node.setSelectionRange(1, 4); (globalThis as any).editor = node; }); await page.evaluate(() => { const sample = (globalThis as any).__sample; const value = { schemaVersion: 1, goal: "<img src=x onerror=alert(1)>", planItems: [], decisions: [], blockers: [], nextSteps: [] }; sample.publish(value, 2); sample.publish({ ...value, goal: "stale" }, 1); }); expect(await page.locator("h2").textContent()).toBe("<img src=x onerror=alert(1)>"); expect(await page.locator("img").count()).toBe(0); expect(await page.locator("textarea").inputValue()).toBe("draft"); expect(await page.evaluate(() => { const node = (globalThis as any).editor; return [node === document.querySelector("textarea"), document.activeElement === node, node.selectionStart, node.selectionEnd]; })).toEqual([true, true, 1, 4]); } finally { await fixture.close(); }
 }, 20_000);

@@ -61,10 +61,12 @@ describe("ExtensionHost", () => {
       } })) as never,
     });
     await host.refresh();
+    expect(container.children.find(child => "extensionStatus" in child.dataset)?.textContent).toBe("Select a context view.");
     host.select("notes/first");
     await new Promise(resolve => setTimeout(resolve, 10));
     expect(documentReads).toBe(1);
     host.select("notes/second");
+    expect(container.children.find(child => "extensionStatus" in child.dataset)?.textContent).toBe("");
     await new Promise(resolve => setTimeout(resolve, 300));
     expect(documentReads).toBe(1);
     host.dispose();

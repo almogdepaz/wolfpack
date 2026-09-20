@@ -122,6 +122,82 @@ test("real broker desktop preserves existing equal-grid cardinalities and revers
   expect(socketUrls).toHaveLength(attachesBefore);
 });
 
+test("left context border resizes with real pointer and keyboard input without replacing the terminal", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop splitter contract; mobile retains the stacked recovery layout");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    if (!localStorage.getItem("splitter-test-seeded")) {
+      localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ placement: "right", splitSize: 320 }));
+      localStorage.setItem("splitter-test-seeded", "true");
+    }
+  });
+  const name = "workspace-resize";
+  await createShellSession(name);
+  const sockets: string[] = [];
+  const sizes: Array<{ cols: number; rows: number }> = [];
+  page.on("websocket", socket => {
+    if (!socket.url().includes("/ws/pty")) return;
+    sockets.push(socket.url());
+    socket.on("framesent", ({ payload }) => {
+      if (typeof payload !== "string") return;
+      try { const value = JSON.parse(payload); if (value.type === "resize") sizes.push(value); } catch { /* PTY data */ }
+    });
+  });
+  await page.goto(server!.baseUrl);
+  await page.locator(".card", { hasText: name }).first().click();
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
+  const context = page.locator("#workspace-context-region");
+  const terminal = page.locator("#workspace-terminal-region");
+  const before = (await context.boundingBox())!;
+  expect(before.x).toBeLessThan((await terminal.boundingBox())!.x);
+  await expect(page.locator("#workspace-context-placement, #workspace-context-size")).toHaveCount(0);
+  const border = page.getByRole("separator", { name: "Resize context panel" });
+  await expect(border).toBeVisible();
+  await expect(border).toHaveCSS("cursor", "col-resize");
+  await page.locator("#desktop-terminal-container canvas").click();
+  await page.evaluate(() => {
+    (window as any).__splitterRetained = { canvas: document.querySelector("#desktop-terminal-container canvas"), focus: document.activeElement };
+  });
+  const attaches = sockets.length;
+  const edge = (await border.boundingBox())!;
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(edge.x + edge.width / 2 + 110, edge.y + edge.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await expect(page.locator("#workspace-shell")).not.toHaveClass(/workspace-resizing/);
+  await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(Math.round(before.width + 110));
+  expect(await page.evaluate(() => {
+    const saved = (window as any).__splitterRetained;
+    return [saved.canvas === document.querySelector("#desktop-terminal-container canvas"), saved.focus === document.activeElement];
+  })).toEqual([true, true]);
+  expect(sockets).toHaveLength(attaches);
+  await expect.poll(() => sizes.length).toBeGreaterThan(0);
+  expect(sizes.every(size => size.cols > 0 && size.rows > 0)).toBe(true);
+  await border.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(Math.round(before.width + 100));
+  const savedSize = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-workspace-shell")!).splitSize);
+  expect(savedSize).toBe(Math.round(before.width + 100));
+  await page.keyboard.press("End");
+  expect((await terminal.boundingBox())!.width).toBeGreaterThanOrEqual(240);
+  await page.setViewportSize({ width: 850, height: 900 });
+  await expect.poll(async () => (await terminal.boundingBox())!.width).toBeGreaterThanOrEqual(240);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await border.focus();
+  await page.keyboard.press("Home");
+  await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(220);
+  await page.locator("#workspace-context-full").click();
+  await expect(border).toBeHidden();
+  await page.locator("#workspace-restore").click();
+  await page.locator("#workspace-context-collapse").click();
+  await expect(border).toBeHidden();
+  await page.locator("#workspace-restore").click();
+  await expect(border).toBeVisible();
+  await page.reload();
+  await page.locator(".card", { hasText: name }).first().click();
+  await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(220);
+});
+
 test("real broker desktop keyboard follows the rendered narrow vertical layout", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop workspace keyboard contract");
   await page.setViewportSize({ width: 1280, height: 720 });

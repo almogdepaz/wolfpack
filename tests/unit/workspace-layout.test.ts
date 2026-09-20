@@ -75,9 +75,13 @@ describe("phase-1 host workspace layout", () => {
     expect(registry.selectedId).toBe("notes/broken");
   });
 
+  test("retires saved placement controls without losing size or recovery state", () => {
+    expect(normalizeWorkspaceShellPreferences({ placement: "right", splitSize: 410, contextCollapsed: true })).toEqual({ splitSize: 410, contextCollapsed: true, fullView: "none" });
+  });
+
   test("bounds and repairs browser-local shell preferences while retaining recovery state", () => {
     expect(normalizeWorkspaceShellPreferences({ placement: "bottom", splitSize: 9999, contextCollapsed: true, fullView: "context" })).toEqual({
-      placement: "bottom", splitSize: 560, contextCollapsed: true, fullView: "context",
+      splitSize: 560, contextCollapsed: true, fullView: "context",
     });
     expect(normalizeWorkspaceShellPreferences({ placement: "bad", splitSize: Number.NaN, fullView: "bad" })).toEqual(DEFAULT_WORKSPACE_SHELL_PREFERENCES);
   });

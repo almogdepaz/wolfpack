@@ -395,7 +395,7 @@
       >
         Reconnecting...
       </div>
-      <div id="workspace-shell" data-context-placement="right" data-full-view="none">
+      <div id="workspace-shell" data-context-placement="left" data-full-view="none">
         <aside id="workspace-context-region" aria-label="Context workspace">
           <div class="workspace-context-header">
             <strong>Context</strong>
@@ -404,20 +404,9 @@
               <button id="workspace-context-full" type="button" aria-pressed="false">full view</button>
             </div>
           </div>
-          <div id="workspace-context-container" aria-live="polite">
-            <p>Context views appear here when enabled.</p>
-          </div>
-          <label class="workspace-control">Placement
-            <select id="workspace-context-placement" aria-label="Context placement">
-              <option value="right">Right</option>
-              <option value="left">Left</option>
-              <option value="bottom">Bottom</option>
-            </select>
-          </label>
-          <label class="workspace-control">Size
-            <input id="workspace-context-size" type="range" min="220" max="560" step="10" aria-label="Context size">
-          </label>
+          <div id="workspace-context-container" aria-live="polite"></div>
         </aside>
+        <div id="workspace-context-divider" role="separator" tabindex="0" aria-label="Resize context panel" aria-controls="workspace-context-region" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="560" aria-valuenow="320"></div>
         <main id="workspace-terminal-region" aria-label="Terminal workspace">
           <div class="workspace-terminal-toolbar">
             <label>Layout <select id="workspace-terminal-layout" aria-label="Terminal layout"><option value="equal-grid">Equal grid</option><option value="lead-stack">Lead + stack</option><option value="vertical-stack">Vertical stack</option></select></label>

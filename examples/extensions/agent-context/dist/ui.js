@@ -171,6 +171,7 @@ var view = {
     const provenance = text("p", "Agent-authored context — not verified task or execution evidence.");
     const scope = text("p");
     const goal = text("h2");
+    const guidance = text("p", `Ask your agent to use the wolfpack-agent-context skill and publish to session ${context.scope.sessionId}. Context is not extracted automatically from terminal output.`);
     const plan = document.createElement("ul");
     const decisions = document.createElement("ul");
     const blockers = document.createElement("ul");
@@ -179,7 +180,7 @@ var view = {
     draft.placeholder = "Local draft (not published)";
     draft.value = context.storage.get("draft") ?? "";
     draft.addEventListener("input", () => context.storage.set("draft", draft.value));
-    root.append(provenance, scope, goal, text("h3", "Plan"), plan, text("h3", "Decisions"), decisions, text("h3", "Blockers"), blockers, text("h3", "Next steps"), nextSteps, draft);
+    root.append(provenance, scope, goal, guidance, text("h3", "Plan"), plan, text("h3", "Decisions"), decisions, text("h3", "Blockers"), blockers, text("h3", "Next steps"), nextSteps, draft);
     container.replaceChildren(root);
     let latest = -1;
     let stopped = false;
@@ -189,6 +190,7 @@ var view = {
       latest = revision;
       const model = contextViewModel(value, revision);
       scope.textContent = `Scope ${context.scope.sessionId} · revision ${model.revision}`;
+      guidance.hidden = model.state !== "empty";
       if (model.state === "empty") {
         goal.textContent = "No context has been published for this exact scope.";
         list(plan, []);

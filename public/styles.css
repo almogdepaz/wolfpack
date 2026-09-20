@@ -1701,7 +1701,7 @@ body.no-animations, body.no-animations * {
   z-index: 5;
 }
 
-/* ── Host workspace shell (phase 1; context container is intentionally empty) ── */
+/* ── Host workspace shell ── */
 #workspace-shell {
   --workspace-context-size: 320px;
   display: flex;
@@ -1711,6 +1711,7 @@ body.no-animations, body.no-animations * {
   background: var(--bg-base);
 }
 #workspace-terminal-region {
+  order: 2;
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
@@ -1727,26 +1728,23 @@ body.no-animations, body.no-animations * {
   min-width: 220px;
   min-height: 0;
   flex-direction: column;
-  order: 2;
+  order: 0;
   overflow: auto;
-  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
   background: var(--bg-elevated);
 }
-#workspace-shell[data-context-placement="left"] #workspace-context-region {
-  order: 0;
-  border-left: 0;
-  border-right: 1px solid var(--border);
+#workspace-context-divider {
+  order: 1;
+  flex: 0 0 6px;
+  cursor: col-resize;
+  touch-action: none;
 }
-#workspace-shell[data-context-placement="bottom"] { flex-direction: column; }
-#workspace-shell[data-context-placement="bottom"] #workspace-context-region {
-  order: 2;
-  width: auto;
-  min-width: 0;
-  min-height: 120px;
-  max-height: min(45%, var(--workspace-context-size));
-  border-left: 0;
-  border-top: 1px solid var(--border);
-}
+#workspace-context-divider:hover,
+#workspace-context-divider:focus-visible,
+.workspace-resizing #workspace-context-divider { background: var(--accent-border); outline: none; }
+.workspace-resizing, .workspace-resizing * { cursor: col-resize !important; user-select: none !important; }
+.workspace-context-collapsed #workspace-context-divider,
+#workspace-shell:not([data-full-view="none"]) #workspace-context-divider { display: none; }
 .workspace-context-header,
 .workspace-terminal-toolbar {
   display: flex;
@@ -1762,8 +1760,7 @@ body.no-animations, body.no-animations * {
 .workspace-context-actions { display: flex; gap: 4px; }
 .workspace-context-header button,
 .workspace-terminal-toolbar button,
-.workspace-terminal-toolbar select,
-.workspace-control select {
+.workspace-terminal-toolbar select {
   min-height: 28px;
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-sm);
@@ -1782,8 +1779,6 @@ body.no-animations, body.no-animations * {
 #workspace-context-container [data-extension-tabs] button[aria-selected="true"] { border-color: var(--accent-border); color: var(--accent); }
 #workspace-context-container [data-extension-status] { margin: 0 0 8px; color: var(--text-dim); }
 #workspace-context-container [data-context-view][hidden] { display: none; }
-.workspace-control { display: grid; gap: 4px; padding: 8px 10px; color: var(--text-dim); font-size: 10px; }
-.workspace-control input { width: 100%; accent-color: var(--accent); }
 .workspace-context-collapsed #workspace-context-region { display: none; }
 .workspace-context-collapsed #workspace-terminal-region { width: 100%; }
 #workspace-shell[data-full-view="context"] #workspace-terminal-region,
@@ -1819,9 +1814,8 @@ body.no-animations, body.no-animations * {
 @media (max-width: 768px) {
   #workspace-shell { flex-direction: column; }
   #workspace-terminal-region { order: 1; }
-  #workspace-context-region,
-  #workspace-shell[data-context-placement="left"] #workspace-context-region,
-  #workspace-shell[data-context-placement="bottom"] #workspace-context-region {
+  #workspace-context-divider { display: none; }
+  #workspace-context-region {
     order: 2;
     width: auto;
     min-width: 0;

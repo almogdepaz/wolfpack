@@ -397,7 +397,7 @@ export class ExtensionHost {
     for (const entry of this.registry.entries()) { const button = document.createElement("button"); button.type = "button"; button.textContent = entry.contribution.title; button.setAttribute("role", "tab"); button.setAttribute("aria-selected", String(entry.id === this.registry.selectedId)); button.addEventListener("click", () => this.select(entry.id)); tabs.append(button); }
     let status = this.options.container.querySelector<HTMLElement>("[data-extension-status]");
     if (!status) { status = document.createElement("p"); status.dataset.extensionStatus = ""; status.setAttribute("role", "status"); this.options.container.prepend(status); }
-    status.textContent = message || this.selectedDocumentStatus() || (this.registry.entries().length ? "Select a context view." : "No enabled context views for this scope.");
+    status.textContent = message || this.selectedDocumentStatus() || (this.registry.selectedId ? "" : this.registry.entries().length ? "Select a context view." : "No enabled context views for this scope.");
     this.options.onChange?.();
   }
   private selectedDocumentStatus(): string | null {
