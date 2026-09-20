@@ -64,6 +64,7 @@ import {
   resolveAgentCommand,
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
+import { taskWorkerShellArgs } from "./task-worker-policy.js";
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
@@ -418,10 +419,21 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       }
       shellCmd = SHELL;
     } else if (taskWorker !== undefined) {
-      const modelArg = options?.model !== undefined ? ' --model "$3"' : "";
-      // Task-worker readiness is Pi-process liveness, not a wrapper shell.
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$1" --no-extensions --extension "$2"${modelArg}`;
-      commandArgs = [taskWorker.executable, taskWorker.extension, ...(options?.model !== undefined ? [options.model] : [])];
+      // Test and compatibility callers can provide the pre-policy launch shape;
+      // route-owned launches always provide the resolved fields.
+      const workerExtensions = taskWorker.extensions ?? [taskWorker.extension];
+      const workerPiOptions = taskWorker.piOptions ?? {};
+      const workerPiArgs = [
+        ...(taskWorker.extensionPolicy === "inherit" ? [] : ["--no-extensions"]),
+        ...workerExtensions.flatMap((extension) => ["--extension", extension]),
+        ...(options?.model !== undefined ? ["--model", options.model] : []),
+        ...(workerPiOptions.thinking !== undefined ? ["--thinking", workerPiOptions.thinking] : []),
+        ...(workerPiOptions.offline ? ["--offline"] : []),
+        ...(workerPiOptions.verbose ? ["--verbose"] : []),
+      ];
+      // Shell resources are intentionally disabled for task workers so they cannot overwrite configured worker env.
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
+      commandArgs = [taskWorker.executable, ...workerPiArgs];
     } else {
       const modelArg = options?.model !== undefined ? ' --model "$1"' : "";
       const promptArg = options?.initialPrompt !== undefined
@@ -442,6 +454,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       if (port) taskWorkerEnv.push(["WOLFPACK_PORT", port]);
       const home = process.env.HOME;
       if (home) taskWorkerEnv.push(["HOME", home]);
+      taskWorkerEnv.push(...Object.entries(taskWorker.env ?? {}));
     }
     const env: Array<[string, string]> = [
       ["TERM", "xterm-256color"],
@@ -461,12 +474,20 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       resp = await this.client.request("create_session", {
         name,
         cwd,
-        command: [
-          SHELL,
-          "-lic",
-          shellCmd,
-          ...(commandArgs.length > 0 ? ["wolfpack-agent", ...commandArgs] : []),
-        ],
+        command: taskWorker === undefined
+          ? [
+            SHELL,
+            "-lic",
+            shellCmd,
+            ...(commandArgs.length > 0 ? ["wolfpack-agent", ...commandArgs] : []),
+          ]
+          : [
+            SHELL,
+            ...(taskWorker.shellArgs ?? taskWorkerShellArgs(SHELL)),
+            shellCmd,
+            "wolfpack-agent",
+            ...commandArgs,
+          ],
         env,
         cols: DEFAULT_COLS,
         rows: DEFAULT_ROWS,

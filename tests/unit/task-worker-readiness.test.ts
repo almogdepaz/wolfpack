@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -35,7 +35,14 @@ describe("task worker launch preflight", () => {
     expect(prepareTaskWorkerLaunch({
       WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executableLink,
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: extension,
-    })).toEqual({ executable: executableLink, extension });
+    })).toMatchObject({
+      executable: executableLink,
+      extension,
+      extensionPolicy: "isolated",
+      extensions: [realpathSync(extension)],
+      env: {},
+      piOptions: {},
+    });
   });
 
   test("rejects dangling launch resources before a session can be created", () => {

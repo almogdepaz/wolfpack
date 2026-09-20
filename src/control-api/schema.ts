@@ -197,6 +197,8 @@ function sessionCreateRequestSchema(): JsonSchema {
       minimum: 1,
       maximum: SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
     },
+    taskWorkerPolicy: ref("TaskWorkerPolicyOverride"),
+    taskWorkerDryRun: { const: true },
   };
   return {
     type: "object",
@@ -206,6 +208,8 @@ function sessionCreateRequestSchema(): JsonSchema {
       projectDir: ref("ProjectDirectory"),
       taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
       readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
+      taskWorkerPolicy: taskWorkerProperties.taskWorkerPolicy,
+      taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
     },
     additionalProperties: false,
     oneOf: [
@@ -242,6 +246,8 @@ function sessionOpenRequestSchema(): JsonSchema {
       minimum: 1,
       maximum: SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
     },
+    taskWorkerPolicy: ref("TaskWorkerPolicyOverride"),
+    taskWorkerDryRun: { const: true },
   };
   return {
     type: "object",
@@ -251,6 +257,8 @@ function sessionOpenRequestSchema(): JsonSchema {
       ...ordinaryProperties,
       taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
       readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
+      taskWorkerPolicy: taskWorkerProperties.taskWorkerPolicy,
+      taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
     },
     additionalProperties: false,
     oneOf: [
@@ -393,6 +401,40 @@ export const controlApiSource: ControlApiSource = {
         }, ["error", "code", "createdSession", "cleanup"]),
       ],
     },
+    TaskWorkerPolicyOverride: {
+      type: "object",
+      properties: {
+        extensionPolicy: { enum: ["isolated", "inherit"] },
+        extensions: arrayOf({ type: "string", pattern: "^/" }),
+        env: { type: "object", additionalProperties: { anyOf: [{ type: "string" }, { type: "null" }] } },
+        piOptions: object({
+          thinking: { anyOf: [{ enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }, { type: "null" }] },
+          offline: { anyOf: [{ type: "boolean" }, { type: "null" }] },
+          verbose: { anyOf: [{ type: "boolean" }, { type: "null" }] },
+        }),
+      },
+      additionalProperties: false,
+    },
+    TaskWorkerPolicyDiagnostics: object({
+      extensionPolicy: { enum: ["isolated", "inherit"] },
+      extensions: arrayOf({ type: "string", pattern: "^/" }),
+      envKeys: arrayOf(string()),
+      piOptions: object({
+        thinking: { enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+        offline: boolean(),
+        verbose: boolean(),
+      }),
+      sources: object({
+        extensionPolicy: { enum: ["default", "host", "project", "spawn"] },
+        extensions: { enum: ["default", "host", "project", "spawn"] },
+        env: { type: "object", additionalProperties: { enum: ["default", "host", "project", "spawn"] } },
+        piOptions: { type: "object", additionalProperties: { enum: ["default", "host", "project", "spawn"] } },
+      }, ["extensionPolicy", "extensions", "env", "piOptions"]),
+    }, ["extensionPolicy", "extensions", "envKeys", "piOptions", "sources"]),
+    TaskWorkerPolicyDryRunResponse: object({
+      ok: { const: true },
+      taskWorkerPolicy: ref("TaskWorkerPolicyDiagnostics"),
+    }, ["ok", "taskWorkerPolicy"]),
     DirectoryBrowseErrorEnvelope: object({
       error: {
         enum: [
@@ -1097,14 +1139,19 @@ export const controlApiSource: ControlApiSource = {
       stable: true,
       auth: "jwt-when-configured",
       request: sessionCreateRequestSchema(),
-      response: object({
-        ok: { const: true },
-        session: ref("SessionName"),
-        sessionId: ref("SessionId"),
-        project: ref("ProjectLabel"),
-        harness: string(),
-        taskEndpoint: ref("RelayEndpoint"),
-      }, ["ok", "session", "sessionId", "project", "harness"]),
+      response: {
+        oneOf: [
+          object({
+            ok: { const: true },
+            session: ref("SessionName"),
+            sessionId: ref("SessionId"),
+            project: ref("ProjectLabel"),
+            harness: string(),
+            taskEndpoint: ref("RelayEndpoint"),
+          }, ["ok", "session", "sessionId", "project", "harness"]),
+          ref("TaskWorkerPolicyDryRunResponse"),
+        ],
+      },
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope|TaskWorkerLaunchErrorEnvelope"],
     },
     "POST /api/session-open": {
@@ -1112,14 +1159,19 @@ export const controlApiSource: ControlApiSource = {
       stable: true,
       auth: "jwt-when-configured",
       request: sessionOpenRequestSchema(),
-      response: object({
-        ok: { const: true },
-        session: ref("SessionName"),
-        sessionId: ref("SessionId"),
-        project: ref("ProjectLabel"),
-        harness: ref("OpenableHarness"),
-        taskEndpoint: ref("RelayEndpoint"),
-      }, ["ok", "session", "sessionId", "project", "harness"]),
+      response: {
+        oneOf: [
+          object({
+            ok: { const: true },
+            session: ref("SessionName"),
+            sessionId: ref("SessionId"),
+            project: ref("ProjectLabel"),
+            harness: ref("OpenableHarness"),
+            taskEndpoint: ref("RelayEndpoint"),
+          }, ["ok", "session", "sessionId", "project", "harness"]),
+          ref("TaskWorkerPolicyDryRunResponse"),
+        ],
+      },
       errors: [...sessionOpenErrorLines(), "503 TaskWorkerLaunchErrorEnvelope"],
     },
     "GET /api/providers": {

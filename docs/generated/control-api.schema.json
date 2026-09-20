@@ -1135,6 +1135,12 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 60000
+          },
+          "taskWorkerPolicy": {
+            "$ref": "#/$defs/TaskWorkerPolicyOverride"
+          },
+          "taskWorkerDryRun": {
+            "const": true
           }
         },
         "additionalProperties": false,
@@ -1198,6 +1204,12 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 60000
+              },
+              "taskWorkerPolicy": {
+                "$ref": "#/$defs/TaskWorkerPolicyOverride"
+              },
+              "taskWorkerDryRun": {
+                "const": true
               }
             },
             "required": [
@@ -1212,35 +1224,42 @@
         "$id": "wolfpack:control-api:http:createTopLevelSession:response",
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "createTopLevelSession response",
-        "type": "object",
-        "properties": {
-          "ok": {
-            "const": true
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "session": {
+                "$ref": "#/$defs/SessionName"
+              },
+              "sessionId": {
+                "$ref": "#/$defs/SessionId"
+              },
+              "project": {
+                "$ref": "#/$defs/ProjectLabel"
+              },
+              "harness": {
+                "type": "string"
+              },
+              "taskEndpoint": {
+                "$ref": "#/$defs/RelayEndpoint"
+              }
+            },
+            "required": [
+              "ok",
+              "session",
+              "sessionId",
+              "project",
+              "harness"
+            ],
+            "additionalProperties": false
           },
-          "session": {
-            "$ref": "#/$defs/SessionName"
-          },
-          "sessionId": {
-            "$ref": "#/$defs/SessionId"
-          },
-          "project": {
-            "$ref": "#/$defs/ProjectLabel"
-          },
-          "harness": {
-            "type": "string"
-          },
-          "taskEndpoint": {
-            "$ref": "#/$defs/RelayEndpoint"
+          {
+            "$ref": "#/$defs/TaskWorkerPolicyDryRunResponse"
           }
-        },
-        "required": [
-          "ok",
-          "session",
-          "sessionId",
-          "project",
-          "harness"
-        ],
-        "additionalProperties": false
+        ]
       },
       "errors": [
         "400 ErrorEnvelope",
@@ -1290,6 +1309,12 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 60000
+          },
+          "taskWorkerPolicy": {
+            "$ref": "#/$defs/TaskWorkerPolicyOverride"
+          },
+          "taskWorkerDryRun": {
+            "const": true
           }
         },
         "additionalProperties": false,
@@ -1373,6 +1398,12 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 60000
+              },
+              "taskWorkerPolicy": {
+                "$ref": "#/$defs/TaskWorkerPolicyOverride"
+              },
+              "taskWorkerDryRun": {
+                "const": true
               }
             },
             "required": [
@@ -1388,35 +1419,42 @@
         "$id": "wolfpack:control-api:http:openSession:response",
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "openSession response",
-        "type": "object",
-        "properties": {
-          "ok": {
-            "const": true
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "session": {
+                "$ref": "#/$defs/SessionName"
+              },
+              "sessionId": {
+                "$ref": "#/$defs/SessionId"
+              },
+              "project": {
+                "$ref": "#/$defs/ProjectLabel"
+              },
+              "harness": {
+                "$ref": "#/$defs/OpenableHarness"
+              },
+              "taskEndpoint": {
+                "$ref": "#/$defs/RelayEndpoint"
+              }
+            },
+            "required": [
+              "ok",
+              "session",
+              "sessionId",
+              "project",
+              "harness"
+            ],
+            "additionalProperties": false
           },
-          "session": {
-            "$ref": "#/$defs/SessionName"
-          },
-          "sessionId": {
-            "$ref": "#/$defs/SessionId"
-          },
-          "project": {
-            "$ref": "#/$defs/ProjectLabel"
-          },
-          "harness": {
-            "$ref": "#/$defs/OpenableHarness"
-          },
-          "taskEndpoint": {
-            "$ref": "#/$defs/RelayEndpoint"
+          {
+            "$ref": "#/$defs/TaskWorkerPolicyDryRunResponse"
           }
-        },
-        "required": [
-          "ok",
-          "session",
-          "sessionId",
-          "project",
-          "harness"
-        ],
-        "additionalProperties": false
+        ]
       },
       "errors": [
         "400 INVALID_REQUEST|UNSUPPORTED_HARNESS",
@@ -3632,6 +3670,205 @@
           "additionalProperties": false
         }
       ]
+    },
+    "TaskWorkerPolicyOverride": {
+      "type": "object",
+      "properties": {
+        "extensionPolicy": {
+          "enum": [
+            "isolated",
+            "inherit"
+          ]
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "piOptions": {
+          "type": "object",
+          "properties": {
+            "thinking": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "off",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "offline": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verbose": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "TaskWorkerPolicyDiagnostics": {
+      "type": "object",
+      "properties": {
+        "extensionPolicy": {
+          "enum": [
+            "isolated",
+            "inherit"
+          ]
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "envKeys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "piOptions": {
+          "type": "object",
+          "properties": {
+            "thinking": {
+              "enum": [
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            "offline": {
+              "type": "boolean"
+            },
+            "verbose": {
+              "type": "boolean"
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "sources": {
+          "type": "object",
+          "properties": {
+            "extensionPolicy": {
+              "enum": [
+                "default",
+                "host",
+                "project",
+                "spawn"
+              ]
+            },
+            "extensions": {
+              "enum": [
+                "default",
+                "host",
+                "project",
+                "spawn"
+              ]
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "enum": [
+                  "default",
+                  "host",
+                  "project",
+                  "spawn"
+                ]
+              }
+            },
+            "piOptions": {
+              "type": "object",
+              "additionalProperties": {
+                "enum": [
+                  "default",
+                  "host",
+                  "project",
+                  "spawn"
+                ]
+              }
+            }
+          },
+          "required": [
+            "extensionPolicy",
+            "extensions",
+            "env",
+            "piOptions"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "extensionPolicy",
+        "extensions",
+        "envKeys",
+        "piOptions",
+        "sources"
+      ],
+      "additionalProperties": false
+    },
+    "TaskWorkerPolicyDryRunResponse": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "taskWorkerPolicy": {
+          "$ref": "#/$defs/TaskWorkerPolicyDiagnostics"
+        }
+      },
+      "required": [
+        "ok",
+        "taskWorkerPolicy"
+      ],
+      "additionalProperties": false
     },
     "DirectoryBrowseErrorEnvelope": {
       "type": "object",

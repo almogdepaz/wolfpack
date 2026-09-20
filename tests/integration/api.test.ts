@@ -44,6 +44,7 @@ const PRIOR_WOLFPACK_SESSION_IDENTITY_PATH = process.env.WOLFPACK_SESSION_IDENTI
 const PRIOR_WOLFPACK_AGENT_RUNTIME_STATE_PATH = process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH;
 const PRIOR_WOLFPACK_SETTINGS_PATH = process.env.WOLFPACK_SETTINGS_PATH;
 const PRIOR_WOLFPACK_TASK_RELAY_ROOT = process.env.WOLFPACK_TASK_RELAY_ROOT;
+const PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH = process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
 const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
 // Create a real temp dir for test project directories.
@@ -170,6 +171,8 @@ afterAll(async () => {
   await __resetTaskRelayGatewayForTests();
   if (PRIOR_WOLFPACK_TASK_RELAY_ROOT === undefined) delete process.env.WOLFPACK_TASK_RELAY_ROOT;
   else process.env.WOLFPACK_TASK_RELAY_ROOT = PRIOR_WOLFPACK_TASK_RELAY_ROOT;
+  if (PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH === undefined) delete process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
+  else process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH;
   for (const root of externalTempRoots) rmSync(root, { recursive: true, force: true });
   rmSync(TEST_DEV_DIR, { recursive: true, force: true });
   if (PRIOR_WOLFPACK_DEV_DIR === undefined) delete process.env.WOLFPACK_DEV_DIR;
@@ -2409,6 +2412,62 @@ describe("agent-native top-level session control", () => {
         code: SESSION_CREATE_ERROR.INVALID_REQUEST,
       });
       expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
+  test("returns a redacted task-worker policy dry-run without creating a session", async () => {
+    const root = createExplicitProjectDir("task-worker-dry-run");
+    const executable = join(root, "pi");
+    const extension = join(root, "extension.ts");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    writeFileSync(extension, "export {}\n");
+    const priorExecutable = process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE;
+    const priorExtension = process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION;
+    const priorPolicyPath = process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
+    process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE = executable;
+    process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION = extension;
+    process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = join(root, "absent-policy.json");
+    mockBackend.lastCreateArgs = null;
+    try {
+      const response = await post("/api/session-create", {
+        projectDir: root,
+        harness: "pi",
+        taskWorker: true,
+        taskWorkerDryRun: true,
+        taskWorkerPolicy: {
+          extensionPolicy: "inherit",
+          env: { PI_ASYNC_PREFIX_COMPACTION_START_RATIO: "0.5" },
+          piOptions: { thinking: "high", offline: true },
+        },
+      });
+      const body = await response.json();
+      expect(response.ok).toBeTruthy();
+      expect(validateSchema(responseSchema("createTopLevelSession"), body, controlApiSchema)).toEqual([]);
+      expect(body).toEqual({
+        ok: true,
+        taskWorkerPolicy: {
+          extensionPolicy: "inherit",
+          extensions: [extension],
+          envKeys: ["PI_ASYNC_PREFIX_COMPACTION_START_RATIO"],
+          piOptions: { thinking: "high", offline: true },
+          sources: {
+            extensionPolicy: "spawn",
+            extensions: "default",
+            env: { PI_ASYNC_PREFIX_COMPACTION_START_RATIO: "spawn" },
+            piOptions: { thinking: "spawn", offline: "spawn" },
+          },
+        },
+      });
+      expect(JSON.stringify(body)).not.toContain("0.5");
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    } finally {
+      if (priorExecutable === undefined) delete process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE;
+      else process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE = priorExecutable;
+      if (priorExtension === undefined) delete process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION;
+      else process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION = priorExtension;
+      if (priorPolicyPath === undefined) delete process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
+      else process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = priorPolicyPath;
     }
   });
 

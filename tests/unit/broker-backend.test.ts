@@ -498,8 +498,8 @@ describe("BrokerBackend.createSession", () => {
 
     const create = client.requests.find((request) => request.method === "create_session");
     const params = create?.params as { command: string[]; env: Array<[string, string]> };
-    expect(params.command.slice(3)).toEqual(["wolfpack-agent", executable, extension, model]);
-    expect(params.command[2]).toEndWith('exec "$1" --no-extensions --extension "$2" --model "$3"');
+    expect(params.command.slice(3)).toEqual(["wolfpack-agent", executable, "--no-extensions", "--extension", extension, "--model", model]);
+    expect(params.command[2]).toContain('exec "$@"');
     expect(params.command[2]).not.toContain(executable);
     expect(params.command[2]).not.toContain(extension);
     expect(params.env).toContainEqual(["PI_TASK_WORKER", "1"]);

@@ -2,6 +2,16 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { AGENT_KIND } from "../agent-kind.js";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
+import {
+  resolveTaskWorkerPolicy,
+  taskWorkerShellArgs,
+  TaskWorkerPolicyError,
+} from "./task-worker-policy.js";
+import { SHELL } from "./shell.js";
+import type {
+  ResolvedTaskWorkerPolicy,
+  TaskWorkerPolicyDiagnostics,
+} from "./task-worker-policy.js";
 import type { SessionInspectionResult } from "../session-status-contract.js";
 import type { RelayEndpoint } from "../task-relay/domain.js";
 import { isLiveTaskRelayRegistration, sameTaskRelayRegistration } from "../task-relay/registration.js";
@@ -33,7 +43,20 @@ export type TaskWorkerCleanup = "completed" | "unconfirmed";
 
 export interface TaskWorkerLaunch {
   readonly executable: string;
+  /** Mandatory Pi Tasks extension; also present first in extensions. */
   readonly extension: string;
+  readonly extensionPolicy?: ResolvedTaskWorkerPolicy["extensionPolicy"];
+  readonly extensions?: ResolvedTaskWorkerPolicy["extensions"];
+  readonly env?: ResolvedTaskWorkerPolicy["env"];
+  readonly piOptions?: ResolvedTaskWorkerPolicy["piOptions"];
+  readonly shellArgs?: readonly string[];
+}
+
+export interface PreparedTaskWorkerLaunch extends ResolvedTaskWorkerPolicy {
+  readonly executable: string;
+  readonly extension: string;
+  readonly diagnostics: TaskWorkerPolicyDiagnostics;
+  readonly shellArgs: readonly string[];
 }
 
 export interface TaskWorkerCreatedSession {
@@ -139,7 +162,11 @@ function isReadableFile(path: string): boolean {
 }
 
 /** Resolves only the executable and extension that the task-worker launch actually uses. */
-export function prepareTaskWorkerLaunch(env: Readonly<Record<string, string | undefined>>): TaskWorkerLaunch {
+export function prepareTaskWorkerLaunch(
+  env: Readonly<Record<string, string | undefined>>,
+  projectDir = process.cwd(),
+  spawnPolicy: unknown = undefined,
+): PreparedTaskWorkerLaunch {
   const executable = env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE === undefined
     ? executableFromPath(env.PATH)
     : configuredPath(
@@ -166,7 +193,19 @@ export function prepareTaskWorkerLaunch(env: Readonly<Record<string, string | un
       "task-worker Pi Tasks extension is missing or unreadable",
     );
   }
-  return { executable, extension };
+  try {
+    return {
+      executable,
+      extension,
+      shellArgs: taskWorkerShellArgs(SHELL),
+      ...resolveTaskWorkerPolicy(env, projectDir, extension, spawnPolicy),
+    };
+  } catch (error: unknown) {
+    if (error instanceof TaskWorkerPolicyError) {
+      throw new TaskWorkerReadinessError(TASK_WORKER_ERROR.PREFLIGHT_FAILED, error.message);
+    }
+    throw error;
+  }
 }
 
 function readySession(

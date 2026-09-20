@@ -134,17 +134,21 @@ interface SessionCreateBody extends Record<string, unknown> {
   initialPrompt?: string;
   taskWorker?: boolean;
   readinessTimeoutMs?: number;
+  taskWorkerPolicy?: Record<string, unknown>;
+  taskWorkerDryRun?: boolean;
 }
 
 function isSessionCreateBody(body: Record<string, unknown>): body is SessionCreateBody {
-  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt", "taskWorker", "readinessTimeoutMs"]);
+  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
     && hasOptionalType(body, "harness", "string")
     && hasOptionalType(body, "initialPrompt", "string")
     && hasOptionalType(body, "taskWorker", "boolean")
-    && hasOptionalType(body, "readinessTimeoutMs", "number");
+    && hasOptionalType(body, "readinessTimeoutMs", "number")
+    && (body.taskWorkerPolicy === undefined || isJsonObject(body.taskWorkerPolicy))
+    && hasOptionalType(body, "taskWorkerDryRun", "boolean");
 }
 
 interface SessionOpenBody extends Record<string, unknown> {
@@ -156,10 +160,12 @@ interface SessionOpenBody extends Record<string, unknown> {
   initialPrompt?: string;
   taskWorker?: boolean;
   readinessTimeoutMs?: number;
+  taskWorkerPolicy?: Record<string, unknown>;
+  taskWorkerDryRun?: boolean;
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
-  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "model", "initialPrompt", "taskWorker", "readinessTimeoutMs"]);
+  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "model", "initialPrompt", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
@@ -168,7 +174,9 @@ function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBo
     && hasOptionalType(body, "model", "string")
     && hasOptionalType(body, "initialPrompt", "string")
     && hasOptionalType(body, "taskWorker", "boolean")
-    && hasOptionalType(body, "readinessTimeoutMs", "number");
+    && hasOptionalType(body, "readinessTimeoutMs", "number")
+    && (body.taskWorkerPolicy === undefined || isJsonObject(body.taskWorkerPolicy))
+    && hasOptionalType(body, "taskWorkerDryRun", "boolean");
 }
 
 interface SettingsBody extends Record<string, unknown> {
@@ -524,6 +532,9 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       || !validTaskWorkerReadinessTimeout(body.readinessTimeoutMs)
       || (body.taskWorker !== undefined && body.taskWorker !== true)
       || (body.readinessTimeoutMs !== undefined && body.taskWorker !== true)
+      || (body.taskWorkerPolicy !== undefined && body.taskWorker !== true)
+      || (body.taskWorkerDryRun !== undefined && body.taskWorker !== true)
+      || (body.taskWorkerDryRun !== undefined && body.taskWorkerDryRun !== true)
       || (body.taskWorker === true && (
         body.projectDir === undefined
         || body.initialPrompt !== undefined
@@ -573,12 +584,18 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
 
     let taskWorker;
     try {
-      taskWorker = body.taskWorker === true ? prepareTaskWorkerLaunch(process.env) : undefined;
+      taskWorker = body.taskWorker === true
+        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
+        : undefined;
     } catch (error: unknown) {
       if (error instanceof TaskWorkerReadinessError) {
         return json(res, taskWorkerFailureBody(error), 503);
       }
       throw error;
+    }
+
+    if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+      return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
     }
 
     try {
@@ -638,6 +655,9 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       || !validTaskWorkerReadinessTimeout(body.readinessTimeoutMs)
       || (body.taskWorker !== undefined && body.taskWorker !== true)
       || (body.readinessTimeoutMs !== undefined && body.taskWorker !== true)
+      || (body.taskWorkerPolicy !== undefined && body.taskWorker !== true)
+      || (body.taskWorkerDryRun !== undefined && body.taskWorker !== true)
+      || (body.taskWorkerDryRun !== undefined && body.taskWorkerDryRun !== true)
       || (body.taskWorker === true && (
         body.projectDir === undefined
         || body.initialPrompt !== undefined
@@ -673,12 +693,18 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
 
     let taskWorker;
     try {
-      taskWorker = body.taskWorker === true ? prepareTaskWorkerLaunch(process.env) : undefined;
+      taskWorker = body.taskWorker === true
+        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
+        : undefined;
     } catch (error: unknown) {
       if (error instanceof TaskWorkerReadinessError) {
         return json(res, taskWorkerFailureBody(error), 503);
       }
       throw error;
+    }
+
+    if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+      return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
     }
 
     const backend = getBackend();

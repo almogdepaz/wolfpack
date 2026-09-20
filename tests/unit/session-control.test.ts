@@ -48,6 +48,8 @@ describe("session control cli parsing", () => {
       "--project-dir", "/worktrees/wolfpack",
       "--harness", "pi",
       "--task-worker",
+      "--task-worker-policy-file", "/tmp/worker-policy.json",
+      "--task-worker-dry-run",
       "--readiness-timeout-ms", "250",
       "--json",
     ])).toEqual({
@@ -57,12 +59,15 @@ describe("session control cli parsing", () => {
       harness: "pi",
       prompt: undefined,
       taskWorker: true,
+      taskWorkerPolicyFile: "/tmp/worker-policy.json",
+      taskWorkerDryRun: true,
       readinessTimeoutMs: 250,
       output: "json",
     });
     expect(parseSessionCommand(["open", "wolfpack", "--task-worker"]).ok).toBe(false);
     expect(parseSessionCommand(["open", "--project-dir", "/worktree", "--task-worker", "--prompt", "run"]).ok).toBe(false);
     expect(parseSessionCommand(["open", "--project-dir", "/worktree", "--task-worker", "--notify-parent"]).ok).toBe(false);
+    expect(parseSessionCommand(["open", "--project-dir", "/worktree", "--task-worker", "--task-worker-dry-run"]).ok).toBe(false);
   });
 
   test("preserves task-worker recovery fields in create and spawn JSON failures", () => {
