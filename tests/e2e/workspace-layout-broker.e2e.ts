@@ -122,12 +122,12 @@ test("real broker desktop preserves existing equal-grid cardinalities and revers
   expect(socketUrls).toHaveLength(attachesBefore);
 });
 
-test("left context border resizes with real pointer and keyboard input without replacing the terminal", async ({ page }, testInfo) => {
+test("right context panel resizes with real pointer and keyboard input without replacing the terminal", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop splitter contract; mobile retains the stacked recovery layout");
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.addInitScript(() => {
     if (!localStorage.getItem("splitter-test-seeded")) {
-      localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ placement: "right", splitSize: 320 }));
+      localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ placement: "left", splitSize: 320 }));
       localStorage.setItem("splitter-test-seeded", "true");
     }
   });
@@ -149,7 +149,8 @@ test("left context border resizes with real pointer and keyboard input without r
   const context = page.locator("#workspace-context-region");
   const terminal = page.locator("#workspace-terminal-region");
   const before = (await context.boundingBox())!;
-  expect(before.x).toBeLessThan((await terminal.boundingBox())!.x);
+  const terminalBefore = (await terminal.boundingBox())!;
+  expect(before.x).toBeGreaterThanOrEqual(terminalBefore.x + terminalBefore.width);
   await expect(page.locator("#workspace-context-placement, #workspace-context-size")).toHaveCount(0);
   const border = page.getByRole("separator", { name: "Resize context panel" });
   await expect(border).toBeVisible();
@@ -160,9 +161,10 @@ test("left context border resizes with real pointer and keyboard input without r
   });
   const attaches = sockets.length;
   const edge = (await border.boundingBox())!;
+  expect(edge.x + edge.width).toBeCloseTo(before.x, 0);
   await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
   await page.mouse.down();
-  await page.mouse.move(edge.x + edge.width / 2 + 110, edge.y + edge.height / 2, { steps: 8 });
+  await page.mouse.move(edge.x + edge.width / 2 - 110, edge.y + edge.height / 2, { steps: 8 });
   await page.mouse.up();
   await expect(page.locator("#workspace-shell")).not.toHaveClass(/workspace-resizing/);
   await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(Math.round(before.width + 110));
@@ -175,6 +177,9 @@ test("left context border resizes with real pointer and keyboard input without r
   expect(sizes.every(size => size.cols > 0 && size.rows > 0)).toBe(true);
   await border.focus();
   await page.keyboard.press("ArrowLeft");
+  await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(Math.round(before.width + 120));
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("ArrowRight");
   await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(Math.round(before.width + 100));
   const savedSize = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-workspace-shell")!).splitSize);
   expect(savedSize).toBe(Math.round(before.width + 100));

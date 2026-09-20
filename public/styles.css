@@ -1711,7 +1711,7 @@ body.no-animations, body.no-animations * {
   background: var(--bg-base);
 }
 #workspace-terminal-region {
-  order: 2;
+  order: 0;
   display: flex;
   flex: 1 1 auto;
   min-width: 0;
@@ -1728,9 +1728,9 @@ body.no-animations, body.no-animations * {
   min-width: 220px;
   min-height: 0;
   flex-direction: column;
-  order: 0;
+  order: 2;
   overflow: auto;
-  border-right: 1px solid var(--border);
+  border-left: 1px solid var(--border);
   background: var(--bg-elevated);
 }
 #workspace-context-divider {

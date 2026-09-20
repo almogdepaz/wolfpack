@@ -112,14 +112,14 @@ export function createWorkspaceShell(options: {
       root.classList.add("workspace-resizing");
     },
     pointermove: (event: PointerEvent) => {
-      if (drag?.id === event.pointerId) resize(drag.size + event.clientX - drag.x);
+      if (drag?.id === event.pointerId) resize(drag.size + drag.x - event.clientX);
     },
     pointerup: finishResize,
     pointercancel: finishResize,
     lostpointercapture: finishResize,
     keydown: (event: KeyboardEvent) => {
       const size = contextRegion!.getBoundingClientRect().width;
-      const sizes: Partial<Record<string, number>> = { ArrowLeft: size - 10, ArrowRight: size + 10, Home: 220, End: maximumSize() };
+      const sizes: Partial<Record<string, number>> = { ArrowLeft: size + 10, ArrowRight: size - 10, Home: 220, End: maximumSize() };
       const next = sizes[event.key];
       if (next === undefined || event.altKey || event.ctrlKey || event.metaKey) return;
       event.preventDefault();
