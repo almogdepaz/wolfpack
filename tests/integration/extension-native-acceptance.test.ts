@@ -23,6 +23,10 @@ test("compiled public extension CLI persists documents through a real isolated b
     timeout: 120_000,
     killSignal: "SIGKILL",
   });
+  if (result.exitCode !== 0) {
+    process.stderr.write(result.stdout);
+    process.stderr.write(result.stderr);
+  }
   expect(result.exitCode).toBe(0);
   expect(result.signalCode ?? null).toBeNull();
   expect(result.stderr.toString()).toBe("");

@@ -155,7 +155,19 @@ wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] 
 
 `wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for child agents launched with `--notify-parent`.
 
-`wolfpack session current-context [--json|--shell]` reports only Wolfpack-injected name/project context. It never infers identity from process names or terminal prose.
+### Current session identity
+
+`wolfpack session current-context [--json|--shell]` returns the current session's stable broker UUID after one read-only, exact-ID lookup against the local backend (5-second request deadline):
+
+```json
+{"ok":true,"verified":true,"sessionId":"11111111-1111-4111-8111-111111111111","session":"wolfpack","projectDir":"/work/wolfpack","harness":"pi"}
+```
+
+The broker assigns `WOLFPACK_SESSION_ID` **before** starting each PTY child, overriding inherited/caller-supplied values. Each new child session therefore receives its own UUID, not its parent's. The CLI validates that UUID, name, project and harness against a live/ready session; `--shell` prints safely quoted identity assignments only after verification. Plain output is UUID, name and project directory, one per line.
+
+This requires a **new session launched by the updated broker** and a reachable local server. Missing, stale, mismatched or unavailable identity fails with nonzero status; JSON failures have `ok: false`. There is no old-session migration, name/list/process-ancestry fallback or `--machine` self-discovery. A same-name replacement is never substituted. Verification checks live identity consistency; environment variables are not an authentication boundary against their owner.
+
+The Agent Context skill can use verified self-identity when asked to update “this session,” without asking the user to copy or confirm a UUID. Explicitly targeting another session still requires its exact UUID. Activating a broker upgrade terminates its existing terminals; schedule that upgrade and then launch fresh sessions.
 
 ## Exit codes
 

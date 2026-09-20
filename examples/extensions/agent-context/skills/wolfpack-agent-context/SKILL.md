@@ -1,15 +1,19 @@
 ---
 name: wolfpack-agent-context
-description: Publish bounded agent-authored context to a supplied exact Wolfpack session scope using the public CLI and compare-and-swap revisions.
+description: Publish bounded agent-authored context to this Wolfpack session or an explicitly supplied session UUID using verified public CLI identity and compare-and-swap revisions.
 ---
 
 # Wolfpack Agent Context
 
-Use this skill only when the user supplies the exact target scope UUID and asks to publish Agent Context data. Do not guess scope IDs from names, terminal text, environment variables, or `current-context` output.
+Use this skill when the user asks to publish Agent Context data. “Update this session's context” does not require the user to copy a UUID: resolve the current session through the verified public CLI below. Publishing to another session still requires the user's exact target UUID. Never guess a scope from names, terminal text, raw environment variables, or a list with only one session.
 
 ## Safe publication workflow
 
-1. Verify the supplied target scope/project with the public Wolfpack CLI. If the target cannot be verified, stop and explain what is missing.
+1. Resolve and pin the target before reading or publishing:
+   - **This session:** run `wolfpack session current-context --json`. Require exit 0, `ok: true`, `verified: true`, and a canonical `sessionId` UUID with the expected session project in `projectDir`. Use that exact `sessionId`; no extra UUID confirmation is needed for an explicit request to update this session. The command verifies the broker-injected identity against the live local backend, without attaching to or changing the terminal.
+   - **An explicitly supplied UUID:** run `wolfpack session status <exact-uuid> --json`. Require success, the identical `sessionId`, the intended project, and a live/ready terminal. Do not silently substitute a replacement session.
+   - If verification fails or the project is unexpected, stop and explain. Self-discovery requires a session launched by the updated broker; old sessions are intentionally unsupported. Do not fall back to names, lists, process scanning, environment hints, unverified older `current-context` output, or a remote machine's scope.
+   Keep the resolved UUID fixed for all operations in this update.
 2. Read the current revision:
    ```sh
    wolfpack extension-data read agent-context/context --session <exact-uuid> --json

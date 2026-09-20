@@ -78,7 +78,7 @@ function run(command: readonly string[], env = childEnv()): string {
 }
 function runCli(cli: string, args: readonly string[], port: number, expected = 0): string {
   const result = Bun.spawnSync([cli, ...args], { cwd: sandbox, env: childEnv(port), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== expected) fail(`CLI ${args.join(" ")} exited ${result.exitCode}, expected ${expected}: ${result.stderr.toString().slice(-1000)}`);
+  if (result.exitCode !== expected) fail(`CLI ${args.join(" ")} exited ${result.exitCode}, expected ${expected}: ${result.stderr.toString().slice(-1000)} ${result.stdout.toString().slice(-2000)}`);
   return result.stdout.toString();
 }
 function jwt(): string {
@@ -149,6 +149,22 @@ async function packagedSampleSource(): Promise<string> {
   if (!required.every((path) => existsSync(join(extracted, path)))) fail("packed sample omitted a declared UI/schema/skill file");
   return extracted;
 }
+async function expectSelfContext(cli: string, port: number, sessionId: string): Promise<string> {
+  const output = join(sandbox, `self-${randomUUID()}.json`);
+  const done = `${output}.exit`;
+  const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+  // Execute INSIDE the real broker-created shell: no harness-supplied self UUID.
+  const command = `${quote(cli)} session current-context --json > ${quote(output)}; printf '%s' \"$?\" > ${quote(done)}`;
+  runCli(cli, ["session", "send", sessionId, command, "--json"], port);
+  const deadline = Date.now() + 8_000;
+  while (!existsSync(done) && Date.now() < deadline) await wait(25);
+  if (!existsSync(done) || readFileSync(done, "utf8") !== "0") {
+    fail(`in-session current-context failed: exit=${existsSync(done) ? readFileSync(done, "utf8") : "missing"}; response=${existsSync(output) ? readFileSync(output, "utf8") : "missing"}`);
+  }
+  const context = JSON.parse(readFileSync(output, "utf8"));
+  if (context.ok !== true || context.verified !== true || context.sessionId !== sessionId || context.projectDir !== project || context.harness !== "shell") fail(`incorrect self context: ${JSON.stringify(context)}`);
+  return context.sessionId;
+}
 async function expectRead(cli: string, port: number, sessionId: string, revision: number, goal: string | null): Promise<void> {
   const data = JSON.parse(runCli(cli, ["extension-data", "read", "agent-context/context", "--session", sessionId, "--json"], port));
   if (data.revision !== revision || (goal === null ? data.document !== null : data.document?.goal !== goal)) fail(`unexpected read response ${JSON.stringify(data)}`);
@@ -174,14 +190,18 @@ try {
   writeFileSync(secondDocument, JSON.stringify(document("revision two")));
   const cli = join(bin, "wolfpack");
   const serverBin = join(bin, "wolfpack-extension-server");
-  run([process.execPath, "build", "--compile", join(ROOT, "src", "cli", "index.ts"), "--outfile", cli]);
-  run([process.execPath, "build", "--compile", join(ROOT, "tests", "integration", "fixtures", "extension-native-server.ts"), "--outfile", serverBin]);
+  const workerEntry = join(ROOT, "src", "task-relay", "worker-entry.ts");
+  // Status inspection uses the production relay gateway; embed its named worker
+  // just as the normal release build does, rather than mocking registrations.
+  run([process.execPath, "build", "--compile", "--entry-naming", "[name].js", join(ROOT, "src", "cli", "index.ts"), workerEntry, "--outfile", cli]);
+  run([process.execPath, "build", "--compile", "--entry-naming", "[name].js", join(ROOT, "tests", "integration", "fixtures", "extension-native-server.ts"), workerEntry, "--outfile", serverBin]);
   runCli(cli, ["extensions", "install", source, "--trust-browser-code", "--skills", "pi"], 18790);
   runCli(cli, ["extensions", "install", nonOneSource, "--trust-browser-code"], 18790);
   if (!existsSync(join(home, ".pi", "agent", "skills", "wolfpack-agent-context", "SKILL.md"))) fail("installed sample skill was not deployed into the owned discovery root");
   await startBroker();
   const original = await createShell("native-scope");
   let port = await startServer(serverBin);
+  const selfScope = await expectSelfContext(cli, port, original.wolfpackSessionId);
 
   const unauthenticated = await fetch(`http://127.0.0.1:${port}/api/extensions`);
   if (unauthenticated.status !== 401) fail(`catalog accepted unauthenticated request (${unauthenticated.status})`);
@@ -196,13 +216,14 @@ try {
   // that sends schemaVersion: 1 is rejected before sample coverage can mask it.
   runCli(cli, ["extension-data", "publish", "native/context", "--session", original.wolfpackSessionId, "--file", nonOneDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port);
   const requestId = randomUUID();
-  runCli(cli, ["extension-data", "publish", "agent-context/context",  "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port);
+  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", selfScope, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port);
   await expectRead(cli, port, original.wolfpackSessionId, 1, "retained across compiled server restart");
   runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", "not-a-uuid", "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 2);
   runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", randomUUID(), "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
 
   await stop(server); server = undefined;
   port = await startServer(serverBin);
+  await expectSelfContext(cli, port, original.wolfpackSessionId);
   const retry = JSON.parse(runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
   if (retry.receipt?.revision !== 1 || retry.receipt?.requestId !== requestId) fail(`identical retry did not return retained receipt: ${JSON.stringify(retry)}`);
   runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
@@ -215,11 +236,14 @@ try {
   runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "2", "--request-id", randomUUID(), "--json"], port, 1);
   const replacement = await createShell("native-scope");
   if (replacement.wolfpackSessionId === original.wolfpackSessionId) fail("same-name shell did not receive a new broker UUID");
+  await expectSelfContext(cli, port, replacement.wolfpackSessionId);
+  const stale = Bun.spawnSync([cli, "session", "current-context", "--json"], { cwd: sandbox, env: { ...childEnv(port), WOLFPACK_SESSION_ID: original.wolfpackSessionId, WOLFPACK_SESSION_NAME: "native-scope", WOLFPACK_PROJECT_DIR: project, WOLFPACK_AGENT_KIND: "shell" }, stdout: "pipe", stderr: "pipe" });
+  if (stale.exitCode === 0 || JSON.parse(stale.stdout.toString()).ok !== false) fail("stale self identity borrowed a replacement by name");
   await expectRead(cli, port, replacement.wolfpackSessionId, 0, null);
   const replacementPublish = runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", replacement.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port);
   try { await expectRead(cli, port, replacement.wolfpackSessionId, 1, "retained across compiled server restart"); }
   catch (error) { fail(`${error instanceof Error ? error.message : String(error)}; replacement publish=${replacementPublish}`); }
-  process.stdout.write("extension-native-acceptance: compiled CLI/server + real broker UUID/restart/CAS/isolation OK\n");
+  process.stdout.write("extension-native-acceptance: compiled CLI/server + in-session verified UUID/restart/CAS/isolation OK\n");
 } finally {
   try { client?.close(); } catch { /* owned cleanup */ }
   await stop(server);

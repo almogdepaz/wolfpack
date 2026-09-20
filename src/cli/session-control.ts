@@ -1,6 +1,6 @@
 import { access, readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { AGENT_KIND, isCreatableHarness } from "../agent-kind.js";
+import { isAbsolute, resolve } from "node:path";
+import { AGENT_KIND, isCreatableHarness, isKnownAgentKind } from "../agent-kind.js";
 import type { CreatableHarness } from "../agent-kind.js";
 import {
   isOpenableHarness,
@@ -25,6 +25,7 @@ import {
   isSessionStatusErrorCode,
   parseSessionTerminalLiveness,
   SESSION_STATUS_ERROR_MESSAGE,
+  SESSION_TERMINAL_STATUS,
 } from "../session-status-contract.js";
 import type { SessionTerminalLiveness } from "../session-status-contract.js";
 import { isValidSessionName, MAX_INITIAL_PROMPT_LENGTH } from "../validation.js";
@@ -108,6 +109,9 @@ Commands:
   wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] [--timeout-ms <1..600000>] [--json]
   wolfpack session current-context [--json|--shell]
   wolfpack session open <project> ...  Deprecated alias for 'wolfpack agent spawn'
+
+current-context verifies this session's broker UUID locally; requires a new session
+launched by the updated broker and a reachable server. No name-based fallback.
 
 Run 'wolfpack session create --help' or 'wolfpack agent --help' for details.`;
 }
@@ -1020,24 +1024,44 @@ async function runCurrentContext(
     printError(red("--machine is not supported for session current-context"));
     return SESSION_EXIT.USAGE;
   }
-  const context = {
-    session: process.env.WOLFPACK_SESSION_NAME || "",
-    projectDir: process.env.WOLFPACK_PROJECT_DIR || "",
-  };
-  if (!context.session && !context.projectDir) {
-    if (parsed.output === "json") jsonOut(context);
-    else printError(yellow("no wolfpack context in this process"));
+  const unavailable = (message: string): number => {
+    if (parsed.output === "json") jsonOut({ ok: false, error: { code: "CURRENT_CONTEXT_UNAVAILABLE", message } });
+    else printError(yellow(message));
     return SESSION_EXIT.NOT_FOUND;
+  };
+  const sessionId = process.env.WOLFPACK_SESSION_ID ?? "";
+  const session = process.env.WOLFPACK_SESSION_NAME ?? "";
+  const projectDir = process.env.WOLFPACK_PROJECT_DIR ?? "";
+  const harness = process.env.WOLFPACK_AGENT_KIND ?? "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(sessionId)
+    || !isBoundedSessionStatusIdentity(session) || !isAbsolute(projectDir) || !isKnownAgentKind(harness)) {
+    return unavailable("Missing broker-injected session identity; start a new Wolfpack session after upgrading the broker.");
   }
-  if (parsed.output === "json") jsonOut(context);
-  else if (parsed.output === "shell") {
-    process.stdout.write(`WOLFPACK_SESSION_NAME=${shellQuote(context.session)}\n`);
-    process.stdout.write(`WOLFPACK_PROJECT_DIR=${shellQuote(context.projectDir)}\n`);
-  } else {
-    if (context.session) print(context.session);
-    if (context.projectDir) print(context.projectDir);
+  try {
+    const value = await call(`/api/session-control/status?session=${encodeURIComponent(sessionId)}`, {}, undefined, 5_000);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return unavailable("Invalid current-session response.");
+    const status = value as Record<string, unknown>;
+    const terminal = parseSessionTerminalLiveness(status.terminal);
+    if (status.ok !== true || status.sessionId !== sessionId || status.session !== session
+      || status.projectDir !== projectDir || status.harness !== harness || status.state !== "active"
+      || !terminal?.exists || !terminal.alive || terminal.status !== SESSION_TERMINAL_STATUS.READY) {
+      return unavailable("Current-session identity does not match a live Wolfpack terminal.");
+    }
+    const context = { ok: true, verified: true, sessionId, session, projectDir, harness };
+    if (parsed.output === "json") jsonOut(context);
+    else if (parsed.output === "shell") {
+      for (const [key, value] of [["WOLFPACK_SESSION_ID", sessionId], ["WOLFPACK_SESSION_NAME", session], ["WOLFPACK_PROJECT_DIR", projectDir], ["WOLFPACK_AGENT_KIND", harness]] as const) {
+        process.stdout.write(`${key}=${shellQuote(value)}\n`);
+      }
+    } else {
+      print(sessionId);
+      print(session);
+      print(projectDir);
+    }
+    return SESSION_EXIT.OK;
+  } catch (error) {
+    return mapApiError(error, parsed.output);
   }
-  return SESSION_EXIT.OK;
 }
 
 async function runTargetSessionCommand(

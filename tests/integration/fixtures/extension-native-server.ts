@@ -31,6 +31,7 @@ if (ping.status !== "ok") throw new Error("real broker list_sessions failed");
 __setTestBackend(new BrokerBackend(client));
 
 const { createServerInstance } = await import("../../../src/server/index.ts");
+const { __resetTaskRelayGatewayForTests } = await import("../../../src/task-relay/gateway.ts");
 const { server } = createServerInstance();
 server.listen(Number(process.env.WOLFPACK_PORT) || 0, "127.0.0.1", () => {
   process.stdout.write(`READY:${(server.address() as AddressInfo).port}\n`);
@@ -38,6 +39,7 @@ server.listen(Number(process.env.WOLFPACK_PORT) || 0, "127.0.0.1", () => {
 
 async function stop(): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  await __resetTaskRelayGatewayForTests();
   client.close();
 }
 process.on("SIGTERM", () => { void stop().finally(() => process.exit(0)); });

@@ -16,7 +16,9 @@ wolfpack extensions install /absolute/path/to/agent-context --trust-browser-code
 
 The installer reports skill ownership separately. A collision or user-modified deployed skill is not overwritten; inspect that status before retrying. Remove the package with the same explicit skills root when needed. Existing Pi sessions need normal `/reload` or a new session before discovery changes apply; do not steer a live agent automatically.
 
-See `skills/wolfpack-agent-context/SKILL.md` for exact-scope CAS publication guidance.
+In a fresh session launched by the updated broker, ask the agent to “update this session's context.” The skill uses `wolfpack session current-context --json` to verify its UUID automatically; no copied ID or extra confirmation is needed. Another session still requires an explicit UUID. Old sessions are intentionally unsupported; upgrading the broker terminates existing terminals, so schedule that upgrade first.
+
+See `skills/wolfpack-agent-context/SKILL.md` for verified exact-scope CAS publication guidance.
 
 ## Opt-in real-agent acceptance (not run here)
 
