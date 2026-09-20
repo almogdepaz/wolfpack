@@ -22,6 +22,7 @@ import {
 } from "../../src/server/backend";
 import { sessionIdentityStorePath } from "../../src/server/session-identity";
 import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
+import { SHELL } from "../../src/server/shell";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -499,9 +500,8 @@ describe("BrokerBackend.createSession", () => {
     const create = client.requests.find((request) => request.method === "create_session");
     const params = create?.params as { command: string[]; env: Array<[string, string]> };
     const workerArgs = ["wolfpack-agent", executable, "--no-extensions", "--extension", extension, "--model", model];
-    // Bash and zsh use different numbers of shell options before the script.
-    const shellCommand = params.command.at(-workerArgs.length - 1);
-    expect(params.command.slice(-workerArgs.length)).toEqual(workerArgs);
+    const shellCommand = params.command[2];
+    expect(params.command).toEqual([SHELL, "-lic", shellCommand, ...workerArgs]);
     expect(shellCommand).toContain('exec "$@"');
     expect(shellCommand).not.toContain(executable);
     expect(shellCommand).not.toContain(extension);

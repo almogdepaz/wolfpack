@@ -56,6 +56,13 @@ import {
   TASK_STATUS,
 } from "../tasks/domain.ts";
 import { RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../task-relay/domain.ts";
+import {
+  TASK_WORKER_POLICY_ENVIRONMENT_NAME_PATTERN,
+  TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
+  TASK_WORKER_POLICY_MAX_ENV_VALUE_LENGTH,
+  TASK_WORKER_POLICY_MAX_EXTENSION_PATH_LENGTH,
+  TASK_WORKER_POLICY_MAX_EXTENSIONS,
+} from "../task-worker-policy-contract.ts";
 import { volatileRelayDefinitions } from "./volatile-relay-schema.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
@@ -361,6 +368,32 @@ const providerIdentityProperties = {
   command: ref("Command"),
 } as const;
 
+const taskWorkerExtensionPathSchema = {
+  type: "string",
+  minLength: 1,
+  maxLength: TASK_WORKER_POLICY_MAX_EXTENSION_PATH_LENGTH,
+  pattern: "^/",
+} as const;
+
+const taskWorkerEnvironmentValueSchema = {
+  anyOf: [
+    { type: "string", maxLength: TASK_WORKER_POLICY_MAX_ENV_VALUE_LENGTH },
+    { type: "null" },
+  ],
+} as const;
+
+const taskWorkerEnvironmentSchema = {
+  type: "object",
+  maxProperties: TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
+  propertyNames: { pattern: TASK_WORKER_POLICY_ENVIRONMENT_NAME_PATTERN },
+  additionalProperties: taskWorkerEnvironmentValueSchema,
+} as const;
+
+const taskWorkerEnvironmentKeysSchema = {
+  ...arrayOf({ type: "string", pattern: TASK_WORKER_POLICY_ENVIRONMENT_NAME_PATTERN }),
+  maxItems: TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
+} as const;
+
 export const controlApiSource: ControlApiSource = {
   schemaVersion: CONTROL_API_SCHEMA_VERSION,
   artifactPath: CONTROL_API_SCHEMA_ARTIFACT,
@@ -405,8 +438,11 @@ export const controlApiSource: ControlApiSource = {
       type: "object",
       properties: {
         extensionPolicy: { enum: ["isolated", "inherit"] },
-        extensions: arrayOf({ type: "string", pattern: "^/" }),
-        env: { type: "object", additionalProperties: { anyOf: [{ type: "string" }, { type: "null" }] } },
+        extensions: {
+          ...arrayOf(taskWorkerExtensionPathSchema),
+          maxItems: TASK_WORKER_POLICY_MAX_EXTENSIONS,
+        },
+        env: taskWorkerEnvironmentSchema,
         piOptions: object({
           thinking: { anyOf: [{ enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }, { type: "null" }] },
           offline: { anyOf: [{ type: "boolean" }, { type: "null" }] },
@@ -417,8 +453,12 @@ export const controlApiSource: ControlApiSource = {
     },
     TaskWorkerPolicyDiagnostics: object({
       extensionPolicy: { enum: ["isolated", "inherit"] },
-      extensions: arrayOf({ type: "string", pattern: "^/" }),
-      envKeys: arrayOf(string()),
+      extensions: {
+        ...arrayOf(taskWorkerExtensionPathSchema),
+        // Diagnostics include mandatory Pi Tasks plus the configured optional extension ceiling.
+        maxItems: TASK_WORKER_POLICY_MAX_EXTENSIONS + 1,
+      },
+      envKeys: taskWorkerEnvironmentKeysSchema,
       piOptions: object({
         thinking: { enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
         offline: boolean(),
@@ -427,7 +467,12 @@ export const controlApiSource: ControlApiSource = {
       sources: object({
         extensionPolicy: { enum: ["default", "host", "project", "spawn"] },
         extensions: { enum: ["default", "host", "project", "spawn"] },
-        env: { type: "object", additionalProperties: { enum: ["default", "host", "project", "spawn"] } },
+        env: {
+          type: "object",
+          maxProperties: TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
+          propertyNames: { pattern: TASK_WORKER_POLICY_ENVIRONMENT_NAME_PATTERN },
+          additionalProperties: { enum: ["default", "host", "project", "spawn"] },
+        },
         piOptions: { type: "object", additionalProperties: { enum: ["default", "host", "project", "spawn"] } },
       }, ["extensionPolicy", "extensions", "env", "piOptions"]),
     }, ["extensionPolicy", "extensions", "envKeys", "piOptions", "sources"]),

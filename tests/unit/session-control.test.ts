@@ -1,9 +1,13 @@
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
   SESSION_EXIT,
   parseSessionCommand,
   resolveSessionOpenContext,
 } from "../../src/cli/session-control.ts";
+import { TASK_WORKER_POLICY_MAX_BYTES } from "../../src/task-worker-policy-contract.ts";
 
 function taskWorkerFailureCli(
   command: "create" | "spawn",
@@ -24,6 +28,42 @@ function taskWorkerFailureCli(
     process.exit(await ${invocation});
   `;
   return Bun.spawnSync([process.execPath, "-e", script], {
+    cwd: process.cwd(),
+    env: { ...process.env, NO_COLOR: "1" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+}
+
+function taskWorkerPolicyFileScript(policyPath: string): string {
+  return `
+    const target = {
+      kind: "remote",
+      origin: "https://target.example.ts.net",
+      machine: {
+        tailnetNodeId: "target-node",
+        installationId: "8304d924-0937-45d7-abba-3d7e29394cff",
+        displayName: "target",
+        origin: "https://target.example.ts.net",
+      },
+    };
+    let requestCount = 0;
+    globalThis.fetch = async () => {
+      requestCount += 1;
+      return Response.json({ ok: true, session: "worker", sessionId: "worker-id", project: "worktree", harness: "pi" });
+    };
+    const { runSessionCommand } = await import("./src/cli/session-control.ts");
+    const code = await runSessionCommand([
+      "create", "--project-dir", "/target/worktree", "--harness", "pi", "--task-worker",
+      "--task-worker-policy-file", ${JSON.stringify(policyPath)}, "--json",
+    ], target);
+    console.error(JSON.stringify({ requestCount }));
+    process.exit(code);
+  `;
+}
+
+function runTaskWorkerPolicyFile(policyPath: string): ReturnType<typeof Bun.spawnSync> {
+  return Bun.spawnSync([process.execPath, "-e", taskWorkerPolicyFileScript(policyPath)], {
     cwd: process.cwd(),
     env: { ...process.env, NO_COLOR: "1" },
     stdout: "pipe",
@@ -84,6 +124,140 @@ describe("session control cli parsing", () => {
         createdSession: { session: "worker", sessionId: "worker-id" },
         cleanup: "unconfirmed",
       });
+    }
+  });
+
+  test("forwards a local task-worker policy with target-only extension paths unchanged to the remote host", () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-session-control-policy-"));
+    const policyPath = join(root, "task-worker-policy.json");
+    const policy = { extensions: ["/target-only/extensions/worker-tools.ts"] };
+    const serializedPolicy = JSON.stringify(policy);
+    writeFileSync(policyPath, serializedPolicy + " ".repeat(TASK_WORKER_POLICY_MAX_BYTES - Buffer.byteLength(serializedPolicy)));
+    try {
+      const script = `
+        const target = {
+          kind: "remote",
+          origin: "https://target.example.ts.net",
+          machine: {
+            tailnetNodeId: "target-node",
+            installationId: "8304d924-0937-45d7-abba-3d7e29394cff",
+            displayName: "target",
+            origin: "https://target.example.ts.net",
+          },
+        };
+        const expected = ${JSON.stringify(policy)};
+        let requestCount = 0;
+        globalThis.fetch = async (url, init) => {
+          requestCount += 1;
+          if (String(url) !== "https://target.example.ts.net/api/session-create") process.exit(97);
+          const body = JSON.parse(String(init?.body));
+          if (JSON.stringify(body) !== JSON.stringify({
+            projectDir: "/target/worktree",
+            harness: "pi",
+            taskWorker: true,
+            taskWorkerPolicy: expected,
+          })) process.exit(98);
+          return Response.json({
+            ok: true,
+            session: "worker",
+            sessionId: "worker-id",
+            project: "worktree",
+            harness: "pi",
+          });
+        };
+        const { runSessionCommand } = await import("./src/cli/session-control.ts");
+        const code = await runSessionCommand([
+          "create",
+          "--project-dir", "/target/worktree",
+          "--harness", "pi",
+          "--task-worker",
+          "--task-worker-policy-file", ${JSON.stringify(policyPath)},
+          "--json",
+        ], target);
+        if (requestCount !== 1) process.exit(99);
+        process.exit(code);
+      `;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        cwd: process.cwd(),
+        env: { ...process.env, NO_COLOR: "1" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(child.stderr.toString()).toBe("");
+      expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects missing, nonregular, and oversized local task-worker policy files before fetch", () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-session-control-policy-file-"));
+    const missing = join(root, "missing.json");
+    const directory = join(root, "directory");
+    const oversized = join(root, "oversized.json");
+    mkdirSync(directory);
+    writeFileSync(oversized, "{}" + " ".repeat(TASK_WORKER_POLICY_MAX_BYTES - 1));
+    try {
+      for (const [path, code, exitCode] of [
+        [missing, "TASK_WORKER_POLICY_FILE_UNREADABLE", SESSION_EXIT.NOT_FOUND],
+        [directory, "TASK_WORKER_POLICY_FILE_INVALID", SESSION_EXIT.USAGE],
+        [oversized, "TASK_WORKER_POLICY_FILE_INVALID", SESSION_EXIT.USAGE],
+      ] as const) {
+        const child = runTaskWorkerPolicyFile(path);
+        expect(child.exitCode).toBe(exitCode);
+        expect(JSON.parse(child.stdout!.toString())).toMatchObject({ ok: false, error: { code } });
+        expect(JSON.parse(child.stderr!.toString())).toEqual({ requestCount: 0 });
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.getuid?.() === 0)("rejects an unreadable local task-worker policy file before fetch", () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-session-control-unreadable-"));
+    const policyPath = join(root, "unreadable.json");
+    writeFileSync(policyPath, "{}");
+    chmodSync(policyPath, 0);
+    try {
+      const child = runTaskWorkerPolicyFile(policyPath);
+      expect(child.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+      expect(JSON.parse(child.stdout!.toString())).toMatchObject({ ok: false, error: { code: "TASK_WORKER_POLICY_FILE_UNREADABLE" } });
+      expect(JSON.parse(child.stderr!.toString())).toEqual({ requestCount: 0 });
+    } finally {
+      chmodSync(policyPath, 0o600);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a FIFO local policy file before fetch and deadline", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-session-control-fifo-"));
+    const fifo = join(root, "policy.fifo");
+    expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
+    const child = Bun.spawn([process.execPath, "-e", taskWorkerPolicyFileScript(fifo)], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const exitCode = await Promise.race([
+      child.exited,
+      new Promise<"deadline">((resolve) => { deadline = setTimeout(() => resolve("deadline"), 500); }),
+    ]);
+    if (deadline) clearTimeout(deadline);
+    if (exitCode === "deadline") {
+      child.kill();
+      await child.exited;
+    }
+    const stdout = await new Response(child.stdout).text();
+    const stderr = await new Response(child.stderr).text();
+    try {
+      expect(exitCode, stderr).toBe(SESSION_EXIT.USAGE);
+      expect(JSON.parse(stdout)).toMatchObject({ ok: false, error: { code: "TASK_WORKER_POLICY_FILE_INVALID" } });
+      expect(JSON.parse(stderr)).toEqual({ requestCount: 0 });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

@@ -64,7 +64,6 @@ import {
   resolveAgentCommand,
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
-import { taskWorkerShellArgs } from "./task-worker-policy.js";
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
@@ -431,7 +430,6 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         ...(workerPiOptions.offline ? ["--offline"] : []),
         ...(workerPiOptions.verbose ? ["--verbose"] : []),
       ];
-      // Shell resources are intentionally disabled for task workers so they cannot overwrite configured worker env.
       shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
       commandArgs = [taskWorker.executable, ...workerPiArgs];
     } else {
@@ -474,20 +472,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       resp = await this.client.request("create_session", {
         name,
         cwd,
-        command: taskWorker === undefined
-          ? [
-            SHELL,
-            "-lic",
-            shellCmd,
-            ...(commandArgs.length > 0 ? ["wolfpack-agent", ...commandArgs] : []),
-          ]
-          : [
-            SHELL,
-            ...(taskWorker.shellArgs ?? taskWorkerShellArgs(SHELL)),
-            shellCmd,
-            "wolfpack-agent",
-            ...commandArgs,
-          ],
+        command: [
+          SHELL,
+          "-lic",
+          shellCmd,
+          ...(commandArgs.length > 0 ? ["wolfpack-agent", ...commandArgs] : []),
+        ],
         env,
         cols: DEFAULT_COLS,
         rows: DEFAULT_ROWS,

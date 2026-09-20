@@ -27,17 +27,19 @@ describe("task worker launch preflight", () => {
     const executable = join(root, "pi-real");
     const executableLink = join(root, "pi");
     const extension = join(root, "extension.ts");
+    const extensionLink = join(root, "extension-link.ts");
     writeFileSync(executable, "#!/bin/sh\nexit 0\n");
     chmodSync(executable, 0o755);
     symlinkSync(executable, executableLink);
     writeFileSync(extension, "export default function () {}\n");
+    symlinkSync(extension, extensionLink);
 
     expect(prepareTaskWorkerLaunch({
       WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executableLink,
-      WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: extension,
+      WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: extensionLink,
     })).toMatchObject({
       executable: executableLink,
-      extension,
+      extension: extensionLink,
       extensionPolicy: "isolated",
       extensions: [realpathSync(extension)],
       env: {},

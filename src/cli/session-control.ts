@@ -39,8 +39,9 @@ import type {
   SessionPromptWaitResult,
 } from "../session-prompt-contract.js";
 import { call as callApi } from "./api.js";
-import { parseTaskWorkerPolicyOverride } from "../server/task-worker-policy.js";
-import type { TaskWorkerPolicyDiagnostics, TaskWorkerPolicyOverride } from "../server/task-worker-policy.js";
+import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
+import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
+import type { TaskWorkerPolicyDiagnostics, TaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import type { VerifiedMachineTarget } from "./machine-target.js";
 import { print, printApiJson, printError, printJson, red, yellow } from "./formatting.js";
 
@@ -900,10 +901,19 @@ async function materializeTaskWorkerPolicy(
   output: OutputMode,
 ): Promise<TaskWorkerPolicyOverride | undefined | number> {
   if (policyFile === undefined) return undefined;
-  let raw: string;
+  let raw: string | undefined;
   try {
-    raw = await readFile(policyFile, "utf8");
-  } catch {
+    raw = readBoundedTaskWorkerPolicyFile(policyFile);
+  } catch (error: unknown) {
+    const invalid = error instanceof TaskWorkerPolicyFileError && error.code === "invalid";
+    return writeOpenError(
+      output,
+      invalid ? "TASK_WORKER_POLICY_FILE_INVALID" : "TASK_WORKER_POLICY_FILE_UNREADABLE",
+      invalid ? "invalid task-worker policy file" : "task-worker policy file not readable",
+      invalid ? SESSION_EXIT.USAGE : SESSION_EXIT.NOT_FOUND,
+    );
+  }
+  if (raw === undefined) {
     return writeOpenError(output, "TASK_WORKER_POLICY_FILE_UNREADABLE", "task-worker policy file not readable", SESSION_EXIT.NOT_FOUND);
   }
   try {

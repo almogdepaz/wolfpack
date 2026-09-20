@@ -3684,15 +3684,23 @@
           "type": "array",
           "items": {
             "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
             "pattern": "^/"
-          }
+          },
+          "maxItems": 32
         },
         "env": {
           "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
           "additionalProperties": {
             "anyOf": [
               {
-                "type": "string"
+                "type": "string",
+                "maxLength": 8192
               },
               {
                 "type": "null"
@@ -3761,14 +3769,19 @@
           "type": "array",
           "items": {
             "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
             "pattern": "^/"
-          }
+          },
+          "maxItems": 33
         },
         "envKeys": {
           "type": "array",
           "items": {
-            "type": "string"
-          }
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "maxItems": 64
         },
         "piOptions": {
           "type": "object",
@@ -3815,6 +3828,10 @@
             },
             "env": {
               "type": "object",
+              "maxProperties": 64,
+              "propertyNames": {
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
               "additionalProperties": {
                 "enum": [
                   "default",
