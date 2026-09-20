@@ -53,7 +53,9 @@ export const SESSION_EXIT = {
   BACKEND_UNAVAILABLE: 6,
 } as const;
 
-type OutputMode = "plain" | "json" | "shell";
+// Shell quoting is an output mode, independent of the shell harness taxonomy.
+const SHELL_OUTPUT_MODE = "shell";
+type OutputMode = "plain" | "json" | typeof SHELL_OUTPUT_MODE;
 
 export type ExistingProjectSelector =
   | { readonly kind: "project"; readonly project: string; readonly projectDir?: never }
@@ -294,7 +296,7 @@ function consumeLaunchValue(args: string[], flag: string): string | null {
 function parseOutputMode(args: string[]): { mode: OutputMode; shellRequested: boolean } {
   const json = consumeFlag(args, "--json");
   const shell = consumeFlag(args, "--shell");
-  return { mode: shell ? "shell" : json ? "json" : "plain", shellRequested: shell };
+  return { mode: shell ? SHELL_OUTPUT_MODE : json ? "json" : "plain", shellRequested: shell };
 }
 
 function parseExistingProjectSelector(
@@ -1049,7 +1051,7 @@ async function runCurrentContext(
     }
     const context = { ok: true, verified: true, sessionId, session, projectDir, harness };
     if (parsed.output === "json") jsonOut(context);
-    else if (parsed.output === "shell") {
+    else if (parsed.output === SHELL_OUTPUT_MODE) {
       for (const [key, value] of [["WOLFPACK_SESSION_ID", sessionId], ["WOLFPACK_SESSION_NAME", session], ["WOLFPACK_PROJECT_DIR", projectDir], ["WOLFPACK_AGENT_KIND", harness]] as const) {
         process.stdout.write(`${key}=${shellQuote(value)}\n`);
       }
