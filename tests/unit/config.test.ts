@@ -80,16 +80,16 @@ describe("hasUninstallConfirmationFlag", () => {
 describe("parseServiceCommand", () => {
   test("parses every accepted service action", () => {
     for (const action of ["install", "uninstall", "stop", "start", "restart", "status"] as const) {
-      expect(parseServiceCommand([action])).toEqual({ action, broker: false, serverOnly: false });
-      expect(parseServiceCommand([action, "--broker"])).toEqual({ action, broker: true, serverOnly: false });
+      expect(parseServiceCommand([action])).toEqual({ action, broker: false, preserveRunningBroker: false, serverOnly: false });
+      expect(parseServiceCommand([action, "--broker"])).toEqual({ action, broker: true, preserveRunningBroker: false, serverOnly: false });
     }
     expect(parseServiceCommand(["restart", "--server-only"]))
-      .toEqual({ action: "restart", broker: false, serverOnly: true });
+      .toEqual({ action: "restart", broker: false, preserveRunningBroker: false, serverOnly: true });
   });
 
   test("treats duplicate broker flags as idempotent", () => {
     expect(parseServiceCommand(["restart", "--broker", "--broker"]))
-      .toEqual({ action: "restart", broker: true, serverOnly: false });
+      .toEqual({ action: "restart", broker: true, preserveRunningBroker: false, serverOnly: false });
   });
 
   test("rejects server-only outside restart or together with broker", () => {

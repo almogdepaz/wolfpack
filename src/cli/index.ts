@@ -22,6 +22,7 @@ import {
   isPackageRunnerPairExecutable,
   replacePackageRunnerPair,
   activatePackageRunnerPair,
+  activateManagedServicePair,
   updateStableBinary,
   uninstall,
 } from "./service.js";
@@ -73,6 +74,7 @@ export function hasUninstallConfirmationFlag(argv: string[]): boolean {
 
 const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 const SERVICE_USAGE = `Usage: wolfpack service [install|uninstall|start|stop|restart|status] [--broker]
+       wolfpack service install --preserve-running-broker
        wolfpack service restart --server-only`;
 
 export function topLevelUsage(): string {
@@ -141,12 +143,15 @@ export function parseSetupOptions(argv: readonly string[]): ParsedSetupOptions |
 async function runSetup(args: readonly string[] = []): Promise<void> {
   const options = parseSetupOptions(args);
   if (!options) throw new Error(`invalid setup options. ${setupUsage()}`);
+  const { assertSetupInteraction, setup } = await import("./setup.js");
+  assertSetupInteraction(options);
   const packageReplacement = replacePackageRunnerPair();
   const serviceNeedsActivation = packageReplacement.replaced && packageReplacement.hadServices;
-  const { setup } = await import("./setup.js");
   await setup({
     ...options,
-    ...(packageReplacement.hadServices && { deferServiceRestart: true }),
+    ...((packageReplacement.replaced || !isServiceInstalled())
+      && packageReplacement.hadServices
+      && { deferServiceRestart: true }),
   });
   if (serviceNeedsActivation) activatePackageRunnerPair();
 }
@@ -160,6 +165,7 @@ export type ServiceCommandAction = "install" | "uninstall" | "stop" | "start" | 
 export interface ParsedServiceCommand {
   readonly action: ServiceCommandAction;
   readonly broker: boolean;
+  readonly preserveRunningBroker: boolean;
   readonly serverOnly: boolean;
 }
 
@@ -167,11 +173,13 @@ export function parseServiceCommand(argv: readonly string[]): ParsedServiceComma
   const [action, ...flags] = argv;
   if (!action) return null;
   if (!["install", "uninstall", "stop", "start", "restart", "status"].includes(action)) return null;
-  if (flags.some(flag => flag !== "--broker" && flag !== "--server-only")) return null;
+  if (flags.some(flag => flag !== "--broker" && flag !== "--preserve-running-broker" && flag !== "--server-only")) return null;
   const broker = flags.includes("--broker");
+  const preserveRunningBroker = flags.includes("--preserve-running-broker");
   const serverOnly = flags.includes("--server-only");
   if (serverOnly && (action !== "restart" || broker)) return null;
-  return { action: action as ServiceCommandAction, broker, serverOnly };
+  if (preserveRunningBroker && (action !== "install" || broker)) return null;
+  return { action: action as ServiceCommandAction, broker, preserveRunningBroker, serverOnly };
 }
 
 async function start() {
@@ -284,7 +292,8 @@ function runServiceCommand(argv: readonly string[]): void {
   }
   if (serviceCommand.action === "install") {
     if (!isPackageRunnerPairExecutable(process.execPath)) {
-      serviceInstall();
+      if (serviceCommand.preserveRunningBroker) activateManagedServicePair({ preserveRunningBroker: true });
+      else serviceInstall();
       return;
     }
     const packageReplacement = replacePackageRunnerPair();
@@ -293,7 +302,9 @@ function runServiceCommand(argv: readonly string[]): void {
   }
   else if (serviceCommand.action === "uninstall") serviceUninstall();
   else if (serviceCommand.action === "stop") serviceStop(serviceCommand.broker ? { broker: true } : {});
-  else if (serviceCommand.action === "start") serviceStart();
+  else if (serviceCommand.action === "start") {
+    if (!serviceStart()) process.exitCode = 1;
+  }
   else if (serviceCommand.action === "restart") {
     const restarted = serviceCommand.serverOnly
       ? serviceRestart({ broker: false, skipBrokerSessionWarning: true })

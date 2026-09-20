@@ -13,7 +13,9 @@ import { homedir, tmpdir } from "node:os";
 
 const fs = await import("node:fs");
 const originalCopyFileSync = fs.copyFileSync;
+const originalChmodSync = fs.chmodSync;
 let failedCopyDestination: string | undefined;
+let failedChmodDestination: string | undefined;
 let ttyConsent = false;
 let ttyInput = "y";
 let ttyWrites = "";
@@ -23,6 +25,10 @@ await mock.module("node:fs", () => ({
   copyFileSync: mock((source, destination, mode) => {
     if (destination === failedCopyDestination) throw new Error("fixture server copy failed");
     return originalCopyFileSync(source, destination, mode);
+  }),
+  chmodSync: mock((path, mode) => {
+    if (path === failedChmodDestination) throw new Error("fixture server chmod failed");
+    return originalChmodSync(path, mode);
   }),
   openSync: mock(() => {
     if (!ttyConsent) throw new Error("fixture has no controlling tty");
@@ -497,6 +503,42 @@ describe.serial("package-runner pair staging", () => {
       expect(readFileSync(join(homedir(), ".config", "systemd", "user", "wolfpack.service"), "utf-8"))
         .toContain("ExecStart=\"" + stableServer + "\"");
     } finally {
+      Object.defineProperty(process, "execPath", { configurable: true, value: originalExecPath });
+      serviceActive = false;
+      brokerActive = true;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test.each(["copy", "chmod"] as const)("does not advertise stale direct staging after %s failure", (operation) => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-stable-server-failure-"));
+    const newerServer = join(root, "wolfpack");
+    const stableDir = join(homedir(), ".wolfpack", "bin");
+    const stableServer = join(stableDir, "wolfpack");
+    const stableBroker = join(stableDir, "wolfpack-broker");
+    const originalExecPath = process.execPath;
+    const lines: string[] = [];
+    const output = spyOn(process.stdout, "write").mockImplementation((chunk) => { lines.push(String(chunk)); return true; });
+    try {
+      mkdirSync(stableDir, { recursive: true });
+      writeFileSync(newerServer, "new server\\n");
+      chmodSync(newerServer, 0o755);
+      writeFileSync(stableServer, "old server\\n");
+      writeFileSync(stableBroker, "broker\\n");
+      serviceActive = false;
+      brokerActive = false;
+      execCommands.length = 0;
+      Object.defineProperty(process, "execPath", { configurable: true, value: newerServer });
+      if (operation === "copy") failedCopyDestination = stableServer;
+      else failedChmodDestination = stableServer;
+
+      expect(() => serviceInstall()).toThrow("Failed to stage executable from " + newerServer + " to " + stableServer);
+      expect(lines.join("")).not.toContain("Wolfpack service installed and started.");
+      expect(systemdLifecycleCommands()).toEqual([]);
+    } finally {
+      output.mockRestore();
+      failedCopyDestination = undefined;
+      failedChmodDestination = undefined;
       Object.defineProperty(process, "execPath", { configurable: true, value: originalExecPath });
       serviceActive = false;
       brokerActive = true;

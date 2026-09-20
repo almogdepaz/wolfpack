@@ -339,53 +339,94 @@ function runPipedInstallerWithTty(
   const python = Bun.which("python3");
   if (!python) throw new Error("missing Python required for the controlling-TTY fixture");
   const harness = String.raw`
-import os, pty, select, signal, sys, time
+import errno, os, pty, select, signal, sys, time
 pid, fd = pty.fork()
 if pid == 0:
     os.chdir(sys.argv[1])
     os.execvp("bash", ["bash", "-c", "printf 'installer\\n' | bash install.sh > \"$INSTALL_TEST_TTY_STDOUT\""])
 output = b""
-deadline = time.monotonic() + 3
+pty_open = True
+normalize_post_consent_eof = False
 
-def timeout():
+def reap_until(deadline):
+    while time.monotonic() < deadline:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done: return status
+        time.sleep(0.01)
+    return None
+
+def terminate_and_reap():
     try: os.killpg(pid, signal.SIGTERM)
     except ProcessLookupError: pass
-    while time.monotonic() < deadline + 1:
-        done, status = os.waitpid(pid, os.WNOHANG)
-        if done:
-            sys.stdout.buffer.write(output)
-            print("controlling TTY fixture timed out", file=sys.stderr)
-            raise SystemExit(124)
-        time.sleep(0.01)
+    status = reap_until(time.monotonic() + 1)
+    if status is not None: return status
     try: os.killpg(pid, signal.SIGKILL)
     except ProcessLookupError: pass
     _, status = os.waitpid(pid, 0)
-    sys.stdout.buffer.write(output)
-    print("controlling TTY fixture timed out", file=sys.stderr)
-    raise SystemExit(124)
+    return status
 
+def finalize(status, *, exit_code=None, read_error=None):
+    sys.stdout.buffer.write(output)
+    if read_error is not None:
+        print(f"controlling TTY read failed: {read_error}", file=sys.stderr)
+        raise read_error
+    if exit_code is not None:
+        print("controlling TTY fixture timed out", file=sys.stderr)
+        raise SystemExit(exit_code)
+    raise SystemExit(os.waitstatus_to_exitcode(status))
+
+def read_pty():
+    global output
+    try:
+        chunk = os.read(fd, 4096)
+        if not chunk and normalize_post_consent_eof:
+            raise OSError(errno.EIO, "normalized PTY EOF")
+    except OSError as error:
+        if error.errno == errno.EIO: return False
+        raise
+    if not chunk: return False
+    output += chunk
+    return True
+
+def capture_ready(timeout):
+    global pty_open
+    if not pty_open: return False
+    ready, _, _ = select.select([fd], [], [], timeout)
+    if not ready: return False
+    pty_open = read_pty()
+    return True
+
+def drain_after_exit(status):
+    try:
+        while pty_open and time.monotonic() < deadline and capture_ready(0): pass
+    except OSError as error:
+        finalize(status, read_error=error)
+    if pty_open and time.monotonic() >= deadline:
+        finalize(status, exit_code=124)
+    finalize(status)
+
+def timeout():
+    finalize(terminate_and_reap(), exit_code=124)
+
+def fail_read(error):
+    finalize(terminate_and_reap(), read_error=error)
+
+deadline = time.monotonic() + 3
 while b"Continue with session loss? [y/N]" not in output:
     if time.monotonic() >= deadline: timeout()
-    ready, _, _ = select.select([fd], [], [], 0.1)
-    if ready:
-        try: output += os.read(fd, 4096)
-        except OSError: pass
+    try: capture_ready(0.1)
+    except OSError as error: fail_read(error)
     done, status = os.waitpid(pid, os.WNOHANG)
-    if done:
-        sys.stdout.buffer.write(output)
-        raise SystemExit(os.waitstatus_to_exitcode(status))
+    if done: drain_after_exit(status)
 os.write(fd, b"y\r")
 deadline = time.monotonic() + 3
+normalize_post_consent_eof = os.environ.get("INSTALL_TEST_NORMALIZE_PTY_EOF") == "1"
 while True:
     if time.monotonic() >= deadline: timeout()
-    ready, _, _ = select.select([fd], [], [], 0.1)
-    if ready:
-        try: output += os.read(fd, 4096)
-        except OSError: break
+    try: capture_ready(0.1)
+    except OSError as error: fail_read(error)
     done, status = os.waitpid(pid, os.WNOHANG)
-    if done:
-        sys.stdout.buffer.write(output)
-        raise SystemExit(os.waitstatus_to_exitcode(status))
+    if done: drain_after_exit(status)
 `;
   return spawnSync(python, ["-c", harness, process.cwd()], {
     encoding: "utf-8",
@@ -412,6 +453,65 @@ function prepareInstalledServices(fixture: ReturnType<typeof prepareFixture>): v
   }));
   writeFileSync(`${fixture.serviceState}.server`, "active\n");
   writeFileSync(`${fixture.serviceState}.broker`, "active\n");
+}
+
+function prepareMatchingMacOsCliActivation(fixture: ReturnType<typeof prepareFixture>): string {
+  const macServiceLog = join(fixtureRoot, "mac-service.log");
+  const macServerState = join(fixtureRoot, "mac-server-active");
+  const macBrokerState = join(fixtureRoot, "mac-broker-active");
+  const preload = join(fixtureRoot, "mac-service-preload.ts");
+  const launchctl = join(fixture.bin, "launchctl");
+  const server = `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '%s\\n' "$INSTALL_TEST_RELEASE_VERSION"; exit 0; fi
+exec ${JSON.stringify(process.execPath)} --preload ${JSON.stringify(preload)} ${JSON.stringify(join(process.cwd(), "src", "cli", "index.ts"))} "$@"
+`;
+  const broker = "#!/bin/sh\nexit 0\n";
+  const checksum = (content: string): string => createHash("sha256").update(content).digest("hex");
+  writeFileSync(macServiceLog, "");
+  writeFileSync(macBrokerState, "active\n");
+  writeExecutable(launchctl, `#!/bin/sh
+printf '%s\\n' "$*" >> "$INSTALL_TEST_MAC_SERVICE_LOG"
+case "$1" in
+  print)
+    case "$2" in
+      *com.wolfpack.server) state="$INSTALL_TEST_MAC_SERVER_STATE" ;;
+      *com.wolfpack.broker) state="$INSTALL_TEST_MAC_BROKER_STATE" ;;
+    esac
+    [ -f "$state" ] && printf 'pid = 123\\n' || exit 113
+    ;;
+  bootout)
+    case "$2" in
+      *com.wolfpack.server) rm -f "$INSTALL_TEST_MAC_SERVER_STATE" ;;
+      *com.wolfpack.broker) rm -f "$INSTALL_TEST_MAC_BROKER_STATE" ;;
+    esac
+    ;;
+  kickstart)
+    case "$2" in
+      *com.wolfpack.server) [ "$INSTALL_TEST_MAC_SKIP_SERVER_START" = "1" ] || { touch "$INSTALL_TEST_MAC_SERVER_STATE"; touch "\${INSTALL_TEST_SERVICE_STATE}.server"; } ;;
+      *com.wolfpack.broker) touch "$INSTALL_TEST_MAC_BROKER_STATE" ;;
+    esac
+    ;;
+esac
+`);
+  writeFileSync(preload, `
+    import { mock } from "bun:test";
+    import { join } from "node:path";
+    const config = await import(${JSON.stringify(join(process.cwd(), "src", "cli", "config.ts"))});
+    await mock.module(${JSON.stringify(join(process.cwd(), "src", "cli", "config.ts"))}, () => ({
+      ...config,
+      WOLFPACK_DIR: join(process.env.HOME!, ".wolfpack"),
+      IS_MACOS: true,
+      IS_LINUX: false,
+      isPortInUse: () => false,
+      waitForPortFree: () => undefined,
+    }));
+  `);
+  writeExecutable(fixture.serverAsset, server);
+  writeExecutable(fixture.brokerAsset, broker);
+  writeExecutable(join(fixture.installDir, "wolfpack"), server);
+  writeExecutable(join(fixture.installDir, "wolfpack-broker"), broker);
+  writeFileSync(fixture.checksums, `${checksum(server)}  wolfpack-linux-x64\n${checksum(broker)}  wolfpack-broker-linux-x64\n`);
+  return macServiceLog;
 }
 
 const setsidLookup = process.platform === "linux"
@@ -744,12 +844,12 @@ describe("install.sh release binary staging", () => {
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(readFileSync(fixture.commandLog, "utf-8").trim().split("\n")).toEqual([
       "setup --defer-service-restart",
-      "service install",
+      "service install --preserve-running-broker",
     ]);
     expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
   });
 
-  test("a matching pair defers setup with changed descriptor-backed configuration without lifecycle commands", () => {
+  test("a matching pair runs setup without implicit restart deferral", () => {
     const fixture = prepareFixture();
     const initial = runInstaller(fixture);
     expect(initial.status).toBe(0);
@@ -764,7 +864,7 @@ describe("install.sh release binary staging", () => {
     const result = runInstallerWithSetup(fixture);
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(readFileSync(fixture.commandLog, "utf-8")).toBe("setup --defer-service-restart\n");
+    expect(readFileSync(fixture.commandLog, "utf-8")).toBe("setup\n");
     expect(readFileSync(fixture.serviceLog, "utf-8")).not.toMatch(/--user (stop|start|restart)/);
   }, 10_000);
 
@@ -815,7 +915,7 @@ describe("install.sh release binary staging", () => {
     expect(result.status).not.toBe(0);
     expect(readFileSync(fixture.commandLog, "utf-8").trim().split("\n")).toEqual([
       "setup --defer-service-restart",
-      "service install",
+      "service install --preserve-running-broker",
     ]);
   });
 
@@ -837,10 +937,45 @@ describe("install.sh release binary staging", () => {
     const retry = runInstaller(fixture, { WOLFPACK_INSTALL_RETRY_ACTIVATION: "1" });
 
     expect(retry.status, `${retry.stdout}\n${retry.stderr}`).toBe(0);
-    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service install");
+    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service install --preserve-running-broker");
     expect(existsSync(`${fixture.serviceState}.server`)).toBe(true);
     expect(existsSync(`${fixture.serviceState}.broker`)).toBe(true);
     expect(readFileSync(fixture.serviceLog, "utf-8")).not.toContain("--user stop");
+  });
+
+  test("curl activation retry preserves a live macOS broker through the real CLI service boundary", () => {
+    const fixture = prepareFixture();
+    prepareInstalledServices(fixture);
+    const macServiceLog = prepareMatchingMacOsCliActivation(fixture);
+    rmSync(`${fixture.serviceState}.server`);
+
+    const retry = runInstaller(fixture, {
+      WOLFPACK_INSTALL_RETRY_ACTIVATION: "1",
+      INSTALL_TEST_MAC_SERVICE_LOG: macServiceLog,
+      INSTALL_TEST_MAC_SERVER_STATE: join(fixtureRoot, "mac-server-active"),
+      INSTALL_TEST_MAC_BROKER_STATE: join(fixtureRoot, "mac-broker-active"),
+    });
+
+    const userId = process.getuid?.();
+    if (userId === undefined) throw new Error("macOS launchctl fixture requires process.getuid()");
+
+    expect(retry.status, `${retry.stdout}\n${retry.stderr}`).toBe(0);
+    expect(readFileSync(macServiceLog, "utf-8")).not.toContain(`bootout gui/${userId}/com.wolfpack.broker`);
+    expect(existsSync(join(fixtureRoot, "mac-broker-active"))).toBe(true);
+    expect(existsSync(join(fixtureRoot, "mac-server-active"))).toBe(true);
+
+    rmSync(join(fixtureRoot, "mac-server-active"));
+    rmSync(`${fixture.serviceState}.server`);
+    const failedActivation = runInstaller(fixture, {
+      WOLFPACK_INSTALL_RETRY_ACTIVATION: "1",
+      INSTALL_TEST_MAC_SERVICE_LOG: macServiceLog,
+      INSTALL_TEST_MAC_SERVER_STATE: join(fixtureRoot, "mac-server-active"),
+      INSTALL_TEST_MAC_BROKER_STATE: join(fixtureRoot, "mac-broker-active"),
+      INSTALL_TEST_MAC_SKIP_SERVER_START: "1",
+    });
+
+    expect(failedActivation.status).not.toBe(0);
+    expect(String(failedActivation.stdout)).toContain("WOLFPACK_INSTALL_RETRY_ACTIVATION=\"1\"");
   });
 
   test("a skip-setup upgrade activates both replacement services through the managed binary", () => {
@@ -851,7 +986,7 @@ describe("install.sh release binary staging", () => {
 
     expect(result.status).toBe(0);
     expect(String(result.stdout).match(/Warning: broker-owned sessions will end/g)).toHaveLength(1);
-    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service install");
+    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service install --preserve-running-broker");
   });
 
   test("downloads and installs the matching wolfpack and broker assets from latest by default", () => {
@@ -1003,6 +1138,22 @@ describe("install.sh release binary staging", () => {
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("Continue with session loss?");
+    expect(readFileSync(fixture.ttyStdout, "utf-8").match(/Warning: broker-owned sessions will end/g)).toHaveLength(1);
+    expect(readFileSync(fixture.commandLog, "utf-8")).toContain("service install");
+  });
+
+  test("preserves controlling-TTY output and activation failure after normalized PTY EOF", () => {
+    const fixture = prepareFixture();
+    prepareInstalledServices(fixture);
+
+    const result = runPipedInstallerWithTty(fixture, {
+      INSTALL_TEST_FAIL_ACTIVATION: "1",
+      INSTALL_TEST_NORMALIZE_PTY_EOF: "1",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(result.stdout, String(result.stderr)).toContain("Continue with session loss?");
     expect(readFileSync(fixture.ttyStdout, "utf-8").match(/Warning: broker-owned sessions will end/g)).toHaveLength(1);
     expect(readFileSync(fixture.commandLog, "utf-8")).toContain("service install");
   });

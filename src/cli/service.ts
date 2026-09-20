@@ -91,7 +91,9 @@ function programArgs(): string[] {
       chmodSync(stableBin, 0o755);
       return [stableBin];
     } catch (error: unknown) {
-      log.warn("programArgs: failed to copy binary to stable location", { error: errMsg(error) });
+      const message = `Failed to stage executable from ${exe} to ${stableBin}: ${errMsg(error)}`;
+      log.warn("programArgs: failed to stage binary", { executable: exe, stableBin, error: errMsg(error) });
+      throw new Error(message, { cause: error });
     }
   }
   return existsSync(stableBin) ? [stableBin] : [exe];
@@ -298,10 +300,7 @@ export function replacePackageRunnerPair(executable: string = process.execPath):
 
 export function activatePackageRunnerPair(): void {
   try {
-    serviceInstall({ failureMode: "throw", preserveRunningBroker: true });
-    if (!isServiceRunning() || !isBrokerServiceRunning()) {
-      throw new Error("managed service activation did not start both server and broker");
-    }
+    activateManagedServicePair({ preserveRunningBroker: true });
   } catch (error: unknown) {
     print(red(`  Package pair activation failed: ${errMsg(error)}`));
     print(dim(`  Reinstall: ${packageRetryCommand()}`));
@@ -357,10 +356,11 @@ ${envEntries}
 
 export function generatePlist(
   serviceAuthPath: string | undefined = existsSync(SERVICE_AUTH_PATH) ? SERVICE_AUTH_PATH : undefined,
+  args: readonly string[] = programArgs(),
 ): string {
   return renderPlist(
     loadConfig(),
-    programArgs(),
+    [...args],
     join(homedir(), ".wolfpack", "wolfpack.log"),
     serviceAuthPath,
   );
@@ -401,8 +401,9 @@ WantedBy=default.target
 
 export function generateSystemdUnit(
   serviceAuthPath: string | undefined = existsSync(SERVICE_AUTH_PATH) ? SERVICE_AUTH_PATH : undefined,
+  args: readonly string[] = programArgs(),
 ): string {
-  return renderSystemdUnit(loadConfig(), programArgs(), serviceAuthPath);
+  return renderSystemdUnit(loadConfig(), [...args], serviceAuthPath);
 }
 
 // ── Broker service file renderers ──────────────────────────────────────────
@@ -537,13 +538,7 @@ export function ensureBrokerBinary(): string | null {
 }
 
 interface ServiceInstallOptions {
-  readonly failureMode?: "exit" | "throw";
   readonly preserveRunningBroker?: boolean;
-}
-
-function failServiceInstall(options: ServiceInstallOptions): never {
-  if (options.failureMode === "throw") throw new Error("service installation failed");
-  process.exit(1);
 }
 
 /** Install the broker as a service (launchd / systemd). Must run before
@@ -552,12 +547,9 @@ function brokerServiceInstall(options: ServiceInstallOptions = {}): void {
   const preserveRunningBroker = options.preserveRunningBroker === true && isBrokerServiceRunning();
   const brokerBin = ensureBrokerBinary();
   if (!brokerBin) {
-    print(red("  Could not locate wolfpack-broker binary."));
-    print(dim("  Expected one of:"));
-    print(dim(`    - ${STABLE_BROKER_PATH} (already-installed)`));
-    print(dim(`    - co-located with the wolfpack binary`));
-    print(dim(`    - ./broker/target/release/wolfpack-broker (dev tree, run \`cargo build --release --manifest-path broker/Cargo.toml\`)`));
-    failServiceInstall(options);
+    throw new Error(
+      `Could not locate wolfpack-broker binary. Expected ${STABLE_BROKER_PATH} (already-installed), a co-located wolfpack-broker binary, or ./broker/target/release/wolfpack-broker (run \`cargo build --release --manifest-path broker/Cargo.toml\`).`,
+    );
   }
 
   if (IS_MACOS) {
@@ -566,15 +558,13 @@ function brokerServiceInstall(options: ServiceInstallOptions = {}): void {
       writeFileSync(BROKER_PLIST_PATH, renderBrokerPlist(brokerBin, BROKER_LOG_PATH));
     } catch (e: unknown) {
       log.error("failed to write broker plist", { error: errMsg(e) });
-      print(red(`  Failed to write broker plist: ${errMsg(e)}`));
-      failServiceInstall(options);
+      throw new Error(`Failed to write broker plist: ${errMsg(e)}`, { cause: e });
     }
     if (!preserveRunningBroker) {
       launchdBootoutBroker();
       try { launchdBootstrapBroker(); } catch (e: unknown) {
         log.error("broker launchctl bootstrap failed", { error: errMsg(e) });
-        print(red(`  Failed to register broker with launchd: ${errMsg(e)}`));
-        failServiceInstall(options);
+        throw new Error(`Failed to register broker with launchd: ${errMsg(e)}`, { cause: e });
       }
     }
     print(dim(`  Broker plist: ${BROKER_PLIST_PATH}`));
@@ -584,8 +574,7 @@ function brokerServiceInstall(options: ServiceInstallOptions = {}): void {
       writeFileSync(BROKER_SYSTEMD_PATH, renderBrokerSystemdUnit(brokerBin));
     } catch (e: unknown) {
       log.error("failed to write broker systemd unit", { error: errMsg(e) });
-      print(red(`  Failed to write broker unit: ${errMsg(e)}`));
-      failServiceInstall(options);
+      throw new Error(`Failed to write broker unit: ${errMsg(e)}`, { cause: e });
     }
     try {
       execSync("systemctl --user daemon-reload");
@@ -593,8 +582,7 @@ function brokerServiceInstall(options: ServiceInstallOptions = {}): void {
       if (!preserveRunningBroker) execSync(`systemctl --user start ${BROKER_SYSTEMD_SERVICE}`);
     } catch (e: unknown) {
       log.error("broker systemctl enable/start failed", { error: errMsg(e) });
-      print(red(`  Failed to enable/start broker: ${errMsg(e)}`));
-      failServiceInstall(options);
+      throw new Error(`Failed to enable/start broker: ${errMsg(e)}`, { cause: e });
     }
     print(dim(`  Broker unit:  ${BROKER_SYSTEMD_PATH}`));
   }
@@ -744,16 +732,22 @@ function configureLinger(): void {
   }
 }
 
+export function activateManagedServicePair(options: ServiceInstallOptions = {}): void {
+  serviceInstall(options);
+  if (!isServiceRunning() || !isBrokerServiceRunning()) {
+    throw new Error("managed service activation did not start both server and broker");
+  }
+}
+
 export function serviceInstall(options: ServiceInstallOptions = {}): void {
   if (IS_MACOS) {
     rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
     rotateLogFile(BROKER_LOG_PATH);
   }
   const config = loadConfig();
-  if (!config) {
-    print(red("  Run 'wolfpack setup' first."));
-    failServiceInstall(options);
-  }
+  if (!config) throw new Error("Run 'wolfpack setup' first.");
+
+  const serviceArgs = programArgs();
 
   let serviceAuthPath: string | undefined;
   try {
@@ -761,8 +755,7 @@ export function serviceInstall(options: ServiceInstallOptions = {}): void {
     if (authState !== "absent") serviceAuthPath = SERVICE_AUTH_PATH;
   } catch (e: unknown) {
     log.error("failed to prepare service authentication", { error: errMsg(e) });
-    print(red(`  Failed to install service authentication: ${errMsg(e)}`));
-    failServiceInstall(options);
+    throw new Error(`Failed to install service authentication: ${errMsg(e)}`, { cause: e });
   }
 
   if (isServiceRunning()) {
@@ -777,82 +770,67 @@ export function serviceInstall(options: ServiceInstallOptions = {}): void {
   brokerServiceInstall(options);
 
   if (IS_MACOS) {
-    const plist = generatePlist(serviceAuthPath);
+    const plist = generatePlist(serviceAuthPath, serviceArgs);
     try {
       mkdirSync(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
     } catch (e: unknown) {
       log.error("failed to create LaunchAgents directory", { error: errMsg(e) });
-      print(red(`  Failed to create ~/Library/LaunchAgents: ${errMsg(e)}`));
-      failServiceInstall(options);
+      throw new Error(`Failed to create ~/Library/LaunchAgents: ${errMsg(e)}`, { cause: e });
     }
     try {
       writeFileSync(PLIST_PATH, plist);
     } catch (e: unknown) {
       log.error("failed to write plist", { path: PLIST_PATH, error: errMsg(e) });
-      print(red(`  Failed to write plist: ${errMsg(e)}`));
-      print(dim("  Check permissions on ~/Library/LaunchAgents or run with sudo."));
-      failServiceInstall(options);
+      throw new Error(`Failed to write plist: ${errMsg(e)}. Check permissions on ~/Library/LaunchAgents or run with sudo.`, { cause: e });
     }
     launchdBootout();
     try {
       launchdBootstrap();
     } catch (e: unknown) {
       log.error("launchctl bootstrap failed", { error: errMsg(e) });
-      print(red(`  Failed to register service with launchd: ${errMsg(e)}`));
-      print(dim("  The plist was written but launchctl bootstrap/kickstart failed."));
-      print(dim(`  Try manually: launchctl bootstrap gui/$(id -u) "${PLIST_PATH}"`));
-      failServiceInstall(options);
+      throw new Error(`Failed to register service with launchd: ${errMsg(e)}. The plist was written but launchctl bootstrap/kickstart failed. Try manually: launchctl bootstrap gui/$(id -u) "${PLIST_PATH}"`, { cause: e });
     }
     print("");
     print(green("  Wolfpack service installed and started."));
     print(dim(`  Plist: ${PLIST_PATH}`));
   } else if (IS_LINUX) {
-    const unit = generateSystemdUnit(serviceAuthPath);
+    const unit = generateSystemdUnit(serviceAuthPath, serviceArgs);
     try {
       mkdirSync(join(homedir(), ".config", "systemd", "user"), { recursive: true });
     } catch (e: unknown) {
       log.error("failed to create systemd user directory", { error: errMsg(e) });
-      print(red(`  Failed to create ~/.config/systemd/user: ${errMsg(e)}`));
-      failServiceInstall(options);
+      throw new Error(`Failed to create ~/.config/systemd/user: ${errMsg(e)}`, { cause: e });
     }
     try {
       writeFileSync(SYSTEMD_PATH, unit);
     } catch (e: unknown) {
       log.error("failed to write systemd unit", { path: SYSTEMD_PATH, error: errMsg(e) });
-      print(red(`  Failed to write unit file: ${errMsg(e)}`));
-      print(dim("  Check permissions on ~/.config/systemd/user/."));
-      failServiceInstall(options);
+      throw new Error(`Failed to write unit file: ${errMsg(e)}. Check permissions on ~/.config/systemd/user/.`, { cause: e });
     }
     try {
       execSync("systemctl --user daemon-reload");
     } catch (e: unknown) {
       log.error("systemctl daemon-reload failed", { error: errMsg(e) });
-      print(red(`  Failed to reload systemd: ${errMsg(e)}`));
-      print(dim("  Is systemd --user running? Check: systemctl --user status"));
-      failServiceInstall(options);
+      throw new Error(`Failed to reload systemd: ${errMsg(e)}. Is systemd --user running? Check: systemctl --user status`, { cause: e });
     }
     try {
       execSync(`systemctl --user enable ${SYSTEMD_SERVICE}`);
     } catch (e: unknown) {
       log.error("systemctl enable failed", { error: errMsg(e) });
-      print(red(`  Failed to enable service: ${errMsg(e)}`));
-      failServiceInstall(options);
+      throw new Error(`Failed to enable service: ${errMsg(e)}`, { cause: e });
     }
     try {
       execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
     } catch (e: unknown) {
       log.error("systemctl start failed", { error: errMsg(e) });
-      print(red(`  Failed to start service: ${errMsg(e)}`));
-      print(dim(`  Check logs: journalctl --user -u ${SYSTEMD_SERVICE}`));
-      failServiceInstall(options);
+      throw new Error(`Failed to start service: ${errMsg(e)}. Check logs: journalctl --user -u ${SYSTEMD_SERVICE}`, { cause: e });
     }
     configureLinger();
     print("");
     print(green("  Wolfpack service installed and started."));
     print(dim(`  Unit: ${SYSTEMD_PATH}`));
   } else {
-    print(red("  Service install not supported on this platform."));
-    failServiceInstall(options);
+    throw new Error("Service install not supported on this platform.");
   }
 
   print(dim(`  Log:   ~/.wolfpack/wolfpack.log`));

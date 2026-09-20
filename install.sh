@@ -348,6 +348,9 @@ managed_pair_matches() {
 if managed_pair_matches; then
   chmod 0755 "$MANAGED_BINARY" "$MANAGED_BROKER" || exit 1
   PAIR_ALREADY_MATCHED=true
+  if ! $SERVICE_EXISTS && { server_service_running || broker_service_running; }; then
+    SERVICE_EXISTS=true
+  fi
   echo "  $(green '✓') Managed wolfpack and broker pair already matches the selected release."
 else
   if broker_service_running; then
@@ -407,7 +410,7 @@ fi
 
 activate_replaced_services() {
   if $SERVICE_EXISTS || [ "${WOLFPACK_INSTALL_RETRY_ACTIVATION:-0}" = "1" ]; then
-    if ! managed_services_running && ! "$MANAGED_BINARY" service install; then
+    if ! managed_services_running && ! "$MANAGED_BINARY" service install --preserve-running-broker; then
       echo "  $(red 'Managed service activation failed.')"
       print_reinstall_command
       return 1
@@ -483,7 +486,11 @@ if [ "$INSTALL_SKIP_SETUP" != "1" ]; then
   echo "  Run $(bold 'wolfpack') to start."
   echo ""
   if $SERVICE_EXISTS; then
-    "$MANAGED_BINARY" setup --defer-service-restart < /dev/tty || exit "$?"
+    if $PAIR_REPLACED || [ ! -f "$SERVER_SERVICE_PATH" ]; then
+      "$MANAGED_BINARY" setup --defer-service-restart < /dev/tty || exit "$?"
+    else
+      "$MANAGED_BINARY" setup < /dev/tty || exit "$?"
+    fi
     if $PAIR_REPLACED || [ "${WOLFPACK_INSTALL_RETRY_ACTIVATION:-0}" = "1" ]; then
       activate_replaced_services || exit 1
     fi

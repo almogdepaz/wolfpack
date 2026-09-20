@@ -258,13 +258,8 @@ function installSetupService(options: {
   }
   const installService = ask("  Start wolfpack automatically on login? [Y/n] ");
   if (installService.toLowerCase() === "n") return options;
-  try {
-    serviceInstall();
-    return { serviceInstalled: true, serviceRunning: true };
-  } catch (e) {
-    print(red(`  Service install failed: ${e}`));
-    return options;
-  }
+  serviceInstall();
+  return { serviceInstalled: true, serviceRunning: true };
 }
 
 export interface SetupOptions {
@@ -272,6 +267,15 @@ export interface SetupOptions {
   readonly deferServiceRestart?: boolean;
   readonly devDir?: string;
   readonly port?: number;
+}
+
+export function assertSetupInteraction(options: Pick<SetupOptions, "nonInteractive">): boolean {
+  const hasTty = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+  const interactive = hasTty && !options.nonInteractive;
+  if (!interactive && !options.nonInteractive) {
+    throw new Error("setup requires a TTY; pass --non-interactive explicitly for safe unattended setup");
+  }
+  return interactive;
 }
 
 export async function setup(options: SetupOptions = {}) {
@@ -282,13 +286,7 @@ export async function setup(options: SetupOptions = {}) {
 
   // Detect non-interactive shells (CI, piped stdin, redirected stdout) so
   // setup can apply deterministic local-only defaults without prompting.
-  // process.stdin.isTTY is undefined when not a TTY — treat any non-true
-  // value as non-interactive.
-  const hasTty = Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
-  const interactive = hasTty && !options.nonInteractive;
-  if (!interactive && !options.nonInteractive) {
-    throw new Error("setup requires a TTY; pass --non-interactive explicitly for safe unattended setup");
-  }
+  const interactive = assertSetupInteraction(options);
   if (options.nonInteractive) {
     print(yellow("  Explicit non-interactive setup."));
     print(dim("  Existing configuration is preserved unless an override is provided."));

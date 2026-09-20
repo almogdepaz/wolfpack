@@ -21,6 +21,7 @@ interface SetupFlowFixture {
   readonly serviceInstalled?: boolean;
   readonly installServiceAnswer?: string;
   readonly serviceRestartSucceeded?: boolean;
+  readonly serviceInstallFails?: boolean;
   readonly providerCommands?: readonly string[];
   readonly setupOptions?: {
     readonly devDir?: string;
@@ -109,7 +110,7 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
       remoteUrl: (nextConfig) => nextConfig.tailscaleHostname ? "https://" + nextConfig.tailscaleHostname : null,
       tailscaleBin: () => fixture?.tailscale ? "tailscale" : null,
     }));
-    if (fixture?.serviceRunning || fixture?.serviceInstalled) {
+    if (fixture?.serviceRunning || fixture?.serviceInstalled || fixture?.serviceInstallFails) {
       const service = await import("./src/cli/service.ts");
       const runningStates = Array.isArray(fixture?.serviceRunning)
         ? fixture.serviceRunning
@@ -122,7 +123,10 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
         refreshInstalledServerService: (options) => console.log(
           "SERVICE_REFRESH=" + (options?.reload === false ? "descriptor-only" : "server-only"),
         ),
-        serviceInstall: () => console.log("SERVICE_INSTALL"),
+        serviceInstall: () => {
+          console.log("SERVICE_INSTALL");
+          if (fixture?.serviceInstallFails) throw new Error("fixture accepted service install failed");
+        },
         serviceRestart: (options) => {
           console.log("SERVICE_RESTART=" + JSON.stringify(options));
           return fixture?.serviceRestartSucceeded ?? true;
@@ -345,6 +349,26 @@ describe("first-run setup", () => {
     expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toMatchObject({ port: 25555 });
     expect(result.stdout).toContain("SERVICE_REFRESH=descriptor-only");
     expect(result.stdout).not.toContain("SERVICE_RESTART=");
+  });
+
+  test("fails setup after an accepted service install failure", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const hostname = "accepted-install-failure.tailnet.ts.net";
+    const result = runSetupFlow(home, {
+      tailscale: {
+        hostname,
+        serveStatus: { Web: { [`${hostname}:443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:18790" } } } } },
+      },
+      serviceInstallFails: true,
+      installServiceAnswer: "y",
+    });
+
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stdout).toContain("SERVICE_INSTALL_PROMPT");
+    expect(result.stdout).toContain("SERVICE_INSTALL");
+    expect(result.stdout).not.toContain("Setup complete");
+    expect(result.stderr).toContain("fixture accepted service install failed");
   });
 
   test("preserves an existing stopped login service without reinstalling it", () => {
