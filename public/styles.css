@@ -1772,6 +1772,10 @@ body.no-animations, body.no-animations * {
 .workspace-terminal-toolbar button { padding: 4px 7px; cursor: pointer; }
 .workspace-terminal-toolbar { justify-content: flex-end; }
 .workspace-terminal-toolbar label { display: flex; align-items: center; gap: 5px; }
+.workspace-icon { width: 34px; height: 34px; }
+.workspace-icon svg { display: block; margin: auto; }
+.workspace-icon[aria-pressed="false"] .restore-icon,
+.workspace-icon[aria-pressed="true"] .expand-icon { display: none; }
 #workspace-context-container { padding: 10px; color: var(--text-dim); font-size: 12px; line-height: 1.45; }
 #workspace-context-container p { margin: 0; }
 #workspace-context-container [data-extension-tabs] { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
@@ -1803,7 +1807,7 @@ body.no-animations, body.no-animations * {
   right: 10px;
   bottom: 10px;
   min-height: 34px;
-  padding: 6px 10px;
+  padding: 6px;
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
@@ -1831,6 +1835,7 @@ body.no-animations, body.no-animations * {
     min-height: 0;
   }
   .workspace-terminal-toolbar { padding: 5px 8px; }
+  .workspace-icon { width: 44px; height: 44px; }
 }
 
 /* ── Ephemeral delegation workspace ── */

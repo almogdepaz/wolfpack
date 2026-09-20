@@ -66,7 +66,6 @@ export function createWorkspaceShell(options: {
   };
   const collapseButton = root.querySelector<HTMLButtonElement>("#workspace-context-collapse");
   const contextFullButton = root.querySelector<HTMLButtonElement>("#workspace-context-full");
-  const terminalFullButton = root.querySelector<HTMLButtonElement>("#workspace-terminal-full");
   const restoreButton = root.querySelector<HTMLButtonElement>("#workspace-restore");
   let geometryFrame: number | null = null;
   const events = new AbortController();
@@ -91,7 +90,6 @@ export function createWorkspaceShell(options: {
     if (current.contextCollapsed || current.fullView !== "none") finishResize();
     if (collapseButton) collapseButton.setAttribute("aria-expanded", String(!current.contextCollapsed));
     if (contextFullButton) contextFullButton.setAttribute("aria-pressed", String(current.fullView === "context"));
-    if (terminalFullButton) terminalFullButton.setAttribute("aria-pressed", String(current.fullView === "terminals"));
     if (restoreButton) restoreButton.hidden = current.fullView === "none" && !current.contextCollapsed;
     options.onContextVisibilityChange?.(workspaceContextIsVisible(current));
     if (geometryChanged) notifyGeometry();
@@ -131,7 +129,6 @@ export function createWorkspaceShell(options: {
   observer.observe(root);
   listen(collapseButton, "click", () => setPreferences({ contextCollapsed: !current.contextCollapsed, fullView: current.fullView === "context" ? "none" : current.fullView }));
   listen(contextFullButton, "click", () => setPreferences({ fullView: current.fullView === "context" ? "none" : "context" }));
-  listen(terminalFullButton, "click", () => setPreferences({ fullView: current.fullView === "terminals" ? "none" : "terminals" }));
   listen(restoreButton, "click", () => setPreferences({ fullView: "none", contextCollapsed: false }));
   render(false);
 

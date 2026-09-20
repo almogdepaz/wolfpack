@@ -40,8 +40,10 @@ async function openGrid(page: Page, names: readonly string[]): Promise<void> {
   await page.goto(server!.baseUrl);
   await page.locator(".card", { hasText: names[0]! }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator("#workspace-terminal-layout")).toBeVisible();
   for (const name of names.slice(1)) await page.locator(`[data-action="toggle-grid"][data-session="${name}"]`).filter({ visible: true }).click();
   await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(names.length, { timeout: 10_000 });
+  await expect(page.locator("#workspace-terminal-layout")).toBeVisible();
 }
 
 test.beforeAll(async () => {
@@ -104,6 +106,10 @@ test("real broker desktop preserves existing equal-grid cardinalities and revers
   const attachesBefore = socketUrls.length;
   await page.locator("#workspace-terminal-layout").selectOption("lead-stack");
   await expect(grid).toHaveAttribute("style", /grid-template-columns/);
+  await expect.poll(async () => (await fifth.boundingBox())!.height > (await grid.locator(".grid-cell").first().boundingBox())!.height).toBe(true);
+  await page.locator("#workspace-terminal-layout").selectOption("vertical-stack");
+  await expect(grid).toHaveCSS("grid-template-columns", /^\d+(\.\d+)?px$/);
+  await page.locator("#workspace-terminal-layout").selectOption("lead-stack");
   await expect(fifth).toHaveClass(/grid-focused/);
   await page.setViewportSize({ width: 1750, height: 900 });
   await expect.poll(() => resizeFrames.some(frame => (frame.cols ?? 0) > 0 && (frame.rows ?? 0) > 0)).toBe(true);
@@ -146,6 +152,15 @@ test("right context panel resizes with real pointer and keyboard input without r
   await page.goto(server!.baseUrl);
   await page.locator(".card", { hasText: name }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator("#workspace-terminal-layout")).toBeVisible();
+  await expect(page.locator("#workspace-terminal-full")).toHaveCount(0);
+  for (const [id, label] of [["workspace-context-collapse", "Collapse context panel"], ["workspace-context-full", "Context full view"]]) {
+    const control = page.locator(`#${id}`);
+    await expect(control).toHaveAccessibleName(label!);
+    await expect(control).toHaveText("");
+    await expect(control.locator("svg")).toBeVisible();
+    await expect(control).toHaveAttribute("title", /.+/);
+  }
   const context = page.locator("#workspace-context-region");
   const terminal = page.locator("#workspace-terminal-region");
   const before = (await context.boundingBox())!;
@@ -191,10 +206,14 @@ test("right context panel resizes with real pointer and keyboard input without r
   await border.focus();
   await page.keyboard.press("Home");
   await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(220);
+  await page.screenshot({ path: testInfo.outputPath("right-context-controls.png") });
   await page.locator("#workspace-context-full").click();
+  await expect(page.locator("#workspace-context-full .restore-icon")).toBeVisible();
   await expect(border).toBeHidden();
   await page.locator("#workspace-restore").click();
   await page.locator("#workspace-context-collapse").click();
+  await expect(page.getByRole("button", { name: "Restore workspace" })).toHaveText("");
+  await expect(page.locator("#workspace-restore svg")).toBeVisible();
   await expect(border).toBeHidden();
   await page.locator("#workspace-restore").click();
   await expect(border).toBeVisible();
@@ -244,12 +263,39 @@ test("real broker delegation collapse retains the child controller and canvas", 
   await expect(childCell).toHaveClass(/hydrated/);
   await childCell.locator("canvas").evaluate(canvas => canvas.setAttribute("data-workspace-collapse-canvas", "retained"));
   const attachesBefore = sockets.length;
+  await expect(page.locator("#workspace-terminal-layout")).toBeVisible();
   await page.getByRole("button", { name: `Collapse ${child}` }).click();
   await expect(childCell).toHaveClass(/collapsed/);
+  await expect(page.locator("#workspace-terminal-layout")).toBeVisible();
   await page.getByRole("button", { name: `Expand ${child}` }).click();
+  await expect(page.locator("#workspace-terminal-layout")).toBeVisible();
   await expect(childCell).toHaveClass(/hydrated/);
   await expect(childCell.locator("canvas")).toHaveAttribute("data-workspace-collapse-canvas", "retained");
   expect(sockets).toHaveLength(attachesBefore);
+  await page.getByRole("button", { name: `Focus ${child}` }).click();
+  await expect(page.locator("#delegation-focus-back")).toBeVisible();
+  await expect(page.locator("#workspace-terminal-layout")).toBeVisible();
+  await page.locator("#delegation-focus-back").click();
+  await expect(page.locator("#workspace-terminal-layout")).toBeVisible();
+});
+
+test("saved terminal-only preferences still restore after removing the terminal full-view button", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop saved-preference recovery");
+  const name = "workspace-legacy-full";
+  await createShellSession(name);
+  await page.goto(server!.baseUrl);
+  await page.evaluate(() => localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ fullView: "terminals", splitSize: 320 })));
+  await page.reload();
+  await page.locator(".card", { hasText: name }).first().click();
+  const canvas = page.locator("#desktop-terminal-container canvas");
+  await expect(canvas).toBeVisible();
+  await canvas.evaluate(node => { (window as any).__legacyFullCanvas = node; });
+  await expect(page.locator("#workspace-terminal-full")).toHaveCount(0);
+  await expect(page.locator("#workspace-context-region")).toBeHidden();
+  await page.getByRole("button", { name: "Restore workspace" }).click();
+  await expect(page.locator("#workspace-context-region")).toBeVisible();
+  expect(await canvas.evaluate(node => node === (window as any).__legacyFullCanvas)).toBe(true);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-workspace-shell")!).fullView)).toBe("none");
 });
 
 test("real broker mobile workspace recovery keeps the terminal attached", async ({ page }, testInfo) => {

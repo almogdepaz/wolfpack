@@ -383,21 +383,19 @@ test("ordinary context-hide controls pause polling and preserve retained workspa
   const selectedLayout = await page.locator("#workspace-terminal-layout").inputValue();
   const attached = sockets.length;
 
-  for (const control of ["#workspace-context-collapse", "#workspace-terminal-full"]) {
-    const button = page.locator(control);
-    if (testInfo.project.name === "mobile-webkit") await button.tap();
-    else await button.click();
-    await expect(page.locator("#workspace-context-region")).toBeHidden();
-    const atHide = reads;
-    await page.waitForTimeout(2_300);
-    expect(reads, `${control} must pause selected context polling`).toBe(atHide);
-    await page.locator("#workspace-restore").click();
-    await expect.poll(() => reads).toBeGreaterThan(atHide);
-    expect(await contextView.evaluate(node => node === (window as unknown as { __extensionRetainedContext?: Element }).__extensionRetainedContext)).toBe(true);
-    expect(await canvas.evaluate(node => node === (window as unknown as { __extensionRetainedShellCanvas?: Element }).__extensionRetainedShellCanvas)).toBe(true);
-    await expect(page.locator("#workspace-terminal-layout")).toHaveValue(selectedLayout);
-    expect(sockets).toHaveLength(attached);
-  }
+  const button = page.locator("#workspace-context-collapse");
+  if (testInfo.project.name === "mobile-webkit") await button.tap();
+  else await button.click();
+  await expect(page.locator("#workspace-context-region")).toBeHidden();
+  const atHide = reads;
+  await page.waitForTimeout(2_300);
+  expect(reads, "collapse must pause selected context polling").toBe(atHide);
+  await page.locator("#workspace-restore").click();
+  await expect.poll(() => reads).toBeGreaterThan(atHide);
+  expect(await contextView.evaluate(node => node === (window as unknown as { __extensionRetainedContext?: Element }).__extensionRetainedContext)).toBe(true);
+  expect(await canvas.evaluate(node => node === (window as unknown as { __extensionRetainedShellCanvas?: Element }).__extensionRetainedShellCanvas)).toBe(true);
+  await expect(page.locator("#workspace-terminal-layout")).toHaveValue(selectedLayout);
+  expect(sockets).toHaveLength(attached);
   if (testInfo.project.name === "mobile-webkit") {
     await page.locator("#terminal-transcript-btn").tap();
     await expect(page.locator("#terminal-transcript-dialog")).toBeVisible();
