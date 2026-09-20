@@ -498,10 +498,13 @@ describe("BrokerBackend.createSession", () => {
 
     const create = client.requests.find((request) => request.method === "create_session");
     const params = create?.params as { command: string[]; env: Array<[string, string]> };
-    expect(params.command.slice(3)).toEqual(["wolfpack-agent", executable, "--no-extensions", "--extension", extension, "--model", model]);
-    expect(params.command[2]).toContain('exec "$@"');
-    expect(params.command[2]).not.toContain(executable);
-    expect(params.command[2]).not.toContain(extension);
+    const workerArgs = ["wolfpack-agent", executable, "--no-extensions", "--extension", extension, "--model", model];
+    // Bash and zsh use different numbers of shell options before the script.
+    const shellCommand = params.command.at(-workerArgs.length - 1);
+    expect(params.command.slice(-workerArgs.length)).toEqual(workerArgs);
+    expect(shellCommand).toContain('exec "$@"');
+    expect(shellCommand).not.toContain(executable);
+    expect(shellCommand).not.toContain(extension);
     expect(params.env).toContainEqual(["PI_TASK_WORKER", "1"]);
   });
 
