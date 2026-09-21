@@ -88,10 +88,14 @@ export function createWorkspaceShell(options: {
     divider?.setAttribute("aria-valuenow", String(size));
     divider?.setAttribute("aria-valuemax", String(maximumSize()));
     if (current.contextCollapsed || current.fullView !== "none") finishResize();
-    if (collapseButton) collapseButton.setAttribute("aria-expanded", String(!current.contextCollapsed));
-    if (contextFullButton) contextFullButton.setAttribute("aria-pressed", String(current.fullView === "context"));
-    if (restoreButton) restoreButton.hidden = current.fullView === "none" && !current.contextCollapsed;
-    options.onContextVisibilityChange?.(workspaceContextIsVisible(current));
+    const visible = workspaceContextIsVisible(current);
+    if (collapseButton) collapseButton.setAttribute("aria-expanded", String(visible));
+    if (contextFullButton) {
+      contextFullButton.setAttribute("aria-pressed", String(current.fullView === "context"));
+      contextFullButton.setAttribute("aria-label", contextFullButton.title = current.fullView === "context" ? "Restore workspace" : "Context full view");
+    }
+    if (restoreButton) restoreButton.hidden = visible;
+    options.onContextVisibilityChange?.(visible);
     if (geometryChanged) notifyGeometry();
   };
   const setPreferences = (next: Partial<WorkspaceShellPreferences>): void => {
@@ -127,9 +131,15 @@ export function createWorkspaceShell(options: {
   for (const [type, handler] of Object.entries(resizeEvents)) listen(divider, type, handler as EventListener);
   const observer = new ResizeObserver(() => render(true));
   observer.observe(root);
-  listen(collapseButton, "click", () => setPreferences({ contextCollapsed: !current.contextCollapsed, fullView: current.fullView === "context" ? "none" : current.fullView }));
+  listen(collapseButton, "click", () => {
+    setPreferences({ contextCollapsed: !current.contextCollapsed, fullView: current.fullView === "context" ? "none" : current.fullView });
+    restoreButton?.focus({ preventScroll: true });
+  });
   listen(contextFullButton, "click", () => setPreferences({ fullView: current.fullView === "context" ? "none" : "context" }));
-  listen(restoreButton, "click", () => setPreferences({ fullView: "none", contextCollapsed: false }));
+  listen(restoreButton, "click", () => {
+    setPreferences({ fullView: "none", contextCollapsed: false });
+    collapseButton?.focus({ preventScroll: true });
+  });
   render(false);
 
   return {

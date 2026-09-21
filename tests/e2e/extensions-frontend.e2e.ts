@@ -229,7 +229,7 @@ test("authenticated installed packages compose qualified local views and refresh
     expect(resizeFrames.slice(resizeCount).every(frame => (frame.cols ?? 0) > 0 && (frame.rows ?? 0) > 0)).toBe(true);
     await page.locator("#workspace-context-full").click();
     await expect(page.locator("#workspace-terminal-region")).toBeHidden();
-    await page.locator("#workspace-restore").click();
+    await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
     expect(await selected.locator("canvas").evaluate(canvas => canvas === (window as unknown as { __extensionRetainedCanvas?: Element }).__extensionRetainedCanvas)).toBe(true);
     await expect.poll(readTail).toContain("WPEXTENSION_RETENTION");
     expect(sockets).toHaveLength(attached);
@@ -244,7 +244,7 @@ test("authenticated installed packages compose qualified local views and refresh
     const attached = sockets.length;
     await page.locator("#workspace-context-full").click();
     await expect(page.locator("#workspace-terminal-region")).toBeHidden();
-    await page.locator("#workspace-restore").click();
+    await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
     expect(await canvas.evaluate(node => node === (window as unknown as { __extensionRetainedCanvas?: Element }).__extensionRetainedCanvas)).toBe(true);
     await expect(draft).toHaveValue("retained mobile terminal draft");
     expect(await draft.evaluate((editor: HTMLTextAreaElement) => [editor.selectionStart, editor.selectionEnd])).toEqual([9, 15]);

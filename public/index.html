@@ -400,7 +400,7 @@
           <div class="workspace-context-header">
             <strong>Context</strong>
             <div class="workspace-context-actions">
-              <button id="workspace-context-collapse" class="workspace-icon" type="button" aria-expanded="true" aria-label="Collapse context panel" title="Collapse context panel"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M8 9l3 3-3 3"/></svg></button>
+              <button id="workspace-context-collapse" class="workspace-icon" type="button" aria-expanded="true" aria-controls="workspace-context-region" aria-label="Collapse context panel" title="Collapse context panel"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M8 9l3 3-3 3"/></svg></button>
               <button id="workspace-context-full" class="workspace-icon" type="button" aria-pressed="false" aria-label="Context full view" title="Toggle context full view"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="expand-icon" d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/><path class="restore-icon" d="M8 3v5H3m13-5v5h5M3 16h5v5m8 0v-5h5"/></svg></button>
             </div>
           </div>
@@ -410,6 +410,7 @@
         <main id="workspace-terminal-region" aria-label="Terminal workspace">
           <div class="workspace-terminal-toolbar">
             <label title="Arrange multiple terminals; narrow views stack vertically">Layout <select id="workspace-terminal-layout" aria-label="Terminal layout"><option value="equal-grid">Equal grid</option><option value="lead-stack">Lead + stack</option><option value="vertical-stack">Vertical stack</option></select></label>
+            <button id="workspace-restore" class="workspace-icon" type="button" aria-expanded="false" aria-controls="workspace-context-region" aria-label="Expand context panel" title="Expand context panel" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M11 9l-3 3 3 3"/></svg></button>
           </div>
       <div id="delegation-focus-toolbar" class="delegation-focus-return">
         <button id="delegation-focus-back" type="button">← Back to session grid</button>
@@ -443,7 +444,6 @@
         <button class="kb-key kb-open" id="kb-open-btn" type="button" aria-label="Show keyboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2.5"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg></button>
       </div>
         </main>
-        <button id="workspace-restore" class="workspace-restore workspace-icon" type="button" aria-label="Restore workspace" title="Restore workspace" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v5H3m13-5v5h5M3 16h5v5m8 0v-5h5"/></svg></button>
       </div>
       <div id="input-bar">
         <textarea
