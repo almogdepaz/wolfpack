@@ -64,6 +64,7 @@ import {
   resolveAgentCommand,
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
+import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
@@ -423,7 +424,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       const workerExtensions = taskWorker.extensions ?? [taskWorker.extension];
       const workerPiOptions = taskWorker.piOptions ?? {};
       const workerPiArgs = [
-        ...(taskWorker.extensionPolicy === "inherit" ? [] : ["--no-extensions"]),
+        ...((taskWorker.extensionPolicy ?? TASK_WORKER_DEFAULT_EXTENSION_POLICY) === "inherit" ? [] : ["--no-extensions"]),
         ...workerExtensions.flatMap((extension) => ["--extension", extension]),
         ...(options?.model !== undefined ? ["--model", options.model] : []),
         ...(workerPiOptions.thinking !== undefined ? ["--thinking", workerPiOptions.thinking] : []),

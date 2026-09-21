@@ -59,8 +59,9 @@ export default defineConfig({
         "refresh-coordinator.e2e.ts",
         "session-switch.e2e.ts",
         "terminal.e2e.ts",
+        "task-worker-settings.e2e.ts",
       ],
-      grep: /clicking a session navigates|mobile card swipe opens|terminal receives output|mobile accessory Enter|mobile touch drag scrolls|compact machine headers make the name the reorder handle|machine move options use ordinary group semantics|machine name move options, keyboard, and pointer alternatives reorder|notification session route|open session drawer|mobile keyboard uses ghostty native input|mobile settings navigation|terminal transcript|visibility resume|WS disconnect shows reconnecting banner then recovers/,
+      grep: /clicking a session navigates|mobile card swipe opens|terminal receives output|mobile accessory Enter|mobile touch drag scrolls|compact machine headers make the name the reorder handle|machine move options use ordinary group semantics|machine name move options, keyboard, and pointer alternatives reorder|notification session route|open session drawer|mobile keyboard uses ghostty native input|mobile settings navigation|task worker extension discovery persists an accessible confirmed server value|task worker extension discovery does not start a second load while the first is pending|task worker extension discovery does not start a load while saving|task worker extension discovery retains an isolated value when a later real load fails|task worker extension discovery reports real server failures and restores its confirmed value|terminal transcript|visibility resume|WS disconnect shows reconnecting banner then recovers/,
       use: {
         ...devices["iPhone 14"],
         viewport: { width: 390, height: 844 },

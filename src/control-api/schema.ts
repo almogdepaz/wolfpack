@@ -568,6 +568,9 @@ export const controlApiSource: ControlApiSource = {
       cmds: arrayOf(ref("CmdEntry")),
       quietAlerts: ref("QuietAlertPolicy"),
     }, ["agentCmd", "cmds", "quietAlerts"]),
+    TaskWorkerExtensionPolicySettings: object({
+      extensionPolicy: { enum: ["inherit", "isolated"] },
+    }, ["extensionPolicy"]),
     EffectiveSettings: object({
       agentCmd: string(),
       cmds: arrayOf(ref("Command")),
@@ -1258,6 +1261,21 @@ export const controlApiSource: ControlApiSource = {
         effective: ref("EffectiveSettings"),
       }, ["ok", "settings", "effective"]),
       errors: ["400 ErrorEnvelope"],
+    },
+    "GET /api/task-worker-settings": {
+      operationId: "getTaskWorkerExtensionPolicySettings",
+      stable: true,
+      auth: "jwt-when-configured",
+      response: ref("TaskWorkerExtensionPolicySettings"),
+      errors: ["503 ErrorEnvelope"],
+    },
+    "POST /api/task-worker-settings": {
+      operationId: "updateTaskWorkerExtensionPolicySettings",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: ref("TaskWorkerExtensionPolicySettings"),
+      response: ref("TaskWorkerExtensionPolicySettings"),
+      errors: ["400 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "GET /api/backend": {
       operationId: "getBackendStatus",

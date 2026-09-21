@@ -1,5 +1,8 @@
 import { unicodeCodePointLength } from "./session-prompt-contract.js";
 
+export type TaskWorkerExtensionPolicy = "isolated" | "inherit";
+
+export const TASK_WORKER_DEFAULT_EXTENSION_POLICY: TaskWorkerExtensionPolicy = "inherit";
 export const TASK_WORKER_POLICY_MAX_BYTES = 64 * 1024;
 export const TASK_WORKER_POLICY_MAX_EXTENSIONS = 32;
 export const TASK_WORKER_POLICY_MAX_EXTENSION_PATH_LENGTH = 4_096;
@@ -28,7 +31,6 @@ const RESERVED_ENVIRONMENT_NAMES = new Set([
   "WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION",
 ]);
 
-export type TaskWorkerExtensionPolicy = "isolated" | "inherit";
 export type TaskWorkerPolicySource = "default" | "host" | "project" | "spawn";
 export type TaskWorkerPiThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -36,6 +38,10 @@ export interface TaskWorkerPiOptions {
   readonly thinking?: TaskWorkerPiThinking;
   readonly offline?: boolean;
   readonly verbose?: boolean;
+}
+
+export interface TaskWorkerSettings {
+  readonly extensionPolicy: TaskWorkerExtensionPolicy;
 }
 
 export interface TaskWorkerPolicyOverride {
@@ -76,6 +82,13 @@ function policyError(): never {
   throw new TaskWorkerPolicyError();
 }
 
+/** Validates the narrow public host-default settings payload. */
+export function parseTaskWorkerSettings(value: unknown): TaskWorkerSettings {
+  if (!isRecord(value) || Object.keys(value).length !== 1 || value.extensionPolicy === undefined) policyError();
+  if (value.extensionPolicy !== "isolated" && value.extensionPolicy !== "inherit") policyError();
+  return { extensionPolicy: value.extensionPolicy };
+}
+
 /** Validates transportable policy data without reading target-host resources. */
 export function parseTaskWorkerPolicyOverride(value: unknown): TaskWorkerPolicyOverride {
   if (!isRecord(value) || Object.keys(value).some((key) => !POLICY_KEYS.has(key))) policyError();
@@ -100,10 +113,15 @@ export function parseTaskWorkerPolicyOverride(value: unknown): TaskWorkerPolicyO
     let totalBytes = 0;
     for (const [name, rawValue] of Object.entries(value.env)) {
       if (!ENVIRONMENT_NAME.test(name) || name.startsWith("WOLFPACK_") || RESERVED_ENVIRONMENT_NAMES.has(name)) policyError();
-      if (rawValue !== null && (typeof rawValue !== "string" || rawValue.includes("\0") || unicodeCodePointLength(rawValue) > TASK_WORKER_POLICY_MAX_ENV_VALUE_LENGTH)) policyError();
-      totalBytes += Buffer.byteLength(name) + (rawValue === null ? 0 : Buffer.byteLength(rawValue));
+      const envValue = rawValue === null
+        ? null
+        : typeof rawValue === "string"
+          ? rawValue
+          : policyError();
+      if (envValue !== null && (envValue.includes("\0") || unicodeCodePointLength(envValue) > TASK_WORKER_POLICY_MAX_ENV_VALUE_LENGTH)) policyError();
+      totalBytes += Buffer.byteLength(name) + (envValue === null ? 0 : Buffer.byteLength(envValue));
       if (totalBytes > TASK_WORKER_POLICY_MAX_ENV_BYTES) policyError();
-      env.set(name, rawValue);
+      env.set(name, envValue);
     }
     result.env = Object.fromEntries(env);
   }

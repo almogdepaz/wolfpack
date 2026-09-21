@@ -89,6 +89,30 @@ describe("task-worker launch policy", () => {
     });
   });
 
+  test("uses inherited discovery for a missing owned policy file while explicit isolation still wins", () => {
+    const root = temporaryRoot();
+    const executable = join(root, "pi");
+    const mandatoryExtension = join(root, "pi-tasks.ts");
+    const missingPolicyPath = join(root, "missing-policy.json");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    writeFileSync(mandatoryExtension, "export {};\n");
+    const env = {
+      WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executable,
+      WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: mandatoryExtension,
+      WOLFPACK_TASK_WORKER_POLICY_PATH: missingPolicyPath,
+    };
+
+    expect(prepareTaskWorkerLaunch(env, root)).toMatchObject({
+      extensionPolicy: "inherit",
+      diagnostics: { sources: { extensionPolicy: "default" } },
+    });
+    expect(prepareTaskWorkerLaunch(env, root, { extensionPolicy: "isolated" })).toMatchObject({
+      extensionPolicy: "isolated",
+      diagnostics: { sources: { extensionPolicy: "spawn" } },
+    });
+  });
+
   test("keeps shared parser extension and env-value boundaries aligned with the published contract", () => {
     const extension = "/" + "x".repeat(TASK_WORKER_POLICY_MAX_EXTENSION_PATH_LENGTH - 1);
     expect(parseTaskWorkerPolicyOverride({
@@ -285,6 +309,7 @@ describe("task-worker launch policy", () => {
     expect(prepareTaskWorkerLaunch({
       WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executable,
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: mandatoryExtension,
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     }, root, { extensions: [extensionLink] }).extensions).toEqual([
       realpathSync(mandatoryExtension),
       realpathSync(extensionTarget),
@@ -292,6 +317,7 @@ describe("task-worker launch policy", () => {
     expect(() => prepareTaskWorkerLaunch({
       WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executable,
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: mandatoryExtension,
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     }, root, { extensions: [unreadableExtension] })).toThrow("task-worker extension is missing or unreadable");
   });
 
@@ -307,6 +333,7 @@ describe("task-worker launch policy", () => {
     expect(() => prepareTaskWorkerLaunch({
       WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executable,
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: mandatoryExtension,
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     }, root, { env: { WOLFPACK_PORT: "9999" } })).toThrow(TaskWorkerReadinessError);
 
     writeFileSync(policyPath, "{");

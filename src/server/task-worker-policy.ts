@@ -5,6 +5,7 @@ import { canonicalReadableRegularFile } from "./task-worker-resource.js";
 import { readBoundedTaskWorkerPolicyFile } from "../task-worker-policy-file.js";
 import {
   parseTaskWorkerPolicyOverride,
+  TASK_WORKER_DEFAULT_EXTENSION_POLICY,
   TASK_WORKER_POLICY_MAX_BYTES,
   TASK_WORKER_POLICY_MAX_ENV_BYTES,
   TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
@@ -20,6 +21,7 @@ import type {
 
 export {
   parseTaskWorkerPolicyOverride,
+  TASK_WORKER_DEFAULT_EXTENSION_POLICY,
   TASK_WORKER_POLICY_MAX_BYTES,
   TASK_WORKER_POLICY_MAX_ENV_BYTES,
   TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
@@ -32,6 +34,11 @@ export type {
   TaskWorkerPolicyOverride,
   TaskWorkerPolicySource,
 } from "../task-worker-policy-contract.js";
+
+export interface TaskWorkerHostPolicy {
+  readonly defaults?: TaskWorkerPolicyOverride;
+  readonly projects?: Readonly<Record<string, TaskWorkerPolicyOverride>>;
+}
 
 export interface ResolvedTaskWorkerPolicy {
   readonly extensionPolicy: TaskWorkerExtensionPolicy;
@@ -58,21 +65,21 @@ function canonicalExtension(path: string): string {
   return canonical;
 }
 
-function policyPath(env: Readonly<Record<string, string | undefined>>): string {
+export function taskWorkerPolicyPath(env: Readonly<Record<string, string | undefined>>): string {
   const configured = env.WOLFPACK_TASK_WORKER_POLICY_PATH;
   if (configured === undefined) return `${homedir()}/.wolfpack/task-worker-policy.json`;
   if (!configured || configured.length > 4_096 || configured.includes("\0") || !isAbsolute(configured)) policyError();
   return configured;
 }
 
-function loadHostPolicy(env: Readonly<Record<string, string | undefined>>): { readonly defaults: TaskWorkerPolicyOverride; readonly projects: Readonly<Record<string, TaskWorkerPolicyOverride>> } {
+export function readTaskWorkerHostPolicy(path: string): TaskWorkerHostPolicy | undefined {
   let raw: string | undefined;
   try {
-    raw = readBoundedTaskWorkerPolicyFile(policyPath(env));
+    raw = readBoundedTaskWorkerPolicyFile(path);
   } catch {
     policyError();
   }
-  if (raw === undefined) return { defaults: {}, projects: {} };
+  if (raw === undefined) return undefined;
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -80,19 +87,27 @@ function loadHostPolicy(env: Readonly<Record<string, string | undefined>>): { re
     policyError();
   }
   if (!isRecord(parsed) || Object.keys(parsed).some((key) => key !== "defaults" && key !== "projects")) policyError();
-  const defaults = parsed.defaults === undefined ? {} : parseTaskWorkerPolicyOverride(parsed.defaults);
-  if (parsed.projects === undefined) return { defaults, projects: {} };
-  if (!isRecord(parsed.projects) || Object.keys(parsed.projects).length > 256) policyError();
-  const projects: Record<string, TaskWorkerPolicyOverride> = {};
-  for (const [project, override] of Object.entries(parsed.projects)) {
-    try {
-      if (!project || project.includes("\0") || !isAbsolute(project) || resolve(project) !== project || !statSync(project).isDirectory() || realpathSync(project) !== project) policyError();
-    } catch {
-      policyError();
+  const policy: { defaults?: TaskWorkerPolicyOverride; projects?: Record<string, TaskWorkerPolicyOverride> } = {};
+  if (parsed.defaults !== undefined) policy.defaults = parseTaskWorkerPolicyOverride(parsed.defaults);
+  if (parsed.projects !== undefined) {
+    if (!isRecord(parsed.projects) || Object.keys(parsed.projects).length > 256) policyError();
+    const projects: Record<string, TaskWorkerPolicyOverride> = {};
+    for (const [project, override] of Object.entries(parsed.projects)) {
+      try {
+        if (!project || project.includes("\0") || !isAbsolute(project) || resolve(project) !== project || !statSync(project).isDirectory() || realpathSync(project) !== project) policyError();
+      } catch {
+        policyError();
+      }
+      projects[project] = parseTaskWorkerPolicyOverride(override);
     }
-    projects[project] = parseTaskWorkerPolicyOverride(override);
+    policy.projects = projects;
   }
-  return { defaults, projects };
+  return policy;
+}
+
+function loadHostPolicy(env: Readonly<Record<string, string | undefined>>): { readonly defaults: TaskWorkerPolicyOverride; readonly projects: Readonly<Record<string, TaskWorkerPolicyOverride>> } {
+  const policy = readTaskWorkerHostPolicy(taskWorkerPolicyPath(env));
+  return { defaults: policy?.defaults ?? {}, projects: policy?.projects ?? {} };
 }
 
 function validateEffectiveEnv(env: ReadonlyMap<string, string>): void {
@@ -156,7 +171,7 @@ export function resolveTaskWorkerPolicy(
   const projectOverride = hostPolicy.projects[projectDir] ?? {};
   const override = spawnOverride === undefined ? {} : parseTaskWorkerPolicyOverride(spawnOverride);
   const state = {
-    extensionPolicy: "isolated" as TaskWorkerExtensionPolicy,
+    extensionPolicy: TASK_WORKER_DEFAULT_EXTENSION_POLICY,
     extensions: [] as readonly string[],
     env: new Map<string, string>(),
     piOptions: new Map<keyof TaskWorkerPiOptions, TaskWorkerPiOptions[keyof TaskWorkerPiOptions]>(),

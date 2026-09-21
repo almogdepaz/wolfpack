@@ -1582,6 +1582,41 @@
         "400 ErrorEnvelope"
       ]
     },
+    "getTaskWorkerExtensionPolicySettings": {
+      "route": "GET /api/task-worker-settings",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:getTaskWorkerExtensionPolicySettings:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getTaskWorkerExtensionPolicySettings response",
+        "$ref": "#/$defs/TaskWorkerExtensionPolicySettings"
+      },
+      "errors": [
+        "503 ErrorEnvelope"
+      ]
+    },
+    "updateTaskWorkerExtensionPolicySettings": {
+      "route": "POST /api/task-worker-settings",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:updateTaskWorkerExtensionPolicySettings:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateTaskWorkerExtensionPolicySettings request",
+        "$ref": "#/$defs/TaskWorkerExtensionPolicySettings"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:updateTaskWorkerExtensionPolicySettings:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateTaskWorkerExtensionPolicySettings response",
+        "$ref": "#/$defs/TaskWorkerExtensionPolicySettings"
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
     "getBackendStatus": {
       "route": "GET /api/backend",
       "stable": true,
@@ -4200,6 +4235,21 @@
         "agentCmd",
         "cmds",
         "quietAlerts"
+      ],
+      "additionalProperties": false
+    },
+    "TaskWorkerExtensionPolicySettings": {
+      "type": "object",
+      "properties": {
+        "extensionPolicy": {
+          "enum": [
+            "inherit",
+            "isolated"
+          ]
+        }
+      },
+      "required": [
+        "extensionPolicy"
       ],
       "additionalProperties": false
     },

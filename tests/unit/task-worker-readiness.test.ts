@@ -37,10 +37,11 @@ describe("task worker launch preflight", () => {
     expect(prepareTaskWorkerLaunch({
       WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executableLink,
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: extensionLink,
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     })).toMatchObject({
       executable: executableLink,
       extension: extensionLink,
-      extensionPolicy: "isolated",
+      extensionPolicy: "inherit",
       extensions: [realpathSync(extension)],
       env: {},
       piOptions: {},
@@ -55,6 +56,7 @@ describe("task worker launch preflight", () => {
     expect(() => prepareTaskWorkerLaunch({
       WOLFPACK_TASK_WORKER_PI_EXECUTABLE: danglingExecutable,
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: join(root, "missing-extension.ts"),
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     })).toThrow(TaskWorkerReadinessError);
   });
 
@@ -67,6 +69,7 @@ describe("task worker launch preflight", () => {
     expect(() => prepareTaskWorkerLaunch({
       WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executable,
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: join(root, "missing-extension.ts"),
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     })).toThrow("task-worker Pi Tasks extension is missing or unreadable");
   });
 
@@ -81,6 +84,7 @@ describe("task worker launch preflight", () => {
     expect(() => prepareTaskWorkerLaunch({
       WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executable,
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: extension,
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     })).toThrow(TaskWorkerReadinessError);
   });
 });

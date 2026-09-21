@@ -332,6 +332,18 @@
             <button id="agent-add-btn" class="add-cmd-btn">+ Add</button>
           </div>
           <div id="agent-add-error" class="agent-add-error" role="alert"></div>
+          <div class="task-worker-extension-setting">
+            <div class="settings-sub-heading">Task workers</div>
+            <div id="task-worker-extension-policy-help" class="settings-description">Applies to new task workers only. Project and per-spawn overrides still win. Inherited extensions execute as the host user, while Pi project trust remains enforced.</div>
+            <label class="settings-toggle" for="task-worker-extension-policy">Task worker extension discovery
+              <select id="task-worker-extension-policy" aria-describedby="task-worker-extension-policy-help task-worker-extension-policy-status">
+                <option value="inherit">Inherit installed extensions</option>
+                <option value="isolated">Isolated (explicit extensions only)</option>
+              </select>
+            </label>
+            <div class="settings-description">Isolated disables discovery; mandatory Pi Tasks and explicitly configured optional files remain loaded.</div>
+            <div id="task-worker-extension-policy-status" class="notification-setting-status" role="status" aria-live="polite"></div>
+          </div>
         </div>
         <div class="settings-section">
           <div class="settings-label">Quick Commands</div>

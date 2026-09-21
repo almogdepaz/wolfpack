@@ -125,6 +125,7 @@ import {
   QUIET_ALERT_MODE,
 } from "../src/quiet-alert-policy";
 import type { QuietAlertPolicy } from "../src/quiet-alert-policy";
+import type { TaskWorkerExtensionPolicy } from "../src/task-worker-policy-contract";
 import {
   createTailnetDiscoveryAutoRefresh,
 } from "../src/tailnet-discovery-auto-refresh";
@@ -1153,6 +1154,10 @@ interface ProviderReadinessResponse {
   readonly providers?: ProviderReadiness[];
 }
 
+interface TaskWorkerExtensionPolicySettingsResponse {
+  readonly extensionPolicy?: TaskWorkerExtensionPolicy;
+}
+
 interface NextSessionNameResponse {
   readonly name?: string;
 }
@@ -1329,6 +1334,7 @@ function applyDesktopViewNavigation(viewName: string): void {
     if (advancedSettings) advancedSettings.open = true;
     renderQuickCmdSettings();
     loadAgentsSettings();
+    void loadTaskWorkerExtensionPolicySettings();
   }
   renderSidebar();
   syncSessionRefreshTimer();
@@ -1376,6 +1382,7 @@ function applyMobileViewNavigation(viewName: string): void {
     title.textContent = "settings";
     renderQuickCmdSettings();
     loadAgentsSettings();
+    void loadTaskWorkerExtensionPolicySettings();
   } else if (viewName === "terminal") {
     back.style.display = "block";
     back.onclick = () => {
@@ -2792,6 +2799,90 @@ async function showAgentPicker(): Promise<void> {
 // machine — agent settings are per-machine, not synced across peers.
 let latestSettingsResponse: SettingsResponse | null = null;
 let providerReadinessCache: ProviderReadiness[] = [];
+let taskWorkerExtensionPolicySettingsBusy = false;
+let taskWorkerExtensionPolicySettingsAvailable = false;
+let confirmedTaskWorkerExtensionPolicy: TaskWorkerExtensionPolicy = "inherit";
+
+function isTaskWorkerExtensionPolicy(value: unknown): value is TaskWorkerExtensionPolicy {
+  return value === "inherit" || value === "isolated";
+}
+
+function taskWorkerExtensionPolicyControls(): {
+  readonly policy: HTMLSelectElement | null;
+  readonly status: HTMLElement | null;
+} {
+  return {
+    policy: document.getElementById("task-worker-extension-policy") as HTMLSelectElement | null,
+    status: document.getElementById("task-worker-extension-policy-status"),
+  };
+}
+
+function renderTaskWorkerExtensionPolicySettings(
+  policy: TaskWorkerExtensionPolicy,
+  status: string,
+  state: "pending" | "error" | "success" | "idle",
+): void {
+  const controls = taskWorkerExtensionPolicyControls();
+  if (controls.policy) {
+    controls.policy.value = policy;
+    controls.policy.disabled = taskWorkerExtensionPolicySettingsBusy || !taskWorkerExtensionPolicySettingsAvailable;
+  }
+  if (controls.status) {
+    controls.status.textContent = status;
+    controls.status.dataset.state = state;
+  }
+}
+
+async function loadTaskWorkerExtensionPolicySettings(): Promise<void> {
+  if (taskWorkerExtensionPolicySettingsBusy) return;
+  taskWorkerExtensionPolicySettingsBusy = true;
+  taskWorkerExtensionPolicySettingsAvailable = false;
+  renderTaskWorkerExtensionPolicySettings(confirmedTaskWorkerExtensionPolicy, "Loading host-wide task-worker extension discovery…", "pending");
+  try {
+    const response = await api<TaskWorkerExtensionPolicySettingsResponse>("/task-worker-settings");
+    if (!isTaskWorkerExtensionPolicy(response.extensionPolicy)) throw new Error("invalid task-worker settings response");
+    confirmedTaskWorkerExtensionPolicy = response.extensionPolicy;
+    taskWorkerExtensionPolicySettingsAvailable = true;
+    renderTaskWorkerExtensionPolicySettings(confirmedTaskWorkerExtensionPolicy, "Applies to new task workers only.", "idle");
+  } catch {
+    renderTaskWorkerExtensionPolicySettings(confirmedTaskWorkerExtensionPolicy, "Could not load host-wide task-worker extension discovery.", "error");
+  } finally {
+    taskWorkerExtensionPolicySettingsBusy = false;
+    const controls = taskWorkerExtensionPolicyControls();
+    if (controls.policy) controls.policy.disabled = !taskWorkerExtensionPolicySettingsAvailable;
+  }
+}
+
+async function saveTaskWorkerExtensionPolicySettings(): Promise<void> {
+  if (taskWorkerExtensionPolicySettingsBusy || !taskWorkerExtensionPolicySettingsAvailable) return;
+  const policy = taskWorkerExtensionPolicyControls().policy?.value;
+  if (!isTaskWorkerExtensionPolicy(policy)) return;
+  const confirmedBeforeSave = confirmedTaskWorkerExtensionPolicy;
+  let renderedPolicy = policy;
+  let message = "Saving host-wide task-worker extension discovery…";
+  let state: "pending" | "error" | "success" = "pending";
+  taskWorkerExtensionPolicySettingsBusy = true;
+  renderTaskWorkerExtensionPolicySettings(renderedPolicy, message, state);
+  try {
+    const response = await api<TaskWorkerExtensionPolicySettingsResponse>("/task-worker-settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ extensionPolicy: policy }),
+    });
+    if (!isTaskWorkerExtensionPolicy(response.extensionPolicy)) throw new Error("invalid task-worker settings response");
+    confirmedTaskWorkerExtensionPolicy = response.extensionPolicy;
+    renderedPolicy = confirmedTaskWorkerExtensionPolicy;
+    message = "Host-wide task-worker extension discovery saved.";
+    state = "success";
+  } catch {
+    renderedPolicy = confirmedBeforeSave;
+    message = "Could not save host-wide task-worker extension discovery.";
+    state = "error";
+  } finally {
+    taskWorkerExtensionPolicySettingsBusy = false;
+    renderTaskWorkerExtensionPolicySettings(renderedPolicy, message, state);
+  }
+}
 
 async function loadAgentsSettings(): Promise<void> {
   const list = document.getElementById("agents-list");
@@ -2955,6 +3046,7 @@ function showAgentAddError(msg: string): void {
   const input = document.getElementById("agent-add-input");
   const providers = document.getElementById("provider-readiness-list");
   const refresh = document.getElementById("provider-refresh-btn");
+  const taskWorkerExtensionPolicy = document.getElementById("task-worker-extension-policy");
   if (btn) btn.addEventListener("click", () => addAgent());
   if (input) input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); addAgent(); }
@@ -2967,6 +3059,7 @@ function showAgentAddError(msg: string): void {
     if (command && !addButton.disabled) void addDetectedProvider(command);
   });
   if (refresh) refresh.addEventListener("click", () => { void loadProviderReadiness(); });
+  if (taskWorkerExtensionPolicy) taskWorkerExtensionPolicy.addEventListener("change", () => void saveTaskWorkerExtensionPolicySettings());
 })();
 
 async function createSessionWithAgent(cmd) {
