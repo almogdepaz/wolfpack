@@ -52,12 +52,19 @@ describe("ExtensionHost", () => {
       container: container as unknown as HTMLElement,
       scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
       authFetch: async () => Response.json(catalog()),
-      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => register.registerContextView({ id: "context", title: "Context", mount() { mounts++; if (failMount) throw Error("broken view"); return { dispose() {} }; } }) })) as never,
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => {
+        register.registerContextView({ id: "context", title: "Context", mount() { mounts++; if (failMount) throw Error("broken view"); return { dispose() {} }; } });
+        host.select(); // a partial catalog must not auto-mount even its first registered view
+      } })) as never,
     });
     const tabs = () => container.children.find(child => "extensionTabs" in child.dataset)!;
     await host.refresh();
     expect(mounts).toBe(0); // registration alone still does not mount
     expect(tabs().hidden).toBe(false); // fallback selection remains reachable
+    expect(host.setShellVisible(false)).toBe(true);
+    expect(host.setShellVisible(false)).toBe(false);
+    host.select(); expect(mounts).toBe(0); // no automatic mount in a collapsed panel
+    expect(host.setShellVisible(true)).toBe(true);
     host.select();
     expect(host.selectedId).toBe("view0/context"); expect(mounts).toBe(1); expect(tabs().hidden).toBe(true);
     host.select(); expect(mounts).toBe(1);

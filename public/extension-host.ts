@@ -110,6 +110,7 @@ export class ExtensionHost {
   async refresh(): Promise<void> {
     if (this.disposed) return;
     const generation = ++this.generation;
+    this.catalog = null;
     const scope = this.options.scope();
     const previousScope = this.currentScope;
     if (previousScope?.sessionId !== scope?.sessionId) {
@@ -133,7 +134,6 @@ export class ExtensionHost {
       const catalog = parseCatalog(await response.json());
       if (this.disposed || generation !== this.generation) return;
       if (catalog.safeMode) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
-      this.catalog = catalog;
       const installationId = catalog.installations[0]?.installationId ?? null;
       // A changed installation owns different trusted registrations. Ordinary
       // session scope changes were already cleaned above without unregistering
@@ -148,6 +148,7 @@ export class ExtensionHost {
       for (const id of [...this.loaded.keys()]) if (!active.has(id)) this.cleanupPackage(id);
       for (const item of catalog.installations) if (item.enabled && item.ui) await this.load(item, generation);
       if (generation === this.generation) {
+        this.catalog = catalog;
         try { this.options.onCatalogReady?.(); } catch {}
         this.render();
       }
@@ -163,16 +164,18 @@ export class ExtensionHost {
   /** The host may explicitly open a sole view after catalog loading; registration stays inert. */
   select(id?: string): void {
     if (id === undefined) {
+      if (!this.catalog || !this.shellVisible) return;
       const entries = this.registry.entries();
       if (entries.length !== 1 || this.registry.selectedId) return;
       id = entries[0]!.id;
     }
     this.registry.select(id);
   }
-  setShellVisible(visible: boolean): void {
-    if (this.disposed || this.shellVisible === visible) return;
+  setShellVisible(visible: boolean): boolean {
+    if (this.disposed || this.shellVisible === visible) return false;
     this.shellVisible = visible;
     this.pausePollers();
+    return true;
   }
   dispose(): void { if (this.disposed) return; this.disposed = true; ++this.generation; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(true); this.registry.dispose(); }
 
@@ -399,15 +402,17 @@ export class ExtensionHost {
     this.cleanupScopeResources();
   }
   private render(message = this.registry.diagnostic): void {
-    const tabs = this.options.container.querySelector<HTMLElement>("[data-extension-tabs]") ?? document.createElement("div");
-    if (!tabs.parentElement) { tabs.dataset.extensionTabs = ""; tabs.setAttribute("role", "tablist"); this.options.container.prepend(tabs); }
+    const root = this.options.container;
+    const tabs = root.querySelector<HTMLElement>("[data-extension-tabs]") ?? document.createElement("div");
+    if (!tabs.parentElement) { tabs.dataset.extensionTabs = ""; tabs.setAttribute("role", "tablist"); root.prepend(tabs); }
     const entries = this.registry.entries();
-    tabs.hidden = entries.length < 2 && (!entries.length || !!this.registry.selectedId);
+    const selected = this.registry.selectedId;
+    tabs.hidden = entries.length < 2 && (!entries.length || !!selected);
     tabs.replaceChildren();
-    for (const entry of entries) { const button = document.createElement("button"); button.type = "button"; button.textContent = entry.contribution.title; button.setAttribute("role", "tab"); button.setAttribute("aria-selected", String(entry.id === this.registry.selectedId)); button.addEventListener("click", () => this.select(entry.id)); tabs.append(button); }
-    let status = this.options.container.querySelector<HTMLElement>("[data-extension-status]");
-    if (!status) { status = document.createElement("p"); status.dataset.extensionStatus = ""; status.setAttribute("role", "status"); this.options.container.prepend(status); }
-    status.textContent = message || this.selectedDocumentStatus() || (this.registry.selectedId ? "" : entries.length ? "Select a context view." : "No enabled context views for this scope.");
+    for (const entry of entries) { const tab = document.createElement("button"); tab.type = "button"; tab.textContent = entry.contribution.title; tab.setAttribute("role", "tab"); tab.setAttribute("aria-selected", String(entry.id === selected)); tab.addEventListener("click", () => this.select(entry.id)); tabs.append(tab); }
+    let status = root.querySelector<HTMLElement>("[data-extension-status]");
+    if (!status) { status = document.createElement("p"); status.dataset.extensionStatus = ""; status.setAttribute("role", "status"); root.prepend(status); }
+    status.textContent = message || this.selectedDocumentStatus() || (selected ? "" : entries.length ? "Select a context view." : "No enabled context views for this scope.");
     this.options.onChange?.();
   }
   private selectedDocumentStatus(): string | null {

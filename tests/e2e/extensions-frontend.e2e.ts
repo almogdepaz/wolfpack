@@ -259,9 +259,13 @@ test("a sole Agent Context opens directly without its redundant tab and multiple
   try {
     for (const id of others) runCli(["extensions", "disable", id]);
     await authorize(page);
+    await page.addInitScript(() => localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ contextCollapsed: true })));
     await page.goto(server!.baseUrl);
     await openSession(page, SESSION_A);
     const view = page.locator("[data-context-view='agent-context/context']");
+    await expect(page.locator("[data-extension-tabs] [role='tab']")).toHaveCount(1);
+    await expect(view).toHaveCount(0); // collapsed shell never auto-mounts a view
+    await page.getByRole("button", { name: "Expand context panel", exact: true }).click();
     const current = JSON.parse(runCli(["extension-data", "read", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port));
     await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
     await expect(page.locator("[data-extension-tabs]")).toBeHidden();

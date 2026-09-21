@@ -5425,7 +5425,7 @@ if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayout
 let extensionHost: ExtensionHost | null = null;
 const workspaceShell = createWorkspaceShell({
   onTerminalGeometryChange: () => scheduleGridStabilizedFit(),
-  onContextVisibilityChange: visible => extensionHost?.setShellVisible(visible),
+  onContextVisibilityChange: visible => { if (extensionHost?.setShellVisible(visible)) extensionHost.select(); },
 });
 window.addEventListener("resize", () => scheduleGridStabilizedFit());
 
