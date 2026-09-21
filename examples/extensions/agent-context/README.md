@@ -4,7 +4,9 @@ A publishable static Wolfpack extension package. Its generated `dist/ui.js` is s
 
 The contribution registers the local `context` view and the explicit **Lead + stack** recipe. Installing it does not select either contribution. Use normal host controls to select the view and recipe.
 
-The view labels data as agent-authored, displays the exact scope UUID and subscription revision, and renders document strings through DOM `textContent`. Its textarea is a namespaced local draft only; it is not published context.
+The view is a compact, theme-aware session brief: a clear goal, separated headline/detail disclosures, visible plan statuses and reported progress, prominent blockers, and numbered next steps. Each bullet expands independently with native keyboard/touch controls. Stable item IDs retain expansion and focused rows across revisions and reordering. Legacy plain-text items remain fully readable without invented summaries or empty expanders.
+
+The revision and agent-authored label stay visible; the exact UUID and provenance explanation live under **Session details**. **Local draft** is a collapsed, namespaced browser-only scratchpad, not a context editor or publication action. Existing drafts are retained. Document strings are assigned through DOM `textContent`, never interpreted as HTML. Extension-scoped styles ship inside its own UI bundle and inherit host theme tokens when available; no host CSS or terminal geometry changes are required.
 
 ## Install and skill ownership
 

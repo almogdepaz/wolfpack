@@ -165,9 +165,10 @@ async function expectSelfContext(cli: string, port: number, sessionId: string): 
   if (context.ok !== true || context.verified !== true || context.sessionId !== sessionId || context.projectDir !== project || context.harness !== "shell") fail(`incorrect self context: ${JSON.stringify(context)}`);
   return context.sessionId;
 }
-async function expectRead(cli: string, port: number, sessionId: string, revision: number, goal: string | null): Promise<void> {
+async function expectRead(cli: string, port: number, sessionId: string, revision: number, goal: string | null, decisionDetails?: string): Promise<void> {
   const data = JSON.parse(runCli(cli, ["extension-data", "read", "agent-context/context", "--session", sessionId, "--json"], port));
   if (data.revision !== revision || (goal === null ? data.document !== null : data.document?.goal !== goal)) fail(`unexpected read response ${JSON.stringify(data)}`);
+  if (decisionDetails !== undefined && data.document?.decisions?.[0]?.details !== decisionDetails) fail("structured bullet details did not round-trip through the compiled CLI");
 }
 
 try {
@@ -187,7 +188,10 @@ try {
   const secondDocument = join(sandbox, "second.json");
   const document = (goal: string) => ({ schemaVersion: 1, goal, planItems: [], decisions: [], blockers: [], nextSteps: [] });
   writeFileSync(firstDocument, JSON.stringify(document("retained across compiled server restart")));
-  writeFileSync(secondDocument, JSON.stringify(document("revision two")));
+  writeFileSync(secondDocument, JSON.stringify({ ...document("revision two"),
+    planItems: [{ id: "review", text: "Review the brief", status: "in_progress", details: "Check each item's expanded content." }],
+    decisions: [{ id: "disclosure", text: "Use collapsible details", details: "Keep supporting detail separate from the headline." }],
+  }));
   const cli = join(bin, "wolfpack");
   const serverBin = join(bin, "wolfpack-extension-server");
   const workerEntry = join(ROOT, "src", "task-relay", "worker-entry.ts");
@@ -228,7 +232,7 @@ try {
   if (retry.receipt?.revision !== 1 || retry.receipt?.requestId !== requestId) fail(`identical retry did not return retained receipt: ${JSON.stringify(retry)}`);
   runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
   runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "1", "--request-id", randomUUID(), "--json"], port);
-  await expectRead(cli, port, original.wolfpackSessionId, 2, "revision two");
+  await expectRead(cli, port, original.wolfpackSessionId, 2, "revision two", "Keep supporting detail separate from the headline.");
 
   await backend!.killSessionById(original.wolfpackSessionId);
   const retainedAfterExit = JSON.parse(runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
