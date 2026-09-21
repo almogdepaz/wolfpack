@@ -18,7 +18,7 @@ Use this skill when the user asks to publish Agent Context data. “Update this 
    ```sh
    wolfpack extension-data read agent-context/context --session <exact-uuid> --json
    ```
-3. Build JSON following [the bounded format](references/context-format.md). Give each item a concise `text` headline, meaningful `details`, and a stable section-unique `id` so its expansion survives updates. It is agent-authored context, not proof that work, tests, or tools succeeded. Never publish secrets, raw transcripts, executable instructions, or fabricated evidence.
+3. Build JSON following [the bounded format](references/context-format.md). Write each bullet as a concise headline, a blank line, and meaningful details inside its existing text string. Keep plan IDs and other item headlines stable so expansion survives updates; do not add fields or change the installed schema. It is agent-authored context, not proof that work, tests, or tools succeeded. Never publish secrets, raw transcripts, executable instructions, or fabricated evidence.
 4. Publish with the read revision and a fresh canonical UUID request ID:
    ```sh
    wolfpack extension-data publish agent-context/context --session <exact-uuid> \

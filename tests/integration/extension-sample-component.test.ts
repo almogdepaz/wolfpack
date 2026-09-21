@@ -90,12 +90,12 @@ test("generated Agent Context component preserves focused drafts and ignores lat
 const richDocument = {
   schemaVersion: 1, goal: "Make Agent Context easier to scan",
   planItems: [
-    { id: "inspect", text: "Inspect the changes", details: "Review spacing, hierarchy and interactions.", status: "in_progress" },
-    { id: "ship", text: "Apply the update", details: "Keep the live terminal and its session unchanged.", status: "pending" },
+    { id: "inspect", text: "Inspect the changes\n\nReview spacing, hierarchy and interactions.", status: "in_progress" },
+    { id: "ship", text: "Apply the update\n\nKeep the live terminal and its session unchanged.", status: "pending" },
   ],
-  decisions: [{ id: "native", text: "Native disclosures", details: "Keyboard, touch and pointer users can expand each item independently." }],
-  blockers: [{ id: "feedback", text: "Feedback needed", details: "Waiting for the design review before claiming visual acceptance." }],
-  nextSteps: [{ id: "review", text: "Review the narrow sidebar", details: "Check long headlines and expanded descriptions." }],
+  decisions: ["Native disclosures\n\nKeyboard, touch and pointer users can expand each item independently."],
+  blockers: ["Feedback needed\n\nWaiting for the design review before claiming visual acceptance."],
+  nextSteps: ["Review the narrow sidebar\n\nCheck long headlines and expanded descriptions."],
 };
 
 test("bullet disclosures preserve keyboard focus and independent expansion across updates and reordering", async () => {
@@ -113,7 +113,7 @@ test("bullet disclosures preserve keyboard focus and independent expansion acros
     await inspect.evaluate((element) => { (globalThis as any).__focusedSummary = element; });
     await page.evaluate((value) => {
       const sample = (globalThis as any).__sample;
-      sample.publish({ ...value, planItems: [value.planItems[1], { ...value.planItems[0], text: "Inspect the revised changes", details: "New supporting detail." }] }, 2);
+      sample.publish({ ...value, planItems: [value.planItems[1], { ...value.planItems[0], text: "Inspect the revised changes\n\nNew supporting detail." }] }, 2);
       sample.publish(value, 1);
     }, richDocument);
     expect(await page.evaluate(() => document.activeElement === (globalThis as any).__focusedSummary)).toBe(true);
@@ -136,10 +136,10 @@ test("disclosure preferences and local draft survive remount without publishing 
     await page.getByText("Native disclosures", { exact: true }).click();
     await page.getByText("Local draft", { exact: true }).click();
     await page.getByRole("textbox", { name: "Local draft", exact: true }).fill("Keep this local");
-    await page.waitForFunction(() => (globalThis as any).__sample.storage.get('bullet-open:["decisions","native",0]') === "true");
+    await page.waitForFunction(() => (globalThis as any).__sample.storage.get('bullet-open:["decisions","Native disclosures",0]') === "true");
     await page.evaluate((value) => { const sample = (globalThis as any).__sample; sample.remount(); sample.publish(value, 1); }, richDocument);
     expect(await page.getByRole("textbox", { name: "Local draft", exact: true }).inputValue()).toBe("Keep this local");
-    expect(await page.getByText(richDocument.decisions[0].details, { exact: true }).isVisible()).toBe(true);
+    expect(await page.getByText(richDocument.decisions[0].split("\n\n")[1]!, { exact: true }).isVisible()).toBe(true);
     await page.evaluate(() => (globalThis as any).__sample.publish({ schemaVersion: 1, goal: "Legacy", planItems: [{ id: "plain", text: "Existing plan", status: "complete" }], decisions: ["An existing decision"], blockers: [], nextSteps: [] }, 2));
     expect(await page.getByText("An existing decision", { exact: true }).isVisible()).toBe(true);
     expect(await page.locator(".wac-item details:not([hidden])").count()).toBe(0);
@@ -153,10 +153,10 @@ test("all plan states stay readable, blockers are prominent, and expanded hostil
   try {
     const { page } = fixture;
     const statuses = ["pending", "in_progress", "complete", "blocked"];
-    await page.evaluate((value) => (globalThis as any).__sample.publish(value, 1), { ...richDocument, planItems: statuses.map((status) => ({ id: status, text: status, status, details: "<img src=x onerror=alert(1)>\n<script>bad()</script>" })) });
+    await page.evaluate((value) => (globalThis as any).__sample.publish(value, 1), { ...richDocument, planItems: statuses.map((status) => ({ id: status, text: `${status}\n\n<img src=x onerror=alert(1)>\n<script>bad()</script>`, status })) });
     for (const label of ["Pending", "In progress", "Complete", "Blocked"]) expect(await page.locator(".wac-status").getByText(label, { exact: true }).isVisible()).toBe(true);
     expect(await page.getByRole("progressbar").getAttribute("aria-valuetext")).toBe("1 of 4 items complete, reported by the agent");
-    expect(await page.getByText(richDocument.blockers[0].details, { exact: true }).isVisible()).toBe(true);
+    expect(await page.getByText(richDocument.blockers[0].split("\n\n")[1]!, { exact: true }).isVisible()).toBe(true);
     const plan = page.getByRole("region", { name: "Plan", exact: true });
     await plan.locator(".wac-item summary").first().click();
     expect(await plan.locator(".wac-detail").first().textContent()).toContain("<img src=x onerror=alert(1)>");
@@ -191,7 +191,7 @@ test("widget has no horizontal overflow or serious accessibility violations with
   const fixture = await component({ hostStyles: true });
   try {
     const { page } = fixture;
-    await page.evaluate((value) => (globalThis as any).__sample.publish(value, 1), { ...richDocument, decisions: [{ id: "long", text: "A".repeat(240), details: "https://example.test/" + "long".repeat(1000) }] });
+    await page.evaluate((value) => (globalThis as any).__sample.publish(value, 1), { ...richDocument, decisions: ["A".repeat(240) + "\n\nhttps://example.test/" + "long".repeat(1000)] });
     await page.locator(".wac-item summary").filter({ hasText: "A".repeat(240) }).click();
     for (const width of [220, 320, 960]) {
       await page.setViewportSize({ width, height: 1000 });
@@ -210,7 +210,7 @@ test("Agent Context visual fixture uses host styles at narrow, sidebar and full-
   try {
     const document = process.env.WOLFPACK_WIDGET_DOCUMENT
       ? JSON.parse(readFileSync(process.env.WOLFPACK_WIDGET_DOCUMENT, "utf8")).document
-      : { schemaVersion: 1, goal: "Make the session brief easier to scan", planItems: [{ id: "design", text: "Refine the widget", status: "in_progress", details: "Separate each item clearly. Keep its headline and status visible, with supporting detail one click away." }], decisions: [{ id: "disclosures", text: "Progressive disclosure", details: "Use native keyboard-accessible disclosures. Keep expanded items open when a new revision arrives." }], blockers: [], nextSteps: [{ id: "review", text: "Review the new design", details: "Check the narrow sidebar and full context view, then verify keyboard interaction." }] };
+      : { schemaVersion: 1, goal: "Make the session brief easier to scan", planItems: [{ id: "design", text: "Refine the widget\n\nSeparate each item clearly. Keep its headline and status visible, with supporting detail one click away.", status: "in_progress" }], decisions: ["Progressive disclosure\n\nUse native keyboard-accessible disclosures. Keep expanded items open when a new revision arrives."], blockers: [], nextSteps: ["Review the new design\n\nCheck the narrow sidebar and full context view, then verify keyboard interaction."] };
     await fixture.page.evaluate((value) => (globalThis as any).__sample.publish(value, 1), document);
     for (const width of [220, 320, 960]) {
       await fixture.page.setViewportSize({ width, height: 1000 });

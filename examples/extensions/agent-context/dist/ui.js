@@ -133,20 +133,22 @@ function leadStackLayout(input) {
 }
 
 // examples/extensions/agent-context/src/model.ts
-function bullet(value) {
-  if (!value || typeof value !== "object")
-    return false;
-  const item = value;
-  return typeof item.id === "string" && typeof item.text === "string" && (item.details === undefined || typeof item.details === "string");
+function splitBulletText(value) {
+  const separator = /\r?\n[\t ]*\r?\n/.exec(value);
+  if (!separator)
+    return { text: value };
+  const text = value.slice(0, separator.index);
+  const details = value.slice(separator.index + separator[0].length);
+  return text.trim() && details.trim() ? { text, details } : { text: value };
 }
-function bullets(value) {
-  return Array.isArray(value) && value.every((item) => typeof item === "string" || bullet(item) && typeof item.details === "string");
+function strings(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 function document2(value) {
   if (!value || typeof value !== "object")
     return false;
   const item = value;
-  return item.schemaVersion === 1 && typeof item.goal === "string" && bullets(item.decisions) && bullets(item.blockers) && bullets(item.nextSteps) && Array.isArray(item.planItems) && item.planItems.every((plan) => bullet(plan) && ("status" in plan) && typeof plan.status === "string" && ["pending", "in_progress", "complete", "blocked"].includes(plan.status));
+  return item.schemaVersion === 1 && typeof item.goal === "string" && strings(item.decisions) && strings(item.blockers) && strings(item.nextSteps) && Array.isArray(item.planItems) && item.planItems.every((plan) => plan && typeof plan === "object" && typeof plan.id === "string" && typeof plan.text === "string" && ["pending", "in_progress", "complete", "blocked"].includes(plan.status));
 }
 function acceptsRevision(previous, next) {
   return Number.isSafeInteger(next) && next >= previous;
@@ -156,7 +158,19 @@ function contextViewModel(value, revision = 0) {
     return { state: "empty", revision: 0 };
   if (!document2(value))
     return { state: "error", revision };
-  return { ...value, state: "ready", revision };
+  const bullets = (values) => values.map((value) => {
+    const parts = splitBulletText(value);
+    return { id: parts.text, ...parts };
+  });
+  return {
+    state: "ready",
+    revision,
+    goal: value.goal,
+    planItems: value.planItems.map((item) => ({ id: item.id, status: item.status, ...splitBulletText(item.text) })),
+    decisions: bullets(value.decisions),
+    blockers: bullets(value.blockers),
+    nextSteps: bullets(value.nextSteps)
+  };
 }
 
 // examples/extensions/agent-context/src/styles.ts
