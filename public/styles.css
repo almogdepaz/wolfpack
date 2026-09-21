@@ -1784,7 +1784,8 @@ body.no-animations, body.no-animations * {
 #workspace-context-container [data-extension-tabs] button { border: 1px solid var(--border-hover); border-radius: var(--radius-sm); background: var(--bg-inset); color: var(--text-secondary); padding: 4px 7px; font: inherit; cursor: pointer; }
 #workspace-context-container [data-extension-tabs] button[aria-selected="true"] { border-color: var(--accent-border); color: var(--accent); }
 #workspace-context-container [data-extension-status] { margin: 0 0 8px; color: var(--text-dim); }
-#workspace-context-container [data-context-view][hidden] { display: none; }
+#workspace-context-container [data-context-view][hidden],
+#workspace-context-container [data-extension-tabs][hidden] { display: none; }
 .workspace-context-collapsed #workspace-context-region { display: none; }
 .workspace-context-collapsed #workspace-terminal-region { width: 100%; }
 #workspace-shell[data-full-view="context"] #workspace-terminal-region,

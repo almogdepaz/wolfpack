@@ -252,6 +252,34 @@ test("authenticated installed packages compose qualified local views and refresh
   }
 });
 
+test("a sole Agent Context opens directly without its redundant tab and multiple views retain their tabs", async ({ page }, testInfo) => {
+  test.skip(!["desktop", "iphone-14"].includes(testInfo.project.name), "desktop and responsive touch single-view contract");
+  const catalog = JSON.parse(runCli(["extensions", "list", "--json"]));
+  const others = catalog.installations.filter((item: { extensionId: string; enabled: boolean }) => item.extensionId !== "agent-context" && item.enabled).map((item: { extensionId: string }) => item.extensionId);
+  try {
+    for (const id of others) runCli(["extensions", "disable", id]);
+    await authorize(page);
+    await page.goto(server!.baseUrl);
+    await openSession(page, SESSION_A);
+    const view = page.locator("[data-context-view='agent-context/context']");
+    const current = JSON.parse(runCli(["extension-data", "read", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port));
+    await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
+    await expect(page.locator("[data-extension-tabs]")).toBeHidden();
+    await expect(page.getByRole("tab", { name: "Agent Context", exact: true })).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath("single-context-no-tab.png") });
+    runCli(["extensions", "enable", "notes"]);
+    await refreshThroughSessionSwitch(page, testInfo);
+    await expect(page.getByRole("tab", { name: "Agent Context", exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Notes", exact: true }).click();
+    runCli(["extensions", "disable", "notes"]);
+    await refreshThroughSessionSwitch(page, testInfo);
+    await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
+    await expect(page.locator("[data-extension-tabs]")).toBeHidden();
+  } finally {
+    for (const id of others) runCli(["extensions", "enable", id]);
+  }
+});
+
 test("installed package disable re-enable remove reinstall and update preserve an unrelated package", async ({ page }, testInfo) => {
   test.skip(!["desktop", "mobile-webkit"].includes(testInfo.project.name), "desktop Chromium and WebKit package lifecycle");
   await authorize(page);

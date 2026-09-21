@@ -19,7 +19,7 @@ class FakeElement {
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   addEventListener() {}
   querySelector<T extends FakeElement>(selector: string): T | null {
-    const name = selector.match(/^\[data-([^\]]+)\]$/)?.[1];
+    const name = selector.match(/^\[data-([^\]]+)\]$/)?.[1]?.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
     return (name ? this.children.find(child => name in child.dataset) : undefined) as T ?? null;
   }
 }
@@ -41,6 +41,41 @@ afterEach(() => {
 });
 
 describe("ExtensionHost", () => {
+  test("host opt-in opens the sole view without a tab, while multiple views keep their selector", async () => {
+    container = new FakeElement();
+    let count = 1; let mounts = 0; let failMount = false;
+    const catalog = () => ({ safeMode: false, installations: Array.from({ length: count }, (_, index) => {
+      const extensionId = `view${index}`; const digest = String(index).repeat(64);
+      return { installationId, extensionId, enabled: true, package: { name: extensionId, version: "1.0.0", digest }, ui: { path: "ui.js", url: `/api/extensions/assets/${extensionId}/${digest}/ui.js`, digest: "a".repeat(64), mime: "text/javascript" }, documents: [] };
+    }) });
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      authFetch: async () => Response.json(catalog()),
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => register.registerContextView({ id: "context", title: "Context", mount() { mounts++; if (failMount) throw Error("broken view"); return { dispose() {} }; } }) })) as never,
+    });
+    const tabs = () => container.children.find(child => "extensionTabs" in child.dataset)!;
+    await host.refresh();
+    expect(mounts).toBe(0); // registration alone still does not mount
+    expect(tabs().hidden).toBe(false); // fallback selection remains reachable
+    host.select();
+    expect(host.selectedId).toBe("view0/context"); expect(mounts).toBe(1); expect(tabs().hidden).toBe(true);
+    host.select(); expect(mounts).toBe(1);
+    count = 2; await host.refresh(); host.select();
+    expect(tabs().hidden).toBe(false); expect(host.selectedId).toBe("view0/context");
+    host.select("view1/context"); expect(mounts).toBe(2);
+    count = 1; await host.refresh(); host.select();
+    expect(host.selectedId).toBe("view0/context"); expect(tabs().hidden).toBe(true);
+    count = 0; await host.refresh(); host.select();
+    expect(host.selectedId).toBeNull(); expect(tabs().hidden).toBe(true);
+    count = 1; failMount = true; await host.refresh(); host.select();
+    expect(host.selectedId).toBeNull(); expect(tabs().hidden).toBe(false);
+    expect(host.diagnostic).toContain("broken view");
+    failMount = false; host.select("view0/context");
+    expect(tabs().hidden).toBe(true);
+    host.dispose();
+  });
+
   test("pauses document polling for a hidden view even while another view remains visible", async () => {
     container = new FakeElement();
     let documentReads = 0;

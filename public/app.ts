@@ -5468,6 +5468,7 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
     };
   },
   onCatalogReady: () => {
+    extensionHost?.select();
     if (!workspaceTerminalLayouts.finalizeRestoration()) return;
     if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
     selectWorkspaceTerminalLayout(workspaceTerminalLayouts.selectedId);

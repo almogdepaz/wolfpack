@@ -4,7 +4,7 @@ import type { TerminalLayoutContribution } from "../src/extensions/layout-contra
 import type { ExtensionRegistration, ExtensionViewContext } from "../src/extensions/sdk.ts";
 import type { ExtensionCatalogEnvelope, ExtensionCatalogInstallation, ExtensionDocumentReadEnvelope } from "../src/extensions/runtime-contract.ts";
 import { browserAuthFetch } from "./browser-auth.ts";
-import { ContextViewRegistry, type ContextViewScope } from "./context-view-registry.ts";
+import { contextScopeHint, ContextViewRegistry, type ContextViewScope } from "./context-view-registry.ts";
 import { SharedDocumentPoller } from "./extension-document-polling.ts";
 import { loadAuthenticatedExtensionBundle } from "./extension-loader.ts";
 
@@ -123,7 +123,7 @@ export class ExtensionHost {
     if (!scope || !scope.sessionId || scope.unavailable) {
       this.registry.setScope(null);
       this.cleanupScopeResources();
-      this.render(scope?.unavailable ?? "Select a live terminal with an exact session identity to view extension context.");
+      this.render(scope?.unavailable ?? contextScopeHint());
       return;
     }
     if (this.options.safeMode?.()) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
@@ -160,7 +160,15 @@ export class ExtensionHost {
     }
   }
 
-  select(id: string): void { this.registry.select(id); }
+  /** The host may explicitly open a sole view after catalog loading; registration stays inert. */
+  select(id?: string): void {
+    if (id === undefined) {
+      const entries = this.registry.entries();
+      if (entries.length !== 1 || this.registry.selectedId) return;
+      id = entries[0]!.id;
+    }
+    this.registry.select(id);
+  }
   setShellVisible(visible: boolean): void {
     if (this.disposed || this.shellVisible === visible) return;
     this.shellVisible = visible;
@@ -393,11 +401,13 @@ export class ExtensionHost {
   private render(message = this.registry.diagnostic): void {
     const tabs = this.options.container.querySelector<HTMLElement>("[data-extension-tabs]") ?? document.createElement("div");
     if (!tabs.parentElement) { tabs.dataset.extensionTabs = ""; tabs.setAttribute("role", "tablist"); this.options.container.prepend(tabs); }
+    const entries = this.registry.entries();
+    tabs.hidden = entries.length < 2 && (!entries.length || !!this.registry.selectedId);
     tabs.replaceChildren();
-    for (const entry of this.registry.entries()) { const button = document.createElement("button"); button.type = "button"; button.textContent = entry.contribution.title; button.setAttribute("role", "tab"); button.setAttribute("aria-selected", String(entry.id === this.registry.selectedId)); button.addEventListener("click", () => this.select(entry.id)); tabs.append(button); }
+    for (const entry of entries) { const button = document.createElement("button"); button.type = "button"; button.textContent = entry.contribution.title; button.setAttribute("role", "tab"); button.setAttribute("aria-selected", String(entry.id === this.registry.selectedId)); button.addEventListener("click", () => this.select(entry.id)); tabs.append(button); }
     let status = this.options.container.querySelector<HTMLElement>("[data-extension-status]");
     if (!status) { status = document.createElement("p"); status.dataset.extensionStatus = ""; status.setAttribute("role", "status"); this.options.container.prepend(status); }
-    status.textContent = message || this.selectedDocumentStatus() || (this.registry.selectedId ? "" : this.registry.entries().length ? "Select a context view." : "No enabled context views for this scope.");
+    status.textContent = message || this.selectedDocumentStatus() || (this.registry.selectedId ? "" : entries.length ? "Select a context view." : "No enabled context views for this scope.");
     this.options.onChange?.();
   }
   private selectedDocumentStatus(): string | null {

@@ -27,6 +27,7 @@ interface MountedContextView {
 }
 
 const MAX_RETAINED_CONTEXT_VIEWS = 32;
+export function contextScopeHint(): string { return "Select a live terminal with an exact session identity to view extension context."; }
 
 /**
  * Host-owned context-view lifecycle. It owns each wrapper and never lets package
@@ -73,7 +74,7 @@ export class ContextViewRegistry {
       // The initial unavailable/error path has no previous scope to replace but
       // still needs host-owned chrome instead of a silent empty region.
       if (!scope && !this.diagnosticValue) {
-        this.diagnosticValue = "Select a live terminal with an exact session identity to view extension context.";
+        this.diagnosticValue = contextScopeHint();
         this.changed();
       }
       return;
@@ -81,7 +82,7 @@ export class ContextViewRegistry {
     this.disposeAllMounted();
     this.scopeValue = scope;
     this.selectedValue = null;
-    this.diagnosticValue = scope ? "" : "Select a live terminal with an exact session identity to view extension context.";
+    this.diagnosticValue = scope ? "" : contextScopeHint();
     this.changed();
   }
 
@@ -99,7 +100,7 @@ export class ContextViewRegistry {
       return;
     }
     if (!this.scopeValue) {
-      this.diagnosticValue = "Select a live terminal with an exact session identity to view extension context.";
+      this.diagnosticValue = contextScopeHint();
       this.changed();
       return;
     }
