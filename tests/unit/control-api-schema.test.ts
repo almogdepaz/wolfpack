@@ -520,6 +520,58 @@ describe("control api schema compatibility samples", () => {
     }, artifact)).toEqual([]);
   });
 
+  test("publishes task-worker policy bounds without shrinking mandatory diagnostics", () => {
+    const override = resolveRef({ $ref: "#/$defs/TaskWorkerPolicyOverride" }, artifact);
+    const diagnostics = resolveRef({ $ref: "#/$defs/TaskWorkerPolicyDiagnostics" }, artifact);
+    const overrideProperties = override.properties as JsonObject;
+    const diagnosticsProperties = diagnostics.properties as JsonObject;
+    const extensions = overrideProperties.extensions as JsonObject;
+    const env = overrideProperties.env as JsonObject;
+    const diagnosticExtensions = diagnosticsProperties.extensions as JsonObject;
+    const diagnosticEnvKeys = diagnosticsProperties.envKeys as JsonObject;
+    const sources = diagnosticsProperties.sources as JsonObject;
+    const sourceEnv = (sources.properties as JsonObject).env as JsonObject;
+
+    expect(extensions).toMatchObject({
+      maxItems: 32,
+      items: { type: "string", minLength: 1, maxLength: 4_096, pattern: "^/" },
+    });
+    expect(validate(override, { extensions: Array.from({ length: 32 }, () => "/worker.ts") }, artifact)).toEqual([]);
+    expect(validate(override, { extensions: Array.from({ length: 33 }, () => "/worker.ts") }, artifact)).not.toEqual([]);
+    expect(env).toMatchObject({
+      maxProperties: 64,
+      propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_]*$" },
+      additionalProperties: { anyOf: [{ type: "string", maxLength: 8_192 }, { type: "null" }] },
+    });
+    expect(diagnosticExtensions).toMatchObject({ maxItems: 33 });
+    expect(diagnosticEnvKeys).toMatchObject({
+      maxItems: 64,
+      items: { type: "string", pattern: "^[A-Za-z_][A-Za-z0-9_]*$" },
+    });
+    expect(sourceEnv).toMatchObject({
+      maxProperties: 64,
+      propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_]*$" },
+    });
+  });
+
+  test("uses Unicode code points for task-worker policy string limits", () => {
+    const override = resolveRef({ $ref: "#/$defs/TaskWorkerPolicyOverride" }, artifact);
+    const exactEnvValue = "x".repeat(8_191) + "😀";
+    const overEnvValue = exactEnvValue + "😀";
+    const reviewerEnvValue = "😀".repeat(4_097);
+    const exactExtension = "/" + "x".repeat(4_094) + "😀";
+    const overExtension = exactExtension + "😀";
+
+    expect(validate(override, { env: { VALUE: exactEnvValue }, extensions: [exactExtension] }, artifact)).toEqual([]);
+    expect(validate(override, { env: { REVIEWER: reviewerEnvValue } }, artifact)).toEqual([]);
+    expect(validate(override, { env: { VALUE: overEnvValue } }, artifact)).not.toEqual([]);
+    expect(validate(override, { extensions: [overExtension] }, artifact)).not.toEqual([]);
+    const validPrototypeEnv = Object.fromEntries([["__proto__", "ok"], ["constructor", "ok"]]);
+    const overlengthPrototypeEnv = Object.fromEntries([["__proto__", overEnvValue], ["constructor", overEnvValue]]);
+    expect(validate(override, { env: validPrototypeEnv }, artifact)).toEqual([]);
+    expect(validate(override, { env: overlengthPrototypeEnv }, artifact)).not.toEqual([]);
+  });
+
   test("models task-worker mode exclusions and recovery errors", () => {
     const topLevel = httpRequest("createTopLevelSession");
     const child = httpRequest("openSession");

@@ -17,6 +17,7 @@ import {
 export interface TestServer {
   port: number;
   baseUrl: string;
+  readonly home: string;
   readonly processId: number;
   /** Stop the server subprocess after its temporary home is cleaned up. */
   close(): Promise<void>;
@@ -137,6 +138,7 @@ export function startTestServer(options: TestServerOptions = {}): Promise<TestSe
         resolve({
           port,
           baseUrl: `http://127.0.0.1:${port}`,
+          home: isolatedHome.path,
           processId: child.pid ?? -1,
           close() {
             if (closePromise) return closePromise;

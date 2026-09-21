@@ -56,6 +56,13 @@ import {
   TASK_STATUS,
 } from "../tasks/domain.ts";
 import { RELAY_ERROR, RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../task-relay/domain.ts";
+import {
+  TASK_WORKER_POLICY_ENVIRONMENT_NAME_PATTERN,
+  TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
+  TASK_WORKER_POLICY_MAX_ENV_VALUE_LENGTH,
+  TASK_WORKER_POLICY_MAX_EXTENSION_PATH_LENGTH,
+  TASK_WORKER_POLICY_MAX_EXTENSIONS,
+} from "../task-worker-policy-contract.ts";
 import { volatileRelayDefinitions } from "./volatile-relay-schema.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
@@ -197,6 +204,8 @@ function sessionCreateRequestSchema(): JsonSchema {
       minimum: 1,
       maximum: SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
     },
+    taskWorkerPolicy: ref("TaskWorkerPolicyOverride"),
+    taskWorkerDryRun: { const: true },
   };
   return {
     type: "object",
@@ -206,6 +215,8 @@ function sessionCreateRequestSchema(): JsonSchema {
       projectDir: ref("ProjectDirectory"),
       taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
       readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
+      taskWorkerPolicy: taskWorkerProperties.taskWorkerPolicy,
+      taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
     },
     additionalProperties: false,
     oneOf: [
@@ -242,6 +253,8 @@ function sessionOpenRequestSchema(): JsonSchema {
       minimum: 1,
       maximum: SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
     },
+    taskWorkerPolicy: ref("TaskWorkerPolicyOverride"),
+    taskWorkerDryRun: { const: true },
   };
   return {
     type: "object",
@@ -251,6 +264,8 @@ function sessionOpenRequestSchema(): JsonSchema {
       ...ordinaryProperties,
       taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
       readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
+      taskWorkerPolicy: taskWorkerProperties.taskWorkerPolicy,
+      taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
     },
     additionalProperties: false,
     oneOf: [
@@ -353,6 +368,32 @@ const providerIdentityProperties = {
   command: ref("Command"),
 } as const;
 
+const taskWorkerExtensionPathSchema = {
+  type: "string",
+  minLength: 1,
+  maxLength: TASK_WORKER_POLICY_MAX_EXTENSION_PATH_LENGTH,
+  pattern: "^/",
+} as const;
+
+const taskWorkerEnvironmentValueSchema = {
+  anyOf: [
+    { type: "string", maxLength: TASK_WORKER_POLICY_MAX_ENV_VALUE_LENGTH },
+    { type: "null" },
+  ],
+} as const;
+
+const taskWorkerEnvironmentSchema = {
+  type: "object",
+  maxProperties: TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
+  propertyNames: { pattern: TASK_WORKER_POLICY_ENVIRONMENT_NAME_PATTERN },
+  additionalProperties: taskWorkerEnvironmentValueSchema,
+} as const;
+
+const taskWorkerEnvironmentKeysSchema = {
+  ...arrayOf({ type: "string", pattern: TASK_WORKER_POLICY_ENVIRONMENT_NAME_PATTERN }),
+  maxItems: TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
+} as const;
+
 export const controlApiSource: ControlApiSource = {
   schemaVersion: CONTROL_API_SCHEMA_VERSION,
   artifactPath: CONTROL_API_SCHEMA_ARTIFACT,
@@ -393,6 +434,52 @@ export const controlApiSource: ControlApiSource = {
         }, ["error", "code", "createdSession", "cleanup"]),
       ],
     },
+    TaskWorkerPolicyOverride: {
+      type: "object",
+      properties: {
+        extensionPolicy: { enum: ["isolated", "inherit"] },
+        extensions: {
+          ...arrayOf(taskWorkerExtensionPathSchema),
+          maxItems: TASK_WORKER_POLICY_MAX_EXTENSIONS,
+        },
+        env: taskWorkerEnvironmentSchema,
+        piOptions: object({
+          thinking: { anyOf: [{ enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }, { type: "null" }] },
+          offline: { anyOf: [{ type: "boolean" }, { type: "null" }] },
+          verbose: { anyOf: [{ type: "boolean" }, { type: "null" }] },
+        }),
+      },
+      additionalProperties: false,
+    },
+    TaskWorkerPolicyDiagnostics: object({
+      extensionPolicy: { enum: ["isolated", "inherit"] },
+      extensions: {
+        ...arrayOf(taskWorkerExtensionPathSchema),
+        // Diagnostics include mandatory Pi Tasks plus the configured optional extension ceiling.
+        maxItems: TASK_WORKER_POLICY_MAX_EXTENSIONS + 1,
+      },
+      envKeys: taskWorkerEnvironmentKeysSchema,
+      piOptions: object({
+        thinking: { enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+        offline: boolean(),
+        verbose: boolean(),
+      }),
+      sources: object({
+        extensionPolicy: { enum: ["default", "host", "project", "spawn"] },
+        extensions: { enum: ["default", "host", "project", "spawn"] },
+        env: {
+          type: "object",
+          maxProperties: TASK_WORKER_POLICY_MAX_ENV_ENTRIES,
+          propertyNames: { pattern: TASK_WORKER_POLICY_ENVIRONMENT_NAME_PATTERN },
+          additionalProperties: { enum: ["default", "host", "project", "spawn"] },
+        },
+        piOptions: { type: "object", additionalProperties: { enum: ["default", "host", "project", "spawn"] } },
+      }, ["extensionPolicy", "extensions", "env", "piOptions"]),
+    }, ["extensionPolicy", "extensions", "envKeys", "piOptions", "sources"]),
+    TaskWorkerPolicyDryRunResponse: object({
+      ok: { const: true },
+      taskWorkerPolicy: ref("TaskWorkerPolicyDiagnostics"),
+    }, ["ok", "taskWorkerPolicy"]),
     DirectoryBrowseErrorEnvelope: object({
       error: {
         enum: [
@@ -481,6 +568,9 @@ export const controlApiSource: ControlApiSource = {
       cmds: arrayOf(ref("CmdEntry")),
       quietAlerts: ref("QuietAlertPolicy"),
     }, ["agentCmd", "cmds", "quietAlerts"]),
+    TaskWorkerExtensionPolicySettings: object({
+      extensionPolicy: { enum: ["inherit", "isolated"] },
+    }, ["extensionPolicy"]),
     EffectiveSettings: object({
       agentCmd: string(),
       cmds: arrayOf(ref("Command")),
@@ -1097,14 +1187,19 @@ export const controlApiSource: ControlApiSource = {
       stable: true,
       auth: "jwt-when-configured",
       request: sessionCreateRequestSchema(),
-      response: object({
-        ok: { const: true },
-        session: ref("SessionName"),
-        sessionId: ref("SessionId"),
-        project: ref("ProjectLabel"),
-        harness: string(),
-        taskEndpoint: ref("RelayEndpoint"),
-      }, ["ok", "session", "sessionId", "project", "harness"]),
+      response: {
+        oneOf: [
+          object({
+            ok: { const: true },
+            session: ref("SessionName"),
+            sessionId: ref("SessionId"),
+            project: ref("ProjectLabel"),
+            harness: string(),
+            taskEndpoint: ref("RelayEndpoint"),
+          }, ["ok", "session", "sessionId", "project", "harness"]),
+          ref("TaskWorkerPolicyDryRunResponse"),
+        ],
+      },
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope|TaskWorkerLaunchErrorEnvelope"],
     },
     "POST /api/session-open": {
@@ -1112,14 +1207,19 @@ export const controlApiSource: ControlApiSource = {
       stable: true,
       auth: "jwt-when-configured",
       request: sessionOpenRequestSchema(),
-      response: object({
-        ok: { const: true },
-        session: ref("SessionName"),
-        sessionId: ref("SessionId"),
-        project: ref("ProjectLabel"),
-        harness: ref("OpenableHarness"),
-        taskEndpoint: ref("RelayEndpoint"),
-      }, ["ok", "session", "sessionId", "project", "harness"]),
+      response: {
+        oneOf: [
+          object({
+            ok: { const: true },
+            session: ref("SessionName"),
+            sessionId: ref("SessionId"),
+            project: ref("ProjectLabel"),
+            harness: ref("OpenableHarness"),
+            taskEndpoint: ref("RelayEndpoint"),
+          }, ["ok", "session", "sessionId", "project", "harness"]),
+          ref("TaskWorkerPolicyDryRunResponse"),
+        ],
+      },
       errors: [...sessionOpenErrorLines(), "503 TaskWorkerLaunchErrorEnvelope"],
     },
     "GET /api/providers": {
@@ -1161,6 +1261,21 @@ export const controlApiSource: ControlApiSource = {
         effective: ref("EffectiveSettings"),
       }, ["ok", "settings", "effective"]),
       errors: ["400 ErrorEnvelope"],
+    },
+    "GET /api/task-worker-settings": {
+      operationId: "getTaskWorkerExtensionPolicySettings",
+      stable: true,
+      auth: "jwt-when-configured",
+      response: ref("TaskWorkerExtensionPolicySettings"),
+      errors: ["503 ErrorEnvelope"],
+    },
+    "POST /api/task-worker-settings": {
+      operationId: "updateTaskWorkerExtensionPolicySettings",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: ref("TaskWorkerExtensionPolicySettings"),
+      response: ref("TaskWorkerExtensionPolicySettings"),
+      errors: ["400 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "GET /api/backend": {
       operationId: "getBackendStatus",

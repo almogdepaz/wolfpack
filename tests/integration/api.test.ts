@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, hostname } from "node:os";
 import pkg from "../../package.json";
@@ -20,6 +20,7 @@ import {
   SESSION_PROMPT_SELECTOR_MAX_CHARS,
 } from "../../src/session-prompt-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../../src/validation.ts";
+import { TASK_WORKER_POLICY_MAX_BYTES } from "../../src/task-worker-policy-contract.ts";
 import {
   createTailnetOriginServerFixture,
   getTailnetReadyPort,
@@ -44,6 +45,7 @@ const PRIOR_WOLFPACK_SESSION_IDENTITY_PATH = process.env.WOLFPACK_SESSION_IDENTI
 const PRIOR_WOLFPACK_AGENT_RUNTIME_STATE_PATH = process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH;
 const PRIOR_WOLFPACK_SETTINGS_PATH = process.env.WOLFPACK_SETTINGS_PATH;
 const PRIOR_WOLFPACK_TASK_RELAY_ROOT = process.env.WOLFPACK_TASK_RELAY_ROOT;
+const PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH = process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
 const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
 // Create a real temp dir for test project directories.
@@ -59,8 +61,10 @@ process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = join(TEST_DEV_DIR, "agent-runtim
 // before the first request.
 const TEST_SETTINGS_PATH = join(TEST_DEV_DIR, "bridge-settings.json");
 const TEST_TASK_RELAY_ROOT = join(TEST_DEV_DIR, "task-relay");
+const TEST_TASK_WORKER_POLICY_PATH = join(TEST_DEV_DIR, "task-worker-policy.json");
 process.env.WOLFPACK_SETTINGS_PATH = TEST_SETTINGS_PATH;
 process.env.WOLFPACK_TASK_RELAY_ROOT = TEST_TASK_RELAY_ROOT;
+process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = TEST_TASK_WORKER_POLICY_PATH;
 
 const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/task-relay/gateway.ts");
 await __resetTaskRelayGatewayForTests();
@@ -170,6 +174,8 @@ afterAll(async () => {
   await __resetTaskRelayGatewayForTests();
   if (PRIOR_WOLFPACK_TASK_RELAY_ROOT === undefined) delete process.env.WOLFPACK_TASK_RELAY_ROOT;
   else process.env.WOLFPACK_TASK_RELAY_ROOT = PRIOR_WOLFPACK_TASK_RELAY_ROOT;
+  if (PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH === undefined) delete process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
+  else process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH;
   for (const root of externalTempRoots) rmSync(root, { recursive: true, force: true });
   rmSync(TEST_DEV_DIR, { recursive: true, force: true });
   if (PRIOR_WOLFPACK_DEV_DIR === undefined) delete process.env.WOLFPACK_DEV_DIR;
@@ -2412,6 +2418,62 @@ describe("agent-native top-level session control", () => {
     }
   });
 
+  test("returns a redacted task-worker policy dry-run without creating a session", async () => {
+    const root = createExplicitProjectDir("task-worker-dry-run");
+    const executable = join(root, "pi");
+    const extension = join(root, "extension.ts");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    writeFileSync(extension, "export {}\n");
+    const priorExecutable = process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE;
+    const priorExtension = process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION;
+    const priorPolicyPath = process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
+    process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE = executable;
+    process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION = extension;
+    process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = join(root, "absent-policy.json");
+    mockBackend.lastCreateArgs = null;
+    try {
+      const response = await post("/api/session-create", {
+        projectDir: root,
+        harness: "pi",
+        taskWorker: true,
+        taskWorkerDryRun: true,
+        taskWorkerPolicy: {
+          extensionPolicy: "inherit",
+          env: { PI_ASYNC_PREFIX_COMPACTION_START_RATIO: "0.5" },
+          piOptions: { thinking: "high", offline: true },
+        },
+      });
+      const body = await response.json();
+      expect(response.ok).toBeTruthy();
+      expect(validateSchema(responseSchema("createTopLevelSession"), body, controlApiSchema)).toEqual([]);
+      expect(body).toEqual({
+        ok: true,
+        taskWorkerPolicy: {
+          extensionPolicy: "inherit",
+          extensions: [extension],
+          envKeys: ["PI_ASYNC_PREFIX_COMPACTION_START_RATIO"],
+          piOptions: { thinking: "high", offline: true },
+          sources: {
+            extensionPolicy: "spawn",
+            extensions: "default",
+            env: { PI_ASYNC_PREFIX_COMPACTION_START_RATIO: "spawn" },
+            piOptions: { thinking: "spawn", offline: "spawn" },
+          },
+        },
+      });
+      expect(JSON.stringify(body)).not.toContain("0.5");
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    } finally {
+      if (priorExecutable === undefined) delete process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE;
+      else process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE = priorExecutable;
+      if (priorExtension === undefined) delete process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION;
+      else process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION = priorExtension;
+      if (priorPolicyPath === undefined) delete process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
+      else process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = priorPolicyPath;
+    }
+  });
+
   test("publishes task-worker create/open success and recovery bodies that satisfy generated schemas", async () => {
     const root = createExplicitProjectDir("task-worker-public");
     const executable = join(root, "pi");
@@ -3804,6 +3866,116 @@ async function resetSettingsToDefaults() {
   });
 }
 
+describe("task-worker settings API", () => {
+  beforeEach(() => {
+    process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = TEST_TASK_WORKER_POLICY_PATH;
+    rmSync(TEST_TASK_WORKER_POLICY_PATH, { recursive: true, force: true });
+  });
+
+  test("round-trips only the host extension policy while preserving private overrides", async () => {
+    const initial = await get("/api/task-worker-settings");
+    expect(initial.status).toBe(200);
+    expect(await initial.json()).toEqual({ extensionPolicy: "inherit" });
+
+    const created = await post("/api/task-worker-settings", { extensionPolicy: "inherit" });
+    expect(created.status).toBe(200);
+    expect(statSync(TEST_TASK_WORKER_POLICY_PATH).mode & 0o777).toBe(0o600);
+
+    writeFileSync(TEST_TASK_WORKER_POLICY_PATH, JSON.stringify({
+      defaults: {
+        extensionPolicy: "inherit",
+        extensions: ["/opt/wolfpack/private-extension.ts"],
+        env: { PRIVATE_CANARY: "do-not-expose" },
+        piOptions: { thinking: "high" },
+      },
+      projects: {
+        [TEST_DEV_DIR]: { extensionPolicy: "inherit", env: { PROJECT_CANARY: "also-private" } },
+      },
+    }));
+
+    const update = await post("/api/task-worker-settings", { extensionPolicy: "isolated" });
+    expect(update.status).toBe(200);
+    expect(await update.json()).toEqual({ extensionPolicy: "isolated" });
+    expect(JSON.parse(readFileSync(TEST_TASK_WORKER_POLICY_PATH, "utf8"))).toEqual({
+      defaults: {
+        extensionPolicy: "isolated",
+        extensions: ["/opt/wolfpack/private-extension.ts"],
+        env: { PRIVATE_CANARY: "do-not-expose" },
+        piOptions: { thinking: "high" },
+      },
+      projects: {
+        [TEST_DEV_DIR]: { extensionPolicy: "inherit", env: { PROJECT_CANARY: "also-private" } },
+      },
+    });
+    expect(await (await get("/api/task-worker-settings")).json()).toEqual({ extensionPolicy: "isolated" });
+  });
+
+  test("rejects invalid input and unsafe or invalid private files without exposing or changing them", async () => {
+    for (const body of [{}, { extensionPolicy: "unknown" }, { extensionPolicy: "inherit", unexpected: true }]) {
+      expect((await post("/api/task-worker-settings", body)).status).toBe(400);
+    }
+
+    const malformedPolicy = '{"defaults":{"env":{"PRIVATE_CANARY":"actual-secret-value"}}';
+    writeFileSync(TEST_TASK_WORKER_POLICY_PATH, malformedPolicy);
+    const malformedGet = await get("/api/task-worker-settings");
+    expect(malformedGet.status).toBe(503);
+    expect(JSON.stringify(await malformedGet.json())).not.toContain("actual-secret-value");
+    const malformed = await post("/api/task-worker-settings", { extensionPolicy: "isolated" });
+    expect(malformed.status).toBe(503);
+    expect(JSON.stringify(await malformed.json())).not.toContain("actual-secret-value");
+    expect(readFileSync(TEST_TASK_WORKER_POLICY_PATH, "utf8")).toBe(malformedPolicy);
+
+    rmSync(TEST_TASK_WORKER_POLICY_PATH, { force: true });
+    mkdirSync(TEST_TASK_WORKER_POLICY_PATH);
+    expect((await get("/api/task-worker-settings")).status).toBe(503);
+    expect((await post("/api/task-worker-settings", { extensionPolicy: "isolated" })).status).toBe(503);
+  });
+
+  test("rejects a symlink or a serialized update over the policy size cap without data loss", async () => {
+    const target = join(TEST_DEV_DIR, "task-worker-policy-target.json");
+    writeFileSync(target, JSON.stringify({ defaults: { extensionPolicy: "inherit" } }));
+    symlinkSync(target, TEST_TASK_WORKER_POLICY_PATH);
+    const symlinkedGet = await get("/api/task-worker-settings");
+    expect(symlinkedGet.status).toBe(503);
+    const symlinked = await post("/api/task-worker-settings", { extensionPolicy: "isolated" });
+    expect(symlinked.status).toBe(503);
+    expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ defaults: { extensionPolicy: "inherit" } });
+    rmSync(TEST_TASK_WORKER_POLICY_PATH, { force: true });
+
+    const extensions = Array.from({ length: 15 }, () => `/${"x".repeat(4_095)}`);
+    extensions.push("/");
+    const policy = { defaults: { extensionPolicy: "inherit", extensions } };
+    const initialSize = Buffer.byteLength(`${JSON.stringify(policy, null, 2)}\n`);
+    extensions[15] = `/${"x".repeat(TASK_WORKER_POLICY_MAX_BYTES - initialSize)}`;
+    const serialized = `${JSON.stringify(policy, null, 2)}\n`;
+    expect(Buffer.byteLength(serialized)).toBe(TASK_WORKER_POLICY_MAX_BYTES);
+    writeFileSync(TEST_TASK_WORKER_POLICY_PATH, serialized);
+
+    const oversized = await post("/api/task-worker-settings", { extensionPolicy: "isolated" });
+    expect(oversized.status).toBe(503);
+    expect(readFileSync(TEST_TASK_WORKER_POLICY_PATH, "utf8")).toBe(serialized);
+  });
+
+  test("keeps a readable policy unchanged when the atomic destination directory rejects a write", async () => {
+    const failureDirectory = join(TEST_DEV_DIR, "task-worker-policy-write-failure");
+    const failurePath = join(failureDirectory, "policy.json");
+    const originalPolicy = '{"defaults":{"extensionPolicy":"inherit","env":{"PRIVATE_CANARY":"actual-write-secret"}}}';
+    mkdirSync(failureDirectory, { recursive: true, mode: 0o700 });
+    writeFileSync(failurePath, originalPolicy, { mode: 0o600 });
+    process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = failurePath;
+    chmodSync(failureDirectory, 0o500);
+    try {
+      const failed = await post("/api/task-worker-settings", { extensionPolicy: "isolated" });
+      expect(failed.status).toBe(503);
+      expect(JSON.stringify(await failed.json())).not.toContain("actual-write-secret");
+      expect(readFileSync(failurePath, "utf8")).toBe(originalPolicy);
+    } finally {
+      chmodSync(failureDirectory, 0o700);
+      rmSync(failureDirectory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("GET /api/providers", () => {
   test("reports allowlisted provider readiness without probing user commands", async () => {
     const providerBin = join(TEST_DEV_DIR, "provider-bin");
@@ -4142,6 +4314,7 @@ describe("JSON body shape validation", () => {
       "/api/create",
       "/api/session-open",
       "/api/settings",
+      "/api/task-worker-settings",
       "/api/kill",
       "/api/session-control/send",
       "/api/session-control/prompt",

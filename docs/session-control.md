@@ -42,6 +42,40 @@ Add `--task-worker` to `session create` or `agent spawn` only with `--project-di
 
 Before creating anything, Wolfpack resolves and validates only the resources it will launch: `WOLFPACK_TASK_WORKER_PI_EXECUTABLE` (otherwise `pi` from `PATH`) and `WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION` (otherwise `$PI_CODING_AGENT_DIR/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts`, or `~/.pi/agent/...` when the Pi config directory is unset). Both configured paths must be absolute; the executable must be a regular executable file (working package-manager symlinks are accepted), and the extension must be a readable regular file.
 
+### host-owned launch policy
+
+Workers inherit normal Pi extension discovery by default while retaining the mandatory Pi Tasks extension. Set `extensionPolicy: "isolated"` to disable discovery, or add readable absolute local extension files. The private host file is `~/.wolfpack/task-worker-policy.json`; services/tests may set the absolute `WOLFPACK_TASK_WORKER_POLICY_PATH` override. The dashboard's host-wide Agents & tools control changes only `defaults.extensionPolicy` in that private file; it never exposes or edits environment, project, extension-path, or Pi-option overrides. The policy is deliberately not a repository file: an untrusted checkout cannot select executable extensions or inject environment before Pi makes its own project-trust decision.
+
+```json
+{
+  "defaults": {
+    "extensionPolicy": "isolated",
+    "extensions": ["/opt/wolfpack/extensions/worker-tools.ts"],
+    "env": { "PI_ASYNC_PREFIX_COMPACTION_START_RATIO": "0.5" },
+    "piOptions": { "thinking": "high", "offline": true }
+  },
+  "projects": {
+    "/absolute/canonical/worktree": { "extensionPolicy": "inherit" }
+  }
+}
+```
+
+Precedence is defaults, then host defaults, then the canonical server project key, then the per-spawn override. Scalars replace; `extensions` replaces the optional list (`[]` clears it); `env` and `piOptions` merge by key, and a `null` override explicitly clears one inherited key. Pi Tasks remains mandatory and is canonicalized/deduplicated with optional files. Present malformed, unreadable, oversized, dangling, or unsupported configuration fails before session creation; an absent host file keeps the inherited-discovery default.
+
+Allowed `piOptions` are only `thinking` (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`), `offline`, and `verbose`. Model selection remains the existing child `--model` option. There is no arbitrary argv or shell escape hatch. Worker env names, values, and count are bounded; `WOLFPACK_*`, identity/relay/config/executable-resolution variables, and shell transport values are reserved. Ordinary provider/application values and `PI_ASYNC_PREFIX_COMPACTION_START_RATIO` are allowed. After precedence and null-clearing, the aggregate UTF-8 bytes of environment names and values must not exceed 32 KiB; this cross-field byte rule is enforced at runtime because JSON Schema cannot represent it. Configured values are injected before the worker's normal `SHELL -lic` startup, so shell rc files may override them; values never appear in Pi argv.
+
+Use `--task-worker-policy-file <local-json-file>` to send one parsed per-spawn override to the selected host. It is read locally, never embedded in a shell command. Add `--task-worker-dry-run --json` to either task-worker launch path to validate the same host/project policy without creating a session. Its typed result lists mode, canonical extension paths, safe Pi options, environment **key names only**, and source precedence; it never returns environment values or raw host policy contents.
+
+`inherit` enables Pi's normal global and, after Pi trust, project extension discovery. Extra extensions and inherited extensions execute as the host user; this is resource selection, not a sandbox. Wolfpack never passes `--approve` or mutates Pi trust. A project may therefore prompt for trust, and readiness still proves only the live Pi session/root/relay endpoint—not extension execution, model readiness, or task success. The same policy resolves on the target host for Tailnet launches; local CLI policy-file paths are sent as parsed data, so they must not be assumed to exist remotely.
+
+Common examples:
+
+1. no policy file or flags: normal Pi discovery plus mandatory Pi Tasks.
+2. host default `{ "extensionPolicy": "inherit" }`: normal global discovery, with project resources still subject to Pi trust.
+3. canonical project override `{ "extensionPolicy": "isolated", "extensions": ["/opt/wolfpack/repo-tools.ts"] }`: discovery disabled while one local allowlisted extension remains loaded.
+4. worker override `{ "env": { "PI_ASYNC_PREFIX_COMPACTION_START_RATIO": "0.5" }, "piOptions": { "thinking": "high", "offline": true } }`: safe worker env and bounded native Pi options.
+5. Tailnet preview: `wolfpack --machine host.tailnet.ts.net agent spawn --project-dir /absolute/worktree --task-worker --task-worker-dry-run --json`; this evaluates the remote host policy and creates nothing.
+
 The child launches Pi with the explicit extension and `PI_TASK_WORKER=1`; no startup assignment prompt runs. Success waits only for the exact live broker `sessionId`, exact canonical project root, Pi harness, and a lease-valid endpoint in the selected relay profile. The normal memory-owned profile also checks that endpoint and epoch have not changed before returning. It does not infer model readiness, task execution, or state from terminal output. A ready local success additionally returns `taskEndpoint: { relay, id }`.
 
 For a remote launch or exact `session status` selection, the CLI resolves that

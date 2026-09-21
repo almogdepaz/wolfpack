@@ -67,8 +67,9 @@ export function validateControlApiSchemaValue(
 
   if (typeof value === "string") {
     const errors: string[] = [];
-    if (typeof resolved.minLength === "number" && value.length < resolved.minLength) errors.push(`${path} is too short`);
-    if (typeof resolved.maxLength === "number" && value.length > resolved.maxLength) errors.push(`${path} is too long`);
+    const codePointLength = Array.from(value).length;
+    if (typeof resolved.minLength === "number" && codePointLength < resolved.minLength) errors.push(`${path} is too short`);
+    if (typeof resolved.maxLength === "number" && codePointLength > resolved.maxLength) errors.push(`${path} is too long`);
     if (typeof resolved.pattern === "string" && !new RegExp(resolved.pattern).test(value)) errors.push(`${path} failed pattern ${resolved.pattern}`);
     if (resolved.format === "uuid" && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)) {
       errors.push(`${path} expected uuid`);
@@ -99,9 +100,17 @@ export function validateControlApiSchemaValue(
     return errors;
   }
 
-  if (isJsonObject(value) && isJsonObject(resolved.properties)) {
+  if (isJsonObject(value)) {
+    const properties = isJsonObject(resolved.properties) ? resolved.properties : {};
+    const keys = Object.keys(value);
     const required = Array.isArray(resolved.required) ? resolved.required : [];
     const errors: string[] = [];
+    if (typeof resolved.maxProperties === "number" && keys.length > resolved.maxProperties) {
+      errors.push(`${path} has too many properties`);
+    }
+    if (isJsonObject(resolved.propertyNames)) {
+      errors.push(...keys.flatMap((key) => validateControlApiSchemaValue(resolved.propertyNames, key, root, `${path}.${key}`)));
+    }
     for (const key of required) {
       if (typeof key === "string" && !(key in value)) errors.push(`${path}.${key} is required`);
     }
@@ -115,12 +124,15 @@ export function validateControlApiSchemaValue(
         }
       }
     }
-    for (const [key, child] of Object.entries(resolved.properties)) {
+    for (const [key, child] of Object.entries(properties)) {
       if (key in value) errors.push(...validateControlApiSchemaValue(child, value[key], root, `${path}.${key}`));
     }
-    if (resolved.additionalProperties === false) {
-      for (const key of Object.keys(value)) {
-        if (!(key in resolved.properties)) errors.push(`${path}.${key} is not allowed`);
+    for (const key of keys) {
+      if (Object.hasOwn(properties, key)) continue;
+      if (resolved.additionalProperties === false) {
+        errors.push(`${path}.${key} is not allowed`);
+      } else if (isJsonObject(resolved.additionalProperties)) {
+        errors.push(...validateControlApiSchemaValue(resolved.additionalProperties, value[key], root, `${path}.${key}`));
       }
     }
     return errors;

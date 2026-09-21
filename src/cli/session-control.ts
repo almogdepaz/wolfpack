@@ -39,6 +39,9 @@ import type {
   SessionPromptWaitResult,
 } from "../session-prompt-contract.js";
 import { call as callApi } from "./api.js";
+import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
+import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
+import type { TaskWorkerPolicyDiagnostics, TaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import type { VerifiedMachineTarget } from "./machine-target.js";
 import { print, printApiJson, printError, printJson, red, yellow } from "./formatting.js";
 
@@ -63,7 +66,7 @@ const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 
 export function sessionCreateUsage(): string {
   return `Usage: wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
-       wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]
+       wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
 
 Global selector: wolfpack --machine <short-name-or-fqdn> session create ...
 
@@ -74,7 +77,7 @@ The server owns validation, naming, identity, and launch.`;
 
 export function sessionOpenUsage(): string {
   return `Usage: wolfpack session open <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-       wolfpack session open --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]
+       wolfpack session open --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
 
 Global selector: wolfpack --machine <short-name-or-fqdn> session open ...
 
@@ -88,7 +91,7 @@ Global selector: wolfpack --machine <short-name-or-fqdn> agent spawn ...
 
 Commands:
   wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-  wolfpack agent spawn --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]
+  wolfpack agent spawn --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
   wolfpack agent notify-parent [--message <text>] [--json]
 
 Spawns a same-harness child of the current Wolfpack agent session or sends a user-visible notification from a child agent.`;
@@ -122,6 +125,8 @@ export type ParsedSessionCommand =
     readonly promptFile?: string;
     readonly plan?: string;
     readonly taskWorker?: true;
+    readonly taskWorkerPolicyFile?: string;
+    readonly taskWorkerDryRun?: true;
     readonly readinessTimeoutMs?: number;
     readonly output: OutputMode;
   }
@@ -136,6 +141,8 @@ export type ParsedSessionCommand =
     readonly plan?: string;
     readonly notifyParent?: true;
     readonly taskWorker?: true;
+    readonly taskWorkerPolicyFile?: string;
+    readonly taskWorkerDryRun?: true;
     readonly readinessTimeoutMs?: number;
     readonly output: OutputMode;
   }
@@ -159,6 +166,8 @@ export type ParsedAgentCommand =
     readonly plan?: string;
     readonly notifyParent?: true;
     readonly taskWorker?: true;
+    readonly taskWorkerPolicyFile?: string;
+    readonly taskWorkerDryRun?: true;
     readonly readinessTimeoutMs?: number;
     readonly output: OutputMode;
   }
@@ -264,6 +273,8 @@ const LAUNCH_KNOWN_OPTIONS = new Set([
   "--message",
   "--project-dir",
   "--task-worker",
+  "--task-worker-policy-file",
+  "--task-worker-dry-run",
   "--readiness-timeout-ms",
 ]);
 
@@ -323,6 +334,8 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
   const modelValue = action === "open" ? consumeLaunchValue(args, "--model") : null;
   const notifyParent = consumeFlag(args, "--notify-parent");
   const taskWorker = consumeFlag(args, "--task-worker");
+  const taskWorkerPolicyFileValue = consumeLaunchValue(args, "--task-worker-policy-file");
+  const taskWorkerDryRun = consumeFlag(args, "--task-worker-dry-run");
   const readinessTimeoutValue = consumeLaunchValue(args, "--readiness-timeout-ms");
   const harnessValue = action === "create" ? consumeValue(args, "--harness") : null;
   const { mode: output, shellRequested } = parseOutputMode(args);
@@ -364,6 +377,9 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     && !notifyParent
     && (action !== "create" || harnessValue === null || harness === AGENT_KIND.PI.id)
   );
+  const validTaskWorkerPolicyFile = taskWorkerPolicyFileValue === null
+    || (taskWorker && Boolean(taskWorkerPolicyFileValue.trim()));
+  const validTaskWorkerDryRun = !taskWorkerDryRun || (taskWorker && output === "json");
   const validReadinessTimeout = readinessTimeoutValue === null || (
     taskWorker
     && readinessTimeoutMs !== undefined
@@ -371,7 +387,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     && readinessTimeoutMs >= 1
     && readinessTimeoutMs <= SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS
   );
-  if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validModel || !validHarness || !validNotify || !validTaskWorker || !validReadinessTimeout) {
+  if (selector === null || args.length > 0 || !validPrompt || !validPromptSources || !validSessionName || !validModel || !validHarness || !validNotify || !validTaskWorker || !validTaskWorkerPolicyFile || !validTaskWorkerDryRun || !validReadinessTimeout) {
     return {
       ok: false,
       message: action === "create" ? sessionCreateUsage().split("\n")[0] : sessionOpenUsage().split("\n")[0],
@@ -387,6 +403,8 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
       ...(promptFile !== undefined && { promptFile }),
       ...(plan !== undefined && { plan }),
       ...(taskWorker && { taskWorker: true }),
+      ...(taskWorkerPolicyFileValue !== null && { taskWorkerPolicyFile: taskWorkerPolicyFileValue }),
+      ...(taskWorkerDryRun && { taskWorkerDryRun: true }),
       ...(readinessTimeoutMs !== undefined && { readinessTimeoutMs }),
       output,
     };
@@ -402,6 +420,8 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     ...(plan !== undefined && { plan }),
     ...(notifyParent && { notifyParent: true }),
     ...(taskWorker && { taskWorker: true }),
+    ...(taskWorkerPolicyFileValue !== null && { taskWorkerPolicyFile: taskWorkerPolicyFileValue }),
+    ...(taskWorkerDryRun && { taskWorkerDryRun: true }),
     ...(readinessTimeoutMs !== undefined && { readinessTimeoutMs }),
     output,
   };
@@ -511,6 +531,8 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     ...(parsed.plan !== undefined && { plan: parsed.plan }),
     ...(parsed.notifyParent && { notifyParent: true }),
     ...(parsed.taskWorker && { taskWorker: true }),
+    ...(parsed.taskWorkerPolicyFile !== undefined && { taskWorkerPolicyFile: parsed.taskWorkerPolicyFile }),
+    ...(parsed.taskWorkerDryRun && { taskWorkerDryRun: true }),
     ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
     output: parsed.output,
   };
@@ -826,8 +848,15 @@ interface SessionOpenLaunchArgs extends LaunchPromptSource {
   readonly sessionName?: string;
   readonly model?: string;
   readonly taskWorker?: true;
+  readonly taskWorkerPolicyFile?: string;
+  readonly taskWorkerDryRun?: true;
   readonly readinessTimeoutMs?: number;
 }
+
+type TaskWorkerDryRunResponse = {
+  readonly ok: true;
+  readonly taskWorkerPolicy: TaskWorkerPolicyDiagnostics;
+};
 
 function launchRequestTimeoutMs(taskWorker: boolean, readinessTimeoutMs: number | undefined): number | undefined {
   return taskWorker
@@ -867,6 +896,33 @@ async function verifyReadablePlan(path: string, output: OutputMode): Promise<num
   }
 }
 
+async function materializeTaskWorkerPolicy(
+  policyFile: string | undefined,
+  output: OutputMode,
+): Promise<TaskWorkerPolicyOverride | undefined | number> {
+  if (policyFile === undefined) return undefined;
+  let raw: string | undefined;
+  try {
+    raw = readBoundedTaskWorkerPolicyFile(policyFile);
+  } catch (error: unknown) {
+    const invalid = error instanceof TaskWorkerPolicyFileError && error.code === "invalid";
+    return writeOpenError(
+      output,
+      invalid ? "TASK_WORKER_POLICY_FILE_INVALID" : "TASK_WORKER_POLICY_FILE_UNREADABLE",
+      invalid ? "invalid task-worker policy file" : "task-worker policy file not readable",
+      invalid ? SESSION_EXIT.USAGE : SESSION_EXIT.NOT_FOUND,
+    );
+  }
+  if (raw === undefined) {
+    return writeOpenError(output, "TASK_WORKER_POLICY_FILE_UNREADABLE", "task-worker policy file not readable", SESSION_EXIT.NOT_FOUND);
+  }
+  try {
+    return parseTaskWorkerPolicyOverride(JSON.parse(raw));
+  } catch {
+    return writeOpenError(output, "TASK_WORKER_POLICY_FILE_INVALID", "invalid task-worker policy file", SESSION_EXIT.USAGE);
+  }
+}
+
 async function materializeInitialPrompt(source: LaunchPromptSource): Promise<string | undefined | number> {
   let prompt = source.prompt;
   let includesNotifyParent = false;
@@ -903,6 +959,8 @@ async function runSessionOpen(
   }
   const initialPrompt = await materializeInitialPrompt(parsed);
   if (typeof initialPrompt === "number") return initialPrompt;
+  const taskWorkerPolicy = await materializeTaskWorkerPolicy(parsed.taskWorkerPolicyFile, parsed.output);
+  if (typeof taskWorkerPolicy === "number") return taskWorkerPolicy;
 
   try {
     const response = await call("/api/session-open", {
@@ -913,13 +971,15 @@ async function runSessionOpen(
         ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
         ...(parsed.model !== undefined && { model: parsed.model }),
         ...(parsed.taskWorker && { taskWorker: true }),
+        ...(taskWorkerPolicy !== undefined && { taskWorkerPolicy }),
+        ...(parsed.taskWorkerDryRun && { taskWorkerDryRun: true }),
         ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),
-    }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse;
+    }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse | TaskWorkerDryRunResponse;
     if (parsed.output === "json") jsonOut(response, target);
-    else { print(response.session); if (response.taskEndpointError) printError(response.taskEndpointError.message); }
-    return response.taskEndpointError ? SESSION_EXIT.BACKEND_UNAVAILABLE : SESSION_EXIT.OK;
+    else if ("session" in response) { print(response.session); if (response.taskEndpointError) printError(response.taskEndpointError.message); }
+    return "taskEndpointError" in response && response.taskEndpointError ? SESSION_EXIT.BACKEND_UNAVAILABLE : SESSION_EXIT.OK;
   } catch (error: unknown) {
     return mapOpenApiError(parsed.output, error);
   }
@@ -931,6 +991,8 @@ async function runSessionCreate(
 ): Promise<number> {
   const initialPrompt = await materializeInitialPrompt(parsed);
   if (typeof initialPrompt === "number") return initialPrompt;
+  const taskWorkerPolicy = await materializeTaskWorkerPolicy(parsed.taskWorkerPolicyFile, parsed.output);
+  if (typeof taskWorkerPolicy === "number") return taskWorkerPolicy;
 
   try {
     const response = await call("/api/session-create", {
@@ -939,13 +1001,15 @@ async function runSessionCreate(
         ...projectSelectorRequest(parsed.selector),
         ...(parsed.harness !== undefined && { harness: parsed.harness }),
         ...(parsed.taskWorker && { taskWorker: true }),
+        ...(taskWorkerPolicy !== undefined && { taskWorkerPolicy }),
+        ...(parsed.taskWorkerDryRun && { taskWorkerDryRun: true }),
         ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
         ...(initialPrompt !== undefined && { initialPrompt }),
       }),
-    }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse;
+    }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse | TaskWorkerDryRunResponse;
     if (parsed.output === "json") jsonOut(response, target);
-    else { print(response.session); if (response.taskEndpointError) printError(response.taskEndpointError.message); }
-    return response.taskEndpointError ? SESSION_EXIT.BACKEND_UNAVAILABLE : SESSION_EXIT.OK;
+    else if ("session" in response) { print(response.session); if (response.taskEndpointError) printError(response.taskEndpointError.message); }
+    return "taskEndpointError" in response && response.taskEndpointError ? SESSION_EXIT.BACKEND_UNAVAILABLE : SESSION_EXIT.OK;
   } catch (error: unknown) {
     return mapCreateApiError(parsed.output, error);
   }
