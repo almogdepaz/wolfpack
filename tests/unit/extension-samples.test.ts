@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { compileStaticDocumentSchema, validateDocumentPayload } from "../../src/extensions/document-contract.ts";
+import type { ExtensionRegistration } from "../../src/extensions/sdk.ts";
 
 const root = join(import.meta.dirname, "..", "..");
 const sample = (name: string, path: string) => join(root, "examples", "extensions", name, path);
@@ -18,6 +19,14 @@ test("Agent Context and Notes are independently packaged self-contained extensio
   expect(existsSync(sample("agent-context", "schemas/context.schema.json"))).toBe(true);
   expect(existsSync(sample("agent-context", "skills/wolfpack-agent-context/SKILL.md"))).toBe(true);
   expect(existsSync(sample("agent-context", "skills/wolfpack-agent-context/references/context-format.md"))).toBe(true);
+});
+
+test("Agent Context contributes its view without duplicating host layout recipes", async () => {
+  const register: ExtensionRegistration = (await import(sample("agent-context", "dist/ui.js"))).default;
+  const views: string[] = []; const layouts: string[] = [];
+  register({ registerContextView: view => { views.push(view.id); }, registerTerminalLayout: layout => { layouts.push(layout.title); } });
+  expect(views).toEqual(["context"]);
+  expect(layouts).toEqual([]);
 });
 
 test("Agent Context view models keep hostile text inert and distinguish empty and failed data", async () => {

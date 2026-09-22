@@ -1,4 +1,4 @@
-import { leadStackLayout, type ContextViewContribution, type ExtensionRegistrationHost } from "wolfpack-bridge/extensions";
+import type { ContextViewContribution, ExtensionRegistrationHost } from "wolfpack-bridge/extensions";
 import { acceptsRevision, contextViewModel, type ContextBullet, type PlanStatus } from "./model.ts";
 import { styles } from "./styles.ts";
 
@@ -151,5 +151,4 @@ const view: ContextViewContribution = {
 
 export default function register(host: ExtensionRegistrationHost): void {
   host.registerContextView(view);
-  host.registerTerminalLayout({ id: "lead-stack", title: "Lead + stack", arrange: leadStackLayout });
 }

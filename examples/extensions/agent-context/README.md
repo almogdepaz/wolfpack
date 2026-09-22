@@ -2,7 +2,9 @@
 
 A publishable static Wolfpack extension package. Its generated `dist/ui.js` is self-contained and uses only `wolfpack-bridge/extensions` while authoring; installation never runs a compiler or package script.
 
-The contribution registers the local `context` view and the explicit **Lead + stack** recipe. Installing it does not select either contribution. Use normal host controls to select the view and recipe.
+The contribution registers only the local `context` view. The host opens a sole view once its catalog is ready and the context panel is visible; installation/registration alone stays inert. Terminal layouts belong to the host's layout picker. Its **Lead + stack** keeps the first pane as lead across focus and machine changes; reorder panes to change the lead.
+
+The old duplicate `agent-context/lead-stack` recipe is no longer contributed. Browsers with that saved recipe use the host's existing missing-recipe fallback (Equal grid); select the built-in **Lead + stack** once to retain that layout. Other recipes and context data are unaffected.
 
 The view is a compact, theme-aware session brief: a clear goal, separated headline/detail disclosures, visible plan statuses and reported progress, prominent blockers, and numbered next steps. Each bullet expands independently with native keyboard/touch controls. Stable plan IDs and other item headlines retain expansion and focused rows across revisions and reordering. Headlines and details are separated by a blank line inside existing text strings; the installed schema is unchanged, so updates require no migration. Legacy plain-text items remain fully readable without invented summaries or empty expanders.
 

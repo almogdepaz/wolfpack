@@ -259,7 +259,10 @@ test("a sole Agent Context opens directly without its redundant tab and multiple
   try {
     for (const id of others) runCli(["extensions", "disable", id]);
     await authorize(page);
-    await page.addInitScript(() => localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ contextCollapsed: true })));
+    await page.addInitScript(() => {
+      localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ contextCollapsed: true }));
+      localStorage.setItem("wolfpack-terminal-layout", "agent-context/lead-stack");
+    });
     await page.goto(server!.baseUrl);
     await openSession(page, SESSION_A);
     const view = page.locator("[data-context-view='agent-context/context']");
@@ -268,6 +271,11 @@ test("a sole Agent Context opens directly without its redundant tab and multiple
     await page.getByRole("button", { name: "Expand context panel", exact: true }).click();
     const current = JSON.parse(runCli(["extension-data", "read", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port));
     await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
+    const layouts = page.locator("#workspace-terminal-layout");
+    await expect(layouts.locator("option", { hasText: /^Lead \+ stack$/ })).toHaveCount(1);
+    await expect(layouts.locator('option[value="agent-context/lead-stack"]')).toHaveCount(0);
+    await expect(layouts).toHaveValue("equal-grid"); // existing missing-recipe fallback, not a legacy alias
+    await layouts.selectOption("lead-stack");
     await expect(page.locator("[data-extension-tabs]")).toBeHidden();
     await expect(page.getByRole("tab", { name: "Agent Context", exact: true })).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("single-context-no-tab.png") });
@@ -278,6 +286,7 @@ test("a sole Agent Context opens directly without its redundant tab and multiple
     runCli(["extensions", "disable", "notes"]);
     await refreshThroughSessionSwitch(page, testInfo);
     await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
+    await expect(layouts).toHaveValue("lead-stack");
     await expect(page.locator("[data-extension-tabs]")).toBeHidden();
   } finally {
     for (const id of others) runCli(["extensions", "enable", id]);

@@ -394,6 +394,11 @@
       >
         Reconnecting...
       </div>
+      <div class="workspace-terminal-toolbar">
+        <button id="terminal-transcript-btn" class="terminal-transcript-btn" type="button" aria-label="Read session transcript">transcript</button>
+        <label class="workspace-icon" title="Terminal layout"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M13 3v18m0-9h8"/></svg><select id="workspace-terminal-layout" aria-label="Terminal layout"><option value="equal-grid">Equal grid</option><option value="lead-stack">Lead + stack</option><option value="vertical-stack">Vertical stack</option></select></label>
+        <button id="workspace-restore" class="workspace-icon" type="button" aria-expanded="false" aria-controls="workspace-context-region" aria-label="Expand context panel" title="Expand context panel" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M11 9l-3 3 3 3"/></svg></button>
+      </div>
       <div id="workspace-shell" data-context-placement="right" data-full-view="none">
         <aside id="workspace-context-region" aria-label="Context workspace">
           <div class="workspace-context-header">
@@ -407,11 +412,6 @@
         </aside>
         <div id="workspace-context-divider" role="separator" tabindex="0" aria-label="Resize context panel" aria-controls="workspace-context-region" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="560" aria-valuenow="320"></div>
         <main id="workspace-terminal-region" aria-label="Terminal workspace">
-          <div class="workspace-terminal-toolbar">
-            <button id="terminal-transcript-btn" class="terminal-transcript-btn" type="button" aria-label="Read session transcript">transcript</button>
-            <label class="workspace-icon" title="Terminal layout"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M13 3v18m0-9h8"/></svg><select id="workspace-terminal-layout" aria-label="Terminal layout"><option value="equal-grid">Equal grid</option><option value="lead-stack">Lead + stack</option><option value="vertical-stack">Vertical stack</option></select></label>
-            <button id="workspace-restore" class="workspace-icon" type="button" aria-expanded="false" aria-controls="workspace-context-region" aria-label="Expand context panel" title="Expand context panel" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M11 9l-3 3 3 3"/></svg></button>
-          </div>
       <div id="delegation-focus-toolbar" class="delegation-focus-return">
         <button id="delegation-focus-back" type="button">← Back to session grid</button>
         <span id="delegation-focus-label"></span>

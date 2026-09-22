@@ -66,7 +66,7 @@ export function createWorkspaceShell(options: {
   };
   const collapseButton = root.querySelector<HTMLButtonElement>("#workspace-context-collapse");
   const contextFullButton = root.querySelector<HTMLButtonElement>("#workspace-context-full");
-  const restoreButton = root.querySelector<HTMLButtonElement>("#workspace-restore");
+  const restoreButton = document.querySelector<HTMLButtonElement>("#workspace-restore");
   let geometryFrame: number | null = null;
   const events = new AbortController();
   const listen = (target: HTMLElement | null, type: string, handler: EventListener) => target?.addEventListener(type, handler, { signal: events.signal });

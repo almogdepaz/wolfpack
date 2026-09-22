@@ -42,7 +42,8 @@ export class TerminalLayoutRegistry {
     this.selected = isBuiltinLayoutId(stored) ? stored : "equal-grid";
     this.pendingStoredSelection = isQualifiedLayoutId(stored) ? stored : null;
     this.registerBuiltin("equal-grid", "Equal grid", equalGridLayout);
-    this.registerBuiltin("lead-stack", "Lead + stack", leadStackLayout);
+    // Host lead stays with pane order; ordinary focus/refits must not promote a new lead.
+    this.registerBuiltin("lead-stack", "Lead + stack", input => leadStackLayout({ ...input, selectedPaneId: input.panes[0]?.id ?? null }));
     this.registerBuiltin("vertical-stack", "Vertical stack", verticalStackLayout);
   }
 
@@ -54,7 +55,7 @@ export class TerminalLayoutRegistry {
 
   /** Reserved for phase-2 extension registration; duplicate IDs fail closed. */
   register(contribution: TerminalLayoutContribution): UnregisterTerminalLayout {
-    if (this.contributions.has(contribution.id)) throw new Error(`terminal layout already registered: ${contribution.id}`);
+    if (this.contributions.has(contribution.id)) throw new Error(`Duplicate layout: ${contribution.id}`);
     this.contributions.set(contribution.id, contribution);
     if (this.pendingStoredSelection === contribution.id) {
       this.selected = contribution.id;
@@ -99,13 +100,11 @@ export class TerminalLayoutRegistry {
     };
     // Narrow/mobile recovery intentionally uses the host vertical layout; it
     // does not mutate the user's explicit desktop preference.
-    const contribution = viewport.width <= 768
-      ? this.contributions.get("vertical-stack")!
-      : this.contributions.get(this.selected)!;
+    const contribution = this.contributions.get(viewport.width <= 768 ? "vertical-stack" : this.selected)!;
     try {
       return validateTerminalLayout(contribution.arrange(context), context.panes);
     } catch (error) {
-      console.warn("[workspace] invalid terminal geometry; using equal grid", error);
+      console.warn("[workspace] invalid layout; using equal grid", error);
       return equalGridLayout(context);
     }
   }
