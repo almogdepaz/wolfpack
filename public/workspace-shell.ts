@@ -64,7 +64,7 @@ export function createWorkspaceShell(options: {
     root.classList.remove("workspace-resizing");
     if (id !== undefined && divider?.hasPointerCapture(id)) divider.releasePointerCapture(id);
   };
-  const collapseButton = root.querySelector<HTMLButtonElement>("#workspace-context-collapse");
+  const collapseButton = document.querySelector<HTMLButtonElement>("#workspace-context-collapse");
   const contextFullButton = root.querySelector<HTMLButtonElement>("#workspace-context-full");
   const restoreButton = document.querySelector<HTMLButtonElement>("#workspace-restore");
   let geometryFrame: number | null = null;
@@ -89,7 +89,10 @@ export function createWorkspaceShell(options: {
     divider?.setAttribute("aria-valuemax", String(maximumSize()));
     if (current.contextCollapsed || current.fullView !== "none") finishResize();
     const visible = workspaceContextIsVisible(current);
-    if (collapseButton) collapseButton.setAttribute("aria-expanded", String(visible));
+    if (collapseButton) {
+      collapseButton.hidden = !visible;
+      collapseButton.setAttribute("aria-expanded", String(visible));
+    }
     if (contextFullButton) {
       contextFullButton.setAttribute("aria-pressed", String(current.fullView === "context"));
       contextFullButton.setAttribute("aria-label", contextFullButton.title = current.fullView === "context" ? "Restore workspace" : "Context full view");
@@ -132,7 +135,7 @@ export function createWorkspaceShell(options: {
   const observer = new ResizeObserver(() => render(true));
   observer.observe(root);
   listen(collapseButton, "click", () => {
-    setPreferences({ contextCollapsed: !current.contextCollapsed, fullView: current.fullView === "context" ? "none" : current.fullView });
+    setPreferences({ contextCollapsed: true, fullView: "none" });
     restoreButton?.focus({ preventScroll: true });
   });
   listen(contextFullButton, "click", () => setPreferences({ fullView: current.fullView === "context" ? "none" : "context" }));

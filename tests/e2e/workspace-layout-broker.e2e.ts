@@ -220,6 +220,8 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect(page.locator("#workspace-context-full .restore-icon")).toBeVisible();
   await expect(border).toBeHidden();
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  const collapseBox = (await page.locator("#workspace-context-collapse").boundingBox())!;
+  const pickerBeforeCollapse = (await page.locator("#workspace-terminal-layout").boundingBox())!;
   await page.locator("#workspace-context-collapse").click();
   const expand = page.getByRole("button", { name: "Expand context panel", exact: true });
   await expect(expand).toHaveText("");
@@ -230,6 +232,9 @@ test("right context panel resizes with real pointer and keyboard input without r
   const expandBox = (await expand.boundingBox())!;
   const toolbarBox = (await page.locator(".workspace-terminal-toolbar").boundingBox())!;
   const layoutBox = (await page.locator("#workspace-terminal-layout").boundingBox())!;
+  expect(expandBox).toEqual(collapseBox);
+  expect(layoutBox).toEqual(pickerBeforeCollapse);
+  await expect(expand.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
   expect(expandBox.y).toBeGreaterThanOrEqual(toolbarBox.y);
   expect(expandBox.y + expandBox.height).toBeLessThanOrEqual(toolbarBox.y + toolbarBox.height);
   expect(expandBox.x).toBeGreaterThan(layoutBox.x + layoutBox.width);
@@ -256,12 +261,14 @@ test("context reopen control stays in the top toolbar on desktop and touch layou
   const toolbar = page.locator(".workspace-terminal-toolbar");
   const height = (await toolbar.boundingBox())!.height;
   const picker = page.getByRole("combobox", { name: "Terminal layout" });
-  const layoutIcon = toolbar.locator("label");
-  await expect(layoutIcon).toHaveCSS("border-radius", "9px");
-  await expect(layoutIcon).toHaveAttribute("title", "Terminal layout");
+  await expect(picker).toHaveCSS("opacity", "1");
+  await expect(picker).toHaveCSS("appearance", "auto");
+  await expect(picker).toHaveCSS("border-radius", "9px");
+  await expect(picker).toHaveAttribute("title", "Terminal layout");
+  await expect(toolbar.locator("label")).toHaveCount(0);
   const controlSize = testInfo.project.name === "iphone-14" ? 44 : 34;
   expect((await picker.boundingBox())!.height).toBe(controlSize);
-  expect((await layoutIcon.boundingBox())!.width).toBe(controlSize);
+  expect((await picker.boundingBox())!.width).toBe(132);
   expect(height).toBe(controlSize + 7);
   // One shared row, not an additional transcript row above the workspace.
   expect((await toolbar.boundingBox())!.y).toBe((await page.locator("#terminal-view").boundingBox())!.y);
@@ -272,7 +279,7 @@ test("context reopen control stays in the top toolbar on desktop and touch layou
   await page.getByRole("button", { name: "Close transcript" }).click();
   await expect(transcript).toBeFocused();
   await picker.focus();
-  await expect(layoutIcon).toHaveCSS("outline-width", "2px");
+  await expect(picker).toHaveCSS("outline-width", "2px");
   if (testInfo.project.name === "desktop") {
     await picker.press("l");
     await picker.press("Enter");
@@ -283,10 +290,19 @@ test("context reopen control stays in the top toolbar on desktop and touch layou
   }
   await expect(picker).toHaveValue("lead-stack");
   const collapse = page.getByRole("button", { name: "Collapse context panel", exact: true });
+  const collapseBox = (await collapse.boundingBox())!;
+  const pickerBox = (await picker.boundingBox())!;
+  const transcriptBox = (await transcript.boundingBox())!;
+  await expect(collapse.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
+  await page.screenshot({ path: testInfo.outputPath("controls-expanded.png") });
   if (testInfo.project.name === "iphone-14") await collapse.tap(); else await collapse.click();
   const expand = page.getByRole("button", { name: "Expand context panel", exact: true });
   await expect(expand).toBeVisible();
   const box = (await expand.boundingBox())!;
+  expect(box).toEqual(collapseBox);
+  expect(await picker.boundingBox()).toEqual(pickerBox);
+  expect(await transcript.boundingBox()).toEqual(transcriptBox);
+  await expect(expand.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
   const top = (await toolbar.boundingBox())!;
   expect(top.height).toBe(height);
   expect(box.y).toBeGreaterThanOrEqual(top.y);
@@ -296,6 +312,18 @@ test("context reopen control stays in the top toolbar on desktop and touch layou
   if (testInfo.project.name === "iphone-14") await expand.tap(); else await expand.press("Space");
   await expect(collapse).toBeVisible();
   await expect(expand).toBeHidden();
+  expect(await collapse.boundingBox()).toEqual(collapseBox);
+  const full = page.getByRole("button", { name: "Context full view", exact: true });
+  await expect(full.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
+  await full.click();
+  await expect(picker).toBeHidden();
+  expect(await collapse.boundingBox()).toEqual(collapseBox);
+  expect(await transcript.boundingBox()).toEqual(transcriptBox);
+  await collapse.click();
+  await expect(expand).toBeVisible();
+  await expect(page.locator("#workspace-context-region")).toBeHidden();
+  expect(await expand.boundingBox()).toEqual(collapseBox);
+  await expand.click();
   expect(await canvas.evaluate(node => node === (window as any).__toggleCanvas)).toBe(true);
 });
 
