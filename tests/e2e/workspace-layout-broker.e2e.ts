@@ -246,6 +246,12 @@ test("context reopen control stays in the top toolbar on desktop and touch layou
   await canvas.evaluate(node => { (window as any).__toggleCanvas = node; });
   const toolbar = page.locator(".workspace-terminal-toolbar");
   const height = (await toolbar.boundingBox())!.height;
+  const picker = page.getByRole("combobox", { name: "Terminal layout" });
+  await expect(picker).toHaveCSS("border-radius", "9px");
+  await expect(picker).toHaveCSS("padding-left", "8px");
+  expect((await picker.boundingBox())!.height).toBe(testInfo.project.name === "iphone-14" ? 44 : 34);
+  await picker.focus();
+  await expect(picker).toHaveCSS("outline-width", "2px");
   const collapse = page.getByRole("button", { name: "Collapse context panel", exact: true });
   if (testInfo.project.name === "iphone-14") await collapse.tap(); else await collapse.click();
   const expand = page.getByRole("button", { name: "Expand context panel", exact: true });

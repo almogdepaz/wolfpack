@@ -215,6 +215,9 @@ test("Agent Context visual fixture uses host styles at narrow, sidebar and full-
     for (const width of [220, 320, 960]) {
       await fixture.page.setViewportSize({ width, height: 1000 });
       expect(await fixture.page.locator("h2").textContent()).toBe(document.goal);
+      expect(await fixture.page.locator("#workspace-context-container").evaluate(el => getComputedStyle(el).padding)).toBe("16px");
+      expect(await fixture.page.locator(".wac-goal").evaluate(el => getComputedStyle(el).borderRadius)).toBe("9px");
+      expect(await fixture.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       if (process.env.WOLFPACK_WIDGET_ARTIFACTS) {
         mkdirSync(process.env.WOLFPACK_WIDGET_ARTIFACTS, { recursive: true });
         await fixture.page.screenshot({ path: join(process.env.WOLFPACK_WIDGET_ARTIFACTS, `widget-${width}.png`), fullPage: true });
