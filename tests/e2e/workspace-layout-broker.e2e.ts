@@ -247,11 +247,32 @@ test("context reopen control stays in the top toolbar on desktop and touch layou
   const toolbar = page.locator(".workspace-terminal-toolbar");
   const height = (await toolbar.boundingBox())!.height;
   const picker = page.getByRole("combobox", { name: "Terminal layout" });
-  await expect(picker).toHaveCSS("border-radius", "9px");
-  await expect(picker).toHaveCSS("padding-left", "8px");
-  expect((await picker.boundingBox())!.height).toBe(testInfo.project.name === "iphone-14" ? 44 : 34);
+  const layoutIcon = toolbar.locator("label");
+  await expect(layoutIcon).toHaveCSS("border-radius", "9px");
+  await expect(layoutIcon).toHaveAttribute("title", "Terminal layout");
+  const controlSize = testInfo.project.name === "iphone-14" ? 44 : 34;
+  expect((await picker.boundingBox())!.height).toBe(controlSize);
+  expect((await layoutIcon.boundingBox())!.width).toBe(controlSize);
+  expect(height).toBe(controlSize + 7);
+  // One shared row, not an additional transcript row above the workspace.
+  expect((await toolbar.boundingBox())!.y).toBe((await page.locator("#terminal-view").boundingBox())!.y);
+  const transcript = toolbar.getByRole("button", { name: "Read session transcript" });
+  expect((await transcript.boundingBox())!.height).toBe(controlSize);
+  await transcript.click();
+  await expect(page.locator("#terminal-transcript-dialog")).toBeVisible();
+  await page.getByRole("button", { name: "Close transcript" }).click();
+  await expect(transcript).toBeFocused();
   await picker.focus();
-  await expect(picker).toHaveCSS("outline-width", "2px");
+  await expect(layoutIcon).toHaveCSS("outline-width", "2px");
+  if (testInfo.project.name === "desktop") {
+    await picker.press("l");
+    await picker.press("Enter");
+  } else {
+    await picker.tap();
+    await picker.press("Escape");
+    await picker.selectOption("lead-stack");
+  }
+  await expect(picker).toHaveValue("lead-stack");
   const collapse = page.getByRole("button", { name: "Collapse context panel", exact: true });
   if (testInfo.project.name === "iphone-14") await collapse.tap(); else await collapse.click();
   const expand = page.getByRole("button", { name: "Expand context panel", exact: true });

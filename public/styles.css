@@ -1752,14 +1752,14 @@ body.no-animations, body.no-animations * {
   justify-content: space-between;
   gap: 8px;
   flex: 0 0 auto;
-  padding: 7px 12px;
+  padding: 3px 12px;
   border-bottom: 1px solid var(--border);
   color: var(--text-secondary);
   font-size: 11px;
 }
 .workspace-context-header { position: sticky; top: 0; z-index: 1; background: var(--bg-elevated); }
 .workspace-context-actions { display: flex; gap: 6px; }
-:is(.workspace-context-header,.workspace-terminal-toolbar) :is(button,select) {
+:is(.workspace-context-header,.workspace-terminal-toolbar) :is(button,label) {
   min-height: 34px;
   border: 1px solid var(--border-input);
   border-radius: var(--radius-md);
@@ -1767,12 +1767,13 @@ body.no-animations, body.no-animations * {
   background: var(--bg-inset);
   font: inherit;
 }
-.workspace-terminal-toolbar select { padding: 0 8px; }
-:is(.workspace-context-header,.workspace-terminal-toolbar) :is(button,select):hover { border-color: var(--border-hover); }
+.workspace-terminal-toolbar select { position: absolute; inset: -1px; width: calc(100% + 2px); height: calc(100% + 2px); opacity: 0; cursor: pointer; }
+:is(.workspace-context-header,.workspace-terminal-toolbar) :is(button,label):hover { border-color: var(--border-hover); }
 :is(.workspace-context-header,.workspace-terminal-toolbar) button { padding: 4px 7px; cursor: pointer; }
-.workspace-terminal-toolbar { justify-content: flex-end; min-height: 49px; }
+.workspace-terminal-toolbar { justify-content: flex-end; min-height: 41px; }
 .workspace-terminal-toolbar button[hidden] { display: none; }
-.workspace-terminal-toolbar label { display: flex; align-items: center; gap: 8px; }
+.workspace-terminal-toolbar label { display: grid; place-items: center; position: relative; }
+.workspace-terminal-toolbar label:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
 .workspace-icon { width: 34px; height: 34px; }
 .workspace-icon svg { display: block; margin: auto; }
 .workspace-icon[aria-pressed="false"] .restore-icon,
@@ -1823,8 +1824,8 @@ body.no-animations, body.no-animations * {
     max-height: none;
     min-height: 0;
   }
-  .workspace-terminal-toolbar,.workspace-context-header { padding: 5px 12px; min-height: 55px; }
-  .workspace-terminal-toolbar select { min-height: 44px; }
+  .workspace-terminal-toolbar,.workspace-context-header { min-height: 51px; }
+  .workspace-terminal-toolbar button { min-height: 44px; }
   .workspace-icon { width: 44px; height: 44px; }
 }
 
@@ -3046,7 +3047,7 @@ body.no-animations, body.no-animations * {
 .about-icon { width: 48px; height: 48px; opacity: 0.15; margin-bottom: 8px; }
 .settings-version { font-size: 10px; color: var(--text-dim); padding: 2px 0; }
 .conn-status { display: none; background: var(--danger); color: #fff; text-align: center; padding: 6px; font-size: 11px; font-family: inherit; text-transform: uppercase; letter-spacing: 1px; flex-shrink: 0; }
-.terminal-transcript-btn { align-self: flex-end; flex: 0 0 auto; margin: 4px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: rgba(17,17,17,0.9); color: var(--text-muted); font: inherit; font-size: 10px; text-transform: uppercase; cursor: pointer; }
+.terminal-transcript-btn { flex: 0 0 auto; }
 .terminal-transcript-btn:hover, .terminal-transcript-btn:focus-visible { color: var(--accent); border-color: var(--accent-border); }
 .session-inspector-dialog,
 .terminal-transcript-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(80vh, 720px); margin: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.7); }
