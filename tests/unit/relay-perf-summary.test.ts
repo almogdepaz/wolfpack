@@ -1,0 +1,37 @@
+import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { summarize } from "../../scripts/relay-perf/summarize.ts";
+
+test("summary keeps failed sends, lost accepted work, uncertainty and omitted probes out of success claims", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-perf-summary-"));
+  const write = (path: string, value: unknown): void => writeFileSync(join(root, path), JSON.stringify(value));
+  try {
+    mkdirSync(join(root, "0")); mkdirSync(join(root, "adapter"));
+    const actor = { resources: [], delays: [] };
+    write("run.json", { config: { relays: 1 }, metrics: { measuredStart: 1000, end: 2000, echoes: [], socketEvents: [], controller: actor }, teardown: [] });
+    write("0/host-metrics.json", actor);
+    write("adapter/adapter-metrics.json", { ...actor, failures: [], sends: [
+      { scheduled: 0, dispatched: 0, completed: 3, outcome: "accepted", taskId: "warmup", lateness: 0 },
+      { scheduled: 1000, dispatched: 1010, completed: 1015, outcome: "accepted", taskId: "lost", lateness: 10 },
+      { scheduled: 1100, dispatched: 1100, completed: 1105, outcome: "PEER_UNREACHABLE", taskId: "uncertain", lateness: 0 },
+    ], deliveries: [{ taskId: "uncertain", incorporated: 1500, acknowledged: 1510, duplicate: false }] });
+    const summary = summarize(root);
+    expect(summary.offered).toBe(2);
+    expect(summary.outcomes).toEqual({ accepted: 1, PEER_UNREACHABLE: 1 });
+    expect(summary.acceptedNotIncorporated).toBe(1);
+    expect(summary.acceptedNotAcknowledged).toBe(1);
+    expect(summary.failedSendLaterDelivered).toBe(1);
+    expect(summary.acceptanceMs).toMatchObject({ count: 1, p95: 5 });
+    expect(summary.echoes).toMatchObject({ offered: 40, dispatched: 0, undispatched: 40 });
+    const adapter = JSON.parse(readFileSync(join(root, "adapter/adapter-metrics.json"), "utf8"));
+    adapter.capturesUnacknowledgedIncorporation = true;
+    adapter.deliveries.push({ taskId: "lost", incorporated: 1200, acknowledged: null, duplicate: false });
+    write("adapter/adapter-metrics.json", adapter);
+    const partial = summarize(root);
+    expect(partial.acceptedNotIncorporated).toBe(0);
+    expect(partial.acceptedNotAcknowledged).toBe(1);
+    expect(partial.acknowledgementMs).toMatchObject({ count: 1 });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
