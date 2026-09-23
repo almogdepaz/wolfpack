@@ -16,6 +16,7 @@ export interface ExtensionHostOptions {
   readonly safeMode?: () => boolean;
   readonly registerLayout?: (contribution: TerminalLayoutContribution) => ((options?: ExtensionLayoutUnregisterOptions) => void);
   readonly onCatalogReady?: () => void;
+  readonly widgetVisible?: (installation: ExtensionCatalogInstallation) => boolean;
   readonly authFetch?: typeof browserAuthFetch;
   readonly bundleLoader?: typeof loadAuthenticatedExtensionBundle;
   readonly onChange?: () => void;
@@ -40,7 +41,7 @@ function nonNegativeSafeInteger(value: unknown): value is number { return typeof
 function catalogFailure(): never { throw new Error("invalid extension catalog envelope"); }
 
 /** Treat server JSON as hostile until every identity used for storage or loading is checked. */
-function parseCatalog(value: unknown): ExtensionCatalogEnvelope {
+export function parseExtensionCatalog(value: unknown): ExtensionCatalogEnvelope {
   if (!record(value) || typeof value.safeMode !== "boolean" || !Array.isArray(value.installations)) return catalogFailure();
   let installationId: string | undefined;
   const extensionIds = new Set<string>();
@@ -131,7 +132,7 @@ export class ExtensionHost {
     try {
       const response = await (this.options.authFetch ?? browserAuthFetch)("/api/extensions", { cache: "no-store" });
       if (!response.ok) throw new Error(`catalog request failed (${response.status})`);
-      const catalog = parseCatalog(await response.json());
+      const catalog = parseExtensionCatalog(await response.json());
       if (this.disposed || generation !== this.generation) return;
       if (catalog.safeMode) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
       const installationId = catalog.installations[0]?.installationId ?? null;
@@ -165,11 +166,26 @@ export class ExtensionHost {
   select(id?: string): void {
     if (id === undefined) {
       if (!this.catalog || !this.shellVisible) return;
-      const entries = this.registry.entries();
+      const entries = this.availableViews();
       if (entries.length !== 1 || this.registry.selectedId) return;
       id = entries[0]!.id;
     }
+    const owner = this.owners.get(id)?.extension;
+    if (owner && this.options.widgetVisible?.(owner) === false) return;
     this.registry.select(id);
+  }
+  /** Hide only widget views: retain controllers and all terminal-layout registrations. */
+  syncWidgetVisibility(): void {
+    if (this.disposed) return;
+    if (this.selectedId && !this.availableViews().some(entry => entry.id === this.selectedId)) this.registry.select(null);
+    this.select();
+    this.render();
+  }
+  private availableViews() {
+    return this.registry.entries().filter(entry => {
+      const owner = this.owners.get(entry.id)?.extension;
+      return owner && (this.options.widgetVisible?.(owner) ?? true);
+    });
   }
   setShellVisible(visible: boolean): boolean {
     if (this.disposed || this.shellVisible === visible) return false;
@@ -405,14 +421,14 @@ export class ExtensionHost {
     const root = this.options.container;
     const tabs = root.querySelector<HTMLElement>("[data-extension-tabs]") ?? document.createElement("div");
     if (!tabs.parentElement) { tabs.dataset.extensionTabs = ""; tabs.setAttribute("role", "tablist"); root.prepend(tabs); }
-    const entries = this.registry.entries();
+    const entries = this.availableViews();
     const selected = this.registry.selectedId;
     tabs.hidden = entries.length < 2 && (!entries.length || !!selected);
     tabs.replaceChildren();
     for (const entry of entries) { const tab = document.createElement("button"); tab.type = "button"; tab.textContent = entry.contribution.title; tab.setAttribute("role", "tab"); tab.setAttribute("aria-selected", String(entry.id === selected)); tab.addEventListener("click", () => this.select(entry.id)); tabs.append(tab); }
     let status = root.querySelector<HTMLElement>("[data-extension-status]");
     if (!status) { status = document.createElement("p"); status.dataset.extensionStatus = ""; status.setAttribute("role", "status"); root.prepend(status); }
-    status.textContent = message || this.selectedDocumentStatus() || (selected ? "" : entries.length ? "Select a context view." : "No enabled context views for this scope.");
+    status.textContent = message || this.selectedDocumentStatus() || (selected ? "" : entries.length ? "Select a context view." : this.registry.entries().length ? "Widgets are hidden. Manage widgets in Settings." : "No enabled context views for this scope.");
     this.options.onChange?.();
   }
   private selectedDocumentStatus(): string | null {

@@ -243,7 +243,7 @@
       <nav id="settings-section-nav" class="settings-section-nav" aria-label="Settings sections">
         <a href="#settings-effects">Effects</a>
         <a href="#settings-terminal">Terminal</a>
-        <a href="#settings-extensions">Extensions</a>
+        <a href="#settings-extensions">Widgets</a>
         <a href="#settings-input">Input</a>
         <a href="#settings-machines">Machines</a>
         <a href="#settings-agents">Agents</a>
@@ -310,7 +310,12 @@
           </div>
         </div>
         <div class="settings-section" id="settings-extensions">
-          <div class="settings-label">Extensions</div>
+          <div class="settings-label">Widgets</div>
+          <p class="settings-description">Show or hide widgets from installed extensions in this browser. Hiding does not disable extension code, terminal layouts, or shared data.</p>
+          <button class="discover-btn" type="button" data-widget-refresh>Refresh installed extensions</button>
+          <p class="settings-description" data-widget-status role="status" aria-live="polite"></p>
+          <div data-widget-list></div>
+          <p class="settings-description">Install, update, enable, or remove trusted packages using the existing CLI: <code>wolfpack extensions --help</code>. Browser extensions run trusted code, not sandboxed content.</p>
           <label class="settings-toggle">
             <input type="checkbox" id="setting-extensionSafeMode"> Safe mode (do not load browser extensions)
           </label>

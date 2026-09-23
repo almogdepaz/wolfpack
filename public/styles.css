@@ -2723,6 +2723,7 @@ body.no-animations, body.no-animations * {
 .accent-val { color: var(--accent); font-size: 11px; }
 .range-input { width: 100%; accent-color: var(--accent); margin-top: 4px; }
 .settings-description { padding: 4px 0; font-size: 11px; color: var(--text-dim); line-height: 1.5; }
+.widget-manager-item{padding:12px 0;border-bottom:1px solid var(--accent-border);overflow-wrap:anywhere}.widget-manager-item h3,.widget-manager-item p{margin:0}.widget-manager-item .settings-toggle{min-height:44px}.widget-manager-item input{flex-shrink:0}
 .provider-readiness-header { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .provider-refresh-btn { background: none; border: none; color: var(--accent); cursor: pointer; font: inherit; text-transform: uppercase; letter-spacing: inherit; }
 .provider-readiness-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }

@@ -41,6 +41,39 @@ afterEach(() => {
 });
 
 describe("ExtensionHost", () => {
+  test("widget visibility gates selection without unloading layouts or retained views", async () => {
+    container = new FakeElement();
+    let visible = true; let mounts = 0; let disposed = 0; let layoutDisposed = 0;
+    const shown: boolean[] = [];
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      widgetVisible: () => visible,
+      authFetch: async () => Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }),
+      registerLayout: () => () => { layoutDisposed++; },
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => {
+        register.registerContextView({ id: "one", title: "One", mount() { mounts++; return { dispose() { disposed++; }, setVisible(value) { shown.push(value); } }; } });
+        register.registerTerminalLayout({ id: "layout", title: "Layout", arrange: equalGridLayout });
+      } })) as never,
+    });
+    await host.refresh();
+    visible = false;
+    host.select();
+    host.select("notes/one");
+    expect(mounts).toBe(0);
+    visible = true; host.syncWidgetVisibility();
+    expect(mounts).toBe(1);
+    expect(host.selectedId).toBe("notes/one");
+    visible = false; host.syncWidgetVisibility();
+    expect(host.selectedId).toBeNull();
+    expect(shown.at(-1)).toBe(false);
+    expect(disposed).toBe(0); expect(layoutDisposed).toBe(0);
+    host.select("notes/one"); expect(host.selectedId).toBeNull();
+    visible = true; host.syncWidgetVisibility();
+    expect(host.selectedId).toBe("notes/one"); expect(mounts).toBe(1);
+    host.dispose(); expect(disposed).toBe(1); expect(layoutDisposed).toBe(1);
+  });
+
   test("host opt-in opens the sole view without a tab, while multiple views keep their selector", async () => {
     container = new FakeElement();
     let count = 1; let mounts = 0; let failMount = false;

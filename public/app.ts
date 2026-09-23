@@ -25,6 +25,8 @@ import { TerminalLayoutRegistry } from "./terminal-layout-registry";
 import { createWorkspaceShell } from "./workspace-shell";
 import { initWorkspaceNavigation } from "./workspace-navigation";
 import { ExtensionHost } from "./extension-host";
+import { WidgetVisibility, WIDGET_VISIBILITY_PREFIX } from "./widget-visibility";
+import { createWidgetManager } from "./widget-manager";
 import { resolveWorkspaceExtensionScope } from "./extension-scope";
 
 import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-controller";
@@ -4428,6 +4430,7 @@ document.getElementById("new-project-create-name")?.addEventListener("keydown", 
 const SETTINGS_SECTION_IDS = new Set([
   "settings-effects",
   "settings-terminal",
+  "settings-extensions",
   "settings-input",
   "settings-machines",
   "settings-agents",
@@ -4561,6 +4564,7 @@ async function showSettings() {
   requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
   renderMachinesList();
   void loadQuietAlertSettings();
+  void widgetManager.refresh();
   toggleDebugPanel();
 }
 
@@ -5364,6 +5368,7 @@ function bindHtmlEventListeners(): void {
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
   on("setting-extensionSafeMode", "change", function(this: HTMLInputElement) {
     toggleSetting("extensionSafeMode", this.checked);
+    widgetManager.render();
     document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   });
 
@@ -5432,6 +5437,7 @@ const workspaceTerminalLayouts = new TerminalLayoutRegistry();
 initWorkspaceTerminalLayouts(workspaceTerminalLayouts);
 const workspaceLayoutPicker = document.getElementById("workspace-terminal-layout") as HTMLSelectElement | null;
 if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
+const widgetVisibility = new WidgetVisibility(localStorage);
 let extensionHost: ExtensionHost | null = null;
 const workspaceShell = createWorkspaceShell({
   onTerminalGeometryChange: () => scheduleGridStabilizedFit(),
@@ -5458,6 +5464,7 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
   container: extensionHostContainer,
   scope: selectedExtensionScope,
   safeMode: () => wpSettings.extensionSafeMode,
+  widgetVisible: item => widgetVisibility.isVisible(item),
   registerLayout: contribution => {
     const unregister = workspaceTerminalLayouts.register(contribution);
     const option = document.createElement("option");
@@ -5485,9 +5492,20 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
   },
 }) : null;
 extensionHost?.setShellVisible(workspaceShell?.contextVisible ?? true);
+const widgetManager = createWidgetManager({ root: document.getElementById("settings-extensions")!, visibility: widgetVisibility, safeMode: () => wpSettings.extensionSafeMode });
+const unsubscribeWidgetVisibility = widgetVisibility.subscribe(() => extensionHost?.syncWidgetVisibility());
+const onWidgetStorage = (event: StorageEvent) => {
+  if (event.storageArea === localStorage && (event.key === null || event.key.startsWith(WIDGET_VISIBILITY_PREFIX))) widgetVisibility.changed();
+};
+window.addEventListener("storage", onWidgetStorage);
 document.addEventListener("wolfpack-extension-scope-change", () => { void extensionHost?.refresh(); });
 window.addEventListener("pagehide", event => {
-  if (!(event as PageTransitionEvent).persisted) extensionHost?.dispose();
+  if (!(event as PageTransitionEvent).persisted) {
+    widgetManager.dispose();
+    unsubscribeWidgetVisibility();
+    window.removeEventListener("storage", onWidgetStorage);
+    extensionHost?.dispose();
+  }
 });
 void extensionHost?.refresh();
 

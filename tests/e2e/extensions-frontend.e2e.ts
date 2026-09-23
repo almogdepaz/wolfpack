@@ -2,6 +2,7 @@ import { selectTerminalLayoutFromUi } from "./helpers.ts";
 import { spawnSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { PROVIDER_DEFINITIONS } from "../../src/provider-readiness.ts";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
@@ -27,7 +28,7 @@ const sessionIds = new Map<string, string>();
 
 function environment(port?: number): Record<string, string> {
   const value: Record<string, string> = {
-    PATH: process.env.PATH ?? "", SHELL: process.env.SHELL ?? "/bin/sh", HOME: home!.path, TMPDIR: root,
+    PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}`, SHELL: process.env.SHELL ?? "/bin/sh", HOME: home!.path, TMPDIR: root,
     WOLFPACK_TEST: "1", WOLFPACK_LOG_LEVEL: "error", WOLFPACK_DEV_DIR: join(root, "dev"),
     WOLFPACK_MACHINE_ID_PATH: join(home!.path, "machine-id"), WOLFPACK_SESSION_IDENTITY_PATH: join(home!.path, "session-identities.json"),
     WOLFPACK_SETTINGS_PATH: join(home!.path, "settings.json"), WOLFPACK_TASK_ROOT: join(home!.path, "tasks"), WOLFPACK_TASK_RELAY_ROOT: join(home!.path, "relay"),
@@ -139,6 +140,11 @@ test.beforeAll(async () => {
   home = createOwnedTestServerHome();
   mkdirSync(join(root, "dev", PROJECT), { recursive: true, mode: 0o700 });
   mkdirSync(join(root, "bin"), { recursive: true, mode: 0o700 });
+  // Settings performs provider readiness probes. Never execute operator-installed
+  // agents (or their subprocess trees) in this widget-focused fixture.
+  for (const provider of PROVIDER_DEFINITIONS) {
+    writeFileSync(join(root, "bin", provider.command), '#!/bin/sh\n[ "$1" = "--version" ] || exit 64\nprintf "widget-fixture-provider 1.0\\n"\n', { mode: 0o700 });
+  }
   cli = join(root, "bin", "wolfpack");
   const build = spawnSync("bun", ["build", "--compile", join(ROOT, "src", "cli", "index.ts"), "--outfile", cli], { cwd: ROOT, env: environment(), stdio: ["ignore", "pipe", "pipe"] });
   expect(build.status, build.stderr.toString()).toBe(0);
@@ -167,6 +173,112 @@ test.afterAll(async () => {
   if (home) removeOwnedTestServerHome(home);
   home = undefined;
   if (root) rmSync(root, { recursive: true, force: true });
+});
+
+test("installed widget manager works without a terminal and persists local visibility without changing packages", async ({ page }, testInfo) => {
+  await authorize(page);
+  const before = runCli(["extensions", "list", "--json"]);
+  const codeRequests: string[] = [];
+  page.on("request", request => { if (/\/api\/extensions\/(assets|documents)\//.test(request.url())) codeRequests.push(request.url()); });
+  await page.goto(`${server!.baseUrl}/#settings-extensions`);
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await expect(page.locator("#settings-view")).not.toHaveClass(/swiping/);
+  const manager = page.locator("#settings-extensions");
+  await expect(manager.locator("[data-widget-extension]")).toHaveCount(4);
+  expect(codeRequests).toEqual([]);
+  const alpha = manager.getByRole("checkbox", { name: "Show widgets from alpha", exact: true });
+  await expect(alpha).toBeChecked();
+  await alpha.uncheck();
+  await expect(alpha).toBeFocused();
+  await expect(alpha).not.toBeChecked();
+  if (testInfo.project.name !== "desktop") {
+    const bounds = await page.locator("#settings-view").boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width);
+  }
+  await expect(manager.locator("[data-widget-status]")).toContainText("saved for this browser");
+  await page.getByRole("link", { name: "Widgets", exact: true }).click();
+  await expect(alpha).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath("installed-widgets.png"), animations: "disabled" });
+  await page.locator(testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn").click();
+  await openSession(page, SESSION_A);
+  await expect(page.getByRole("tab", { name: "Beta", exact: true })).toHaveCount(1);
+  await expect(page.getByRole("tab", { name: /^Alpha/ })).toHaveCount(0);
+  await expect(page.locator("#workspace-terminal-layout option[value='alpha/recipe']")).toHaveCount(1);
+  await page.goto(`${server!.baseUrl}/#settings-extensions`);
+  await page.reload(); // the same hash alone is a same-document navigation, not a persistence reload
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await expect(alpha).not.toBeChecked();
+  expect(runCli(["extensions", "list", "--json"])).toBe(before);
+});
+
+test("widget manager metadata handles failure retry safe mode disabled empty and hostile names", async ({ page }, testInfo) => {
+  await authorize(page);
+  const catalog = JSON.parse(runCli(["extensions", "list", "--json"]));
+  const hostile = '<img src=x onerror="window.__managerHostile=1">';
+  catalog.installations[0].package.name = hostile;
+  catalog.installations[0].enabled = false;
+  let mode = "failure";
+  await page.route("**/api/extensions", async route => {
+    await route.fulfill(mode === "failure" ? { status: 503, body: "unavailable" } : { json: mode === "empty" ? { safeMode: false, installations: [] } : { ...catalog, safeMode: mode === "safe" } });
+  });
+  await page.goto(`${server!.baseUrl}/#settings-extensions`);
+  await expect(page.locator("#settings-view")).not.toHaveClass(/swiping/);
+  const manager = page.locator("#settings-extensions");
+  const status = manager.locator("[data-widget-status]");
+  const refresh = manager.getByRole("button", { name: "Refresh installed extensions" });
+  await expect(status).toContainText("unavailable");
+  mode = "normal"; await refresh.click();
+  await expect(manager.getByRole("heading", { name: hostile, exact: true })).toBeVisible();
+  await expect(manager.locator("img")).toHaveCount(0);
+  await expect(manager.getByRole("checkbox", { name: `Show widgets from ${catalog.installations[0].extensionId}`, exact: true })).toBeDisabled();
+  mode = "safe"; await refresh.click();
+  await expect(status).toContainText("Safe mode");
+  await expect(manager.locator("[data-widget-list] input:enabled")).toHaveCount(0);
+  mode = "empty"; await refresh.click();
+  await expect(status).toContainText("No extensions installed");
+  await expect(manager.locator("[data-widget-extension]")).toHaveCount(0);
+  mode = "normal"; await refresh.click();
+  const beta = manager.getByRole("checkbox", { name: "Show widgets from beta", exact: true });
+  await expect(beta).toBeEnabled();
+  await page.evaluate(() => {
+    const original = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) { if (key.startsWith("wolfpack-widget-visibility:")) throw Error("storage blocked"); original.call(this, key, value); };
+  });
+  await beta.click(); // rejected storage write restores the original checked state
+  await expect(beta).toBeChecked();
+  await expect(status).toContainText("Could not save");
+  await page.screenshot({ path: testInfo.outputPath("widget-storage-error.png") });
+});
+
+test("hiding widgets from another settings tab pauses documents without replacing live terminals or views", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop retained-terminal and cross-tab visibility boundary");
+  await authorize(page);
+  let reads = 0; let sockets = 0;
+  page.on("request", request => { if (request.url().includes("/documents/agent-context/context")) reads++; });
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await page.goto(server!.baseUrl); await openSession(page, SESSION_A); await selectAgentContext(page);
+  const view = page.locator("[data-context-view='agent-context/context']");
+  await expect(view.locator("h2")).toBeVisible();
+  const canvas = page.locator("#desktop-terminal-container canvas");
+  const oldView = await view.elementHandle(); const oldCanvas = await canvas.elementHandle();
+  const attached = sockets;
+  const managerPage = await context.newPage();
+  try {
+    await authorize(managerPage);
+    await managerPage.goto(`${server!.baseUrl}/#settings-extensions`);
+    const checkbox = managerPage.getByRole("checkbox", { name: "Show widgets from agent-context", exact: true });
+    await checkbox.uncheck();
+    await expect(view).toBeHidden();
+    await expect(page.getByRole("tab", { name: /Agent Context/ })).toHaveCount(0);
+    const hiddenReads = reads; await page.waitForTimeout(2_300); expect(reads).toBe(hiddenReads);
+    await checkbox.check(); await selectAgentContext(page);
+    await expect.poll(() => reads).toBeGreaterThan(hiddenReads);
+    expect(await view.evaluate((node, previous) => node === previous, oldView)).toBe(true);
+    expect(await canvas.evaluate((node, previous) => node === previous, oldCanvas)).toBe(true);
+    expect(sockets).toBe(attached);
+    await expect(page.locator("#workspace-terminal-layout option[value='alpha/recipe']")).toHaveCount(1);
+  } finally { await managerPage.close(); }
 });
 
 test("authenticated installed packages compose qualified local views and refresh published data without terminal replacement", async ({ page }, testInfo) => {
@@ -356,7 +468,7 @@ test("real CLI invalid scope schema and CAS rejection keep the good browser docu
   await expect(heading).not.toContainText("must not render");
 });
 
-test("extension safe mode uses the real settings control and makes no extension requests until disabled", async ({ page }, testInfo) => {
+test("extension safe mode allows manager metadata but never code or documents until disabled", async ({ page }, testInfo) => {
   test.skip(!["desktop", "mobile-webkit"].includes(testInfo.project.name), "desktop Chromium and WebKit safe-mode recovery");
   await authorize(page, true);
   const extensionRequests: string[] = [];
@@ -373,8 +485,10 @@ test("extension safe mode uses the real settings control and makes no extension 
   await page.locator("#sidebar-settings-btn, #expanded-settings-btn, #gear-btn").filter({ visible: true }).first().click();
   const safeMode = page.locator("#setting-extensionSafeMode");
   await expect(safeMode).toBeChecked();
+  await expect(page.locator("[data-widget-extension]")).toHaveCount(4);
+  expect(extensionRequests.every(url => new URL(url).pathname === "/api/extensions")).toBe(true);
   await safeMode.uncheck();
-  expect(extensionRequests).toEqual([]);
+  expect(extensionRequests.every(url => new URL(url).pathname === "/api/extensions")).toBe(true);
   await page.locator(testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn").click();
   if (testInfo.project.name === "mobile-webkit") await openSession(page, SESSION_A);
   await expect(page.getByRole("tab", { name: /Agent Context/ })).toBeVisible({ timeout: 5_000 });
