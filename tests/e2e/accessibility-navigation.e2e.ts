@@ -145,6 +145,7 @@ test("terminal transcript exposes authoritative plain text without a second pars
     else await control.tap();
   };
 
+  if (testInfo.project.name === "desktop") await page.locator("#workspace-session-actions summary").click();
   await activate(transcript);
   const dialog = page.getByRole("dialog", { name: "Session transcript" });
   await expect(dialog).toBeVisible();

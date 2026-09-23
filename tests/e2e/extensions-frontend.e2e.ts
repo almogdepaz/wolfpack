@@ -1,3 +1,4 @@
+import { selectTerminalLayoutFromUi } from "./helpers.ts";
 import { spawnSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -224,7 +225,7 @@ test("authenticated installed packages compose qualified local views and refresh
     await selected.locator("canvas").evaluate(canvas => { (window as unknown as { __extensionRetainedCanvas?: Element }).__extensionRetainedCanvas = canvas; });
     const attached = sockets.length;
     const resizeCount = resizeFrames.length;
-    await page.locator("#workspace-terminal-layout").selectOption("lead-stack");
+    await selectTerminalLayoutFromUi(page, "lead-stack");
     await expect.poll(() => resizeFrames.length).toBeGreaterThan(resizeCount);
     expect(resizeFrames.slice(resizeCount).every(frame => (frame.cols ?? 0) > 0 && (frame.rows ?? 0) > 0)).toBe(true);
     await page.locator("#workspace-context-full").click();
@@ -268,14 +269,14 @@ test("a sole Agent Context opens directly without its redundant tab and multiple
     const view = page.locator("[data-context-view='agent-context/context']");
     await expect(page.locator("[data-extension-tabs] [role='tab']")).toHaveCount(1);
     await expect(view).toHaveCount(0); // collapsed shell never auto-mounts a view
-    await page.getByRole("button", { name: "Expand context panel", exact: true }).click();
+    await page.getByRole("button", { name: testInfo.project.name === "desktop" ? "Show widgets" : "Expand context panel", exact: true }).click();
     const current = JSON.parse(runCli(["extension-data", "read", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port));
     await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
     const layouts = page.locator("#workspace-terminal-layout");
     await expect(layouts.locator("option", { hasText: /^Lead \+ stack$/ })).toHaveCount(1);
     await expect(layouts.locator('option[value="agent-context/lead-stack"]')).toHaveCount(0);
     await expect(layouts).toHaveValue("equal-grid"); // existing missing-recipe fallback, not a legacy alias
-    await layouts.selectOption("lead-stack");
+    await selectTerminalLayoutFromUi(page, "lead-stack");
     await expect(page.locator("[data-extension-tabs]")).toBeHidden();
     await expect(page.getByRole("tab", { name: "Agent Context", exact: true })).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("single-context-no-tab.png") });
@@ -385,7 +386,7 @@ test("installed extension recipe and terminal instances survive exact grid-scope
   await page.goto(server!.baseUrl);
   await openSession(page, SESSION_A);
   await expect(page.locator("#workspace-terminal-layout option[value='alpha/recipe']")).toHaveCount(1, { timeout: 5_000 });
-  await page.locator("#workspace-terminal-layout").selectOption("alpha/recipe");
+  await selectTerminalLayoutFromUi(page, "alpha/recipe");
   await page.locator(`[data-action="toggle-grid"][data-session="${SESSION_B}"]`).filter({ visible: true }).click();
   await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2, { timeout: 10_000 });
   const first = page.locator(`#desktop-grid-container .grid-cell[data-session="${SESSION_A}"]`);

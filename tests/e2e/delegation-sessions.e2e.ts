@@ -1,3 +1,4 @@
+import { selectTerminalLayoutFromUi } from "./helpers.ts";
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
 import { openSessionFromUi, startTestServer, type TestServer } from "./helpers.ts";
 import { AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
@@ -206,7 +207,7 @@ test("explicit workspace shell changes retain delegation panes and focus", async
   await expect(child).toHaveAttribute("data-terminal-load-state", "live");
   await child.click();
   await expect(child).toHaveClass(/grid-focused/);
-  await page.locator("#workspace-terminal-layout").selectOption("lead-stack");
+  await selectTerminalLayoutFromUi(page, "lead-stack");
   await expect(page.locator("#delegation-grid-container")).toHaveAttribute("style", /grid-template-columns/);
   await page.locator("#workspace-context-collapse").click();
   await expect(page.locator("#workspace-restore")).toBeVisible();

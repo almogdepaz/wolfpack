@@ -259,6 +259,15 @@ export async function openSettingsFromUi(page: Page): Promise<void> {
   await page.locator("#sidebar-settings-btn, #expanded-settings-btn, #gear-btn").filter({ visible: true }).first().click();
 }
 
+/** Desktop layout lives in a modal; mobile retains its existing toolbar. */
+export async function selectTerminalLayoutFromUi(page: Page, value: string): Promise<void> {
+  const picker = page.locator("#workspace-terminal-layout");
+  const desktop = !(await picker.isVisible());
+  if (desktop) await page.locator("#workspace-settings-btn").click();
+  await picker.selectOption(value);
+  if (desktop) await page.locator("#workspace-settings-dialog").getByRole("button", { name: "Done", exact: true }).click();
+}
+
 /** Open the new-session/project picker through a real visible UI control. */
 export async function openProjectPickerFromUi(page: Page, machine?: string): Promise<void> {
   const candidates = page.locator('[data-action="new-session"]').filter({ visible: true });

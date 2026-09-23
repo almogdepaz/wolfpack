@@ -23,6 +23,7 @@ import {
 import type { DelegationGridMember } from "./app-grid";
 import { TerminalLayoutRegistry } from "./terminal-layout-registry";
 import { createWorkspaceShell } from "./workspace-shell";
+import { initWorkspaceNavigation } from "./workspace-navigation";
 import { ExtensionHost } from "./extension-host";
 import { resolveWorkspaceExtensionScope } from "./extension-scope";
 
@@ -5204,7 +5205,7 @@ function initSidebar() {
   sidebar.addEventListener("mouseleave", () => {
     if (state.sidebarAutoExpanded && !state.sidebarPinned) {
       sidebarAutoCollapseTimer = setTimeout(() => {
-        if (state.sidebarAutoExpanded && !sidebarSessionOrderDragActive && !sidebarMachineGroupDragActive) {
+        if (state.sidebarAutoExpanded && !sidebarSessionOrderDragActive && !sidebarMachineGroupDragActive && !sidebar.matches(":focus-within") && !document.querySelector("dialog[open]")) {
           state.sidebarTransitionIsHover = true;
           sidebar.classList.add("collapsed");
           state.sidebarCollapsed = true;
@@ -5401,6 +5402,7 @@ function bindHtmlEventListeners(): void {
 
 }
 
+initWorkspaceNavigation();
 bindHtmlEventListeners();
 
 initGridDeps({
