@@ -240,12 +240,13 @@ function handleOptionalPiIntegration(interactive: boolean): void {
   }
 }
 
-function installSetupService(options: {
+async function installSetupService(options: {
   readonly serviceInstalled: boolean;
   readonly serviceRunning: boolean;
   readonly interactive: boolean;
   readonly deferServiceRestart: boolean | undefined;
-}): { readonly serviceInstalled: boolean; readonly serviceRunning: boolean } {
+  readonly onServiceInstallAccepted?: () => Promise<void>;
+}): Promise<{ readonly serviceInstalled: boolean; readonly serviceRunning: boolean }> {
   if (options.serviceInstalled) return options;
   if (options.deferServiceRestart) {
     print(dim("  Service activation deferred."));
@@ -258,13 +259,9 @@ function installSetupService(options: {
   }
   const installService = ask("  Start wolfpack automatically on login? [Y/n] ");
   if (installService.toLowerCase() === "n") return options;
-  try {
-    serviceInstall();
-    return { serviceInstalled: true, serviceRunning: true };
-  } catch (e) {
-    print(red(`  Service install failed: ${e}`));
-    return options;
-  }
+  if (options.onServiceInstallAccepted) await options.onServiceInstallAccepted();
+  else serviceInstall();
+  return { serviceInstalled: true, serviceRunning: true };
 }
 
 export interface SetupOptions {
@@ -272,6 +269,8 @@ export interface SetupOptions {
   readonly deferServiceRestart?: boolean;
   readonly devDir?: string;
   readonly port?: number;
+  /** Internal package-owner handoff after interactive service-install acceptance. */
+  readonly onServiceInstallAccepted?: () => Promise<void>;
 }
 
 export async function setup(options: SetupOptions = {}) {
@@ -395,11 +394,12 @@ export async function setup(options: SetupOptions = {}) {
 
   handleOptionalPiIntegration(interactive);
 
-  ({ serviceInstalled, serviceRunning } = installSetupService({
+  ({ serviceInstalled, serviceRunning } = await installSetupService({
     serviceInstalled,
     serviceRunning,
     interactive,
     deferServiceRestart: options.deferServiceRestart,
+    onServiceInstallAccepted: options.onServiceInstallAccepted,
   }));
 
   printSetupCompletion({

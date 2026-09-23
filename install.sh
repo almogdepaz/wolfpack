@@ -218,29 +218,30 @@ if $IS_MACOS; then
   done
 fi
 
-mv -f "$STAGED_WOLFPACK" "${INSTALL_DIR}/${BINARY_NAME}" || exit 1
-mv -f "$STAGED_BROKER" "${INSTALL_DIR}/${BROKER_BINARY_NAME}" || exit 1
+if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" != "1" ]; then
+  if [ ! -r /dev/tty ]; then
+    echo "  $(red '✗') Setup requires an interactive terminal. Re-run this installer from one."
+    exit 1
+  fi
+  "$STAGED_WOLFPACK" install "$STAGED_BROKER" < /dev/tty
+else
+  "$STAGED_WOLFPACK" install "$STAGED_BROKER"
+fi
+if [ "$?" -ne 0 ]; then
+  echo "  $(red '✗') Installation failed. Fix the reported error and rerun this installer."
+  exit 1
+fi
 
 echo "  $(green '✓') Binary installed to ${INSTALL_DIR}/${BINARY_NAME}"
 echo "  $(green '✓') Broker installed to ${INSTALL_DIR}/${BROKER_BINARY_NAME}"
-
-# ── Detect an existing service (upgrade path) ──
-
-SERVICE_EXISTS=false
-if $IS_MACOS && [ -f "$HOME/Library/LaunchAgents/com.wolfpack.server.plist" ]; then
-  SERVICE_EXISTS=true
-elif $IS_LINUX && [ -f "$HOME/.config/systemd/user/wolfpack.service" ]; then
-  SERVICE_EXISTS=true
-fi
-
 echo ""
 
 # ── Add to PATH ──
 
 SYMLINK_DIR="${WOLFPACK_SYMLINK_DIR:-/usr/local/bin}"
 
-# Preserve foreign commands. The managed binary is always refreshed at
-# INSTALL_DIR, and setup always executes that exact path below.
+# Preserve foreign commands. The installation owner has already staged the
+# managed pair and completed setup before this PATH-only step.
 EXISTING=$(command -v wolfpack 2>/dev/null || true)
 MANAGED_BINARY="${INSTALL_DIR}/${BINARY_NAME}"
 MANAGED_LINK="${SYMLINK_DIR}/${BINARY_NAME}"
@@ -278,38 +279,5 @@ if $NEEDS_LINK; then
   else
     echo "  Add to your PATH manually:"
     echo "    export PATH=\"${INSTALL_DIR}:\$PATH\""
-  fi
-fi
-
-echo ""
-
-# ── Run setup ──
-
-if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" != "1" ]; then
-  if [ -x "$MANAGED_BINARY" ]; then
-    echo "  $(green '✓') $(bold 'wolfpack') installed"
-    echo ""
-    echo "  Run $(bold 'wolfpack') to start."
-    echo ""
-    if $SERVICE_EXISTS && [ -f "$HOME/.wolfpack/config.json" ]; then
-      "$MANAGED_BINARY" setup --defer-service-restart < /dev/tty || exit "$?"
-    else
-      exec "$MANAGED_BINARY" setup < /dev/tty
-    fi
-  else
-    echo "  $(red '✗') wolfpack binary not found after install"
-    exit 1
-  fi
-fi
-
-# ── Restart service after successful setup (upgrade path) ──
-
-if $SERVICE_EXISTS && [ -f "$HOME/.wolfpack/config.json" ]; then
-  echo "  Restarting service with new binary..."
-  if "$MANAGED_BINARY" service restart --server-only 2>/dev/null; then
-    echo "  $(green '✓') Server service restarted"
-  else
-    echo "  $(dim 'Server restart failed — run: wolfpack service restart')"
-    exit 1
   fi
 fi

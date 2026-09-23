@@ -5,15 +5,17 @@ import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
 
 const innerTestPath = join(process.cwd(), "tests", "unit", ".tmp-service-lifecycle-inner.test.ts");
-
-const innerTest = String.raw`import { describe, expect, mock, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+const innerTest = String.raw`import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 
 const execCommands: string[] = [];
 const execFileCalls: Array<{ command: string; args: readonly string[] }> = [];
 const askPrompts: string[] = [];
+const ownerEvents: string[] = [];
+let brokerActive = true;
+let trackBrokerState = false;
 let lingerStatus: string | Error = "yes\n";
 let lingerAnswer = "y";
 let failLingerElevation = false;
@@ -38,9 +40,18 @@ await mock.module("node:child_process", () => ({
   execSync: mock((command: string) => {
     execCommands.push(command);
     if (command === "systemctl --user is-active wolfpack 2>&1") return serviceActive ? "active\n" : "inactive\n";
-    if (command === "systemctl --user is-active wolfpack-broker 2>&1") return "active\n";
-    if (command === "systemctl --user stop wolfpack" && failServerStop) throw new Error("server stop failed");
-    if (command === "systemctl --user start wolfpack" && failServerStart) throw new Error("server start failed");
+    if (command === "systemctl --user is-active wolfpack-broker 2>&1") return !trackBrokerState || brokerActive ? "active\n" : "inactive\n";
+    ownerEvents.push(command);
+    if (command === "systemctl --user stop wolfpack") {
+      if (failServerStop) throw new Error("server stop failed");
+      serviceActive = false;
+    }
+    if (command === "systemctl --user stop wolfpack-broker 2>/dev/null" && trackBrokerState) brokerActive = false;
+    if (command === "systemctl --user start wolfpack") {
+      if (failServerStart) throw new Error("server start failed");
+      serviceActive = true;
+    }
+    if (command === "systemctl --user start wolfpack-broker" && trackBrokerState) brokerActive = true;
     return "";
   }),
   spawn: mock(() => undefined),
@@ -53,6 +64,7 @@ await mock.module("../../src/cli/config.js", () => ({
   IS_LINUX: true,
   ask: mock((prompt: string) => {
     askPrompts.push(prompt);
+    ownerEvents.push("prompt:" + prompt);
     return lingerAnswer;
   }),
   isPortInUse: mock(() => true),
@@ -62,7 +74,7 @@ await mock.module("../../src/cli/config.js", () => ({
   waitForPortFree: mock(() => undefined),
 }));
 
-const { refreshInstalledServerService, removeManagedEntrypoints, serviceInstall, serviceRestart, serviceStop } = await import("../../src/cli/service.ts");
+const { installCandidatePair, isBrokerServiceRunning, refreshInstalledServerService, removeManagedEntrypoints, serviceInstall, serviceRestart, serviceStop } = await import("../../src/cli/service.ts");
 
 function systemdLifecycleCommands(): readonly string[] {
   return execCommands.filter(command =>
@@ -84,7 +96,29 @@ describe.serial("serviceInstall", () => {
     Object.defineProperty(process.stdout, "isTTY", { configurable: true, value });
   }
 
-  test("writes and starts the broker before the server on Linux", () => {
+  afterEach(() => {
+    rmSync(join(homedir(), ".wolfpack"), { recursive: true, force: true });
+    rmSync(join(homedir(), ".config", "systemd", "user"), { recursive: true, force: true });
+    prepareBroker();
+    brokerActive = true;
+    trackBrokerState = false;
+    serviceActive = false;
+    lingerStatus = "yes\n";
+    lingerAnswer = "y";
+    failLingerElevation = false;
+    failServerStop = false;
+    failServerStart = false;
+    currentConfig = { devDir: "/tmp/old-dev", port: 18790 };
+    setInteractive(true);
+    serviceInstall();
+    execCommands.length = 0;
+    execFileCalls.length = 0;
+    askPrompts.length = 0;
+    ownerEvents.length = 0;
+    serviceActive = false;
+  });
+
+  test("writes the broker descriptor without restarting an active broker", () => {
     execCommands.length = 0;
     serviceActive = false;
     currentConfig = { devDir: "/tmp/new dev", port: 24444 };
@@ -101,7 +135,6 @@ describe.serial("serviceInstall", () => {
     expect(systemdLifecycleCommands()).toEqual([
       "systemctl --user daemon-reload",
       "systemctl --user enable wolfpack-broker",
-      "systemctl --user start wolfpack-broker",
       "systemctl --user daemon-reload",
       "systemctl --user enable wolfpack",
       "systemctl --user start wolfpack",
@@ -140,6 +173,112 @@ describe.serial("serviceInstall", () => {
     expect(askPrompts).toHaveLength(promptCount);
     expect(execFileCalls.some((call) => call.command === "sudo")).toBe(sudoCalled);
     expect(lines.join("")).toContain(detail);
+  });
+
+  function resetInstallationOwnerState(options: { serverActive?: boolean; brokerActive?: boolean; answer?: string } = {}): void {
+    execCommands.length = 0;
+    execFileCalls.length = 0;
+    askPrompts.length = 0;
+    ownerEvents.length = 0;
+    serviceActive = options.serverActive ?? false;
+    brokerActive = options.brokerActive ?? false;
+    trackBrokerState = true;
+    lingerStatus = "yes\n";
+    lingerAnswer = options.answer ?? "y";
+    failLingerElevation = false;
+    failServerStop = false;
+    failServerStart = false;
+    currentConfig = { devDir: "/tmp/install-owner", port: 24444 };
+    setInteractive(true);
+  }
+
+  function writeInstallationPair(directory: string, serverContents: string, brokerContents: string) {
+    const server = join(directory, "wolfpack");
+    const broker = join(directory, "wolfpack-broker");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(server, serverContents);
+    writeFileSync(broker, brokerContents);
+    chmodSync(server, 0o755);
+    chmodSync(broker, 0o755);
+    return { server, broker };
+  }
+
+  test("explicit install leaves a running broker untouched when its binary is unchanged", async () => {
+    resetInstallationOwnerState({ serverActive: true, brokerActive: true });
+    const managed = writeInstallationPair(join(homedir(), ".wolfpack", "bin"), "old server\n", "unchanged broker\n");
+    const candidates = writeInstallationPair(join(homedir(), "candidate-unchanged"), "new server\n", "unchanged broker\n");
+
+    expect(isBrokerServiceRunning()).toBe(true);
+    await installCandidatePair(candidates, "explicit");
+
+    expect(askPrompts).not.toContain("  Stop broker too? This kills broker-owned sessions. (y/n) ");
+    expect(execCommands).toContain("systemctl --user stop wolfpack");
+    expect(execCommands).not.toContain("systemctl --user stop wolfpack-broker 2>/dev/null");
+    expect(execCommands).not.toContain("systemctl --user start wolfpack-broker");
+    expect(readFileSync(managed.broker, "utf-8")).toBe("unchanged broker\n");
+  });
+
+  test("rejects an owner-inaccessible candidate before touching managed files or services", async () => {
+    resetInstallationOwnerState();
+    const managed = writeInstallationPair(join(homedir(), ".wolfpack", "bin"), "old server\n", "old broker\n");
+    const candidates = writeInstallationPair(join(homedir(), "candidate-invalid"), "not executable\n", "new broker\n");
+    chmodSync(candidates.server, 0o001);
+
+    await expect(installCandidatePair(candidates, "explicit")).rejects.toThrow("not executable");
+    expect(readFileSync(managed.server, "utf-8")).toBe("old server\n");
+    expect(readFileSync(managed.broker, "utf-8")).toBe("old broker\n");
+    expect(execCommands).toEqual([]);
+  });
+
+  test("explicit install activates a fresh pair and repairs a missing server descriptor", async () => {
+    resetInstallationOwnerState();
+    const managedDirectory = join(homedir(), ".wolfpack", "bin");
+    rmSync(managedDirectory, { recursive: true, force: true });
+    const candidates = writeInstallationPair(join(homedir(), "candidate-fresh"), "fresh server\n", "fresh broker\n");
+    const unitDirectory = join(homedir(), ".config", "systemd", "user");
+    rmSync(unitDirectory, { recursive: true, force: true });
+
+    await installCandidatePair(candidates, "explicit");
+    expect(execCommands).toContain("systemctl --user enable wolfpack");
+    expect(execCommands).toContain("systemctl --user start wolfpack");
+
+    resetInstallationOwnerState({ brokerActive: true });
+    rmSync(join(unitDirectory, "wolfpack.service"), { force: true });
+    await installCandidatePair(candidates, "explicit");
+    expect(execCommands).toContain("systemctl --user enable wolfpack");
+    expect(execCommands).not.toContain("systemctl --user stop wolfpack-broker 2>/dev/null");
+  });
+
+  test("rejects bootstrap without setup interaction before replacing managed bytes", async () => {
+    resetInstallationOwnerState();
+    const managed = writeInstallationPair(join(homedir(), ".wolfpack", "bin"), "old server\n", "old broker\n");
+    const candidates = writeInstallationPair(join(homedir(), "candidate-no-tty"), "new server\n", "new broker\n");
+    setInteractive(false);
+
+    await expect(installCandidatePair(candidates, "bootstrap")).rejects.toThrow("TTY");
+    expect(readFileSync(managed.server, "utf-8")).toBe("old server\n");
+    expect(readFileSync(managed.broker, "utf-8")).toBe("old broker\n");
+  });
+
+  test("warns and obtains consent before replacing a running broker", async () => {
+    resetInstallationOwnerState({ serverActive: true, brokerActive: true, answer: "n" });
+    const managed = writeInstallationPair(join(homedir(), ".wolfpack", "bin"), "server\n", "old broker\n");
+    const candidates = writeInstallationPair(join(homedir(), "candidate-replacement"), "server\n", "new broker\n");
+
+    await expect(installCandidatePair(candidates, "explicit")).rejects.toThrow("aborted");
+    expect(readFileSync(managed.broker, "utf-8")).toBe("old broker\n");
+    expect(execCommands).not.toContain("systemctl --user stop wolfpack-broker 2>/dev/null");
+
+    lingerAnswer = "y";
+    await installCandidatePair(candidates, "explicit");
+    const prompt = "prompt:  Continue with broker replacement? [y/N] ";
+    const serverStop = ownerEvents.indexOf("systemctl --user stop wolfpack");
+    const brokerStop = ownerEvents.indexOf("systemctl --user stop wolfpack-broker 2>/dev/null");
+    expect(askPrompts).toContain("  Continue with broker replacement? [y/N] ");
+    expect(ownerEvents.indexOf(prompt)).toBeLessThan(brokerStop);
+    expect(serverStop).toBeGreaterThanOrEqual(0);
+    expect(serverStop).toBeLessThan(brokerStop);
+    expect(readFileSync(managed.broker, "utf-8")).toBe("new broker\n");
   });
 });
 

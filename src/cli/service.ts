@@ -94,7 +94,113 @@ function programArgs(): string[] {
   return [exe];
 }
 
+const STABLE_SERVER_PATH = join(WOLFPACK_DIR, "bin", "wolfpack");
 const STABLE_BROKER_PATH = join(WOLFPACK_DIR, "bin", "wolfpack-broker");
+
+interface InstallationCandidatePair {
+  readonly server: string;
+  readonly broker: string;
+}
+
+type InstallationMode = "bootstrap" | "explicit";
+
+function validateExecutableCandidate(path: string, name: string): void {
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(path);
+  } catch (e: unknown) {
+    throw new Error(`Could not inspect candidate ${name}: ${errMsg(e)}`, { cause: e });
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`Candidate ${name} must be a regular file.`);
+  }
+  if ((stat.mode & 0o100) === 0) {
+    throw new Error(`Candidate ${name} is not executable by its owner.`);
+  }
+}
+
+function candidateDiffers(candidate: string, managed: string, name: string): boolean {
+  if (!existsSync(managed)) return true;
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(managed);
+  } catch (e: unknown) {
+    throw new Error(`Could not inspect managed ${name}: ${errMsg(e)}`, { cause: e });
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error(`Managed ${name} is not a regular file.`);
+  }
+  return !readFileSync(candidate).equals(readFileSync(managed));
+}
+
+function replaceManagedCandidate(candidate: string, managed: string): void {
+  mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
+  copyFileSync(candidate, managed);
+  chmodSync(managed, 0o755);
+}
+
+function confirmBrokerReplacement(): void {
+  print(yellow("  Warning: replacing the broker ends broker-owned sessions."));
+  if (ask("  Continue with broker replacement? [y/N] ").toLowerCase() !== "y") {
+    throw new Error("Broker replacement aborted.");
+  }
+}
+
+/** Installs a validated release/package pair and performs its requested lifecycle work. */
+export async function installCandidatePair(
+  candidates: InstallationCandidatePair,
+  mode: InstallationMode,
+): Promise<void> {
+  validateExecutableCandidate(candidates.server, "wolfpack");
+  validateExecutableCandidate(candidates.broker, "wolfpack-broker");
+  if (mode === "bootstrap" && process.env.WOLFPACK_INSTALL_SKIP_SETUP !== "1"
+    && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+    throw new Error("Bootstrap setup requires an interactive TTY.");
+  }
+
+  const managed = {
+    serverDescriptor: isServiceInstalled(),
+    brokerDescriptor: isBrokerServiceInstalled(),
+    serverRunning: isServiceRunning(),
+    brokerRunning: isBrokerServiceRunning(),
+  };
+  const wasManaged = Object.values(managed).some(Boolean);
+  if ((mode === "explicit" || wasManaged) && !loadConfig()) {
+    throw new Error("Missing or invalid config. Run 'wolfpack setup' before reinstalling managed services.");
+  }
+
+  const serverChanged = candidateDiffers(candidates.server, STABLE_SERVER_PATH, "wolfpack");
+  const brokerChanged = candidateDiffers(candidates.broker, STABLE_BROKER_PATH, "wolfpack-broker");
+  if (brokerChanged && managed.brokerRunning) confirmBrokerReplacement();
+
+  if ((serverChanged || brokerChanged) && managed.serverRunning) {
+    if (!serviceStop({ broker: false, skipBrokerSessionWarning: true }) || isServiceRunning()) {
+      throw new Error("Failed to stop the running server before replacement.");
+    }
+  }
+  if (brokerChanged && managed.brokerRunning) {
+    brokerServiceStop();
+    if (isBrokerServiceRunning()) {
+      throw new Error("Failed to stop the running broker before replacement.");
+    }
+  }
+
+  if (serverChanged) replaceManagedCandidate(candidates.server, STABLE_SERVER_PATH);
+  if (brokerChanged) replaceManagedCandidate(candidates.broker, STABLE_BROKER_PATH);
+
+  if (mode === "explicit") {
+    serviceInstall();
+    return;
+  }
+  if (process.env.WOLFPACK_INSTALL_SKIP_SETUP === "1") {
+    if (wasManaged) serviceInstall();
+    return;
+  }
+
+  const { setup } = await import("./setup.js");
+  await setup(wasManaged ? { deferServiceRestart: true } : {});
+  if (wasManaged) serviceInstall();
+}
 
 /**
  * Finds the wolfpack-broker binary and stages it at
@@ -394,6 +500,7 @@ export function ensureBrokerBinary(): string | null {
 /** Install the broker as a service (launchd / systemd). Must run before
  *  the wolfpack server is bootstrapped so the socket is ready. */
 function brokerServiceInstall(): void {
+  const preserveRunningBroker = isBrokerServiceRunning();
   const brokerBin = ensureBrokerBinary();
   if (!brokerBin) {
     print(red("  Could not locate wolfpack-broker binary."));
@@ -413,8 +520,10 @@ function brokerServiceInstall(): void {
       print(red(`  Failed to write broker plist: ${errMsg(e)}`));
       process.exit(1);
     }
-    launchdBootoutBroker();
-    try { launchdBootstrapBroker(); } catch (e: unknown) {
+    if (!preserveRunningBroker) launchdBootoutBroker();
+    try {
+      if (!preserveRunningBroker) launchdBootstrapBroker();
+    } catch (e: unknown) {
       log.error("broker launchctl bootstrap failed", { error: errMsg(e) });
       print(red(`  Failed to register broker with launchd: ${errMsg(e)}`));
       process.exit(1);
@@ -432,7 +541,7 @@ function brokerServiceInstall(): void {
     try {
       execSync("systemctl --user daemon-reload");
       execSync(`systemctl --user enable ${BROKER_SYSTEMD_SERVICE}`);
-      execSync(`systemctl --user start ${BROKER_SYSTEMD_SERVICE}`);
+      if (!preserveRunningBroker) execSync(`systemctl --user start ${BROKER_SYSTEMD_SERVICE}`);
     } catch (e: unknown) {
       log.error("broker systemctl enable/start failed", { error: errMsg(e) });
       print(red(`  Failed to enable/start broker: ${errMsg(e)}`));
@@ -487,6 +596,12 @@ function brokerServiceUninstall(): void {
 export function isServiceInstalled(): boolean {
   if (IS_MACOS) return existsSync(PLIST_PATH);
   if (IS_LINUX) return existsSync(SYSTEMD_PATH);
+  return false;
+}
+
+function isBrokerServiceInstalled(): boolean {
+  if (IS_MACOS) return existsSync(BROKER_PLIST_PATH);
+  if (IS_LINUX) return existsSync(BROKER_SYSTEMD_PATH);
   return false;
 }
 
@@ -607,8 +722,9 @@ export function serviceInstall() {
     process.exit(1);
   }
 
-  if (isServiceRunning()) {
-    serviceStop();
+  if (isServiceRunning() && !serviceStop({ broker: false, skipBrokerSessionWarning: true })) {
+    print(red("  Failed to stop running server service."));
+    process.exit(1);
   }
   if (isPortInUse(config.port)) {
     waitForPortFree(config.port);
