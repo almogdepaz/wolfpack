@@ -743,20 +743,50 @@ describe("cross-process peer task gateway", () => {
     const fixture = await createHttpPeerFixture("sender-exhaustion-finalization");
     let sender: PeerServer | undefined;
     let receiver: PeerServer | undefined;
+    // Temporary PR #373 CI diagnostics; retain the original timeout and assertions.
+    const started = performance.now();
+    let stage = "starting-receiver";
+    const trace = (nextStage: string, detail: unknown = null): void => {
+      stage = nextStage;
+      console.error(JSON.stringify({
+        diagnostic: "ci373-sender-exhaustion", stage, elapsedMs: performance.now() - started, detail,
+        senderPid: sender?.process.pid, senderExit: sender?.process.exitCode, senderSignal: sender?.process.signalCode,
+        receiverPid: receiver?.process.pid, receiverExit: receiver?.process.exitCode, receiverSignal: receiver?.process.signalCode,
+        senderStdout: sender?.stdout.value, senderStderr: sender?.stderr.value,
+        receiverStdout: receiver?.stdout.value, receiverStderr: receiver?.stderr.value,
+        dispatches: existsSync(fixture.dispatchLogPath) ? readFileSync(fixture.dispatchLogPath, "utf8") : null,
+      }));
+    };
+    const diagnosticTimer = setTimeout(() => trace(stage, "still pending before the test deadline"), 12_000);
+    diagnosticTimer.unref();
     try {
+      trace("starting-receiver");
       receiver = await spawnPeerServer(peerServerOptions(fixture, "receiver"));
+      trace("starting-sender");
       sender = await spawnPeerServer(peerServerOptions(fixture, "sender", [], true, undefined, TASK_EVENT_TYPE.INFORMATION, 4));
+      trace("sending-assignment");
       const sent = await peerRequest(sender.base, "/api/tasks/v1/send", {
         callerSession: "parent", to: { machine: fixture.receiverOrigin, sessionId: "receiver-id" }, task: "finalize the exhausted sender intent",
       });
       if (typeof sent.taskId !== "string") throw new Error("expected remote task receipt");
+      trace("stopping-receiver");
       await stopPeerServer(receiver);
+      trace("receiver-stopped");
       receiver = undefined;
-      const senderExit = new Promise<void>((resolve) => sender?.process.once("exit", () => resolve()));
+      const senderExit = new Promise<void>((resolve) => sender?.process.once("exit", (code, signal) => {
+        trace("sender-exit", { code, signal });
+        resolve();
+      }));
+      trace("posting-message");
       await expect(postPeerRequest(sender.base, "/api/tasks/v1/message", {
         callerSession: "parent", taskId: sent.taskId, type: "information", message: "persist the fourth attempt before crashing",
+      }).catch((error: unknown) => {
+        trace("message-rejected", { message: String(error), error, stack: error instanceof Error ? error.stack : undefined });
+        throw error;
       })).rejects.toThrow();
+      trace("awaiting-sender-exit");
       await senderExit;
+      trace("reading-crashed-sender-ledger");
       sender = undefined;
       const beforeRestart = (await new TaskStore({ root: fixture.senderTaskRoot }).ledgers())
         .find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.SENDER && ledger.key.taskId === sent.taskId);
@@ -767,9 +797,13 @@ describe("cross-process peer task gateway", () => {
       expect(beforeRestart?.state.events.filter((event) => event.type === TASK_EVENT_TYPE.DELIVERY_FAILED)).toHaveLength(0);
       expect(beforeRestart?.records.filter((record) => record.kind === "diagnostic" && record.id === `peer.delivery:${originalEventId}`)).toHaveLength(0);
 
+      trace("restarting-sender");
       sender = await spawnPeerServer(peerServerOptions(fixture, "sender", [], true));
+      trace("querying-restarted-sender");
       expect((await fetch(`${sender.base}/api/tasks/v1/status?callerSession=parent&taskId=${sent.taskId}`)).status).toBe(200);
+      trace("stopping-restarted-sender");
       await stopPeerServer(sender);
+      trace("reading-finalized-ledger");
       sender = undefined;
       const afterFinalization = (await new TaskStore({ root: fixture.senderTaskRoot }).ledgers())
         .find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.SENDER && ledger.key.taskId === sent.taskId);
@@ -777,16 +811,23 @@ describe("cross-process peer task gateway", () => {
       expect(afterFinalization?.records.filter((record) => record.kind === "diagnostic" && record.id === `peer.delivery:${originalEventId}`)).toHaveLength(1);
       expect(peerDispatches(fixture).filter((entry) => entry.role === "sender" && entry.path === "/api/tasks/v1/peer/event" && entry.eventId === originalEventId)).toHaveLength(4);
 
+      trace("restarting-sender-again");
       sender = await spawnPeerServer(peerServerOptions(fixture, "sender", [], true));
+      trace("querying-second-restart");
       expect((await fetch(`${sender.base}/api/tasks/v1/status?callerSession=parent&taskId=${sent.taskId}`)).status).toBe(200);
+      trace("stopping-second-restart");
       await stopPeerServer(sender);
+      trace("reading-second-restart-ledger");
       sender = undefined;
       const afterSecondRestart = (await new TaskStore({ root: fixture.senderTaskRoot }).ledgers())
         .find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.SENDER && ledger.key.taskId === sent.taskId);
       expect(afterSecondRestart?.state.events.filter((event) => event.type === TASK_EVENT_TYPE.DELIVERY_FAILED)).toHaveLength(1);
       expect(afterSecondRestart?.records.filter((record) => record.kind === "diagnostic" && record.id === `peer.delivery:${originalEventId}`)).toHaveLength(1);
       expect(peerDispatches(fixture).filter((entry) => entry.role === "sender" && entry.path === "/api/tasks/v1/peer/event" && entry.eventId === originalEventId)).toHaveLength(4);
+      trace("assertions-complete");
     } finally {
+      clearTimeout(diagnosticTimer);
+      trace("cleanup", { previousStage: stage });
       await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
       rmSync(fixture.root, { recursive: true, force: true });
     }
