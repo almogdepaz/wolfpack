@@ -138,7 +138,8 @@ test("Transcript is absent while context full-view recovery remains keyboard acc
   await page.getByRole("button", { name: "Open test-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCount(0);
-  const full = page.getByRole("button", { name: "Context full view", exact: true });
+  const full = page.locator("#workspace-context-full");
+  await expect(full).toHaveAccessibleName("Context full view");
   await full.focus(); await full.press("Enter");
   await expect(full).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();

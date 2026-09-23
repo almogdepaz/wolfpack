@@ -339,8 +339,10 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(page.locator('#delegation-grid-container .grid-cell[data-stability-marker="same-cell"]')).toHaveCount(1);
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/transitioning/);
 
-  await page.locator('#delegation-grid-container .grid-cell[data-session="idle-child"] .delegation-cell-collapse').click();
   const collapsedIdleCell = page.locator('#delegation-grid-container .grid-cell[data-session="idle-child"]');
+  await expect(collapsedIdleCell.locator('canvas')).toBeVisible();
+  await collapsedIdleCell.locator('canvas').evaluate(node => { (window as any).__collapsedIdleCanvas = node; });
+  await collapsedIdleCell.locator('.delegation-cell-collapse').click();
   await expect(collapsedIdleCell).toHaveClass(/collapsed/);
   await expect(collapsedIdleCell).toBeHidden();
   const collapsedIdleTab = page.getByRole("button", { name: "Expand idle-child" });
@@ -352,13 +354,15 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/collapsed/);
-  await expect(collapsedIdleCell.locator("canvas")).toHaveCount(0);
+  await expect(collapsedIdleCell.locator("canvas")).toHaveCount(1);
+  await expect(collapsedIdleCell.locator("canvas")).toBeHidden();
   // Restored-session affordances use a defined edge, not a neon glow.
   await expect(collapsedIdleTab).toHaveCSS("border-top-style", "solid");
   await expect(collapsedIdleTab).toHaveCSS("border-top-width", "1px");
   await collapsedIdleTab.click();
   await expect(collapsedIdleCell).not.toHaveClass(/collapsed/);
   await expect(collapsedIdleCell).toBeVisible();
+  expect(await collapsedIdleCell.locator('canvas').evaluate(node => node === (window as any).__collapsedIdleCanvas)).toBe(true);
   await page.mouse.move(1, 100);
   await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect(sidebar).not.toHaveClass(/collapsed/);
@@ -1082,8 +1086,9 @@ test("click selects a filtered project through final create", async ({ page }) =
 
   await page.goto(srv.baseUrl);
   await openProjectPickerFromUi(page);
-  await page.locator("#new-project-name").fill("wo");
   const projectCards = page.locator("#project-list .card");
+  await expect(projectCards).toHaveCount(2); // the asynchronous picker load resets its filter
+  await page.locator("#new-project-name").fill("wo");
   await expect(projectCards).toHaveText(["wolfpack"]);
   await projectCards.first().click();
 
@@ -1153,7 +1158,7 @@ test("create failure returns to the agent form with the entered session name and
   await expect(sessionName).toBeFocused();
 });
 
-test("stop confirmation is styled, cancellable, and restores focus", async ({ page }) => {
+test("stop confirmation is styled, cancellable, and restores focus", async ({ page }, testInfo) => {
   const killRequests: unknown[] = [];
   await page.route("**/api/kill", async (route) => {
     killRequests.push(route.request().postDataJSON());
@@ -1185,9 +1190,9 @@ test("stop confirmation is styled, cancellable, and restores focus", async ({ pa
       confirmTransform: confirmStyle.textTransform,
     };
   })).toEqual({
-    titleColor: "rgb(237, 243, 239)",
+    titleColor: testInfo.project.name === "desktop" ? "rgb(230, 238, 232)" : "rgb(237, 243, 239)",
     titleTransform: "none",
-    cancelBackground: "rgb(28, 33, 30)",
+    cancelBackground: testInfo.project.name === "desktop" ? "rgb(27, 36, 30)" : "rgb(28, 33, 30)",
     cancelBorderRadius: "9px",
     cancelTransform: "none",
     confirmBackground: "rgba(204, 51, 51, 0.12)",

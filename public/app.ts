@@ -1248,7 +1248,8 @@ function teardownTerminalForViewChange(previousView: string, nextView: string): 
   closeTerminalTranscript();
   if (state.activeDelegationRoot) {
     destroyTerminal(nextView === "settings");
-    if (nextView === "settings") suspendDelegationGridTerminals();
+    // Preserve the existing Settings return priority for a suspended manual grid.
+    if (nextView === "settings" && !hasPreservedGrid()) suspendDelegationGridTerminals();
     else teardownDelegationWorkspace();
     if (isGridActive()) suspendGridMode();
   } else if (isGridActive()) {
@@ -4448,7 +4449,11 @@ function revealSettingsSection(sectionId: string, updateLocation = true): void {
     if (link.hash === `#${sectionId}`) link.setAttribute("aria-current", "location");
     else link.removeAttribute("aria-current");
   });
-  requestAnimationFrame(() => section.scrollIntoView({ block: "start", behavior: "smooth" }));
+  requestAnimationFrame(() => {
+    // Scroll only the Settings list, never the horizontally translated view stack.
+    const list = section.closest<HTMLElement>("#settings-view > .list");
+    if (list) list.scrollTo({ top: list.scrollTop + section.getBoundingClientRect().top - list.getBoundingClientRect().top, behavior: "smooth" });
+  });
 }
 
 let settingsFocusReturn: HTMLElement | null = null;
