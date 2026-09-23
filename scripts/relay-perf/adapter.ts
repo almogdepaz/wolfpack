@@ -1,17 +1,19 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { dueSlots, errorCode, MAX_SENDS_IN_FLIGHT, number, POLL_MS, record, ROUTE, SEND_INTERVAL_MS, startSampling, text } from "./measurement.ts";
+import { dueSlots, errorCode, MAX_SENDS_IN_FLIGHT, number, POLL_MS, record, ROUTE, SEND_INTERVAL_MS, startSampling, text, trace } from "./measurement.ts";
+import { createArchive } from "./archive.ts";
 
 // Structural boundary for the explicitly pinned external package; no copied implementation.
 interface Endpoint { readonly relay: string; readonly id: string }
 interface Delivery { readonly cursor: string; readonly envelope: { readonly taskId: string; readonly envelopeId: string } }
-interface Core {
+export interface Core {
   readonly endpoint: Endpoint;
   createTask(input: { target: Endpoint; task: string; timeoutMs: number }): Promise<{ taskId: string }>;
   receive(): Promise<readonly Delivery[]>;
   acknowledgeRelayDelivery(cursor: string): Promise<void>;
   getTask(taskId: string): unknown;
+  listTasks(): readonly unknown[];
   flushOutbox(): Promise<void>;
 }
 interface Session {
@@ -19,7 +21,7 @@ interface Session {
   status(): { binding: unknown };
   close(): void;
 }
-interface Store { close(): void }
+interface Store { close(): void; outbox(state: "pending" | "accepted"): readonly unknown[]; quarantinedOutbox(): readonly unknown[] }
 interface AdapterModule {
   createTaskStore(): Store;
   createVolatileTaskSession(options: { callerSession: string; store: Store; url: string; fetch: typeof fetch }): Session;
@@ -35,7 +37,8 @@ for (const base of [baseA, baseB]) if (new URL(base).hostname !== "127.0.0.1") t
 const exports: unknown = await import(pathToFileURL(join(source, "src/index.ts")).href);
 if (typeof record(exports).createTaskStore !== "function" || typeof record(exports).createVolatileTaskSession !== "function") throw new Error("adapter exports unavailable");
 const adapter = exports as AdapterModule; // Source HEAD/cleanliness is checked by the controller before import.
-const requests: unknown[] = [], sends: SendSample[] = [], deliveries: unknown[] = [], failures: unknown[] = [];
+const requests = trace(join(root, "requests.jsonl")), failures = trace(join(root, "failures.jsonl"));
+const sends: SendSample[] = [], deliveries: unknown[] = [];
 const authenticated = Object.assign(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(String(input));
   if (url.origin !== baseA && url.origin !== baseB) throw new Error("adapter external request denied");
@@ -69,6 +72,8 @@ if (baseA !== baseB) {
   const endpoint = record(record(reply.value).endpoint);
   target = { relay: text(endpoint.relay), id: text(endpoint.id) };
 }
+const archives = config.archiveEvents === undefined ? undefined : await Promise.all(["sender-history", "receiver-history"].map(name => createArchive(source, join(root, name), number(config.archiveEvents))));
+if (archives && (sender.listTasks().length || receiver.listTasks().length)) throw new Error("archive restored operational tasks");
 const seeded: string[] = [];
 for (let index = 0; index < number(config.seedMailbox ?? 0); index++) {
   const created = await sender.createTask({ target, task: "seed".repeat(256), timeoutMs: 3_600_000 });
@@ -82,6 +87,17 @@ async function health(session: Session, base: string, caller: string): Promise<u
   }) });
   return response.json();
 }
+if (config.fixedCohort === true) {
+  for (let round = 0; round < 4; round++) {
+    if (!archives) throw new Error("fixed cohort requires archive path");
+    await archives[1]!.poll(receiver); await archives[0]!.poll(sender);
+    if (round < 3) await Bun.sleep(POLL_MS);
+  }
+}
+const state = (): unknown => ({ at: Date.now(), tasks: [sender.listTasks().length, receiver.listTasks().length],
+  pending: stores.map(store => store.outbox("pending").length), quarantined: stores.map(store => store.quarantinedOutbox().length),
+  entries: archives?.map(archive => archive.entries()) });
+const initialState = state();
 const initialHealth = await health(sessions[1]!, baseB, "receiver");
 writeFileSync(join(root, "adapter-ready.json"), JSON.stringify({ pid: process.pid, nonce: config.nonce, target }), { mode: 0o600 });
 let started = false;
@@ -98,8 +114,11 @@ process.on("message", (message: unknown) => {
   });
 });
 async function run(start: number, duration: number, payloadBytes: number, load: boolean): Promise<void> {
-  const sampling = startSampling();
-  const count = load ? Math.floor(duration / SEND_INTERVAL_MS) : 0;
+  const sampling = startSampling(join(root, "samples.jsonl"));
+  const interval = number(config.sendIntervalMs ?? SEND_INTERVAL_MS);
+  const loadDuration = Math.min(duration, number(config.loadDurationMs ?? duration));
+  const count = load ? Math.floor(loadDuration / interval) : 0;
+  const healthSamples = trace(join(root, "health.jsonl"));
   let next = 0, active = 0, nextPoll = start + POLL_MS, polling = false;
   const pending = new Set<Promise<void>>(), observed = new Set<string>();
   const dispatch = (sample: SendSample): void => {
@@ -116,33 +135,52 @@ async function run(start: number, duration: number, payloadBytes: number, load: 
     })();
     pending.add(operation); void operation.finally(() => pending.delete(operation));
   };
-  const poll = async (): Promise<void> => {
-    polling = true;
-    try {
+  interface DeliverySample { taskId: string; envelopeId: string; incorporated: number; ackStart: number; acknowledged: number | null; duplicate: boolean }
+  const byCursor = new Map<string, DeliverySample>();
+  const instrumentedReceiver: Core = {
+    ...receiver!,
+    async receive() {
       const page = await receiver!.receive();
       const incorporated = Date.now();
       for (const delivery of page) {
-        const duplicate = observed.has(delivery.envelope.envelopeId);
-        observed.add(delivery.envelope.envelopeId);
         if (!receiver!.getTask(delivery.envelope.taskId)) throw new Error("delivery missing from endpoint state");
-        const sample: { taskId: string; envelopeId: string; incorporated: number; ackStart: number; acknowledged: number | null; duplicate: boolean } = {
-          taskId: delivery.envelope.taskId, envelopeId: delivery.envelope.envelopeId, incorporated, ackStart: Date.now(), acknowledged: null, duplicate,
-        };
-        deliveries.push(sample);
-        try {
-          await receiver!.acknowledgeRelayDelivery(delivery.cursor);
-          sample.acknowledged = Date.now();
-        } catch (error) { failures.push({ at: Date.now(), operation: "acknowledge", code: errorCode(error), taskId: delivery.envelope.taskId }); }
+        const sample: DeliverySample = { taskId: delivery.envelope.taskId, envelopeId: delivery.envelope.envelopeId,
+          incorporated, ackStart: 0, acknowledged: null, duplicate: observed.has(delivery.envelope.envelopeId) };
+        observed.add(delivery.envelope.envelopeId); deliveries.push(sample); byCursor.set(delivery.cursor, sample);
       }
-      // Native transport renews the lease on operations; idle sender needs its regular poll too.
-      await sender!.receive();
+      return page;
+    },
+    async acknowledgeRelayDelivery(cursor) {
+      const sample = byCursor.get(cursor);
+      if (sample) sample.ackStart = Date.now();
+      await receiver!.acknowledgeRelayDelivery(cursor);
+      if (sample) sample.acknowledged = Date.now();
+      byCursor.delete(cursor);
+    },
+  };
+  const poll = async (): Promise<void> => {
+    polling = true;
+    const pollStarted = performance.now();
+    try {
+      if (archives) {
+        await archives[1]!.poll(instrumentedReceiver); await archives[0]!.poll(sender!);
+      } else {
+        for (const delivery of await instrumentedReceiver.receive()) {
+          try { await instrumentedReceiver.acknowledgeRelayDelivery(delivery.cursor); }
+          catch (error) { failures.push({ at: Date.now(), operation: "acknowledge", code: errorCode(error), taskId: delivery.envelope.taskId }); }
+        }
+        // Native transport renews leases on operations; retain shipped 5s idle polling.
+        await sender!.receive();
+      }
     } catch (error) { failures.push({ at: Date.now(), operation: "receive", code: errorCode(error) }); }
     finally { polling = false; }
+    healthSamples.push({ at: Date.now(), pollMs: performance.now() - pollStarted,
+      sender: await health(sessions[0]!, baseA, "sender"), receiver: await health(sessions[1]!, baseB, "receiver"), state: state() });
   };
   const end = start + duration, drainEnd = end + 2 * POLL_MS + 1_000;
   while (Date.now() < drainEnd) {
     const now = Date.now();
-    for (const slot of dueSlots(start, Math.min(now, end), SEND_INTERVAL_MS, next, count)) {
+    for (const slot of dueSlots(start, Math.min(now, end), interval, next, count)) {
       const sample: SendSample = { sequence: next++, ...slot, outcome: "in_flight", completed: null, taskId: null };
       sends.push(sample);
       if (active >= MAX_SENDS_IN_FLIGHT || now >= end) { sample.outcome = "controller_backpressure"; sample.completed = now; }
@@ -156,7 +194,9 @@ async function run(start: number, duration: number, payloadBytes: number, load: 
   }
   await Promise.all(pending);
   const finalHealth = await health(sessions[1]!, baseB, "receiver");
-  writeFileSync(join(root, "adapter-metrics.json"), JSON.stringify({ start, end, count, seeded, initialHealth, finalHealth, capturesUnacknowledgedIncorporation: true, sends, deliveries, requests, failures, ...sampling.stop() }), { mode: 0o600 });
+  writeFileSync(join(root, "adapter-metrics.json"), JSON.stringify({ start, end, count, seeded, initialHealth, finalHealth, initialState, finalState: state(), healthSamples,
+    archive: archives?.map(archive => ({ ...archive.info, finalEntries: archive.entries(), writes: archive.writes })),
+    capturesUnacknowledgedIncorporation: true, sends, deliveries, requests, failures, ...sampling.stop() }), { mode: 0o600 });
   for (const session of sessions) session.close();
   for (const store of stores) store.close();
   process.disconnect?.();

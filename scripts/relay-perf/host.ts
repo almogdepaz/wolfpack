@@ -53,7 +53,7 @@ const { createServerInstance } = await import("../../src/server/index.ts");
 const { server, wss } = createServerInstance();
 await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
 const port = (server.address() as AddressInfo).port;
-const sampling = startSampling();
+const sampling = startSampling(join(root, "samples.jsonl"));
 let closing = false;
 async function close(): Promise<void> {
   if (closing) return; closing = true;

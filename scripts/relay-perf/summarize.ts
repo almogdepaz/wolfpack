@@ -1,12 +1,16 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { distribution, number, record, text } from "./measurement.ts";
 
 function objects(value: unknown): Record<string, unknown>[] {
+  if (value && typeof value === "object" && "traceFile" in value) return jsonLines(text(value.traceFile));
   if (!Array.isArray(value)) throw new TypeError("expected array");
   return value.map(record);
 }
 function load(path: string): Record<string, unknown> { return record(JSON.parse(readFileSync(path, "utf8"))); }
+function jsonLines(path: string): Record<string, unknown>[] {
+  return readFileSync(path, "utf8").trim().split("\n").filter(Boolean).map(line => record(JSON.parse(line)));
+}
 export function summarize(root: string): Record<string, unknown> {
   const run = load(join(root, "run.json")), metrics = record(run.metrics), config = record(run.config);
   const start = number(metrics.measuredStart), end = number(metrics.end), seconds = (end - start) / 1000;
@@ -20,6 +24,12 @@ export function summarize(root: string): Record<string, unknown> {
     if (typeof row.acknowledged === "number" && !byAck.has(row.taskId)) byAck.set(row.taskId, row);
   }
   const echoes = objects(metrics.echoes).filter(row => window(row, "scheduled"));
+  const archiveWrites = adapter.archive === undefined ? [] : objects(adapter.archive).flatMap(archive => objects(archive.writes));
+  const inserted = new Map<unknown, number>();
+  for (const row of archiveWrites) {
+    const details = record(row.details);
+    if (row.type === "pi-tasks-event" && details.event && record(details.event).type === "task.created" && !inserted.has(details.taskId)) inserted.set(details.taskId, number(row.at));
+  }
   const counts: Record<string, number> = {};
   for (const row of sends) { const code = text(row.outcome); counts[code] = (counts[code] ?? 0) + 1; }
   const accepted = sends.filter(row => row.outcome === "accepted");
@@ -27,6 +37,10 @@ export function summarize(root: string): Record<string, unknown> {
   const incorporationCoverageComplete = adapter.capturesUnacknowledgedIncorporation === true || objects(adapter.failures).length === 0;
   const hosts = Array.from({ length: number(config.relays) }, (_, index) => load(join(root, String(index), "host-metrics.json")));
   const resources = (actor: Record<string, unknown>): Record<string, unknown> => {
+    if (actor.sampleFile) {
+      const rows = jsonLines(text(actor.sampleFile));
+      actor = { resources: rows.filter(row => row.kind === "resource"), delays: rows.filter(row => row.kind === "delay") };
+    }
     const samples = objects(actor.resources).filter(row => window(row, "at"));
     const first = samples[0], last = samples.at(-1);
     return { samples: samples.length, rssBytes: distribution(samples.map(row => number(row.rss))),
@@ -36,6 +50,16 @@ export function summarize(root: string): Record<string, unknown> {
       finalMinuteRssMedian: distribution(samples.filter(row => number(row.at) >= end - 60_000).map(row => number(row.rss))).p50,
     };
   };
+  const nativeRows = existsSync(join(root, "native-samples.jsonl")) ? jsonLines(join(root, "native-samples.jsonl")) : [];
+  const native = [...new Set(nativeRows.map(row => row.pid))].map(pid => {
+    const rows = nativeRows.filter(row => row.pid === pid);
+    return { pid, role: rows[0]!.role, ...resources({ resources: rows, delays: [] }) };
+  });
+  const treeByTime = new Map<number, { at: number; rss: number; cpuMicros: number }>();
+  for (const row of nativeRows.filter(row => row.role !== "controller")) {
+    const at = number(row.at), total = treeByTime.get(at) ?? { at, rss: 0, cpuMicros: 0 };
+    total.rss += number(row.rss); total.cpuMicros += number(row.cpuMicros); treeByTime.set(at, total);
+  }
   return {
     root, config, sourceRevision: run.sourceRevision, adapterRevision: run.adapterRevision, brokerHash: run.brokerHash,
     seconds, offered: sends.length, outcomes: counts, acceptedPerSecond: accepted.length / seconds,
@@ -45,6 +69,8 @@ export function summarize(root: string): Record<string, unknown> {
     failedSendLaterDelivered: delivered.filter(row => row.outcome !== "accepted").length,
     duplicateDeliveries: deliveries.filter(row => row.duplicate === true).length,
     acceptanceMs: distribution(accepted.map(row => number(row.completed) - number(row.dispatched))),
+    archiveInsertionMs: distribution(sends.filter(row => inserted.has(row.taskId)).map(row => inserted.get(row.taskId)! - number(row.dispatched))),
+    acceptedNotInserted: adapter.archive === undefined ? null : accepted.filter(row => !inserted.has(row.taskId)).length,
     incorporationMs: distribution(delivered.map(row => number(byTask.get(row.taskId)!.incorporated) - number(row.dispatched))),
     acknowledgementMs: distribution(acknowledged.map(row => number(byAck.get(row.taskId)!.acknowledged) - number(row.dispatched))),
     acknowledgementFromScheduledMs: distribution(acknowledged.map(row => number(byAck.get(row.taskId)!.acknowledged) - number(row.scheduled))),
@@ -54,7 +80,9 @@ export function summarize(root: string): Record<string, unknown> {
       latencyMs: distribution(echoes.filter(row => row.latency !== null).map(row => number(row.latency))),
       latenessMs: distribution(echoes.map(row => number(row.lateness))) },
     host: hosts.map(resources), adapter: resources(adapter), controller: resources(record(metrics.controller)),
-    failures: adapter.failures, initialHealth: adapter.initialHealth, finalHealth: adapter.finalHealth,
+    native, processTree: resources({ resources: [...treeByTime.values()], delays: [] }),
+    archive: adapter.archive, initialState: adapter.initialState, finalState: adapter.finalState, healthSamples: adapter.healthSamples === undefined ? [] : objects(adapter.healthSamples),
+    failures: objects(adapter.failures), initialHealth: adapter.initialHealth, finalHealth: adapter.finalHealth,
     socketEvents: metrics.socketEvents, faultEvents: hosts.map(host => host.faultEvents), teardown: run.teardown, ptyCleanup: run.ptyCleanup,
   };
 }

@@ -2,7 +2,7 @@
 
 ## decision
 
-2026-09-23: retain the current worker/memory-owned architecture. the measured 1 kib local and loopback-peer workload meets the declared latency budgets. **this is partial qualification, not permission to close #339.** saturation exposes retry amplification and misleading error classification; archived-history independence and fixed-active-work memory stability remain unverified. no production correction was made.
+initial matrix, 2026-09-23: retain the current worker/memory-owned architecture. the measured 1 kib local and loopback-peer workload meets the declared latency budgets. the initial evidence below was partial. the [remaining qualification report](memory-relay-qualification.md) now covers real history delivery, fixed-active-work memory, live native accounting and matched post-load recovery, and supersedes the remaining-gates decision below. it records budget misses and scoped follow-ups, not an unconditional performance pass. no production correction was made in this benchmark PR.
 
 contracts: [memory-owned relay design](memory-owned-relay-design.md), [worker isolation and historical evidence](relay-worker-isolation.md). historical results are not substituted for this revision.
 
@@ -112,7 +112,7 @@ normal/fault/occupancy terminal p95 remains below 18.70ms, with no missing measu
 2. **bound retry work under pressure.** pinned adapter `src/task-core.ts` `flush` visits the entire pending outbox on each task creation. after capacity/outage, repeated calls amplify traffic and consume admission needed for receive/ack. seeded-256 generated 42,224 requests for 300 offered sends. propose a focused retry/admission regression, then bounded per-cycle retry/backoff without changing immutable identities, exhaustion or uncertainty semantics.
 3. **measure a bounded page-drain alternative.** `INBOX_PAGE_BYTES` is 256 kib, while this large envelope consumes about 33.85 kb. one page every 5s cannot sustain 10 such envelopes/sec; item/byte limits must remain intact. investigate draining available pages within a fixed operation/time budget rather than weakening capacity or merely hiding overload by reducing offered rate. full extension history/insertion work must be included before selecting the fix.
 
-no production changes, external adapter edits, live service restarts, installation, commits, pushes or issue closure were performed.
+no production changes, external adapter edits, live service restarts or installation were performed. the benchmark/report is published in PR#374. correction1 is separately owned by pi-tasks#25; measured follow-ups2/3 are now pi-tasks#26/#27.
 
 ## reproducible commands
 
@@ -152,7 +152,9 @@ repeat using fresh driver invocations, not reused relay state:
 
 focused checks used: `bun test tests/unit/relay-perf-measurement.test.ts tests/unit/relay-perf-summary.test.ts` (4 pass, 0 fail, 20 assertions; exit 0), and `./node_modules/.bin/tsc --noEmit` (exit 0). no repository-wide test suite was run for this harness-only addition.
 
-## evidence ledger and remaining gates
+## initial evidence ledger and remaining gates
+
+historical status at the first publication; see the [qualification supplement](memory-relay-qualification.md#acceptance-map) for current disposition.
 
 the private evidence root is recorded in `.plans/339-evidence-path` with the current handoff in `.plans/314-relay-performance.md`; neither is a portable/public evidence bundle. preserve it before temporary-directory cleanup. raw artifacts include per-trial `run.json`, `adapter/adapter-metrics.json`, host metrics, process stdout/stderr, matrix configs, source fingerprints, environment receipts, and summaries.
 
@@ -171,4 +173,4 @@ the private evidence root is recorded in `.plans/339-evidence-path` with the cur
 | budget comparison and smallest correction | normal measured scope passes; saturation candidates above need separate approval/regressions |
 | physical tls/tailnet/devices | unverified; remains #254 |
 
-next evidence gate: exercise the real pi history-delivery boundary with fixed bounded active work and controlled archive volume, measure full extension/resource recovery, and add live native-process accounting. do not create unrelated archive files and call that history independence.
+these initial evidence gaps are addressed in the qualification supplement at the production inbox/history boundary. full installed-pi/model/rebind behavior remains explicitly outside the measured scope; it is not inferred from a synchronous history facade.

@@ -42,24 +42,31 @@ export function dueSlots(start: number, now: number, interval: number, next: num
 export interface ResourceSample {
   readonly at: number; readonly rss: number; readonly cpuMicros: number;
 }
-export function startSampling(): { stop(): { resources: ResourceSample[]; delays: { at: number; ms: number }[] } } {
+export function startSampling(sampleFile?: string): { stop(): { resources: ResourceSample[]; delays: { at: number; ms: number }[]; sampleFile?: string } } {
   const resources: ResourceSample[] = [], delays: { at: number; ms: number }[] = [];
+  const resource = (row: ResourceSample): void => { if (sampleFile) writeJsonLine(sampleFile, { kind: "resource", ...row }); else resources.push(row); };
+  const delay = (row: { at: number; ms: number }): void => { if (sampleFile) writeJsonLine(sampleFile, { kind: "delay", ...row }); else delays.push(row); };
   const sample = (): void => {
     const cpu = process.cpuUsage();
-    resources.push({ at: Date.now(), rss: process.memoryUsage().rss, cpuMicros: cpu.user + cpu.system });
+    resource({ at: Date.now(), rss: process.memoryUsage().rss, cpuMicros: cpu.user + cpu.system });
   };
   sample();
   let previous = performance.now();
   const loop = setInterval(() => {
     const now = performance.now();
-    delays.push({ at: Date.now(), ms: Math.max(0, now - previous - 10) });
+    delay({ at: Date.now(), ms: Math.max(0, now - previous - 10) });
     previous = now;
   }, 10);
   const timer = setInterval(sample, 1_000);
-  return { stop() { clearInterval(loop); clearInterval(timer); sample(); return { resources, delays }; } };
+  return { stop() { clearInterval(loop); clearInterval(timer); sample(); return { resources, delays, ...(sampleFile && { sampleFile }) }; } };
 }
 export function writeJsonLine(path: string, value: unknown): void {
   appendFileSync(path, JSON.stringify(value) + "\n", { mode: 0o600 });
+}
+/** Append-only evidence without retaining the trace in the measured process heap. */
+export function trace(path: string): { push(value: unknown): void; toJSON(): { traceFile: string } } {
+  appendFileSync(path, "", { mode: 0o600 });
+  return { push(value) { writeJsonLine(path, value); }, toJSON() { return { traceFile: path }; } };
 }
 export async function waitUntil(predicate: () => boolean, timeoutMs: number, label: string): Promise<void> {
   const deadline = performance.now() + timeoutMs;

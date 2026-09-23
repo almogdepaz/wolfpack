@@ -33,5 +33,24 @@ test("summary keeps failed sends, lost accepted work, uncertainty and omitted pr
     expect(partial.acceptedNotIncorporated).toBe(0);
     expect(partial.acceptedNotAcknowledged).toBe(1);
     expect(partial.acknowledgementMs).toMatchObject({ count: 1 });
+    const traceFile = join(root, "failures.jsonl");
+    writeFileSync(traceFile, JSON.stringify({ code: "RELAY_CAPACITY" }) + "\n");
+    adapter.failures = { traceFile };
+    adapter.archive = [{ writes: [{ at: 1210, type: "pi-tasks-event", details: { taskId: "lost", event: { type: "task.created" } } }] }];
+    write("adapter/adapter-metrics.json", adapter);
+    const rows = [
+      { pid: 1, role: "host", at: 1000, rss: 100, cpuMicros: 0 },
+      { pid: 2, role: "broker", at: 1000, rss: 50, cpuMicros: 0 },
+      { pid: 3, role: "controller", at: 1000, rss: 900, cpuMicros: 0 },
+      { pid: 1, role: "host", at: 1500, rss: 110, cpuMicros: 100000 },
+      { pid: 2, role: "broker", at: 1500, rss: 60, cpuMicros: 50000 },
+      { pid: 3, role: "controller", at: 1500, rss: 999, cpuMicros: 500000 },
+    ];
+    writeFileSync(join(root, "native-samples.jsonl"), rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+    const qualified = summarize(root);
+    expect(qualified.failures).toEqual([{ code: "RELAY_CAPACITY" }]);
+    expect(qualified.acceptedNotInserted).toBe(0);
+    expect(qualified.archiveInsertionMs).toMatchObject({ count: 1, p95: 200 });
+    expect(qualified.processTree).toMatchObject({ samples: 2, cpuPercent: 30, rssBytes: { max: 170 } });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

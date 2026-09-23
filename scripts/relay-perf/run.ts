@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { Subprocess } from "bun";
-import { dueSlots, ECHO_INTERVAL_MS, number, record, startSampling, text, waitUntil } from "./measurement.ts";
+import { dueSlots, ECHO_INTERVAL_MS, number, record, startSampling, text, waitUntil, writeJsonLine } from "./measurement.ts";
+import { sampleProcesses } from "./native-resources.ts";
 
 const repo = resolve(import.meta.dir, "../..");
 const input = record(JSON.parse(readFileSync(text(process.argv[2]), "utf8")));
@@ -48,6 +49,8 @@ async function ready(home: string, filename: string, child: Subprocess, nonce: s
 }
 const hostBases: string[] = [], hosts: Subprocess[] = [];
 let metrics: unknown;
+let nativePending: Promise<void> | undefined, nativeFailure: unknown;
+const identities = new Map<number, string>();
 try {
   for (let index = 0; index < relays; index++) {
     const home = join(root, String(index)), name = index ? "b" : "a";
@@ -76,9 +79,10 @@ try {
   await waitUntil(() => configured.size === hosts.length, 5_000, "host configuration");
   const adapterHome = join(root, "adapter"); mkdirSync(adapterHome, { mode: 0o700 });
   const nonce = randomUUID();
-  writeFileSync(join(adapterHome, "adapter.json"), JSON.stringify({ source, seedMailbox: input.seedMailbox ?? 0, baseA: hostBases[0], baseB: hostBases.at(-1), peerOrigin: "https://b.tail123.ts.net", authorization: "Bearer " + token, nonce }), { mode: 0o600 });
+  writeFileSync(join(adapterHome, "adapter.json"), JSON.stringify({ source, seedMailbox: input.seedMailbox ?? 0, archiveEvents: input.archiveEvents, fixedCohort: input.fixedCohort,
+    sendIntervalMs: input.sendIntervalMs, loadDurationMs: input.loadDurationMs, baseA: hostBases[0], baseB: hostBases.at(-1), peerOrigin: "https://b.tail123.ts.net", authorization: "Bearer " + token, nonce }), { mode: 0o600 });
   const adapter = launch("adapter", [process.execPath, join(import.meta.dir, "adapter.ts"), adapterHome], adapterHome, { HOME: adapterHome, PATH: "/usr/bin:/bin" }, true);
-  await ready(adapterHome, "adapter-ready.json", adapter, nonce, 15_000 + number(input.seedMailbox ?? 0) * 100);
+  await ready(adapterHome, "adapter-ready.json", adapter, nonce, 60_000 + number(input.seedMailbox ?? 0) * 100);
   const echoesBySocket: Map<string, EchoSample>[] = [];
   for (let index = 0; index < 2; index++) {
     const session = `echo-${index}`, base = hostBases[index % relays]!;
@@ -110,12 +114,27 @@ try {
     await waitUntil(() => attached, 5_000, "pty ready");
   }
   const start = Date.now() + 250, end = start + warmup + duration;
-  const sampling = startSampling();
+  const sampling = startSampling(join(root, "controller-samples.jsonl"));
+  const owned = [...children.map(child => ({ pid: child.process.pid, role: child.role })),
+    ...ptyPids.map(pid => ({ pid, role: "pty" })), { pid: process.pid, role: "controller" }];
+  let nextNative = start;
   adapter.send({ kind: "run", start, duration: warmup + duration, payloadBytes: input.payloadBytes, load: input.load === true });
   let next = 0;
   const count = Math.floor((warmup + duration) / ECHO_INTERVAL_MS);
   while (Date.now() < end && !stopRequested) {
     const now = Date.now();
+    if (nativeFailure) throw nativeFailure;
+    if (input.nativeSampler && now >= nextNative && !nativePending) {
+      nextNative = now + 1_000;
+      nativePending = sampleProcesses(text(input.nativeSampler), owned).then(rows => {
+        for (const row of rows) {
+          const identity = `${row.startSeconds}:${row.startMicros}`;
+          if (identities.has(row.pid) && identities.get(row.pid) !== identity) throw new Error("owned process identity changed");
+          identities.set(row.pid, identity);
+          writeJsonLine(join(root, "native-samples.jsonl"), row);
+        }
+      }).catch(error => { nativeFailure = error; }).finally(() => { nativePending = undefined; });
+    }
     for (const slot of dueSlots(start, now, ECHO_INTERVAL_MS, next, count)) {
       const sequence = next++;
       for (let index = 0; index < sockets.length; index++) {
@@ -127,11 +146,14 @@ try {
     }
     await Bun.sleep(5);
   }
+  await nativePending;
+  if (nativeFailure) throw nativeFailure;
   if (stopRequested) throw new Error("interrupted");
   await waitUntil(() => adapter.exitCode !== null, 40_000, "adapter drain");
   if (adapter.exitCode !== 0 || !existsSync(join(adapterHome, "adapter-metrics.json"))) throw new Error("adapter workload failed");
   metrics = { start, measuredStart: start + warmup, end, echoes, socketEvents, controller: sampling.stop() };
 } finally {
+  await nativePending;
   for (const ws of sockets) ws.close();
   for (const child of [...children].reverse()) {
     if (child.process.exitCode === null) child.process.kill("SIGTERM");
