@@ -22,9 +22,9 @@ curl -fsSL "https://raw.githubusercontent.com/almogdepaz/wolfpack/${WOLFPACK_REL
 
 `WOLFPACK_RELEASE_TAG` is an opt-in: the installer validates it as a semantic release tag before downloads or installed-state changes, then uses that tag for all three release asset URLs. Use only a tag you have selected and reviewed. The checksum list establishes consistency within that release but is distributed with the binaries; use the [manual/audited path](#manualaudited-install) for independent inspection and optional provenance verification.
 
-The installer downloads and verifies the matching `wolfpack` and `wolfpack-broker` releases, then immediately launches setup. After setup, if you accepted the login service, open the printed URL. If you declined the login service, run `wolfpack`, then open the printed URL. In either case, run `wolfpack doctor` to verify the installation.
+The installer downloads and verifies the matching `wolfpack` and `wolfpack-broker` releases, then delegates installation and interactive setup to the staged server. Package-triggered installation uses the same pair owner. After setup, if you accepted the login service, open the printed URL. If you declined the login service, run `wolfpack`, then open the printed URL. In either case, run `wolfpack doctor` to verify the installation.
 
-On later runs, `wolfpack` stages the current server binary and runs `setup --defer-service-restart`, which verifies and persists configuration without activating the server. After setup succeeds for an existing configured service, the script invokes `wolfpack service restart --server-only` once. That final restart neither prompts for nor restarts a running broker, though starting the server can start a missing required broker.
+On later runs, the owner validates the pair and required configuration before disrupting managed services. An unchanged running broker is preserved; replacing a running broker warns that its sessions will end and requires confirmation before stopping it. For an existing managed installation, setup defers activation to the owner, which installs or repairs the required services after setup succeeds. The shell does not perform a separate restart. Installation or activation failure returns nonzero; fix the reported cause and rerun the same installer.
 
 ### Bunx or npm: no persistent CLI
 
@@ -50,12 +50,12 @@ In execution order, the installer:
 2. creates a private staging directory under `~/.wolfpack/bin`, then downloads the matching `wolfpack`, `wolfpack-broker`, and `checksums-sha256.txt` release assets there;
 3. rejects failed or empty downloads and unavailable SHA-256 tooling, selects each binary's exact filename from the checksum list, and verifies both binaries before replacement; ordinary exits and failures run the EXIT cleanup trap;
 4. on macOS, clears downloaded quarantine/provenance attributes and applies an ad-hoc local signature to both staged binaries before replacement—this permits local execution but is **not** Wolfpack publisher identity verification;
-5. after both checks pass, moves each staged file into `~/.wolfpack/bin` on the same filesystem, so each managed path is replaced atomically; and
-6. leaves unrelated `wolfpack` commands or symlinks unchanged, attempts its managed PATH symlink, and runs the exact managed binary's setup. On an already configured upgrade, deferred setup is followed by one `wolfpack service restart --server-only`; restart failure makes the installer fail. A running broker and its sessions are preserved, but server start can start a missing required broker.
+5. invokes the staged server's installation dispatch, which validates the candidate pair, required configuration and setup TTY before stopping services or replacing managed bytes; the owner compares each binary independently and obtains consent before replacing a running broker; and
+6. after the owner finishes setup and requested service activation, leaves unrelated `wolfpack` commands or symlinks unchanged and attempts its managed PATH symlink. The EXIT trap removes staging files on ordinary success and failure, including fresh installs.
 
-On a clean install, `exec "$MANAGED_BINARY" setup` replaces Bash, so its EXIT trap does not run and a private `.install.*` directory can remain under `~/.wolfpack/bin`. On a configured upgrade, setup returns control to Bash before the server-only restart, and the EXIT trap removes the staging directory when the installer exits. Any retained clean-install directory contains the public release checksum list and neither moved binary; remove it only after confirming no installer is active.
+Managed copies are not an atomic pair transaction and there is no automatic rollback. A failed activation retains installed descriptors and configuration so ordinary rerun can retry even when the binary bytes already match. An older candidate without the installation dispatch fails before managed cutover rather than falling back to shell-owned replacement.
 
-Direct setup can refresh the installed server descriptor or request an immediate server-only restart when descriptor settings or remote-access policy change. During a configured installer upgrade, restart deferral writes descriptor changes without activation and leaves one final server-only restart to the installer. An already installed login service is preserved without another installation prompt, so the upgrade does not reinstall or restart a running broker; starting the server can start a missing required broker. On a clean install without a service, accepting login-service installation starts both the server and broker. While active sessions matter, run the upgrade from an external terminal and verify sessions and service state afterward.
+Direct setup can refresh the installed server descriptor or request an immediate server-only restart when descriptor settings or remote-access policy change. During a managed installer upgrade, setup defers activation to the installation owner. An unchanged running broker is not restarted, including descriptor repair; an inactive required broker is started before the server. On a fresh install, declining login-service installation leaves the downloaded pair without activating services. `WOLFPACK_INSTALL_SKIP_SETUP=1` is binary-only for a fresh install, but still repairs an existing configured managed installation. Run upgrades from an external terminal when broker replacement is possible, and verify sessions and service state afterward.
 
 Release checksums detect corruption or a mismatch between downloaded bytes and listed filenames, but the checksum list is distributed with the same release. The [release workflow source](https://github.com/almogdepaz/wolfpack/blob/main/.github/workflows/release.yml) also creates GitHub build-provenance attestations for the release assets. Verifying those attestations adds a separate workflow/repository identity signal; it does not audit the source for correctness or prove that a binary is safe. See GitHub CLI's [`gh attestation verify` documentation](https://cli.github.com/manual/gh_attestation_verify).
 
@@ -150,7 +150,7 @@ gh attestation verify "$BROKER_ASSET" --repo almogdepaz/wolfpack
 
 A successful result verifies the attestation's GitHub workflow/repository identity and artifact digest. It does not independently audit source correctness, runtime behavior, or safety, and it is separate from the ad-hoc macOS signature.
 
-Only after both checksum checks, any optional attestation checks, and your inspection succeed, install the pair and run setup from the exact managed path:
+Only after both checksum checks, any optional attestation checks, and your inspection succeed, invoke the inspected pair's installation owner from an interactive terminal:
 
 ```sh
 chmod +x "$SERVER_ASSET" "$BROKER_ASSET"
@@ -161,17 +161,13 @@ if [ "$OS" = "darwin" ]; then
   codesign --sign - --force "$BROKER_ASSET"
 fi
 
-INSTALL_DIR="$HOME/.wolfpack/bin"
-mkdir -p "$INSTALL_DIR"
-mv -f "$SERVER_ASSET" "$INSTALL_DIR/wolfpack"
-mv -f "$BROKER_ASSET" "$INSTALL_DIR/wolfpack-broker"
-"$INSTALL_DIR/wolfpack" setup
+"$STAGING_DIR/$SERVER_ASSET" install "$STAGING_DIR/$BROKER_ASSET"
 
 rm -rf "$STAGING_DIR"
 trap - EXIT HUP INT TERM
 ```
 
-The file replacement itself does not create a PATH symlink or restart an existing service. On an upgrade, deferred setup preserves an already installed login service and writes descriptor changes without activation; the final server-only restart does not reinstall or restart a running broker, though it can start a missing required broker. The moves overwrite the managed server/broker pair and there is no automatic rollback, so stop before them or retain your own backup if inspection fails. While active sessions matter, run these steps from an external terminal and verify sessions and service state afterward. `~/.wolfpack/bin/wolfpack uninstall --yes` removes Wolfpack-managed files while preserving unrelated commands; see [uninstall](#uninstall).
+This uses the same validation, broker-replacement consent, setup and activation flow as the curl installer, but does not create a PATH symlink. It requires a release with the installation dispatch; for older releases, consult that tag's installation documentation instead of manually overwriting a running pair. There is no automatic rollback, so retain your own backup if needed. While active sessions matter, run these steps from an external terminal and verify sessions and service state afterward. `~/.wolfpack/bin/wolfpack uninstall --yes` removes Wolfpack-managed files while preserving unrelated commands; see [uninstall](#uninstall).
 
 ## setup choices
 

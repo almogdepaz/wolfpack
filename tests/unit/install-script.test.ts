@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -164,7 +164,7 @@ function prepareFixture(): {
   mkdirSync(systemBin, { recursive: true });
   writeFileSync(log, "");
   writeFileSync(commandLog, "");
-  const serverAsset = "#!/bin/sh\n[ -z \"$INSTALL_TEST_COMMAND_LOG\" ] || printf \"%s\\n\" \"$*\" >> \"$INSTALL_TEST_COMMAND_LOG\"\nif [ \"$INSTALL_TEST_FAIL_SETUP\" = \"1\" ] && [ \"$1\" = \"setup\" ]; then exit 42; fi\nif [ \"$INSTALL_TEST_FAIL_RESTART\" = \"1\" ] && [ \"$1\" = \"service\" ] && [ \"$2\" = \"restart\" ]; then exit 43; fi\nprintf \"new server\\n\"\n";
+  const serverAsset = "#!/bin/sh\n[ -z \"$INSTALL_TEST_COMMAND_LOG\" ] || printf \"%s\\n\" \"$*\" >> \"$INSTALL_TEST_COMMAND_LOG\"\nif [ \"$INSTALL_TEST_UNSUPPORTED_INSTALL\" = \"1\" ] && [ \"$1\" = \"install\" ]; then exit 44; fi\nif [ \"$INSTALL_TEST_FAIL_SETUP\" = \"1\" ] && [ \"$1\" = \"setup\" ]; then exit 42; fi\nif [ \"$INSTALL_TEST_FAIL_RESTART\" = \"1\" ] && [ \"$1\" = \"service\" ] && [ \"$2\" = \"restart\" ]; then exit 43; fi\nprintf \"new server\\n\"\n";
   const brokerAsset = "#!/bin/sh\nprintf \"new broker\\n\"\n";
   const sha256 = (content: string): string => createHash("sha256").update(content).digest("hex");
   writeFileSync(checksums, `${sha256(serverAsset)}  wolfpack-linux-x64\n${sha256(brokerAsset)}  wolfpack-broker-linux-x64\n`);
@@ -200,10 +200,12 @@ case "$url" in
     ;;
   *wolfpack-broker-linux-x64)
     if [ "$INSTALL_TEST_FAIL_BROKER" = "1" ]; then exit 22; fi
-    if [ "$INSTALL_TEST_EMPTY_BROKER" != "1" ]; then printf '#!/bin/sh\\nprintf "new broker\\\\n"\\n' > "$output"; fi
+    if [ -n "$INSTALL_TEST_BROKER_ASSET" ]; then cat "$INSTALL_TEST_BROKER_ASSET" > "$output"
+    elif [ "$INSTALL_TEST_EMPTY_BROKER" != "1" ]; then printf '#!/bin/sh\\nprintf "new broker\\\\n"\\n' > "$output"; fi
     ;;
   *wolfpack-linux-x64)
-    printf '#!/bin/sh\\n[ -z "$INSTALL_TEST_COMMAND_LOG" ] || printf "%%s\\\\n" "$*" >> "$INSTALL_TEST_COMMAND_LOG"\\nif [ "$INSTALL_TEST_FAIL_SETUP" = "1" ] && [ "$1" = "setup" ]; then exit 42; fi\\nif [ "$INSTALL_TEST_FAIL_RESTART" = "1" ] && [ "$1" = "service" ] && [ "$2" = "restart" ]; then exit 43; fi\\nprintf "new server\\\\n"\\n' > "$output"
+    if [ -n "$INSTALL_TEST_SERVER_ASSET" ]; then cat "$INSTALL_TEST_SERVER_ASSET" > "$output"
+    else printf '#!/bin/sh\\n[ -z "$INSTALL_TEST_COMMAND_LOG" ] || printf "%%s\\\\n" "$*" >> "$INSTALL_TEST_COMMAND_LOG"\\nif [ "$INSTALL_TEST_UNSUPPORTED_INSTALL" = "1" ] && [ "$1" = "install" ]; then exit 44; fi\\nif [ "$INSTALL_TEST_FAIL_SETUP" = "1" ] && [ "$1" = "setup" ]; then exit 42; fi\\nif [ "$INSTALL_TEST_FAIL_RESTART" = "1" ] && [ "$1" = "service" ] && [ "$2" = "restart" ]; then exit 43; fi\\nprintf "new server\\\\n"\\n' > "$output"; fi
     ;;
   *) exit 22 ;;
 esac
@@ -227,6 +229,7 @@ function installerEnvironment(
     INSTALL_TEST_CORRUPT_CHECKSUM: "0",
     INSTALL_TEST_FAIL_SETUP: "0",
     INSTALL_TEST_FAIL_RESTART: "0",
+    INSTALL_TEST_UNSUPPORTED_INSTALL: "0",
     WOLFPACK_SYMLINK_DIR: fixture.systemBin,
     WOLFPACK_INSTALL_SKIP_SETUP: "1",
     ...extraEnv,
@@ -267,6 +270,85 @@ function runInstallerWithSetup(
     encoding: "utf-8",
     env: installerEnvironment(fixture, { WOLFPACK_INSTALL_SKIP_SETUP: "0", ...extraEnv }),
   });
+}
+
+const PYTHON_PTY_SPAWN = `import errno,os,pty,sys
+# Python 3.9 pty.spawn waits forever on macOS zero-byte PTY EOF; normalize it to EIO.
+def read_pty(fd):
+    chunk=os.read(fd,4096)
+    if not chunk: raise OSError(errno.EIO,"PTY EOF")
+    return chunk
+sys.exit(os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:],master_read=read_pty)))`;
+
+function runWithControllingTty(
+  root: string,
+  command: readonly string[],
+  environment: NodeJS.ProcessEnv,
+  input: string,
+): ReturnType<typeof spawnSync> {
+  const python = Bun.which("python3");
+  if (!python) throw new Error("python3 is required for the controlling-TTY fixture");
+  return spawnSync(python, ["-c", PYTHON_PTY_SPAWN, ...command], {
+    cwd: root,
+    encoding: "utf-8",
+    env: environment,
+    input,
+    timeout: 20_000,
+  });
+}
+
+function expectClosedManagerPath(
+  managerBin: string,
+  environment: NodeJS.ProcessEnv,
+  commands: readonly string[],
+): void {
+  for (const command of commands) {
+    const executable = join(managerBin, command);
+    expect(Bun.which(command, { PATH: environment.PATH })).toBe(executable);
+    renameSync(executable, `${executable}.disabled`);
+    try { expect(Bun.which(command, { PATH: environment.PATH })).toBeNull(); }
+    finally { renameSync(`${executable}.disabled`, executable); }
+  }
+}
+
+function prepareSetupPair(root: string, server: string, broker: string, managerBin = join(root, "manager-bin")): NodeJS.ProcessEnv {
+  mkdirSync(managerBin, { recursive: true });
+  mkdirSync(join(root, "tmp"), { recursive: true });
+  const serviceManager = process.platform === "darwin" ? "launchctl" : "systemctl";
+  const inactiveCommand = process.platform === "darwin" ? "print" : "is-active";
+  writeExecutable(join(managerBin, serviceManager), `#!/bin/sh
+printf '${serviceManager} %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
+case "$*" in *${inactiveCommand}*) exit 3 ;; esac
+exit 0
+`);
+  writeExecutable(join(managerBin, "tailscale"), `#!/bin/sh
+printf 'tailscale %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
+exit 1
+`);
+  if (process.platform === "linux") {
+    writeExecutable(join(managerBin, "loginctl"), "#!/bin/sh\nprintf 'yes\\n'\n");
+  }
+  for (const command of process.platform === "linux"
+    ? ["launchctl", "sudo", "brew", "apt", "open"]
+    : ["systemctl", "loginctl", "sudo", "brew", "apt", "open"]) {
+    writeExecutable(join(managerBin, command), `#!/bin/sh
+printf 'unexpected ${command} %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
+exit 97
+`);
+  }
+  const built = spawnSync(process.execPath, ["build", "--compile", "src/cli/index.ts", "--outfile", server], {
+    cwd: process.cwd(), encoding: "utf-8", timeout: 20_000,
+  });
+  expect(built.status, built.stderr).toBe(0);
+  writeExecutable(broker, "#!/bin/sh\nprintf 'new broker\\n'\n");
+  const environment = packageFixtureEnvironment(root, {
+    PATH: managerBin,
+    INSTALL_TEST_MANAGER_LOG: join(root, "manager.log"),
+  });
+  expectClosedManagerPath(managerBin, environment, [
+    "launchctl", "tailscale", "systemctl", "loginctl", "sudo", "brew", "apt", "open",
+  ]);
+  return environment;
 }
 
 function installedOutput(path: string): string {
@@ -335,29 +417,109 @@ describe("install entrypoint parity", () => {
     expect(packedManifest.optionalDependencies).toEqual(manifest.optionalDependencies);
   }, 7500);
 
-  test("package runner directly executes an exact immutable executable pair with its colocated broker", () => {
-    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-direct-package-runner-")));
+  test.each([false, true])("package runner repairs its pair and retries activation (existing descriptor: %p)", (installed) => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-owner-")));
     const { packageBin, platformRoot, server, broker } = createPackageRunnerFixture(fixtureRoot);
-    writeExecutable(server, "#!/bin/sh\n\"$(dirname \"$0\")/wolfpack-broker\" --version\nprintf 'wolfpack %s\\n' \"$*\"\n");
-    writeExecutable(broker, "#!/bin/sh\nprintf 'broker %s\\n' \"$*\"\n");
-    writeExecutable(join(packageBin, "wolfpack"), "#!/bin/sh\nprintf 'STALE LOCAL BINARY\\n'\n");
-    const sourceBytes = [readFileSync(server), readFileSync(broker)];
-    const sourceModes = [statSync(server).mode & 0o777, statSync(broker).mode & 0o777];
-
-    const invoked = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "--version"], {
-      cwd: fixtureRoot,
-      encoding: "utf-8",
-      env: packageFixtureEnvironment(fixtureRoot),
-      timeout: 2500,
+    const managerBin = join(fixtureRoot, "manager-bin");
+    const commands = join(fixtureRoot, "manager.log");
+    const managedBin = join(fixtureRoot, "home", ".wolfpack", "bin");
+    const descriptorDirectory = process.platform === "darwin"
+      ? join(fixtureRoot, "home", "Library", "LaunchAgents") : join(fixtureRoot, "home", ".config", "systemd", "user");
+    const descriptor = join(descriptorDirectory, process.platform === "darwin" ? "com.wolfpack.server.plist" : "wolfpack.service");
+    mkdirSync(managerBin);
+    mkdirSync(join(fixtureRoot, "home", ".wolfpack"));
+    writeFileSync(join(fixtureRoot, "home", ".wolfpack", "config.json"), JSON.stringify({ devDir: join(fixtureRoot, "home", "Dev"), port: 24444 }));
+    if (installed) {
+      mkdirSync(descriptorDirectory, { recursive: true });
+      writeFileSync(descriptor, "installed\n");
+      mkdirSync(managedBin);
+      for (const name of ["wolfpack", "wolfpack-broker"]) writeExecutable(join(managedBin, name), "#!/bin/sh\nexit 17\n");
+    }
+    writeExecutable(join(managerBin, "systemctl"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
+[ "$INSTALL_TEST_FAIL_SERVER_START" = "1" ] && [ "$*" = "--user start wolfpack" ] && exit 1
+case "$*" in
+  '--user start wolfpack-broker') : > "$HOME/broker-started" ;;
+  '--user is-active wolfpack-broker') [ -f "$HOME/broker-started" ] && printf 'active\\n' && exit 0; exit 3 ;;
+  *is-active*) exit 3 ;;
+esac
+`);
+    writeExecutable(join(managerBin, "loginctl"), "#!/bin/sh\nprintf 'yes\\n'\n");
+    writeExecutable(join(managerBin, "launchctl"), `#!/bin/sh
+printf '%s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
+if [ "$INSTALL_TEST_FAIL_SERVER_START" = "1" ]; then
+  case "$*" in *com.wolfpack.server*) exit 1 ;; esac
+fi
+case "$*" in
+  bootstrap*com.wolfpack.broker.plist) : > "$HOME/broker-started" ;;
+  print*com.wolfpack.broker) [ -f "$HOME/broker-started" ] && printf 'pid = 42\\n' ;;
+esac
+`);
+    const built = spawnSync(process.execPath, ["build", "--compile", "src/cli/index.ts", "--outfile", server], {
+      cwd: process.cwd(), encoding: "utf-8", timeout: 20_000,
     });
+    expect(built.status, built.stderr).toBe(0);
+    writeExecutable(broker, "#!/bin/sh\nexit 0\n");
+    const environment = packageFixtureEnvironment(fixtureRoot, {
+      PATH: managerBin, INSTALL_TEST_MANAGER_LOG: commands,
+    });
+    // A missing fake must never fall through to the host service manager.
+    expectClosedManagerPath(managerBin, environment, ["launchctl", "systemctl", "loginctl"]);
 
-    expect(invoked.status, invoked.stderr).toBe(0);
-    expect(invoked.stdout).toBe("broker --version\nwolfpack --version\n");
-    expect(existsSync(join(fixtureRoot, "cache", "wolfpack-bridge"))).toBe(false);
-    expect([readFileSync(server), readFileSync(broker)]).toEqual(sourceBytes);
-    expect([statSync(server).mode & 0o777, statSync(broker).mode & 0o777]).toEqual(sourceModes);
+    for (const fails of [true, true, false]) {
+      const attempt = spawnSync(process.execPath, [join(packageBin, "run.cjs")], {
+        cwd: fixtureRoot, encoding: "utf-8", env: { ...environment, INSTALL_TEST_FAIL_SERVER_START: fails ? "1" : "0" }, timeout: 20_000,
+      });
+      expect(attempt.status, `${attempt.stdout}\n${attempt.stderr}`).toBe(fails ? 1 : 0);
+      expect(existsSync(join(managedBin, "wolfpack")), attempt.stderr).toBe(true);
+      expect(readFileSync(join(managedBin, "wolfpack"))).toEqual(readFileSync(server));
+      expect(readFileSync(join(managedBin, "wolfpack-broker"))).toEqual(readFileSync(broker));
+      expect(existsSync(descriptor)).toBe(true);
+    }
+    const managerLog = readFileSync(commands, "utf-8");
+    for (const [macAction, linuxAction, count] of [
+      ["bootstrap", "start", 1],
+      ["bootout", "stop", process.platform === "darwin" ? 1 : 0],
+    ] as const) {
+      const brokerCalls = managerLog.split("\n").filter(line => process.platform === "darwin"
+        ? line.startsWith(`${macAction} `) && line.includes("com.wolfpack.broker")
+        : line === `--user ${linuxAction} wolfpack-broker`);
+      expect(brokerCalls).toHaveLength(count);
+    }
     expect(platformRoot).toContain("wolfpack-bridge-");
-  });
+  }, 45_000);
+
+  test.each([
+    ["accepted", [], "n\n\ny\n24444\n\n\n", true],
+    ["declined", [], "n\n\ny\n24444\nn\n", false],
+    ["deferred", ["--defer-service-restart"], "n\n\ny\n24444\n", false],
+  ] as const)("package runner setup %s installs its colocated pair only after acceptance", (_case, setupArgs, input, installsPair) => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-setup-owner-")));
+    const { packageBin, server, broker } = createPackageRunnerFixture(fixtureRoot);
+    const commands = join(fixtureRoot, "manager.log");
+    const stableBin = join(fixtureRoot, "home", ".wolfpack", "bin");
+    mkdirSync(stableBin, { recursive: true });
+    writeExecutable(join(stableBin, "wolfpack-broker"), "#!/bin/sh\nprintf 'old broker\\n'\n");
+    const environment = prepareSetupPair(fixtureRoot, server, broker);
+
+    const result = runWithControllingTty(fixtureRoot,
+      [process.execPath, join(packageBin, "run.cjs"), "setup", ...setupArgs], environment, input);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(String(result.stdout)).toContain("Phone and remote access stay unavailable");
+    const stableServer = join(stableBin, "wolfpack");
+    if (installsPair) {
+      expect(readFileSync(stableServer)).toEqual(readFileSync(server));
+      expect(readFileSync(join(stableBin, "wolfpack-broker"))).toEqual(readFileSync(broker));
+    } else {
+      expect(existsSync(stableServer)).toBe(false);
+      expect(readFileSync(join(stableBin, "wolfpack-broker"), "utf-8")).toContain("old broker");
+    }
+    const managerLog = readFileSync(commands, "utf-8");
+    expect(managerLog).toContain("tailscale version");
+    expect(managerLog).not.toContain("unexpected");
+    if (!installsPair) expect(managerLog).not.toMatch(/(?:bootstrap|enable|start)/);
+  }, 45_000);
 
   test.each(["wolfpack", "wolfpack-broker"] as const)("package runner rejects a non-executable exact-pair payload: %s", (payload) => {
     fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-direct-non-executable-")));
@@ -404,8 +566,7 @@ describe("install entrypoint parity", () => {
 
     expect(result.status).toBe(0);
     expect(String(result.stdout).toLowerCase()).not.toContain("tmux");
-    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("new server\n");
-    expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("new broker\n");
+    expect(readFileSync(fixture.commandLog, "utf-8")).toContain("install");
   });
 
   test("installer explains the missing-Tailscale local-only fallback without surfacing JWT setup", () => {
@@ -568,6 +729,65 @@ describe("install entrypoint parity", () => {
 });
 
 describe("install.sh release binary staging", () => {
+  test.each([
+    ["fresh acceptance", false, true, "n\n\ny\n24444\n\n"],
+    ["fresh decline", false, false, "n\n\ny\n24444\nn\n"],
+    ["managed deferred setup", true, true, "n\n\ny\n24444\n"],
+  ] as const)("piped installer %s runs real setup and the pair owner", (_case, managed, activates, input) => {
+    const fixture = prepareFixture();
+    const server = join(fixtureRoot, "candidate-server");
+    const broker = join(fixtureRoot, "candidate-broker");
+    const environment = prepareSetupPair(fixtureRoot, server, broker, fixture.bin);
+    for (const command of ["awk", "bash", "cat", "chmod", "ln", "mkdir", "mktemp", "rm", "readlink", process.platform === "darwin" ? "shasum" : "sha256sum"]) {
+      const executable = Bun.which(command, { PATH: "/usr/bin:/bin" });
+      if (!executable) throw new Error(`missing installer fixture utility: ${command}`);
+      symlinkSync(executable, join(fixture.bin, command));
+    }
+    const assets = [[server, "wolfpack-linux-x64"], [broker, "wolfpack-broker-linux-x64"]] as const;
+    writeFileSync(fixture.checksums, assets.map(([path, name]) =>
+      `${createHash("sha256").update(readFileSync(path)).digest("hex")}  ${name}\n`,
+    ).join(""));
+    if (managed) {
+      const descriptorDirectory = process.platform === "darwin"
+        ? join(fixture.home, "Library", "LaunchAgents") : join(fixture.home, ".config", "systemd", "user");
+      mkdirSync(descriptorDirectory, { recursive: true });
+      writeFileSync(join(descriptorDirectory, process.platform === "darwin" ? "com.wolfpack.broker.plist" : "wolfpack-broker.service"), "installed\n");
+      writeFileSync(join(fixture.home, ".wolfpack", "config.json"), JSON.stringify({ devDir: join(fixture.home, "Dev"), port: 24443 }));
+    } else {
+      rmSync(fixture.installDir, { recursive: true });
+    }
+    const result = runWithControllingTty(fixtureRoot,
+      ["/bin/bash", "-c", 'cat "$1" | bash', "piped-installer", join(process.cwd(), "install.sh")], {
+        ...environment,
+        OSTYPE: "linux-gnu",
+        INSTALL_TEST_LOG: fixture.log,
+        INSTALL_TEST_CHECKSUMS: fixture.checksums,
+        INSTALL_TEST_SERVER_ASSET: server,
+        INSTALL_TEST_BROKER_ASSET: broker,
+        WOLFPACK_SYMLINK_DIR: fixture.systemBin,
+      }, input);
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(String(result.stdout)).toContain("Setup complete — next steps:");
+    expect(JSON.parse(readFileSync(join(fixture.home, ".wolfpack", "config.json"), "utf-8")).port).toBe(24444);
+    expect(readFileSync(join(fixture.installDir, "wolfpack"))).toEqual(readFileSync(server));
+    expect(readFileSync(join(fixture.installDir, "wolfpack-broker"))).toEqual(readFileSync(broker));
+    const managerLog = readFileSync(join(fixtureRoot, "manager.log"), "utf-8");
+    expect(managerLog).toContain("tailscale version");
+    expect(managerLog).not.toContain("unexpected");
+    for (const [label, unit] of [["com.wolfpack.server", "wolfpack"], ["com.wolfpack.broker", "wolfpack-broker"]]) {
+      const starts = managerLog.split("\n").filter(line => process.platform === "darwin"
+        ? line.startsWith("launchctl bootstrap ") && line.endsWith(`/${label}.plist`)
+        : line === `systemctl --user start ${unit}`);
+      expect(starts).toHaveLength(activates ? 1 : 0);
+    }
+    if (managed) {
+      expect(String(result.stdout)).toContain("Service activation deferred.");
+      expect(String(result.stdout)).not.toContain("Start wolfpack automatically on login?");
+    }
+    expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
+  }, 45_000);
+
   test("Linux pseudo-tty invocation keeps spaced repository paths out of the shell command", () => {
     const repositoryCwd = "/tmp/wolfpack checkout with spaces";
     const invocation = scriptInvocation("linux", repositoryCwd);
@@ -576,22 +796,19 @@ describe("install.sh release binary staging", () => {
     expect(invocation.args).toEqual(["-q", "-e", "-c", "bash install.sh", "/dev/null"]);
   });
 
-  test("normal completion hands setup to the newly installed managed binary", () => {
+  test("normal completion delegates lifecycle work to the staged installation owner", () => {
     const fixture = prepareFixture();
     const result = runInstallerWithSetup(fixture);
 
     expect(result.status).toBe(0);
-    expect(readFileSync(fixture.commandLog, "utf-8")).toBe("setup\n");
-    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("new server\n");
-    const retainedStagingDirectories = installerStagingDirectories(fixture.installDir);
-    expect(retainedStagingDirectories).toHaveLength(1);
-    expect(readdirSync(join(
-      fixture.installDir,
-      retainedStagingDirectories[0] ?? "missing-staging-directory",
-    ))).toEqual(["checksums-sha256.txt"]);
+    const commands = readFileSync(fixture.commandLog, "utf-8");
+    expect(commands).toContain("install");
+    expect(commands).not.toContain("setup\n");
+    expect(commands).not.toContain("service restart");
+    expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
   });
 
-  test("a normal upgrade completes managed setup before restarting the service", () => {
+  test("a normal upgrade delegates installation and setup without shell-managed restart", () => {
     const fixture = prepareFixture();
     const serviceDir = join(fixture.home, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
@@ -604,10 +821,10 @@ describe("install.sh release binary staging", () => {
     const result = runInstallerWithSetup(fixture);
 
     expect(result.status).toBe(0);
-    expect(readFileSync(fixture.commandLog, "utf-8").trim().split("\n")).toEqual([
-      "setup --defer-service-restart",
-      "service restart --server-only",
-    ]);
+    const commands = readFileSync(fixture.commandLog, "utf-8");
+    expect(commands).toContain("install");
+    expect(commands).not.toContain("setup\n");
+    expect(commands).not.toContain("service restart");
     expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
   });
 
@@ -628,10 +845,13 @@ describe("install.sh release binary staging", () => {
 
     expect(result.status).not.toBe(0);
     expect(readFileSync(fixture.log, "utf-8")).toContain("wolfpack-linux-x64");
-    expect(readFileSync(fixture.commandLog, "utf-8")).toBe("");
+    const commands = readFileSync(fixture.commandLog, "utf-8");
+    expect(commands).not.toContain("install");
+    expect(commands).not.toContain("setup");
+    expect(commands).not.toContain("service restart");
   });
 
-  test("does not restart an upgrade when setup fails", () => {
+  test("propagates an owner failure with ordinary rerun guidance", () => {
     const fixture = prepareFixture();
     const serviceDir = join(fixture.home, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
@@ -641,13 +861,17 @@ describe("install.sh release binary staging", () => {
       port: 18790,
     }));
 
-    const result = runInstallerWithSetup(fixture, { INSTALL_TEST_FAIL_SETUP: "1" });
+    const result = runInstallerWithSetup(fixture, { INSTALL_TEST_UNSUPPORTED_INSTALL: "1" });
 
     expect(result.status).not.toBe(0);
-    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("setup --defer-service-restart");
+    expect(String(result.stdout)).toContain("Fix the reported error and rerun this installer.");
+    const commands = readFileSync(fixture.commandLog, "utf-8");
+    expect(commands).toContain("install");
+    expect(commands).not.toContain("setup");
+    expect(commands).not.toContain("service restart");
   });
 
-  test("exits nonzero when the final server-only restart fails", () => {
+  test("does not request a shell-managed final restart", () => {
     const fixture = prepareFixture();
     const serviceDir = join(fixture.home, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
@@ -657,16 +881,16 @@ describe("install.sh release binary staging", () => {
       port: 18790,
     }));
 
-    const result = runInstallerWithSetup(fixture, { INSTALL_TEST_FAIL_RESTART: "1" });
+    const result = runInstallerWithSetup(fixture);
 
-    expect(result.status).not.toBe(0);
-    expect(readFileSync(fixture.commandLog, "utf-8").trim().split("\n")).toEqual([
-      "setup --defer-service-restart",
-      "service restart --server-only",
-    ]);
+    expect(result.status).toBe(0);
+    const commands = readFileSync(fixture.commandLog, "utf-8");
+    expect(commands).toContain("install");
+    expect(commands).not.toContain("setup\n");
+    expect(commands).not.toContain("service restart");
   });
 
-  test("a skip-setup upgrade still restarts through the managed binary", () => {
+  test("a skip-setup upgrade leaves service decisions to the installation owner", () => {
     const fixture = prepareFixture();
     const serviceDir = join(fixture.home, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
@@ -676,7 +900,21 @@ describe("install.sh release binary staging", () => {
     const result = runInstaller(fixture);
 
     expect(result.status).toBe(0);
-    expect(readFileSync(fixture.commandLog, "utf-8").trim()).toBe("service restart --server-only");
+    const commands = readFileSync(fixture.commandLog, "utf-8");
+    expect(commands).toContain("install");
+    expect(commands).not.toContain("setup");
+    expect(commands).not.toContain("service restart");
+  });
+
+  test("rejects a candidate without an installation dispatch before managed cutover", () => {
+    const fixture = prepareFixture();
+
+    const result = runInstaller(fixture, { INSTALL_TEST_UNSUPPORTED_INSTALL: "1" });
+
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(fixture.commandLog, "utf-8")).toContain("install");
+    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("old server\n");
+    expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("old broker\n");
   });
 
   test("downloads and installs the matching wolfpack and broker assets from latest by default", () => {
@@ -689,10 +927,8 @@ describe("install.sh release binary staging", () => {
       "https://github.com/almogdepaz/wolfpack/releases/latest/download/wolfpack-linux-x64",
       "https://github.com/almogdepaz/wolfpack/releases/latest/download/wolfpack-broker-linux-x64",
     ]);
-    expect(installedOutput(join(fixture.installDir, "wolfpack"))).toBe("new server\n");
-    expect(installedOutput(join(fixture.installDir, "wolfpack-broker"))).toBe("new broker\n");
-    expect(statSync(join(fixture.installDir, "wolfpack")).mode & 0o111).not.toBe(0);
-    expect(statSync(join(fixture.installDir, "wolfpack-broker")).mode & 0o111).not.toBe(0);
+    expect(readFileSync(fixture.commandLog, "utf-8")).toContain("install");
+    expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
   });
 
   test("downloads checksums and both binaries from one validated release tag", () => {

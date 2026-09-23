@@ -2,6 +2,8 @@
 /**
  * CLI dispatch entry point.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { printQR } from "../qr.js";
 import { print, printError, printJson, bold, dim, red, yellow, WOLF } from "./formatting.js";
 import pkg from "../../package.json";
@@ -18,6 +20,7 @@ import {
   serviceStatus,
   isServiceInstalled,
   isServiceRunning,
+  installCandidatePair,
   updateStableBinary,
   uninstall,
 } from "./service.js";
@@ -138,7 +141,13 @@ async function runSetup(args: readonly string[] = []): Promise<void> {
   const options = parseSetupOptions(args);
   if (!options) throw new Error(`invalid setup options. ${setupUsage()}`);
   const { setup } = await import("./setup.js");
-  await setup(options);
+  const candidates = currentPackageCandidates();
+  await setup({
+    ...options,
+    ...(candidates && {
+      onServiceInstallAccepted: () => installCandidatePair(candidates, "explicit"),
+    }),
+  });
 }
 
 export function shouldStartDashboard(argv: readonly string[]): boolean {
@@ -169,10 +178,15 @@ async function start() {
   const serviceAuthFile = process.env.WOLFPACK_SERVICE_AUTH_FILE;
   if (serviceMode && serviceAuthFile) applyServiceAuthFile(serviceAuthFile);
 
+  const packageCandidates = currentPackageCandidates();
   const config = loadConfig();
   if (!config) {
     if (serviceMode) {
       throw new Error("missing or invalid config. Run 'wolfpack setup' to recreate ~/.wolfpack/config.json.");
+    }
+    if (packageCandidates) {
+      await installCandidatePair(packageCandidates, "bootstrap");
+      process.exit(0);
     }
     print("  No valid config found. Running setup first...\n");
     await runSetup([]);
@@ -189,18 +203,22 @@ async function start() {
 
   // CLI invocation — ensure service is running the current version
   const url = remoteUrl(config);
-  const binaryUpdated = updateStableBinary();
   const wasRunning = isServiceRunning();
-  try {
-    const action = planBinaryUpdateAction(binaryUpdated, wasRunning, isServiceInstalled());
-    if (action === "server-restart") {
-      print(dim("  Updated server binary; restarting server only so broker sessions stay attached to the broker."));
-      serviceRestart({ broker: false, skipBrokerSessionWarning: true });
-    } else if (action === "start") serviceStart();
-    else if (action === "install") serviceInstall();
-  } catch (e) {
-    printError(red(`  Service startup failed: ${e}`));
-    printError(dim("  Run 'wolfpack service install' to retry."));
+  if (packageCandidates && !wasRunning) {
+    await installCandidatePair(packageCandidates, "explicit");
+  } else {
+    const binaryUpdated = updateStableBinary();
+    try {
+      const action = planBinaryUpdateAction(binaryUpdated, wasRunning, isServiceInstalled());
+      if (action === "server-restart") {
+        print(dim("  Updated server binary; restarting server only so broker sessions stay attached to the broker."));
+        serviceRestart({ broker: false, skipBrokerSessionWarning: true });
+      } else if (action === "start") serviceStart();
+      else if (action === "install") serviceInstall();
+    } catch (e) {
+      printError(red(`  Service startup failed: ${e}`));
+      printError(dim("  Run 'wolfpack service install' to retry."));
+    }
   }
   if (wasRunning && !isServiceRunning()) {
     printError(yellow("  Service was running but didn't restart."));
@@ -256,7 +274,37 @@ function emitMachineFailure(
   process.exit(failure.exitCode);
 }
 
-function runServiceCommand(argv: readonly string[]): void {
+function currentExecutablePath(): string {
+  return process.execPath;
+}
+
+function currentPackageCandidates(): { server: string; broker: string } | null {
+  const server = currentExecutablePath();
+  if (server.endsWith("/bun") || server.endsWith("/bun.exe")) return null;
+
+  const manifestPath = join(dirname(server), "package.json");
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`Could not read package metadata beside ${server}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+  }
+  const packageName = `wolfpack-bridge-${process.platform}-${process.arch}`;
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error(`Invalid package metadata beside ${server}.`);
+  }
+  if ((manifest as { name?: unknown }).name !== packageName) return null;
+  return { server, broker: join(dirname(server), "wolfpack-broker") };
+}
+
+async function runInstallCommand(argv: readonly string[]): Promise<void> {
+  const [, broker] = argv;
+  if (argv.length !== 2 || !broker) throw new Error("Usage: wolfpack install <staged-broker-path>");
+  await installCandidatePair({ server: currentExecutablePath(), broker }, "bootstrap");
+}
+
+async function runServiceCommand(argv: readonly string[]): Promise<void> {
   if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
     print(SERVICE_USAGE);
     return;
@@ -266,7 +314,11 @@ function runServiceCommand(argv: readonly string[]): void {
     printError(`  ${SERVICE_USAGE}`);
     process.exit(1);
   }
-  if (serviceCommand.action === "install") serviceInstall();
+  if (serviceCommand.action === "install") {
+    const candidates = currentPackageCandidates();
+    if (candidates) await installCandidatePair(candidates, "explicit");
+    else serviceInstall();
+  }
   else if (serviceCommand.action === "uninstall") serviceUninstall();
   else if (serviceCommand.action === "stop") serviceStop(serviceCommand.broker ? { broker: true } : {});
   else if (serviceCommand.action === "start") serviceStart();
@@ -319,13 +371,17 @@ async function dispatchCommand(
     await start();
     return;
   }
+  if (cmd === "install") {
+    await runInstallCommand(argv);
+    return;
+  }
   if (cmd === "setup") {
     if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print(setupUsage());
     else await runSetup(argv.slice(1));
     return;
   }
   if (cmd === "service") {
-    runServiceCommand(argv);
+    await runServiceCommand(argv);
     return;
   }
   if (cmd === "doctor") {
