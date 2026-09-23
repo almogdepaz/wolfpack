@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wolfpack · Bounded docking concept</title>
+<style>
+:root{color-scheme:dark;--bg:#0a0e0c;--panel:#141b17;--raised:#1b241e;--line:#2b3930;--muted:#94a79b;--text:#e6eee8;--green:#45ed7e;--mono:ui-monospace,SFMono-Regular,Consolas,monospace;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:13px var(--sans)}button,input,textarea,select{font:inherit;color:inherit}button,select{cursor:pointer}button{border:1px solid var(--line);border-radius:8px;background:var(--raised);padding:9px 12px;min-height:38px}button:hover{background:#26342b;border-color:#53745e}button:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible,[role=separator]:focus-visible{outline:2px solid var(--green);outline-offset:-2px}button:disabled{opacity:.38;cursor:not-allowed}button.primary{background:var(--green);border-color:var(--green);color:#092010;font-weight:650}button.quiet{background:transparent}button.danger{color:#ffb0b0;background:#332021;border-color:#714444}.icon{display:grid;place-items:center;width:32px;min-height:32px;padding:6px;flex:0 0 auto;color:var(--green)}svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}.symbols,[hidden]{display:none!important}h1,h2,h3,p{margin-top:0}p{line-height:1.65}small,.muted{color:var(--muted)}.eyebrow{font-size:10px;letter-spacing:.15em;font-weight:700;color:var(--muted);text-transform:uppercase}.badge{display:inline-flex;border:1px solid var(--line);border-radius:5px;padding:3px 6px;font:10px var(--mono);color:var(--muted)}.badge.green{color:var(--green);border-color:#285339;background:#11281a}.row{display:flex;align-items:center;gap:8px}.spread{justify-content:space-between}.stack{display:grid;gap:12px}a{color:var(--muted)}
+.app{height:100dvh;display:grid;grid-template-columns:var(--left,232px) 6px minmax(0,1fr);overflow:hidden}.sidebar{display:flex;flex-direction:column;min-height:0;min-width:0;background:linear-gradient(155deg,#17221a,#101612)}.brand{font:700 15px var(--mono);letter-spacing:3px;color:var(--green);display:flex;align-items:center;gap:10px;padding:23px 19px;flex:0 0 auto}.brand svg{width:23px;height:23px}.tools{position:relative;padding:18px 14px 12px;flex:0 0 auto;border-top:1px solid var(--line);margin-top:auto}.tools>.eyebrow{margin:0 8px 10px}.tools nav{display:grid;gap:5px}.tools nav button,.mobile-tool-list button{display:flex;gap:10px;align-items:center;text-align:left;background:transparent;min-height:41px}.tools nav svg,.mobile-tool-list svg{color:var(--green)}.tools .manage{border-color:#3c6c4b;background:#152f1e}.count{margin-left:auto;font:11px var(--mono);background:#274232;color:#b8efca;padding:3px 7px;border-radius:5px}.prototype{padding:13px 7px 0;color:var(--muted);font-size:10px;line-height:1.7}.prototype strong{color:var(--green);font-weight:500;letter-spacing:.05em}.arranging .prototype{visibility:hidden}.arrange-help{position:absolute;bottom:12px;left:14px;right:14px;margin:0;background:#12291b;border:1px solid #355d41;padding:10px;border-radius:8px;font-size:11px;line-height:1.6}.arrange-help button{margin-top:8px;width:100%;font-size:11px}.tools button[aria-pressed=true]{color:var(--green);background:#183c25;border-color:#467d56}
+.workspace{min-width:0;min-height:0;position:relative;display:grid;grid-template-columns:minmax(0,1fr) var(--rgap,6px) var(--right,320px);grid-template-rows:minmax(0,1fr) var(--bgap,0px) var(--bottom,0px)}.zone{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;position:relative;background:var(--panel)}#zone-left{flex:1;background:transparent}#zone-main{grid-column:1;grid-row:1;background:var(--bg)}#zone-right{grid-column:3;grid-row:1}#zone-bottom{grid-column:1/4;grid-row:3}#zone-focus{grid-column:1/4;grid-row:1/4;z-index:2}.zone-header{display:flex;align-items:center;gap:4px;padding:4px 7px;border-bottom:1px solid var(--line);min-height:40px;flex:0 0 auto;background:#121b15}.tabs{display:flex;gap:2px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:thin}.tab{flex:0 0 auto;font-size:11px;padding:7px 9px;min-height:30px;background:transparent;border-color:transparent;border-radius:5px;white-space:nowrap}.tab[aria-selected=true]{background:#223429;color:#d4f9de;border-color:#385442}.tab .grip{color:var(--muted);margin-right:7px;display:none}.arranging .tab .grip{display:inline}.arranging .tab{cursor:grab}.zone-body{flex:1;min-height:0;min-width:0;display:flex;position:relative}.panel{flex:1;min-width:0;min-height:0;overflow:auto}.panel:not(.terminal){padding:20px}.zone-empty{margin:auto;padding:20px;text-align:center;color:var(--muted);font-size:12px;line-height:1.8}.zone-empty strong{display:block;color:var(--green);font-size:13px}.arranging .zone{outline:1px dashed #416b4c;outline-offset:-1px}.drop-hint{display:none;position:absolute;inset:4px;z-index:5;align-items:center;justify-content:center;background:#123b27e8;border:2px solid var(--green);border-radius:6px;color:var(--green);font-weight:600;text-align:center;pointer-events:none}.dragging .zone.drop-over .drop-hint{display:flex}.resizer{background:#17231b;touch-action:none;position:relative;z-index:4}.resizer:hover,.resizer:focus-visible,.resizer.resizing{background:#45ed7e66}.resizer.vertical{cursor:col-resize}.resizer.horizontal{cursor:row-resize}#resize-right{grid-column:2;grid-row:1}#resize-bottom{grid-column:1/4;grid-row:2}.resizing-body{user-select:none;cursor:col-resize}
+.session-card{border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:10px;background:#19251c}.session-card.active{border-color:#42604c;border-left:3px solid var(--green)}.session-card strong{font:600 11px var(--mono);display:block;margin-bottom:8px}.session-card small{font-size:10px}.session-card .icon{min-height:28px;width:28px}.dot{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;margin-right:5px}.terminal{background:radial-gradient(ellipse at top left,#0f1811,transparent 65%),#0a0e0c;display:flex;flex-direction:column}.terminal-grid{display:grid;flex:1;min-height:0;min-width:0;grid-template-columns:minmax(0,1fr)}.terminal-pane{padding:24px;min-width:0;overflow:auto}.terminal-grid.equal{grid-template-columns:1fr 1fr}.terminal-grid.lead{grid-template-columns:2fr 1fr}.terminal-grid.vertical{grid-template-columns:1fr;grid-template-rows:1fr 1fr}.terminal-grid.single .secondary{display:none}.terminal-pane.secondary{border-left:1px solid var(--line);background:#101713}.terminal-grid.vertical .secondary{border-left:0;border-top:1px solid var(--line)}pre{font:12px/1.9 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;margin:0}.green{color:var(--green)}.dim{color:#7e9586}.cursor{display:inline-block;width:7px;height:14px;background:var(--green);vertical-align:middle}.terminal-note{font:10px/1.7 var(--mono);color:#748c7c;margin-top:28px}.goal{padding:18px;border-left:2px solid var(--green);border-radius:8px;background:#101912;margin:16px 0 22px}.goal .eyebrow{color:var(--green)}.goal h2{font-size:20px;line-height:1.45;font-weight:550;margin:10px 0 0}.check-row{display:flex;align-items:flex-start;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);font-size:12px;line-height:1.5}.check-row span:first-child{color:var(--green)}details{margin-top:18px;font-size:12px}summary{cursor:pointer;color:var(--muted);padding:8px 0}details p{margin:10px 0;color:var(--muted)}textarea{display:block;resize:vertical;width:100%;min-height:74px;background:#0d1710;border:1px solid var(--line);border-radius:8px;padding:10px;line-height:1.6;margin-top:8px}.stat-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:16px 0}.stat{padding:16px;background:#101912;border:1px solid var(--line);border-radius:8px}.stat b{display:block;font:25px var(--mono);color:var(--green);margin-bottom:6px}.stat small{font-size:11px}.file-line{font:12px/2.4 var(--mono);padding:5px 0;border-bottom:1px solid var(--line)}
+dialog{color:var(--text);background:#141c17;border:1px solid #425748;border-radius:14px;padding:0;box-shadow:0 24px 100px #0009;max-width:calc(100vw - 24px);max-height:calc(100dvh - 24px)}dialog::backdrop{background:#020704b8;backdrop-filter:blur(4px)}dialog[open]{display:flex;flex-direction:column}.dialog-header{display:flex;align-items:flex-start;gap:14px;padding:23px 24px 17px;flex:0 0 auto}.dialog-header h1{font-size:23px;letter-spacing:-.035em;margin-bottom:7px}.dialog-header p{font-size:12px;color:var(--muted);margin:0}.dialog-header .close{margin-left:auto}.dialog-body{padding:20px 24px;overflow:auto;min-height:0}.dialog-footer{border-top:1px solid var(--line);padding:13px 24px;font-size:11px;color:var(--muted);line-height:1.6;flex:0 0 auto}.wide-dialog{width:810px}.small-dialog{width:480px}.medium-dialog{width:600px}.dialog-tabs{display:flex;gap:20px;padding:0 24px;border-bottom:1px solid var(--line);flex:0 0 auto}.dialog-tabs button{border:0;border-radius:0;background:transparent;padding:12px 0;color:var(--muted)}.dialog-tabs button[aria-pressed=true]{color:var(--green);box-shadow:inset 0 -2px var(--green)}.explainer{background:#10261a;border:1px solid #2a5138;border-radius:8px;padding:12px 14px;font-size:12px;line-height:1.65;color:#bed6c6;margin-bottom:18px}.field{display:grid;gap:8px;margin-bottom:18px;font-size:12px}.field select,.placement-row select{min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:10px}.field select{width:100%}.search{width:100%;padding:11px 13px;background:var(--bg);border:1px solid var(--line);border-radius:8px;margin-bottom:18px}.catalog{display:grid;grid-template-columns:1fr 1fr;gap:14px}.widget-card{border:1px solid var(--line);border-radius:10px;padding:17px;background:#19231c;min-width:0}.widget-card h2{font-size:15px;margin:0}.widget-card p{font-size:12px;color:var(--muted);margin:12px 0}.widget-icon{display:grid;place-items:center;width:36px;height:36px;background:#233e2b;border:1px solid #31573c;border-radius:8px;color:var(--green);flex:0 0 auto}.byline{font-size:10px;color:var(--muted);margin-top:5px}.author{border-top:1px solid var(--line);padding-top:12px;margin:14px 0;font-size:11px;color:var(--muted);line-height:1.7}.author b{color:var(--text);font-weight:500}.controls{display:flex;gap:7px;flex-wrap:wrap}.controls button{font-size:12px}.dock-targets{display:grid;grid-template-columns:1fr 1fr;gap:10px}.dock-targets button{text-align:left;padding:15px;min-height:85px;background:#18291e}.dock-targets button strong{display:block;color:var(--green);margin-bottom:7px;font-size:13px}.dock-targets button small{font-size:11px;display:block;line-height:1.5}.dock-targets button.current{border-color:#4d855c}.move-actions{display:flex;gap:8px;margin-top:18px}.placement-row{display:grid;grid-template-columns:minmax(0,1fr) 130px;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}.placement-row strong{font-size:12px}.placement-row small{display:block;margin-top:4px;font-size:10px}.remember{display:flex;gap:10px;align-items:flex-start;font-size:12px;line-height:1.6;margin-top:22px}.remember input{accent-color:var(--green);margin-top:4px}.storage-status{font-size:11px;line-height:1.6;color:var(--muted);margin:10px 0 0}.empty{padding:30px 10px;color:var(--muted);line-height:1.8;text-align:center;grid-column:1/-1}.empty strong{display:block;color:var(--text);font-size:17px}.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:12px 18px;background:#26412e;border:1px solid #588566;color:#e5ffeb;border-radius:9px;font-size:12px;max-width:calc(100vw - 24px);z-index:10;box-shadow:0 8px 32px #0008;pointer-events:none}.mobile-header{display:none}.mobile-tool-list{display:grid;gap:8px}.prototype-link{display:inline-block;margin-top:7px}.mobile-note{display:none}
+@media(max-width:1100px) and (min-width:901px){.brand{font-size:13px;letter-spacing:2px;padding:20px 14px}.tools{padding:14px 9px}.tools nav button{font-size:12px}.terminal-pane{padding:20px}}
+@media(max-width:900px){button{min-height:44px}.app{display:flex;flex-direction:column}.sidebar,.resizer{display:none!important}.mobile-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--panel);border-bottom:1px solid var(--line);flex:0 0 auto}.mobile-header select{flex:1;min-width:0;min-height:44px;padding:8px;border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--green)}.mobile-header .icon{width:44px;min-height:44px}.workspace{display:flex;flex:1;min-height:0}.workspace>.zone:not(#zone-focus){display:none!important}#zone-focus{flex:1}.zone-header{display:none!important}.panel:not(.terminal){padding:20px}.terminal-pane{padding:20px 16px}.terminal-grid.equal,.terminal-grid.lead{grid-template-columns:1fr;grid-template-rows:1fr 1fr}.terminal-pane.secondary{border-left:0;border-top:1px solid var(--line)}pre{font-size:11px}.mobile-note{display:block}.catalog{grid-template-columns:1fr}.dialog-header{padding:20px 18px 15px}.dialog-header h1{font-size:22px}.dialog-body{padding:18px}.dialog-footer{padding:12px 18px;font-size:10px}.dialog-tabs{padding:0 18px}.dock-targets{grid-template-columns:1fr 1fr}.desktop-only{display:none!important}.placement-row{grid-template-columns:minmax(0,1fr) 122px}.stat{padding:12px}textarea{font-size:16px}.toast{bottom:12px}}
+</style>
+</head>
+<body>
+<svg class="symbols" aria-hidden="true"><defs>
+<symbol id="i-widgets" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17.5 14v7M14 17.5h7"/></symbol>
+<symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18m-7-12 3 3-3 3"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16M8 4v6m8 4v6"/></symbol>
+<symbol id="i-move" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18m-12-6 3-3 3 3m-9 3-3 3 3 3m12-6 3 3-3 3m-12 3 3 3 3-3"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+<symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/></symbol>
+<symbol id="i-reset" viewBox="0 0 24 24"><path d="M4 11a8 8 0 1 1 2 7M4 4v7h7"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 6 6 6-6 6m9 0h7"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8Z M14 3v5h5M8 12h8M8 16h6"/></symbol>
+</defs></svg>
+<div class="app" id="app">
+ <aside class="sidebar" aria-label="Workspace navigation">
+  <div class="brand"><svg aria-hidden="true"><use href="#i-widgets"/></svg>WOLFPACK</div>
+  <section class="zone" id="zone-left" data-zone="left" aria-label="Left dock"><header class="zone-header"></header><div class="zone-body"></div><div class="drop-hint" aria-hidden="true">Dock left · group as tabs</div></section>
+  <section class="tools" aria-label="Workspace tools"><div class="eyebrow">Workspace tools</div><nav>
+   <button data-action="terminal"><svg aria-hidden="true"><use href="#i-terminal"/></svg>Terminal grid</button>
+   <button class="manage" data-action="widgets"><svg aria-hidden="true"><use href="#i-widgets"/></svg>Widgets <span class="count" data-count>1</span></button>
+   <button id="arrange-button" data-action="arrange" aria-pressed="false"><svg aria-hidden="true"><use href="#i-move"/></svg><span id="arrange-label">Arrange workspace</span></button>
+   <button data-action="settings"><svg aria-hidden="true"><use href="#i-settings"/></svg>Workspace settings</button>
+   <button data-action="reset"><svg aria-hidden="true"><use href="#i-reset"/></svg>Reset workspace</button>
+  </nav><div class="arrange-help" id="arrange-help" hidden>Drag tabs between docks.<button data-action="move-picker" aria-label="Move a panel without dragging">Move a panel…</button></div>
+  <div class="prototype"><strong>● BOUNDED DOCKING CONCEPT</strong><br>Demo panels · no real sessions or installs<br><span id="save-label">Not saved · resets on reload</span><br><a class="prototype-link" href="widget-workspace.html">Original widget mock ↗</a></div></section>
+ </aside>
+ <div class="resizer vertical" id="resize-left" data-resize="left" role="separator" tabindex="0" aria-label="Resize left dock" aria-orientation="vertical" aria-controls="zone-left"></div>
+ <header class="mobile-header"><button data-action="tools" aria-label="Open workspace tools">Tools</button><select id="mobile-view" aria-label="Mobile view"></select><button class="icon" data-action="widgets" aria-label="Manage widgets"><svg aria-hidden="true"><use href="#i-widgets"/></svg></button></header>
+ <main class="workspace" id="workspace" aria-label="Docking workspace">
+  <section class="zone" id="zone-main" data-zone="main" aria-label="Main dock"><header class="zone-header"></header><div class="zone-body"></div><div class="drop-hint" aria-hidden="true">Dock in main · group as tabs</div></section>
+  <div class="resizer vertical" id="resize-right" data-resize="right" role="separator" tabindex="0" aria-label="Resize right dock" aria-orientation="vertical" aria-controls="zone-right"></div>
+  <section class="zone" id="zone-right" data-zone="right" aria-label="Right dock"><header class="zone-header"></header><div class="zone-body"></div><div class="drop-hint" aria-hidden="true">Dock right · group as tabs</div></section>
+  <div class="resizer horizontal" id="resize-bottom" data-resize="bottom" role="separator" tabindex="0" aria-label="Resize bottom dock" aria-orientation="horizontal" aria-controls="zone-bottom"></div>
+  <section class="zone" id="zone-bottom" data-zone="bottom" aria-label="Bottom dock"><header class="zone-header"></header><div class="zone-body"></div><div class="drop-hint" aria-hidden="true">Dock bottom · group as tabs</div></section>
+  <section class="zone" id="zone-focus" aria-label="Focused panel" hidden><header class="zone-header"></header><div class="zone-body"></div></section>
+ </main>
+</div>
+<div id="panel-stash" hidden>
+ <section class="panel" id="panel-sessions" aria-label="Sessions panel"><div class="row spread"><span class="eyebrow">Your sessions</span><span class="badge">Demo</span></div><div class="session-card active"><div class="row spread"><div><strong>wolfpack-ui</strong><small><span class="dot"></span>Pi · working</small></div><button class="icon quiet" data-action="session" aria-label="Session actions"><svg aria-hidden="true"><use href="#i-more"/></svg></button></div></div><div class="session-card"><strong>api-review</strong><small>Idle · demo session</small></div><div class="session-card"><strong>frontend-checks</strong><small>Shell · demo session</small></div><p class="muted" style="font-size:11px;margin-top:20px">Move this entire session panel. Workspace tools stay in navigation so you can always recover your layout.</p></section>
+ <section class="panel terminal" id="panel-terminal" aria-label="Demo terminal grid"><div class="terminal-grid single" id="terminal-grid"><div class="terminal-pane"><pre><span class="dim">~/Dev/wolfpack</span> <span class="green">❯</span> pi
+
+<span class="green">π</span> Wolfpack workspace <span class="dim">/ docking concept</span>
+
+<span class="dim">You</span>
+Keep Workspace tools. Let me arrange the rest.
+
+<span class="green">Assistant</span>
+Sessions, the terminal grid, and each widget
+can share the same bounded docking system.
+
+<span class="dim">  ✓</span> Four predictable docking zones
+<span class="dim">  ✓</span> Panels sharing a zone become tabs
+<span class="dim">  ✓</span> The terminal grid moves as one unit
+
+Start with <span class="green">Arrange workspace</span>.
+Drag a panel tab, or choose <span class="green">Move a panel</span>.
+
+<span class="green">❯</span> <span class="cursor"></span></pre><div class="terminal-note">ILLUSTRATIVE TERMINAL · NO COMMANDS RUN<br><span class="mobile-note">Mobile switches views, not tiny docking zones.<br>This prototype is not the native-keyboard fix.</span></div></div><div class="terminal-pane secondary"><pre><span class="dim">Second demo terminal</span>
+
+<span class="green">❯</span> watching changes…
+
+Both terminal panes move together.</pre></div></div></section>
+ <section class="panel" id="panel-context" aria-label="Agent Context panel"><div class="row spread"><small>Agent-authored · demo</small><span class="badge">Revision 2</span></div><div class="goal"><span class="eyebrow">Current goal</span><h2>A workspace that fits the way you work.</h2></div><div class="eyebrow">Plan</div><div class="check-row"><span>✓</span><div>Keep Workspace tools as the fixed home.</div></div><div class="check-row"><span>◉</span><div>Dock panels without replacing their contents.</div></div><div class="check-row"><span>○</span><div>Give mobile a simple view switcher.</div></div><details open><summary>Local demo note</summary><textarea id="demo-note" aria-label="Local demo note" placeholder="Type a note, then move this panel…"></textarea><small>Retained while docking. Not sent or saved on reload.</small></details><details><summary>Author’s layout preferences</summary><p>This extension prefers the right dock, but supports all four zones. Users choose where it lives; the host owns tabs, sizing, and recovery.</p></details></section>
+ <section class="panel" id="panel-checks" aria-label="Checks panel"><div class="row spread"><span class="eyebrow">Latest verification</span><span class="badge green">Example results</span></div><div class="stat-grid"><div class="stat"><b>24</b><small>Passed</small></div><div class="stat"><b>0</b><small>Failed</small></div><div class="stat"><b>2</b><small>Skipped</small></div></div><div class="check-row"><span>✓</span><div>Workspace layout tests</div></div><div class="check-row"><span>✓</span><div>Widget lifecycle tests</div></div><p class="muted" style="font-size:12px;margin-top:18px">Checks prefers the bottom dock. These numbers are illustrative, not verification evidence.</p></section>
+ <section class="panel" id="panel-files" aria-label="Changed Files panel"><span class="eyebrow">Illustrative changes</span><div class="file-line">M public/workspace.ts</div><div class="file-line">M public/styles.css</div><div class="file-line">A tests/widgets.test.ts</div><p class="muted" style="font-size:12px;margin-top:18px">This author supports Left, Main, and Right, but not Bottom. Unsupported destinations are disabled.</p></section>
+</div>
+<dialog class="medium-dialog" id="move-dialog" aria-labelledby="move-title"><header class="dialog-header"><div><h1 id="move-title">Move a panel</h1><p>Choose a dock. An occupied destination becomes a tab group.</p></div><button class="icon quiet close" data-close="move-dialog" aria-label="Close move panel"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header><div class="dialog-body"><label class="field">Panel<select id="move-panel" aria-label="Panel to move"></select></label><div class="dock-targets" id="dock-targets"></div><div class="move-actions"><button id="hide-panel" data-action="hide-selected">Hide panel</button><button data-action="focus-selected">Focus panel</button></div></div><footer class="dialog-footer">Main always keeps a panel. Moving its last tab promotes another panel; the destination explains which one. Terminal grid is never removed. No floating windows.</footer></dialog>
+<dialog class="wide-dialog" id="manager" aria-labelledby="manager-title"><header class="dialog-header"><div><h1 id="manager-title">Your widgets</h1><p>Independent extensions. Shared docking controls. Your placement.</p></div><button class="icon quiet close" data-close="manager" aria-label="Close widget manager"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header><nav class="dialog-tabs" aria-label="Widget library sections"><button id="installed-tab" data-tab="installed" aria-pressed="true">Installed <span id="installed-count">1</span></button><button id="browse-tab" data-tab="browse" aria-pressed="false">Browse widgets</button></nav><div class="dialog-body"><div class="explainer"><b>Hide</b> removes a panel from the workspace, but keeps its extension installed. <b>Uninstall</b> removes the demo extension. Installing a widget opens its author-preferred dock.</div><input type="search" class="search" id="widget-search" aria-label="Find a widget" placeholder="Find a widget…" hidden><div class="catalog" id="catalog"></div></div><footer class="dialog-footer">PROTOTYPE ONLY · No packages downloaded, real installations changed, or session data deleted. Creator docking declarations are a proposed API.</footer></dialog>
+<dialog class="medium-dialog" id="settings" aria-labelledby="settings-title"><header class="dialog-header"><div><h1 id="settings-title">Workspace settings</h1><p>Restore hidden panels, choose docking locations, or save this demo layout.</p></div><button class="icon quiet close" data-close="settings" aria-label="Close workspace settings"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header><div class="dialog-body"><label class="field">Terminal grid layout<select id="terminal-layout"><option value="single">Single terminal</option><option value="equal">Equal grid</option><option value="lead">Lead + stack</option><option value="vertical">Vertical stack</option></select></label><div class="eyebrow">Desktop docking</div><p class="muted" style="font-size:11px;margin:8px 0">Mobile uses a view switcher; these placements are kept for wider screens.</p><div id="panel-settings"></div><label class="remember"><input type="checkbox" id="remember">Remember this demo workspace in this browser</label><p class="storage-status" id="storage-status" role="status">Off by default. This does not change Wolfpack’s preferences.</p></div><footer class="dialog-footer">Only demo panel locations, sizes, visibility, and grid choice are saved. Notes and real sessions are never stored.</footer></dialog>
+<dialog class="small-dialog" id="reset-dialog" aria-labelledby="reset-title"><header class="dialog-header"><div><h1 id="reset-title">Reset workspace?</h1><p>Restore default docking and show installed panels. Your installed widgets and local demo note stay intact.</p></div></header><div class="dialog-body row"><button class="primary" data-action="confirm-reset">Restore default layout</button><button data-close="reset-dialog">Cancel</button></div></dialog>
+<dialog class="small-dialog" id="mobile-tools" aria-labelledby="tools-title"><header class="dialog-header"><div><h1 id="tools-title">Workspace tools</h1><p>Same tools. One panel at a time on mobile.</p></div><button class="icon quiet close" data-close="mobile-tools" aria-label="Close workspace tools"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header><div class="dialog-body mobile-tool-list"><button data-action="terminal"><svg aria-hidden="true"><use href="#i-terminal"/></svg>Terminal grid</button><button data-action="widgets"><svg aria-hidden="true"><use href="#i-widgets"/></svg>Widgets</button><button data-action="settings"><svg aria-hidden="true"><use href="#i-settings"/></svg>Workspace settings</button><button data-action="session"><svg aria-hidden="true"><use href="#i-more"/></svg>Session actions</button><button data-action="reset"><svg aria-hidden="true"><use href="#i-reset"/></svg>Reset workspace</button><p class="muted" style="font-size:11px;margin:10px 0 0">Desktop docking is preserved while you switch mobile views. This mock does not fix the app’s native-keyboard behavior.</p></div></dialog>
+<dialog class="small-dialog" id="session-dialog" aria-labelledby="session-title"><header class="dialog-header"><div><h1 id="session-title">wolfpack-ui</h1><p>Demo session actions</p></div><button class="icon quiet close" data-close="session-dialog" aria-label="Close session actions"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header><div class="dialog-body stack"><button data-action="transcript">Read transcript</button><button data-action="settings">Workspace settings</button></div></dialog>
+<dialog class="small-dialog" id="transcript-dialog" aria-labelledby="transcript-title"><header class="dialog-header"><div><h1 id="transcript-title">Session transcript</h1><p>Read-only demo text</p></div><button class="icon quiet close" data-close="transcript-dialog" aria-label="Close transcript"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header><div class="dialog-body"><pre>You: Keep Workspace tools. Let me arrange the rest.
+
+Assistant: Sessions, the terminal grid, and each widget can share the same bounded docking system.
+
+Illustrative text, not live session output.</pre></div></dialog>
+<div class="toast" id="toast" role="status" hidden></div>
+<script>
+(() => {
+'use strict';
+const $=id=>document.getElementById(id);
+const ZONES=['left','main','right','bottom'];
+const NAMES={left:'Left',main:'Main',right:'Right',bottom:'Bottom'};
+const STORAGE='wolfpack-bounded-docking-prototype:v1';
+const PANELS={
+ terminal:{name:'Terminal grid',icon:'i-terminal',allowed:ZONES,preferred:'main',core:true},
+ sessions:{name:'Sessions',icon:'i-panel',allowed:ZONES,preferred:'left',core:true},
+ context:{name:'Agent Context',icon:'i-panel',allowed:ZONES,preferred:'right',author:'Wolfpack',description:'Goals, progress, decisions, and next steps for the active session.'},
+ checks:{name:'Checks',icon:'i-check',allowed:ZONES,preferred:'bottom',author:'Example Studio',description:'A compact view of test results and verification activity.'},
+ files:{name:'Changed Files',icon:'i-file',allowed:['left','main','right'],preferred:'right',author:'Example Studio',description:'A lightweight summary of changed files. This author excludes the bottom dock.'}
+};
+const WIDGETS=['context','checks','files'];
+const media=matchMedia('(max-width:900px)');
+const nodes=Object.fromEntries(Object.keys(PANELS).map(id=>[id,$('panel-'+id)]));
+function defaults(installed=['context']){
+ const slots={left:['sessions'],main:['terminal'],right:[],bottom:[]};
+ for(const id of installed)slots[PANELS[id].preferred].push(id);
+ return {version:1,remember:false,installed:[...installed],slots,active:Object.fromEntries(ZONES.map(z=>[z,slots[z][0]||null])),sizes:{left:232,right:320,bottom:250},grid:'single'};
+}
+let state=defaults(),arranging=false,focusId=null,mobileView='terminal',dragId=null,resize=null;
+let managerTab='installed',pendingRemove=null,toastTimer,storageMessage='Off by default. This does not change Wolfpack’s preferences.';
+function notify(message){clearTimeout(toastTimer);$('toast').textContent=message;$('toast').hidden=false;toastTimer=setTimeout(()=>{$('toast').hidden=true},3800)}
+function available(id){return !!PANELS[id]&&(PANELS[id].core||state.installed.includes(id))}
+function location(id){return ZONES.find(z=>state.slots[z].includes(id))||null}
+function validate(value){
+ if(!value||value.version!==1||value.remember!==true||!Array.isArray(value.installed)||value.installed.length>3||new Set(value.installed).size!==value.installed.length||value.installed.some(id=>!WIDGETS.includes(id)))throw Error('Invalid saved demo');
+ const seen=new Set();
+ for(const z of ZONES){if(!Array.isArray(value.slots?.[z])||value.slots[z].length>5)throw Error('Invalid dock');for(const id of value.slots[z]){if(!PANELS[id]||seen.has(id)||!PANELS[id].allowed.includes(z)||(!PANELS[id].core&&!value.installed.includes(id)))throw Error('Invalid panel');seen.add(id)}}
+ if(!seen.has('terminal')||!value.slots.main.length||!['single','equal','lead','vertical'].includes(value.grid))throw Error('Missing terminal or main');
+ const next=defaults(value.installed);next.remember=true;next.grid=value.grid;
+ for(const z of ZONES){next.slots[z]=[...value.slots[z]];next.active[z]=next.slots[z].includes(value.active?.[z])?value.active[z]:next.slots[z][0]||null}
+ for(const z of ['left','right','bottom']){const n=value.sizes?.[z];if(!Number.isFinite(n))throw Error('Invalid size');next.sizes[z]=Math.max(180,Math.min(460,Math.round(n)))}
+ return next;
+}
+try{const raw=localStorage.getItem(STORAGE);if(raw){if(raw.length>8000)throw Error('Too large');state=validate(JSON.parse(raw));storageMessage='Demo workspace restored from this browser.'}}
+catch{storageMessage='Saved demo layout could not be used. Safe defaults are shown; saving is off.'}
+function persist(){
+ try{if(state.remember){localStorage.setItem(STORAGE,JSON.stringify(state));storageMessage='Demo workspace saved in this browser. Notes are not saved.'}else{localStorage.removeItem(STORAGE);storageMessage='Saving is off. This demo resets on reload.'}}
+ catch{storageMessage='Could not save in this browser. Your current layout still works, but may be lost on reload.'}
+ updateStorageStatus();
+}
+function updateStorageStatus(){
+ $('remember').checked=state.remember;$('storage-status').textContent=storageMessage;
+ $('save-label').textContent=storageMessage.startsWith('Could not')?'Could not save · see settings':state.remember?'Saved demo layout · this browser':'Not saved · resets on reload';
+}
+function icon(name){return `<svg aria-hidden="true"><use href="#${name}"/></svg>`}
+function setActive(id){const z=location(id);if(z)state.active[z]=id;mobileView=id}
+function returnFocus(id){const tab=$('tab-'+id);if(tab&&tab.getClientRects().length)tab.focus();else if(media.matches)$('mobile-view').focus();else $('arrange-button').focus()}
+function bounds(){
+ const w=$('app').clientWidth,h=$('workspace').clientHeight;
+ const rightPresent=state.slots.right.length>0||arranging;
+ const leftMax=Math.max(200,Math.min(420,w-300-(rightPresent?220:0)-12));
+ const left=Math.max(200,Math.min(leftMax,state.sizes.left));
+ const rightMax=Math.max(220,Math.min(460,w-left-312));
+ const bottomMax=Math.max(140,Math.min(380,h-200));
+ return {left:{min:200,max:leftMax,value:left},right:{min:220,max:rightMax,value:Math.max(220,Math.min(rightMax,state.sizes.right))},bottom:{min:140,max:bottomMax,value:Math.max(140,Math.min(bottomMax,state.sizes.bottom))}};
+}
+function layout(){
+ const limits=bounds(),focused=!!focusId&&!media.matches;
+ const right=(state.slots.right.length||arranging)&&!focused;
+ const bottom=(state.slots.bottom.length||arranging)&&!focused;
+ $('app').style.setProperty('--left',limits.left.value+'px');
+ $('workspace').style.setProperty('--right',right?limits.right.value+'px':'0px');
+ $('workspace').style.setProperty('--rgap',right?'6px':'0px');
+ $('workspace').style.setProperty('--bottom',bottom?(state.slots.bottom.length?limits.bottom.value:140)+'px':'0px');
+ $('workspace').style.setProperty('--bgap',bottom?'6px':'0px');
+ for(const z of ['left','right','bottom']){const el=$('resize-'+z);el.hidden=media.matches||focused||(z==='right'&&!right)||(z==='bottom'&&!bottom);el.setAttribute('aria-valuemin',String(limits[z].min));el.setAttribute('aria-valuemax',String(limits[z].max));el.setAttribute('aria-valuenow',String(limits[z].value))}
+}
+function header(zone,ids,active,focused=false){
+ const name=PANELS[active]?.name;
+ const tabs=ids.map(id=>`<button class="tab" id="${focused?'focus-tab-':'tab-'}${id}" role="tab" aria-selected="${id===active}" aria-controls="panel-${id}" tabindex="${id===active?0:-1}" data-activate="${id}" data-tab-zone="${zone}" draggable="${arranging&&!media.matches}"><span class="grip" aria-hidden="true">⠿</span>${PANELS[id].name}</button>`).join('');
+ return `<div class="tabs" role="tablist" aria-label="${focused?'Focused':NAMES[zone]} panels">${tabs}</div>${active?focused?`<button class="icon quiet" data-action="restore-focus" aria-label="Restore docked workspace" title="Restore docked workspace">${icon('i-expand')}</button>`:`<button class="icon quiet" data-move="${active}" aria-label="Move ${name}" title="Move or hide ${name}">${icon('i-move')}</button><button class="icon quiet" data-focus="${active}" aria-label="Focus ${name}" title="Focus ${name}">${icon('i-expand')}</button>`:''}`;
+}
+function render(){
+ const oldFocus=document.activeElement;
+ const selection=oldFocus instanceof HTMLTextAreaElement?[oldFocus.selectionStart,oldFocus.selectionEnd]:null;
+ $('app').classList.toggle('arranging',arranging&&!media.matches);
+ $('arrange-button').setAttribute('aria-pressed',String(arranging));$('arrange-label').textContent=arranging?'Finish arranging':'Arrange workspace';$('arrange-help').hidden=!arranging;
+ for(const [id,node] of Object.entries(nodes)){node.hidden=true;node.setAttribute('role','tabpanel');if(!available(id)||!location(id))$('panel-stash').append(node)}
+ for(const z of ZONES){
+   const zone=$('zone-'+z),ids=state.slots[z];
+   if(!ids.includes(state.active[z]))state.active[z]=ids[0]||null;
+   const active=state.active[z];
+   zone.querySelector('.zone-header').innerHTML=header(z,ids,active);
+   zone.querySelector('.zone-header').hidden=!ids.length||(z==='main'&&ids.length===1&&active==='terminal'&&!arranging);
+   const body=zone.querySelector('.zone-body');body.querySelector('.zone-empty')?.remove();
+   for(const id of ids){if(nodes[id].parentElement!==body)body.append(nodes[id]);nodes[id].hidden=id!==active;nodes[id].setAttribute('aria-labelledby','tab-'+id)}
+   if(!ids.length){const empty=document.createElement('div');empty.className='zone-empty';empty.innerHTML=`<strong>${NAMES[z]} dock</strong>Drop a panel here`;body.append(empty)}
+   zone.hidden=!!focusId||media.matches||(!ids.length&&!arranging);
+ }
+ const visible=Object.keys(PANELS).filter(id=>available(id)&&location(id));
+ if(!visible.includes(mobileView))mobileView='terminal';
+ if(focusId&&!visible.includes(focusId))focusId=null;
+ const focus=media.matches?mobileView:focusId;
+ $('zone-focus').hidden=!focus;
+ if(focus){const zone=$('zone-focus');zone.querySelector('.zone-header').innerHTML=header('main',[focus],focus,true);zone.querySelector('.zone-body').append(nodes[focus]);nodes[focus].hidden=false;nodes[focus].setAttribute('aria-labelledby','focus-tab-'+focus)}
+ $('mobile-view').innerHTML=visible.map(id=>`<option value="${id}">${PANELS[id].name}</option>`).join('');$('mobile-view').value=mobileView;
+ document.querySelectorAll('[data-count]').forEach(el=>el.textContent=String(state.installed.length));
+ $('terminal-grid').className='terminal-grid '+state.grid;$('terminal-layout').value=state.grid;
+ updateStorageStatus();layout();
+ if(selection&&oldFocus.isConnected&&oldFocus.getClientRects().length){oldFocus.focus({preventScroll:true});oldFocus.setSelectionRange(...selection)}
+}
+function replacement(id,target){
+ if(location(id)!=='main'||state.slots.main.length>1)return null;
+ const preferred=state.active[target];
+ const candidates=[preferred,...state.slots[target],...ZONES.flatMap(z=>state.slots[z])];
+ return candidates.find(candidate=>candidate&&candidate!==id&&PANELS[candidate].allowed.includes('main'))||null;
+}
+function canMove(id,target){
+ if(!available(id)||!ZONES.includes(target)||!PANELS[id].allowed.includes(target))return false;
+ return location(id)!=='main'||target==='main'||state.slots.main.length>1||!!replacement(id,target);
+}
+function removeFromZones(id){for(const z of ZONES){state.slots[z]=state.slots[z].filter(item=>item!==id);if(state.active[z]===id)state.active[z]=state.slots[z][0]||null}}
+function movePanel(id,target){
+ if(!canMove(id,target)){notify('That dock is unavailable. Main must keep a panel and author limits are respected.');return false}
+ if(location(id)===target){setActive(id);focusId=null;render();return true}
+ const promoted=replacement(id,target);
+ removeFromZones(id);
+ if(promoted){removeFromZones(promoted);state.slots.main.push(promoted);state.active.main=promoted}
+ state.slots[target].push(id);setActive(id);focusId=null;render();persist();
+ notify(PANELS[id].name+' docked '+NAMES[target].toLowerCase()+'.'+(promoted?' '+PANELS[promoted].name+' now fills Main.':''));
+ return true;
+}
+function hidePanel(id){
+ if(id==='terminal'||!available(id))return false;
+ if(location(id)==='main'&&state.slots.main.length===1){const next=replacement(id,'main');if(!next)return false;removeFromZones(next);state.slots.main.push(next);state.active.main=next}
+ removeFromZones(id);if(focusId===id)focusId=null;render();persist();notify(PANELS[id].name+' hidden. Restore it from Workspace settings.');return true;
+}
+function reveal(id){if(!location(id))movePanel(id,PANELS[id].preferred);else{setActive(id);focusId=null;render();persist()}}
+function closeDialogs(){document.querySelectorAll('dialog[open]').forEach(dialog=>dialog.close())}
+function showDialog(id){closeDialogs();$(id).showModal()}
+function renderMove(){
+ const id=$('move-panel').value,panel=PANELS[id];if(!panel)return;
+ $('dock-targets').innerHTML=ZONES.map(z=>{const supported=panel.allowed.includes(z),valid=canMove(id,z),promoted=z!=='main'?replacement(id,z):null;const others=state.slots[z].filter(p=>p!==id);let hint=location(id)===z?'Current dock':others.length?'Join '+others.map(p=>PANELS[p].name).join(' + ')+' as a tab':'Use this dock';if(promoted)hint=PANELS[promoted].name+' will move to Main';if(!supported)hint='Not supported by this author';else if(!valid)hint='Show another panel before moving the last Main tab';return `<button data-dock="${z}" class="${location(id)===z?'current':''}" ${!valid?'disabled':''} aria-label="Dock ${z}"><strong>${NAMES[z]}</strong><small>${hint}</small></button>`}).join('');
+ $('hide-panel').hidden=id==='terminal';$('hide-panel').disabled=!location(id);
+}
+function openMove(id='terminal'){
+ $('move-panel').innerHTML=Object.keys(PANELS).filter(available).map(key=>`<option value="${key}">${PANELS[key].name}${location(key)?'':' · hidden'}</option>`).join('');$('move-panel').value=available(id)?id:'terminal';renderMove();showDialog('move-dialog');
+}
+function renderSettings(){
+ $('panel-settings').innerHTML=Object.keys(PANELS).filter(available).map(id=>`<div class="placement-row"><div><strong>${PANELS[id].name}</strong><small>${PANELS[id].core?'Built-in panel':'Independent extension'}</small></div><select data-setting-panel="${id}" aria-label="${PANELS[id].name} dock">${id!=='terminal'?'<option value="hidden">Hidden</option>':''}${ZONES.map(z=>`<option value="${z}" ${!canMove(id,z)?'disabled':''}>${NAMES[z]}</option>`).join('')}</select></div>`).join('');
+ document.querySelectorAll('[data-setting-panel]').forEach(el=>el.value=location(el.dataset.settingPanel)||'hidden');updateStorageStatus();
+}
+function renderManager(){
+ $('installed-count').textContent=String(state.installed.length);for(const tab of ['installed','browse'])$(tab+'-tab').setAttribute('aria-pressed',String(tab===managerTab));
+ $('widget-search').hidden=managerTab!=='browse';const query=$('widget-search').value.toLowerCase();
+ const list=WIDGETS.filter(id=>(managerTab==='browse'||state.installed.includes(id))&&PANELS[id].name.toLowerCase().includes(query));
+ $('catalog').innerHTML=list.length?list.map(id=>{const p=PANELS[id],installed=state.installed.includes(id),z=location(id),removing=pendingRemove===id;return `<article class="widget-card"><div class="row"><div class="widget-icon">${icon(p.icon)}</div><div><h2>${p.name}</h2><div class="byline">${p.author} · example extension</div></div></div><p>${p.description}</p><span class="badge ${installed?'green':''}">${installed?(z?'Installed · '+NAMES[z]+' dock':'Installed · hidden'):'Available to install'}</span><div class="author"><b>Author default: ${NAMES[p.preferred]} dock</b><br>Supports ${p.allowed.map(v=>NAMES[v]).join(', ')}</div><div class="controls">${removing?`<p style="width:100%;color:#ffb0b0;margin:0 0 6px">Uninstall ${p.name} from this demo?</p><button class="danger" data-uninstall="${id}">Confirm uninstall</button><button data-action="cancel-remove">Cancel</button>`:installed?`<button data-open-panel="${id}">${z?'Open widget':'Show widget'}</button><button data-move="${id}">Move…</button>${z?`<button class="quiet" data-hide="${id}">Hide</button>`:''}<button class="quiet" data-remove="${id}">Uninstall</button>`:`<button class="primary" data-install="${id}">Install widget</button>`}</div></article>`}).join(''):'<div class="empty"><strong>No widgets here yet.</strong>Browse the library to add one. Your terminal stays available.</div>';
+}
+function openManager(){managerTab='installed';pendingRemove=null;$('widget-search').value='';renderManager();showDialog('manager')}
+function activate(id){if(!available(id))return;reveal(id);returnFocus(id)}
+document.addEventListener('click',event=>{
+ const button=event.target.closest('button');if(!button)return;const d=button.dataset;
+ if(d.close){$(d.close).close();return}
+ if(d.activate){setActive(d.activate);render();persist();returnFocus(d.activate);return}
+ if(d.move){openMove(d.move);return}
+ if(d.focus){focusId=d.focus;arranging=false;render();return}
+ if(d.dock){const id=$('move-panel').value;if(movePanel(id,d.dock)){$('move-dialog').close();returnFocus(id)}return}
+ if(d.tab){managerTab=d.tab;pendingRemove=null;renderManager();return}
+ if(d.install){if(!WIDGETS.includes(d.install)||state.installed.includes(d.install))return;state.installed.push(d.install);movePanel(d.install,PANELS[d.install].preferred);renderManager();notify(PANELS[d.install].name+' installed in its preferred dock.');return}
+ if(d.openPanel){closeDialogs();activate(d.openPanel);return}
+ if(d.hide){hidePanel(d.hide);renderManager();return}
+ if(d.remove){pendingRemove=d.remove;renderManager();return}
+ if(d.uninstall){if(!WIDGETS.includes(d.uninstall))return;hidePanel(d.uninstall);state.installed=state.installed.filter(id=>id!==d.uninstall);pendingRemove=null;render();persist();renderManager();notify(PANELS[d.uninstall].name+' uninstalled from the demo.');return}
+ switch(d.action){
+ case 'terminal':closeDialogs();activate('terminal');break;
+ case 'widgets':openManager();break;
+ case 'arrange':focusId=null;arranging=!arranging;render();break;
+ case 'move-picker':openMove();break;
+ case 'hide-selected':{const id=$('move-panel').value;if(hidePanel(id)){$('move-dialog').close();returnFocus('terminal')}break}
+ case 'focus-selected':{const id=$('move-panel').value;reveal(id);focusId=id;arranging=false;$('move-dialog').close();render();break}
+ case 'restore-focus':focusId=null;render();returnFocus('terminal');break;
+ case 'settings':renderSettings();showDialog('settings');break;
+ case 'reset':showDialog('reset-dialog');break;
+ case 'confirm-reset':{const remembered=state.remember;state=defaults(state.installed);state.remember=remembered;focusId=null;arranging=false;mobileView='terminal';closeDialogs();render();persist();notify('Default docking restored. Widgets and your demo note are kept.');returnFocus('terminal');break}
+ case 'tools':showDialog('mobile-tools');break;
+ case 'session':showDialog('session-dialog');break;
+ case 'transcript':showDialog('transcript-dialog');break;
+ case 'cancel-remove':pendingRemove=null;renderManager();break;
+ }
+});
+$('move-panel').addEventListener('change',renderMove);
+$('mobile-view').addEventListener('change',event=>{mobileView=event.target.value;render()});
+$('widget-search').addEventListener('input',renderManager);
+$('terminal-layout').addEventListener('change',event=>{state.grid=event.target.value;render();persist()});
+$('remember').addEventListener('change',event=>{state.remember=event.target.checked;persist()});
+$('panel-settings').addEventListener('change',event=>{const id=event.target.dataset.settingPanel;if(!id)return;if(event.target.value==='hidden')hidePanel(id);else movePanel(id,event.target.value);renderSettings();document.querySelector(`[data-setting-panel="${id}"]`)?.focus()});
+document.addEventListener('keydown',event=>{
+ const tab=event.target.closest('[data-tab-zone]');
+ if(tab&&['ArrowLeft','ArrowRight','Home','End'].includes(event.key)&&!focusId){const ids=state.slots[tab.dataset.tabZone],index=ids.indexOf(tab.dataset.activate);const next=event.key==='Home'?0:event.key==='End'?ids.length-1:(index+(event.key==='ArrowRight'?1:-1)+ids.length)%ids.length;event.preventDefault();setActive(ids[next]);render();persist();returnFocus(ids[next])}
+ if(event.key==='Escape'&&!document.querySelector('dialog[open]')){dragId=null;clearDrop();if(focusId||arranging){focusId=null;arranging=false;render();returnFocus('terminal')}}
+});
+function clearDrop(){$('app').classList.remove('dragging');document.querySelectorAll('.drop-over').forEach(el=>el.classList.remove('drop-over'))}
+document.addEventListener('dragstart',event=>{const tab=event.target.closest('[data-activate]');if(!tab||!arranging||media.matches){if(tab)event.preventDefault();return}dragId=tab.dataset.activate;event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/x-wolfpack-demo-panel',dragId);$('app').classList.add('dragging')});
+for(const z of ZONES){const zone=$('zone-'+z);zone.addEventListener('dragover',event=>{if(!arranging||!dragId||!canMove(dragId,z))return;event.preventDefault();event.dataTransfer.dropEffect='move';document.querySelectorAll('.drop-over').forEach(el=>el.classList.remove('drop-over'));zone.classList.add('drop-over')});zone.addEventListener('dragleave',event=>{if(!zone.contains(event.relatedTarget))zone.classList.remove('drop-over')});zone.addEventListener('drop',event=>{event.preventDefault();const id=dragId;dragId=null;clearDrop();if(id&&arranging&&canMove(id,z)){movePanel(id,z);returnFocus(id)}})}
+document.addEventListener('dragend',()=>{dragId=null;clearDrop()});
+function setSize(z,n){const limits=bounds()[z];state.sizes[z]=Math.max(limits.min,Math.min(limits.max,Math.round(n)));layout()}
+for(const z of ['left','right','bottom']){
+ const handle=$('resize-'+z);
+ handle.addEventListener('pointerdown',event=>{if(event.button!==0||!event.isPrimary||media.matches)return;event.preventDefault();resize={z,start:z==='bottom'?event.clientY:event.clientX,size:bounds()[z].value,pointer:event.pointerId};handle.setPointerCapture(event.pointerId);handle.classList.add('resizing');$('app').classList.add('resizing-body')});
+ handle.addEventListener('pointermove',event=>{if(!resize||resize.z!==z||resize.pointer!==event.pointerId)return;const delta=(z==='bottom'?event.clientY:event.clientX)-resize.start;setSize(z,resize.size+(z==='left'?delta:-delta))});
+ const finish=()=>{if(!resize||resize.z!==z)return;resize=null;handle.classList.remove('resizing');$('app').classList.remove('resizing-body');persist()};
+ handle.addEventListener('pointerup',finish);handle.addEventListener('pointercancel',finish);handle.addEventListener('lostpointercapture',finish);
+ handle.addEventListener('keydown',event=>{const limits=bounds()[z];let n;if(event.key==='Home')n=limits.min;else if(event.key==='End')n=limits.max;else if(z==='bottom'&&['ArrowUp','ArrowDown'].includes(event.key))n=limits.value+(event.key==='ArrowUp'?16:-16);else if(z!=='bottom'&&['ArrowLeft','ArrowRight'].includes(event.key))n=limits.value+(event.key==='ArrowRight'?16:-16)*(z==='left'?1:-1);if(n!==undefined){event.preventDefault();setSize(z,n);persist()}});
+}
+media.addEventListener('change',()=>{focusId=null;arranging=false;dragId=null;clearDrop();render()});
+window.addEventListener('resize',layout);
+render();
+})();
+</script>
+</body>
+</html>

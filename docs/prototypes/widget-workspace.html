@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Wolfpack · Widget workspace concept</title>
+<style>
+:root{color-scheme:dark;--bg:#0a0e0c;--panel:#141b17;--raised:#1b241e;--line:#2b3930;--muted:#94a79b;--text:#e6eee8;--green:#45ed7e;--mono:ui-monospace,SFMono-Regular,Consolas,monospace;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px var(--sans)}button,input,select{font:inherit;color:inherit}button,select{cursor:pointer}button{border:1px solid var(--line);border-radius:8px;background:var(--raised);padding:9px 12px;min-height:40px}button:hover{background:#26342b;border-color:#53745e}button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--green);outline-offset:3px}button:disabled{opacity:.45;cursor:not-allowed}button.primary{background:var(--green);border-color:var(--green);color:#092010;font-weight:650}button.quiet{background:transparent}button.danger{color:#ffb0b0;border-color:#714444;background:#332021}button.icon{display:grid;place-items:center;width:40px;padding:8px;flex:0 0 auto;color:var(--green)}svg{height:18px;width:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}svg.symbols{display:none}[hidden]{display:none!important}p{line-height:1.6}h1,h2,h3,p{margin-top:0}small,.muted{color:var(--muted)}.eyebrow{font-size:10px;letter-spacing:.15em;font-weight:700;color:var(--muted);text-transform:uppercase}.badge{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:5px;padding:3px 6px;font:10px var(--mono);color:var(--muted)}.badge.green{color:var(--green);border-color:#285339;background:#11281a}.row{display:flex;align-items:center;gap:8px}.spread{justify-content:space-between}.stack{display:grid;gap:12px}.app{height:100dvh;display:grid;grid-template-columns:232px minmax(0,1fr)}
+.sidebar{display:flex;flex-direction:column;padding:22px 14px 14px;border-right:1px solid var(--line);background:linear-gradient(155deg,#17221a,#101612);min-height:0;overflow:auto}.brand{font:700 16px var(--mono);letter-spacing:3px;color:var(--green);display:flex;align-items:center;gap:10px;padding:0 8px;margin-bottom:28px}.brand svg{width:24px;height:24px}.sidebar .eyebrow{padding:0 8px;margin-bottom:10px}.session{background:#1b2b20;border:1px solid #42604c;border-left:3px solid var(--green);border-radius:8px;padding:12px;margin-bottom:26px}.session-title{font:600 12px var(--mono);margin-bottom:8px}.session .icon{height:32px;width:32px;min-height:32px}.dot{width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;margin-right:5px}.nav{display:grid;gap:6px}.nav button{display:flex;gap:10px;align-items:center;text-align:left;min-height:46px;background:transparent}.nav .manage{border-color:#3c6c4b;background:#152f1e}.nav svg{color:var(--green);flex:0 0 auto}.count{margin-left:auto;font:11px var(--mono);background:#274232;color:#b8efca;padding:3px 7px;border-radius:5px}.sidebar-note{margin-top:auto;padding:32px 8px 4px;font-size:12px;color:var(--muted);line-height:1.7}.sidebar-note b{color:var(--text);font-weight:500}.prototype{margin-top:18px;border-top:1px solid var(--line);padding-top:14px;font-size:10px;letter-spacing:.08em}.prototype span{color:var(--green)}
+.mobile-header{display:none}.stage{display:grid;min-width:0;min-height:0;overflow:hidden}.stage.side{grid-template-columns:minmax(0,1fr) 350px}.stage.bottom{grid-template-rows:minmax(160px,1fr) 300px}.stage.full,.stage.closed{grid-template-columns:minmax(0,1fr)}.stage.full .terminal{display:none}.terminal{min-width:0;min-height:0;overflow:auto;padding:25px 26px;position:relative;background:radial-gradient(ellipse at top left,#0f1811,transparent 65%),#0a0e0c}.terminal pre{font:12px/1.9 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;max-width:850px}.terminal .green{color:var(--green)}.terminal .dim{color:#7e9586}.terminal .white{color:#e6eee8}.terminal .cursor{display:inline-block;width:7px;height:14px;background:var(--green);vertical-align:middle}.terminal-note{font:10px var(--mono);letter-spacing:.06em;color:#6c8072;margin-top:34px}.secondary-terminal{display:none;border:1px solid var(--line);border-radius:8px;padding:18px;margin-top:28px}.terminal.grid-demo .secondary-terminal{display:block}.dock{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--line)}.bottom .dock{border-left:0;border-top:1px solid var(--line)}.dock-header{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex:0 0 auto}.dock-heading{flex:1;min-width:0}.dock-heading strong{font-size:13px}.dock-heading small{display:block;font-size:10px;margin-top:5px}.dock-header .icon{min-height:34px;height:34px;width:34px}.widget-switch{padding:10px 18px 0}.widget-switch label{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:10px}.widget-switch select{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px}.widget-content{overflow:auto;padding:20px;flex:1;min-height:0}.goal{padding:18px;border-left:2px solid var(--green);border-radius:8px;background:#101912;margin:16px 0 22px}.goal .eyebrow{color:var(--green)}.goal h2{font-size:20px;line-height:1.45;font-weight:550;margin:10px 0 0}.check-row{display:flex;align-items:flex-start;gap:10px;padding:12px 0;border-bottom:1px solid var(--line);font-size:12px;line-height:1.5}.check-row span:first-child{color:var(--green)}.widget-content details{margin-top:18px;font-size:12px}.widget-content summary{cursor:pointer;color:var(--muted);padding:8px 0}.widget-content details p{margin:10px 0;color:var(--muted)}.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:16px 0}.stat{padding:16px;background:#101912;border:1px solid var(--line);border-radius:8px}.stat b{display:block;font:25px var(--mono);color:var(--green);margin-bottom:6px}.stat small{font-size:11px}.file-line{font:12px/2.4 var(--mono);padding:5px 10px;border-bottom:1px solid var(--line)}
+dialog{color:var(--text);background:#141c17;border:1px solid #425748;border-radius:14px;padding:0;box-shadow:0 24px 100px #0009;max-width:calc(100vw - 32px);max-height:calc(100dvh - 32px)}dialog::backdrop{background:#020704b8;backdrop-filter:blur(4px)}dialog[open]{display:flex;flex-direction:column}.manager{width:860px}.dialog-header{display:flex;align-items:flex-start;gap:16px;padding:24px 26px 18px;flex-shrink:0}.dialog-header h1{font-size:24px;letter-spacing:-.04em;margin-bottom:7px}.dialog-header p{font-size:12px;color:var(--muted);margin:0;max-width:610px}.dialog-header .close{margin-left:auto}.dialog-tabs{display:flex;gap:20px;padding:0 26px;border-bottom:1px solid var(--line);flex-shrink:0}.dialog-tabs button{border:0;border-radius:0;background:transparent;padding:12px 0;color:var(--muted)}.dialog-tabs button.active{color:var(--green);box-shadow:inset 0 -2px var(--green)}.dialog-body{padding:24px 26px;overflow:auto;min-height:0}.dialog-footer{border-top:1px solid var(--line);padding:14px 26px;font-size:11px;color:var(--muted);flex-shrink:0;line-height:1.5}.explainer{background:#10261a;border:1px solid #2a5138;border-radius:8px;padding:12px 15px;font-size:12px;color:#bed6c6;line-height:1.65;margin-bottom:18px}.search{width:100%;padding:11px 13px;background:var(--bg);border:1px solid var(--line);border-radius:8px;margin-bottom:18px}.catalog-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.widget-card{border:1px solid var(--line);border-radius:10px;padding:18px;background:#19231c;min-width:0}.widget-card h2{font-size:15px;margin:0}.widget-card p{font-size:12px;color:var(--muted);margin:12px 0}.widget-icon{display:grid;place-items:center;width:38px;height:38px;background:#233e2b;border:1px solid #31573c;border-radius:9px;color:var(--green);flex-shrink:0}.widget-card .byline{font-size:10px;color:var(--muted);margin-top:5px}.widget-card .author{border-top:1px solid var(--line);padding-top:12px;margin:14px 0;font-size:11px;color:var(--muted);line-height:1.7}.widget-card .author b{font-weight:500;color:var(--text)}.widget-card .controls{display:flex;gap:8px;flex-wrap:wrap}.widget-card .controls button{font-size:12px}.preferences{display:grid;gap:10px;margin:14px 0}.preferences label{display:grid;grid-template-columns:72px minmax(0,1fr);gap:10px;align-items:center;font-size:11px;color:var(--muted)}.preferences select{width:100%;background:#0e1711;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11px}.empty{padding:34px 14px;text-align:center;color:var(--muted);line-height:1.8}.empty strong{display:block;color:var(--text);font-size:17px}.small-dialog{width:480px}.small-dialog .dialog-body{padding-top:0}.field{display:grid;gap:8px;margin:18px 0}.field select{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px}.transcript{font:12px/1.8 var(--mono);white-space:pre-wrap;color:#b7c9bd}.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);padding:12px 18px;background:#26412e;border:1px solid #588566;color:#e5ffeb;border-radius:9px;font-size:12px;max-width:calc(100vw - 24px);z-index:10;box-shadow:0 8px 32px #0008;pointer-events:none}.mobile-only{display:none}
+@media(min-width:761px) and (max-width:1100px){.app{grid-template-columns:202px minmax(0,1fr)}.stage.side{grid-template-columns:minmax(0,1fr) 300px}.terminal{padding:20px}}
+@media(max-width:760px){button{min-height:44px}.app{display:flex;flex-direction:column}.sidebar{display:none}.mobile-header{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--panel);flex:0 0 auto}.mobile-header .name{flex:1;min-width:0;font:600 12px var(--mono);color:var(--green);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mobile-header button{min-height:44px}.mobile-header .icon{width:44px}.stage{flex:1;min-height:0}.stage.side,.stage.bottom,.stage.full,.stage.closed{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}.stage:not(.closed):not(.sheet) .terminal{display:none}.stage.sheet{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(120px,1fr) minmax(180px,52%)}.sheet .dock{border-top:1px solid var(--line);border-radius:18px 18px 0 0}.dock{border-left:0}.terminal{padding:20px 16px}.terminal pre{font-size:11px}.terminal-note{line-height:1.7}.dock-header{padding:12px 16px}.dock-header .icon{min-height:44px;width:44px}.widget-content{padding:18px}.catalog-grid{grid-template-columns:1fr}.dialog-header{padding:20px 18px 16px}.dialog-header h1{font-size:22px}.dialog-tabs{padding:0 18px}.dialog-body{padding:18px}.dialog-footer{padding:12px 18px;font-size:10px}dialog{max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.desktop-only{display:none!important}.mobile-only{display:initial}.stat{padding:12px}.stat b{font-size:22px}}
+@media(prefers-reduced-motion:no-preference){.cursor{animation:blink 1s steps(2,start) infinite}@keyframes blink{to{visibility:hidden}}}
+</style>
+</head>
+<body>
+<svg class="symbols" aria-hidden="true"><defs>
+<symbol id="i-widgets" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17.5 14v7M14 17.5h7"/></symbol>
+<symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18m-7-12 3 3-3 3"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16M8 4v6m8 4v6"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+<symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H5v18h14V8Z M14 3v5h5M8 12h8M8 16h6"/></symbol>
+</defs></svg>
+<div class="app">
+<aside class="sidebar" aria-label="Workspace navigation">
+  <div class="brand"><svg aria-hidden="true"><use href="#i-widgets"/></svg>WOLFPACK</div>
+  <div class="eyebrow">Your workspace</div>
+  <div class="session"><div class="row spread"><div><div class="session-title">wolfpack-ui</div><small><span class="dot"></span>Demo session · Pi</small></div><button class="icon quiet" data-action="session-menu" aria-label="Session actions" title="Session actions"><svg aria-hidden="true"><use href="#i-more"/></svg></button></div></div>
+  <div class="eyebrow">Workspace tools</div>
+  <nav class="nav" aria-label="Workspace tools">
+    <button class="manage" data-action="manage"><svg aria-hidden="true"><use href="#i-widgets"/></svg>Widgets <span class="count" data-count>1</span></button>
+    <button data-action="toggle" aria-controls="widget-dock" aria-expanded="true"><svg aria-hidden="true"><use href="#i-panel"/></svg><span data-toggle-label>Hide widgets</span></button>
+    <button data-action="workspace-settings"><svg aria-hidden="true"><use href="#i-settings"/></svg>Workspace settings</button>
+  </nav>
+  <div class="sidebar-note"><b>The terminal gets the space.</b><br>No toolbar above it. Add extensions from <b>Widgets</b>; change terminal layout in settings; read the transcript from the session menu.<div class="prototype"><span>● INTERACTIVE CONCEPT</span><br>Demo content · resets on reload<br>Proposed UI, not a shipped extension API.</div></div>
+</aside>
+<header class="mobile-header">
+  <span class="name">wolfpack-ui</span>
+  <button data-action="manage" aria-label="Manage widgets">Widgets <span data-count>1</span></button>
+  <button class="icon" data-action="toggle" aria-controls="widget-dock" aria-expanded="false" aria-label="Show widgets" title="Show widgets"><svg aria-hidden="true"><use href="#i-panel"/></svg></button>
+  <button class="icon quiet" data-action="session-menu" aria-label="Session actions" title="Session actions"><svg aria-hidden="true"><use href="#i-more"/></svg></button>
+</header>
+<main class="stage side" id="stage">
+  <section class="terminal" id="terminal" aria-label="Demo terminal">
+<pre><span class="dim">~/Dev/wolfpack</span> <span class="green">❯</span> pi
+
+<span class="green">π</span> <span class="white">Wolfpack workspace</span> <span class="dim">/ design preview</span>
+
+<span class="dim">You</span>
+Show me how widgets fit into the workspace.
+
+<span class="green">Assistant</span>
+The terminal stays here. Extensions live in a
+host-managed panel, with layouts their authors support.
+
+<span class="dim">  ✓</span> No empty toolbar above the terminal
+<span class="dim">  ✓</span> One place to manage installed widgets
+<span class="dim">  ✓</span> Your layout choice overrides author defaults
+
+Try <span class="green">Widgets</span> in the navigation.
+Install <span class="white">Checks</span> to try its bottom-panel default.
+
+<span class="green">❯</span> <span class="cursor"></span></pre>
+    <div class="secondary-terminal"><pre><span class="dim">Second demo pane</span>
+<span class="green">❯</span> watching tests…</pre></div>
+    <div class="terminal-note">ILLUSTRATIVE TERMINAL · NO COMMANDS EXECUTED<br><span class="mobile-only">Mobile concept only; this does not fix or simulate a native keyboard.</span></div>
+  </section>
+  <aside class="dock" id="widget-dock" aria-label="Widget panel">
+    <header class="dock-header"><div class="dock-heading"><strong id="dock-title">Agent Context</strong><small id="dock-byline">Extension · Wolfpack</small></div><button class="icon quiet" data-action="manage" aria-label="Widget settings" title="Manage widgets and placement"><svg aria-hidden="true"><use href="#i-settings"/></svg></button><button class="icon quiet desktop-only" id="full-view" data-action="full" aria-label="Full widget view" title="Full widget view"><svg aria-hidden="true"><use href="#i-expand"/></svg></button></header>
+    <div class="widget-switch" id="widget-switch" hidden><label>Widget <select id="active-widget" aria-label="Active widget"></select></label></div>
+    <div class="widget-content" id="widget-content"></div>
+  </aside>
+</main>
+</div>
+<dialog class="manager" id="manager" aria-labelledby="manager-title">
+  <header class="dialog-header"><div><h1 id="manager-title">Your widgets</h1><p>Independent extensions. One familiar place to install them and choose where they appear.</p></div><button class="icon quiet close" data-close="manager" aria-label="Close widget manager"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header>
+  <nav class="dialog-tabs" aria-label="Widget library sections"><button id="installed-tab" data-tab="installed" class="active" aria-pressed="true">Installed <span id="installed-count">1</span></button><button id="browse-tab" data-tab="browse" aria-pressed="false">Browse widgets</button></nav>
+  <div class="dialog-body"><div class="explainer" id="manager-hint"></div><input class="search" id="widget-search" type="search" placeholder="Find a widget…" aria-label="Find a widget" hidden><div class="catalog-grid" id="catalog"></div></div>
+  <footer class="dialog-footer">PROTOTYPE ONLY · Install and uninstall affect this page’s demo state, not your app. No downloads, saved changes, or real data deletion.</footer>
+</dialog>
+<dialog class="small-dialog" id="settings" aria-labelledby="settings-title"><header class="dialog-header"><div><h1 id="settings-title">Workspace settings</h1><p>Terminal controls live here—not in an empty row above your work.</p></div><button class="icon quiet" data-close="settings" aria-label="Close workspace settings"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header><div class="dialog-body"><label class="field">Terminal layout<select id="terminal-layout"><option value="single">Single terminal</option><option value="equal">Equal grid</option><option value="lead">Lead + stack</option><option value="vertical">Vertical stack</option></select></label><p class="muted">This mock shows an illustrative second pane for grid choices. In the app, layout applies to your open terminal panes.</p><button data-action="manage-from-settings">Manage widget placement →</button></div></dialog>
+<dialog class="small-dialog" id="session-actions" aria-labelledby="session-title"><header class="dialog-header"><div><h1 id="session-title">wolfpack-ui</h1><p>Session actions</p></div><button class="icon quiet" data-close="session-actions" aria-label="Close session actions"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header><div class="dialog-body stack"><button data-action="transcript">Read transcript</button><button data-action="settings-from-session">Workspace settings</button></div></dialog>
+<dialog class="small-dialog" id="transcript" aria-labelledby="transcript-title"><header class="dialog-header"><div><h1 id="transcript-title">Session transcript</h1><p>Read-only demo text</p></div><button class="icon quiet" data-close="transcript" aria-label="Close transcript"><svg aria-hidden="true"><use href="#i-close"/></svg></button></header><div class="dialog-body"><pre class="transcript">You: Show me how widgets fit into the workspace.
+
+Assistant: The terminal stays here. Extensions live in a host-managed panel, with layouts their authors support.
+
+This transcript is illustrative, not live session output.</pre></div></dialog>
+<div class="toast" id="toast" role="status" hidden></div>
+<script>
+'use strict';
+const widgets = [
+ {id:'context',name:'Agent Context',author:'Wolfpack',icon:'i-panel',description:'Goals, progress, decisions, and next steps for the active session.',desktop:['side','bottom','full'],mobile:['page','sheet'],preferred:'side',phone:'page'},
+ {id:'checks',name:'Checks',author:'Example Studio',icon:'i-check',description:'A compact view of test results and verification activity.',desktop:['bottom','side','full'],mobile:['sheet','page'],preferred:'bottom',phone:'sheet'},
+ {id:'files',name:'Changed Files',author:'Example Studio',icon:'i-file',description:'Review a lightweight summary of files changed in this session.',desktop:['side','full'],mobile:['page'],preferred:'side',phone:'page'}
+];
+const labels={side:'Side panel',bottom:'Bottom panel',full:'Full view',page:'Separate view',sheet:'Bottom sheet'};
+const installed=new Set(['context']), enabled=new Set(['context']), choices={};
+let active='context', tab='installed', pendingRemove=null, toastTimer, full=false;
+const media=matchMedia('(max-width:760px)');
+let panelOpen=!media.matches;
+const $=id=>document.getElementById(id);
+function notify(text){clearTimeout(toastTimer);$('toast').textContent=text;$('toast').hidden=false;toastTimer=setTimeout(()=>{$('toast').hidden=true},3200)}
+function showDialog(id){if(!$(id).open)$(id).showModal()}
+function openManager(section='installed'){tab=section;pendingRemove=null;$('widget-search').value='';renderManager();showDialog('manager')}
+function preference(widget,phone){const kind=phone?'mobile':'desktop';return choices[widget.id]?.[kind] || (phone?widget.phone:widget.preferred)}
+function renderPanel(){
+ const available=widgets.filter(w=>installed.has(w.id)&&enabled.has(w.id));
+ if(!available.some(w=>w.id===active))active=available[0]?.id||null;
+ const widget=widgets.find(w=>w.id===active);
+ const visible=panelOpen&&!!widget;
+ const mode=visible?(media.matches?preference(widget,true):(full?'full':preference(widget,false))):'closed';
+ $('stage').className='stage '+(mode==='page'?'full':mode);
+ $('widget-dock').hidden=!visible;
+ document.querySelectorAll('[data-action="toggle"]').forEach(button=>{button.setAttribute('aria-expanded',String(visible));button.setAttribute('aria-label',visible?'Hide widgets':'Show widgets');button.title=visible?'Return to terminal / hide widgets':'Show widgets';});
+ document.querySelectorAll('[data-toggle-label]').forEach(node=>node.textContent=visible?'Hide widgets':'Show widgets');
+ document.querySelectorAll('[data-count]').forEach(node=>node.textContent=String(installed.size));
+ $('widget-switch').hidden=available.length<2;
+ $('active-widget').innerHTML=available.map(w=>`<option value="${w.id}">${w.name}</option>`).join('');
+ if(!widget)return;
+ $('active-widget').value=active;
+ $('dock-title').textContent=widget.name;$('dock-byline').textContent='Extension · '+widget.author;
+ $('full-view').setAttribute('aria-label',$('full-view').title=full?'Restore widget placement':'Full widget view');
+ $('full-view').disabled=!widget.desktop.includes('full')||(!full&&preference(widget,false)==='full');
+ $('widget-content').innerHTML=widget.id==='context'?`<div class="row spread"><small>Agent-authored · demo content</small><span class="badge">Revision 2</span></div><section class="goal"><span class="eyebrow">Current goal</span><h2>Give the terminal its space back.</h2></section><div class="eyebrow">Plan</div><div class="check-row"><span>✓</span><div>Keep workspace controls in navigation.</div></div><div class="check-row"><span>◉</span><div>Make widgets independently installable.</div></div><div class="check-row"><span>○</span><div>Keep the typing area clear on mobile.</div></div><details><summary>Why this layout?</summary><p>The author prefers a side panel on desktop and a separate view on mobile. You can override either in Widgets.</p></details><details><summary>Next steps</summary><p>Try installing Checks, changing its placement, and hiding or uninstalling it.</p></details>`:widget.id==='checks'?`<div class="row spread"><span class="eyebrow">Latest verification</span><span class="badge green">Example results</span></div><div class="stat-grid"><div class="stat"><b>24</b><small>Passed</small></div><div class="stat"><b>0</b><small>Failed</small></div><div class="stat"><b>2</b><small>Skipped</small></div></div><div class="check-row"><span>✓</span><div>Workspace layout tests</div></div><div class="check-row"><span>✓</span><div>Widget lifecycle tests</div></div><p class="muted" style="font-size:12px;margin-top:16px">Checks prefers a bottom panel. These are illustrative numbers, not verification evidence.</p>`:`<span class="eyebrow">Illustrative changes</span><div class="file-line">M public/workspace.ts</div><div class="file-line">M public/styles.css</div><div class="file-line">A tests/widgets.test.ts</div><p class="muted" style="font-size:12px;margin-top:18px">This author supports side panel and full view on desktop, and a separate view on mobile. Unsupported placements are not offered.</p>`;
+}
+function selectMarkup(widget,phone){
+ const kind=phone?'mobile':'desktop', preferred=phone?widget.phone:widget.preferred, value=choices[widget.id]?.[kind]||'';
+ return `<label>${phone?'Mobile':'Desktop'}<select data-placement="${widget.id}" data-device="${kind}" aria-label="${widget.name} ${kind} placement"><option value="" ${!value?'selected':''}>Author default · ${labels[preferred]}</option>${widget[kind].map(mode=>`<option value="${mode}" ${value===mode?'selected':''}>${labels[mode]}</option>`).join('')}</select></label>`;
+}
+function renderManager(){
+ $('installed-count').textContent=String(installed.size);
+ for(const section of ['installed','browse']){$(section+'-tab').classList.toggle('active',section===tab);$(section+'-tab').setAttribute('aria-pressed',String(section===tab))}
+ $('widget-search').hidden=tab!=='browse';
+ $('manager-hint').innerHTML=tab==='installed'?'<b>Hide</b> removes a widget from this workspace’s selector but keeps it installed. <b>Uninstall</b> removes the extension from this demo. Layout choices stay inside the author’s supported options.':'<b>Add a widget here.</b> These illustrative extensions provide their own content and declare supported layouts. The host supplies navigation, placement, and shared controls.';
+ const query=$('widget-search').value.toLowerCase();
+ const list=widgets.filter(w=>(tab==='browse'||installed.has(w.id))&&w.name.toLowerCase().includes(query));
+ $('catalog').innerHTML=list.length?list.map(w=>{
+   const exists=installed.has(w.id),shown=enabled.has(w.id);
+   const remove=pendingRemove===w.id;
+   return `<article class="widget-card"><div class="row"><div class="widget-icon"><svg aria-hidden="true"><use href="#${w.icon}"/></svg></div><div><h2>${w.name}</h2><div class="byline">by ${w.author} · example extension</div></div></div><p>${w.description}</p><span class="badge ${exists?'green':''}">${exists?(shown?'Installed · in workspace':'Installed · hidden'):'Available to install'}</span><div class="author"><b>Author’s preferred layout</b><br>${labels[w.preferred]} on desktop · ${labels[w.phone]} on mobile</div>${exists&&tab==='installed'?`<div class="preferences">${selectMarkup(w,false)}${selectMarkup(w,true)}</div>`:''}<div class="controls">${remove?`<p style="width:100%;margin:0 0 4px;color:#ffb0b0">Uninstall ${w.name} from this demo?</p><button class="danger" data-confirm-remove="${w.id}">Confirm uninstall</button><button data-cancel-remove>Cancel</button>`:exists?`<button data-show="${w.id}">${shown?'Open widget':'Show in workspace'}</button>${shown?`<button class="quiet" data-hide="${w.id}">Hide</button>`:''}<button class="quiet" data-remove="${w.id}">Uninstall</button>`:`<button class="primary" data-install="${w.id}">Install widget</button>`}</div></article>`;
+ }).join(''):'<div class="empty"><strong>No widgets here yet.</strong>Browse the library to add one. Your terminal keeps working.</div>';
+}
+document.addEventListener('click',event=>{
+ const button=event.target.closest('button');if(!button)return;
+ const data=button.dataset;
+ if(data.close){$(data.close).close();return}
+ if(data.tab){tab=data.tab;pendingRemove=null;renderManager();return}
+ const action=data.action;
+ if(action==='manage'){openManager();return}
+ if(action==='toggle'){if(!enabled.size){openManager();return}panelOpen=!panelOpen;full=false;renderPanel();return}
+ if(action==='workspace-settings'){showDialog('settings');return}
+ if(action==='session-menu'){showDialog('session-actions');return}
+ if(action==='transcript'){$('session-actions').close();showDialog('transcript');return}
+ if(action==='settings-from-session'){$('session-actions').close();showDialog('settings');return}
+ if(action==='manage-from-settings'){$('settings').close();openManager();return}
+ if(action==='full'){full=!full;renderPanel();return}
+ if('cancelRemove' in data){pendingRemove=null;renderManager();return}
+ const id=data.install||data.show||data.hide||data.remove||data.confirmRemove;
+ const widget=widgets.find(w=>w.id===id);if(!widget)return;
+ if(data.remove){pendingRemove=id;renderManager();return}
+ if(data.confirmRemove){installed.delete(id);enabled.delete(id);delete choices[id];pendingRemove=null;notify(widget.name+' uninstalled from the demo.');}
+ if(data.install){installed.add(id);enabled.add(id);active=id;panelOpen=true;full=false;notify(widget.name+' installed. Open it or adjust its placement in Installed.');}
+ if(data.show){enabled.add(id);active=id;panelOpen=true;full=false;$('manager').close();}
+ if(data.hide){enabled.delete(id);notify(widget.name+' hidden, but still installed.');}
+ renderPanel();renderManager();
+});
+$('active-widget').addEventListener('change',event=>{active=event.target.value;full=false;renderPanel()});
+$('catalog').addEventListener('change',event=>{const select=event.target;if(!select.dataset.placement)return;const id=select.dataset.placement;choices[id]??={};choices[id][select.dataset.device]=select.value;full=false;renderPanel();notify('Placement updated. Close this window to see the workspace.');});
+$('widget-search').addEventListener('input',renderManager);
+$('terminal-layout').addEventListener('change',event=>{$('terminal').classList.toggle('grid-demo',event.target.value!=='single');notify('Demo terminal arrangement updated.');});
+media.addEventListener('change',()=>{panelOpen=!media.matches;full=false;renderPanel()});
+renderPanel();
+</script>
+</body>
+</html>
