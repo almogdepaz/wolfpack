@@ -214,7 +214,7 @@ test("explicit workspace shell changes retain delegation panes and focus", async
   await page.locator("#workspace-restore").click();
   await page.locator("#workspace-context-full").click();
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
-  await page.locator("#workspace-restore").click();
+  await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
   await expect(child).toHaveClass(/grid-focused/);
   expect(attachCounts.get("parent")).toBe(1);
   expect(attachCounts.get("child")).toBe(1);

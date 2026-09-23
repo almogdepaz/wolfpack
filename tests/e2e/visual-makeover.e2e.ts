@@ -110,7 +110,7 @@ test("All and Idle form a quiet, keyboard-operable segmented control", async ({ 
   await expect(all).toHaveCSS("border-radius", "999px");
   await expect(all).toHaveCSS("font-size", "12px");
   await expect(all).toHaveCSS("letter-spacing", /^(normal|0px)$/);
-  await expect(all).toHaveCSS("color", "rgb(237, 243, 239)");
+  await expect(all).toHaveCSS("color", testInfo.project.name === "desktop" ? "rgb(230, 238, 232)" : "rgb(237, 243, 239)");
   const minimumHeight = testInfo.project.name === "desktop" ? 40 : 44;
   const pillBox = (await filter.boundingBox())!;
   await expect(filter).toHaveCSS("padding", "3px");
