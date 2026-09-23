@@ -1056,8 +1056,9 @@ test("desktop selects a filtered project instead of creating its typed prefix", 
 
   await page.goto(srv.baseUrl);
   await openProjectPickerFromUi(page);
-  await page.locator("#new-project-name").fill("wo");
   const projectCards = page.locator("#project-list .card");
+  await expect(projectCards).toHaveCount(2);
+  await page.locator("#new-project-name").fill("wo");
   await expect(projectCards).toHaveText(["wolfpack"]);
   await page.keyboard.press("ArrowDown");
   await expect(projectCards.nth(0)).toHaveClass(/keyboard-selected/);
@@ -1118,6 +1119,7 @@ test("desktop enter selects the first filtered project without arrow navigation"
 
   await page.goto(srv.baseUrl);
   await openProjectPickerFromUi(page);
+  await expect(page.locator("#project-list .card")).toHaveCount(3);
   await page.locator("#new-project-name").fill("wo");
   await expect(page.locator("#project-list .card")).toHaveText(["wolfpack", "wolfpack-tools"]);
   await page.keyboard.press("Enter");
