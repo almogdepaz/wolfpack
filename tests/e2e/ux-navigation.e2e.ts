@@ -582,7 +582,7 @@ test("delegation root selection replaces a suspended single inspection target", 
   await expect.poll(() => rootAttaches).toBe(1);
   await openSettingsFromUi(page);
   await page.locator("#settings-back-btn").click();
-  const inspect = page.locator("#desktop-conflict-overlay").getByRole("button", { name: "Inspect root", exact: true });
+  const inspect = page.locator('#delegation-grid-container .grid-cell[data-session="root"]').getByRole("button", { name: "Inspect root", exact: true });
   await expect(inspect).toBeVisible();
   await inspect.click();
   await expect(page.getByRole("dialog", { name: "Inspect root", exact: true })).toContainText("root Settings snapshot");

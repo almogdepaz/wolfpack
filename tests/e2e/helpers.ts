@@ -259,13 +259,21 @@ export async function openSettingsFromUi(page: Page): Promise<void> {
   await page.locator("#sidebar-settings-btn, #expanded-settings-btn, #gear-btn").filter({ visible: true }).first().click();
 }
 
-/** Desktop layout lives in a modal; mobile retains its existing toolbar. */
+/** Layout uses ordinary Settings navigation, including its viewer suspension/return. */
 export async function selectTerminalLayoutFromUi(page: Page, value: string): Promise<void> {
-  const picker = page.locator("#workspace-terminal-layout");
-  const desktop = !(await picker.isVisible());
-  if (desktop) await page.locator("#workspace-settings-btn").click();
-  await picker.selectOption(value);
-  if (desktop) await page.locator("#workspace-settings-dialog").getByRole("button", { name: "Done", exact: true }).click();
+  let mobileReturn: { session: string; machine: string } | null = null;
+  if (await page.locator("#session-chip").isVisible()) {
+    const current = page.locator('#drawer-list .drawer-item[aria-current="page"]');
+    const session = (await current.locator('.drawer-item-name').textContent())!;
+    const value = (await current.getAttribute('data-val'))!;
+    mobileReturn = { session, machine: value === session ? "" : value.slice(0, -(session.length + 1)) };
+    await page.locator("#back-btn").click();
+  }
+  await openSettingsFromUi(page);
+  await page.getByRole("link", { name: "Terminal", exact: true }).click();
+  await page.locator("#workspace-terminal-layout").selectOption(value);
+  await page.locator("#settings-back-btn, #back-btn").filter({ visible: true }).first().click();
+  if (mobileReturn) await openSessionFromUi(page, mobileReturn.session, mobileReturn.machine);
 }
 
 /** Open the new-session/project picker through a real visible UI control. */

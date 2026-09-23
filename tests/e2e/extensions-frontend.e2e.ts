@@ -222,10 +222,13 @@ test("authenticated installed packages compose qualified local views and refresh
     await page.keyboard.type("printf 'WP%s\\n' EXTENSION_RETENTION");
     await page.keyboard.press("Enter");
     await expect.poll(readTail).toContain("WPEXTENSION_RETENTION");
-    await selected.locator("canvas").evaluate(canvas => { (window as unknown as { __extensionRetainedCanvas?: Element }).__extensionRetainedCanvas = canvas; });
-    const attached = sockets.length;
     const resizeCount = resizeFrames.length;
     await selectTerminalLayoutFromUi(page, "lead-stack");
+    await expect(page.locator('#desktop-grid-container .grid-cell.hydrated')).toHaveCount(2);
+    await expect.poll(readTail).toContain("WPEXTENSION_RETENTION");
+    // Settings suspends/reopens viewers; workspace-only toggles must then retain them.
+    await selected.locator("canvas").evaluate(canvas => { (window as unknown as { __extensionRetainedCanvas?: Element }).__extensionRetainedCanvas = canvas; });
+    const attached = sockets.length;
     await expect.poll(() => resizeFrames.length).toBeGreaterThan(resizeCount);
     expect(resizeFrames.slice(resizeCount).every(frame => (frame.cols ?? 0) > 0 && (frame.rows ?? 0) > 0)).toBe(true);
     await page.locator("#workspace-context-full").click();
@@ -439,9 +442,7 @@ test("ordinary context-hide controls pause polling and preserve retained workspa
   await expect(page.locator("#workspace-terminal-layout")).toHaveValue(selectedLayout);
   expect(sockets).toHaveLength(attached);
   if (testInfo.project.name === "mobile-webkit") {
-    await page.locator("#terminal-transcript-btn").tap();
-    await expect(page.locator("#terminal-transcript-dialog")).toBeVisible();
-    await page.locator("#terminal-transcript-close").tap();
+    await expect(page.locator("#terminal-transcript-btn")).toHaveCount(0);
   }
 });
 

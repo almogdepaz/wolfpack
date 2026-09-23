@@ -1248,7 +1248,8 @@ function teardownTerminalForViewChange(previousView: string, nextView: string): 
   closeTerminalTranscript();
   if (state.activeDelegationRoot) {
     destroyTerminal(nextView === "settings");
-    teardownDelegationWorkspace();
+    if (nextView === "settings") suspendDelegationGridTerminals();
+    else teardownDelegationWorkspace();
     if (isGridActive()) suspendGridMode();
   } else if (isGridActive()) {
     suspendGridMode();
@@ -4295,7 +4296,7 @@ document.addEventListener("keydown", (e) => {
     showProjectPickerPanel("projects", document.getElementById("create-project-action"));
     return;
   }
-  if (state.focusedDelegationSession) {
+  if (state.currentView === "terminal" && state.focusedDelegationSession) {
     e.preventDefault();
     e.stopPropagation();
     returnToDelegationGrid();
@@ -4789,6 +4790,9 @@ function syncSessionChooserOwnership(): boolean {
   const sessionDashboardControls = document.getElementById("session-dashboard-controls");
   const sessionList = document.getElementById("session-list");
   if (sessionDashboardControls) sessionDashboardControls.hidden = sidebarOwns;
+  const sidebarControls = document.getElementById("sidebar-session-controls");
+  if (sidebarControls) sidebarControls.hidden = !sidebarOwns;
+  syncWorkspaceControls(sidebarOwns);
   if (sessionList) sessionList.hidden = sidebarOwns;
   return sidebarOwns;
 }
@@ -4822,7 +4826,7 @@ function _renderSidebarNow() {
   const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
-  let html = sessionCardViewControlsHtml();
+  let html = "";
   if (!multiMachine) {
     const g = state.lastSessionGroups.find(group => group.machine.url === "");
     if (g) {
@@ -5390,7 +5394,6 @@ function bindHtmlEventListeners(): void {
   if (debugResetBtn) debugResetBtn.addEventListener("click", () => { wpMetrics.reset(); renderDebugPanel(); });
 
   // Terminal view
-  on("terminal-transcript-btn", "click", () => { void showTerminalTranscript(); });
   on("terminal-transcript-close", "click", () => closeTerminalTranscript());
 
   // Keyboard accessory
@@ -5402,7 +5405,7 @@ function bindHtmlEventListeners(): void {
 
 }
 
-initWorkspaceNavigation();
+const syncWorkspaceControls = initWorkspaceNavigation();
 bindHtmlEventListeners();
 
 initGridDeps({
@@ -5484,8 +5487,9 @@ window.addEventListener("pagehide", event => {
 void extensionHost?.refresh();
 
 initSettings();
-const sessionDashboardControls = document.getElementById("session-dashboard-controls");
-if (sessionDashboardControls) sessionDashboardControls.innerHTML = sessionCardViewControlsHtml();
+for (const id of ["dashboard-session-filter", "sidebar-session-filter"]) {
+  document.getElementById(id)!.innerHTML = sessionCardViewControlsHtml();
+}
 purgeLegacyTerminalRecoverySnapshots();
 renderCmdPalette();
 initSidebar(); // Init sidebar early so pin/expand/hover handlers are ready

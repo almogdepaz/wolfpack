@@ -954,11 +954,15 @@ test("navigating away from terminal with active grid suspends grid state", async
   expect(tails).toEqual(expect.arrayContaining([expect.stringContaining("test-project-PREFILL"), expect.stringContaining("another-project-PREFILL")]));
 });
 
-test("transcript button clears grid-cell close controls", async ({ page }) => {
+test("removed Transcript entry leaves grid-cell close controls unobstructed", async ({ page }) => {
   await loadApp(page);
   await openTwoCellGrid(page);
-
-  await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCSS("top", "40px");
+  await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCount(0);
+  const remove = page.getByRole("button", { name: "Remove another-project from grid", exact: true });
+  await expect(page.locator('#desktop-grid-container .grid-cell.hydrated')).toHaveCount(2);
+  await expect(remove).toBeVisible();
+  await remove.click();
+  await expect(page.locator('#desktop-terminal-container canvas')).toBeVisible();
 });
 
 test("re-adding the remaining preserved session from settings reinitializes terminal view", async ({ page }) => {

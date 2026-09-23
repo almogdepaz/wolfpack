@@ -41,10 +41,10 @@ async function openGrid(page: Page, names: readonly string[]): Promise<void> {
   await page.goto(server!.baseUrl);
   await page.locator(".card", { hasText: names[0]! }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator("#workspace-settings-btn")).toBeVisible();
+  await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
   for (const name of names.slice(1)) await page.locator(`[data-action="toggle-grid"][data-session="${name}"]`).filter({ visible: true }).click();
   await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(names.length, { timeout: 10_000 });
-  await expect(page.locator("#workspace-settings-btn")).toBeVisible();
+  await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
 }
 
 test.beforeAll(async () => {
@@ -103,15 +103,17 @@ test("real broker desktop preserves existing equal-grid cardinalities and revers
   const selected = DESKTOP_SESSIONS[4]!;
   await fifth.click();
   await expect(fifth).toHaveClass(/grid-focused/);
-  await page.locator("#desktop-grid-container .grid-cell canvas").evaluateAll((canvases) => canvases.forEach((canvas, index) => canvas.setAttribute("data-workspace-canvas", String(index))));
-  const attachesBefore = socketUrls.length;
   await selectTerminalLayoutFromUi(page, "lead-stack");
   await expect(grid).toHaveAttribute("style", /grid-template-columns/);
   await expect.poll(async () => (await grid.locator(".grid-cell").first().boundingBox())!.height > (await fifth.boundingBox())!.height).toBe(true);
   await selectTerminalLayoutFromUi(page, "vertical-stack");
   await expect(grid).toHaveCSS("grid-template-columns", /^\d+(\.\d+)?px$/);
   await selectTerminalLayoutFromUi(page, "lead-stack");
+  await expect(page.locator('#desktop-grid-container .grid-cell.hydrated')).toHaveCount(5);
   await expect(fifth).toHaveClass(/grid-focused/);
+  // Settings uses its existing suspend/resume lifecycle; direct workspace controls retain these restored canvases.
+  await page.locator("#desktop-grid-container .grid-cell canvas").evaluateAll((canvases) => canvases.forEach((canvas, index) => canvas.setAttribute("data-workspace-canvas", String(index))));
+  const attachesBefore = socketUrls.length;
   const placements = () => grid.locator(".grid-cell").evaluateAll(cells => cells.map(cell => ({ row: (cell as HTMLElement).style.gridRow, column: (cell as HTMLElement).style.gridColumn })));
   const initialPlacements = await placements();
   const resizeCount = resizeFrames.length;
@@ -162,7 +164,7 @@ test("right context panel resizes with real pointer and keyboard input without r
   await page.goto(server!.baseUrl);
   await page.locator(".card", { hasText: name }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator("#workspace-settings-btn")).toBeVisible();
+  await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
   await expect(page.locator("#workspace-terminal-full")).toHaveCount(0);
   for (const [id, label] of [["workspace-context-collapse", "Hide widgets"], ["workspace-context-full", "Context full view"]]) {
     const control = page.locator(`#${id}`);
@@ -222,7 +224,7 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect(border).toBeHidden();
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
   const collapseBox = (await page.locator("#workspace-context-collapse").boundingBox())!;
-  const toolsBeforeCollapse = (await page.locator("#workspace-tools").boundingBox())!;
+  const toolsBeforeCollapse = (await page.locator("#sidebar-session-controls").boundingBox())!;
   await page.locator("#workspace-context-collapse").click();
   const expand = page.getByRole("button", { name: "Show widgets", exact: true });
   await expect(expand).toHaveText("Show widgets");
@@ -231,7 +233,7 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect(expand.locator("svg rect")).toHaveAttribute("width", "18");
   await expect(border).toBeHidden();
   const expandBox = (await expand.boundingBox())!;
-  const toolsBox = (await page.locator("#workspace-tools").boundingBox())!;
+  const toolsBox = (await page.locator("#sidebar-session-controls").boundingBox())!;
   expect(expandBox).toEqual(collapseBox);
   expect(toolsBox).toEqual(toolsBeforeCollapse);
   await expect(expand.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
@@ -248,7 +250,7 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(220);
 });
 
-test("context controls stay fixed in desktop tools and the mobile toolbar", async ({ page }, testInfo) => {
+test("context controls stay fixed beside desktop filters and in the mobile toolbar", async ({ page }, testInfo) => {
   test.skip(!["desktop", "iphone-14"].includes(testInfo.project.name), "desktop and responsive Chromium touch contract");
   const name = `workspace-top-toggle-${testInfo.project.name}`;
   await createShellSession(name);
@@ -258,19 +260,10 @@ test("context controls stay fixed in desktop tools and the mobile toolbar", asyn
   await expect(canvas).toBeVisible();
   await canvas.evaluate(node => { (window as any).__toggleCanvas = node; });
   if (testInfo.project.name === "desktop") {
-    const tools = page.locator("#workspace-tools");
+    const tools = page.locator("#sidebar-session-controls");
     const before = await tools.boundingBox();
     await expect(page.locator(".workspace-terminal-toolbar")).toBeHidden();
-    await tools.getByRole("button", { name: "Workspace settings", exact: true }).click();
-    const picker = page.getByRole("combobox", { name: "Terminal layout" });
-    await expect(picker).toHaveCSS("appearance", "auto");
-    await picker.focus();
-    await expect(picker).toHaveCSS("outline-width", "2px");
-    await picker.press("l");
-    await picker.press("Enter");
-    await expect(page.locator("#workspace-terminal-layout")).toHaveValue("lead-stack");
-    // Native Enter commits the selection and submits the dialog's Done action.
-    await expect(page.locator("#workspace-settings-dialog")).toBeHidden();
+    await expect(page.locator("#workspace-tools, #workspace-settings-dialog, #terminal-transcript-btn")).toHaveCount(0);
     const collapse = tools.locator("#workspace-context-collapse");
     const box = await collapse.boundingBox();
     await expect(collapse.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
@@ -281,16 +274,6 @@ test("context controls stay fixed in desktop tools and the mobile toolbar", asyn
     await expand.press("Space");
     await expect(collapse).toBeFocused();
     await page.locator("#workspace-context-full").click();
-    await tools.locator("summary").click();
-    const transcript = tools.getByRole("button", { name: "Read session transcript" });
-    await transcript.click();
-    await expect(page.locator("#terminal-transcript-dialog")).toBeVisible();
-    await page.getByRole("button", { name: "Close transcript" }).click();
-    await expect(transcript).toBeFocused();
-    await page.keyboard.press("Escape");
-    await tools.getByRole("button", { name: "Workspace settings", exact: true }).click();
-    await expect(picker).toBeDisabled();
-    await page.keyboard.press("Escape");
     expect(await collapse.boundingBox()).toEqual(box);
     await collapse.click();
     await expect(page.locator("#workspace-context-region")).toBeHidden();
@@ -302,39 +285,12 @@ test("context controls stay fixed in desktop tools and the mobile toolbar", asyn
   }
   const toolbar = page.locator(".workspace-terminal-toolbar");
   const height = (await toolbar.boundingBox())!.height;
-  const picker = page.getByRole("combobox", { name: "Terminal layout" });
-  await expect(picker).toHaveCSS("opacity", "1");
-  await expect(picker).toHaveCSS("appearance", "auto");
-  await expect(picker).toHaveCSS("border-radius", "9px");
-  await expect(picker).toHaveAttribute("title", "Terminal layout");
-  await expect(toolbar.locator("label")).toHaveCount(0);
-  const controlSize = testInfo.project.name === "iphone-14" ? 44 : 34;
-  expect((await picker.boundingBox())!.height).toBe(controlSize);
-  expect((await picker.boundingBox())!.width).toBe(132);
+  await expect(toolbar.locator("select, #terminal-transcript-btn")).toHaveCount(0);
+  const controlSize = 44;
   expect(height).toBe(controlSize + 7);
-  // One shared row, not an additional transcript row above the workspace.
   expect((await toolbar.boundingBox())!.y).toBe((await page.locator("#terminal-view").boundingBox())!.y);
-  const transcript = toolbar.getByRole("button", { name: "Read session transcript" });
-  expect((await transcript.boundingBox())!.height).toBe(controlSize);
-  await transcript.click();
-  await expect(page.locator("#terminal-transcript-dialog")).toBeVisible();
-  await page.getByRole("button", { name: "Close transcript" }).click();
-  await expect(transcript).toBeFocused();
-  await picker.focus();
-  await expect(picker).toHaveCSS("outline-width", "2px");
-  if (testInfo.project.name === "desktop") {
-    await picker.press("l");
-    await picker.press("Enter");
-  } else {
-    await picker.tap();
-    await picker.press("Escape");
-    await picker.selectOption("lead-stack");
-  }
-  await expect(picker).toHaveValue("lead-stack");
   const collapse = page.getByRole("button", { name: "Collapse context panel", exact: true });
   const collapseBox = (await collapse.boundingBox())!;
-  const pickerBox = (await picker.boundingBox())!;
-  const transcriptBox = (await transcript.boundingBox())!;
   await expect(collapse.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
   await page.screenshot({ path: testInfo.outputPath("controls-expanded.png") });
   if (testInfo.project.name === "iphone-14") await collapse.tap(); else await collapse.click();
@@ -342,8 +298,6 @@ test("context controls stay fixed in desktop tools and the mobile toolbar", asyn
   await expect(expand).toBeVisible();
   const box = (await expand.boundingBox())!;
   expect(box).toEqual(collapseBox);
-  expect(await picker.boundingBox()).toEqual(pickerBox);
-  expect(await transcript.boundingBox()).toEqual(transcriptBox);
   await expect(expand.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
   const top = (await toolbar.boundingBox())!;
   expect(top.height).toBe(height);
@@ -358,9 +312,7 @@ test("context controls stay fixed in desktop tools and the mobile toolbar", asyn
   const full = page.getByRole("button", { name: "Context full view", exact: true });
   await expect(full.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
   await full.click();
-  await expect(picker).toBeHidden();
   expect(await collapse.boundingBox()).toEqual(collapseBox);
-  expect(await transcript.boundingBox()).toEqual(transcriptBox);
   await collapse.click();
   await expect(expand).toBeVisible();
   await expect(page.locator("#workspace-context-region")).toBeHidden();
@@ -410,20 +362,30 @@ test("real broker delegation collapse retains the child controller and canvas", 
   await expect(childCell).toHaveClass(/hydrated/);
   await childCell.locator("canvas").evaluate(canvas => canvas.setAttribute("data-workspace-collapse-canvas", "retained"));
   const attachesBefore = sockets.length;
-  await expect(page.locator("#workspace-settings-btn")).toBeVisible();
+  await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
   await page.getByRole("button", { name: `Collapse ${child}` }).click();
   await expect(childCell).toHaveClass(/collapsed/);
-  await expect(page.locator("#workspace-settings-btn")).toBeVisible();
+  await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
   await page.getByRole("button", { name: `Expand ${child}` }).click();
-  await expect(page.locator("#workspace-settings-btn")).toBeVisible();
+  await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
   await expect(childCell).toHaveClass(/hydrated/);
   await expect(childCell.locator("canvas")).toHaveAttribute("data-workspace-collapse-canvas", "retained");
   expect(sockets).toHaveLength(attachesBefore);
   await page.getByRole("button", { name: `Focus ${child}` }).click();
   await expect(page.locator("#delegation-focus-back")).toBeVisible();
-  await expect(page.locator("#workspace-settings-btn")).toBeVisible();
+  await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
+  await selectTerminalLayoutFromUi(page, "vertical-stack");
+  await expect(page.locator('#desktop-terminal-container canvas')).toBeVisible();
+  await expect(page.locator('#delegation-focus-label')).toContainText(child);
+  await expect(page.locator('#delegation-focus-back')).toBeVisible();
+  await page.locator('#sidebar-settings-btn').click();
+  await expect(page.locator('#desktop-terminal-container canvas')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#desktop-terminal-container canvas')).toBeVisible();
+  await expect(page.locator('#delegation-focus-back')).toBeVisible();
+  await expect(page.locator('#delegation-focus-label')).toContainText(child);
   await page.locator("#delegation-focus-back").click();
-  await expect(page.locator("#workspace-settings-btn")).toBeVisible();
+  await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
 });
 
 test("saved terminal-only preferences still restore after removing the terminal full-view button", async ({ page }, testInfo) => {

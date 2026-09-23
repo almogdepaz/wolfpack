@@ -644,6 +644,8 @@ function renderDelegationCollapsedStrip(): void {
 }
 
 export function renderDelegationGridCells(): void {
+  // Settings keeps workspace identity, not background terminal viewers.
+  if (state.currentView !== "terminal" || state.focusedDelegationSession) return;
   const container = document.getElementById("delegation-grid-container");
   if (!container) return;
   renderGridSessionCells(state.delegationGridSessions, container, state.delegationGridFocusIndex, () => {
@@ -872,6 +874,12 @@ export function setCurrentSessionFromGridFocus(sessions, focusIndex) {
 
 export function returnToTerminalView() {
   deps.showView("terminal");
+  if (state.activeDelegationRoot) {
+    if (state.focusedDelegationSession) {
+      if (!state.terminalController) deps.initTerminal();
+    } else renderDelegationGridCells();
+    return true;
+  }
   if (restorePreservedGrid()) return true;
   if (!state.currentSession) return false;
   if (!state.terminalController) deps.initTerminal();
@@ -936,6 +944,7 @@ function geometryFocusIndex(
 }
 
 export function moveGridFocusByArrow(direction: "left" | "right" | "up" | "down"): boolean {
+  if (state.currentView !== "terminal") return false;
   if (state.activeDelegationRoot && !state.focusedDelegationSession) {
     const target = geometryFocusIndex(state.delegationGridSessions, state.delegationGridFocusIndex, "delegation", document.getElementById("delegation-grid-container"), direction);
     if (target === null) return false;

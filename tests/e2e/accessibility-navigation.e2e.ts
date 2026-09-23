@@ -134,41 +134,16 @@ test("sidebar details and actions remain independently pointer-accessible", asyn
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
 });
 
-test("terminal transcript exposes authoritative plain text without a second parser", async ({ page }, testInfo) => {
+test("Transcript is absent while context full-view recovery remains keyboard accessible", async ({ page }) => {
   await page.getByRole("button", { name: "Open test-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
-
-  const transcript = page.getByRole("button", { name: "Read session transcript" });
-  const contextFull = page.locator("#workspace-context-full");
-  const activate = async (control: typeof transcript) => {
-    if (testInfo.project.name === "desktop") await control.click();
-    else await control.tap();
-  };
-
-  if (testInfo.project.name === "desktop") await page.locator("#workspace-session-actions summary").click();
-  await activate(transcript);
-  const dialog = page.getByRole("dialog", { name: "Session transcript" });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("log")).toContainText("mock-terminal-ready");
-
-  await activate(dialog.getByRole("button", { name: "Close transcript" }));
-  await expect(dialog).toBeHidden();
-
-  const [transcriptBox, contextFullBox] = await Promise.all([transcript.boundingBox(), contextFull.boundingBox()]);
-  expect(transcriptBox).not.toBeNull();
-  expect(contextFullBox).not.toBeNull();
-  expect(
-    transcriptBox!.x + transcriptBox!.width <= contextFullBox!.x
-      || contextFullBox!.x + contextFullBox!.width <= transcriptBox!.x
-      || transcriptBox!.y + transcriptBox!.height <= contextFullBox!.y
-      || contextFullBox!.y + contextFullBox!.height <= transcriptBox!.y,
-  ).toBe(true);
-
-  await activate(contextFull);
-  await expect(contextFull).toHaveAttribute("aria-pressed", "true");
-  await activate(transcript);
-  await expect(dialog).toBeVisible();
-  await activate(dialog.getByRole("button", { name: "Close transcript" }));
-  await activate(contextFull);
-  await expect(contextFull).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCount(0);
+  const full = page.getByRole("button", { name: "Context full view", exact: true });
+  await full.focus(); await full.press("Enter");
+  await expect(full).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+  const restore = page.getByRole("button", { name: "Restore workspace", exact: true });
+  await restore.focus(); await restore.press("Enter");
+  await expect(full).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#workspace-terminal-region")).toBeVisible();
 });

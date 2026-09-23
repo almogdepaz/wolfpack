@@ -137,7 +137,7 @@ test("All and Idle form a quiet, keyboard-operable segmented control", async ({ 
       return Math.abs(element.getBoundingClientRect().x - card.getBoundingClientRect().x);
     })).toBeLessThanOrEqual(1);
     await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
-    const sidebar = page.locator("#sidebar-session-list").getByRole("group", { name: "Session view" });
+    const sidebar = page.locator("#sidebar-session-controls").getByRole("group", { name: "Session view" });
     await expect(sidebar).toBeVisible();
     await expect(sidebar.getByRole("button", { name: "All sessions", exact: true })).toHaveAttribute("aria-pressed", "true");
     await sidebar.getByRole("button", { name: "Idle sessions", exact: true }).click();

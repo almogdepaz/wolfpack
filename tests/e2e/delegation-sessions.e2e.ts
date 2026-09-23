@@ -208,6 +208,11 @@ test("explicit workspace shell changes retain delegation panes and focus", async
   await child.click();
   await expect(child).toHaveClass(/grid-focused/);
   await selectTerminalLayoutFromUi(page, "lead-stack");
+  await expect(child).toHaveAttribute("data-terminal-load-state", "live");
+  await expect(child).toHaveClass(/grid-focused/);
+  // The Settings page suspends viewers; returning must restore the same workspace.
+  expect(attachCounts.get("parent")).toBe(2);
+  expect(attachCounts.get("child")).toBe(2);
   await expect(page.locator("#delegation-grid-container")).toHaveAttribute("style", /grid-template-columns/);
   await page.locator("#workspace-context-collapse").click();
   await expect(page.locator("#workspace-restore")).toBeVisible();
@@ -216,8 +221,8 @@ test("explicit workspace shell changes retain delegation panes and focus", async
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
   await expect(child).toHaveClass(/grid-focused/);
-  expect(attachCounts.get("parent")).toBe(1);
-  expect(attachCounts.get("child")).toBe(1);
+  expect(attachCounts.get("parent")).toBe(2);
+  expect(attachCounts.get("child")).toBe(2);
 });
 
 test("workspace shell mobile recovery keeps a visible terminal usable", async ({ page }, testInfo) => {

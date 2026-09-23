@@ -197,7 +197,7 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
     await expect(expandedIdle).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator("#sidebar-session-list")).not.toBeInViewport();
     await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
-    const sidebarIdle = page.locator("#sidebar-session-list").getByRole("button", { name: "Idle sessions", exact: true });
+    const sidebarIdle = page.locator("#sidebar-session-controls").getByRole("button", { name: "Idle sessions", exact: true });
     await expect(sidebarIdle).toBeInViewport();
     await expect(sidebarIdle).toHaveAttribute("aria-pressed", "true");
   }
