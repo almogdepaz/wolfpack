@@ -466,6 +466,8 @@ test("desktop delegation focus makes suspended manual-grid sessions available to
   await manualOneGridButton.click();
 
   await expect.poll(() => gridSessionNames(page)).toEqual(["child", "manual-one"]);
+  // Do not race keyboard activation against the new cells' initial autofocus.
+  await expect(page.locator('#desktop-grid-container .grid-cell[data-terminal-load-state="live"]')).toHaveCount(2);
   await openSessionFromUi(page, "child");
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
   await openSessionFromUi(page, "manual-one");
