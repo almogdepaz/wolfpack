@@ -52,6 +52,11 @@ broker/target/
 .context/
 docs/broker-protocol.md
 docs/ralph-broker-plan.md
+/docs/tailnet-release-matrix.md
+/docs/multi-machine-trial-feedback.md
+/docs/live-update-handoff.md
+/docs/task-gateway.md
+/docs/memory-owned-relay-design.md
 review-tasks/
 
 delivery-review-*.md

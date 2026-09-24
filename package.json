@@ -30,13 +30,9 @@
     "docs/phone-pwa-notifications.md",
     "docs/assets/wolfpack-desktop-dashboard.png",
     "docs/assets/wolfpack-mobile-sessions.png",
-    "docs/live-update-handoff.md",
     "docs/multi-machine-control-room.md",
-    "docs/multi-machine-trial-feedback.md",
     "docs/session-control.md",
     "docs/session-identity.md",
-    "docs/task-gateway.md",
-    "docs/tailnet-release-matrix.md",
     "docs/troubleshooting.md",
     "skills"
   ],
