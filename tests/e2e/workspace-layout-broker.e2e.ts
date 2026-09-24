@@ -92,10 +92,15 @@ test("late advertised local name preserves the attached terminal and scrollback"
   const info = await (await fetch(`${server!.baseUrl}/api/info`)).json();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  await page.route(`${server!.baseUrl}/api/machine`, async route => {
+  // Delay initial metadata, not a /machine request past its intentional 5s bound.
+  // Once the terminal is ready, the advertised-name request can finish normally.
+  await page.route(`${server!.baseUrl}/api/info`, async route => {
     await held;
-    await route.fulfill({ json: { machine: { installationId: info.machineId, displayName: "Advertised fixture machine" } } });
+    await route.fulfill({ json: info });
   });
+  await page.route(`${server!.baseUrl}/api/machine`, route => route.fulfill({
+    json: { machine: { installationId: info.machineId, displayName: "Advertised fixture machine" } },
+  }));
   let sockets = 0;
   page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
   try {
