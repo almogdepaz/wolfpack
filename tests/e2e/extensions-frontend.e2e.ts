@@ -28,7 +28,7 @@ const sessionIds = new Map<string, string>();
 
 function environment(port?: number): Record<string, string> {
   const value: Record<string, string> = {
-    PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}`, SHELL: process.env.SHELL ?? "/bin/sh", HOME: home!.path, TMPDIR: root,
+    PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}`, SHELL: "/bin/sh", ZDOTDIR: home!.path, HOME: home!.path, TMPDIR: root,
     WOLFPACK_TEST: "1", WOLFPACK_LOG_LEVEL: "error", WOLFPACK_DEV_DIR: join(root, "dev"),
     WOLFPACK_MACHINE_ID_PATH: join(home!.path, "machine-id"), WOLFPACK_SESSION_IDENTITY_PATH: join(home!.path, "session-identities.json"),
     WOLFPACK_SETTINGS_PATH: join(home!.path, "settings.json"), WOLFPACK_TASK_ROOT: join(home!.path, "tasks"), WOLFPACK_TASK_RELAY_ROOT: join(home!.path, "relay"),
@@ -112,7 +112,15 @@ async function openSession(page: Page, name: string): Promise<void> {
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
 }
 
+async function showWidgets(page: Page): Promise<void> {
+  const show = page.locator("#workspace-restore");
+  if (await show.isVisible()) await show.click();
+}
+
 async function switchSession(page: Page, name: string, testInfo: TestInfo): Promise<void> {
+  const mobileBack = page.locator("#workspace-context-back");
+  const wasWidgetScreen = await mobileBack.isVisible();
+  if (wasWidgetScreen) await mobileBack.click();
   if (testInfo.project.name === "desktop") {
     await page.locator(`[data-action="open-session"][data-session="${name}"]`).filter({ visible: true }).first().click();
   } else {
@@ -120,6 +128,7 @@ async function switchSession(page: Page, name: string, testInfo: TestInfo): Prom
     await page.locator(`.drawer-item[data-val="${name}"]`).click();
   }
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
+  if (wasWidgetScreen) await showWidgets(page);
 }
 
 async function refreshThroughSessionSwitch(page: Page, testInfo: TestInfo): Promise<void> {
@@ -128,6 +137,7 @@ async function refreshThroughSessionSwitch(page: Page, testInfo: TestInfo): Prom
 }
 
 async function selectAgentContext(page: Page): Promise<void> {
+  await showWidgets(page);
   await expect(page.getByRole("tab", { name: /Agent Context/ })).toBeVisible({ timeout: 5_000 });
   await page.getByRole("tab", { name: /Agent Context/ }).click();
 }
@@ -140,6 +150,7 @@ test.beforeAll(async () => {
   home = createOwnedTestServerHome();
   mkdirSync(join(root, "dev", PROJECT), { recursive: true, mode: 0o700 });
   mkdirSync(join(root, "bin"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(home.path, ".profile"), `export PATH=${JSON.stringify(join(root, "bin"))}:"$PATH"\n`);
   // Settings performs provider readiness probes. Never execute operator-installed
   // agents (or their subprocess trees) in this widget-focused fixture.
   for (const provider of PROVIDER_DEFINITIONS) {
@@ -156,6 +167,12 @@ test.beforeAll(async () => {
   runCli(["extensions", "install", join(ROOT, "examples", "extensions", "notes"), "--trust-browser-code"]);
   expect(existsSync(join(home.path, ".pi", "agent", "skills", "wolfpack-agent-context", "SKILL.md"))).toBe(true);
   server = await start({ envOverrides: environment() });
+  const readiness = await (await fetch(`${server.baseUrl}/api/providers`, { headers: { authorization: `Bearer ${token()}` } })).json();
+  expect(readiness.providers).toHaveLength(PROVIDER_DEFINITIONS.length);
+  for (const provider of readiness.providers) {
+    expect(provider.executablePath).toBe(join(root, "bin", provider.command));
+    expect(provider.version).toBe("widget-fixture-provider 1.0");
+  }
   writeFileSync(join(home.path, ".wolfpack", "config.json"), JSON.stringify({ devDir: join(root, "dev"), port: server.port }), { mode: 0o600 });
   await createSession(SESSION_A);
   await createSession(SESSION_B);
@@ -202,6 +219,7 @@ test("installed widget manager works without a terminal and persists local visib
   await page.screenshot({ path: testInfo.outputPath("installed-widgets.png"), animations: "disabled" });
   await page.locator(testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn").click();
   await openSession(page, SESSION_A);
+  await showWidgets(page);
   await expect(page.getByRole("tab", { name: "Beta", exact: true })).toHaveCount(1);
   await expect(page.getByRole("tab", { name: /^Alpha/ })).toHaveCount(0);
   await expect(page.locator("#workspace-terminal-layout option[value='alpha/recipe']")).toHaveCount(1);
@@ -263,6 +281,14 @@ test("hiding widgets from another settings tab pauses documents without replacin
   const canvas = page.locator("#desktop-terminal-container canvas");
   const oldView = await view.elementHandle(); const oldCanvas = await canvas.elementHandle();
   const attached = sockets;
+  const placement = page.getByRole("combobox", { name: "Widget panel placement" });
+  for (const position of ["bottom", "full-screen", "right"]) {
+    await placement.selectOption(position);
+    await page.screenshot({ path: testInfo.outputPath(`installed-widget-${position}.png`), animations: "disabled" });
+  }
+  expect(await view.evaluate((node, previous) => node === previous, oldView)).toBe(true);
+  expect(await canvas.evaluate((node, previous) => node === previous, oldCanvas)).toBe(true);
+  expect(sockets).toBe(attached);
   const managerPage = await context.newPage();
   try {
     await authorize(managerPage);
@@ -296,6 +322,7 @@ test("authenticated installed packages compose qualified local views and refresh
   });
   await page.goto(server!.baseUrl);
   await openSession(page, SESSION_A);
+  await showWidgets(page);
   await expect(page.getByRole("tab", { name: "Alpha" })).toBeVisible({ timeout: 5_000 });
   await expect(page.getByRole("tab", { name: "Beta" })).toBeVisible();
   await expect(page.getByRole("tab", { name: /Agent Context/ })).toBeVisible();
@@ -350,6 +377,7 @@ test("authenticated installed packages compose qualified local views and refresh
     await expect.poll(readTail).toContain("WPEXTENSION_RETENTION");
     expect(sockets).toHaveLength(attached);
   } else {
+    await page.getByRole("button", { name: "Back to terminal", exact: true }).click();
     const draft = page.locator("#msg-input");
     await draft.evaluate((editor: HTMLTextAreaElement) => {
       editor.value = "retained mobile terminal draft";
@@ -358,9 +386,9 @@ test("authenticated installed packages compose qualified local views and refresh
     const canvas = page.locator("#desktop-terminal-container canvas");
     await canvas.evaluate(node => { (window as unknown as { __extensionRetainedCanvas?: Element }).__extensionRetainedCanvas = node; });
     const attached = sockets.length;
-    await page.locator("#workspace-context-full").click();
+    await showWidgets(page);
     await expect(page.locator("#workspace-terminal-region")).toBeHidden();
-    await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+    await page.getByRole("button", { name: "Back to terminal", exact: true }).click();
     expect(await canvas.evaluate(node => node === (window as unknown as { __extensionRetainedCanvas?: Element }).__extensionRetainedCanvas)).toBe(true);
     await expect(draft).toHaveValue("retained mobile terminal draft");
     expect(await draft.evaluate((editor: HTMLTextAreaElement) => [editor.selectionStart, editor.selectionEnd])).toEqual([9, 15]);
@@ -392,6 +420,7 @@ test("a sole Agent Context opens directly without its redundant tab and multiple
     await expect(layouts.locator('option[value="agent-context/lead-stack"]')).toHaveCount(0);
     await expect(layouts).toHaveValue("equal-grid"); // existing missing-recipe fallback, not a legacy alias
     await selectTerminalLayoutFromUi(page, "lead-stack");
+    await showWidgets(page);
     await expect(page.locator("[data-extension-tabs]")).toBeHidden();
     await expect(page.getByRole("tab", { name: "Agent Context", exact: true })).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("single-context-no-tab.png") });
@@ -414,6 +443,7 @@ test("installed package disable re-enable remove reinstall and update preserve a
   await authorize(page);
   await page.goto(server!.baseUrl);
   await openSession(page, SESSION_A);
+  await showWidgets(page);
   await expect(page.getByRole("tab", { name: "Alpha" })).toBeVisible({ timeout: 5_000 });
   await expect(page.getByRole("tab", { name: "Beta" })).toBeVisible();
 
@@ -491,6 +521,7 @@ test("extension safe mode allows manager metadata but never code or documents un
   expect(extensionRequests.every(url => new URL(url).pathname === "/api/extensions")).toBe(true);
   await page.locator(testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn").click();
   if (testInfo.project.name === "mobile-webkit") await openSession(page, SESSION_A);
+  await showWidgets(page);
   await expect(page.getByRole("tab", { name: /Agent Context/ })).toBeVisible({ timeout: 5_000 });
   expect(extensionRequests.some(url => new URL(url).pathname === "/api/extensions")).toBe(true);
 });
@@ -542,7 +573,7 @@ test("ordinary context-hide controls pause polling and preserve retained workspa
   const selectedLayout = await page.locator("#workspace-terminal-layout").inputValue();
   const attached = sockets.length;
 
-  const button = page.locator("#workspace-context-collapse");
+  const button = page.locator(testInfo.project.name === "desktop" ? "#workspace-context-collapse" : "#workspace-context-back");
   if (testInfo.project.name === "mobile-webkit") await button.tap();
   else await button.click();
   await expect(page.locator("#workspace-context-region")).toBeHidden();

@@ -1707,6 +1707,7 @@ body.no-animations, body.no-animations * {
 #workspace-terminal-layout:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #workspace-shell {
   --workspace-context-size: 320px;
+  --workspace-resize-cursor: col-resize;
   display: flex;
   flex: 1;
   min-height: 0;
@@ -1739,13 +1740,17 @@ body.no-animations, body.no-animations * {
 #workspace-context-divider {
   order: 1;
   flex: 0 0 6px;
-  cursor: col-resize;
+  cursor: var(--workspace-resize-cursor);
   touch-action: none;
 }
 #workspace-context-divider:hover,
 #workspace-context-divider:focus-visible,
 .workspace-resizing #workspace-context-divider { background: var(--accent-border); outline: none; }
-.workspace-resizing, .workspace-resizing * { cursor: col-resize !important; user-select: none !important; }
+.workspace-resizing, .workspace-resizing * { cursor: var(--workspace-resize-cursor) !important; user-select: none !important; }
+#workspace-shell[data-context-placement="bottom"]{flex-direction:column;--workspace-resize-cursor:row-resize}
+#workspace-shell[data-context-placement="bottom"] #workspace-context-region{width:auto;min-width:0;border-left:0;border-top:1px solid var(--border)}
+#workspace-panel-placement{appearance:auto;width:100px;padding:4px}
+[data-workspace-layout-status]{font-size:12px;color:var(--text-secondary)}
 .workspace-context-collapsed #workspace-context-divider,
 #workspace-shell:not([data-full-view="none"]) #workspace-context-divider { display: none; }
 .workspace-context-header,
@@ -1812,15 +1817,8 @@ body.no-animations, body.no-animations * {
   #workspace-shell { flex-direction: column; }
   #workspace-terminal-region { order: 1; }
   #workspace-context-divider { display: none; }
-  #workspace-context-region {
-    order: 2;
-    width: auto;
-    min-width: 0;
-    min-height: 112px;
-    max-height: 42%;
-    border: 0;
-    border-top: 1px solid var(--border);
-  }
+  #workspace-context-region { display: none; }
+  #terminal-view:has(#workspace-shell[data-full-view="context"]) .workspace-terminal-toolbar{display:none}
   #workspace-shell[data-full-view="context"] #workspace-context-region {
     flex: 1 1 auto;
     width: auto;
@@ -1828,7 +1826,7 @@ body.no-animations, body.no-animations * {
     min-height: 0;
   }
   .workspace-terminal-toolbar,.workspace-context-header { min-height: 51px; }
-  .workspace-terminal-toolbar :is(button,select) { min-height: 44px; }
+  :is(.workspace-terminal-toolbar,.workspace-context-header) :is(button,select) { min-height: 44px; }
   .workspace-icon { width: 44px; height: 44px; }
 }
 

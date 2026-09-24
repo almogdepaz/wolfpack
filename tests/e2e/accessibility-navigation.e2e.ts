@@ -134,10 +134,21 @@ test("sidebar details and actions remain independently pointer-accessible", asyn
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
 });
 
-test("Transcript is absent while context full-view recovery remains keyboard accessible", async ({ page }) => {
+test("Transcript is absent while context full-view recovery remains keyboard accessible", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "Open test-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCount(0);
+  if (testInfo.project.name !== "desktop") {
+    const show = page.locator("#workspace-restore");
+    await show.focus(); await show.press("Enter");
+    const back = page.getByRole("button", { name: "Back to terminal", exact: true });
+    await expect(back).toBeFocused();
+    await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+    await back.press("Enter");
+    await expect(show).toBeFocused();
+    await expect(page.locator("#workspace-terminal-region")).toBeVisible();
+    return;
+  }
   const full = page.locator("#workspace-context-full");
   await expect(full).toHaveAccessibleName("Context full view");
   await full.focus(); await full.press("Enter");

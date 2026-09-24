@@ -5498,7 +5498,10 @@ const onWidgetStorage = (event: StorageEvent) => {
   if (event.storageArea === localStorage && (event.key === null || event.key.startsWith(WIDGET_VISIBILITY_PREFIX))) widgetVisibility.changed();
 };
 window.addEventListener("storage", onWidgetStorage);
-document.addEventListener("wolfpack-extension-scope-change", () => { void extensionHost?.refresh(); });
+document.addEventListener("wolfpack-extension-scope-change", () => {
+  if (state.currentView !== "terminal") workspaceShell?.closeMobileView();
+  void extensionHost?.refresh();
+});
 window.addEventListener("pagehide", event => {
   if (!(event as PageTransitionEvent).persisted) {
     widgetManager.dispose();

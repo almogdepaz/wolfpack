@@ -1,6 +1,7 @@
 import { selectTerminalLayoutFromUi } from "./helpers.ts";
 import { test, expect, type Page } from "@playwright/test";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { PROVIDER_DEFINITIONS } from "../../src/provider-readiness.ts";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { start, skipIfNoBroker, type BrokerTestServer } from "./broker-helpers.ts";
@@ -52,11 +53,22 @@ test.beforeAll(async () => {
   devDir = realpathSync(mkdtempSync(join(tmpdir(), "wp-workspace-layout-")));
   mkdirSync(join(devDir, PROJECT_NAME));
   home = createOwnedTestServerHome();
+  const bin = join(home.path, "bin"); mkdirSync(bin);
+  // Server startup reads a login-shell PATH; macOS path_helper otherwise puts
+  // installed agents ahead of the fixture PATH. Own its profile as well.
+  writeFileSync(join(home.path, ".profile"), `export PATH=${JSON.stringify(bin)}:"$PATH"\n`);
+  for (const provider of PROVIDER_DEFINITIONS) writeFileSync(join(bin, provider.command), '#!/bin/sh\n[ "$1" = "--version" ] || exit 64\nprintf "placement-fixture-provider 1.0\\n"\n', { mode: 0o700 });
   server = await start({ envOverrides: {
-    HOME: home.path,
+    HOME: home.path, ZDOTDIR: home.path, SHELL: "/bin/sh", PATH: `${bin}:${process.env.PATH ?? ""}`,
     WOLFPACK_DEV_DIR: devDir,
     WOLFPACK_MACHINE_ID_PATH: join(home.path, "machine-id"),
   } });
+  const readiness = await (await fetch(`${server.baseUrl}/api/providers`)).json();
+  expect(readiness.providers).toHaveLength(PROVIDER_DEFINITIONS.length);
+  for (const provider of readiness.providers) {
+    expect(provider.executablePath).toBe(join(bin, provider.command));
+    expect(provider.version).toBe("placement-fixture-provider 1.0");
+  }
 });
 
 test.afterAll(async () => {
@@ -66,6 +78,142 @@ test.afterAll(async () => {
   devDir = null;
   if (home) removeOwnedTestServerHome(home);
   home = null;
+});
+
+test("shared widget panel moves right bottom and full screen while native grid instances survive", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop menu and splitter geometry");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const names = ["placement-one", "placement-two"];
+  for (const name of names) await createShellSession(name);
+  let sockets = 0;
+  const sizes: Array<{ cols: number; rows: number }> = [];
+  page.on("websocket", socket => { if (!socket.url().includes("/ws/pty")) return; sockets++; socket.on("framesent", ({ payload }) => { if (typeof payload === "string") { try { const value = JSON.parse(payload); if (value.type === "resize") sizes.push(value); } catch {} } }); });
+  await openGrid(page, names);
+  const firstCell = page.locator("#desktop-grid-container .grid-cell").first();
+  await expect(firstCell).toHaveAttribute("data-terminal-load-state", "live");
+  await firstCell.click(); await page.keyboard.type("printf 'WP%s\\n' PLACEMENT_RETENTION"); await page.keyboard.press("Enter");
+  const readTail = () => firstCell.evaluate(cell => (window as any).__wolfpackTest.serializeTerminalTail(cell, 200));
+  await expect.poll(readTail).toContain("WPPLACEMENT_RETENTION");
+  const canvases = page.locator("#desktop-grid-container .grid-cell canvas");
+  await canvases.evaluateAll(nodes => { (window as any).__placementCanvases = nodes; });
+  const attached = sockets;
+  const picker = page.getByRole("combobox", { name: "Widget panel placement" });
+  const panel = page.locator("#workspace-context-region");
+  const terminal = page.locator("#workspace-terminal-region");
+  const divider = page.getByRole("separator", { name: "Resize context panel" });
+  await picker.selectOption("bottom");
+  await expect(divider).toHaveAttribute("aria-orientation", "horizontal");
+  await expect(divider).toHaveCSS("cursor", "row-resize");
+  const before = (await panel.boundingBox())!;
+  const terminalBox = (await terminal.boundingBox())!;
+  expect(before.y).toBeGreaterThanOrEqual(terminalBox.y + terminalBox.height);
+  expect(Math.abs(before.width - terminalBox.width)).toBeLessThanOrEqual(2);
+  const edge = (await divider.boundingBox())!;
+  await canvases.first().click();
+  const focus = await page.evaluateHandle(() => document.activeElement);
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2);
+  await page.mouse.down(); await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2 - 60, { steps: 6 }); await page.mouse.up();
+  await expect.poll(async () => Math.round((await panel.boundingBox())!.height)).toBe(Math.round(before.height + 60));
+  expect(await page.evaluate(previous => document.activeElement === previous, focus)).toBe(true);
+  await divider.focus(); await divider.press("ArrowUp");
+  await expect.poll(async () => Math.round((await panel.boundingBox())!.height)).toBe(Math.round(before.height + 70));
+  await divider.press("End"); expect((await terminal.boundingBox())!.height).toBeGreaterThanOrEqual(160);
+  await divider.press("Home"); await expect(divider).toHaveAttribute("aria-valuenow", "140");
+  await picker.selectOption("right"); await expect(divider).toHaveAttribute("aria-orientation", "vertical");
+  await expect(divider).toHaveAttribute("aria-valuenow", "320");
+  await divider.focus(); await divider.press("ArrowLeft");
+  await picker.selectOption("bottom"); await expect(divider).toHaveAttribute("aria-valuenow", "140");
+  await picker.selectOption("full-screen"); await expect(terminal).toBeHidden(); await expect(divider).toBeHidden();
+  await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await expect(picker).toHaveValue("bottom"); await expect(terminal).toBeVisible();
+  expect(await canvases.evaluateAll(nodes => nodes.every((node, index) => node === (window as any).__placementCanvases[index]))).toBe(true);
+  expect(sockets).toBe(attached); expect(sizes.length).toBeGreaterThan(0); expect(sizes.every(size => size.cols > 0 && size.rows > 0)).toBe(true);
+  await expect(firstCell).toHaveAttribute("data-terminal-load-state", "live");
+  await expect.poll(readTail).toContain("WPPLACEMENT_RETENTION");
+  await expect(firstCell.locator(".grid-cell-loading")).toBeHidden();
+  await expect(canvases.first()).toHaveCSS("opacity", "1");
+  await page.screenshot({ path: testInfo.outputPath("bottom-widget-panel.png") });
+  await page.setViewportSize({ width: 1440, height: 320 });
+  await expect.poll(async () => (await terminal.boundingBox())!.height).toBeGreaterThan(0);
+  const shortShell = (await page.locator("#workspace-shell").boundingBox())!;
+  const shortPanel = (await panel.boundingBox())!;
+  expect(shortPanel.y + shortPanel.height).toBeLessThanOrEqual(shortShell.y + shortShell.height + 1);
+  expect(shortPanel.height).toBeGreaterThan(0);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(divider).toHaveAttribute("aria-valuenow", "140");
+  await page.reload(); await page.locator(".card", { hasText: names[0]! }).first().click();
+  await expect(picker).toHaveValue("bottom"); await expect(divider).toHaveAttribute("aria-valuenow", "140");
+  await page.locator("#sidebar-settings-btn").click();
+  await page.getByRole("link", { name: "Widgets", exact: true }).click();
+  await page.getByRole("button", { name: "Reset widget layout", exact: true }).click();
+  await page.locator("#settings-back-btn").click();
+  await expect(picker).toHaveValue("right"); await expect(divider).toHaveAttribute("aria-valuenow", "320");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-workspace-shell")!).bottomSize)).toBe(240);
+});
+
+test("widget layout remains recoverable when browser storage rejects writes", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop in-memory recovery and Settings reset");
+  const name = "placement-storage"; await createShellSession(name);
+  await page.goto(server!.baseUrl); await page.locator(".card", { hasText: name }).first().click();
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
+  await page.evaluate(() => {
+    const set = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) { if (key === "wolfpack-workspace-shell") throw Error("blocked"); set.call(this, key, value); };
+  });
+  const picker = page.getByRole("combobox", { name: "Widget panel placement" });
+  await picker.selectOption("bottom");
+  await expect(page.locator("#workspace-shell")).toHaveAttribute("data-context-placement", "bottom");
+  await expect(page.locator("#workspace-context-region [data-workspace-layout-status]")).toContainText("this tab only");
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-workspace-shell"))).toBeNull();
+  await picker.selectOption("full-screen");
+  await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await page.locator("#sidebar-settings-btn").click();
+  await page.getByRole("link", { name: "Widgets", exact: true }).click();
+  await page.getByRole("button", { name: "Reset widget layout", exact: true }).click();
+  await expect(page.locator("#settings-extensions [data-workspace-layout-status]")).toContainText("storage is unavailable");
+  await page.locator("#settings-back-btn").click();
+  await expect(picker).toHaveValue("right");
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
+});
+
+test("mobile widgets are a separate full-screen view and never overwrite the desktop layout", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "iphone-14", "responsive mobile presentation and breakpoint recovery");
+  const name = "placement-mobile"; await createShellSession(name);
+  await page.addInitScript(() => { if (!localStorage.getItem("placement-seeded")) { localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ panelPlacement: "bottom", bottomSize: 270, splitSize: 410, fullView: "context" })); localStorage.setItem("placement-seeded", "yes"); } });
+  let sockets = 0; page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await page.goto(server!.baseUrl); await page.locator(".card", { hasText: name }).first().click();
+  const canvas = page.locator("#desktop-terminal-container canvas"); await expect(canvas).toBeVisible();
+  const old = await canvas.elementHandle(); const attached = sockets;
+  const saved = await page.evaluate(() => localStorage.getItem("wolfpack-workspace-shell"));
+  const draft = page.locator("#msg-input"); await draft.evaluate((node: HTMLTextAreaElement) => { node.value = "retained draft"; node.setSelectionRange(2, 5); });
+  await expect(page.locator("#workspace-context-region")).toBeHidden();
+  await page.locator("#workspace-restore").tap();
+  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+  for (const id of ["workspace-panel-placement", "workspace-context-divider"]) await expect(page.locator(`#${id}`)).toBeHidden();
+  const shell = (await page.locator("#workspace-shell").boundingBox())!; const panel = (await page.locator("#workspace-context-region").boundingBox())!;
+  expect(panel.width).toBeCloseTo(shell.width, 0); expect(panel.height).toBeCloseTo(shell.height, 0);
+  await expect(page.getByRole("button", { name: "Back to terminal", exact: true })).toBeFocused();
+  await page.screenshot({ path: testInfo.outputPath("mobile-widget-screen.png") });
+  await page.getByRole("button", { name: "Back to terminal", exact: true }).tap();
+  await expect(canvas).toBeVisible(); expect(await canvas.evaluate((node, previous) => node === previous, old)).toBe(true); expect(sockets).toBe(attached);
+  await expect(draft).toHaveValue("retained draft"); expect(await draft.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])).toEqual([2, 5]);
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-workspace-shell"))).toBe(saved);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(page.locator("#workspace-panel-placement")).toHaveValue("full-screen");
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-workspace-shell"))).toBe(saved);
+  await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await expect(page.locator("#workspace-panel-placement")).toHaveValue("bottom");
+  const divider = page.locator("#workspace-context-divider");
+  await expect(divider).toHaveAttribute("aria-valuenow", "270");
+  const edge = (await divider.boundingBox())!;
+  await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2); await page.mouse.down();
+  await expect(page.locator("#workspace-shell")).toHaveClass(/workspace-resizing/);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator("#workspace-shell")).not.toHaveClass(/workspace-resizing/);
+  await page.mouse.up();
+  await expect(canvas).toBeVisible();
+  expect(await canvas.evaluate((node, previous) => node === previous, old)).toBe(true);
+  expect(sockets).toBe(attached);
 });
 
 test("real broker desktop preserves existing equal-grid cardinalities and reversible workspace identity", async ({ page }, testInfo) => {
@@ -141,7 +289,7 @@ test("real broker desktop preserves existing equal-grid cardinalities and revers
 });
 
 test("right context panel resizes with real pointer and keyboard input without replacing the terminal", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop splitter contract; mobile retains the stacked recovery layout");
+  test.skip(testInfo.project.name !== "desktop", "desktop splitter contract; mobile uses a separate widget screen");
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.addInitScript(() => {
     if (!localStorage.getItem("splitter-test-seeded")) {
@@ -289,35 +437,24 @@ test("context controls stay fixed beside desktop filters and in the mobile toolb
   const controlSize = 44;
   expect(height).toBe(controlSize + 7);
   expect((await toolbar.boundingBox())!.y).toBe((await page.locator("#terminal-view").boundingBox())!.y);
-  const collapse = page.getByRole("button", { name: "Collapse context panel", exact: true });
-  const collapseBox = (await collapse.boundingBox())!;
-  await expect(collapse.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
-  await page.screenshot({ path: testInfo.outputPath("controls-expanded.png") });
-  if (testInfo.project.name === "iphone-14") await collapse.tap(); else await collapse.click();
   const expand = page.getByRole("button", { name: "Expand context panel", exact: true });
   await expect(expand).toBeVisible();
   const box = (await expand.boundingBox())!;
-  expect(box).toEqual(collapseBox);
   await expect(expand.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
   const top = (await toolbar.boundingBox())!;
-  expect(top.height).toBe(height);
   expect(box.y).toBeGreaterThanOrEqual(top.y);
   expect(box.y + box.height).toBeLessThanOrEqual(top.y + top.height);
-  expect(box.height).toBeGreaterThanOrEqual(testInfo.project.name === "iphone-14" ? 44 : 34);
+  expect(box.height).toBeGreaterThanOrEqual(44);
   await page.screenshot({ path: testInfo.outputPath("top-context-toggle.png") });
-  if (testInfo.project.name === "iphone-14") await expand.tap(); else await expand.press("Space");
-  await expect(collapse).toBeVisible();
-  await expect(expand).toBeHidden();
-  expect(await collapse.boundingBox()).toEqual(collapseBox);
-  const full = page.getByRole("button", { name: "Context full view", exact: true });
-  await expect(full.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
-  await full.click();
-  expect(await collapse.boundingBox()).toEqual(collapseBox);
-  await collapse.click();
-  await expect(expand).toBeVisible();
+  await expand.tap();
+  await expect(toolbar).toBeHidden();
+  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+  const back = page.getByRole("button", { name: "Back to terminal", exact: true });
+  await expect(back).toBeFocused();
+  await back.tap();
+  await expect(expand).toBeFocused();
   await expect(page.locator("#workspace-context-region")).toBeHidden();
-  expect(await expand.boundingBox()).toEqual(collapseBox);
-  await expand.click();
+  expect(await expand.boundingBox()).toEqual(box);
   expect(await canvas.evaluate(node => node === (window as any).__toggleCanvas)).toBe(true);
 });
 
@@ -424,10 +561,10 @@ test("real broker mobile workspace recovery keeps the terminal attached", async 
     input.setSelectionRange(7, 13);
   });
   const attachesBefore = sockets.length;
-  await page.locator("#workspace-context-full").click();
+  await page.locator("#workspace-restore").click();
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
-  await expect(page.getByRole("button", { name: "Restore workspace", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Back to terminal", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Back to terminal", exact: true }).click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
   await expect(draft).toHaveValue("retain mobile draft");
   expect(await draft.evaluate((input: HTMLTextAreaElement) => [input.selectionStart, input.selectionEnd])).toEqual([7, 13]);

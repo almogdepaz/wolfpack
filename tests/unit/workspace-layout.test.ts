@@ -5,6 +5,7 @@ import {
   DEFAULT_WORKSPACE_SHELL_PREFERENCES,
   normalizeWorkspaceShellPreferences,
   workspaceContextIsVisible,
+  workspacePresentation,
 } from "../../public/workspace-shell.ts";
 
 function memoryStorage(initial: Record<string, string> = {}): Pick<Storage, "getItem" | "setItem"> {
@@ -13,6 +14,19 @@ function memoryStorage(initial: Record<string, string> = {}): Pick<Storage, "get
 }
 
 describe("phase-1 host workspace layout", () => {
+  test("new panel placement and independent sizes are bounded; retired placement stays ignored", () => {
+    expect(normalizeWorkspaceShellPreferences({ panelPlacement: "bottom", bottomSize: 9999, splitSize: 410 })).toMatchObject({ panelPlacement: "bottom", bottomSize: 480, splitSize: 410 });
+    expect(normalizeWorkspaceShellPreferences({ placement: "bottom", bottomSize: -20 })).toMatchObject({ panelPlacement: "right", bottomSize: 140 });
+    expect(normalizeWorkspaceShellPreferences({ panelPlacement: "left", bottomSize: NaN })).toEqual(DEFAULT_WORKSPACE_SHELL_PREFERENCES);
+  });
+  test("mobile full-screen presentation never changes desktop placement or recovery preferences", () => {
+    const saved = normalizeWorkspaceShellPreferences({ panelPlacement: "bottom", bottomSize: 310, fullView: "context", contextCollapsed: true });
+    expect(workspaceContextIsVisible(workspacePresentation(saved, false, false))).toBe(false);
+    expect(workspacePresentation(saved, false, true)).toMatchObject({ fullView: "context", contextCollapsed: false });
+    expect(workspacePresentation(saved, true, false)).toBe(saved);
+    expect(saved).toMatchObject({ panelPlacement: "bottom", bottomSize: 310, fullView: "context", contextCollapsed: true });
+  });
+
   test("keeps equal grid as the explicit built-in default and persists only a user selection", () => {
     const storage = memoryStorage();
     const registry = new TerminalLayoutRegistry(storage);
@@ -91,12 +105,12 @@ describe("phase-1 host workspace layout", () => {
   });
 
   test("retires saved placement controls without losing size or recovery state", () => {
-    expect(normalizeWorkspaceShellPreferences({ placement: "right", splitSize: 410, contextCollapsed: true })).toEqual({ splitSize: 410, contextCollapsed: true, fullView: "none" });
+    expect(normalizeWorkspaceShellPreferences({ placement: "right", splitSize: 410, contextCollapsed: true })).toEqual({ ...DEFAULT_WORKSPACE_SHELL_PREFERENCES, splitSize: 410, contextCollapsed: true, fullView: "none" });
   });
 
   test("bounds and repairs browser-local shell preferences while retaining recovery state", () => {
     expect(normalizeWorkspaceShellPreferences({ placement: "bottom", splitSize: 9999, contextCollapsed: true, fullView: "context" })).toEqual({
-      splitSize: 560, contextCollapsed: true, fullView: "context",
+      ...DEFAULT_WORKSPACE_SHELL_PREFERENCES, splitSize: 560, contextCollapsed: true, fullView: "context",
     });
     expect(normalizeWorkspaceShellPreferences({ placement: "bad", splitSize: Number.NaN, fullView: "bad" })).toEqual(DEFAULT_WORKSPACE_SHELL_PREFERENCES);
   });

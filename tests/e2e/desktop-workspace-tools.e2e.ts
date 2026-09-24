@@ -98,8 +98,9 @@ test('widget controls retain one owner across desktop and mobile',async({page},i
  await expect(page.locator('#sidebar-session-controls #workspace-context-collapse')).toBeVisible();
  await page.setViewportSize({width:390,height:844});
  const toolbar=page.locator('.workspace-terminal-toolbar');await expect(toolbar).toBeVisible();
- await expect(toolbar.locator('#workspace-context-collapse')).toHaveAccessibleName('Collapse context panel');
- await toolbar.locator('#workspace-context-collapse').click();await toolbar.locator('#workspace-restore').click();
+ await expect(toolbar.locator('#workspace-restore')).toHaveAccessibleName('Expand context panel');
+ await toolbar.locator('#workspace-restore').click();
+ await page.getByRole('button',{name:'Back to terminal',exact:true}).click();
  await expect(toolbar.locator('select, #terminal-transcript-btn')).toHaveCount(0);
  await page.setViewportSize({width:1280,height:720});
  await expect(toolbar).toBeHidden();await expect(page.locator('#sidebar-session-controls #workspace-context-collapse')).toBeVisible();

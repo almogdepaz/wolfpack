@@ -312,6 +312,8 @@
         <div class="settings-section" id="settings-extensions">
           <div class="settings-label">Widgets</div>
           <p class="settings-description">Show or hide widgets from installed extensions in this browser. Hiding does not disable extension code, terminal layouts, or shared data.</p>
+          <button class="discover-btn" type="button" id="workspace-reset-layout">Reset widget layout</button>
+          <p class="settings-description" data-workspace-layout-status role="status" hidden></p>
           <button class="discover-btn" type="button" data-widget-refresh>Refresh installed extensions</button>
           <p class="settings-description" data-widget-status role="status" aria-live="polite"></p>
           <div data-widget-list></div>
@@ -412,9 +414,12 @@
           <div class="workspace-context-header">
             <strong>Context</strong>
             <div class="workspace-context-actions">
+              <button id="workspace-context-back" type="button" hidden>Back to terminal</button>
+              <select id="workspace-panel-placement" aria-label="Widget panel placement" title="Widget panel placement"><option value="right">Right</option><option value="bottom">Bottom</option><option value="full-screen">Full screen</option></select>
               <button id="workspace-context-full" class="workspace-icon" type="button" aria-pressed="false" aria-label="Context full view" title="Toggle context full view"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path class="expand-icon" d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/><path class="restore-icon" d="M8 3v5H3m13-5v5h5M3 16h5v5m8 0v-5h5"/></svg></button>
             </div>
           </div>
+          <p data-workspace-layout-status role="status" hidden></p>
           <div id="workspace-context-container" aria-live="polite"></div>
         </aside>
         <div id="workspace-context-divider" role="separator" tabindex="0" aria-label="Resize context panel" aria-controls="workspace-context-region" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="560" aria-valuenow="320"></div>
