@@ -468,6 +468,8 @@ test("context controls stay fixed beside desktop filters and in the mobile toolb
     await page.screenshot({ path: testInfo.outputPath("desktop-tools-controls.png") });
     return;
   }
+  // Initial navigation translates the entire mobile view; measure settled chrome.
+  await expect(page.locator("#terminal-view")).not.toHaveClass(/swiping/);
   const toolbar = page.locator(".workspace-terminal-toolbar");
   const height = (await toolbar.boundingBox())!.height;
   await expect(toolbar.locator("select, #terminal-transcript-btn")).toHaveCount(0);
