@@ -6,6 +6,11 @@ const peerIdentity = `n-peer:${installationId}`;
 
 let server: TestServer;
 
+// Optional display metadata must never escape to real hosts in peer fixtures.
+test.beforeEach(async ({ page }) => {
+  await page.route("https://**/api/info", route => route.fulfill({ status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "optional metadata unavailable" }));
+});
+
 test.beforeAll(async () => {
   server = await startTestServer();
 });
@@ -53,6 +58,41 @@ function mainGroup(page: Page) {
 function sidebarGroup(page: Page) {
   return page.locator(`#sidebar-session-list .machine-group[data-machine="${peerIdentity}"]`);
 }
+
+test("machine groups restore the full host name without changing peer identity", async ({ page }, testInfo) => {
+  await installMachineFixture(page, true);
+  let infoRequests = 0;
+  await page.route("https://peer.example.ts.net/api/info", route => {
+    infoRequests++;
+    return route.fulfill({ contentType: "application/json", headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ name: "peer-MacBook-Pro", machineId: installationId, version: "not-routing-authority" }) });
+  });
+  await page.goto(server.baseUrl);
+  const group = testInfo.project.name === "desktop" ? sidebarGroup(page) : mainGroup(page);
+  await expect(group.locator(".machine-header-name")).toHaveText("peer-MacBook-Pro");
+  await expect(group.locator(".machine-header-name")).toHaveAttribute("title", "peer-MacBook-Pro");
+  await expect(group).toHaveAttribute("data-machine", peerIdentity);
+  await expect(group.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", peerIdentity);
+  await group.getByRole("button", { name: "Collapse peer-MacBook-Pro", exact: true }).click();
+  await expect(group.getByRole("button", { name: "Expand peer-MacBook-Pro", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await group.getByRole("button", { name: "Expand peer-MacBook-Pro", exact: true }).click();
+  if (testInfo.project.name === "desktop") {
+    await page.screenshot({ path: testInfo.outputPath("full-machine-name-sidebar.png") });
+    await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
+    await expect(mainGroup(page).locator(".machine-header-name")).toHaveText("peer-MacBook-Pro");
+  }
+  expect(infoRequests).toBe(1);
+  await page.screenshot({ path: testInfo.outputPath("full-machine-name.png") });
+});
+
+test("unmatched display metadata leaves the verified peer label and sessions usable", async ({ page }, testInfo) => {
+  await installMachineFixture(page, true);
+  await page.route("https://peer.example.ts.net/api/info", route => route.fulfill({ contentType: "application/json", headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ name: "wrong-installation-MacBook", machineId: "00000000-0000-4000-8000-000000000000" }) }));
+  await page.goto(server.baseUrl);
+  const group = testInfo.project.name === "desktop" ? sidebarGroup(page) : mainGroup(page);
+  await expect(group.locator(".machine-header-name")).toHaveText("verified peer");
+  await expect(group.getByRole("button", { name: "Open peer-session", exact: true })).toBeVisible();
+  await expect(group.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", peerIdentity);
+});
 
 test("compact machine headers make the name the drag handle and reserve the chevron for collapse", async ({ page }, testInfo) => {
   await installMachineFixture(page);

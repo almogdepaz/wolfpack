@@ -14,6 +14,12 @@ const poisonTailnetHostname = "poison.tailnet.ts.net";
 const poisonSiblingOrigin = `https://sibling.${poisonTailnetHostname}`;
 
 let server: TestServer;
+
+// Peer display-name metadata is optional; all unconfigured HTTPS fixtures fail
+// locally rather than querying a real host. Per-test routes can override this.
+test.beforeEach(async ({ page }) => {
+  await page.route("https://**/api/info", route => route.fulfill({ status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "optional metadata unavailable" }));
+});
 let poisonedHome: string;
 let temporaryActionCounter = 0;
 
