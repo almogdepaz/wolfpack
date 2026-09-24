@@ -26,7 +26,6 @@ import { createWorkspaceShell } from "./workspace-shell";
 import { initWorkspaceNavigation } from "./workspace-navigation";
 import { ExtensionHost } from "./extension-host";
 import { WidgetVisibility, WIDGET_VISIBILITY_PREFIX } from "./widget-visibility";
-import { MachineDisplayNames } from "./machine-display-names";
 import { createWidgetManager } from "./widget-manager";
 import { resolveWorkspaceExtensionScope } from "./extension-scope";
 
@@ -899,7 +898,6 @@ function serializeXtermTail(term, maxLines) {
 // ── Machine registry ──
 
 const tailnetPeers = new TailnetPeerRegistry();
-const machineDisplayNames = new MachineDisplayNames();
 const TRANSIENT_MACHINE_KEY_PREFIX = "candidate:";
 
 function machineKey(peer: TailnetPeerEntry): string {
@@ -920,7 +918,7 @@ function legacyMachineDisplayMetadata(): readonly { readonly url: unknown; reado
 function getMachines(): readonly { readonly url: string; readonly name: string; readonly version: string; readonly ready: boolean; readonly diagnostic: string | undefined }[] {
   return tailnetPeers.entries().map((peer) => ({
     url: machineKey(peer),
-    name: (peer.identity && machineDisplayNames.get(peer.identity)) || peer.displayName,
+    name: peer.displayName,
     version: peer.version ?? "",
     ready: peer.status === "ready" && peer.identity !== undefined,
     diagnostic: peer.diagnostic,
@@ -2011,7 +2009,7 @@ function machineFailureLabel(category: MachineFailureCategory): string {
 function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal: AbortSignal) {
   const isRemote = machineIdentity !== "";
   const currentMachineMeta = () => isRemote
-    ? { ...machineMeta, name: machineDisplayNames.get(machineIdentity) || machineMeta.name, version: machineMeta.version || "" }
+    ? { ...machineMeta, version: machineMeta.version || "" }
     : { ...machineMeta, name: state.selfName || "this machine", version: state.selfVersion };
   if (isRemote && !resolveReadyMachineOrigin(machineIdentity)) {
     return Promise.resolve({
@@ -2025,10 +2023,7 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
     ? AbortSignal.any([refreshSignal, AbortSignal.timeout(timeoutMs)])
     : refreshSignal;
   const options = { signal };
-  const displayName = isRemote
-    ? machineDisplayNames.resolve(machineIdentity, () => api("/info", { signal: AbortSignal.any([signal, AbortSignal.timeout(1_000)]) }, machineIdentity), () => isCurrentLoad() && !refreshSignal.aborted)
-    : Promise.resolve(undefined);
-  return Promise.all([api<SessionsResponse>("/sessions", options, machineIdentity || undefined), displayName]).then(([sessions]) => {
+  return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
     if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordSuccess(state.peerHealth, machineIdentity);
     const sessionRows = sessions.sessions || [];
     if (isRemote) for (const session of sessionRows) session.activity = undefined;

@@ -19,7 +19,7 @@ test.afterAll(async () => {
   await server?.close();
 });
 
-async function installMachineFixture(page: Page, withSessions = false): Promise<void> {
+async function installMachineFixture(page: Page, withSessions = false, displayName = "verified peer"): Promise<void> {
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({ candidates: [{
@@ -37,7 +37,7 @@ async function installMachineFixture(page: Page, withSessions = false): Promise<
       machine: {
         tailnetNodeId: "n-peer",
         installationId,
-        displayName: "verified peer",
+        displayName,
         origin: "https://peer.example.ts.net",
       },
       wolfpack: { version: "test" },
@@ -59,8 +59,12 @@ function sidebarGroup(page: Page) {
   return page.locator(`#sidebar-session-list .machine-group[data-machine="${peerIdentity}"]`);
 }
 
-test("machine groups restore the full host name without changing peer identity", async ({ page }, testInfo) => {
-  await installMachineFixture(page, true);
+for (const { localName, peerName } of [
+  { localName: "Mac", peerName: "Almog’s MacBook Pro" },
+  { localName: "oldsgt", peerName: "sgt" },
+]) test(`machine names match main with local ${localName} and peer ${peerName}`, async ({ page }, testInfo) => {
+  await installMachineFixture(page, true, peerName);
+  await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: localName, version: "test" }) }));
   let infoRequests = 0;
   await page.route("https://peer.example.ts.net/api/info", route => {
     infoRequests++;
@@ -68,19 +72,20 @@ test("machine groups restore the full host name without changing peer identity",
   });
   await page.goto(server.baseUrl);
   const group = testInfo.project.name === "desktop" ? sidebarGroup(page) : mainGroup(page);
-  await expect(group.locator(".machine-header-name")).toHaveText("peer-MacBook-Pro");
-  await expect(group.locator(".machine-header-name")).toHaveAttribute("title", "peer-MacBook-Pro");
+  await expect(group.locator(".machine-header-name")).toHaveText(peerName);
+  await expect(group.locator(".machine-header-name")).toHaveAttribute("title", peerName);
+  await expect(page.locator('.machine-group[data-machine=""] .machine-header-name').filter({ visible: true })).toHaveText(localName);
   await expect(group).toHaveAttribute("data-machine", peerIdentity);
   await expect(group.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", peerIdentity);
-  await group.getByRole("button", { name: "Collapse peer-MacBook-Pro", exact: true }).click();
-  await expect(group.getByRole("button", { name: "Expand peer-MacBook-Pro", exact: true })).toHaveAttribute("aria-expanded", "false");
-  await group.getByRole("button", { name: "Expand peer-MacBook-Pro", exact: true }).click();
+  await group.getByRole("button", { name: `Collapse ${peerName}`, exact: true }).click();
+  await expect(group.getByRole("button", { name: `Expand ${peerName}`, exact: true })).toHaveAttribute("aria-expanded", "false");
+  await group.getByRole("button", { name: `Expand ${peerName}`, exact: true }).click();
   if (testInfo.project.name === "desktop") {
     await page.screenshot({ path: testInfo.outputPath("full-machine-name-sidebar.png") });
     await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
-    await expect(mainGroup(page).locator(".machine-header-name")).toHaveText("peer-MacBook-Pro");
+    await expect(mainGroup(page).locator(".machine-header-name")).toHaveText(peerName);
   }
-  expect(infoRequests).toBe(1);
+  expect(infoRequests).toBe(0);
   await page.screenshot({ path: testInfo.outputPath("full-machine-name.png") });
 });
 
