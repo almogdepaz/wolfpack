@@ -59,10 +59,57 @@ function sidebarGroup(page: Page) {
   return page.locator(`#sidebar-session-list .machine-group[data-machine="${peerIdentity}"]`);
 }
 
+const localInstallationId = "77d7b892-711f-4005-b62e-509d1d09a165";
+
+for (const { hostname, localName, peerName } of [
+  { hostname: "oldsgt", localName: "Almog’s MacBook Pro", peerName: "sgt" },
+  { hostname: "Mac", localName: "sgt", peerName: "Almog’s MacBook Pro" },
+]) test(`local and remote use advertised names when opened on ${hostname}`, async ({ page }, testInfo) => {
+  await installMachineFixture(page, true, peerName);
+  await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ json: { name: hostname, version: "test", machineId: localInstallationId } }));
+  let machineRequests = 0;
+  await page.route(`${server.baseUrl}/api/machine`, route => {
+    machineRequests++;
+    return route.fulfill({ json: { machine: { installationId: localInstallationId, displayName: localName, origin: "https://not-a-routing-authority.example.ts.net" }, wolfpack: { version: "not-version-authority" } } });
+  });
+  await page.goto(server.baseUrl);
+  const local = page.locator('.machine-group[data-machine=""]').filter({ visible: true });
+  const peer = testInfo.project.name === "desktop" ? sidebarGroup(page) : mainGroup(page);
+  await expect(local.locator(".machine-header-name")).toHaveText(localName);
+  await expect(local.locator(".machine-header-name")).toHaveAttribute("title", localName);
+  await expect(peer.locator(".machine-header-name")).toHaveText(peerName);
+  await expect(local.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", "");
+  await expect(peer.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", peerIdentity);
+  await local.getByRole("button", { name: `Collapse ${localName}`, exact: true }).click();
+  await expect(local.getByRole("button", { name: `Expand ${localName}`, exact: true })).toHaveAttribute("aria-expanded", "false");
+  await local.getByRole("button", { name: `Expand ${localName}`, exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath("advertised-names.png") });
+  if (testInfo.project.name === "desktop") {
+    await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
+    await expect(page.locator('#session-list .machine-group[data-machine=""] .machine-header-name')).toHaveText(localName);
+  }
+  expect(machineRequests).toBe(1);
+});
+
+for (const scenario of ["unavailable", "replacement", "malformed"] as const) test(`local advertised name ${scenario} keeps hostname and sessions`, async ({ page }) => {
+  await installMachineFixture(page, true);
+  await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ json: { name: "hostname-fallback", version: "test", machineId: localInstallationId } }));
+  await page.route(`${server.baseUrl}/api/machine`, route => scenario === "unavailable"
+    ? route.fulfill({ status: 503, json: { error: "tailnet unavailable" } })
+    : route.fulfill({ json: { machine: { installationId: scenario === "replacement" ? installationId : localInstallationId, displayName: scenario === "malformed" ? 42 : "wrong installation" } } }));
+  const responded = page.waitForResponse(`${server.baseUrl}/api/machine`);
+  await page.goto(server.baseUrl);
+  await responded;
+  const local = page.locator('.machine-group[data-machine=""]').filter({ visible: true });
+  await expect(local.locator(".machine-header-name")).toHaveText("hostname-fallback");
+  await expect(local.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", "");
+  await expect(page.locator("#settings-version")).toHaveText("wolfpack vtest");
+});
+
 for (const { localName, peerName } of [
   { localName: "Mac", peerName: "Almog’s MacBook Pro" },
   { localName: "oldsgt", peerName: "sgt" },
-]) test(`machine names match main with local ${localName} and peer ${peerName}`, async ({ page }, testInfo) => {
+]) test(`legacy local metadata keeps ${localName} and advertised peer ${peerName}`, async ({ page }, testInfo) => {
   await installMachineFixture(page, true, peerName);
   await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: localName, version: "test" }) }));
   let infoRequests = 0;

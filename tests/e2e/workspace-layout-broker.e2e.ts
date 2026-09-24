@@ -65,6 +65,7 @@ test.beforeAll(async () => {
   server = await start({ envOverrides: {
     HOME: home.path, ZDOTDIR: home.path, SHELL: "/bin/sh", PATH: `${bin}:${process.env.PATH ?? ""}`,
     WOLFPACK_DEV_DIR: devDir,
+    WOLFPACK_TAILSCALE_STATUS_JSON: "{}", // Local-name fallback without consulting the operator's Tailnet.
     WOLFPACK_MACHINE_ID_PATH: join(home.path, "machine-id"),
   } });
   const readiness = await (await fetch(`${server.baseUrl}/api/providers`)).json();
@@ -82,6 +83,38 @@ test.afterAll(async () => {
   devDir = null;
   if (home) removeOwnedTestServerHome(home);
   home = null;
+});
+
+test("late advertised local name preserves the attached terminal and scrollback", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop retained native canvas");
+  const name = "local-name-retention";
+  await createShellSession(name);
+  const info = await (await fetch(`${server!.baseUrl}/api/info`)).json();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route(`${server!.baseUrl}/api/machine`, async route => {
+    await held;
+    await route.fulfill({ json: { machine: { installationId: info.machineId, displayName: "Advertised fixture machine" } } });
+  });
+  let sockets = 0;
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  try {
+    await page.goto(server!.baseUrl);
+    await page.locator(".card", { hasText: name }).first().click();
+    const terminal = page.locator("#desktop-terminal-container");
+    await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
+    await terminal.locator("canvas").evaluate(node => { (window as any).__nameCanvas = node; });
+    const attached = sockets;
+    await terminal.click(); await page.keyboard.type("printf 'NAME_%s\\n' RETENTION"); await page.keyboard.press("Enter");
+    const readTail = () => terminal.evaluate(node => (window as any).__wolfpackTest.serializeTerminalTail(node, 200));
+    await expect.poll(readTail).toContain("NAME_RETENTION");
+    release();
+    await expect(page.locator('#sidebar-session-list .machine-group[data-machine=""] .machine-header-name')).toHaveText("Advertised fixture machine");
+    expect(await terminal.locator("canvas").evaluate(node => node === (window as any).__nameCanvas)).toBe(true);
+    expect(sockets).toBe(attached);
+    expect(await readTail()).toContain("NAME_RETENTION");
+    await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
+  } finally { release(); }
 });
 
 test("shared widget panel moves right bottom and full screen while native grid instances survive", async ({ page }, testInfo) => {

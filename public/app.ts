@@ -146,7 +146,7 @@ import type {
   TailnetPeerEntry,
   TailnetPeerIdentityReplacement,
 } from "../src/tailnet-peer-registry";
-import { candidateEnumerationCandidates } from "../src/tailnet-machine-contract";
+import { candidateEnumerationCandidates, type MachineHandshake } from "../src/tailnet-machine-contract";
 import { serializeBufferTail } from "../src/terminal-buffer";
 import {
   encodeTerminalBinary,
@@ -1076,13 +1076,23 @@ const tailnetDiscoveryAutoRefresh = createTailnetDiscoveryAutoRefresh({
 
 void (async (): Promise<void> => {
   try {
-    const info = await api<{ readonly name?: string; readonly version?: string }>("/info");
+    const info = await api<{ readonly name?: string; readonly version?: string; readonly machineId?: string }>("/info");
     state.selfName = info.name || "this machine";
     state.selfVersion = info.version || "";
     updateProjectMachineLabels();
     renderUpdatedLocalMachineMetadata();
     const version = document.getElementById("settings-version");
     if (version && state.selfVersion) version.textContent = "wolfpack v" + state.selfVersion;
+    // Use the same advertised label as peers; hostname stays usable while this
+    // optional lookup is pending or unavailable. It supplies no routing facts.
+    if (!info.machineId) return;
+    const advertised = await api<MachineHandshake>("/machine", { signal: AbortSignal.timeout(5_000) }).catch(() => null);
+    const machine = advertised?.machine;
+    if (machine?.installationId === info.machineId && typeof machine.displayName === "string" && machine.displayName) {
+      state.selfName = machine.displayName;
+      updateProjectMachineLabels();
+      renderUpdatedLocalMachineMetadata();
+    }
   } catch {
     state.selfName = "this machine";
     updateProjectMachineLabels();

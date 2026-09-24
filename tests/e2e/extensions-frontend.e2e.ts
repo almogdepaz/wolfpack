@@ -30,6 +30,7 @@ function environment(port?: number): Record<string, string> {
   const value: Record<string, string> = {
     PATH: `${join(root, "bin")}:${process.env.PATH ?? ""}`, SHELL: "/bin/sh", ZDOTDIR: home!.path, HOME: home!.path, TMPDIR: root,
     WOLFPACK_TEST: "1", WOLFPACK_LOG_LEVEL: "error", WOLFPACK_DEV_DIR: join(root, "dev"),
+    WOLFPACK_TAILSCALE_STATUS_JSON: "{}", // Local-name fallback without consulting the operator's Tailnet.
     WOLFPACK_MACHINE_ID_PATH: join(home!.path, "machine-id"), WOLFPACK_SESSION_IDENTITY_PATH: join(home!.path, "session-identities.json"),
     WOLFPACK_SETTINGS_PATH: join(home!.path, "settings.json"), WOLFPACK_TASK_ROOT: join(home!.path, "tasks"), WOLFPACK_TASK_RELAY_ROOT: join(home!.path, "relay"),
     WOLFPACK_PI_SKILLS_ROOT: join(home!.path, ".pi", "agent", "skills"), WOLFPACK_JWT_SECRET: SECRET,
