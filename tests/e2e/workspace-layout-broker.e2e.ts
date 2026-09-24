@@ -3,6 +3,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { PROVIDER_DEFINITIONS } from "../../src/provider-readiness.ts";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { start, skipIfNoBroker, type BrokerTestServer } from "./broker-helpers.ts";
 import { openSessionFromUi } from "./helpers.ts";
@@ -58,6 +59,9 @@ test.beforeAll(async () => {
   // installed agents ahead of the fixture PATH. Own its profile as well.
   writeFileSync(join(home.path, ".profile"), `export PATH=${JSON.stringify(bin)}:"$PATH"\n`);
   for (const provider of PROVIDER_DEFINITIONS) writeFileSync(join(bin, provider.command), '#!/bin/sh\n[ "$1" = "--version" ] || exit 64\nprintf "placement-fixture-provider 1.0\\n"\n', { mode: 0o700 });
+  // Verify fresh executable fixtures serially before concurrent readiness probes.
+  // Cold script starts on macOS can consume nearly the probe's 2s budget.
+  for (const provider of PROVIDER_DEFINITIONS) expect(execFileSync(join(bin, provider.command), ["--version"], { encoding: "utf8", timeout: 2_000 }).trim()).toBe("placement-fixture-provider 1.0");
   server = await start({ envOverrides: {
     HOME: home.path, ZDOTDIR: home.path, SHELL: "/bin/sh", PATH: `${bin}:${process.env.PATH ?? ""}`,
     WOLFPACK_DEV_DIR: devDir,

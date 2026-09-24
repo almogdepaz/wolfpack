@@ -1,5 +1,5 @@
 import { selectTerminalLayoutFromUi } from "./helpers.ts";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { PROVIDER_DEFINITIONS } from "../../src/provider-readiness.ts";
@@ -156,6 +156,7 @@ test.beforeAll(async () => {
   for (const provider of PROVIDER_DEFINITIONS) {
     writeFileSync(join(root, "bin", provider.command), '#!/bin/sh\n[ "$1" = "--version" ] || exit 64\nprintf "widget-fixture-provider 1.0\\n"\n', { mode: 0o700 });
   }
+  for (const provider of PROVIDER_DEFINITIONS) expect(execFileSync(join(root, "bin", provider.command), ["--version"], { encoding: "utf8", timeout: 2_000 }).trim()).toBe("widget-fixture-provider 1.0");
   cli = join(root, "bin", "wolfpack");
   const build = spawnSync("bun", ["build", "--compile", join(ROOT, "src", "cli", "index.ts"), "--outfile", cli], { cwd: ROOT, env: environment(), stdio: ["ignore", "pipe", "pipe"] });
   expect(build.status, build.stderr.toString()).toBe(0);

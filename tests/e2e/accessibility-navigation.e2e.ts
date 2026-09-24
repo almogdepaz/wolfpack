@@ -138,6 +138,9 @@ test("Transcript is absent while context full-view recovery remains keyboard acc
   await page.getByRole("button", { name: "Open test-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCount(0);
+  // Exercise recovery after initial attachment. Startup's existing autofocus can
+  // otherwise land between focus() and Enter (also reproduced on deployed assets).
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
   if (testInfo.project.name !== "desktop") {
     const show = page.locator("#workspace-restore");
     await show.focus(); await show.press("Enter");
