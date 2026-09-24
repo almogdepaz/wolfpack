@@ -16,7 +16,6 @@ Choose the audience and task that matches what you need. These links route to th
 For service lifecycle and upgrades, route to [service and platform behavior](installation.md#service-and-platform-behavior) or [stale UI after upgrade](troubleshooting.md#browser-shows-stale-ui-after-upgrade).
 
 - [Understand machine visibility](multi-machine-control-room.md) — interpret peer readiness, diagnostics, and identity boundaries.
-- [Record a multi-machine trial](multi-machine-trial-feedback.md) — capture operator context, timing, failures, and follow-up.
 - [Interpret session identity](session-identity.md) — distinguish durable identity metadata from display selectors.
 
 ## automate Wolfpack
@@ -24,13 +23,10 @@ For service lifecycle and upgrades, route to [service and platform behavior](ins
 - [Attach a local terminal](cli-attach.md) — find CLI attach usage, requirements, and viewer ownership.
 - [Control sessions from scripts](session-control.md) — route CLI and API creation, inspection, send, and wait tasks.
 - [Install agent control skills](agent-skills.md) — choose the supported skill installation route for each harness.
-- [Route durable Pi tasks](task-gateway.md) — review task trust, delivery, retention, and federation boundaries.
 - [Read control API schema guidance](control-api-schema.md) — locate the public schema and compatibility notes.
 
 ## develop Wolfpack
 
 - [Prepare a contribution](../CONTRIBUTING.md) — use the canonical development, testing, build, and pull-request guide.
 - [Change the broker protocol safely](broker-protocol.md) — review transport, frames, methods, events, and limits.
-- [Review live-update handoff](live-update-handoff.md) — understand the current restart boundary and design gate.
 - [Test mobile screen readers](accessibility-testing.md) — run the canonical VoiceOver and TalkBack checks.
-- [Run physical-device release checks](tailnet-release-matrix.md) — collect the required Tailnet release evidence.

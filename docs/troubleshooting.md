@@ -125,7 +125,6 @@ The deployment script builds and atomically installs signed artifacts. It then v
 ## Sessions disappeared after broker restart
 
 The broker owns PTYs. Restarting the server preserves sessions; restarting/stopping the broker is destructive.
-See [`live-update-handoff.md`](live-update-handoff.md) for the current restart blast radius and broker handoff design gate.
 
 Use server-only lifecycle commands unless you intentionally want to kill all broker-owned sessions:
 

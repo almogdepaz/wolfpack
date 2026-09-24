@@ -52,7 +52,7 @@ WOLFPACK_BUILD_MODE=local bun run scripts/build.ts
 
 Local mode builds all four `wolfpack` binaries plus a fresh host broker under `dist/local/<target>`; it emits no platform npm packages. `package-all` requires four pre-staged, proven release brokers under `dist/broker/<target>` and emits the platform packages.
 
-**Tailnet release gate:** Before a Tailnet release, complete the [physical-device release matrix](docs/tailnet-release-matrix.md); physical-device evidence is required, and automated checks do not substitute for it.
+**Tailnet release gate:** Before a Tailnet release, complete physical-device release checks; physical-device evidence is required, and automated checks do not substitute for it.
 
 Before local release-style builds that compile the broker, run:
 
