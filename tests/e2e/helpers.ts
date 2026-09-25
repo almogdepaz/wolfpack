@@ -261,6 +261,9 @@ export async function openSettingsFromUi(page: Page): Promise<void> {
 
 /** Layout uses ordinary Settings navigation, including its viewer suspension/return. */
 export async function selectTerminalLayoutFromUi(page: Page, value: string): Promise<void> {
+  // Complete each mobile slide before the next navigation; its cleanup still
+  // owns the previous target. This helper is not a rapid-navigation stress test.
+  await expect(page.locator('.view.swiping')).toHaveCount(0);
   let mobileReturn: { session: string; machine: string } | null = null;
   if (await page.locator("#session-chip").isVisible()) {
     const current = page.locator('#drawer-list .drawer-item[aria-current="page"]');
@@ -268,12 +271,16 @@ export async function selectTerminalLayoutFromUi(page: Page, value: string): Pro
     const value = (await current.getAttribute('data-val'))!;
     mobileReturn = { session, machine: value === session ? "" : value.slice(0, -(session.length + 1)) };
     await page.locator("#back-btn").click();
+    await expect(page.locator('.view.swiping')).toHaveCount(0);
   }
   await openSettingsFromUi(page);
+  await expect(page.locator('.view.swiping')).toHaveCount(0);
   await page.getByRole("link", { name: "Terminal", exact: true }).click();
   await page.locator("#workspace-terminal-layout").selectOption(value);
   await page.locator("#settings-back-btn, #back-btn").filter({ visible: true }).first().click();
+  await expect(page.locator('.view.swiping')).toHaveCount(0);
   if (mobileReturn) await openSessionFromUi(page, mobileReturn.session, mobileReturn.machine);
+  await expect(page.locator('.view.swiping')).toHaveCount(0);
 }
 
 /** Open the new-session/project picker through a real visible UI control. */
