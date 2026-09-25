@@ -85,22 +85,19 @@ test.afterAll(async () => {
   home = null;
 });
 
-test("late advertised local name preserves the attached terminal and scrollback", async ({ page }, testInfo) => {
+test("late server-owned local name preserves the attached terminal and scrollback", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop retained native canvas");
   const name = "local-name-retention";
   await createShellSession(name);
   const info = await (await fetch(`${server!.baseUrl}/api/info`)).json();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  // Delay initial metadata, not a /machine request past its intentional 5s bound.
-  // Once the terminal is ready, the advertised-name request can finish normally.
-  await page.route(`${server!.baseUrl}/api/info`, async route => {
+  // Name rendering must not replace an already attached terminal.
+  let handling: Promise<void> | undefined;
+  await page.route(`${server!.baseUrl}/api/info`, route => handling = (async () => {
     await held;
-    await route.fulfill({ json: info });
-  });
-  await page.route(`${server!.baseUrl}/api/machine`, route => route.fulfill({
-    json: { machine: { installationId: info.machineId, displayName: "Advertised fixture machine" } },
-  }));
+    await route.fulfill({ json: { ...info, name: "Server fixture machine" } });
+  })());
   let sockets = 0;
   page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
   try {
@@ -114,12 +111,12 @@ test("late advertised local name preserves the attached terminal and scrollback"
     const readTail = () => terminal.evaluate(node => (window as any).__wolfpackTest.serializeTerminalTail(node, 200));
     await expect.poll(readTail).toContain("NAME_RETENTION");
     release();
-    await expect(page.locator('#sidebar-session-list .machine-group[data-machine=""] .machine-header-name')).toHaveText("Advertised fixture machine");
+    await expect(page.locator('#sidebar-session-list .machine-group[data-machine=""] .machine-header-name')).toHaveText("Server fixture machine");
     expect(await terminal.locator("canvas").evaluate(node => node === (window as any).__nameCanvas)).toBe(true);
     expect(sockets).toBe(attached);
     expect(await readTail()).toContain("NAME_RETENTION");
     await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
-  } finally { release(); }
+  } finally { release(); await handling; }
 });
 
 test("shared widget panel moves right bottom and full screen while native grid instances survive", async ({ page }, testInfo) => {

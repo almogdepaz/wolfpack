@@ -16,6 +16,7 @@ import {
 } from "../tailnet-machine-contract.js";
 import type { MachineHandshake, TailnetMachineCandidate } from "../tailnet-machine-contract.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
+import { getMachineDisplayName } from "../machine-display-name.js";
 import { isValidProjectName, MAX_SESSION_NAME_LENGTH, projectLabelToSessionName } from "../validation.js";
 
 const log = createLogger("http");
@@ -502,6 +503,7 @@ export async function getLocalMachineHandshake(
     return buildMachineHandshakeFromTailnetStatus({
       status,
       installationId: getInstallationId(),
+      displayName: getMachineDisplayName(),
       version,
     });
   } catch (error: unknown) {

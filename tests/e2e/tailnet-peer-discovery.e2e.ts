@@ -225,17 +225,19 @@ test("isolates inherited config from the shared Tailnet test server", async ({ p
   expect(await candidatesResponse.json()).toEqual({ candidates: [] });
   expect(machineResponse.ok).toBe(true);
   const machine = await machineResponse.json();
+  const info = await localResponse.json();
+  expect(info.name).toEqual(expect.any(String));
   expect(machine).toMatchObject({
     machine: {
       tailnetNodeId: "n-e2e-test-server",
-      displayName: "e2e-test-server",
+      displayName: info.name,
       origin: "https://e2e-test-server.example.ts.net",
     },
   });
   expect((machine as { readonly machine: Record<string, unknown> }).machine).toEqual({
     tailnetNodeId: "n-e2e-test-server",
     installationId: localInstallationId,
-    displayName: "e2e-test-server",
+    displayName: info.name,
     origin: "https://e2e-test-server.example.ts.net",
   });
 

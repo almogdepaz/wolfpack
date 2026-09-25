@@ -70,10 +70,6 @@ interface LocalTailnetIdentity {
   readonly tailscaleNodeId: string;
 }
 
-interface LocalTailnetMachineFacts extends LocalTailnetIdentity {
-  readonly displayName: string;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -83,6 +79,10 @@ function isBoundedVisibleString(value: unknown, maximumLength: number): value is
     && value.length > 0
     && value.length <= maximumLength
     && !CONTROL_CHARACTER_PATTERN.test(value);
+}
+
+export function isMachineDisplayName(value: unknown): value is string {
+  return isBoundedVisibleString(value, MAX_DISPLAY_NAME_LENGTH);
 }
 
 function isTailnetNodeId(value: unknown): value is string {
@@ -137,7 +137,7 @@ export function buildMachineHandshake(input: MachineHandshakeInput): MachineHand
     || !isTailnetNodeId(input.tailscaleNodeId)
     || typeof input.installationId !== "string"
     || !UUID_PATTERN.test(input.installationId)
-    || !isBoundedVisibleString(input.displayName, MAX_DISPLAY_NAME_LENGTH)
+    || !isMachineDisplayName(input.displayName)
     || !isBoundedVisibleString(input.version, MAX_VERSION_LENGTH)
   ) {
     return null;
@@ -170,22 +170,17 @@ function localTailnetIdentity(status: unknown): LocalTailnetIdentity | null {
   };
 }
 
-function localMachineFacts(status: unknown): LocalTailnetMachineFacts | null {
-  const identity = localTailnetIdentity(status);
-  if (!identity || !isRecord(status) || !isRecord(status.Self) || !isBoundedVisibleString(status.Self.HostName, MAX_DISPLAY_NAME_LENGTH)) {
-    return null;
-  }
-  return { ...identity, displayName: status.Self.HostName };
-}
-
 export function buildMachineHandshakeFromTailnetStatus(input: {
   readonly status: unknown;
   readonly installationId: string | undefined;
+  readonly displayName: string;
   readonly version: string | undefined;
 }): MachineHandshake | null {
-  const facts = localMachineFacts(input.status);
-  if (!facts) return null;
-  return buildMachineHandshake({ ...facts, installationId: input.installationId, version: input.version });
+  const identity = localTailnetIdentity(input.status);
+  // Preserve the existing self-status readiness checks; HostName is validated
+  // here but no longer selects the display label.
+  if (!identity || !isRecord(input.status) || !isRecord(input.status.Self) || !isMachineDisplayName(input.status.Self.HostName)) return null;
+  return buildMachineHandshake({ ...identity, installationId: input.installationId, displayName: input.displayName, version: input.version });
 }
 
 function compareTailnetCandidates(left: TailnetMachineCandidate, right: TailnetMachineCandidate): number {

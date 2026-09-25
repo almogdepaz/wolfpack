@@ -79,10 +79,9 @@ test("machine names stay quiet and the labelled session action keeps its existin
 
 test("long machine names stay bounded without squeezing the session action", async ({ page }, testInfo) => {
   const machineName = "studio-macbook-pro-with-a-very-long-machine-name";
-  await page.route(`${server.baseUrl}/api/machine`, async route => {
+  await page.route(`${server.baseUrl}/api/info`, async route => {
     const response = await route.fetch();
-    const handshake = await response.json();
-    await route.fulfill({ response, json: { ...handshake, machine: { ...handshake.machine, displayName: machineName } } });
+    await route.fulfill({ response, json: { ...await response.json(), name: machineName } });
   });
   await page.reload();
   if (testInfo.project.name === "desktop") {

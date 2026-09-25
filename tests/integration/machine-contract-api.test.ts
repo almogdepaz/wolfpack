@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { getMachineDisplayName } from "../../src/machine-display-name.ts";
 
 const PRIOR_ENV = {
   WOLFPACK_TEST: process.env.WOLFPACK_TEST,
@@ -80,8 +81,8 @@ beforeAll(async () => {
   });
 });
 
-afterAll(() => {
-  (server as Server).close();
+afterAll(async () => {
+  await new Promise<void>((resolve, reject) => (server as Server).close(error => error ? reject(error) : resolve()));
   __pollRateLimiter._map.clear();
   __globalRateLimiter._map.clear();
   rmSync(testRoot, { recursive: true, force: true });
@@ -108,7 +109,7 @@ describe("direct machine contract routes", () => {
       protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
       machine: {
         tailnetNodeId: "n-local",
-        displayName: "local",
+        displayName: getMachineDisplayName(),
         origin: "https://local.example.ts.net",
       },
       wolfpack: { version: expect.any(String) },
@@ -118,6 +119,39 @@ describe("direct machine contract routes", () => {
     expect(handshake).not.toHaveProperty("tailscaleIPs");
     expect(handshake).not.toHaveProperty("userId");
     expect(handshake).not.toHaveProperty("sessions");
+  });
+
+  test("info and handshake share the display name independently of the Tailnet label", async () => {
+    const info = await (await fetch(`${base}/api/info`)).json();
+    const status = JSON.parse(defaultTailscaleStatus);
+    status.Self.HostName = "different-tailnet-label";
+    process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify(status);
+    try {
+      const response = await fetch(`${base}/api/machine`);
+      expect(response.status).toBe(200);
+      const handshake = await response.json();
+      expect(handshake.machine.displayName).toBe(info.name);
+      expect(handshake.machine.installationId).toBe(info.machineId);
+      expect(handshake.machine.tailnetNodeId).toBe("n-local");
+      expect(handshake.machine.origin).toBe("https://local.example.ts.net");
+      expect(handshake.wolfpack.version).toBe(info.version);
+      // Changing display policy must not relax existing self-status readiness.
+      delete status.Self.HostName;
+      process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify(status);
+      expect((await fetch(`${base}/api/machine`)).status).toBe(503);
+      expect(await (await fetch(`${base}/api/info`)).json()).toEqual(info);
+    } finally { process.env.WOLFPACK_TAILSCALE_STATUS_JSON = defaultTailscaleStatus; }
+  });
+
+  test("info remains available with the same name when Tailnet identity is unavailable", async () => {
+    const info = await (await fetch(`${base}/api/info`)).json();
+    process.env.WOLFPACK_TAILSCALE_STATUS_JSON = "{}";
+    try {
+      const response = await fetch(`${base}/api/info`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(info);
+      expect((await fetch(`${base}/api/machine`)).status).toBe(503);
+    } finally { process.env.WOLFPACK_TAILSCALE_STATUS_JSON = defaultTailscaleStatus; }
   });
 
   test("enumerates only canonical local Tailnet candidate facts without probing peers", async () => {

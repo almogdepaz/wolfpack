@@ -64,9 +64,13 @@ const localInstallationId = "77d7b892-711f-4005-b62e-509d1d09a165";
 for (const { hostname, localName, peerName } of [
   { hostname: "oldsgt", localName: "Almog’s MacBook Pro", peerName: "sgt" },
   { hostname: "Mac", localName: "sgt", peerName: "Almog’s MacBook Pro" },
-]) test(`local and remote use advertised names when opened on ${hostname}`, async ({ page }, testInfo) => {
+]) test(`local and remote render server-owned names when opened on ${hostname}`, async ({ page }, testInfo) => {
   await installMachineFixture(page, true, peerName);
-  await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ json: { name: hostname, version: "test", machineId: localInstallationId } }));
+  let infoRequests = 0;
+  await page.route(`${server.baseUrl}/api/info`, route => {
+    infoRequests++;
+    return route.fulfill({ json: { name: localName, version: "test", machineId: localInstallationId } });
+  });
   let machineRequests = 0;
   await page.route(`${server.baseUrl}/api/machine`, route => {
     machineRequests++;
@@ -88,45 +92,24 @@ for (const { hostname, localName, peerName } of [
     await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
     await expect(page.locator('#session-list .machine-group[data-machine=""] .machine-header-name')).toHaveText(localName);
   }
-  expect(machineRequests).toBe(1);
+  expect(infoRequests).toBe(1);
+  expect(machineRequests).toBe(0);
 });
 
-for (const scenario of ["unavailable", "replacement", "malformed"] as const) test(`local advertised name ${scenario} keeps hostname and sessions`, async ({ page }) => {
+test("local server name stays usable without a Tailnet handshake lookup", async ({ page }) => {
   await installMachineFixture(page, true);
   await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ json: { name: "hostname-fallback", version: "test", machineId: localInstallationId } }));
-  await page.route(`${server.baseUrl}/api/machine`, route => scenario === "unavailable"
-    ? route.fulfill({ status: 503, json: { error: "tailnet unavailable" } })
-    : route.fulfill({ json: { machine: { installationId: scenario === "replacement" ? installationId : localInstallationId, displayName: scenario === "malformed" ? 42 : "wrong installation" } } }));
-  const responded = page.waitForResponse(`${server.baseUrl}/api/machine`);
+  let machineRequests = 0;
+  await page.route(`${server.baseUrl}/api/machine`, route => {
+    machineRequests++;
+    return route.fulfill({ status: 503, json: { error: "tailnet unavailable" } });
+  });
   await page.goto(server.baseUrl);
-  await responded;
   const local = page.locator('.machine-group[data-machine=""]').filter({ visible: true });
   await expect(local.locator(".machine-header-name")).toHaveText("hostname-fallback");
   await expect(local.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", "");
   await expect(page.locator("#settings-version")).toHaveText("wolfpack vtest");
-});
-
-test("pending advertised name stays optional and its deadline keeps the hostname", async ({ page }) => {
-  await installMachineFixture(page, true);
-  await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ json: { name: "hostname-fallback", version: "test", machineId: localInstallationId } }));
-  const url = `${server.baseUrl}/api/machine`;
-  let release!: () => void;
-  const held = new Promise<void>(resolve => { release = resolve; });
-  let handling: Promise<void> | undefined;
-  await page.route(url, route => handling = (async () => {
-    await held;
-    await route.fulfill({ status: 503, json: { error: "late fixture response" } });
-  })());
-  const aborted = page.waitForEvent("requestfailed", { predicate: request => request.url() === url });
-  try {
-    await page.goto(server.baseUrl);
-    const local = page.locator('.machine-group[data-machine=""]').filter({ visible: true });
-    await expect(local.locator(".machine-header-name")).toHaveText("hostname-fallback");
-    await expect(local.getByRole("button", { name: "Open peer-session", exact: true })).toBeVisible();
-    expect((await aborted).failure()?.errorText).toBe("net::ERR_ABORTED");
-    await expect(local.locator(".machine-header-name")).toHaveText("hostname-fallback");
-    await expect(page.locator("#settings-version")).toHaveText("wolfpack vtest");
-  } finally { release(); await handling; }
+  expect(machineRequests).toBe(0);
 });
 
 for (const { localName, peerName } of [
