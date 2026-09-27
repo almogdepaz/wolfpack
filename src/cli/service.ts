@@ -8,14 +8,16 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { xmlEsc, systemdEsc } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
@@ -83,9 +85,7 @@ function programArgs(): string[] {
   const stableBin = join(WOLFPACK_DIR, "bin", "wolfpack");
   if (exe !== stableBin && existsSync(exe)) {
     try {
-      mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
-      copyFileSync(exe, stableBin);
-      chmodSync(stableBin, 0o755);
+      replaceManagedCandidate(exe, stableBin);
       return [stableBin];
     } catch (e: unknown) {
       log.warn("programArgs: failed to copy binary to stable location", { error: errMsg(e) });
@@ -134,9 +134,17 @@ function candidateDiffers(candidate: string, managed: string, name: string): boo
 }
 
 function replaceManagedCandidate(candidate: string, managed: string): void {
-  mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
-  copyFileSync(candidate, managed);
-  chmodSync(managed, 0o755);
+  const directory = dirname(managed);
+  mkdirSync(directory, { recursive: true });
+  const stagingDirectory = mkdtempSync(join(directory, `.${basename(managed)}-`));
+  const stagedCandidate = join(stagingDirectory, basename(managed));
+  try {
+    copyFileSync(candidate, stagedCandidate);
+    chmodSync(stagedCandidate, 0o755);
+    renameSync(stagedCandidate, managed);
+  } finally {
+    rmSync(stagingDirectory, { recursive: true, force: true });
+  }
 }
 
 function confirmBrokerReplacement(): void {
@@ -260,9 +268,7 @@ export function updateStableBinary(): boolean {
         return false;
       }
     }
-    mkdirSync(join(WOLFPACK_DIR, "bin"), { recursive: true });
-    copyFileSync(exe, stableBin);
-    chmodSync(stableBin, 0o755);
+    replaceManagedCandidate(exe, stableBin);
     return true;
   } catch (e: unknown) {
     log.warn("failed to update stable binary", { error: errMsg(e) });
