@@ -34,7 +34,7 @@ async function component({ launch = () => chromium.launch({ headless: true, ...(
     if (path === "/ui.js") return new Response(Bun.file(join(root, "examples", "extensions", "agent-context", "dist", "ui.js")), { headers: { "content-type": "text/javascript" } });
     if (path === "/styles.css") return new Response(Bun.file(join(root, "public", "styles.css")), { headers: { "content-type": "text/css" } });
     if (path === "/wolfpack-icon.svg") return new Response(Bun.file(join(root, "public", "wolfpack-icon.svg")), { headers: { "content-type": "image/svg+xml" } });
-    return new Response(hostStyles ? '<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/styles.css"><div id="workspace-context-region" style="width:100%;flex:1;max-height:none"><main id="workspace-context-container"></main></div>' : "<main></main>", { headers: { "content-type": "text/html" } });
+    return new Response(hostStyles ? '<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/styles.css"><div id="workspace-context-region"><div id="workspace-context-container"><section class="widget-panel" style="width:100%;flex:1;max-height:none"><div class="widget-content"><main></main></div></section></div></div>' : "<main></main>", { headers: { "content-type": "text/html" } });
   } });
   let browser: Browser | undefined;
   try {
@@ -215,7 +215,7 @@ test("Agent Context visual fixture uses host styles at narrow, sidebar and full-
     for (const width of [220, 320, 960]) {
       await fixture.page.setViewportSize({ width, height: 1000 });
       expect(await fixture.page.locator("h2").textContent()).toBe(document.goal);
-      expect(await fixture.page.locator("#workspace-context-container").evaluate(el => getComputedStyle(el).padding)).toBe("16px");
+      expect(await fixture.page.locator(".widget-content").evaluate(el => getComputedStyle(el).padding)).toBe("16px");
       expect(await fixture.page.locator(".wac-goal").evaluate(el => getComputedStyle(el).borderRadius)).toBe("9px");
       expect(await fixture.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       if (process.env.WOLFPACK_WIDGET_ARTIFACTS) {
