@@ -22,7 +22,8 @@ import {
 } from "./app-grid";
 import type { DelegationGridMember } from "./app-grid";
 import { TerminalLayoutRegistry } from "./terminal-layout-registry";
-import { createWorkspaceShell } from "./workspace-shell";
+import { createWorkspaceShell, loadWorkspaceShellPreferences } from "./workspace-shell";
+import { WidgetLayout } from "./widget-layout";
 import { initWorkspaceNavigation } from "./workspace-navigation";
 import { ExtensionHost } from "./extension-host";
 import { WidgetVisibility, WIDGET_VISIBILITY_PREFIX } from "./widget-visibility";
@@ -5438,10 +5439,12 @@ initWorkspaceTerminalLayouts(workspaceTerminalLayouts);
 const workspaceLayoutPicker = document.getElementById("workspace-terminal-layout") as HTMLSelectElement | null;
 if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
 const widgetVisibility = new WidgetVisibility(localStorage);
+const widgetLayout = new WidgetLayout(localStorage, loadWorkspaceShellPreferences(localStorage).panelPlacement);
 let extensionHost: ExtensionHost | null = null;
 const workspaceShell = createWorkspaceShell({
   onTerminalGeometryChange: () => scheduleGridStabilizedFit(),
-  onContextVisibilityChange: visible => { if (extensionHost?.setShellVisible(visible)) extensionHost.select(); },
+  onWidgetPresentationChange: presentation => { if (extensionHost?.setPresentation(presentation)) extensionHost.select(); },
+  onReset: () => extensionHost?.resetWidgetLayout(),
 });
 window.addEventListener("resize", () => scheduleGridStabilizedFit());
 
@@ -5465,6 +5468,9 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
   scope: selectedExtensionScope,
   safeMode: () => wpSettings.extensionSafeMode,
   widgetVisible: item => widgetVisibility.isVisible(item),
+  widgetLayout,
+  onWidgetAreasChange: areas => workspaceShell?.setPanelAreas(areas),
+  onWidgetFocus: area => workspaceShell?.focusPanel(area),
   registerLayout: contribution => {
     const unregister = workspaceTerminalLayouts.register(contribution);
     const option = document.createElement("option");
@@ -5491,7 +5497,7 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
     selectWorkspaceTerminalLayout(workspaceTerminalLayouts.selectedId);
   },
 }) : null;
-extensionHost?.setShellVisible(workspaceShell?.contextVisible ?? true);
+if (workspaceShell) extensionHost?.setPresentation(workspaceShell.widgetPresentation);
 const widgetManager = createWidgetManager({ root: document.getElementById("settings-extensions")!, visibility: widgetVisibility, safeMode: () => wpSettings.extensionSafeMode });
 const unsubscribeWidgetVisibility = widgetVisibility.subscribe(() => extensionHost?.syncWidgetVisibility());
 const onWidgetStorage = (event: StorageEvent) => {

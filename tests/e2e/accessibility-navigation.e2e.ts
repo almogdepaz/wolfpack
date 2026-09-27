@@ -152,7 +152,7 @@ test("Transcript is absent while context full-view recovery remains keyboard acc
     await expect(page.locator("#workspace-terminal-region")).toBeVisible();
     return;
   }
-  const full = page.locator("#workspace-context-full");
+  const full = page.locator("[data-widget-full]:visible");
   await expect(full).toHaveAccessibleName("Context full view");
   await full.focus(); await full.press("Enter");
   await expect(full).toHaveAttribute("aria-pressed", "true");

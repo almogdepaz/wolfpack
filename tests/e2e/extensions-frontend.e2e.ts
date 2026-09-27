@@ -194,6 +194,78 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
+test("independent widget areas retain live terminals and drafts while mobile leaves desktop tabs untouched", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop simultaneous areas with responsive mobile recovery");
+  await authorize(page);
+  let sockets = 0;
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await page.goto(server!.baseUrl);
+  await openSession(page, SESSION_A);
+  const terminal = page.locator("#desktop-terminal-container");
+  await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await note.fill("independent retained draft");
+  await note.evaluate(node => { (window as any).__independentNote = { node, parent: node.parentElement, view: node.closest("[data-context-view]") }; });
+  const canvas = terminal.locator("canvas");
+  await canvas.evaluate(node => { (window as any).__independentCanvas = node; });
+  const attached = sockets;
+  await page.getByRole("combobox", { name: "Widget panel placement" }).selectOption("bottom");
+  const right = page.locator('.widget-panel[data-widget-area="right"]:visible');
+  const bottom = page.locator('.widget-panel[data-widget-area="bottom"]:visible');
+  await right.getByRole("tab", { name: "Alpha", exact: true }).click();
+  await expect(bottom.locator("textarea")).toHaveValue("independent retained draft");
+  await expect(right.locator("[data-context-view='alpha/shared']")).toHaveText("Alpha mounted");
+  const terminalBox = (await page.locator("#workspace-terminal-region").boundingBox())!;
+  const rightBox = (await right.boundingBox())!; const bottomBox = (await bottom.boundingBox())!;
+  expect(rightBox.x).toBeGreaterThanOrEqual(terminalBox.x + terminalBox.width);
+  expect(bottomBox.y).toBeGreaterThanOrEqual(terminalBox.y + terminalBox.height);
+  expect(Math.abs(bottomBox.width - terminalBox.width)).toBeLessThanOrEqual(2);
+  for (const [name, key] of [["Resize right widgets", "ArrowLeft"], ["Resize bottom widgets", "ArrowUp"]]) {
+    const divider = page.getByRole("separator", { name: name!, exact: true });
+    const before = Number(await divider.getAttribute("aria-valuenow"));
+    await divider.focus(); await divider.press(key!);
+    await expect(divider).toHaveAttribute("aria-valuenow", String(before + 10));
+  }
+  await bottom.getByRole("button", { name: "Context full view", exact: true }).click();
+  await expect(right).toBeHidden(); await expect(terminal).toBeHidden();
+  await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await expect(right).toBeVisible(); await expect(bottom).toBeVisible();
+  await right.getByRole("combobox", { name: "Widget panel placement" }).selectOption("bottom");
+  await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveAttribute("aria-selected", "true");
+  await bottom.getByRole("tab", { name: "Notes", exact: true }).click();
+  await expect(note).toHaveValue("independent retained draft");
+  await bottom.getByRole("tab", { name: "Alpha", exact: true }).click();
+  await bottom.getByRole("combobox", { name: "Widget panel placement" }).selectOption("right");
+  await expect(right.locator("[data-context-view='alpha/shared']")).toBeVisible();
+  await expect(note).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("independent-widget-areas.png") });
+  const preferences = await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#workspace-restore").click();
+  await page.getByRole("tab", { name: "Beta", exact: true }).click();
+  await expect(page.locator("[data-context-view='beta/shared']")).toBeVisible();
+  await expect(note).toBeHidden();
+  await page.locator("#workspace-context-back").click();
+  await expect(terminal).toBeVisible();
+  expect(await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")])).toEqual(preferences);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(right.locator("[data-context-view='alpha/shared']")).toBeVisible();
+  await expect(note).toHaveValue("independent retained draft");
+  expect(await note.evaluate(node => { const old = (window as any).__independentNote; return node === old.node && node.parentElement === old.parent && node.closest("[data-context-view]") === old.view; })).toBe(true);
+  expect(await canvas.evaluate(node => node === (window as any).__independentCanvas)).toBe(true);
+  expect(sockets).toBe(attached);
+  await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
+  await right.getByRole("tab", { name: "Beta", exact: true }).focus();
+  await page.keyboard.press("Home");
+  await expect(right.getByRole("tab").first()).toBeFocused();
+  await expect(right.getByRole("tab").first()).toHaveAttribute("aria-selected", "true");
+  await right.getByRole("tab", { name: "Alpha", exact: true }).click();
+  await page.reload(); await openSession(page, SESSION_A);
+  await expect(right.locator("[data-context-view='alpha/shared']")).toBeVisible();
+  await expect(bottom.locator("textarea")).toHaveValue("independent retained draft");
+});
+
 test("installed widget manager works without a terminal and persists local visibility without changing packages", async ({ page }, testInfo) => {
   await authorize(page);
   const before = runCli(["extensions", "list", "--json"]);
@@ -283,7 +355,7 @@ test("hiding widgets from another settings tab pauses documents without replacin
   const canvas = page.locator("#desktop-terminal-container canvas");
   const oldView = await view.elementHandle(); const oldCanvas = await canvas.elementHandle();
   const attached = sockets;
-  const placement = page.getByRole("combobox", { name: "Widget panel placement" });
+  const placement = page.getByRole("region", { name: "Agent Context widget", exact: true }).getByRole("combobox", { name: "Widget panel placement" });
   for (const position of ["bottom", "full-screen", "right"]) {
     await placement.selectOption(position);
     await page.screenshot({ path: testInfo.outputPath(`installed-widget-${position}.png`), animations: "disabled" });
@@ -372,7 +444,7 @@ test("authenticated installed packages compose qualified local views and refresh
     const attached = sockets.length;
     await expect.poll(() => resizeFrames.length).toBeGreaterThan(resizeCount);
     expect(resizeFrames.slice(resizeCount).every(frame => (frame.cols ?? 0) > 0 && (frame.rows ?? 0) > 0)).toBe(true);
-    await page.locator("#workspace-context-full").click();
+    await page.locator("[data-widget-full]:visible").click();
     await expect(page.locator("#workspace-terminal-region")).toBeHidden();
     await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
     expect(await selected.locator("canvas").evaluate(canvas => canvas === (window as unknown as { __extensionRetainedCanvas?: Element }).__extensionRetainedCanvas)).toBe(true);

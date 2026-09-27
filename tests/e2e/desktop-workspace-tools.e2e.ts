@@ -43,7 +43,7 @@ test('widget controls sit beside All/Idle without a Workspace tools section or t
  await filter.getByRole('button',{name:'Idle sessions'}).click();
  await hide.focus();await page.waitForTimeout(350);await expect(hide).toBeFocused();
  await filter.getByRole('button',{name:'All sessions'}).click();
- await page.locator('#workspace-context-full').click();await hide.click();
+ await page.locator('[data-widget-full]:visible').click();await hide.click();
  await expect(page.locator('#workspace-context-region')).toBeHidden();await show.click();
  expect(await canvas.evaluate(node=>node===(window as any).__toolsCanvas)).toBe(true);expect(sockets).toHaveLength(attached);
  await page.getByRole('button',{name:'Expand sessions',exact:true}).click();

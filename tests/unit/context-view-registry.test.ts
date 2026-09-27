@@ -112,6 +112,46 @@ describe("ContextViewRegistry", () => {
     expect(registry.diagnostic).toBe("");
   });
 
+  test("keeps two independently visible views mounted and hides only the replaced area's tab", () => {
+    container = new FakeElement();
+    const events: string[] = [];
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement });
+    for (const id of ["right", "bottom", "other"]) registry.register(`widgets/${id}`, view(id, events));
+    registry.setScope(scope);
+    registry.select("widgets/right");
+    const right = container.children[0];
+    registry.select("widgets/bottom", ["widgets/right"]);
+    expect(container.children.map(child => child.hidden)).toEqual([false, false]);
+    registry.select("widgets/other", ["widgets/bottom"]);
+    expect(container.children.map(child => child.hidden)).toEqual([true, false, false]);
+    registry.select("widgets/right", ["widgets/bottom"]);
+    expect(container.children[0]).toBe(right);
+    expect(right?.parent).toBe(container);
+    expect(events.filter(event => event.startsWith("mount:"))).toHaveLength(3);
+    expect(events.some(event => event.startsWith("dispose:"))).toBe(false);
+    registry.dispose();
+    expect(events.filter(event => event.startsWith("dispose:"))).toHaveLength(3);
+  });
+
+  test("presentation hides retained views without mounting or forgetting selection", () => {
+    container = new FakeElement();
+    const events: string[] = [];
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement });
+    registry.register("widgets/one", view("one", events));
+    registry.setScope(scope);
+    registry.select("widgets/one");
+    registry.setVisibleIds([]);
+    expect(container.children[0]?.hidden).toBe(true);
+    expect(registry.selectedId).toBe("widgets/one");
+    registry.setVisibleIds(["widgets/one", "missing/view"]);
+    registry.setVisibleIds(["widgets/one"]);
+    expect(events).toEqual(["mount:one", "visible:one:true", "visible:one:false", "visible:one:true"]);
+    expect(container.children).toHaveLength(1);
+    registry.setScope({ ...scope, sessionId: "33333333-3333-4333-8333-333333333333" });
+    expect(events.slice(-2)).toEqual(["abort:one", "dispose:one"]);
+    expect(container.children).toHaveLength(0);
+  });
+
   test("unregister cleans only its mounted contribution and leaves another package intact", () => {
     container = new FakeElement();
     const events: string[] = [];

@@ -137,9 +137,9 @@ test("shared widget panel moves right bottom and full screen while native grid i
   await canvases.evaluateAll(nodes => { (window as any).__placementCanvases = nodes; });
   const attached = sockets;
   const picker = page.getByRole("combobox", { name: "Widget panel placement" });
-  const panel = page.locator("#workspace-context-region");
+  const panel = page.locator(".widget-panel:visible");
   const terminal = page.locator("#workspace-terminal-region");
-  const divider = page.getByRole("separator", { name: "Resize context panel" });
+  const divider = page.locator(".workspace-divider:visible");
   await picker.selectOption("bottom");
   await expect(divider).toHaveAttribute("aria-orientation", "horizontal");
   await expect(divider).toHaveCSS("cursor", "row-resize");
@@ -197,12 +197,13 @@ test("widget layout remains recoverable when browser storage rejects writes", as
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
   await page.evaluate(() => {
     const set = Storage.prototype.setItem;
-    Storage.prototype.setItem = function(key, value) { if (key === "wolfpack-workspace-shell") throw Error("blocked"); set.call(this, key, value); };
+    Storage.prototype.setItem = function(key, value) { if (key === "wolfpack-workspace-shell" || key === "wolfpack-widget-layout:v1") throw Error("blocked"); set.call(this, key, value); };
   });
   const picker = page.getByRole("combobox", { name: "Widget panel placement" });
   await picker.selectOption("bottom");
   await expect(page.locator("#workspace-shell")).toHaveAttribute("data-context-placement", "bottom");
-  await expect(page.locator("#workspace-context-region [data-workspace-layout-status]")).toContainText("this tab only");
+  await expect(page.locator(".widget-panel:visible [data-extension-status]")).toContainText("this tab only");
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBeNull();
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-workspace-shell"))).toBeNull();
   await picker.selectOption("full-screen");
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
@@ -228,9 +229,13 @@ test("mobile widgets are a separate full-screen view and never overwrite the des
   await expect(page.locator("#workspace-context-region")).toBeHidden();
   await page.locator("#workspace-restore").tap();
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
-  for (const id of ["workspace-panel-placement", "workspace-context-divider"]) await expect(page.locator(`#${id}`)).toBeHidden();
-  const shell = (await page.locator("#workspace-shell").boundingBox())!; const panel = (await page.locator("#workspace-context-region").boundingBox())!;
-  expect(panel.width).toBeCloseTo(shell.width, 0); expect(panel.height).toBeCloseTo(shell.height, 0);
+  for (const selector of ["[data-widget-placement]", "#workspace-context-divider", "#workspace-bottom-divider"]) await expect(page.locator(selector)).toBeHidden();
+  const shell = (await page.locator("#workspace-shell").boundingBox())!; const panel = (await page.locator(".widget-panel:visible").boundingBox())!;
+  const header = (await page.locator("#workspace-mobile-header").boundingBox())!;
+  expect(panel.width).toBeCloseTo(shell.width, 0);
+  expect(header.y).toBeCloseTo(shell.y, 0);
+  expect(panel.y).toBeCloseTo(header.y + header.height, 0);
+  expect(panel.height + header.height).toBeCloseTo(shell.height, 0);
   await expect(page.getByRole("button", { name: "Back to terminal", exact: true })).toBeFocused();
   await page.screenshot({ path: testInfo.outputPath("mobile-widget-screen.png") });
   await page.getByRole("button", { name: "Back to terminal", exact: true }).tap();
@@ -238,11 +243,11 @@ test("mobile widgets are a separate full-screen view and never overwrite the des
   await expect(draft).toHaveValue("retained draft"); expect(await draft.evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])).toEqual([2, 5]);
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-workspace-shell"))).toBe(saved);
   await page.setViewportSize({ width: 1280, height: 900 });
-  await expect(page.locator("#workspace-panel-placement")).toHaveValue("full-screen");
+  await expect(page.locator("[data-widget-placement]:visible")).toHaveValue("full-screen");
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-workspace-shell"))).toBe(saved);
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
-  await expect(page.locator("#workspace-panel-placement")).toHaveValue("bottom");
-  const divider = page.locator("#workspace-context-divider");
+  await expect(page.locator("[data-widget-placement]:visible")).toHaveValue("bottom");
+  const divider = page.locator("#workspace-bottom-divider");
   await expect(divider).toHaveAttribute("aria-valuenow", "270");
   const edge = (await divider.boundingBox())!;
   await page.mouse.move(edge.x + edge.width / 2, edge.y + edge.height / 2); await page.mouse.down();
@@ -316,9 +321,9 @@ test("real broker desktop preserves existing equal-grid cardinalities and revers
   await expect(page.locator("#workspace-restore")).toBeVisible();
   expect(await page.locator("#desktop-grid-container .grid-cell canvas").evaluateAll((canvases) => canvases.map(canvas => canvas.getAttribute("data-workspace-canvas")))).toEqual(["0", "1", "2", "3", "4"]);
   await page.locator("#workspace-restore").click();
-  await page.locator("#workspace-context-full").click();
+  await page.locator("[data-widget-full]:visible").click();
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
-  const [shellBox, contextBox] = await Promise.all([page.locator("#workspace-shell").boundingBox(), page.locator("#workspace-context-region").boundingBox()]);
+  const [shellBox, contextBox] = await Promise.all([page.locator("#workspace-shell").boundingBox(), page.locator(".widget-panel:visible").boundingBox()]);
   expect(shellBox).not.toBeNull();
   expect(contextBox).not.toBeNull();
   expect(Math.abs(contextBox!.width - shellBox!.width)).toBeLessThanOrEqual(2);
@@ -353,20 +358,20 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
   await expect(page.locator("#workspace-terminal-full")).toHaveCount(0);
-  for (const [id, label] of [["workspace-context-collapse", "Hide widgets"], ["workspace-context-full", "Context full view"]]) {
-    const control = page.locator(`#${id}`);
+  for (const [selector, label] of [["#workspace-context-collapse", "Hide widgets"], ["[data-widget-full]:visible", "Context full view"]]) {
+    const control = page.locator(selector!);
     await expect(control).toHaveAccessibleName(label!);
-    await expect(control).toHaveText(id === "workspace-context-collapse" ? "Hide widgets" : "");
+    await expect(control).toHaveText(selector === "#workspace-context-collapse" ? "Hide widgets" : "");
     await expect(control.locator("svg")).toBeVisible();
     await expect(control).toHaveAttribute("title", /.+/);
   }
-  const context = page.locator("#workspace-context-region");
+  const context = page.locator(".widget-panel:visible");
   const terminal = page.locator("#workspace-terminal-region");
   const before = (await context.boundingBox())!;
   const terminalBefore = (await terminal.boundingBox())!;
   expect(before.x).toBeGreaterThanOrEqual(terminalBefore.x + terminalBefore.width);
   await expect(page.locator("#workspace-context-placement, #workspace-context-size")).toHaveCount(0);
-  const border = page.getByRole("separator", { name: "Resize context panel" });
+  const border = page.locator(".workspace-divider:visible");
   await expect(border).toBeVisible();
   await expect(border).toHaveCSS("cursor", "col-resize");
   await page.locator("#desktop-terminal-container canvas").click();
@@ -406,8 +411,8 @@ test("right context panel resizes with real pointer and keyboard input without r
   await page.keyboard.press("Home");
   await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(220);
   await page.screenshot({ path: testInfo.outputPath("right-context-controls.png") });
-  await page.locator("#workspace-context-full").click();
-  await expect(page.locator("#workspace-context-full .restore-icon")).toBeVisible();
+  await page.locator("[data-widget-full]:visible").click();
+  await expect(page.locator("[data-widget-full]:visible .restore-icon")).toBeVisible();
   await expect(border).toBeHidden();
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
   const collapseBox = (await page.locator("#workspace-context-collapse").boundingBox())!;
@@ -460,7 +465,7 @@ test("context controls stay fixed beside desktop filters and in the mobile toolb
     expect(await expand.boundingBox()).toEqual(box);
     await expand.press("Space");
     await expect(collapse).toBeFocused();
-    await page.locator("#workspace-context-full").click();
+    await page.locator("[data-widget-full]:visible").click();
     expect(await collapse.boundingBox()).toEqual(box);
     await collapse.click();
     await expect(page.locator("#workspace-context-region")).toBeHidden();

@@ -7,6 +7,8 @@ import { browserAuthFetch } from "./browser-auth.ts";
 import { contextScopeHint, ContextViewRegistry, type ContextViewScope } from "./context-view-registry.ts";
 import { SharedDocumentPoller } from "./extension-document-polling.ts";
 import { loadAuthenticatedExtensionBundle } from "./extension-loader.ts";
+import { WidgetLayout, type WidgetArea } from "./widget-layout.ts";
+import { WidgetPanels, type WidgetPresentation } from "./widget-panels.ts";
 
 export interface SelectedExtensionScope { readonly sessionId: string | null; readonly unavailable?: string; }
 export interface ExtensionLayoutUnregisterOptions { readonly preservePreference?: boolean; }
@@ -17,6 +19,9 @@ export interface ExtensionHostOptions {
   readonly registerLayout?: (contribution: TerminalLayoutContribution) => ((options?: ExtensionLayoutUnregisterOptions) => void);
   readonly onCatalogReady?: () => void;
   readonly widgetVisible?: (installation: ExtensionCatalogInstallation) => boolean;
+  readonly widgetLayout?: WidgetLayout;
+  readonly onWidgetAreasChange?: (areas: readonly WidgetArea[]) => void;
+  readonly onWidgetFocus?: (area: WidgetArea | null) => void;
   readonly authFetch?: typeof browserAuthFetch;
   readonly bundleLoader?: typeof loadAuthenticatedExtensionBundle;
   readonly onChange?: () => void;
@@ -92,6 +97,7 @@ export class ExtensionHost {
   private currentScope: SelectedExtensionScope | null = null;
   private currentInstallationId: string | null = null;
   private catalog: ExtensionCatalogEnvelope | null = null;
+  private readonly panels: WidgetPanels;
   private shellVisible = true;
   private disposed = false;
 
@@ -99,14 +105,20 @@ export class ExtensionHost {
     this.registry = new ContextViewRegistry({
       container: options.container,
       createContext: (scope, signal, viewId) => this.contextFor(scope, signal, viewId),
+      createContainer: (entry, wrapper, signal) => this.panels.createContainer(entry, wrapper, signal),
       onVisibilityChange: (viewId, visible) => this.setViewVisible(viewId, visible),
       onChange: () => this.render(),
+    });
+    this.panels = new WidgetPanels({
+      container: options.container, registry: this.registry,
+      layout: options.widgetLayout ?? new WidgetLayout({ getItem: () => null, setItem: () => {} }),
+      onAreasChange: options.onWidgetAreasChange, onFocus: options.onWidgetFocus, onSelect: id => this.select(id),
     });
     document.addEventListener("visibilitychange", this.onDocumentVisibility);
   }
 
   get diagnostic(): string { return this.registry.diagnostic; }
-  get selectedId(): string | null { return this.registry.selectedId; }
+  get selectedId(): string | null { return this.panels.selectedId; }
 
   async refresh(): Promise<void> {
     if (this.disposed) return;
@@ -166,20 +178,27 @@ export class ExtensionHost {
   select(id?: string): void {
     if (id === undefined) {
       if (!this.catalog || !this.shellVisible) return;
-      const entries = this.availableViews();
-      if (entries.length !== 1 || this.registry.selectedId) return;
-      id = entries[0]!.id;
+      this.render();
+      this.panels.selectDefaults();
+      return;
     }
     const owner = this.owners.get(id)?.extension;
     if (owner && this.options.widgetVisible?.(owner) === false) return;
-    this.registry.select(id);
+    this.render();
+    this.panels.select(id);
+  }
+  moveWidget(id: string, area: WidgetArea): void { this.panels.move(id, area); }
+  resetWidgetLayout(): void { this.panels.reset(); this.select(); }
+  setPresentation(presentation: WidgetPresentation): boolean {
+    const visibilityChanged = this.setShellVisible(presentation.visible);
+    const presentationChanged = this.panels.setPresentation(presentation);
+    return visibilityChanged || presentationChanged;
   }
   /** Hide only widget views: retain controllers and all terminal-layout registrations. */
   syncWidgetVisibility(): void {
     if (this.disposed) return;
-    if (this.selectedId && !this.availableViews().some(entry => entry.id === this.selectedId)) this.registry.select(null);
-    this.select();
     this.render();
+    this.select();
   }
   private availableViews() {
     return this.registry.entries().filter(entry => {
@@ -190,6 +209,7 @@ export class ExtensionHost {
   setShellVisible(visible: boolean): boolean {
     if (this.disposed || this.shellVisible === visible) return false;
     this.shellVisible = visible;
+    this.panels.setVisible(visible);
     this.pausePollers();
     return true;
   }
@@ -418,22 +438,11 @@ export class ExtensionHost {
     this.cleanupScopeResources();
   }
   private render(message = this.registry.diagnostic): void {
-    const root = this.options.container;
-    const tabs = root.querySelector<HTMLElement>("[data-extension-tabs]") ?? document.createElement("div");
-    if (!tabs.parentElement) { tabs.dataset.extensionTabs = ""; tabs.setAttribute("role", "tablist"); root.prepend(tabs); }
     const entries = this.availableViews();
-    const selected = this.registry.selectedId;
-    tabs.hidden = entries.length < 2 && (!entries.length || !!selected);
-    tabs.replaceChildren();
-    for (const entry of entries) { const tab = document.createElement("button"); tab.type = "button"; tab.textContent = entry.contribution.title; tab.setAttribute("role", "tab"); tab.setAttribute("aria-selected", String(entry.id === selected)); tab.addEventListener("click", () => this.select(entry.id)); tabs.append(tab); }
-    let status = root.querySelector<HTMLElement>("[data-extension-status]");
-    if (!status) { status = document.createElement("p"); status.dataset.extensionStatus = ""; status.setAttribute("role", "status"); root.prepend(status); }
-    status.textContent = message || this.selectedDocumentStatus() || (selected ? "" : entries.length ? "Select a context view." : this.registry.entries().length ? "Widgets are hidden. Manage widgets in Settings." : "No enabled context views for this scope.");
+    this.panels.update(entries, message || (!entries.length && this.registry.entries().length ? "Widgets are hidden. Manage widgets in Settings." : ""), id => this.selectedDocumentStatus(id));
     this.options.onChange?.();
   }
-  private selectedDocumentStatus(): string | null {
-    const selected = this.registry.selectedId;
-    if (!selected) return null;
+  private selectedDocumentStatus(selected: string): string | null {
     const states = [...(this.viewDocumentKeys.get(selected) ?? [])].map(key => this.documentStates.get(key));
     if (states.includes("error")) return "Extension context data is unavailable.";
     if (states.includes("stale")) return "Showing stale extension context data.";

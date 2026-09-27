@@ -9,6 +9,7 @@ export interface ContextViewRegistryOptions {
   readonly container: HTMLElement;
   readonly maxRetainedViews?: number;
   readonly createContext?: (scope: ContextViewScope, signal: AbortSignal, viewId: string) => ExtensionViewContext;
+  readonly createContainer?: (entry: RegisteredContextView, wrapper: HTMLElement, signal: AbortSignal) => HTMLElement;
   readonly onChange?: () => void;
   readonly onVisibilityChange?: (viewId: string, visible: boolean) => void;
 }
@@ -24,6 +25,7 @@ interface MountedContextView {
   readonly controller: ContextViewController;
   readonly abort: AbortController;
   disposed: boolean;
+  visible?: boolean;
 }
 
 const MAX_RETAINED_CONTEXT_VIEWS = 32;
@@ -86,7 +88,8 @@ export class ContextViewRegistry {
     this.changed();
   }
 
-  select(id: string | null): void {
+  /** Selecting one area's tab may retain the other area's already-mounted view. */
+  select(id: string | null, keepVisible: readonly string[] = []): void {
     if (id === null) {
       this.selectedValue = null;
       for (const mounted of this.mountedById.values()) this.setVisible(mounted, false);
@@ -116,12 +119,17 @@ export class ContextViewRegistry {
     }
     let selectedVisibilityFailed = false;
     for (const item of this.mountedById.values()) {
-      const visible = item.id === id;
+      const visible = item.id === id || keepVisible.includes(item.id);
       if (!this.setVisible(item, visible) && visible) selectedVisibilityFailed = true;
     }
     this.selectedValue = id;
     if (!selectedVisibilityFailed) this.diagnosticValue = "";
     this.changed();
+  }
+
+  /** Presentation only: never mounts contributions or changes logical selection. */
+  setVisibleIds(ids: readonly string[]): void {
+    for (const mounted of this.mountedById.values()) this.setVisible(mounted, ids.includes(mounted.id));
   }
 
   dispose(): void {
@@ -149,7 +157,8 @@ export class ContextViewRegistry {
         storage: Object.freeze({ get: () => null, set: () => {}, remove: () => {} }),
         documents: Object.freeze({ read: async () => null, subscribe: () => () => {} }),
       }) as ExtensionViewContext;
-      const controller = entry.contribution.mount(element, this.options.createContext?.(scope, abort.signal, entry.id) ?? fallbackContext);
+      const content = this.options.createContainer?.(entry, element, abort.signal) ?? element;
+      const controller = entry.contribution.mount(content, this.options.createContext?.(scope, abort.signal, entry.id) ?? fallbackContext);
       if (!controller || typeof controller.dispose !== "function") throw new Error("context view mount did not return a controller");
       const mounted: MountedContextView = { id: entry.id, element, controller, abort, disposed: false };
       this.mountedById.set(entry.id, mounted);
@@ -164,10 +173,13 @@ export class ContextViewRegistry {
   }
 
   private setVisible(mounted: MountedContextView, visible: boolean): boolean {
+    if (mounted.visible === visible) return true;
     mounted.element.hidden = !visible;
+    // Set before callbacks: visibility can synchronously update document status.
+    mounted.visible = visible;
     let succeeded = true;
     try { mounted.controller.setVisible?.(visible); }
-    catch { this.diagnosticValue = `Visibility update failed for ${mounted.id}.`; succeeded = false; }
+    catch { this.diagnosticValue = `Visibility update failed for ${mounted.id}.`; mounted.visible = undefined; succeeded = false; }
     this.options.onVisibilityChange?.(mounted.id, visible);
     return succeeded;
   }

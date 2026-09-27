@@ -217,7 +217,7 @@ test("explicit workspace shell changes retain delegation panes and focus", async
   await page.locator("#workspace-context-collapse").click();
   await expect(page.locator("#workspace-restore")).toBeVisible();
   await page.locator("#workspace-restore").click();
-  await page.locator("#workspace-context-full").click();
+  await page.locator("[data-widget-full]:visible").click();
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
   await expect(child).toHaveClass(/grid-focused/);
@@ -244,9 +244,9 @@ test("workspace shell mobile recovery keeps a visible terminal usable", async ({
   await page.goto(srv.baseUrl);
   await openSessionFromUi(page, "parent", "");
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
-  await page.locator("#workspace-context-full").click();
-  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
   await page.locator("#workspace-restore").click();
+  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+  await page.locator("#workspace-context-back").click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
   expect(attaches).toBe(1);
 });

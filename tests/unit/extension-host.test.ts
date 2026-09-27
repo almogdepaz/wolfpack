@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { ExtensionHost } from "../../public/extension-host.ts";
 import { TerminalLayoutRegistry } from "../../public/terminal-layout-registry.ts";
 import { equalGridLayout } from "../../src/extensions/layout-contract.ts";
+import { WidgetLayout } from "../../public/widget-layout.ts";
 import type { ExtensionRegistration, ExtensionRegistrationHost, ExtensionViewContext } from "../../src/extensions/sdk.ts";
 
 class FakeElement {
@@ -12,15 +13,19 @@ class FakeElement {
   hidden = false;
   type = "";
   private readonly attributes = new Map<string, string>();
-  append(child: FakeElement) { child.parentElement = this; this.children.push(child); }
-  prepend(child: FakeElement) { child.parentElement = this; this.children.unshift(child); }
+  append(child: FakeElement) { child.remove(); child.parentElement = this; this.children.push(child); }
+  prepend(child: FakeElement) { child.remove(); child.parentElement = this; this.children.unshift(child); }
+  insertBefore(child: FakeElement, before: FakeElement | null) { child.remove(); child.parentElement = this; const at = before ? this.children.indexOf(before) : -1; if (at < 0) this.children.push(child); else this.children.splice(at, 0, child); }
+  contains(child: FakeElement): boolean { return child === this || this.children.some(item => item.contains(child)); }
+  focus() {}
   remove() { if (!this.parentElement) return; const at = this.parentElement.children.indexOf(this); if (at >= 0) this.parentElement.children.splice(at, 1); this.parentElement = null; }
   replaceChildren() { for (const child of this.children) child.parentElement = null; this.children.length = 0; }
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
+  removeAttribute(name: string) { this.attributes.delete(name); }
   addEventListener() {}
   querySelector<T extends FakeElement>(selector: string): T | null {
     const name = selector.match(/^\[data-([^\]]+)\]$/)?.[1]?.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
-    return (name ? this.children.find(child => name in child.dataset) : undefined) as T ?? null;
+    return (name ? this.children.find(child => name in child.dataset) ?? this.children.map(child => child.querySelector<T>(selector)).find(Boolean) : undefined) as T ?? null;
   }
 }
 
@@ -34,6 +39,9 @@ const documentListeners = new Map<string, unknown>();
 
 const installationId = "11111111-1111-4111-8111-111111111111";
 let container: FakeElement;
+function rightChrome(selector: string): FakeElement | undefined {
+  return container.children.filter(child => child.dataset.widgetArea === "right").map(child => child.querySelector(selector)).find((child): child is FakeElement => !!child);
+}
 afterEach(() => {
   container?.remove();
   documentListeners.clear();
@@ -41,6 +49,108 @@ afterEach(() => {
 });
 
 describe("ExtensionHost", () => {
+  test("independent panels retain content parents, scope and desktop selections through mobile and area focus", async () => {
+    container = new FakeElement();
+    let saved: string | null = null;
+    const layout = new WidgetLayout({ getItem: () => saved, setItem: (_key, value) => { saved = value; } });
+    const nodes = new Map<string, HTMLElement>();
+    const visible = new Map<string, boolean>();
+    const signals: AbortSignal[] = [];
+    let mounts = 0; let disposals = 0; let failThird = true;
+    const visibilityEvents: string[] = [];
+    let sessionId = "22222222-2222-4222-8222-222222222222";
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement, widgetLayout: layout,
+      scope: () => ({ sessionId }),
+      authFetch: async () => Response.json({ safeMode: false, installations: [{ installationId, extensionId: "widgets", enabled: true, package: { name: "widgets", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/widgets/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }),
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => {
+        for (const id of ["one", "two", "three"]) register.registerContextView({ id, title: id, mount(node, context) {
+          mounts++; nodes.set(id, node); signals.push(context.signal);
+          if (id === "three" && failThird) throw Error("third view failed");
+          return { dispose() { disposals++; }, setVisible(value) { visible.set(id, value); visibilityEvents.push(`${id}:${value}`); } };
+        } });
+      } })) as never,
+    });
+    await host.refresh(); host.select(); expect(mounts).toBe(0);
+    host.select("widgets/one"); host.moveWidget("widgets/one", "bottom");
+    host.select("widgets/two");
+    expect(visible.get("one")).toBe(true); expect(visible.get("two")).toBe(true);
+    const one = nodes.get("one")!; const parent = one.parentElement;
+    const beforeFailure = [...visibilityEvents];
+    host.select("widgets/three");
+    expect(host.diagnostic).toContain("third view failed");
+    expect(visibilityEvents).toEqual(beforeFailure);
+    expect(visible.get("one")).toBe(true); expect(visible.get("two")).toBe(true);
+    failThird = false;
+    host.select("widgets/three");
+    expect(visible.get("one")).toBe(true); expect(visible.get("two")).toBe(false); expect(visible.get("three")).toBe(true);
+    host.setPresentation({ visible: true, desktop: true, focusArea: "bottom" });
+    expect(visible.get("one")).toBe(true); expect(visible.get("three")).toBe(false);
+    host.setPresentation({ visible: true, desktop: true, focusArea: null });
+    expect(visible.get("three")).toBe(true);
+    const desktopSaved = saved;
+    host.setPresentation({ visible: true, desktop: false, focusArea: null }); host.select();
+    host.select("widgets/two");
+    expect(visible.get("two")).toBe(true); expect(visible.get("one")).toBe(false); expect(visible.get("three")).toBe(false);
+    expect(saved).toBe(desktopSaved);
+    host.moveWidget("widgets/two", "bottom"); expect(saved).toBe(desktopSaved);
+    host.setPresentation({ visible: true, desktop: true, focusArea: null }); host.select();
+    expect(visible.get("one")).toBe(true); expect(visible.get("three")).toBe(true); expect(visible.get("two")).toBe(false);
+    expect(nodes.get("one")).toBe(one); expect(one.parentElement).toBe(parent);
+    expect(mounts).toBe(4); expect(disposals).toBe(0);
+    host.select("unknown/view"); expect(host.diagnostic).toContain("unavailable");
+    expect(visible.get("one")).toBe(true); expect(visible.get("three")).toBe(true);
+    sessionId = "33333333-3333-4333-8333-333333333333";
+    await host.refresh(); expect(disposals).toBe(3); expect(signals.every(signal => signal.aborted)).toBe(true);
+    host.select(); expect(mounts).toBe(6);
+    host.dispose(); expect(disposals).toBe(5);
+  });
+
+  test("both visible areas resume their exact document while an inactive tab stays paused", async () => {
+    container = new FakeElement();
+    const sessionId = "22222222-2222-4222-8222-222222222222";
+    const reads = new Map<string, number>();
+    const delivered = new Map<string, number>();
+    const waiters = new Map<string, () => void>();
+    const wait = (id: string, revision: number) => delivered.get(id) === revision ? Promise.resolve() : new Promise<void>(resolve => waiters.set(`${id}:${revision}`, resolve));
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement, scope: () => ({ sessionId }),
+      authFetch: async input => {
+        const path = String(input);
+        if (path === "/api/extensions") return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "widgets", enabled: true, package: { name: "widgets", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/widgets/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: ["one", "two", "three"].map(id => ({ id, schemaVersion: 1 })) }] });
+        const url = new URL(path, "http://fixture");
+        expect(url.searchParams.get("session")).toBe(sessionId);
+        const id = url.pathname.split("/").at(-1)!;
+        const revision = (reads.get(id) ?? 0) + 1; reads.set(id, revision);
+        return Response.json({ installationId, extensionId: "widgets", documentId: id, scopeSessionId: sessionId, schemaVersion: 1, revision, document: { value: id } });
+      },
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => {
+        for (const id of ["one", "two", "three"]) register.registerContextView({ id, title: id, mount(_node, context) {
+          context.documents.subscribe(id, (_value, revision) => { delivered.set(id, revision); waiters.get(`${id}:${revision}`)?.(); });
+          return { dispose() {} };
+        } });
+      } })) as never,
+    });
+    try {
+      await host.refresh(); host.select("widgets/one"); host.moveWidget("widgets/one", "bottom"); host.select("widgets/two");
+      await Promise.all([wait("one", 1), wait("two", 1)]);
+      host.select("widgets/three"); await wait("three", 1);
+      (document as unknown as { visibilityState: string }).visibilityState = "hidden";
+      (documentListeners.get("visibilitychange") as () => void)();
+      (document as unknown as { visibilityState: string }).visibilityState = "visible";
+      (documentListeners.get("visibilitychange") as () => void)();
+      await Promise.all([wait("one", 2), wait("three", 2)]);
+      expect(reads.get("two")).toBe(1);
+      host.setPresentation({ visible: true, desktop: true, focusArea: "bottom" });
+      (document as unknown as { visibilityState: string }).visibilityState = "hidden";
+      (documentListeners.get("visibilitychange") as () => void)();
+      (document as unknown as { visibilityState: string }).visibilityState = "visible";
+      (documentListeners.get("visibilitychange") as () => void)();
+      await wait("one", 3);
+      expect(reads.get("two")).toBe(1); expect(reads.get("three")).toBe(2);
+    } finally { host.dispose(); }
+  });
+
   test("widget visibility gates selection without unloading layouts or retained views", async () => {
     container = new FakeElement();
     let visible = true; let mounts = 0; let disposed = 0; let layoutDisposed = 0;
@@ -90,7 +200,7 @@ describe("ExtensionHost", () => {
         host.select(); // a partial catalog must not auto-mount even its first registered view
       } })) as never,
     });
-    const tabs = () => container.children.find(child => "extensionTabs" in child.dataset)!;
+    const tabs = () => rightChrome("[data-extension-tabs]")!;
     await host.refresh();
     expect(mounts).toBe(0); // registration alone still does not mount
     expect(tabs().hidden).toBe(false); // fallback selection remains reachable
@@ -136,12 +246,12 @@ describe("ExtensionHost", () => {
       } })) as never,
     });
     await host.refresh();
-    expect(container.children.find(child => "extensionStatus" in child.dataset)?.textContent).toBe("Select a context view.");
+    expect(rightChrome("[data-extension-status]")?.textContent).toBe("Select a context view.");
     host.select("notes/first");
     await new Promise(resolve => setTimeout(resolve, 10));
     expect(documentReads).toBe(1);
     host.select("notes/second");
-    expect(container.children.find(child => "extensionStatus" in child.dataset)?.textContent).toBe("");
+    expect(rightChrome("[data-extension-status]")?.textContent).toBe("");
     await new Promise(resolve => setTimeout(resolve, 300));
     expect(documentReads).toBe(1);
     host.dispose();
@@ -161,7 +271,7 @@ describe("ExtensionHost", () => {
     });
     await host.refresh();
     expect(loads).toBe(0);
-    expect(container.children.find(child => "extensionStatus" in child.dataset)?.textContent).toContain("catalog unavailable");
+    expect(rightChrome("[data-extension-status]")?.textContent).toContain("catalog unavailable");
     host.dispose();
   });
 
@@ -429,7 +539,7 @@ describe("ExtensionHost", () => {
       await host.refresh();
       host.select("notes/tab");
       expect(await read!.then(() => "resolved", error => (error as Error).message), label).toBe("extension document unavailable");
-      expect(container.children.find(child => "extensionStatus" in child.dataset)?.textContent, label).toBe("Extension context data is unavailable.");
+      expect(rightChrome("[data-extension-status]")?.textContent, label).toBe("Extension context data is unavailable.");
       host.dispose();
     }
   });
@@ -469,7 +579,7 @@ describe("ExtensionHost", () => {
     const originalNode = mountedNode;
     (document as unknown as { visibilityState: string }).visibilityState = "hidden";
     (documentListeners.get("visibilitychange") as () => void)();
-    expect(container.children.find(child => "extensionStatus" in child.dataset)?.textContent).toBe("Extension context updates are paused.");
+    expect(rightChrome("[data-extension-status]")?.textContent).toBe("Extension context updates are paused.");
     expect(mountedNode).toBe(originalNode);
     (document as unknown as { visibilityState: string }).visibilityState = "visible";
     (documentListeners.get("visibilitychange") as () => void)();
