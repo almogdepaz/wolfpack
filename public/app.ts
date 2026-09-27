@@ -23,7 +23,8 @@ import {
 import type { DelegationGridMember } from "./app-grid";
 import { TerminalLayoutRegistry } from "./terminal-layout-registry";
 import { createWorkspaceShell, loadWorkspaceShellPreferences } from "./workspace-shell";
-import { WidgetLayout } from "./widget-layout";
+import { WidgetLayout, SESSIONS_PANEL, TERMINALS_PANEL } from "./widget-layout";
+import { createWorkspaceDocking } from "./workspace-docking";
 import { initWorkspaceNavigation } from "./workspace-navigation";
 import { ExtensionHost } from "./extension-host";
 import { WidgetVisibility, WIDGET_VISIBILITY_PREFIX } from "./widget-visibility";
@@ -5444,7 +5445,7 @@ let extensionHost: ExtensionHost | null = null;
 const workspaceShell = createWorkspaceShell({
   onTerminalGeometryChange: () => scheduleGridStabilizedFit(),
   onWidgetPresentationChange: presentation => { if (extensionHost?.setPresentation(presentation)) extensionHost.select(); },
-  onReset: () => extensionHost?.resetWidgetLayout(),
+  onReset: () => extensionHost?.resetWorkspaceLayout(),
 });
 window.addEventListener("resize", () => scheduleGridStabilizedFit());
 
@@ -5469,6 +5470,11 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
   safeMode: () => wpSettings.extensionSafeMode,
   widgetVisible: item => widgetVisibility.isVisible(item),
   widgetLayout,
+  nativePanels: [
+    { id: TERMINALS_PANEL, title: "Terminal grid", element: document.getElementById("workspace-terminal-region")! },
+    { id: SESSIONS_PANEL, title: "Sessions", element: document.getElementById("desktop-sidebar")! },
+  ],
+  onPanelGeometryChange: () => scheduleGridStabilizedFit(),
   onWidgetAreasChange: areas => workspaceShell?.setPanelAreas(areas),
   onWidgetFocus: area => workspaceShell?.focusPanel(area),
   registerLayout: contribution => {
@@ -5498,6 +5504,15 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
   },
 }) : null;
 if (workspaceShell) extensionHost?.setPresentation(workspaceShell.widgetPresentation);
+const workspaceDocking = createWorkspaceDocking({
+  layout: widgetLayout,
+  active: () => state.currentView === "terminal",
+  sessionsPinned: () => state.sidebarPinned && !state.sessionsExpanded,
+  panels: () => extensionHost?.availablePanels ?? [],
+  setNativePanels: ids => extensionHost?.setNativePanels(ids),
+  move: (id, area) => extensionHost?.moveWidget(id, area),
+  reset: () => workspaceShell?.reset(),
+});
 const widgetManager = createWidgetManager({ root: document.getElementById("settings-extensions")!, visibility: widgetVisibility, safeMode: () => wpSettings.extensionSafeMode });
 const unsubscribeWidgetVisibility = widgetVisibility.subscribe(() => extensionHost?.syncWidgetVisibility());
 const onWidgetStorage = (event: StorageEvent) => {
@@ -5505,12 +5520,14 @@ const onWidgetStorage = (event: StorageEvent) => {
 };
 window.addEventListener("storage", onWidgetStorage);
 document.addEventListener("wolfpack-extension-scope-change", () => {
+  workspaceDocking.sync();
   if (state.currentView !== "terminal") workspaceShell?.closeMobileView();
   void extensionHost?.refresh();
 });
 window.addEventListener("pagehide", event => {
   if (!(event as PageTransitionEvent).persisted) {
     widgetManager.dispose();
+    workspaceDocking.dispose();
     unsubscribeWidgetVisibility();
     window.removeEventListener("storage", onWidgetStorage);
     extensionHost?.dispose();

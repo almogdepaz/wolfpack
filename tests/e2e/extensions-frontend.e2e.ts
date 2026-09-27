@@ -221,7 +221,7 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   expect(rightBox.x).toBeGreaterThanOrEqual(terminalBox.x + terminalBox.width);
   expect(bottomBox.y).toBeGreaterThanOrEqual(terminalBox.y + terminalBox.height);
   expect(Math.abs(bottomBox.width - terminalBox.width)).toBeLessThanOrEqual(2);
-  for (const [name, key] of [["Resize right widgets", "ArrowLeft"], ["Resize bottom widgets", "ArrowUp"]]) {
+  for (const [name, key] of [["Resize right panels", "ArrowLeft"], ["Resize bottom panels", "ArrowUp"]]) {
     const divider = page.getByRole("separator", { name: name!, exact: true });
     const before = Number(await divider.getAttribute("aria-valuenow"));
     await divider.focus(); await divider.press(key!);
@@ -264,6 +264,51 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await page.reload(); await openSession(page, SESSION_A);
   await expect(right.locator("[data-context-view='alpha/shared']")).toBeVisible();
   await expect(bottom.locator("textarea")).toHaveValue("independent retained draft");
+});
+
+test("native panels share widget areas and Main recovers without losing a draft or desktop preferences", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "native/widget docking with responsive recovery");
+  await authorize(page);
+  let sockets = 0;
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
+  const terminal = page.locator("#workspace-terminal-region"), sessions = page.locator("#desktop-sidebar");
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await note.fill("native docking retained draft");
+  await note.evaluate(node => { (window as any).__dockingNote = { node, parent: node.parentElement }; });
+  await terminal.locator("canvas").evaluate(node => { (window as any).__dockingCanvas = node; });
+  const attached = sockets;
+  await page.getByRole("combobox", { name: "Widget panel placement" }).selectOption("main");
+  await expect(terminal).toBeHidden();
+  await page.getByRole("button", { name: "Move panels", exact: true }).click();
+  await page.getByRole("combobox", { name: "Terminal grid placement", exact: true }).selectOption("bottom");
+  await page.getByRole("combobox", { name: "Sessions placement", exact: true }).selectOption("right");
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(terminal).toBeVisible(); await expect(note).toBeVisible();
+  await expect(sessions).toHaveAttribute("data-widget-area", "right");
+  await expect(sessions.getByRole("tab", { name: "Agent Context", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Hide widgets", exact: true }).click();
+  await expect(note).toBeHidden(); await expect(terminal).toHaveAttribute("data-widget-area", "main");
+  await page.getByRole("button", { name: "Show widgets", exact: true }).click();
+  await expect(note).toHaveValue("native docking retained draft"); await expect(terminal).toHaveAttribute("data-widget-area", "bottom");
+  await page.screenshot({ path: testInfo.outputPath("widget-main-sessions-right-grid-bottom.png") });
+  const saved = await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator("#workspace-restore").click();
+  await page.getByRole("tab", { name: "Agent Context", exact: true }).click();
+  await page.locator("#workspace-context-back").click();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await expect(note).toHaveValue("native docking retained draft"); await expect(terminal).toBeVisible();
+  expect(await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")])).toEqual(saved);
+  expect(await note.evaluate(node => node === (window as any).__dockingNote.node && node.parentElement === (window as any).__dockingNote.parent)).toBe(true);
+  expect(await terminal.locator("canvas").evaluate(node => node === (window as any).__dockingCanvas)).toBe(true);
+  expect(sockets).toBe(attached);
+  await page.reload(); await openSession(page, SESSION_A);
+  await expect(note).toHaveValue("native docking retained draft");
+  await expect(terminal).toHaveAttribute("data-widget-area", "bottom");
+  await expect(sessions).toHaveAttribute("data-widget-area", "right");
 });
 
 test("installed widget manager works without a terminal and persists local visibility without changing packages", async ({ page }, testInfo) => {

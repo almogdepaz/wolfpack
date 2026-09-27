@@ -49,6 +49,47 @@ afterEach(() => {
 });
 
 describe("ExtensionHost", () => {
+  test("native panels preserve the full 32-view registry bound and recover Main without disposing content", async () => {
+    container = new FakeElement();
+    const parent = new FakeElement(), terminals = new FakeElement(), sessions = new FakeElement();
+    parent.append(terminals); parent.append(sessions); parent.append(container);
+    let saved: string | null = null;
+    const layout = new WidgetLayout({ getItem: () => saved, setItem: (_key, value) => { saved = value; } });
+    let mounts = 0, disposals = 0, visible = false;
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement, widgetLayout: layout,
+      nativePanels: [{ id: ":terminals", title: "Terminal grid", element: terminals as unknown as HTMLElement }, { id: ":sessions", title: "Sessions", element: sessions as unknown as HTMLElement }],
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      authFetch: async () => Response.json({ safeMode: false, installations: [{ installationId, extensionId: "widgets", enabled: true, package: { name: "widgets", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/widgets/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }),
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => {
+        for (let index = 0; index < 32; index++) register.registerContextView({ id: `view-${index}`, title: `View ${index}`, mount() {
+          mounts++; return { dispose() { disposals++; }, setVisible(value) { visible = value; } };
+        } });
+      } })) as never,
+    });
+    try {
+      host.setNativePanels([":terminals", ":sessions"]);
+      expect(terminals.hidden).toBe(false); expect(sessions.hidden).toBe(false);
+      await host.refresh(); host.select();
+      expect(host.availablePanels).toHaveLength(34); expect(mounts).toBe(0);
+      host.select("widgets/view-31"); expect(mounts).toBe(1);
+      host.moveWidget("widgets/view-31", "main");
+      expect(terminals.hidden).toBe(true); expect(visible).toBe(true);
+      host.moveWidget(":terminals", "bottom");
+      expect(terminals.hidden).toBe(false); expect(terminals.dataset.widgetArea).toBe("bottom");
+      const preferences = saved;
+      host.setPresentation({ visible: false, desktop: true, focusArea: null });
+      expect(terminals.dataset.widgetArea).toBe("main"); expect(visible).toBe(false); expect(saved).toBe(preferences);
+      host.select("widgets/view-30"); expect(mounts).toBe(1); // hidden widget actions cannot mount code
+      host.setPresentation({ visible: true, desktop: true, focusArea: null }); host.select();
+      expect(terminals.dataset.widgetArea).toBe("bottom"); expect(visible).toBe(true);
+      expect(terminals.parentElement).toBe(parent); expect(sessions.parentElement).toBe(parent);
+      expect(mounts).toBe(1); expect(disposals).toBe(0);
+      host.select(":unknown"); expect(host.diagnostic).toContain("unavailable");
+    } finally { host.dispose(); }
+    expect(disposals).toBe(1);
+  });
+
   test("independent panels retain content parents, scope and desktop selections through mobile and area focus", async () => {
     container = new FakeElement();
     let saved: string | null = null;

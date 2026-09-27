@@ -62,6 +62,7 @@
         <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
         <h1>WOLFPACK</h1>
         <div class="sidebar-controls">
+          <button id="workspace-move-open" type="button" aria-label="Move panels" title="Move panels" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M8 7l4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg></button>
           <button id="sidebar-settings-btn" type="button" title="Settings" aria-label="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
           <button id="sidebar-expand-btn" type="button" title="Expand sessions" aria-label="Expand sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg></button>
           <button id="sidebar-collapse-btn" type="button" title="Pin sidebar" aria-label="Pin sidebar"><span class="pin-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 6 6M14 3l7 7-4 1-4 4-1 4-7-7 4-1 4-4 1-4ZM5 19l4-4"/></svg></span></button>
@@ -104,6 +105,16 @@
       <div class="session-inspector-actions">
         <button id="session-inspector-retry" type="button">Retry snapshot</button>
       </div>
+    </dialog>
+
+    <dialog id="workspace-move-dialog" class="app-dialog" aria-labelledby="workspace-move-title">
+      <form method="dialog">
+        <h2 id="workspace-move-title">Move panels</h2>
+        <label class="settings-toggle">Sessions placement<select data-native-placement=":sessions" aria-label="Sessions placement"></select></label>
+        <label class="settings-toggle">Terminal grid placement<select data-native-placement=":terminals" aria-label="Terminal grid placement"></select></label>
+        <p data-docking-status role="status"></p>
+        <div class="app-dialog-actions"><button type="button" data-docking-reset>Reset workspace layout</button><button type="button" data-docking-close>Done</button></div>
+      </form>
     </dialog>
 
     <main id="view-container">
@@ -312,7 +323,8 @@
         <div class="settings-section" id="settings-extensions">
           <div class="settings-label">Widgets</div>
           <p class="settings-description">Show or hide widgets from installed extensions in this browser. Hiding does not disable extension code, terminal layouts, or shared data.</p>
-          <button class="discover-btn" type="button" id="workspace-reset-layout">Reset widget layout</button>
+          <button class="discover-btn" type="button" id="workspace-reset-layout">Reset workspace layout</button>
+          <p class="settings-description">Restore panel positions and sizes without changing terminal membership or the terminal layout recipe.</p>
           <p class="settings-description" data-workspace-layout-status role="status" hidden></p>
           <button class="discover-btn" type="button" data-widget-refresh>Refresh installed extensions</button>
           <p class="settings-description" data-widget-status role="status" aria-live="polite"></p>
@@ -416,9 +428,10 @@
           </div>
           <div id="workspace-context-container" aria-live="polite"></div>
         </aside>
-        <div id="workspace-context-divider" class="workspace-divider" role="separator" tabindex="0" aria-label="Resize right widgets" aria-controls="workspace-context-region" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="560" aria-valuenow="320"></div>
-        <div id="workspace-bottom-divider" class="workspace-divider" role="separator" tabindex="0" aria-label="Resize bottom widgets" aria-controls="workspace-context-region" aria-orientation="horizontal" aria-valuemin="140" aria-valuemax="480" aria-valuenow="240" hidden></div>
-        <main id="workspace-terminal-region" aria-label="Terminal workspace">
+        <div id="workspace-left-divider" class="workspace-divider" role="separator" tabindex="0" aria-label="Resize left panels" aria-controls="desktop-sidebar workspace-terminal-region workspace-context-region" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="560" aria-valuenow="272" hidden></div>
+        <div id="workspace-context-divider" class="workspace-divider" role="separator" tabindex="0" aria-label="Resize right panels" aria-controls="desktop-sidebar workspace-terminal-region workspace-context-region" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="560" aria-valuenow="320"></div>
+        <div id="workspace-bottom-divider" class="workspace-divider" role="separator" tabindex="0" aria-label="Resize bottom panels" aria-controls="desktop-sidebar workspace-terminal-region workspace-context-region" aria-orientation="horizontal" aria-valuemin="140" aria-valuemax="480" aria-valuenow="240" hidden></div>
+        <main id="workspace-terminal-region" class="workspace-native-panel" data-widget-area="main" aria-label="Terminal workspace">
       <div id="delegation-focus-toolbar" class="delegation-focus-return">
         <button id="delegation-focus-back" type="button">← Back to session grid</button>
         <span id="delegation-focus-label"></span>

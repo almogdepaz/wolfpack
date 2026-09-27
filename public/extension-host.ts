@@ -8,7 +8,7 @@ import { contextScopeHint, ContextViewRegistry, type ContextViewScope } from "./
 import { SharedDocumentPoller } from "./extension-document-polling.ts";
 import { loadAuthenticatedExtensionBundle } from "./extension-loader.ts";
 import { WidgetLayout, type WidgetArea } from "./widget-layout.ts";
-import { WidgetPanels, type WidgetPresentation } from "./widget-panels.ts";
+import { WidgetPanels, type WidgetPresentation, type NativeWorkspacePanel } from "./widget-panels.ts";
 
 export interface SelectedExtensionScope { readonly sessionId: string | null; readonly unavailable?: string; }
 export interface ExtensionLayoutUnregisterOptions { readonly preservePreference?: boolean; }
@@ -22,6 +22,8 @@ export interface ExtensionHostOptions {
   readonly widgetLayout?: WidgetLayout;
   readonly onWidgetAreasChange?: (areas: readonly WidgetArea[]) => void;
   readonly onWidgetFocus?: (area: WidgetArea | null) => void;
+  readonly nativePanels?: readonly NativeWorkspacePanel[];
+  readonly onPanelGeometryChange?: () => void;
   readonly authFetch?: typeof browserAuthFetch;
   readonly bundleLoader?: typeof loadAuthenticatedExtensionBundle;
   readonly onChange?: () => void;
@@ -113,12 +115,15 @@ export class ExtensionHost {
       container: options.container, registry: this.registry,
       layout: options.widgetLayout ?? new WidgetLayout({ getItem: () => null, setItem: () => {} }),
       onAreasChange: options.onWidgetAreasChange, onFocus: options.onWidgetFocus, onSelect: id => this.select(id),
+      nativePanels: options.nativePanels, onGeometryChange: options.onPanelGeometryChange,
+      onMove: (id, area) => this.moveWidget(id, area),
     });
     document.addEventListener("visibilitychange", this.onDocumentVisibility);
   }
 
   get diagnostic(): string { return this.registry.diagnostic; }
   get selectedId(): string | null { return this.panels.selectedId; }
+  get availablePanels(): readonly { id: string; title: string }[] { return this.panels.availablePanels; }
 
   async refresh(): Promise<void> {
     if (this.disposed) return;
@@ -187,8 +192,9 @@ export class ExtensionHost {
     this.render();
     this.panels.select(id);
   }
-  moveWidget(id: string, area: WidgetArea): void { this.panels.move(id, area); }
-  resetWidgetLayout(): void { this.panels.reset(); this.select(); }
+  setNativePanels(ids: readonly string[]): void { this.panels.setNativePanels(ids); this.select(); }
+  moveWidget(id: string, area: WidgetArea): void { this.panels.move(id, area); this.select(); }
+  resetWorkspaceLayout(): void { this.panels.reset(); this.select(); }
   setPresentation(presentation: WidgetPresentation): boolean {
     const visibilityChanged = this.setShellVisible(presentation.visible);
     const presentationChanged = this.panels.setPresentation(presentation);

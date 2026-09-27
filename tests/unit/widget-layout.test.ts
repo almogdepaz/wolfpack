@@ -35,7 +35,7 @@ describe("independent widget placement preferences", () => {
     expect(layout.selection("bottom", ["notes/one"])).toBe("notes/one");
   });
   test("validates identities, areas and preference bounds without accepting prototype placement", () => {
-    expect(normalizeWidgetLayout({ placements: { "notes/one": "left", "bad/id/extra": "right", "notes/two": "bottom", "../path": "right" }, selected: { right: "bad id", bottom: "notes/two" }, placement: "left" })).toEqual({ placements: { "notes/two": "bottom" }, selected: { bottom: "notes/two" } });
+    expect(normalizeWidgetLayout({ placements: { "notes/one": "floating", "bad/id/extra": "right", "notes/two": "bottom", "../path": "right" }, selected: { right: "bad id", bottom: "notes/two" }, placement: "left" })).toEqual({ placements: { "notes/two": "bottom" }, selected: { bottom: "notes/two" } });
     expect(normalizeWidgetLayout([])).toEqual({ placements: {}, selected: {} });
     const storage = memory({ placements: Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`notes/view-${i}`, "bottom"])) });
     const layout = new WidgetLayout(storage);
