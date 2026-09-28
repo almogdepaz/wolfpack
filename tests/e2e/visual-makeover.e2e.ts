@@ -24,7 +24,7 @@ test("session chrome keeps the original logo and readable, untransformed names",
   const name = page.locator("#session-list .card-name").first();
   await expect(name).toHaveCSS("text-transform", "none");
   await expect(name).toHaveCSS("text-shadow", "none");
-  expect(await name.evaluate((element) => getComputedStyle(element).fontFamily)).toContain("ui-monospace");
+  await expect(name).toHaveCSS("font-family", /ui-monospace/);
   const viewport = page.viewportSize()!;
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(viewport.width);
 });
@@ -57,7 +57,8 @@ test("machine names stay quiet and the labelled session action keeps its existin
   await expect(name).toHaveCSS("font-size", "11px");
   await expect(name).toHaveCSS("color", "rgb(143, 159, 149)");
   await expect(name).toHaveCSS("text-transform", "uppercase");
-  expect(await name.evaluate(element => getComputedStyle(element).fontFamily)).toContain("ui-monospace");
+  // Re-resolve the name across session-list refreshes, like the other CSS assertions above.
+  await expect(name).toHaveCSS("font-family", /ui-monospace/);
   const add = page.locator("#session-list .machine-add-btn").first();
   await expect(add).toHaveText("New session");
   await expect(add.locator("svg")).toHaveAttribute("aria-hidden", "true");
