@@ -1702,7 +1702,8 @@ body.no-animations, body.no-animations * {
 }
 
 /* Host workspace shell */
-body:not(:has(#terminal-view.visible)) #workspace-restore{display:none}
+#workspace-restore{color:var(--accent)}
+body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hidden]{display:none}
 #workspace-terminal-layout { appearance: auto; padding: 10px; border: 1px solid var(--border-input); border-radius: var(--radius-md); background: var(--bg-base); color: var(--text-primary); font: inherit; }
 #workspace-terminal-layout:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 #workspace-shell{position:relative;display:grid;grid-template-columns:var(--workspace-left-size,0px) var(--workspace-left-divider,0px) minmax(0,1fr) var(--workspace-right-divider,0px) var(--workspace-right-size,320px);grid-template-rows:minmax(0,1fr) var(--workspace-bottom-divider,0px) var(--workspace-bottom-size,0px);flex:1;min-height:0;overflow:hidden;background:var(--bg-base)}
