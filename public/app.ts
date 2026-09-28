@@ -1262,12 +1262,17 @@ function teardownTerminalForViewChange(previousView: string, nextView: string): 
   }
 }
 
+let cancelViewTransition: (() => void) | null = null;
+
 function applyViewVisibility(
   previousView: HTMLElement | null,
   nextView: HTMLElement,
   animate: boolean,
   goingForward: boolean,
 ): void {
+  // A prior animation's timeout or transitionend must not hide a newer view.
+  cancelViewTransition?.();
+  cancelViewTransition = null;
   if (animate && previousView) {
     const fg = goingForward ? nextView : previousView;
     const bg = goingForward ? previousView : nextView;
@@ -1293,22 +1298,33 @@ function applyViewVisibility(
     bg.style.transform = goingForward ? "translate3d(-30%,0,0)" : "translate3d(0,0,0)";
 
     let cleaned = false;
-    const cleanup = (): void => {
-      if (cleaned) return;
-      cleaned = true;
+    const resetStyles = (): void => {
       [fg, bg].forEach(el => {
         el.style.transition = "";
         el.style.zIndex = "";
         el.style.transform = "";
         el.classList.remove("swiping");
       });
+    };
+    const cancel = (): void => {
+      if (cleaned) return;
+      cleaned = true;
+      clearTimeout(timer);
+      fg.removeEventListener("transitionend", cleanup);
+      resetStyles();
+    };
+    const cleanup = (): void => {
+      if (cleaned) return;
+      cancel();
+      if (cancelViewTransition === cancel) cancelViewTransition = null;
       document.querySelectorAll(".view").forEach(view => {
         if (view !== nextView) view.classList.remove("visible");
       });
       nextView.classList.add("visible");
     };
     fg.addEventListener("transitionend", cleanup, { once: true });
-    setTimeout(cleanup, 350);
+    const timer = setTimeout(cleanup, 350);
+    cancelViewTransition = cancel;
     return;
   }
 
@@ -3089,19 +3105,16 @@ function removeDesktopConflictOverlay() {
   if (el) el.remove();
 }
 
-function mobileKeyboardShiftElements(): HTMLElement[] {
-  return [
-    document.getElementById("conn-status"),
-    document.getElementById("desktop-terminal-container"),
-    document.getElementById("desktop-grid-container"),
-    document.getElementById("cmd-palette"),
-    document.getElementById("kb-accessory"),
-  ].filter((el): el is HTMLElement => !!el);
+function setMobileKeyboardInset(insetPx: number): void {
+  // Shrink the view rather than translating its canvas above the clipped
+  // workspace. This also keeps the first row and accessory in the viewport.
+  const view = document.getElementById("terminal-view");
+  if (view) view.style.bottom = insetPx > 0 ? `${insetPx}px` : "";
 }
 
-function setMobileKeyboardShift(offsetPx: number): void {
-  const transform = offsetPx > 0 ? `translateY(-${offsetPx}px)` : "";
-  for (const el of mobileKeyboardShiftElements()) el.style.transform = transform;
+function terminalMayTakeFocus(container: HTMLElement): boolean {
+  const active = document.activeElement;
+  return active === document.body || active === container || container.contains(active);
 }
 
 type TerminalSlowLoadIndicator = ReturnType<typeof createTerminalSlowPathIndicator>;
@@ -3198,7 +3211,7 @@ function handleTerminalControlGranted(
   setTerminalLoadVisualState(container, "hydrating");
   slowLoad.start("restoring terminal control");
   if (isMobile) setMobileGhosttyKeyboardOpen(state.kbAccessoryOpen);
-  else state.terminalController?.focus();
+  else if (terminalMayTakeFocus(container)) state.terminalController?.focus();
 }
 
 function handleTerminalDisconnected(
@@ -3290,7 +3303,7 @@ function createTerminalBootstrapController(
     hydrationSilenceMs: INITIAL_HYDRATION_SILENCE_MS,
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
-    shouldFocus: () => !isMobile,
+    shouldFocus: () => !isMobile && terminalMayTakeFocus(container),
     shouldReconnect: () => !!state.terminalController?.term,
     onOpen: (wasReconnect) => {
       handleTerminalOpened(container, slowLoad, wasReconnect);
@@ -3351,10 +3364,10 @@ function setupMobileTerminalViewport(): void {
       offsetTop: window.visualViewport.offsetTop ?? 0,
     });
     const kbOpen = kbHeight > 150;
-    // Shift terminal sub-elements without changing their layout height.
-    // ghostty-web sees no container resize → no reflow → no scroll-through.
-    // Keep #terminal-view transform reserved for mobile view/swipe navigation.
-    setMobileKeyboardShift(kbOpen ? kbHeight : 0);
+    // Keep the view within the visual viewport; offsetTop is already
+    // subtracted by keyboardOcclusionHeight. Normal layout drives terminal
+    // geometry, without moving its first rendered row above the clip.
+    setMobileKeyboardInset(kbOpen ? kbHeight : 0);
     // Viewport is authoritative for collapse only. Opening remains an
     // explicit keyboard-button action so layout changes cannot enable stdin.
     if (!kbOpen && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
@@ -3448,7 +3461,7 @@ function destroyTerminal(preserveTarget = false) {
   // Reset terminal positioning
   const termView = document.getElementById("terminal-view");
   if (termView) { termView.style.bottom = ""; termView.style.transform = ""; }
-  setMobileKeyboardShift(0);
+  setMobileKeyboardInset(0);
   if (state.kbResizeTimer) { clearTimeout(state.kbResizeTimer); state.kbResizeTimer = null; }
   const container = document.getElementById("desktop-terminal-container");
   container.removeAttribute("inputmode");

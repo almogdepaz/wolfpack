@@ -343,6 +343,15 @@ function createGridCell(gs: GridSession, idx: number): HTMLElement {
     });
   }
 
+  // Ghostty's container key handler otherwise consumes Enter/Space from grid
+  // buttons. Leave the browser default intact so keyboard activation clicks.
+  cell.addEventListener("keydown", (event) => {
+    if ((event.key === "Enter" || event.key === " " || event.key === "Spacebar") &&
+        event.target instanceof HTMLButtonElement && cell.contains(event.target)) {
+      event.stopImmediatePropagation();
+    }
+  }, true);
+
   setTerminalLoadVisualState(cell, "prefill-loading");
   gs._slowLoad = createTerminalSlowPathIndicator(cell);
   gs._slowLoad.start("waiting for grid cell snapshot");
