@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { BROKER_TARGETS, readBrokerVersion, readSourceRevision, validateBrokerArtifact } from "../../scripts/broker-artifacts";
 import { validateReleaseTag } from "../../scripts/release-version-policy";
 
 type WorkflowStep = {
@@ -61,6 +62,42 @@ interface FinalizationFixture {
 
 const FINAL_TARGETS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"] as const;
 const FINAL_PAYLOADS = ["wolfpack", "wolfpack-broker"] as const;
+const MACOS_BROKER_TARGETS = ["bun-darwin-x64", "bun-darwin-arm64"] as const;
+const MACHO_64_HEADER_BYTES = 32;
+
+function prepareUnsignedMacosBrokers(root: string): void {
+  mkdirSync(join(root, "scripts"));
+  mkdirSync(join(root, "broker"));
+  for (const path of ["scripts/broker-artifacts.ts", "broker/Cargo.toml"]) {
+    copyFileSync(join(process.cwd(), path), join(root, path));
+  }
+  execFileSync("git", ["init", "-q"], { cwd: root });
+  execFileSync("git", ["add", "scripts/broker-artifacts.ts", "broker/Cargo.toml"], { cwd: root });
+  execFileSync("git", [
+    "-c", "user.name=Test", "-c", "user.email=test@example.com",
+    "-c", "commit.gpgsign=false", "commit", "-qm", "fixture",
+  ], { cwd: root });
+  for (const target of MACOS_BROKER_TARGETS) {
+    const output = join(root, "broker", "target", BROKER_TARGETS[target].cargoTarget, "release", "wolfpack-broker");
+    mkdirSync(dirname(output), { recursive: true });
+    execFileSync("/usr/bin/clang", [
+      "-arch", BROKER_TARGETS[target].cpu === "x64" ? "x86_64" : "arm64",
+      "-Wl,-no_adhoc_codesign", "-x", "c", "-", "-o", output,
+    ], { input: "int main(void) { return 0; }\n" });
+    const unsigned = spawnSync("/usr/bin/codesign", ["--verify", "--strict", output], { encoding: "utf8" });
+    expect(unsigned.status, unsigned.stderr).toBe(1);
+  }
+}
+
+function runMacosBrokerStaging(root: string): ReturnType<typeof spawnSync> {
+  const stage = jobs["broker-darwin"]?.steps?.find(step => step.name === "Stage broker binaries with provenance");
+  if (!stage?.run) throw new Error("macOS broker staging step is missing");
+  return spawnSync("bash", ["-e", "-c", stage.run], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${dirname(process.execPath)}:/usr/bin:/bin` },
+  });
+}
 
 function writeExecutable(path: string, source: string): void {
   writeFileSync(path, source);
@@ -295,6 +332,48 @@ describe("release workflow security policy", () => {
     }
     expect(stagingSource.match(/broker-artifacts\.ts stage/g)).toHaveLength(4);
     expect(jobSource("build")).toContain("WOLFPACK_BUILD_MODE=package-all bun run scripts/build.ts");
+  });
+
+  test.skipIf(process.platform !== "darwin")("stages natively signed macOS brokers with provenance bound to signed bytes", () => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-native-broker-signing-"));
+    try {
+      prepareUnsignedMacosBrokers(root);
+      const staging = runMacosBrokerStaging(root);
+      expect(staging.status, `${staging.stderr}\n${staging.stdout}`).toBe(0);
+      for (const target of MACOS_BROKER_TARGETS) {
+        const binaryPath = join(root, "staging", target, "wolfpack-broker");
+        const signature = spawnSync("/usr/bin/codesign", ["--verify", "--strict", binaryPath], { encoding: "utf8" });
+        expect(signature.status, signature.stderr).toBe(0);
+        expect(validateBrokerArtifact({
+          binaryPath,
+          metadataPath: join(root, "staging", target, "broker-artifact.json"),
+          expectedMode: "release",
+          expectedTarget: target,
+          expectedBrokerVersion: readBrokerVersion(root),
+          expectedSourceRevision: readSourceRevision(root),
+        }).sha256).toBe(sha256(binaryPath));
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform !== "darwin").each([...MACOS_BROKER_TARGETS])("rejects an unsignable %s broker before recording provenance", target => {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-unsignable-broker-"));
+    try {
+      prepareUnsignedMacosBrokers(root);
+      const binaryPath = join(root, "broker", "target", BROKER_TARGETS[target].cargoTarget, "release", "wolfpack-broker");
+      // Preserve the architecture header but remove load commands and code.
+      // Metadata-only validation accepts this; real signing must reject it.
+      writeFileSync(binaryPath, readFileSync(binaryPath).subarray(0, MACHO_64_HEADER_BYTES));
+      const staging = runMacosBrokerStaging(root);
+      expect(staging.status, `${staging.stderr}\n${staging.stdout}`).toBe(1);
+      for (const stagedTarget of MACOS_BROKER_TARGETS) {
+        expect(existsSync(join(root, "staging", stagedTarget, "broker-artifact.json"))).toBe(false);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("keeps build jobs read-only and grants release authority only to the release job", () => {
