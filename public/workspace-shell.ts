@@ -44,7 +44,7 @@ export interface WorkspaceShell {
   readonly contextVisible: boolean;
   readonly widgetPresentation: WidgetPresentation;
   setPreferences(next: Partial<WorkspaceShellPreferences>): void;
-  setPanelAreas(areas: readonly WidgetArea[]): void;
+  setPanelAreas(areas: readonly WidgetArea[], collapsed?: readonly WidgetArea[]): void;
   focusPanel(area: WidgetArea | null): void;
   closeMobileView(): void;
   reset(): void;
@@ -65,6 +65,7 @@ export function createWorkspaceShell(options: {
   const storage = options.storage ?? localStorage;
   let current = loadWorkspaceShellPreferences(storage);
   let areas: readonly WidgetArea[] = [current.panelPlacement];
+  let collapsedAreas: readonly WidgetArea[] = [];
   const desktop = matchMedia("(min-width:769px)");
   let mobileOpen = false;
   const presentation = () => workspacePresentation(current, desktop.matches, mobileOpen);
@@ -77,7 +78,6 @@ export function createWorkspaceShell(options: {
     right: root.querySelector("#workspace-context-divider"), bottom: root.querySelector("#workspace-bottom-divider"),
   };
   const contextRegion = root.querySelector<HTMLElement>("#workspace-context-region");
-  const collapseButton = document.querySelector<HTMLButtonElement>("#workspace-context-collapse");
   const restoreButton = document.querySelector<HTMLButtonElement>("#workspace-restore");
   const backButton = root.querySelector<HTMLButtonElement>("#workspace-context-back");
   const mobileHeader = root.querySelector<HTMLElement>("#workspace-mobile-header");
@@ -120,20 +120,20 @@ export function createWorkspaceShell(options: {
     root.classList.toggle("workspace-context-collapsed", !visible);
     for (const area of WIDGET_AREAS.filter(area => area !== "main")) {
       const enabled = desktop.matches && effective.fullView === "none" && areas.includes(area);
-      const size = dimension(area);
+      const collapsed = collapsedAreas.includes(area);
+      const size = collapsed ? 44 : dimension(area);
       root.style.setProperty(`--workspace-${area}-size`, `${enabled ? size : 0}px`);
-      root.style.setProperty(`--workspace-${area}-divider`, enabled ? "6px" : "0px");
+      root.style.setProperty(`--workspace-${area}-divider`, enabled && !collapsed ? "6px" : "0px");
       const divider = dividers[area];
-      if (divider) divider.hidden = !enabled;
+      if (divider) divider.hidden = !enabled || collapsed;
       divider?.setAttribute("aria-valuemin", String(minimumSize(area)));
       divider?.setAttribute("aria-valuenow", String(size));
       divider?.setAttribute("aria-valuemax", String(maximumSize(area)));
     }
     if (effective.fullView !== "none" || !desktop.matches || (drag && !areas.includes(drag.area))) finishResize();
-    if (collapseButton) { collapseButton.hidden = !visible; collapseButton.setAttribute("aria-expanded", String(visible)); }
     if (mobileHeader) mobileHeader.hidden = desktop.matches || !visible;
     if (backButton) backButton.hidden = desktop.matches;
-    if (restoreButton) restoreButton.hidden = visible;
+    if (restoreButton) { restoreButton.hidden = desktop.matches || visible; restoreButton.setAttribute("aria-expanded", String(visible)); }
     options.onContextVisibilityChange?.(visible);
     options.onWidgetPresentationChange?.(widgetPresentation());
     if (geometryChanged) notifyGeometry();
@@ -144,7 +144,7 @@ export function createWorkspaceShell(options: {
   for (const area of WIDGET_AREAS) {
     const divider = dividers[area];
     const coordinate = (event: PointerEvent) => area === "bottom" ? event.clientY : event.clientX;
-    const canResize = () => desktop.matches && current.fullView === "none" && areas.includes(area);
+    const canResize = () => desktop.matches && current.fullView === "none" && areas.includes(area) && !collapsedAreas.includes(area);
     const resize = (size: number) => setPreferences({ [area === "bottom" ? "bottomSize" : area === "left" ? "leftSize" : "splitSize"]: Math.min(size, maximumSize(area)) });
     const resizeEvents = {
       pointerdown: (event: PointerEvent) => {
@@ -168,17 +168,17 @@ export function createWorkspaceShell(options: {
   const onBreakpoint = () => {
     const panelHadFocus = contextRegion?.contains(document.activeElement);
     finishResize(); mobileOpen = false; render(true);
-    if (panelHadFocus) (workspaceContextIsVisible(presentation()) ? collapseButton : restoreButton)?.focus({ preventScroll: true });
+    if (panelHadFocus) (desktop.matches ? document.getElementById("sidebar-settings-btn") : restoreButton)?.focus({ preventScroll: true });
   };
   desktop.addEventListener("change", onBreakpoint);
   const close = () => {
     if (desktop.matches) setPreferences({ contextCollapsed: true, fullView: "none" }); else { mobileOpen = false; render(true); }
     restoreButton?.focus({ preventScroll: true });
   };
-  listen(collapseButton, "click", close); listen(backButton, "click", close);
+  listen(backButton, "click", close);
   listen(restoreButton, "click", () => {
     if (desktop.matches) setPreferences({ fullView: "none", contextCollapsed: false }); else { mobileOpen = true; render(true); }
-    (desktop.matches ? collapseButton : backButton)?.focus({ preventScroll: true });
+    (desktop.matches ? resetButton : backButton)?.focus({ preventScroll: true });
   });
   const reset = () => { mobileOpen = false; setPreferences(DEFAULT_WORKSPACE_SHELL_PREFERENCES); options.onReset?.(); };
   listen(resetButton, "click", reset);
@@ -186,14 +186,14 @@ export function createWorkspaceShell(options: {
   return {
     get preferences() { return current; }, get contextVisible() { return workspaceContextIsVisible(presentation()); }, get widgetPresentation() { return widgetPresentation(); },
     setPreferences, reset,
-    setPanelAreas(next): void {
-      const valid = WIDGET_AREAS.filter(area => next.includes(area));
-      const normalized = valid;
-      if (areas.join() === normalized.join()) return;
-      areas = normalized; render(true);
+    setPanelAreas(next, collapsed = []): void {
+      const normalized = WIDGET_AREAS.filter(area => next.includes(area));
+      const minimized = normalized.filter(area => collapsed.includes(area));
+      if (areas.join() === normalized.join() && collapsedAreas.join() === minimized.join()) return;
+      areas = normalized; collapsedAreas = minimized; render(true);
     },
     focusPanel(area): void {
-      if (!desktop.matches) return;
+      if (!desktop.matches) { mobileOpen = !!area; render(true); if (!mobileOpen) restoreButton?.focus({ preventScroll: true }); return; }
       setPreferences({ fullView: area ? "context" : "none", ...(area ? { contextArea: area, contextCollapsed: false } : {}) });
       if (!workspaceContextIsVisible(presentation())) restoreButton?.focus({ preventScroll: true });
     },

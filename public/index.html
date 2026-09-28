@@ -54,6 +54,7 @@
       </div>
       <div class="header-right">
         <div id="header-machine-label" class="machine-label"></div>
+        <button id="workspace-restore" class="settings-gear icon-btn" type="button" aria-expanded="false" aria-controls="workspace-context-region" aria-label="Widgets" title="Widgets" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
         <button class="settings-gear icon-btn" id="gear-btn" type="button" aria-label="Settings" title="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
       </div>
     </header>
@@ -68,7 +69,7 @@
           <button id="sidebar-collapse-btn" type="button" title="Pin sidebar" aria-label="Pin sidebar"><span class="pin-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 6 6M14 3l7 7-4 1-4 4-1 4-7-7 4-1 4-4 1-4ZM5 19l4-4"/></svg></span></button>
         </div>
       </div>
-      <div id="sidebar-session-controls" class="session-chooser-controls" hidden><div id="sidebar-session-filter"></div><div id="sidebar-widget-controls" class="widget-controls"></div></div>
+      <div id="sidebar-session-controls" class="session-chooser-controls" hidden><div id="sidebar-session-filter"></div></div>
       <div id="sidebar-session-list" class="sidebar-sessions"></div>
     </nav>
     <script src="/sidebar-bootstrap.js?v=__WOLFPACK_ASSET_VERSION__"></script>
@@ -123,7 +124,7 @@
           <button id="expanded-collapse-btn" type="button" title="Collapse sessions" aria-label="Collapse sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 9-5-5M4 9V4h5M15 9l5-5M15 4h5v5M9 15l-5 5M4 15v5h5M15 15l5 5M20 15v5h-5"/></svg></button>
         </div>
       </div>
-      <div id="session-dashboard-controls" class="session-chooser-controls"><div id="dashboard-session-filter"></div><div id="dashboard-widget-controls" class="widget-controls"></div></div>
+      <div id="session-dashboard-controls" class="session-chooser-controls"><div id="dashboard-session-filter"></div></div>
       <div id="session-list" class="list"></div>
     </div>
     <p id="session-order-instructions" class="visually-hidden">Drag the card to reorder it, or press Alt with an up or down arrow.</p>
@@ -320,6 +321,7 @@
           <p class="settings-description">Restore panel positions and sizes without changing terminal membership or the terminal layout recipe.</p>
           <p class="settings-description" data-workspace-layout-status role="status" hidden></p>
           <button class="discover-btn" type="button" data-widget-refresh>Refresh installed extensions</button>
+          <button class="discover-btn" type="button" id="workspace-reopen-widgets">Reopen closed widgets</button>
           <p class="settings-description" data-widget-status role="status" aria-live="polite"></p>
           <div data-widget-list></div>
           <p class="settings-description">Install, update, enable, or remove trusted packages using the existing CLI: <code>wolfpack extensions --help</code>. Browser extensions run trusted code, not sandboxed content.</p>
@@ -409,10 +411,6 @@
         aria-atomic="true"
       >
         Reconnecting...
-      </div>
-      <div class="workspace-terminal-toolbar">
-        <button id="workspace-context-collapse" class="workspace-icon" type="button" aria-expanded="true" aria-controls="workspace-context-region" aria-label="Collapse context panel" title="Collapse context panel"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M8 9l3 3-3 3"/></svg><span class="workspace-control-label">Hide widgets</span></button>
-        <button id="workspace-restore" class="workspace-icon" type="button" aria-expanded="false" aria-controls="workspace-context-region" aria-label="Expand context panel" title="Expand context panel" hidden><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18M11 9l-3 3 3 3"/></svg><span class="workspace-control-label">Show widgets</span></button>
       </div>
       <div id="workspace-shell" data-context-placement="right" data-full-view="none">
         <aside id="workspace-context-region" aria-label="Context workspace">

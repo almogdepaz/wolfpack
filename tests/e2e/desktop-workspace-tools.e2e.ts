@@ -20,37 +20,36 @@ test.beforeAll(async()=>{
 });
 test.afterAll(async()=>{await server?.teardown();if(home)removeOwnedTestServerHome(home);if(root)rmSync(root,{recursive:true,force:true})});
 
-test('widget controls sit beside All/Idle without a Workspace tools section or terminal remount',async({page},info)=>{
+test('widget controls belong to their panel without global toggles or terminal remount',async({page},info)=>{
  test.skip(info.project.name!=='desktop','Desktop session controls');
  const sockets:string[]=[];page.on('websocket',socket=>{if(socket.url().includes('/ws/pty'))sockets.push(socket.url())});
  await page.goto(server.baseUrl);await page.locator('.card',{hasText:'tools-one'}).first().click();
- const canvas=page.locator('#desktop-terminal-container canvas');await expect(canvas).toBeVisible();
+ const terminal=page.locator('#desktop-terminal-container'), canvas=terminal.locator('canvas');
+ await expect(terminal).toHaveAttribute('data-terminal-load-state','live');
  expect(await page.evaluate(()=>({privateView:typeof (window as any).showView,hooks:Object.keys((window as any).__wolfpackTest)}))).toEqual({privateView:'undefined',hooks:['serializeTerminalTail']});
- await expect(page.locator('#workspace-tools, #workspace-settings-dialog, #workspace-session-actions, #terminal-transcript-btn')).toHaveCount(0);
- await expect(page.locator('.workspace-terminal-toolbar')).toBeHidden();
- const row=page.locator('#sidebar-session-controls');
- const filter=row.getByRole('group',{name:'Session view'});
- const hide=row.getByRole('button',{name:'Hide widgets',exact:true});
- await expect(hide).toBeVisible();
- const pill=(await filter.boundingBox())!, box=(await hide.boundingBox())!;
- expect(box.x).toBeGreaterThanOrEqual(pill.x+pill.width);
- expect(Math.abs(box.y+box.height/2-pill.y-pill.height/2)).toBeLessThanOrEqual(1);
- await canvas.evaluate(node=>{(window as any).__toolsCanvas=node});const attached=sockets.length;
- await hide.click();const show=row.getByRole('button',{name:'Show widgets',exact:true});
- await expect(show).toBeFocused();expect(await show.boundingBox()).toEqual(box);
- await show.press('Enter');await expect(hide).toBeFocused();
- // Polling/filter renders must not replace the stable widget controls or lose focus.
+ await expect(page.locator('#workspace-tools, #workspace-settings-dialog, #workspace-session-actions, #terminal-transcript-btn, #workspace-context-collapse, .workspace-terminal-toolbar')).toHaveCount(0);
+ await expect(page.locator('#workspace-terminal-region .workspace-context-header:visible')).toHaveCount(0);
+ const filter=page.locator('#sidebar-session-controls').getByRole('group',{name:'Session view'});
+ const collapse=page.getByRole('button',{name:'Collapse Widgets',exact:true});
+ await expect(collapse).toBeVisible();
+ await canvas.evaluate(node=>{(window as any).__toolsCanvas=node});
+ await collapse.evaluate(node=>{(window as any).__widgetCollapse=node});
+ const attached=sockets.length;
+ await collapse.click();const restore=page.getByRole('tab',{name:'Widgets',exact:true});
+ await expect(restore).toBeVisible();await restore.click();
+ await expect(collapse).toBeVisible();
  await filter.getByRole('button',{name:'Idle sessions'}).click();
- await hide.focus();await page.waitForTimeout(350);await expect(hide).toBeFocused();
  await filter.getByRole('button',{name:'All sessions'}).click();
- await page.locator('[data-widget-full]:visible').click();await hide.click();
- await expect(page.locator('#workspace-context-region')).toBeHidden();await show.click();
+ expect(await collapse.evaluate(node=>node===(window as any).__widgetCollapse)).toBe(true);
+ await page.locator('[data-widget-full]:visible').click();await collapse.click();
+ await expect(terminal).toBeVisible();await restore.click();
  expect(await canvas.evaluate(node=>node===(window as any).__toolsCanvas)).toBe(true);expect(sockets).toHaveLength(attached);
  await page.getByRole('button',{name:'Expand sessions',exact:true}).click();
- await expect(page.locator('#session-dashboard-controls #workspace-context-collapse')).toBeVisible();
+ await expect(page.locator('#session-dashboard-controls')).toBeVisible();
+ await expect(page.getByRole('button',{name:'Hide widgets',exact:true})).toHaveCount(0);
  await page.getByRole('button',{name:'Collapse sessions',exact:true}).click();
- await expect(hide).toBeVisible();
- await expect(page.locator('#desktop-terminal-container')).toHaveAttribute('data-terminal-load-state','live');
+ await expect(collapse).toBeVisible();
+ await expect(terminal).toHaveAttribute('data-terminal-load-state','live');
  await page.screenshot({path:info.outputPath('session-controls.png')});
 });
 
@@ -65,7 +64,7 @@ test('terminal layout lives in Settings and survives return and reload without a
  await page.locator('.card',{hasText:'tools-one'}).filter({visible:true}).first().click();
  await expect(page.locator('#desktop-terminal-container canvas')).toBeVisible();
  await expect(page.locator('#terminal-transcript-btn')).toHaveCount(0);
- await expect(page.locator('.workspace-terminal-toolbar select')).toHaveCount(0);
+ await expect(page.locator('.workspace-terminal-toolbar')).toHaveCount(0);
  expect(await page.evaluate(()=>localStorage.getItem('wolfpack-terminal-layout'))).toBe('lead-stack');
  await page.reload();await expect(page.locator('#settings-view')).toBeVisible();
  await expect(picker).toHaveValue('lead-stack');
@@ -75,34 +74,38 @@ test('terminal layout lives in Settings and survives return and reload without a
  await page.screenshot({path:info.outputPath('terminal-settings.png')});
 });
 
-test('unpinned sidebar retains keyboard access to the widget toggle',async({page},info)=>{
+test('unpinned sidebar retains keyboard Settings access while widgets recover locally',async({page},info)=>{
  test.skip(info.project.name!=='desktop','Desktop hover sidebar');
  await page.addInitScript(()=>localStorage.setItem('wolfpack-sidebar-pinned','0'));
  await page.goto(server.baseUrl);await page.locator('.card',{hasText:'tools-one'}).filter({visible:true}).first().click();
- await expect(page.locator('#desktop-terminal-container canvas')).toBeVisible();
+ await expect(page.locator('#desktop-terminal-container')).toHaveAttribute('data-terminal-load-state','live');
  await page.keyboard.press('Meta+b');await expect(page.locator('#sidebar-session-controls')).toBeVisible();
  await page.mouse.move(700,300);await page.keyboard.press('Meta+b');
  await expect(page.locator('#desktop-sidebar')).toHaveClass(/collapsed/);
  const edge=(await page.locator('#sidebar-hover-edge').boundingBox())!;
  await page.mouse.move(edge.x+edge.width/2,edge.y+100);
- const hide=page.locator('#sidebar-session-controls #workspace-context-collapse');await expect(hide).toBeVisible();
- await hide.click();await page.mouse.move(700,300);await page.waitForTimeout(350);
+ const settings=page.locator('#sidebar-settings-btn');await expect(settings).toBeVisible();
+ await settings.focus();await page.mouse.move(700,300);
  await expect(page.locator('#desktop-sidebar')).not.toHaveClass(/collapsed/);
- await expect(page.locator('#workspace-restore')).toBeFocused();
- await page.keyboard.press('Enter');await expect(hide).toBeFocused();
+ await settings.press('Enter');await expect(page.locator('#settings-view')).toBeVisible();
+ await page.locator('#settings-back-btn').click();
+ await expect(page.locator('#desktop-terminal-container')).toHaveAttribute('data-terminal-load-state','live');
+ const collapse=page.getByRole('button',{name:'Collapse Widgets',exact:true});
+ await collapse.focus();await collapse.press('Enter');
+ const restore=page.getByRole('tab',{name:'Widgets',exact:true});await expect(restore).toBeVisible();
+ await restore.focus();await restore.press('Enter');await expect(collapse).toBeVisible();
 });
 
-test('widget controls retain one owner across desktop and mobile',async({page},info)=>{
+test('mobile Widgets entry lives in the app header without a terminal toolbar',async({page},info)=>{
  test.skip(info.project.name!=='desktop','Desktop to mobile responsive ownership');
  await page.goto(server.baseUrl);await page.locator('.card',{hasText:'tools-two'}).first().click();
- await expect(page.locator('#sidebar-session-controls #workspace-context-collapse')).toBeVisible();
+ await expect(page.getByRole('button',{name:'Collapse Widgets',exact:true})).toBeVisible();
  await page.setViewportSize({width:390,height:844});
- const toolbar=page.locator('.workspace-terminal-toolbar');await expect(toolbar).toBeVisible();
- await expect(toolbar.locator('#workspace-restore')).toHaveAccessibleName('Expand context panel');
- await toolbar.locator('#workspace-restore').click();
+ const open=page.locator('body > header #workspace-restore');await expect(open).toBeVisible();
+ await expect(open).toHaveAccessibleName('Widgets');await open.click();
  await page.getByRole('button',{name:'Back to terminal',exact:true}).click();
- await expect(toolbar.locator('select, #terminal-transcript-btn')).toHaveCount(0);
+ await expect(page.locator('.workspace-terminal-toolbar, #workspace-context-collapse, #terminal-transcript-btn')).toHaveCount(0);
  await page.setViewportSize({width:1280,height:720});
- await expect(toolbar).toBeHidden();await expect(page.locator('#sidebar-session-controls #workspace-context-collapse')).toBeVisible();
- await expect(page.locator('#workspace-context-collapse')).toHaveCount(1);
+ await expect(open).toBeHidden();await expect(page.getByRole('button',{name:'Collapse Widgets',exact:true})).toBeVisible();
+ await expect(page.locator('#workspace-restore')).toHaveCount(1);
 });

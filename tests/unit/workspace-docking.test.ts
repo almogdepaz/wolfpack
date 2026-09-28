@@ -26,17 +26,17 @@ describe("built-in workspace docking", () => {
     expect(layout.area(terminals)).toBe("main");
     expect(layout.area(widget)).toBe("right");
   });
-  test("moving the last Main panel promotes another available panel atomically", () => {
+  test("the terminal stays in Main while other panels can join and leave its tabs", () => {
     const store = memory(), layout = new WidgetLayout(store);
     const available = [sessions, terminals, widget];
-    expect(layout.replacement(terminals, "bottom", available)).toBe(sessions);
-    expect(layout.move(terminals, "bottom", available)).toBe(true);
-    expect(layout.area(terminals)).toBe("bottom");
-    expect(layout.area(sessions)).toBe("main");
-    expect(layout.area(widget)).toBe("right");
-    const restored = new WidgetLayout(store);
-    expect(restored.selection("main", available)).toBe(sessions);
-    expect(restored.selection("bottom", available)).toBe(terminals);
+    expect(layout.move(terminals, "bottom", available)).toBe(false);
+    expect(layout.area(terminals)).toBe("main");
+    expect(layout.move(sessions, "main", available)).toBe(true);
+    expect(layout.selection("main", available)).toBe(sessions);
+    expect(layout.move(sessions, "bottom", available)).toBe(true);
+    expect(layout.area(terminals)).toBe("main");
+    expect(layout.selection("main", available)).toBe(terminals);
+    expect(new WidgetLayout(store).area(sessions)).toBe("bottom");
   });
   test("an occupied destination groups tabs; grid membership is never a placement preference", () => {
     const layout = new WidgetLayout(memory());
@@ -60,19 +60,19 @@ describe("built-in workspace docking", () => {
   });
   test("runtime recovery fills Main without overwriting hidden or unavailable panels' preferences", () => {
     const layout = new WidgetLayout(memory());
-    layout.move(terminals, "bottom", [terminals, widget]);
+    layout.move(widget, "main", [terminals, widget]);
     expect(layout.area(widget)).toBe("main");
     const before = JSON.stringify(layout.preferences);
     expect(layout.areasFor([terminals])[terminals]).toBe("main");
     expect(JSON.stringify(layout.preferences)).toBe(before);
-    expect(layout.areasFor([terminals, widget])).toEqual({ [terminals]: "bottom", [widget]: "main" });
+    expect(layout.areasFor([terminals, widget])).toEqual({ [terminals]: "main", [widget]: "main" });
   });
   test("preview validation neither mutates preferences nor permits an unavailable or sole Main panel", () => {
     const store = memory(), layout = new WidgetLayout(store);
     const before = layout.preferences;
     expect(layout.canMove(terminals, "bottom", [terminals])).toBe(false);
     expect(layout.canMove(terminals, "bottom", [terminals, ":unknown"])).toBe(false);
-    expect(layout.canMove(terminals, "bottom", [terminals, sessions])).toBe(true);
+    expect(layout.canMove(terminals, "bottom", [terminals, sessions])).toBe(false);
     expect(layout.canMove("unknown/view", "main", [terminals, sessions])).toBe(false);
     expect(layout.preferences).toBe(before);
     expect(layout.diagnostic).toBe("");

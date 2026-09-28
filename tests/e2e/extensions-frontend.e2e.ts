@@ -195,7 +195,48 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-test("independent widget areas retain live terminals and drafts while mobile leaves desktop tabs untouched", async ({ page }, testInfo) => {
+test("widgets collapse individually and close without terminal chrome or lost drafts", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop widget collapse and close");
+  await authorize(page);
+  let sockets = 0;
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
+  const terminal = page.locator("#desktop-terminal-container");
+  await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
+  await expect(page.locator("#workspace-context-collapse")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Move Terminal grid", exact: true })).toHaveCount(0);
+  await expect(page.locator("#workspace-terminal-region .workspace-context-header:visible")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await note.fill("retained collapsed draft");
+  await note.evaluate(node => { (window as any).__collapsedNote = { node, parent: node.parentElement }; });
+  await terminal.locator("canvas").evaluate(node => { (window as any).__collapseCanvas = node; });
+  const attached = sockets;
+  await dockPanel(page, "Notes", "bottom");
+  await page.getByRole("tab", { name: "Alpha", exact: true }).click();
+  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await expect(note).toBeHidden();
+  const bottom = page.locator('.widget-panel[data-widget-area="bottom"]:visible');
+  await expect(bottom.getByRole("tab", { name: "Notes", exact: true })).toBeVisible();
+  expect((await bottom.boundingBox())!.height).toBeLessThanOrEqual(48);
+  await bottom.getByRole("tab", { name: "Notes", exact: true }).click();
+  await expect(note).toHaveValue("retained collapsed draft");
+  expect(await note.evaluate(node => node === (window as any).__collapsedNote.node && node.parentElement === (window as any).__collapsedNote.parent)).toBe(true);
+  await page.getByRole("button", { name: "Close Notes", exact: true }).click();
+  await expect(note).toBeHidden();
+  await expect(page.getByRole("tab", { name: "Notes", exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-context-view='alpha/shared']")).toBeVisible();
+  expect(await terminal.locator("canvas").evaluate(node => node === (window as any).__collapseCanvas)).toBe(true);
+  expect(sockets).toBe(attached);
+  await page.screenshot({ path: testInfo.outputPath("clean-terminal-widgets-closed.png") });
+  await page.locator("#sidebar-settings-btn").click();
+  await page.getByRole("link", { name: "Widgets", exact: true }).click();
+  await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
+  await page.locator("#settings-back-btn").click();
+  await expect(note).toHaveValue("retained collapsed draft");
+});
+
+test("independent widget areas retain live terminals and drafts while mobile leaves desktop tabs untouched",  async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop simultaneous areas with responsive mobile recovery");
   await authorize(page);
   let sockets = 0;
@@ -234,7 +275,8 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await expect(right).toBeVisible(); await expect(bottom).toBeVisible();
   await dockPanel(page, "Alpha", "bottom");
   await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveAttribute("aria-selected", "true");
-  await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveCSS("border-bottom-width", "3px");
+  await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveCSS("border-bottom-width", "1px");
+  await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveCSS("box-shadow", "rgb(69, 237, 126) 0px 2px 0px 0px inset");
   await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveCSS("font-weight", "600");
   await bottom.getByRole("tab", { name: "Notes", exact: true }).click();
   await expect(note).toHaveValue("independent retained draft");
@@ -250,6 +292,7 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await expect(page.locator("[data-context-view='beta/shared']")).toBeVisible();
   await expect(page.getByRole("tab", { name: "Beta", exact: true })).toHaveCSS("font-weight", "600");
   await expect(page.getByRole("tab", { name: "Beta", exact: true })).toHaveCSS("min-height", "44px");
+  await expect(page.getByRole("tab", { name: "Beta", exact: true })).toHaveCSS("background-color", "rgb(28, 33, 30)");
   await page.screenshot({ path: testInfo.outputPath("mobile-widget-tab-strip.png") });
   await expect(note).toBeHidden();
   await page.locator("#workspace-context-back").click();
@@ -346,16 +389,18 @@ test("native panels share widget areas and Main recovers without losing a draft 
   const attached = sockets;
   await dockPanel(page, "Notes", "main");
   await expect(terminal).toBeHidden();
-  await dockPanel(page, "Terminal grid", "bottom");
   await dockPanel(page, "Sessions", "right");
-  await expect(terminal).toBeVisible(); await expect(note).toBeVisible();
+  await expect(terminal).toBeHidden(); await expect(note).toBeVisible();
   await expect(sessions).toHaveAttribute("data-widget-area", "right");
   await expect(sessions.getByRole("tab", { name: "Agent Context", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Hide widgets", exact: true }).click();
-  await expect(note).toBeHidden(); await expect(terminal).toHaveAttribute("data-widget-area", "main");
-  await page.getByRole("button", { name: "Show widgets", exact: true }).click();
-  await expect(note).toHaveValue("native docking retained draft"); await expect(terminal).toHaveAttribute("data-widget-area", "bottom");
-  await page.screenshot({ path: testInfo.outputPath("widget-main-sessions-right-grid-bottom.png") });
+  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await expect(note).toBeHidden(); await expect(terminal).toBeVisible();
+  await expect(terminal).toHaveAttribute("data-widget-area", "main");
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await expect(note).toHaveValue("native docking retained draft"); await expect(terminal).toBeHidden();
+  await dockPanel(page, "Notes", "bottom");
+  await expect(terminal).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("widget-bottom-sessions-right-grid-main.png") });
   const saved = await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#workspace-restore").click();
@@ -369,7 +414,7 @@ test("native panels share widget areas and Main recovers without losing a draft 
   expect(sockets).toBe(attached);
   await page.reload(); await openSession(page, SESSION_A);
   await expect(note).toHaveValue("native docking retained draft");
-  await expect(terminal).toHaveAttribute("data-widget-area", "bottom");
+  await expect(terminal).toHaveAttribute("data-widget-area", "main");
   await expect(sessions).toHaveAttribute("data-widget-area", "right");
 });
 
@@ -593,7 +638,12 @@ test("a sole Agent Context opens directly without its redundant tab and multiple
     const view = page.locator("[data-context-view='agent-context/context']");
     await expect(page.locator("[data-extension-tabs] [role='tab']")).toHaveCount(1);
     await expect(view).toHaveCount(0); // collapsed shell never auto-mounts a view
-    await page.getByRole("button", { name: testInfo.project.name === "desktop" ? "Show widgets" : "Expand context panel", exact: true }).click();
+    if (testInfo.project.name === "desktop") {
+      await page.locator("#sidebar-settings-btn").click();
+      await page.getByRole("link", { name: "Widgets", exact: true }).click();
+      await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
+      await page.locator("#settings-back-btn").click();
+    } else await page.getByRole("button", { name: "Widgets", exact: true }).click();
     const current = JSON.parse(runCli(["extension-data", "read", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port));
     await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
     const layouts = page.locator("#workspace-terminal-layout");
@@ -754,14 +804,15 @@ test("ordinary context-hide controls pause polling and preserve retained workspa
   const selectedLayout = await page.locator("#workspace-terminal-layout").inputValue();
   const attached = sockets.length;
 
-  const button = page.locator(testInfo.project.name === "desktop" ? "#workspace-context-collapse" : "#workspace-context-back");
+  const button = testInfo.project.name === "desktop" ? page.getByRole("button", { name: "Collapse Agent Context", exact: true }) : page.locator("#workspace-context-back");
   if (testInfo.project.name === "mobile-webkit") await button.tap();
   else await button.click();
-  await expect(page.locator("#workspace-context-region")).toBeHidden();
+  await expect(contextView).toBeHidden();
   const atHide = reads;
   await page.waitForTimeout(2_300);
   expect(reads, "collapse must pause selected context polling").toBe(atHide);
-  await page.locator("#workspace-restore").click();
+  if (testInfo.project.name === "desktop") await page.getByRole("tab", { name: "Agent Context", exact: true }).click();
+  else await page.locator("#workspace-restore").click();
   await expect.poll(() => reads).toBeGreaterThan(atHide);
   expect(await contextView.evaluate(node => node === (window as unknown as { __extensionRetainedContext?: Element }).__extensionRetainedContext)).toBe(true);
   expect(await canvas.evaluate(node => node === (window as unknown as { __extensionRetainedShellCanvas?: Element }).__extensionRetainedShellCanvas)).toBe(true);

@@ -7,6 +7,27 @@ function memory(initial?: unknown) {
 }
 
 describe("independent widget placement preferences", () => {
+  test("individual collapsed and closed views persist without hiding their package siblings", () => {
+    const storage = memory(), layout = new WidgetLayout(storage);
+    layout.setWidgetState("notes/one", "collapsed");
+    layout.setWidgetState("notes/two", "closed");
+    expect(new WidgetLayout(storage).widgetState("notes/one")).toBe("collapsed");
+    expect(new WidgetLayout(storage).widgetState("notes/two")).toBe("closed");
+    expect(layout.widgetState("notes/three")).toBe("open");
+    layout.setWidgetState("notes/one", "open");
+    expect(layout.widgetState("notes/two")).toBe("closed");
+    layout.reopenWidgets();
+    expect(layout.preferences).toEqual({ placements: {}, selected: {} });
+  });
+  test("widget state is bounded presentation data, never native-panel visibility", () => {
+    const layout = new WidgetLayout(memory({ widgets: { ":terminals": "closed", "bad/id/extra": "collapsed", "notes/one": "unknown", "notes/two": "closed" } }));
+    expect(layout.preferences.widgets).toEqual({ "notes/two": "closed" });
+    layout.setWidgetState(":sessions", "closed");
+    expect(layout.widgetState(":sessions")).toBe("open");
+    for (let i = 0; i < 150; i++) layout.setWidgetState(`notes/view-${i}`, "collapsed");
+    expect(Object.keys(layout.preferences.widgets!)).toHaveLength(128);
+    expect(layout.widgetState("notes/view-149")).toBe("collapsed");
+  });
   test("inherits Step3 placement without turning a multi-view catalog into auto-selection", () => {
     const layout = new WidgetLayout(memory(), "bottom");
     expect(layout.area("notes/one")).toBe("bottom");

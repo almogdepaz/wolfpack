@@ -75,14 +75,15 @@ describe("ExtensionHost", () => {
       host.select("widgets/view-31"); expect(mounts).toBe(1);
       host.moveWidget("widgets/view-31", "main");
       expect(terminals.hidden).toBe(true); expect(visible).toBe(true);
-      host.moveWidget(":terminals", "bottom");
-      expect(terminals.hidden).toBe(false); expect(terminals.dataset.widgetArea).toBe("bottom");
       const preferences = saved;
+      host.moveWidget(":terminals", "bottom");
+      expect(terminals.hidden).toBe(true); expect(terminals.dataset.widgetArea).toBe("main");
+      expect(saved).toBe(preferences);
       host.setPresentation({ visible: false, desktop: true, focusArea: null });
       expect(terminals.dataset.widgetArea).toBe("main"); expect(visible).toBe(false); expect(saved).toBe(preferences);
       host.select("widgets/view-30"); expect(mounts).toBe(1); // hidden widget actions cannot mount code
       host.setPresentation({ visible: true, desktop: true, focusArea: null }); host.select();
-      expect(terminals.dataset.widgetArea).toBe("bottom"); expect(visible).toBe(true);
+      expect(terminals.dataset.widgetArea).toBe("main"); expect(visible).toBe(true);
       expect(terminals.parentElement).toBe(parent); expect(sessions.parentElement).toBe(parent);
       expect(mounts).toBe(1); expect(disposals).toBe(0);
       host.select(":unknown"); expect(host.diagnostic).toContain("unavailable");

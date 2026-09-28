@@ -25,7 +25,6 @@ import { TerminalLayoutRegistry } from "./terminal-layout-registry";
 import { createWorkspaceShell, loadWorkspaceShellPreferences } from "./workspace-shell";
 import { WidgetLayout, SESSIONS_PANEL, TERMINALS_PANEL } from "./widget-layout";
 import { createWorkspaceDocking } from "./workspace-docking";
-import { initWorkspaceNavigation } from "./workspace-navigation";
 import { ExtensionHost } from "./extension-host";
 import { WidgetVisibility, WIDGET_VISIBILITY_PREFIX } from "./widget-visibility";
 import { createWidgetManager } from "./widget-manager";
@@ -4794,7 +4793,6 @@ function syncSessionChooserOwnership(): boolean {
   if (sessionDashboardControls) sessionDashboardControls.hidden = sidebarOwns;
   const sidebarControls = document.getElementById("sidebar-session-controls");
   if (sidebarControls) sidebarControls.hidden = !sidebarOwns;
-  syncWorkspaceControls(sidebarOwns);
   if (sessionList) sessionList.hidden = sidebarOwns;
   return sidebarOwns;
 }
@@ -5412,7 +5410,6 @@ function bindHtmlEventListeners(): void {
 
 }
 
-const syncWorkspaceControls = initWorkspaceNavigation();
 bindHtmlEventListeners();
 
 initGridDeps({
@@ -5479,8 +5476,7 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
     { id: SESSIONS_PANEL, title: "Sessions", element: document.getElementById("desktop-sidebar")! },
   ],
   onPanelGeometryChange: () => scheduleGridStabilizedFit(),
-  onWorkspaceReset: () => workspaceShell?.reset(),
-  onWidgetAreasChange: areas => workspaceShell?.setPanelAreas(areas),
+  onWidgetAreasChange: (areas, collapsed) => workspaceShell?.setPanelAreas(areas, collapsed),
   onWidgetFocus: area => workspaceShell?.focusPanel(area),
   registerLayout: contribution => {
     const unregister = workspaceTerminalLayouts.register(contribution);
@@ -5518,6 +5514,10 @@ const workspaceDocking = createWorkspaceDocking({
   move: (id, area) => extensionHost?.moveWidget(id, area),
 });
 const widgetManager = createWidgetManager({ root: document.getElementById("settings-extensions")!, visibility: widgetVisibility, safeMode: () => wpSettings.extensionSafeMode });
+document.getElementById("workspace-reopen-widgets")?.addEventListener("click", () => {
+  if (isDesktop()) workspaceShell?.setPreferences({ contextCollapsed: false, fullView: "none" });
+  extensionHost?.reopenWidgets();
+});
 const unsubscribeWidgetVisibility = widgetVisibility.subscribe(() => extensionHost?.syncWidgetVisibility());
 const onWidgetStorage = (event: StorageEvent) => {
   if (event.storageArea === localStorage && (event.key === null || event.key.startsWith(WIDGET_VISIBILITY_PREFIX))) widgetVisibility.changed();

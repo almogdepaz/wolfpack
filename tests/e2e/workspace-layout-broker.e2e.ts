@@ -98,7 +98,7 @@ test("desktop dock dragging previews without changing layout and cancels safely"
   });
   await page.goto(server!.baseUrl); await page.locator(".card", { hasText: name }).first().click();
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
-  const handle = page.getByRole("button", { name: "Move Terminal grid", exact: true });
+  const handle = page.getByRole("button", { name: "Move Sessions", exact: true });
   await expect(handle).toBeVisible();
   await expect(page.locator("[data-widget-placement], [data-native-placement], #workspace-move-dialog")).toHaveCount(0);
   const snapshot = () => page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
@@ -128,13 +128,13 @@ test("desktop dock dragging previews without changing layout and cancels safely"
   await expect(handle).toBeFocused();
   await handle.press("Space"); await handle.press("ArrowDown");
   await expect(page.locator('[data-dock-target="bottom"]')).toHaveAttribute("data-active", "true");
-  await expect(page.locator('[data-dock-target="bottom"]')).toContainText("Sessions moves to Main");
-  await expect(page.locator("#workspace-dock-status")).toContainText("Sessions moves to Main");
+  await expect(page.locator('[data-dock-target="bottom"]')).toContainText("Bottom");
+  await expect(page.locator("#workspace-dock-status")).toContainText("Sessions → bottom");
   expect(await snapshot()).toEqual(saved);
   await handle.press("Escape");
   expect(await snapshot()).toEqual(saved);
   await handle.press("Space");
-  await page.getByRole("button", { name: "Reset workspace layout", exact: true }).focus();
+  await page.locator("#sidebar-settings-btn").focus();
   await expect(page.locator(".workspace-dock-targets")).toHaveCount(0);
   expect(await snapshot()).toEqual(saved);
   // Outside release cancels rather than inventing a free-form position.
@@ -153,17 +153,13 @@ test("desktop dock dragging previews without changing layout and cancels safely"
   await page.setViewportSize({ width: 1440, height: 900 });
   // Keyboard uses the same bounded drop, not a hidden placement menu.
   await handle.focus(); await handle.press("Space"); await handle.press("ArrowDown"); await handle.press("Enter");
-  await expect(page.locator("#workspace-terminal-region")).toHaveAttribute("data-widget-area", "bottom");
+  await expect(page.locator("#desktop-sidebar")).toHaveAttribute("data-widget-area", "bottom");
   await expect(handle).toBeFocused();
-  await page.getByRole("button", { name: "Reset workspace layout", exact: true }).click();
-  await page.getByRole("button", { name: "Hide widgets", exact: true }).click();
+  await dockPanel(page, "Sessions", "left");
+  await page.getByRole("button", { name: "Close Widgets", exact: true }).click();
   await page.locator("#sidebar-collapse-btn").click();
-  const sole = await snapshot();
-  await handle.focus(); await handle.press("Space"); await handle.press("ArrowDown");
-  await expect(page.locator('[data-dock-target="bottom"]')).toHaveAttribute("aria-disabled", "true");
-  await expect(page.locator("#workspace-dock-status")).toContainText("Main must keep a panel");
-  await handle.press("Enter");
-  expect(await snapshot()).toEqual(sole);
+  await expect(page.getByRole("button", { name: "Move Terminal grid", exact: true })).toHaveCount(0);
+  await expect(page.locator("#workspace-terminal-region .workspace-context-header:visible")).toHaveCount(0);
   await expect(page.locator("#workspace-terminal-region")).toHaveAttribute("data-widget-area", "main");
   expect(sockets).toBe(attached);
 });
@@ -173,7 +169,7 @@ test("desktop docking rejects touch and cancels lost capture and navigation", as
   const name = "drag-lifecycle"; await createShellSession(name);
   await page.goto(server!.baseUrl); await page.locator(".card", { hasText: name }).first().click();
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
-  const handle = page.getByRole("button", { name: "Move Terminal grid", exact: true });
+  const handle = page.getByRole("button", { name: "Move Sessions", exact: true });
   const saved = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
   const point = (await handle.boundingBox())!;
   // A simulated touch on a desktop handle must not enter a drag or capture it.
@@ -280,7 +276,7 @@ test("adding a session to a tab-hidden grid reveals its dock", async ({ page }, 
   await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2);
 });
 
-test("Sessions and the intact grid dock independently without replacing live terminals", async ({ page }, testInfo) => {
+test("Sessions docking resizes the fixed grid without replacing live terminals",  async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop native-panel dragging and retained grid");
   await page.setViewportSize({ width: 1440, height: 900 });
   const names = ["docking-one", "docking-two"];
@@ -303,7 +299,8 @@ test("Sessions and the intact grid dock independently without replacing live ter
   await cells.locator("canvas").evaluateAll(nodes => { (window as any).__dockCanvases = nodes.map(node => ({ node, parent: node.parentElement })); });
   const attached = sockets;
   const sessions = page.locator("#desktop-sidebar"), terminal = page.locator("#workspace-terminal-region");
-  const reset = () => page.getByRole("button", { name: "Reset workspace layout", exact: true }).click();
+  await expect(terminal.locator(".workspace-context-header:visible")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Move Terminal grid", exact: true })).toHaveCount(0);
   const leftDivider = page.getByRole("separator", { name: "Resize left panels", exact: true });
   const rightDivider = page.getByRole("separator", { name: "Resize right panels", exact: true });
   await leftDivider.focus(); await leftDivider.press("ArrowRight");
@@ -324,39 +321,47 @@ test("Sessions and the intact grid dock independently without replacing live ter
   await dockPanel(page, "Sessions", "right");
   await expect(sessions).toHaveAttribute("data-widget-area", "right");
   expect((await sessions.boundingBox())!.x).toBeGreaterThan((await terminal.boundingBox())!.x);
-  await dockPanel(page, "Terminal grid", "bottom");
-  await expect(sessions).toHaveAttribute("data-widget-area", "main");
-  await expect(terminal).toHaveAttribute("data-widget-area", "bottom");
+  await dockPanel(page, "Sessions", "bottom");
+  await expect(sessions).toHaveAttribute("data-widget-area", "bottom");
+  await expect(terminal).toHaveAttribute("data-widget-area", "main");
   const sessionsBox = (await sessions.boundingBox())!, terminalBox = (await terminal.boundingBox())!;
-  expect(terminalBox.y).toBeGreaterThanOrEqual(sessionsBox.y + sessionsBox.height);
+  expect(sessionsBox.y).toBeGreaterThanOrEqual(terminalBox.y + terminalBox.height);
   expect(terminalBox.height).toBeGreaterThan(0);
   await expect(cells.first().locator(".grid-cell-loading")).toBeHidden();
   await expect(cells.first().locator("canvas")).toHaveCSS("opacity", "1");
   await expect(cells.last().locator("canvas")).toHaveCSS("opacity", "1");
-  await page.screenshot({ path: testInfo.outputPath("sessions-main-grid-bottom.png") });
+  await page.screenshot({ path: testInfo.outputPath("sessions-bottom-grid-main.png") });
   // Sharing Main uses tabs, not a view-navigation action or a terminal remount.
-  await dockPanel(page, "Terminal grid", "main");
-  await expect(page.getByRole("button", { name: "Move Terminal grid", exact: true })).toBeFocused();
+  await dockPanel(page, "Sessions", "main");
+  await page.getByRole("tab", { name: "Terminal grid", exact: true }).click();
   const selectedTab = page.getByRole("tab", { name: "Terminal grid", exact: true });
   const sessionsTab = page.getByRole("tab", { name: "Sessions", exact: true });
-  await expect(selectedTab).toHaveCSS("border-bottom-width", "3px");
-  await expect(selectedTab).toHaveCSS("border-bottom-color", "rgb(69, 237, 126)");
+  await expect(selectedTab).toHaveCSS("border-bottom-width", "1px");
+  await expect(selectedTab).toHaveCSS("border-bottom-color", "rgb(27, 36, 30)");
+  await expect(selectedTab).toHaveCSS("background-color", "rgb(27, 36, 30)");
+  await expect(selectedTab).toHaveCSS("box-shadow", "rgb(69, 237, 126) 0px 2px 0px 0px inset");
   await expect(selectedTab).toHaveCSS("font-weight", "600");
   await expect(selectedTab).toHaveCSS("border-bottom-left-radius", "0px");
-  await expect(sessionsTab).toHaveCSS("border-bottom-color", "rgba(0, 0, 0, 0)");
+  await expect(sessionsTab).toHaveCSS("border-bottom-color", "rgb(43, 57, 48)");
+  await expect(sessionsTab).toHaveCSS("background-color", "rgb(20, 27, 23)");
   await page.screenshot({ path: testInfo.outputPath("shared-main-tab-strip.png") });
+  await selectedTab.focus(); await selectedTab.press("ArrowRight");
+  await expect(sessionsTab).toBeFocused();
+  await expect(sessionsTab).toHaveCSS("outline-style", "solid");
+  await expect(sessionsTab).toHaveCSS("outline-width", "2px");
   const accessibility = await new AxeBuilder({ page }).include("#workspace-shell").exclude("canvas").withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
   expect(accessibility.violations.filter(violation => ["serious", "critical"].includes(violation.impact ?? ""))).toEqual([]);
   await sessionsTab.click();
   await expect(terminal).toBeHidden();
   await expect(sessionsTab).toHaveCSS("font-weight", "600");
-  await expect(selectedTab).toHaveCSS("border-bottom-color", "rgba(0, 0, 0, 0)");
+  await expect(selectedTab).toHaveCSS("border-bottom-color", "rgb(43, 57, 48)");
+  await expect(sessionsTab).toHaveCSS("background-color", "rgb(27, 36, 30)");
   await page.getByRole("tab", { name: "Terminal grid", exact: true }).click();
   await expect(terminal).toBeVisible();
   await page.getByRole("tab", { name: "Sessions", exact: true }).click();
-  await dockPanel(page, "Sessions", "left"); await dockPanel(page, "Terminal grid", "right");
-  await expect(sessions).toHaveAttribute("data-widget-area", "main");
-  await expect(terminal).toHaveAttribute("data-widget-area", "right");
+  await dockPanel(page, "Sessions", "right");
+  await expect(sessions).toHaveAttribute("data-widget-area", "right");
+  await expect(terminal).toHaveAttribute("data-widget-area", "main");
   expect(await cells.locator("canvas").evaluateAll(nodes => nodes.every((node, index) => { const old = (window as any).__dockCanvases[index]; return node === old.node && node.parentElement === old.parent; }))).toBe(true);
   expect(sockets).toBe(attached);
   expect(sizes.length).toBeGreaterThan(0);
@@ -367,8 +372,8 @@ test("Sessions and the intact grid dock independently without replacing live ter
   await expect(terminal).toBeVisible(); await expect(sessions).toBeHidden();
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(saved);
   await page.setViewportSize({ width: 1440, height: 900 });
-  await expect(terminal).toHaveAttribute("data-widget-area", "right");
-  await reset();
+  await expect(terminal).toHaveAttribute("data-widget-area", "main");
+  await dockPanel(page, "Sessions", "left");
   await expect(sessions).toHaveAttribute("data-widget-area", "left");
   await expect(terminal).toHaveAttribute("data-widget-area", "main");
   expect(sockets).toBe(attached);
@@ -377,9 +382,9 @@ test("Sessions and the intact grid dock independently without replacing live ter
     const set = Storage.prototype.setItem;
     Storage.prototype.setItem = function(key, value) { if (key === "wolfpack-widget-layout:v1" || key === "wolfpack-workspace-shell") throw Error("blocked"); set.call(this, key, value); };
   });
-  await dockPanel(page, "Terminal grid", "right");
+  await dockPanel(page, "Sessions", "right");
   await expect(page.locator("#workspace-dock-status")).toContainText("this tab only");
-  await expect(terminal).toHaveAttribute("data-widget-area", "right");
+  await expect(sessions).toHaveAttribute("data-widget-area", "right");
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(persisted);
   await page.reload(); await page.locator(".card", { hasText: names[0]! }).first().click();
   await expect(terminal).toHaveAttribute("data-widget-area", "main");
@@ -617,10 +622,10 @@ test("real broker desktop preserves existing equal-grid cardinalities and revers
   expect(await placements()).toEqual(initialPlacements);
   await fifth.click();
   await expect(fifth).toHaveClass(/grid-focused/);
-  await page.locator("#workspace-context-collapse").click();
-  await expect(page.locator("#workspace-restore")).toBeVisible();
+  await page.getByRole("button", { name: "Collapse Widgets", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Widgets", exact: true })).toBeVisible();
   expect(await page.locator("#desktop-grid-container .grid-cell canvas").evaluateAll((canvases) => canvases.map(canvas => canvas.getAttribute("data-workspace-canvas")))).toEqual(["0", "1", "2", "3", "4"]);
-  await page.locator("#workspace-restore").click();
+  await page.getByRole("tab", { name: "Widgets", exact: true }).click();
   await page.locator("[data-widget-full]:visible").click();
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
   const [shellBox, contextBox] = await Promise.all([page.locator("#workspace-shell").boundingBox(), page.locator(".widget-panel:visible").boundingBox()]);
@@ -658,13 +663,12 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
   await expect(page.locator("#workspace-terminal-full")).toHaveCount(0);
-  for (const [selector, label] of [["#workspace-context-collapse", "Hide widgets"], ["[data-widget-full]:visible", "Context full view"]]) {
-    const control = page.locator(selector!);
-    await expect(control).toHaveAccessibleName(label!);
-    await expect(control).toHaveText(selector === "#workspace-context-collapse" ? "Hide widgets" : "");
-    await expect(control.locator("svg")).toBeVisible();
-    await expect(control).toHaveAttribute("title", /.+/);
+  for (const label of ["Collapse Widgets", "Close Widgets", "Context full view"]) {
+    const control = page.getByRole("button", { name: label, exact: true });
+    await expect(control).toBeVisible();
+    await expect(control).toHaveAttribute("title", label);
   }
+  await expect(page.locator("#workspace-context-collapse")).toHaveCount(0);
   const context = page.locator(".widget-panel:visible");
   const terminal = page.locator("#workspace-terminal-region");
   const before = (await context.boundingBox())!;
@@ -715,26 +719,19 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect(page.locator("[data-widget-full]:visible .restore-icon")).toBeVisible();
   await expect(border).toBeHidden();
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
-  const collapseBox = (await page.locator("#workspace-context-collapse").boundingBox())!;
   const toolsBeforeCollapse = (await page.locator("#sidebar-session-controls").boundingBox())!;
-  await page.locator("#workspace-context-collapse").click();
-  const expand = page.getByRole("button", { name: "Show widgets", exact: true });
-  await expect(expand).toHaveText("Show widgets");
+  const collapse = page.getByRole("button", { name: "Collapse Widgets", exact: true });
+  await collapse.click();
+  const expand = page.getByRole("tab", { name: "Widgets", exact: true });
   await expect(expand).toBeFocused();
-  await expect(expand).toHaveAttribute("aria-controls", "workspace-context-region");
-  await expect(expand.locator("svg rect")).toHaveAttribute("width", "18");
+  await expect(context).toHaveAttribute("data-collapsed", "true");
+  expect((await context.boundingBox())!.width).toBe(44);
   await expect(border).toBeHidden();
-  const expandBox = (await expand.boundingBox())!;
-  const toolsBox = (await page.locator("#sidebar-session-controls").boundingBox())!;
-  expect(expandBox).toEqual(collapseBox);
-  expect(toolsBox).toEqual(toolsBeforeCollapse);
-  await expect(expand.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
-  expect(expandBox.y).toBeGreaterThanOrEqual(toolsBox.y);
-  expect(expandBox.y + expandBox.height).toBeLessThanOrEqual(toolsBox.y + toolsBox.height);
-  await expect(page.locator(".workspace-terminal-toolbar")).toBeHidden();
-  await page.screenshot({ path: testInfo.outputPath("context-expand-top.png") });
+  expect(await page.locator("#sidebar-session-controls").boundingBox()).toEqual(toolsBeforeCollapse);
+  await expect(page.locator(".workspace-terminal-toolbar")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("collapsed-widget-rail.png") });
   await expand.press("Enter");
-  await expect(page.locator("#workspace-context-collapse")).toBeFocused();
+  await expect(collapse).toBeFocused();
   await expect(expand).toBeHidden();
   await expect(border).toBeVisible();
   await page.reload();
@@ -742,7 +739,7 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect.poll(async () => Math.round((await context.boundingBox())!.width)).toBe(220);
 });
 
-test("context controls stay fixed beside desktop filters and in the mobile toolbar", async ({ page }, testInfo) => {
+test("widget controls stay local on desktop and open from the mobile app header",  async ({ page }, testInfo) => {
   test.skip(!["desktop", "iphone-14"].includes(testInfo.project.name), "desktop and responsive Chromium touch contract");
   const name = `workspace-top-toggle-${testInfo.project.name}`;
   await createShellSession(name);
@@ -754,21 +751,18 @@ test("context controls stay fixed beside desktop filters and in the mobile toolb
   if (testInfo.project.name === "desktop") {
     const tools = page.locator("#sidebar-session-controls");
     const before = await tools.boundingBox();
-    await expect(page.locator(".workspace-terminal-toolbar")).toBeHidden();
-    await expect(page.locator("#workspace-tools, #workspace-settings-dialog, #terminal-transcript-btn")).toHaveCount(0);
-    const collapse = tools.locator("#workspace-context-collapse");
-    const box = await collapse.boundingBox();
-    await expect(collapse.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
+    await expect(page.locator(".workspace-terminal-toolbar")).toHaveCount(0);
+    await expect(page.locator("#workspace-tools, #workspace-settings-dialog, #terminal-transcript-btn, #workspace-context-collapse")).toHaveCount(0);
+    const collapse = page.getByRole("button", { name: "Collapse Widgets", exact: true });
     await collapse.click();
-    const expand = tools.locator("#workspace-restore");
+    const expand = page.getByRole("tab", { name: "Widgets", exact: true });
     await expect(expand).toBeFocused();
-    expect(await expand.boundingBox()).toEqual(box);
     await expand.press("Space");
     await expect(collapse).toBeFocused();
     await page.locator("[data-widget-full]:visible").click();
-    expect(await collapse.boundingBox()).toEqual(box);
     await collapse.click();
-    await expect(page.locator("#workspace-context-region")).toBeHidden();
+    await expect(page.locator("#workspace-terminal-region")).toBeVisible();
+    await expect(page.locator(".widget-panel:visible")).toHaveAttribute("data-collapsed", "true");
     await expand.click();
     expect(await tools.boundingBox()).toEqual(before);
     expect(await canvas.evaluate(node => node === (window as any).__toggleCanvas)).toBe(true);
@@ -777,13 +771,9 @@ test("context controls stay fixed beside desktop filters and in the mobile toolb
   }
   // Initial navigation translates the entire mobile view; measure settled chrome.
   await expect(page.locator("#terminal-view")).not.toHaveClass(/swiping/);
-  const toolbar = page.locator(".workspace-terminal-toolbar");
-  const height = (await toolbar.boundingBox())!.height;
-  await expect(toolbar.locator("select, #terminal-transcript-btn")).toHaveCount(0);
-  const controlSize = 44;
-  expect(height).toBe(controlSize + 7);
-  expect((await toolbar.boundingBox())!.y).toBe((await page.locator("#terminal-view").boundingBox())!.y);
-  const expand = page.getByRole("button", { name: "Expand context panel", exact: true });
+  const toolbar = page.locator("body > header");
+  await expect(page.locator(".workspace-terminal-toolbar, #terminal-transcript-btn")).toHaveCount(0);
+  const expand = page.getByRole("button", { name: "Widgets", exact: true });
   await expect(expand).toBeVisible();
   const box = (await expand.boundingBox())!;
   await expect(expand.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");
@@ -793,7 +783,7 @@ test("context controls stay fixed beside desktop filters and in the mobile toolb
   expect(box.height).toBeGreaterThanOrEqual(44);
   await page.screenshot({ path: testInfo.outputPath("top-context-toggle.png") });
   await expand.tap();
-  await expect(toolbar).toBeHidden();
+  await expect(expand).toBeHidden();
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
   const back = page.getByRole("button", { name: "Back to terminal", exact: true });
   await expect(back).toBeFocused();
@@ -871,7 +861,7 @@ test("real broker delegation collapse retains the child controller and canvas", 
   await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
 });
 
-test("saved terminal-only preferences still restore after removing the terminal full-view button", async ({ page }, testInfo) => {
+test("saved terminal-only preferences recover through Settings without a terminal header",  async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop saved-preference recovery");
   const name = "workspace-legacy-full";
   await createShellSession(name);
@@ -884,9 +874,14 @@ test("saved terminal-only preferences still restore after removing the terminal 
   await canvas.evaluate(node => { (window as any).__legacyFullCanvas = node; });
   await expect(page.locator("#workspace-terminal-full")).toHaveCount(0);
   await expect(page.locator("#workspace-context-region")).toBeHidden();
-  await page.getByRole("button", { name: "Show widgets", exact: true }).click();
-  await expect(page.locator("#workspace-context-region")).toBeVisible();
-  expect(await canvas.evaluate(node => node === (window as any).__legacyFullCanvas)).toBe(true);
+  await page.locator("#sidebar-settings-btn").click();
+  await page.getByRole("link", { name: "Widgets", exact: true }).click();
+  await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
+  await page.locator("#settings-back-btn").click();
+  await expect(page.locator(".widget-panel:visible")).toBeVisible();
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  // Real Settings navigation retains its existing suspend/reattach lifecycle.
+  expect(await canvas.evaluate(node => node !== (window as any).__legacyFullCanvas)).toBe(true);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-workspace-shell")!).fullView)).toBe("none");
 });
 

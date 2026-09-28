@@ -8,7 +8,9 @@ export const TERMINALS_PANEL = ":terminals";
 export function isNativePanel(id: string): boolean { return id === SESSIONS_PANEL || id === TERMINALS_PANEL; }
 export const WIDGET_LAYOUT_KEY = "wolfpack-widget-layout:v1";
 const MAX_PLACEMENTS = 128;
+export type WidgetState = "open" | "collapsed" | "closed";
 export interface WidgetLayoutPreferences {
+  readonly widgets?: Readonly<Record<string, Exclude<WidgetState, "open">>>;
   readonly defaultArea?: WidgetArea;
   readonly placements: Readonly<Record<string, WidgetArea>>;
   readonly selected: Readonly<Partial<Record<WidgetArea, string>>>;
@@ -24,6 +26,7 @@ function viewId(value: unknown): value is string {
 export function normalizeWidgetLayout(value: unknown): WidgetLayoutPreferences {
   const placements: Record<string, WidgetArea> = {};
   const selected: Partial<Record<WidgetArea, string>> = {};
+  const widgets: Record<string, "collapsed" | "closed"> = {};
   if (record(value)) {
     if (record(value.placements)) {
       for (const [id, area] of Object.entries(value.placements)) {
@@ -31,11 +34,15 @@ export function normalizeWidgetLayout(value: unknown): WidgetLayoutPreferences {
         if (viewId(id) && isWidgetArea(area)) placements[id] = area;
       }
     }
+    if (record(value.widgets)) for (const [id, state] of Object.entries(value.widgets)) {
+      if (Object.keys(widgets).length === MAX_PLACEMENTS) break;
+      if (viewId(id) && !isNativePanel(id) && (state === "collapsed" || state === "closed")) widgets[id] = state;
+    }
     if (record(value.selected)) for (const area of WIDGET_AREAS) {
       if (viewId(value.selected[area])) selected[area] = value.selected[area];
     }
   }
-  return { placements, selected, ...(record(value) && isWidgetArea(value.defaultArea) ? { defaultArea: value.defaultArea } : {}) };
+  return { placements, selected, ...(Object.keys(widgets).length ? { widgets } : {}), ...(record(value) && isWidgetArea(value.defaultArea) ? { defaultArea: value.defaultArea } : {}) };
 }
 
 /** Origin-local presentation preferences, never contribution registration or routing authority. */
@@ -51,7 +58,19 @@ export class WidgetLayout {
   get preferences(): WidgetLayoutPreferences { return this.value; }
   get diagnostic(): string { return this.error; }
   area(id: string): WidgetArea {
-    return this.value.placements[id] ?? (id === SESSIONS_PANEL ? "left" : id === TERMINALS_PANEL ? "main" : this.value.defaultArea ?? this.defaultArea);
+    if (id === TERMINALS_PANEL) return "main";
+    return this.value.placements[id] ?? (id === SESSIONS_PANEL ? "left" : this.value.defaultArea ?? this.defaultArea);
+  }
+  widgetState(id: string): WidgetState { return this.value.widgets?.[id] ?? "open"; }
+  setWidgetState(id: string, state: WidgetState): void {
+    if (!viewId(id) || isNativePanel(id)) return;
+    const rest = Object.fromEntries(Object.entries(this.value.widgets ?? {}).filter(([key]) => key !== id));
+    this.value = normalizeWidgetLayout({ ...this.value, widgets: { ...(state === "open" ? {} : { [id]: state }), ...rest } });
+    this.persist();
+  }
+  reopenWidgets(): void {
+    this.value = normalizeWidgetLayout({ ...this.value, widgets: Object.fromEntries(Object.entries(this.value.widgets ?? {}).filter(([, state]) => state === "collapsed")) });
+    this.persist();
   }
   /** Resolve only available panels. Temporary catalog/visibility loss never rewrites saved placements. */
   areasFor(available: readonly string[]): Record<string, WidgetArea> {
@@ -82,11 +101,12 @@ export class WidgetLayout {
   }
   /** Nonmutating drop validation; previews cannot change preferences or diagnostics. */
   canMove(id: string, area: WidgetArea, available: readonly string[]): boolean {
-    if (!viewId(id) || !isWidgetArea(area) || !available.includes(id)) return false;
+    if (id === TERMINALS_PANEL || !viewId(id) || !isWidgetArea(area) || !available.includes(id)) return false;
     const areas = this.areasFor(available);
     return !available.includes(TERMINALS_PANEL) || areas[id] !== "main" || area === "main" || !!this.replacement(id, area, available) || available.some(other => other !== id && areas[other] === "main");
   }
   move(id: string, area: WidgetArea, available?: readonly string[]): boolean {
+    if (id === TERMINALS_PANEL) { this.error = "The terminal workspace stays in Main."; return false; }
     if (!viewId(id) || !isWidgetArea(area) || (available && !available.includes(id))) return false;
     const from = available ? this.areasFor(available)[id]! : this.area(id);
     const replacement = available ? this.replacement(id, area, available) : null;

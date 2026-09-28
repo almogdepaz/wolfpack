@@ -214,9 +214,9 @@ test("explicit workspace shell changes retain delegation panes and focus", async
   expect(attachCounts.get("parent")).toBe(2);
   expect(attachCounts.get("child")).toBe(2);
   await expect(page.locator("#delegation-grid-container")).toHaveAttribute("style", /grid-template-columns/);
-  await page.locator("#workspace-context-collapse").click();
-  await expect(page.locator("#workspace-restore")).toBeVisible();
-  await page.locator("#workspace-restore").click();
+  await page.getByRole("button", { name: "Collapse Widgets", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Widgets", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Widgets", exact: true }).click();
   await page.locator("[data-widget-full]:visible").click();
   await expect(page.locator("#workspace-terminal-region")).toBeHidden();
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
