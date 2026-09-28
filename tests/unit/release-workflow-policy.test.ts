@@ -358,7 +358,7 @@ describe("release workflow security policy", () => {
     }
   });
 
-  test.skipIf(process.platform !== "darwin").each(MACOS_BROKER_TARGETS)("rejects an unsignable %s broker before recording provenance", target => {
+  test.skipIf(process.platform !== "darwin").each([...MACOS_BROKER_TARGETS])("rejects an unsignable %s broker before recording provenance", target => {
     const root = mkdtempSync(join(tmpdir(), "wolfpack-unsignable-broker-"));
     try {
       prepareUnsignedMacosBrokers(root);
