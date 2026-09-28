@@ -309,7 +309,7 @@ export class WidgetPanels {
         chrome.close.setAttribute("aria-label", chrome.close.title = `Close ${entry?.title ?? "Widgets"}`);
         chrome.full.setAttribute("aria-label", chrome.full.title = this.presentation.focusArea ? "Restore workspace" : "Context full view");
         chrome.full.setAttribute("aria-pressed", String(!!this.presentation.focusArea));
-        chrome.status.textContent = this.options.layout.diagnostic || (selected && isNativePanel(selected) ? "" : this.message || this.errors[area] || (selected ? this.documentStatus(selected) : entries.length ? "Select a context view." : "No enabled context views for this scope.")) || "";
+        chrome.status.textContent = this.options.layout.diagnostic || (selected && isNativePanel(selected) ? "" : this.message || this.errors[area] || (selected ? this.documentStatus(selected) : entries.length ? "Select a context view." : this.entries.length ? "Widgets are closed. Reopen them in Settings." : "No enabled context views for this scope.")) || "";
         // Native headers need a grip, not empty SDK status/tab owners.
         if (selected && isNativePanel(selected) && !chrome.status.textContent) chrome.status.remove();
         else if (!chrome.status.parentElement) chrome.node.append(chrome.status);

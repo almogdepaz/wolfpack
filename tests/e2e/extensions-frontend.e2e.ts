@@ -1,5 +1,5 @@
 import { dockPanel } from "./workspace-drag-helpers.ts";
-import { selectTerminalLayoutFromUi } from "./helpers.ts";
+import { openSettingsFromUi, selectTerminalLayoutFromUi } from "./helpers.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -620,6 +620,47 @@ test("authenticated installed packages compose qualified local views and refresh
     expect(await draft.evaluate((editor: HTMLTextAreaElement) => [editor.selectionStart, editor.selectionEnd])).toEqual([9, 15]);
     expect(sockets).toHaveLength(attached);
   }
+});
+
+test("mobile widget close and collapse recover locally without rewriting desktop preferences", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "iphone-14", "responsive mobile widget recovery");
+  await authorize(page);
+  await page.addInitScript(() => {
+    localStorage.setItem("wolfpack-widget-layout:v1", JSON.stringify({ placements: { "notes/notes": "bottom" }, selected: { right: "alpha/shared" } }));
+    localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ fullView: "context", contextArea: "bottom", splitSize: 440 }));
+  });
+  const sockets: string[] = [];
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets.push(socket.url()); });
+  await page.goto(server!.baseUrl); await openSession(page, SESSION_A); await showWidgets(page);
+  await page.getByRole("tab", { name: "Alpha", exact: true }).click();
+  const alpha = page.locator("[data-context-view='alpha/shared']");
+  await alpha.evaluate(node => { (window as any).__mobileAlpha = node; });
+  const canvas = page.locator("#desktop-terminal-container canvas");
+  await canvas.evaluate(node => { (window as any).__mobileCloseCanvas = node; });
+  const attached = sockets.length;
+  const preferences = () => page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
+  const saved = await preferences();
+  await page.getByRole("button", { name: "Close Alpha", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-context-view='beta/shared']")).toBeVisible();
+  await page.getByRole("button", { name: "Collapse Beta", exact: true }).click();
+  await expect(canvas).toBeVisible();
+  await showWidgets(page);
+  await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toHaveCount(0);
+  expect(await alpha.evaluate(node => node === (window as any).__mobileAlpha)).toBe(true);
+  expect(await canvas.evaluate(node => node === (window as any).__mobileCloseCanvas)).toBe(true);
+  expect(sockets).toHaveLength(attached); expect(await preferences()).toEqual(saved);
+  for (const title of ["Beta", "Agent Context", "Notes"]) await page.getByRole("button", { name: `Close ${title}`, exact: true }).click();
+  await expect(canvas).toBeVisible(); await showWidgets(page);
+  await expect(page.locator("[data-extension-status]:visible")).toHaveText("Widgets are closed. Reopen them in Settings.");
+  expect(sockets).toHaveLength(attached); expect(await preferences()).toEqual(saved);
+  await page.locator("#back-btn").click(); // Mobile Settings is reached from Sessions.
+  await openSettingsFromUi(page);
+  await page.getByRole("link", { name: "Widgets", exact: true }).click();
+  await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
+  await page.locator("#back-btn").click(); await openSession(page, SESSION_A); await showWidgets(page);
+  await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toBeVisible();
+  expect(await preferences()).toEqual(saved);
 });
 
 test("a sole Agent Context opens directly without its redundant tab and multiple views retain their tabs", async ({ page }, testInfo) => {

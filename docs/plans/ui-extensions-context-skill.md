@@ -1,6 +1,6 @@
 # Wolfpack UI extensions: context views, terminal layouts, and an agent skill
 
-Status: **Dock-visibility recovery is deployed to oldsgt. Activation approval is spent.** Fixed docks, desktop only, no placement menus. No further activation, broker restart, remote deployment, package/skill or Context publication authorized; Context remains unchanged. Section 2 records newest-first evidence and history; `.plans/widget-placement-followup.md` is the current phase handoff. Normal-Pi two-turn/provider/physical-phone acceptance remains unverified; no delegated task is active.
+Status: **Clean workspace controls and four verified UX repairs are implemented; combined broad verification is pending. Not deployed.** The earlier tab/banner polish is deployed to oldsgt; activation approval is spent. Fixed docks, desktop only, no placement menus. No further activation, broker restart, remote deployment, package/skill or Context publication authorized; Context remains unchanged. Section 2 records newest-first evidence and history; `.plans/widget-placement-followup.md` is the current phase handoff. Normal-Pi two-turn/provider/physical-phone acceptance remains unverified; no delegated task is active.
 
 ## 1. Goal and acceptance story
 
@@ -28,6 +28,17 @@ wolfpack extensions list --json
 Phase-0 foundations are frozen in `ui-extensions-contract.md`. The user-facing commands and integrated journey below remain later-phase implementation, not claims about existing routes/UI.
 
 ## 2. Current handoff and source grounding
+
+### Clean workspace controls and input/recovery repairs — pending final gate, not deployed
+
+- User approved clearer tab surfaces, widget-local collapse/close, removal of the global Hide widgets control and permanent terminal/grid header, fixed Main terminals, and repairs for the four separately verified UX issues. Main still accepts Sessions/widgets as shared tabs. Sessions/widgets remain desktop-draggable; old saved terminal placements are ignored. Reset stays in Settings.
+- Base `11a40b42`; chrome `94c4aca9`, reliability integration `c9cf6992`, mobile-header correction `c5b8eaa0`. Widget state is bounded browser-local presentation, never package disable/uninstall. Collapse retains mounted content and exposes a local recovery tab; close hides it until Settings → Widgets → Reopen closed widgets. Mobile state is ephemeral and does not overwrite desktop preferences. Terminal roots, direct-layout canvases/controllers/sockets, widget parents/drafts and membership/recipes remain retained; ordinary Settings navigation still suspends/reattaches viewers.
+- Input repairs exempt grid buttons from Ghostty swallowing native Enter/Space activation, avoid stealing explicit control focus during terminal hydration, inset the mobile terminal viewport instead of translating the first line above its clip, and cancel obsolete view-transition cleanup. Conditional synthetic evidence is not a physical-phone/native-keyboard/WebKit or end-to-end rapid-navigation acceptance claim.
+- Focused parent gate `faff6f34-db3d-4fd3-88e1-649c55cf569c`:55 unit and6 browser passes plus types/assets/budgets. Independent worker-source check `85858dac-1e43-4c3e-9662-b448016d28b7`:9 browser cases/typecheck. Combined `12d7f517-581c-43c8-bebf-ea9a32c641c7`:9 repair cases passed, then54 browser passes/1 failure/43 profile skips. The mobile entry lost its accent and the header button's hidden attribute needed explicit CSS; corrected without weakening the assertion (`2f8c0a03-4d21-49dc-94c8-2fc424c55e94`:1 pass). Mobile all-closed recovery RED `7d3f645a-38ba-4376-9ecb-8f522198487d` exposed misleading empty-scope wording; GREEN `7973b1c1-4949-405c-9f90-5291415da81e` proves Settings recovery and unchanged desktop preferences. Earlier test-only missing-import/incorrect Settings-entry failures remain in the private evidence root.
+- Evidence `/Users/almog/.local/share/wolfpack-tab-surfaces.ItwMfwVX/`; exact current source and gate references live in `.plans/widget-placement-followup.md`. CSS remains below102000raw/20000gzip, all existing caps unchanged. No final broad acceptance yet.
+- Worker task `e36bf847-1bd0-4f6a-ae8b-4b6b6f5b1d2d` completed, parent independently verified and ACKed once; exact owned child `717dbcde-ac3f-4bff-ab61-714336e6378b` canonically killed and absent from the subsequent session list, parent preserved. Worker commit `1562cfa2` integrated; only generated-assets conflict, regenerated from combined source. No worker/task remains active.
+- No deployment/rollback/broker restart, live terminal takeover, sgt/preview mutation, package/schema/managed-skill change or Context publication authorized. Context5 remains unchanged. Earlier activation markers are spent.
+
 
 **Current execution boundary (newest item controls; older entries are historical):**
 
