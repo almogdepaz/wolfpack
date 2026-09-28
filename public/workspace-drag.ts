@@ -47,7 +47,9 @@ export function createWorkspaceDrag(options: {
       const area = (node as HTMLElement).dataset.dockTarget as WidgetArea;
       const active = area === g.target, enabled = allowed(g, area);
       const replacement = active && g.id ? layout.replacement(g.id, area, available()) : null;
-      const hint = !enabled ? " — Main must keep a panel" : replacement ? ` — ${options.panels().find(panel => panel.id === replacement)?.title} moves to Main` : "";
+      const areas = layout.areasFor(available());
+      const peers = active ? options.panels().filter(panel => panel.id !== g.id && panel.id !== replacement && areas[panel.id] === area) : [];
+      const hint = !enabled ? " — Main must keep a panel" : replacement ? ` — ${options.panels().find(panel => panel.id === replacement)?.title} moves to Main` : peers.length ? ` — Tabs with ${peers[0]!.title}${peers.length > 1 ? ` (+${peers.length - 1})` : ""}` : "";
       node.textContent = area[0]!.toUpperCase() + area.slice(1) + hint;
       node.setAttribute("data-active", String(active));
       node.setAttribute("aria-disabled", String(!enabled));

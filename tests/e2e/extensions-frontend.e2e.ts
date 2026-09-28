@@ -267,6 +267,51 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await expect(bottom.locator("textarea")).toHaveValue("independent retained draft");
 });
 
+test("session navigation reveals a terminal behind a widget tab or full view without losing the widget", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop explicit terminal navigation");
+  await authorize(page);
+  let sockets = 0;
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
+  const terminal = page.locator("#workspace-terminal-region");
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await note.fill("retained through native tab recovery");
+  await note.evaluate(node => { (window as any).__recoverNote = { node, parent: node.parentElement }; });
+  await terminal.locator("canvas").evaluate(node => { (window as any).__recoverCanvas = { node, parent: node.parentElement }; });
+  const attached = sockets;
+  await dockPanel(page, "Notes", "main");
+  const placements = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1")!).placements);
+  for (const full of [false, true]) {
+    await expect(note).toBeVisible();
+    if (full) await page.locator(".widget-panel").filter({ has: note }).getByRole("button", { name: "Context full view", exact: true }).click();
+    await expect(terminal).toBeHidden();
+    await page.locator("#sidebar-session-list .card", { hasText: SESSION_A }).click();
+    await expect(terminal).toBeVisible();
+    await expect(page.locator("#workspace-shell")).toHaveAttribute("data-full-view", "none");
+    await page.getByRole("tab", { name: "Notes", exact: true }).click();
+    await expect(note).toHaveValue("retained through native tab recovery");
+  }
+  expect(await note.evaluate(node => node === (window as any).__recoverNote.node && node.parentElement === (window as any).__recoverNote.parent)).toBe(true);
+  expect(await terminal.locator("canvas").evaluate(node => node === (window as any).__recoverCanvas.node && node.parentElement === (window as any).__recoverCanvas.parent)).toBe(true);
+  expect(sockets).toBe(attached);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1")!).placements)).toEqual(placements);
+  await page.getByRole("tab", { name: "Terminal grid", exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath("terminal-recovered-widget-retained.png") });
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await page.locator(".widget-panel").filter({ has: note }).getByRole("button", { name: "Context full view", exact: true }).click();
+  const saved = await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
+  await page.locator("#sidebar-settings-btn").click();
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await expect(page.locator(".view.swiping")).toHaveCount(0);
+  await page.locator("#settings-back-btn").click();
+  await expect(page.locator("#workspace-shell")).toHaveAttribute("data-full-view", "context");
+  await expect(note).toBeVisible();
+  await expect(note).toHaveValue("retained through native tab recovery");
+  expect(await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")])).toEqual(saved);
+});
+
 test("native panels share widget areas and Main recovers without losing a draft or desktop preferences", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "native/widget docking with responsive recovery");
   await authorize(page);

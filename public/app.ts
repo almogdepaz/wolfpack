@@ -1952,6 +1952,7 @@ function openDelegationGrid(rootSession: string, machineUrl = ""): void {
   document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   setDelegationWorkspaceDisplay("grid");
   showView("terminal", true);
+  revealWorkspaceTerminals();
   renderDelegationGridCells();
   renderSidebar();
 }
@@ -1978,6 +1979,7 @@ function focusDelegationSession(sessionName: string, machineUrl = ""): void {
   if (label) label.textContent = `${sessionName} terminal`;
   setDelegationWorkspaceDisplay("focus");
   showView("terminal", true);
+  revealWorkspaceTerminals();
   void initTerminal(TERMINAL_PREFILL_MODE.FULL);
   renderSidebar();
 }
@@ -2238,6 +2240,7 @@ async function openSession(name, machineUrl) {
     return;
   }
   if (isDesktop()) {
+    revealWorkspaceTerminals();
     const delegation = delegationWorkspaceContext(name, targetMachine);
     if (delegation) {
       if (delegation.root.name === name) openDelegationGrid(name, targetMachine);
@@ -2295,6 +2298,7 @@ async function openSession(name, machineUrl) {
   wpMetrics.reset();
   restoreDraft();
   showView("terminal");
+  revealWorkspaceTerminals();
   __wfTraceEvent(trace, "dom.view.created");
   void initTerminal(TERMINAL_PREFILL_MODE.FULL);
   renderSidebar();
@@ -2704,6 +2708,7 @@ function selectBrowsedDirectory(): void {
 function showTerminalLoading(label: string): void {
   clearPreservedGrid();
   showView("terminal");
+  revealWorkspaceTerminals();
   const dtc = document.getElementById("desktop-terminal-container");
   dtc.style.display = "block";
   dtc.innerHTML = '<span class="loading-text">Starting session in ' + esc(label) + '\u2026</span>';
@@ -5287,7 +5292,11 @@ function bindHtmlEventListeners(): void {
     agentRemove: command => { void removeAgent(command); },
     createAgentSession: command => { void createSessionWithAgent(command); },
     agentToggle: (command, enabled) => { void toggleAgentEnabled(command, enabled); },
-    toggleGrid,
+    toggleGrid: (session, machine, event) => {
+      const adding = !isSessionInGrid(session, machine);
+      toggleGrid(session, machine, event);
+      if (adding && isSessionInGrid(session, machine)) revealWorkspaceTerminals();
+    },
     setSessionCardView,
     machineGroupCollapse: updateMachineGroupCollapse,
   });
@@ -5448,6 +5457,13 @@ const workspaceShell = createWorkspaceShell({
   onReset: () => extensionHost?.resetWorkspaceLayout(),
 });
 window.addEventListener("resize", () => scheduleGridStabilizedFit());
+
+/** Explicit terminal navigation must also select its dock tab; geometry alone cannot reveal it. */
+function revealWorkspaceTerminals(): void {
+  if (!isDesktop() || state.currentView !== "terminal") return;
+  if (workspaceShell?.preferences.fullView === "context") workspaceShell.focusPanel(null);
+  extensionHost?.select(TERMINALS_PANEL);
+}
 
 function selectedExtensionScope(): { readonly sessionId: string | null; readonly unavailable?: string } | null {
   const delegationGrid = state.activeDelegationRoot && !state.focusedDelegationSession;

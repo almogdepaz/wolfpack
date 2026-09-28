@@ -196,6 +196,90 @@ test("desktop docking rejects touch and cancels lost capture and navigation", as
   await expect(handle).toBeVisible();
 });
 
+test("opening a session from shared Main reveals its retained terminal", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop shared native docks");
+  const name = "shared-main-open", other = "shared-main-other";
+  await createShellSession(name); await createShellSession(other);
+  let sockets = 0;
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await page.goto(server!.baseUrl);
+  await page.locator(".card", { hasText: name }).first().click();
+  const terminal = page.locator("#workspace-terminal-region");
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  const canvas = page.locator("#desktop-terminal-container canvas");
+  await canvas.evaluate(node => { (window as any).__sharedCanvas = { node, parent: node.parentElement }; });
+  const attached = sockets;
+  const grip = (await page.getByRole("button", { name: "Move Sessions", exact: true }).boundingBox())!;
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2); await page.mouse.down();
+  await page.mouse.move(grip.x + grip.width / 2 + 8, grip.y + grip.height / 2);
+  const mainTarget = page.locator('[data-dock-target="main"]');
+  const box = (await mainTarget.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 4 });
+  await expect(mainTarget).toContainText("Tabs with Terminal grid");
+  await page.mouse.up();
+  const placements = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1")!).placements);
+  await expect(page.getByRole("tab", { name: "Terminal grid", exact: true })).toBeVisible();
+  await expect(terminal).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath("sessions-dropped-into-main.png") });
+  await page.getByRole("tab", { name: "Terminal grid", exact: true }).click();
+  await expect(terminal).toBeVisible();
+  await page.getByRole("tab", { name: "Sessions", exact: true }).click();
+  await page.locator("#sidebar-session-list .card", { hasText: name }).click();
+  await expect(terminal).toBeVisible();
+  expect(await canvas.evaluate(node => node === (window as any).__sharedCanvas.node && node.parentElement === (window as any).__sharedCanvas.parent)).toBe(true);
+  expect(sockets).toBe(attached);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1")!).placements)).toEqual(placements);
+  await page.getByRole("tab", { name: "Sessions", exact: true }).click();
+  await page.locator("#sidebar-session-list .card", { hasText: other }).click();
+  await expect(terminal).toBeVisible();
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await page.screenshot({ path: testInfo.outputPath("session-open-reveals-shared-terminal.png") });
+  await page.getByRole("tab", { name: "Sessions", exact: true }).click();
+  await page.locator("#sidebar-settings-btn").click();
+  await expect(page.locator("#settings-view")).toBeVisible();
+  await expect(page.locator(".view.swiping")).toHaveCount(0);
+  await page.locator("#settings-back-btn").click();
+  await expect(page.getByRole("tab", { name: "Sessions", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(terminal).toBeHidden();
+  await page.getByRole("tab", { name: "Terminal grid", exact: true }).click();
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  // Returning from Settings preserves the selected dock tab, not explicit session-opening intent.
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1")!).placements)).toEqual(placements);
+});
+
+test("opening a grid session from shared Main reveals the intact grid", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop shared native docks");
+  const names = ["shared-grid-one", "shared-grid-two"];
+  for (const name of names) await createShellSession(name);
+  let sockets = 0;
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await openGrid(page, names);
+  const cells = page.locator("#desktop-grid-container .grid-cell");
+  await expect(cells.first()).toHaveAttribute("data-terminal-load-state", "live");
+  await expect(cells.last()).toHaveAttribute("data-terminal-load-state", "live");
+  await cells.locator("canvas").evaluateAll(nodes => { (window as any).__sharedGrid = nodes.map(node => ({ node, parent: node.parentElement })); });
+  const attached = sockets;
+  await dockPanel(page, "Sessions", "main");
+  await page.locator("#sidebar-session-list .card", { hasText: names[0]! }).click();
+  await expect(page.locator("#workspace-terminal-region")).toBeVisible();
+  await expect(cells.first()).toHaveClass(/grid-focused/);
+  expect(await cells.locator("canvas").evaluateAll(nodes => nodes.every((node, index) => node === (window as any).__sharedGrid[index].node && node.parentElement === (window as any).__sharedGrid[index].parent))).toBe(true);
+  expect(sockets).toBe(attached);
+});
+
+test("adding a session to a tab-hidden grid reveals its dock", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop grid action");
+  const names = ["hidden-grid-one", "hidden-grid-two"];
+  for (const name of names) await createShellSession(name);
+  await page.goto(server!.baseUrl);
+  await page.locator(".card", { hasText: names[0]! }).first().click();
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await dockPanel(page, "Sessions", "main");
+  await page.locator(`#sidebar-session-list [data-action="toggle-grid"][data-session="${names[1]}"]`).click();
+  await expect(page.locator("#workspace-terminal-region")).toBeVisible();
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2);
+});
+
 test("Sessions and the intact grid dock independently without replacing live terminals", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop native-panel dragging and retained grid");
   await page.setViewportSize({ width: 1440, height: 900 });
