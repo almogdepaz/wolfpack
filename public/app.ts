@@ -1858,18 +1858,6 @@ function delegationGridMember(row: DelegationSessionRow<DelegationSessionLike>, 
   };
 }
 
-function updateDelegationGridHeader(context: DelegationWorkspaceContext): void {
-  const title = document.getElementById("delegation-grid-title");
-  const summary = document.getElementById("delegation-grid-summary");
-  if (title) title.textContent = `${context.root.name} grid`;
-  if (summary) {
-    const childSummary = context.members[0]?.childSummary;
-    summary.textContent = childSummary
-      ? delegationChildSummaryText(childSummary)
-      : `${Math.max(0, context.members.length - 1)} child agents`;
-  }
-}
-
 function setDelegationWorkspaceDisplay(mode: "grid" | "focus" | "off"): void {
   document.body.classList.toggle("delegation-workspace", mode !== "off");
   document.body.classList.toggle("delegation-grid-active", mode === "grid");
@@ -1907,7 +1895,6 @@ function syncDelegationWorkspace(): void {
   const focusedStillExists = !state.focusedDelegationSession
     || members.some(member => member.session === state.focusedDelegationSession);
   setDelegationGridMembers(members);
-  updateDelegationGridHeader(context);
 
   if (!focusedStillExists) {
     destroyTerminal();
@@ -1932,7 +1919,6 @@ function prepareDelegationWorkspace(rootSession: string, machineUrl: string): De
     delegationMachine: machineUrl,
   });
   setDelegationGridMembers(context.members.map(row => delegationGridMember(row, machineUrl)));
-  updateDelegationGridHeader(context);
   return context;
 }
 

@@ -234,6 +234,8 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await expect(right).toBeVisible(); await expect(bottom).toBeVisible();
   await dockPanel(page, "Alpha", "bottom");
   await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveAttribute("aria-selected", "true");
+  await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveCSS("border-bottom-width", "3px");
+  await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveCSS("font-weight", "600");
   await bottom.getByRole("tab", { name: "Notes", exact: true }).click();
   await expect(note).toHaveValue("independent retained draft");
   await bottom.getByRole("tab", { name: "Alpha", exact: true }).click();
@@ -246,6 +248,9 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await page.locator("#workspace-restore").click();
   await page.getByRole("tab", { name: "Beta", exact: true }).click();
   await expect(page.locator("[data-context-view='beta/shared']")).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Beta", exact: true })).toHaveCSS("font-weight", "600");
+  await expect(page.getByRole("tab", { name: "Beta", exact: true })).toHaveCSS("min-height", "44px");
+  await page.screenshot({ path: testInfo.outputPath("mobile-widget-tab-strip.png") });
   await expect(note).toBeHidden();
   await page.locator("#workspace-context-back").click();
   await expect(terminal).toBeVisible();

@@ -1746,9 +1746,9 @@ body.no-animations, body.no-animations * {
 .workspace-icon{width:34px;height:34px}
 .workspace-icon svg{color:var(--accent);display:block;margin:auto}
 .workspace-icon[aria-pressed="false"] .restore-icon,.workspace-icon[aria-pressed="true"] .expand-icon{display:none}
-[data-extension-tabs]{display:flex;gap:4px;flex-wrap:wrap;padding:8px 12px}
-[data-extension-tabs] button{border:1px solid var(--border-hover);border-radius:var(--radius-sm);background:var(--bg-inset);color:var(--text-secondary);padding:4px 7px;font:inherit;cursor:pointer}
-[data-extension-tabs] button[aria-selected="true"]{border-color:var(--accent-border);color:var(--accent)}
+[data-extension-tabs]{display:flex;flex-wrap:wrap;border-bottom:1px solid var(--border)}
+[data-extension-tabs] button{border:0;border-bottom:3px solid transparent;border-radius:6px 6px 0 0;background:none;color:inherit;padding:10px;font:inherit;cursor:pointer}
+[data-extension-tabs] [aria-selected=true]{border-color:var(--accent);background:var(--accent-subtle);color:var(--accent);font-weight:600}
 .workspace-context-collapsed #workspace-context-region,#workspace-shell[data-full-view="context"] #workspace-terminal-region,#workspace-shell[data-full-view="terminals"] #workspace-context-region{display:none}
 #workspace-shell[data-full-view="context"] .widget-panel{grid-area:1/1/-1/-1}
 #workspace-shell[data-full-view="context"] + #input-bar{display:none}
@@ -1790,7 +1790,6 @@ body.no-animations, body.no-animations * {
     flex-direction: column;
     background: var(--bg-base);
   }
-  .delegation-grid-header,
   .delegation-focus-return {
     align-items: center;
     justify-content: space-between;
@@ -1800,19 +1799,6 @@ body.no-animations, body.no-animations * {
     background: var(--bg-header-gradient);
     flex-shrink: 0;
   }
-  .delegation-grid-heading {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-  #delegation-grid-title {
-    color: var(--accent);
-    text-transform: uppercase;
-    letter-spacing: 1.4px;
-    font-size: 11px;
-  }
-  #delegation-grid-summary,
   #delegation-focus-label {
     color: var(--text-dim);
     font-size: 10px;

@@ -288,8 +288,11 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     .evaluate((button: HTMLButtonElement) => button.click());
 
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
-  await expect(page.locator("#delegation-grid-title")).toHaveText("delegation-parent grid");
-  await expect(page.locator("#delegation-grid-summary")).toHaveText("2 children");
+  await expect(page.locator(".delegation-grid-header, #delegation-grid-title, #delegation-grid-summary")).toHaveCount(0);
+  const shellBox = (await page.locator("#delegation-grid-shell").boundingBox())!;
+  const gridBox = (await page.locator("#delegation-grid-container").boundingBox())!;
+  expect(gridBox.y).toBe(shellBox.y);
+  await page.screenshot({ path: testInfo.outputPath("delegation-grid-without-banner.png") });
   await expect(page.locator("#delegation-collapse-idle, #delegation-expand-all, #delegation-focus-parent, #delegation-exit-grid")).toHaveCount(0);
   await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText([
     "delegation-parent",

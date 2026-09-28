@@ -337,10 +337,20 @@ test("Sessions and the intact grid dock independently without replacing live ter
   // Sharing Main uses tabs, not a view-navigation action or a terminal remount.
   await dockPanel(page, "Terminal grid", "main");
   await expect(page.getByRole("button", { name: "Move Terminal grid", exact: true })).toBeFocused();
+  const selectedTab = page.getByRole("tab", { name: "Terminal grid", exact: true });
+  const sessionsTab = page.getByRole("tab", { name: "Sessions", exact: true });
+  await expect(selectedTab).toHaveCSS("border-bottom-width", "3px");
+  await expect(selectedTab).toHaveCSS("border-bottom-color", "rgb(69, 237, 126)");
+  await expect(selectedTab).toHaveCSS("font-weight", "600");
+  await expect(selectedTab).toHaveCSS("border-bottom-left-radius", "0px");
+  await expect(sessionsTab).toHaveCSS("border-bottom-color", "rgba(0, 0, 0, 0)");
+  await page.screenshot({ path: testInfo.outputPath("shared-main-tab-strip.png") });
   const accessibility = await new AxeBuilder({ page }).include("#workspace-shell").exclude("canvas").withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
   expect(accessibility.violations.filter(violation => ["serious", "critical"].includes(violation.impact ?? ""))).toEqual([]);
-  await page.getByRole("tab", { name: "Sessions", exact: true }).click();
+  await sessionsTab.click();
   await expect(terminal).toBeHidden();
+  await expect(sessionsTab).toHaveCSS("font-weight", "600");
+  await expect(selectedTab).toHaveCSS("border-bottom-color", "rgba(0, 0, 0, 0)");
   await page.getByRole("tab", { name: "Terminal grid", exact: true }).click();
   await expect(terminal).toBeVisible();
   await page.getByRole("tab", { name: "Sessions", exact: true }).click();
