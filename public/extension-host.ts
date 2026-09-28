@@ -7,7 +7,7 @@ import { browserAuthFetch } from "./browser-auth.ts";
 import { contextScopeHint, ContextViewRegistry, type ContextViewScope } from "./context-view-registry.ts";
 import { SharedDocumentPoller } from "./extension-document-polling.ts";
 import { loadAuthenticatedExtensionBundle } from "./extension-loader.ts";
-import { WidgetLayout, type WidgetArea } from "./widget-layout.ts";
+import { isNativePanel, WidgetLayout, type WidgetArea } from "./widget-layout.ts";
 import { WidgetPanels, type WidgetPresentation, type NativeWorkspacePanel } from "./widget-panels.ts";
 
 export interface SelectedExtensionScope { readonly sessionId: string | null; readonly unavailable?: string; }
@@ -187,6 +187,8 @@ export class ExtensionHost {
       this.panels.selectDefaults();
       return;
     }
+    // Native tab selection must not replace the current catalog/safe-mode diagnostic.
+    if (isNativePanel(id)) { this.panels.select(id); return; }
     const owner = this.owners.get(id)?.extension;
     if (owner && this.options.widgetVisible?.(owner) === false) return;
     this.render();

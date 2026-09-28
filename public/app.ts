@@ -5462,7 +5462,9 @@ window.addEventListener("resize", () => scheduleGridStabilizedFit());
 function revealWorkspaceTerminals(): void {
   if (!isDesktop() || state.currentView !== "terminal") return;
   if (workspaceShell?.preferences.fullView === "context") workspaceShell.focusPanel(null);
-  extensionHost?.select(TERMINALS_PANEL);
+  // A saved widget tab can arrive after the native panel, when its catalog finishes loading.
+  const saved = widgetLayout.preferences.selected[widgetLayout.area(TERMINALS_PANEL)];
+  if (document.getElementById("workspace-terminal-region")?.hidden || (saved && saved !== TERMINALS_PANEL)) extensionHost?.select(TERMINALS_PANEL);
 }
 
 function selectedExtensionScope(): { readonly sessionId: string | null; readonly unavailable?: string } | null {

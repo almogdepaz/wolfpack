@@ -300,6 +300,19 @@ test("session navigation reveals a terminal behind a widget tab or full view wit
   await page.getByRole("tab", { name: "Terminal grid", exact: true }).click();
   await page.screenshot({ path: testInfo.outputPath("terminal-recovered-widget-retained.png") });
   await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  // Explicit opening intent must survive a saved widget tab arriving with a late catalog.
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const catalogUrl = `${server!.baseUrl}/api/extensions`;
+  await page.route(catalogUrl, async route => { await held; await route.continue(); });
+  try {
+    await page.reload(); await openSession(page, SESSION_A);
+    release();
+    await expect(page.getByRole("tab", { name: "Notes", exact: true })).toBeVisible();
+    await expect(terminal).toBeVisible();
+  } finally { release(); await page.unroute(catalogUrl); }
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await expect(note).toHaveValue("retained through native tab recovery");
   await page.locator(".widget-panel").filter({ has: note }).getByRole("button", { name: "Context full view", exact: true }).click();
   const saved = await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
   await page.locator("#sidebar-settings-btn").click();

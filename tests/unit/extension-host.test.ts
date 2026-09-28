@@ -629,16 +629,24 @@ describe("ExtensionHost", () => {
 
   test("safe mode is inert before catalog, asset, or document requests", async () => {
     container = new FakeElement();
+    const terminals = new FakeElement(), sessions = new FakeElement();
     let requests = 0;
     let safeMode = true;
     const host = new ExtensionHost({
       container: container as unknown as HTMLElement,
       scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
       safeMode: () => safeMode,
+      nativePanels: [{ id: ":terminals", title: "Terminal grid", element: terminals as unknown as HTMLElement }, { id: ":sessions", title: "Sessions", element: sessions as unknown as HTMLElement }],
       authFetch: async () => { requests++; throw new Error("must not fetch"); },
       bundleLoader: (async () => { requests++; throw new Error("must not load"); }) as never,
     });
+    host.setNativePanels([":terminals", ":sessions"]);
     await host.refresh();
+    host.moveWidget(":sessions", "main");
+    expect(terminals.hidden).toBe(true);
+    host.select(":terminals");
+    expect(terminals.hidden).toBe(false);
+    expect(rightChrome("[data-extension-status]")?.textContent).toContain("Safe mode prevents extension loading");
     expect(requests).toBe(0);
     safeMode = false;
     host.dispose();
