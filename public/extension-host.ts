@@ -24,6 +24,7 @@ export interface ExtensionHostOptions {
   readonly onWidgetFocus?: (area: WidgetArea | null) => void;
   readonly nativePanels?: readonly NativeWorkspacePanel[];
   readonly onPanelGeometryChange?: () => void;
+  readonly onWorkspaceReset?: () => void;
   readonly authFetch?: typeof browserAuthFetch;
   readonly bundleLoader?: typeof loadAuthenticatedExtensionBundle;
   readonly onChange?: () => void;
@@ -115,8 +116,7 @@ export class ExtensionHost {
       container: options.container, registry: this.registry,
       layout: options.widgetLayout ?? new WidgetLayout({ getItem: () => null, setItem: () => {} }),
       onAreasChange: options.onWidgetAreasChange, onFocus: options.onWidgetFocus, onSelect: id => this.select(id),
-      nativePanels: options.nativePanels, onGeometryChange: options.onPanelGeometryChange,
-      onMove: (id, area) => this.moveWidget(id, area),
+      nativePanels: options.nativePanels, onGeometryChange: options.onPanelGeometryChange, onReset: options.onWorkspaceReset,
     });
     document.addEventListener("visibilitychange", this.onDocumentVisibility);
   }

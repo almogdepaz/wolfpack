@@ -1,3 +1,4 @@
+import { dockPanel } from "./workspace-drag-helpers.ts";
 import { selectTerminalLayoutFromUi } from "./helpers.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
@@ -210,7 +211,7 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   const canvas = terminal.locator("canvas");
   await canvas.evaluate(node => { (window as any).__independentCanvas = node; });
   const attached = sockets;
-  await page.getByRole("combobox", { name: "Widget panel placement" }).selectOption("bottom");
+  await dockPanel(page, "Notes", "bottom");
   const right = page.locator('.widget-panel[data-widget-area="right"]:visible');
   const bottom = page.locator('.widget-panel[data-widget-area="bottom"]:visible');
   await right.getByRole("tab", { name: "Alpha", exact: true }).click();
@@ -231,12 +232,12 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await expect(right).toBeHidden(); await expect(terminal).toBeHidden();
   await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
   await expect(right).toBeVisible(); await expect(bottom).toBeVisible();
-  await right.getByRole("combobox", { name: "Widget panel placement" }).selectOption("bottom");
+  await dockPanel(page, "Alpha", "bottom");
   await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveAttribute("aria-selected", "true");
   await bottom.getByRole("tab", { name: "Notes", exact: true }).click();
   await expect(note).toHaveValue("independent retained draft");
   await bottom.getByRole("tab", { name: "Alpha", exact: true }).click();
-  await bottom.getByRole("combobox", { name: "Widget panel placement" }).selectOption("right");
+  await dockPanel(page, "Alpha", "right");
   await expect(right.locator("[data-context-view='alpha/shared']")).toBeVisible();
   await expect(note).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("independent-widget-areas.png") });
@@ -280,12 +281,10 @@ test("native panels share widget areas and Main recovers without losing a draft 
   await note.evaluate(node => { (window as any).__dockingNote = { node, parent: node.parentElement }; });
   await terminal.locator("canvas").evaluate(node => { (window as any).__dockingCanvas = node; });
   const attached = sockets;
-  await page.getByRole("combobox", { name: "Widget panel placement" }).selectOption("main");
+  await dockPanel(page, "Notes", "main");
   await expect(terminal).toBeHidden();
-  await page.getByRole("button", { name: "Move panels", exact: true }).click();
-  await page.getByRole("combobox", { name: "Terminal grid placement", exact: true }).selectOption("bottom");
-  await page.getByRole("combobox", { name: "Sessions placement", exact: true }).selectOption("right");
-  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await dockPanel(page, "Terminal grid", "bottom");
+  await dockPanel(page, "Sessions", "right");
   await expect(terminal).toBeVisible(); await expect(note).toBeVisible();
   await expect(sessions).toHaveAttribute("data-widget-area", "right");
   await expect(sessions.getByRole("tab", { name: "Agent Context", exact: true })).toBeVisible();
@@ -400,9 +399,9 @@ test("hiding widgets from another settings tab pauses documents without replacin
   const canvas = page.locator("#desktop-terminal-container canvas");
   const oldView = await view.elementHandle(); const oldCanvas = await canvas.elementHandle();
   const attached = sockets;
-  const placement = page.getByRole("region", { name: "Agent Context widget", exact: true }).getByRole("combobox", { name: "Widget panel placement" });
-  for (const position of ["bottom", "full-screen", "right"]) {
-    await placement.selectOption(position);
+  for (const position of ["bottom", "full-screen", "right"] as const) {
+    if (position === "full-screen") await page.getByRole("region", { name: "Agent Context widget", exact: true }).getByRole("button", { name: "Context full view", exact: true }).click();
+    else await dockPanel(page, "Agent Context", position);
     await page.screenshot({ path: testInfo.outputPath(`installed-widget-${position}.png`), animations: "disabled" });
   }
   expect(await view.evaluate((node, previous) => node === previous, oldView)).toBe(true);

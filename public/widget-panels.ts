@@ -1,5 +1,5 @@
 import type { ContextViewRegistry, RegisteredContextView } from "./context-view-registry.ts";
-import { WidgetLayout, WIDGET_AREAS, type WidgetArea, isWidgetArea, isNativePanel, TERMINALS_PANEL } from "./widget-layout.ts";
+import { WidgetLayout, WIDGET_AREAS, type WidgetArea, isNativePanel, SESSIONS_PANEL, TERMINALS_PANEL } from "./widget-layout.ts";
 
 export interface WidgetPresentation {
   readonly visible: boolean;
@@ -14,12 +14,12 @@ export interface NativeWorkspacePanel {
 interface Chrome {
   readonly node: HTMLElement;
   readonly header: HTMLElement;
-  readonly title: HTMLElement;
+  readonly title: HTMLButtonElement;
   readonly tabs: HTMLElement;
   readonly buttons: Map<string, HTMLButtonElement>;
   order: string[];
-  readonly placement: HTMLSelectElement;
   readonly full: HTMLButtonElement;
+  readonly reset: HTMLButtonElement;
   readonly status: HTMLElement;
   readonly placeholder: HTMLElement;
 }
@@ -49,8 +49,8 @@ export class WidgetPanels {
     readonly onAreasChange?: (areas: readonly WidgetArea[]) => void;
     readonly onFocus?: (area: WidgetArea | null) => void;
     readonly onGeometryChange?: () => void;
+    readonly onReset?: () => void;
     readonly onSelect: (id: string) => void;
-    readonly onMove: (id: string, area: WidgetArea) => void;
   }) {
     for (const area of WIDGET_AREAS) this.chrome.set(area, this.createChrome(area));
   }
@@ -149,6 +149,10 @@ export class WidgetPanels {
     }
   }
   move(id: string, area: WidgetArea): void {
+    // An empty diagnostic panel changes host geometry only, never registry membership.
+    if (!id && this.presentation.desktop && this.presentation.visible && !this.entries.length) {
+      this.options.layout.setDefaultArea(area); this.options.onFocus?.(null); this.render(); return;
+    }
     if (!this.presentation.desktop || !this.mounted(id) || !this.ids().includes(id)) return;
     const from = this.area(id);
     const ids = this.ids();
@@ -193,30 +197,22 @@ export class WidgetPanels {
     placeholder.setAttribute("role", "region"); placeholder.setAttribute("aria-label", `${label} widgets`);
     const node = document.createElement("div"); node.className = "widget-chrome";
     const header = document.createElement("header"); header.className = "workspace-context-header";
-    const title = document.createElement("strong");
+    const title = document.createElement("button"); title.type = "button";
+    title.setAttribute("aria-describedby", "workspace-dock-help");
     const actions = document.createElement("div"); actions.className = "workspace-context-actions";
-    const placement = document.createElement("select"); placement.dataset.widgetPlacement = ""; placement.setAttribute("aria-label", "Widget panel placement");
-    for (const value of [...WIDGET_AREAS, "full-screen"]) {
-      const option = document.createElement("option"); option.value = value; option.textContent = value === "full-screen" ? "Full screen" : value[0]!.toUpperCase() + value.slice(1); placement.append(option);
-    }
     const full = document.createElement("button"); full.type = "button"; full.dataset.widgetFull = ""; full.className = "workspace-icon";
     full.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path class="expand-icon" d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/><path class="restore-icon" d="M8 3v5H3m13-5v5h5M3 16h5v5m8 0v-5h5"/></svg>';
-    placement.addEventListener("change", () => {
-      const id = this.active[area];
-      if (placement.value === "full-screen") this.options.onFocus?.(area);
-      else if (isWidgetArea(placement.value)) {
-        if (id) this.options.onMove(id, placement.value);
-        else if (!this.entries.length) { this.options.layout.setDefaultArea(placement.value); this.options.onFocus?.(null); this.render(); }
-      }
-      this.chrome.get(this.area(id ?? ""))?.placement.focus({ preventScroll: true });
-    });
     full.addEventListener("click", () => this.options.onFocus?.(this.presentation.focusArea ? null : area));
-    actions.append(placement); actions.append(full); header.append(title); header.append(actions);
+    const reset = document.createElement("button"); reset.type = "button"; reset.className = "workspace-icon";
+    reset.setAttribute("aria-label", reset.title = "Reset workspace layout");
+    reset.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/></svg>';
+    reset.addEventListener("click", () => this.options.onReset?.());
+    actions.append(full); actions.append(reset); header.append(title); header.append(actions);
     const tabs = document.createElement("div"); tabs.dataset.extensionTabs = ""; tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", `${label} widgets`);
     const status = document.createElement("p"); status.dataset.extensionStatus = ""; status.setAttribute("role", "status");
     const geometryStatus = document.createElement("p"); geometryStatus.dataset.workspaceLayoutStatus = ""; geometryStatus.setAttribute("role", "status"); geometryStatus.hidden = true;
     node.append(header); node.append(tabs); node.append(status); node.append(geometryStatus); placeholder.append(node);
-    return { node, header, title, tabs, buttons: new Map(), order: [], placement, full, status, placeholder };
+    return { node, header, title, tabs, buttons: new Map(), order: [], full, reset, status, placeholder };
   }
   private render(): void {
     if (this.rendering || this.selecting) return;
@@ -254,26 +250,26 @@ export class WidgetPanels {
         const hadFocus = focus && chrome.node.contains(focus);
         const pool = this.panelEntries(!selected || !isNativePanel(selected));
         const entries = this.presentation.desktop ? pool.filter(entry => this.area(entry.id) === area) : area === mobileArea ? pool : [];
-        if (selected && isNativePanel(selected) && entries.length === 1 && !this.options.layout.diagnostic) chrome.node.remove();
+        if (selected === SESSIONS_PANEL && entries.length === 1 && !this.options.layout.diagnostic) chrome.node.remove();
         else if (chrome.node.parentElement !== target) { target.prepend(chrome.node); if (hadFocus) focus.focus({ preventScroll: true }); }
         chrome.placeholder.hidden = target !== chrome.placeholder || !this.presentation.visible || (this.presentation.desktop ? !this.visibleAreas().includes(area) : area !== mobileArea);
         const entry = entries.find(entry => entry.id === selected);
-        chrome.header.hidden = !!selected && isNativePanel(selected);
-        chrome.title.textContent = entry?.title ?? "Widgets";
-        chrome.placement.hidden = !this.presentation.desktop;
-        chrome.placement.disabled = !entry && this.entries.length > 0;
-        chrome.placement.value = this.presentation.focusArea ? "full-screen" : area;
-        for (const child of Array.from(chrome.placement.children)) {
-          const option = child as HTMLOptionElement;
-          if (!isWidgetArea(option.value)) continue;
-          const replacement = selected ? this.options.layout.replacement(selected, option.value, ids) : null;
-          option.textContent = option.value[0]!.toUpperCase() + option.value.slice(1) + (replacement ? ` — ${this.panelEntries().find(panel => panel.id === replacement)?.title} moves to Main` : "");
-          option.disabled = !!selected && ids.includes(TERMINALS_PANEL) && area === "main" && option.value !== "main" && !replacement && !ids.some(id => id !== selected && this.area(id) === "main");
-        }
-        chrome.full.hidden = !this.presentation.desktop;
+        chrome.header.hidden = selected === SESSIONS_PANEL;
+        chrome.title.textContent = `⠿ ${entry?.title ?? "Widgets"}`;
+        chrome.title.dataset.dockHandle = selected ?? "";
+        chrome.title.disabled = !entry && this.entries.length > 0;
+        chrome.title.setAttribute("aria-label", `Move ${entry?.title ?? "Widgets"}`);
+        chrome.title.title = `Drag ${entry?.title ?? "Widgets"} to dock`;
+        chrome.full.hidden = !this.presentation.desktop || (!!selected && isNativePanel(selected));
+        chrome.reset.hidden = !this.presentation.desktop || selected !== TERMINALS_PANEL;
         chrome.full.setAttribute("aria-label", chrome.full.title = this.presentation.focusArea ? "Restore workspace" : "Context full view");
         chrome.full.setAttribute("aria-pressed", String(!!this.presentation.focusArea));
         chrome.status.textContent = this.options.layout.diagnostic || (selected && isNativePanel(selected) ? "" : this.message || this.errors[area] || (selected ? this.documentStatus(selected) : entries.length ? "Select a context view." : "No enabled context views for this scope.")) || "";
+        // Native headers need a grip, not empty SDK status/tab owners.
+        if (selected && isNativePanel(selected) && !chrome.status.textContent) chrome.status.remove();
+        else if (!chrome.status.parentElement) chrome.node.append(chrome.status);
+        if (selected && isNativePanel(selected) && entries.length < 2) chrome.tabs.remove();
+        else if (!chrome.tabs.parentElement) chrome.node.insertBefore(chrome.tabs, chrome.status.parentElement ? chrome.status : null);
         chrome.tabs.hidden = entries.length < 2 && (!entries.length || !!selected);
         chrome.tabs.setAttribute("aria-label", `${area[0]!.toUpperCase() + area.slice(1)} ${entries.some(entry => isNativePanel(entry.id)) ? "panels" : "widgets"}`);
         for (const [id, button] of chrome.buttons) if (!entries.some(entry => entry.id === id)) { button.remove(); chrome.buttons.delete(id); }

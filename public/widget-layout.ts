@@ -62,7 +62,7 @@ export class WidgetLayout {
   replacement(id: string, target: WidgetArea, available: readonly string[]): string | null {
     const areas = this.areasFor(available);
     if (target === "main" || areas[id] !== "main" || available.some(other => other !== id && areas[other] === "main")) return null;
-    return [TERMINALS_PANEL, SESSIONS_PANEL, ...available].find(other => other !== id && available.includes(other)) ?? null;
+    return [TERMINALS_PANEL, SESSIONS_PANEL, ...available].find(other => other !== id && areas[other] !== undefined) ?? null;
   }
   setDefaultArea(area: WidgetArea): void {
     if (!isWidgetArea(area)) return;
@@ -80,11 +80,17 @@ export class WidgetLayout {
     this.value = { ...this.value, selected: { ...this.value.selected, [this.area(id)]: id } };
     this.persist();
   }
+  /** Nonmutating drop validation; previews cannot change preferences or diagnostics. */
+  canMove(id: string, area: WidgetArea, available: readonly string[]): boolean {
+    if (!viewId(id) || !isWidgetArea(area) || !available.includes(id)) return false;
+    const areas = this.areasFor(available);
+    return !available.includes(TERMINALS_PANEL) || areas[id] !== "main" || area === "main" || !!this.replacement(id, area, available) || available.some(other => other !== id && areas[other] === "main");
+  }
   move(id: string, area: WidgetArea, available?: readonly string[]): boolean {
     if (!viewId(id) || !isWidgetArea(area) || (available && !available.includes(id))) return false;
     const from = available ? this.areasFor(available)[id]! : this.area(id);
     const replacement = available ? this.replacement(id, area, available) : null;
-    if (available?.includes(TERMINALS_PANEL) && from === "main" && area !== "main" && !replacement && !available.some(other => other !== id && this.areasFor(available)[other] === "main")) {
+    if (available && !this.canMove(id, area, available)) {
       this.error = "Show another panel before moving the last Main panel.";
       return false;
     }

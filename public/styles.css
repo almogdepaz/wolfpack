@@ -1705,7 +1705,7 @@ body.no-animations, body.no-animations * {
 .workspace-control-label { display: none; }
 #workspace-terminal-layout { appearance: auto; padding: 10px; border: 1px solid var(--border-input); border-radius: var(--radius-md); background: var(--bg-base); color: var(--text-primary); font: inherit; }
 #workspace-terminal-layout:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-#workspace-shell{display:grid;grid-template-columns:var(--workspace-left-size,0px) var(--workspace-left-divider,0px) minmax(0,1fr) var(--workspace-right-divider,0px) var(--workspace-right-size,320px);grid-template-rows:minmax(0,1fr) var(--workspace-bottom-divider,0px) var(--workspace-bottom-size,0px);flex:1;min-height:0;overflow:hidden;background:var(--bg-base)}
+#workspace-shell{position:relative;display:grid;grid-template-columns:var(--workspace-left-size,0px) var(--workspace-left-divider,0px) minmax(0,1fr) var(--workspace-right-divider,0px) var(--workspace-right-size,320px);grid-template-rows:minmax(0,1fr) var(--workspace-bottom-divider,0px) var(--workspace-bottom-size,0px);flex:1;min-height:0;overflow:hidden;background:var(--bg-base)}
 #workspace-terminal-region{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden}
 #workspace-context-region,#workspace-context-container{display:contents}
 #workspace-context-container{color:var(--text-dim);font-size:12px;line-height:1.45}
@@ -1716,8 +1716,6 @@ body.no-animations, body.no-animations * {
 #workspace-shell [data-widget-area="bottom"]{grid-area:3/3/4/4}
 #workspace-shell #desktop-sidebar{width:auto;height:auto;margin:0;min-width:0;min-height:0;transition:none}
 #workspace-shell [hidden]{display:none}
-#workspace-move-dialog select{min-width:0;max-width:100%;font:inherit;color:var(--text-primary);background:var(--bg-base);padding:8px}
-#workspace-move-dialog label{display:grid}
 .widget-content{flex:1;min-height:0;overflow:auto;padding:16px}
 .widget-chrome{flex:none;max-height:100%;overflow:auto}
 .widget-chrome p{margin:0;padding:0 12px}
@@ -1728,19 +1726,23 @@ body.no-animations, body.no-animations * {
 #workspace-bottom-divider{grid-area:2/3/3/4;cursor:row-resize}
 .workspace-divider:hover,.workspace-divider:focus-visible,.workspace-resizing .workspace-divider{background:var(--accent-border);outline:none}
 .workspace-resizing,.workspace-resizing *{cursor:var(--workspace-resize-cursor)!important;user-select:none!important}
-[data-widget-placement]{appearance:auto;width:100px;padding:4px}
+[data-dock-handle]{cursor:grab!important;touch-action:none}
+.workspace-context-header [data-dock-handle]{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.workspace-dragging{user-select:none}
+.workspace-dock-targets{position:absolute;inset:0;z-index:90;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr) minmax(0,1fr);grid-template-rows:7fr 3fr;gap:6px;padding:6px;background:#0006;pointer-events:none}
+.workspace-dock-targets>div{display:grid;place-content:center;text-align:center;overflow-wrap:anywhere;border:2px dashed var(--border-hover);background:var(--bg-elevated);color:var(--text-primary);border-radius:8px}
+[data-dock-target="left"]{grid-area:1/1/3/2}[data-dock-target="main"]{grid-area:1/2/2/3}[data-dock-target="right"]{grid-area:1/3/3/4}[data-dock-target="bottom"]{grid-area:2/2/3/3}
+[data-dock-target][data-active="true"]{border-color:var(--accent);background:var(--accent-subtle)}
+[data-dock-target][aria-disabled="true"]{opacity:.4}
 [data-workspace-layout-status]{font-size:12px;color:var(--text-secondary)}
 .workspace-context-header,.workspace-terminal-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex:0 0 auto;padding:3px 12px;border-bottom:1px solid var(--border);color:var(--text-secondary);font-size:11px}
 .workspace-context-header strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .workspace-context-actions{display:flex;gap:6px;flex:none}
-:is(.workspace-context-header,.workspace-terminal-toolbar) :is(button,select){min-height:34px;border:1px solid var(--border-input);border-radius:var(--radius-md);color:var(--text-secondary);background:var(--bg-inset);font:inherit}
-.workspace-terminal-toolbar select{appearance:auto;width:132px;padding:4px 7px;cursor:pointer}
-:is(.workspace-context-header,.workspace-terminal-toolbar) :is(button,select):hover{border-color:var(--border-hover)}
+:is(.workspace-context-header,.workspace-terminal-toolbar) button{min-height:34px;border:1px solid var(--border-input);border-radius:var(--radius-md);color:var(--text-secondary);background:var(--bg-inset);font:inherit}
+:is(.workspace-context-header,.workspace-terminal-toolbar) button:hover{border-color:var(--border-hover)}
 :is(.workspace-context-header,.workspace-terminal-toolbar) button{padding:4px 7px;cursor:pointer}
 .workspace-terminal-toolbar{justify-content:flex-end;min-height:41px}
 .workspace-terminal-toolbar button[hidden],.workspace-context-header[hidden],.widget-panel[hidden],[data-extension-tabs][hidden]{display:none}
-#terminal-view:has(#workspace-shell[data-full-view="context"]) .workspace-terminal-toolbar select{visibility:hidden}
-.workspace-terminal-toolbar select:focus{outline:2px solid var(--accent);outline-offset:2px}
 .workspace-icon{width:34px;height:34px}
 .workspace-icon svg{color:var(--accent);display:block;margin:auto}
 .workspace-icon[aria-pressed="false"] .restore-icon,.workspace-icon[aria-pressed="true"] .expand-icon{display:none}
@@ -1754,11 +1756,11 @@ body.no-animations, body.no-animations * {
   #workspace-shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
   #workspace-shell #workspace-terminal-region{grid-area:1/1/-1/-1}
   #workspace-mobile-header{grid-area:1/1/2/2}
-  .widget-chrome .workspace-context-header{display:none}
+  .widget-chrome .workspace-context-header,[data-dock-handle]{display:none}
   #workspace-shell[data-full-view="context"] .widget-panel{grid-area:2/1/3/2}
   #terminal-view:has(#workspace-shell[data-full-view="context"]) .workspace-terminal-toolbar{display:none}
   .workspace-terminal-toolbar,.workspace-context-header{min-height:51px}
-  :is(.workspace-terminal-toolbar,.workspace-context-header) :is(button,select),[data-extension-tabs] button{min-height:44px}
+  :is(.workspace-terminal-toolbar,.workspace-context-header) button,[data-extension-tabs] button{min-height:44px}
   .workspace-icon{width:44px;height:44px}
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { dockTargetAt } from "../../public/workspace-drag.ts";
 import { normalizeWidgetLayout, WidgetLayout } from "../../public/widget-layout.ts";
 
 const sessions = ":sessions", terminals = ":terminals", widget = "agent-context/context";
@@ -8,6 +9,17 @@ function memory() {
 }
 
 describe("built-in workspace docking", () => {
+  test("drop hit-testing uses four bounded docks and rejects outside or invalid geometry", () => {
+    const box = { left: 100, top: 50, width: 1000, height: 500 };
+    expect(dockTargetAt(200, 100, box)).toBe("left");
+    expect(dockTargetAt(600, 100, box)).toBe("main");
+    expect(dockTargetAt(1000, 500, box)).toBe("right");
+    expect(dockTargetAt(600, 500, box)).toBe("bottom");
+    expect(dockTargetAt(99, 100, box)).toBeNull();
+    expect(dockTargetAt(600, 551, box)).toBeNull();
+    expect(dockTargetAt(600, 100, { ...box, width: 0 })).toBeNull();
+    expect(dockTargetAt(NaN, 100, box)).toBeNull();
+  });
   test("Sessions starts Left, the intact terminal grid Main, widgets Right", () => {
     const layout = new WidgetLayout(memory());
     expect(layout.area(sessions)).toBe("left");
@@ -54,6 +66,17 @@ describe("built-in workspace docking", () => {
     expect(layout.areasFor([terminals])[terminals]).toBe("main");
     expect(JSON.stringify(layout.preferences)).toBe(before);
     expect(layout.areasFor([terminals, widget])).toEqual({ [terminals]: "bottom", [widget]: "main" });
+  });
+  test("preview validation neither mutates preferences nor permits an unavailable or sole Main panel", () => {
+    const store = memory(), layout = new WidgetLayout(store);
+    const before = layout.preferences;
+    expect(layout.canMove(terminals, "bottom", [terminals])).toBe(false);
+    expect(layout.canMove(terminals, "bottom", [terminals, ":unknown"])).toBe(false);
+    expect(layout.canMove(terminals, "bottom", [terminals, sessions])).toBe(true);
+    expect(layout.canMove("unknown/view", "main", [terminals, sessions])).toBe(false);
+    expect(layout.preferences).toBe(before);
+    expect(layout.diagnostic).toBe("");
+    expect(store.getItem()).toBeNull();
   });
   test("host IDs are reserved and unavailable stored contributions cannot fill Main", () => {
     const normalized = normalizeWidgetLayout({ placements: { [terminals]: "left", [sessions]: "bottom", ":unknown": "main", "unknown/view": "main", "bad/path/extra": "left" } });

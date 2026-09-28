@@ -5475,6 +5475,7 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
     { id: SESSIONS_PANEL, title: "Sessions", element: document.getElementById("desktop-sidebar")! },
   ],
   onPanelGeometryChange: () => scheduleGridStabilizedFit(),
+  onWorkspaceReset: () => workspaceShell?.reset(),
   onWidgetAreasChange: areas => workspaceShell?.setPanelAreas(areas),
   onWidgetFocus: area => workspaceShell?.focusPanel(area),
   registerLayout: contribution => {
@@ -5511,7 +5512,6 @@ const workspaceDocking = createWorkspaceDocking({
   panels: () => extensionHost?.availablePanels ?? [],
   setNativePanels: ids => extensionHost?.setNativePanels(ids),
   move: (id, area) => extensionHost?.moveWidget(id, area),
-  reset: () => workspaceShell?.reset(),
 });
 const widgetManager = createWidgetManager({ root: document.getElementById("settings-extensions")!, visibility: widgetVisibility, safeMode: () => wpSettings.extensionSafeMode });
 const unsubscribeWidgetVisibility = widgetVisibility.subscribe(() => extensionHost?.syncWidgetVisibility());
