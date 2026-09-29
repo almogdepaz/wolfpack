@@ -19,10 +19,12 @@ interface Chrome {
   readonly buttons: Map<string, HTMLButtonElement>;
   order: string[];
   readonly full: HTMLButtonElement;
+  readonly pin: HTMLButtonElement;
   readonly collapse: HTMLButtonElement;
   readonly close: HTMLButtonElement;
   readonly status: HTMLElement;
   readonly placeholder: HTMLElement;
+  readonly rail: HTMLElement;
 }
 
 /** Host panels share area chrome, not SDK registrations. Content and terminal roots never move. */
@@ -43,6 +45,10 @@ export class WidgetPanels {
   private readonly mobileClosed = new Set<string>();
   private rendering = false;
   private selecting = false;
+  // Peeking never changes the saved collapsed state or the shell's occupied tracks.
+  private peekArea: WidgetArea | null = null;
+  private peekTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly events = new AbortController();
 
   constructor(private readonly options: {
     readonly container: HTMLElement;
@@ -72,6 +78,63 @@ export class WidgetPanels {
   }
   private ids(): string[] { return this.panelEntries().map(entry => entry.id); }
   private collapsed(id: string): boolean { return this.presentation.desktop && this.options.layout.widgetState(id) === "collapsed"; }
+  private minimized(area: WidgetArea): boolean {
+    const members = this.ids().filter(id => this.area(id) === area);
+    return members.length ? members.every(id => this.collapsed(id)) : this.placeholderState === "collapsed";
+  }
+  private canPeek(area: WidgetArea): boolean {
+    return area !== "main" && this.presentation.desktop && this.presentation.visible && !this.presentation.focusArea && this.minimized(area);
+  }
+  private peeking(area: WidgetArea): boolean { return this.peekArea === area && this.canPeek(area); }
+  private expanded(area: WidgetArea): boolean { return this.peeking(area) || this.presentation.focusArea === area; }
+  private clearPeekTimer(): void { if (this.peekTimer !== null) clearTimeout(this.peekTimer); this.peekTimer = null; }
+  private clearPeek(): void { this.clearPeekTimer(); this.peekArea = null; }
+  private hidePeek(focus = false): void {
+    const area = this.peekArea;
+    if (!area) return;
+    this.clearPeek(); this.render();
+    if (focus) this.chrome.get(area)?.buttons.get(this.active[area] ?? "")?.focus({ preventScroll: true });
+  }
+  private peek(area: WidgetArea, id?: string): void {
+    if (!this.canPeek(area)) return;
+    this.clearPeekTimer();
+    const selected = id ?? this.active[area] ?? this.ids().find(id => this.area(id) === area);
+    if (this.peeking(area) && selected === this.active[area]) return;
+    if (selected) this.options.onSelect(selected);
+    else { this.peekArea = area; this.render(); }
+  }
+  private watchPanel(node: HTMLElement, signal = this.events.signal): void {
+    node.addEventListener("pointerenter", event => {
+      if (event.pointerType === "touch") return;
+      const area = node.dataset.widgetArea as WidgetArea;
+      if (this.peeking(area)) this.clearPeekTimer();
+      else if (node.dataset.collapsed === "true") this.peek(area);
+    }, { signal });
+    const schedule = () => {
+      if (this.peekArea !== node.dataset.widgetArea) return;
+      this.clearPeekTimer();
+      this.peekTimer = setTimeout(() => {
+        this.peekTimer = null;
+        const area = node.dataset.widgetArea as WidgetArea, chrome = this.chrome.get(area)!;
+        const panel = this.slots.get(this.active[area] ?? "") ?? chrome.placeholder;
+        if (!panel.matches(":hover, :focus-within") && !chrome.rail.matches(":hover") && !document.querySelector("dialog[open], .workspace-dragging")) this.hidePeek();
+      }, 300);
+    };
+    node.addEventListener("pointerleave", schedule, { signal });
+    node.addEventListener("focusout", schedule, { signal });
+    node.addEventListener("keydown", event => {
+      if (event.key !== "Escape" || !this.peeking(node.dataset.widgetArea as WidgetArea) || document.querySelector("dialog[open]")) return;
+      event.preventDefault(); event.stopPropagation(); this.hidePeek(true);
+    }, { signal });
+  }
+  private pin(area: WidgetArea): void {
+    if (!this.peeking(area)) return;
+    const id = this.active[area];
+    if (id) { this.options.layout.setWidgetState(id, "open"); this.options.layout.select(id); }
+    else this.placeholderState = "open";
+    this.clearPeek(); this.render(); this.chrome.get(area)?.collapse.focus({ preventScroll: true });
+  }
+  dispose(): void { this.clearPeek(); this.events.abort(); for (const chrome of this.chrome.values()) chrome.rail.remove(); }
   reopen(): void {
     if (this.presentation.desktop) { this.options.layout.reopenWidgets(); this.placeholderState = "open"; }
     this.mobileClosed.clear();
@@ -80,6 +143,8 @@ export class WidgetPanels {
   private dismiss(area: WidgetArea, close: boolean): void {
     const id = this.presentation.desktop ? this.active[area] : this.mobileSelection;
     if (id && isNativePanel(id)) return;
+    if (!close && this.peeking(area)) { this.hidePeek(true); return; }
+    this.clearPeek();
     if (!this.presentation.desktop && !close) { this.options.onFocus?.(null); return; }
     if (id) {
       if (this.presentation.desktop) this.options.layout.setWidgetState(id, close ? "closed" : "collapsed");
@@ -101,7 +166,7 @@ export class WidgetPanels {
   setNativePanels(ids: readonly string[]): void {
     const valid = (this.options.nativePanels ?? []).filter(panel => ids.includes(panel.id)).map(panel => panel.id);
     if (valid.join() === this.nativeIds.join()) return;
-    this.nativeIds = valid;
+    this.clearPeek(); this.nativeIds = valid;
     this.render();
   }
   createContainer(entry: RegisteredContextView, wrapper: HTMLElement, signal: AbortSignal): HTMLElement {
@@ -118,8 +183,9 @@ export class WidgetPanels {
     content.setAttribute("role", "tabpanel");
     content.setAttribute("aria-label", entry.contribution.title);
     body.append(content); wrapper.append(body);
-    this.slots.set(entry.id, wrapper);
+    this.slots.set(entry.id, wrapper); this.watchPanel(wrapper, signal);
     signal.addEventListener("abort", () => {
+      this.clearPeek();
       if (this.slots.get(entry.id) !== wrapper) return;
       this.slots.delete(entry.id);
       for (const area of WIDGET_AREAS) if (this.active[area] === entry.id) delete this.active[area];
@@ -128,6 +194,8 @@ export class WidgetPanels {
     return content;
   }
   update(entries: readonly RegisteredContextView[], message: string, documentStatus: (id: string) => string | null): void {
+    const peekId = this.peekArea && this.active[this.peekArea];
+    if (peekId && !entries.some(entry => entry.id === peekId)) this.clearPeek();
     this.entries = entries; this.message = message; this.documentStatus = documentStatus;
     if (!entries.some(entry => entry.id === this.mobileSelection)) this.mobileSelection = null;
     this.render();
@@ -136,7 +204,7 @@ export class WidgetPanels {
     const previous = this.presentation;
     if (previous.visible === next.visible && previous.desktop === next.desktop && previous.focusArea === next.focusArea) return false;
     if (previous.desktop !== next.desktop) { this.mobileSelection = null; this.mobileClosed.clear(); }
-    this.presentation = next;
+    this.clearPeek(); this.presentation = next;
     this.render();
     return true;
   }
@@ -156,11 +224,14 @@ export class WidgetPanels {
       } finally { this.selecting = false; }
       if (this.options.registry.selectedId !== id) { this.errors[area] = this.options.registry.diagnostic; this.render(); return; }
     }
-    if (this.collapsed(id)) this.options.layout.setWidgetState(id, "open");
+    const peek = this.collapsed(id) && this.canPeek(area);
+    this.clearPeek();
+    if (peek) this.peekArea = area;
+    else if (this.collapsed(id)) this.options.layout.setWidgetState(id, "open");
     if (this.presentation.desktop) this.active[area] = id; else this.mobileSelection = id;
     this.lastSelected = id;
     delete this.errors[area];
-    if (persist && this.presentation.desktop) this.options.layout.select(id);
+    if (persist && this.presentation.desktop && !peek) this.options.layout.select(id);
     this.render();
   }
   /** Caller owns complete-catalog and visible-shell gates for extension mounting. */
@@ -181,12 +252,15 @@ export class WidgetPanels {
   move(id: string, area: WidgetArea): void {
     // An empty diagnostic panel changes host geometry only, never registry membership.
     if (!id && this.presentation.desktop && this.presentation.visible && !this.entries.length) {
+      this.clearPeek(); this.placeholderState = "open";
       this.options.layout.setDefaultArea(area); this.options.onFocus?.(null); this.render(); return;
     }
     if (!this.presentation.desktop || !this.mounted(id) || !this.ids().includes(id)) return;
     const from = this.area(id);
     const ids = this.ids();
     if (!this.options.layout.move(id, area, ids)) { this.render(); return; }
+    this.clearPeek();
+    if (this.collapsed(id)) this.options.layout.setWidgetState(id, "open");
     if (this.active[from] === id) delete this.active[from];
     for (const location of WIDGET_AREAS) {
       const selected = this.options.layout.selection(location, ids);
@@ -199,7 +273,7 @@ export class WidgetPanels {
   }
   reset(): void {
     const selected = this.selectedId;
-    this.options.layout.reset(); this.placeholderState = "open"; this.mobileClosed.clear();
+    this.clearPeek(); this.options.layout.reset(); this.placeholderState = "open"; this.mobileClosed.clear();
     for (const area of WIDGET_AREAS) delete this.active[area];
     if (selected && this.slots.has(selected)) this.active.right = selected;
     this.render();
@@ -218,13 +292,17 @@ export class WidgetPanels {
   }
   private visibleIds(): string[] {
     if (!this.presentation.desktop) return this.presentation.visible && this.mobileSelection && !this.mobileClosed.has(this.mobileSelection) && this.slots.has(this.mobileSelection) ? [this.mobileSelection] : [];
-    return this.visibleAreas().flatMap(area => this.active[area] && !this.collapsed(this.active[area]!) && this.ids().includes(this.active[area]!) && this.mounted(this.active[area]!) ? [this.active[area]!] : []);
+    return this.visibleAreas().flatMap(area => this.active[area] && (!this.collapsed(this.active[area]!) || this.expanded(area)) && this.ids().includes(this.active[area]!) && this.mounted(this.active[area]!) ? [this.active[area]!] : []);
   }
   private createChrome(area: WidgetArea): Chrome {
     const label = area[0]!.toUpperCase() + area.slice(1);
     const placeholder = document.createElement("section");
     placeholder.className = "widget-panel"; placeholder.dataset.widgetArea = area;
     placeholder.setAttribute("role", "region"); placeholder.setAttribute("aria-label", `${label} widgets`);
+    this.watchPanel(placeholder);
+    const rail = document.createElement("section"); rail.className = "widget-panel"; rail.dataset.widgetArea = area;
+    rail.setAttribute("aria-label", `${label} widgets`); rail.setAttribute("role", "region");
+    rail.dataset.collapsed = "true"; rail.hidden = true; this.watchPanel(rail);
     const node = document.createElement("div"); node.className = "widget-chrome";
     const header = document.createElement("header"); header.className = "workspace-context-header";
     const title = document.createElement("button"); title.type = "button";
@@ -232,17 +310,24 @@ export class WidgetPanels {
     const actions = document.createElement("div"); actions.className = "workspace-context-actions";
     const full = document.createElement("button"); full.type = "button"; full.dataset.widgetFull = ""; full.className = "workspace-icon";
     full.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path class="expand-icon" d="M8 3H3v5m13-5h5v5M3 16v5h5m8 0h5v-5"/><path class="restore-icon" d="M8 3v5H3m13-5v5h5M3 16h5v5m8 0v-5h5"/></svg>';
-    full.addEventListener("click", () => this.options.onFocus?.(this.presentation.focusArea ? null : area));
+    full.addEventListener("click", () => {
+      const restoring = !!this.presentation.focusArea;
+      this.options.onFocus?.(restoring ? null : area);
+      if (restoring && this.minimized(area)) this.chrome.get(area)?.buttons.get(this.active[area] ?? "")?.focus({ preventScroll: true });
+    });
+    const pin = document.createElement("button"); pin.type = "button"; pin.className = "workspace-icon";
+    pin.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M8 3h8l-1 7 4 4v2H5v-2l4-4-1-7zm4 13v6"/></svg>';
+    pin.addEventListener("click", () => this.pin(area));
     const collapse = document.createElement("button"); collapse.type = "button"; collapse.className = "workspace-icon"; collapse.textContent = "−";
     collapse.addEventListener("click", () => this.dismiss(area, false));
     const close = document.createElement("button"); close.type = "button"; close.className = "workspace-icon"; close.textContent = "×";
     close.addEventListener("click", () => this.dismiss(area, true));
-    actions.append(full, collapse, close); header.append(title); header.append(actions);
+    actions.append(full, pin, collapse, close); header.append(title); header.append(actions);
     const tabs = document.createElement("div"); tabs.dataset.extensionTabs = ""; tabs.setAttribute("role", "tablist"); tabs.setAttribute("aria-label", `${label} widgets`);
     const status = document.createElement("p"); status.dataset.extensionStatus = ""; status.setAttribute("role", "status");
     const geometryStatus = document.createElement("p"); geometryStatus.dataset.workspaceLayoutStatus = ""; geometryStatus.setAttribute("role", "status"); geometryStatus.hidden = true;
     node.append(header); node.append(tabs); node.append(status); node.append(geometryStatus); placeholder.append(node);
-    return { node, header, title, tabs, buttons: new Map(), order: [], full, collapse, close, status, placeholder };
+    return { node, header, title, tabs, buttons: new Map(), order: [], full, pin, collapse, close, status, placeholder, rail };
   }
   private render(): void {
     if (this.rendering || this.selecting) return;
@@ -259,17 +344,16 @@ export class WidgetPanels {
         }
       }
       const areas = this.occupiedAreas();
-      const collapsedAreas = this.presentation.desktop ? areas.filter(area => {
-        const members = ids.filter(id => this.area(id) === area);
-        return members.length ? members.every(id => this.collapsed(id)) : this.placeholderState === "collapsed";
-      }) : [];
+      const collapsedAreas = this.presentation.desktop ? areas.filter(area => this.minimized(area)) : [];
+      if (this.peekArea && !this.canPeek(this.peekArea)) this.clearPeek();
       const key = `${areas.join(",")}/${collapsedAreas.join(",")}`;
       if (key !== this.areasKey) { this.areasKey = key; this.options.onAreasChange?.(areas, collapsedAreas); }
       for (const [id, slot] of this.slots) slot.dataset.widgetArea = this.area(id);
       const visibleIds = this.visibleIds();
       this.options.registry.setVisibleIds(visibleIds.filter(id => !isNativePanel(id)));
       for (const [id, slot] of this.slots) {
-        const collapsed = this.collapsed(id);
+        const collapsed = this.collapsed(id) && !this.expanded(this.area(id));
+        slot.dataset.peek = String(this.peeking(this.area(id)) && this.active[this.area(id)] === id);
         slot.dataset.collapsed = String(collapsed);
         const body = slot.querySelector<HTMLElement>(".widget-content");
         if (body) body.hidden = collapsed;
@@ -289,14 +373,15 @@ export class WidgetPanels {
         const selected = this.presentation.desktop ? this.active[area] : area === mobileArea ? this.mobileSelection : null;
         const target = selected ? this.native(selected)?.element ?? this.slots.get(selected) ?? chrome.placeholder : chrome.placeholder;
         const focus = document.activeElement as HTMLElement | null;
-        const hadFocus = focus && chrome.node.contains(focus);
+        const hadFocus = focus && (chrome.node.contains(focus) || chrome.rail.contains(focus));
         const pool = this.panelEntries(!selected || !isNativePanel(selected));
         const entries = this.presentation.desktop ? pool.filter(entry => this.area(entry.id) === area) : area === mobileArea ? pool : [];
         if (selected && isNativePanel(selected) && entries.length === 1 && !this.options.layout.diagnostic) chrome.node.remove();
         else if (chrome.node.parentElement !== target) { target.prepend(chrome.node); if (hadFocus) focus.focus({ preventScroll: true }); }
         chrome.placeholder.hidden = target !== chrome.placeholder || !this.presentation.visible || (this.presentation.desktop ? !this.visibleAreas().includes(area) : area !== mobileArea);
         const entry = entries.find(entry => entry.id === selected);
-        const collapsed = collapsedAreas.includes(area);
+        const collapsed = collapsedAreas.includes(area) && !this.expanded(area);
+        target.dataset.peek = String(this.peeking(area));
         target.dataset.collapsed = String(collapsed);
         chrome.header.hidden = (!!selected && isNativePanel(selected)) || collapsed;
         chrome.title.textContent = `⠿ ${entry?.title ?? "Widgets"}`;
@@ -305,6 +390,8 @@ export class WidgetPanels {
         chrome.title.setAttribute("aria-label", `Move ${entry?.title ?? "Widgets"}`);
         chrome.title.title = `Drag ${entry?.title ?? "Widgets"} to dock`;
         chrome.full.hidden = !this.presentation.desktop || (!!selected && isNativePanel(selected));
+        chrome.pin.hidden = !this.peeking(area);
+        chrome.pin.setAttribute("aria-label", chrome.pin.title = `Pin ${entry?.title ?? "Widgets"}`);
         chrome.collapse.setAttribute("aria-label", chrome.collapse.title = `Collapse ${entry?.title ?? "Widgets"}`);
         chrome.close.setAttribute("aria-label", chrome.close.title = `Close ${entry?.title ?? "Widgets"}`);
         chrome.full.setAttribute("aria-label", chrome.full.title = this.presentation.focusArea ? "Restore workspace" : "Context full view");
@@ -313,11 +400,17 @@ export class WidgetPanels {
         // Native headers need a grip, not empty SDK status/tab owners.
         if (selected && isNativePanel(selected) && !chrome.status.textContent) chrome.status.remove();
         else if (!chrome.status.parentElement) chrome.node.append(chrome.status);
-        if (selected && isNativePanel(selected) && entries.length < 2) chrome.tabs.remove();
-        else if (!chrome.tabs.parentElement) chrome.node.insertBefore(chrome.tabs, chrome.status.parentElement ? chrome.status : null);
-        chrome.tabs.hidden = !collapsed && entries.length < 2 && (!entries.length || !!selected);
+        const peek = this.peeking(area);
+        chrome.rail.hidden = !peek;
+        if (peek) {
+          // Keep the hit targets stationary; only host chrome moves, never widget content.
+          if (!chrome.rail.parentElement) this.options.container.append(chrome.rail);
+          if (chrome.tabs.parentElement !== chrome.rail) chrome.rail.append(chrome.tabs);
+        } else if (selected && isNativePanel(selected) && entries.length < 2) chrome.tabs.remove();
+        else if (chrome.tabs.parentElement !== chrome.node) chrome.node.insertBefore(chrome.tabs, chrome.status.parentElement ? chrome.status : null);
+        chrome.tabs.hidden = !collapsed && !peek && entries.length < 2 && (!entries.length || !!selected);
         // A collapsed empty diagnostic panel still has a local recovery affordance.
-        if (collapsed && !entries.length) entries.push({ id: "", title: "Widgets" });
+        if ((collapsed || peek) && !entries.length) entries.push({ id: "", title: "Widgets" });
         chrome.tabs.setAttribute("aria-label", `${area[0]!.toUpperCase() + area.slice(1)} ${entries.some(entry => isNativePanel(entry.id)) ? "panels" : "widgets"}`);
         for (const [id, button] of chrome.buttons) if (!entries.some(entry => entry.id === id)) { button.remove(); chrome.buttons.delete(id); }
         chrome.order = entries.map(entry => entry.id);
@@ -325,31 +418,32 @@ export class WidgetPanels {
           let button = chrome.buttons.get(item.id);
           if (!button) {
             button = document.createElement("button"); button.type = "button"; button.setAttribute("role", "tab");
-            const activate = (id: string) => {
-              this.options.onSelect(id);
-              const current = this.chrome.get(this.area(id));
-              (current?.tabs.hidden ? current.collapse : current?.buttons.get(id))?.focus({ preventScroll: true });
+            const activate = (id: string, focusPanel = true) => {
+              if (id) this.options.onSelect(id);
+              else if (this.canPeek(area)) this.peek(area);
+              else { this.placeholderState = "open"; this.render(); }
+              const location = id ? this.area(id) : area, current = this.chrome.get(location);
+              (current?.tabs.hidden || (focusPanel && this.peeking(location)) ? current?.collapse : current?.buttons.get(id))?.focus({ preventScroll: true });
             };
-            button.addEventListener("click", () => {
-              if (!item.id) { this.placeholderState = "open"; this.render(); chrome.collapse.focus({ preventScroll: true }); }
-              else activate(item.id);
-            });
+            button.addEventListener("click", () => activate(item.id));
+            button.addEventListener("pointerenter", event => { if (event.pointerType !== "touch") this.peek(area, item.id); });
             button.addEventListener("keydown", event => {
               const list = chrome.order, at = list.indexOf(item.id);
               const next = event.key === "Home" ? 0 : event.key === "End" ? list.length - 1 : event.key === "ArrowRight" ? (at + 1) % list.length : event.key === "ArrowLeft" ? (at + list.length - 1) % list.length : -1;
               if (next < 0 || event.altKey || event.ctrlKey || event.metaKey) return;
-              event.preventDefault(); activate(list[next]!);
+              event.preventDefault(); activate(list[next]!, false);
             });
             chrome.buttons.set(item.id, button);
           }
           button.textContent = item.title;
-          button.setAttribute("aria-selected", String(item.id === selected && !this.collapsed(item.id)));
+          button.setAttribute("aria-selected", String(item.id === selected && (!this.collapsed(item.id) || this.expanded(area))));
           if (this.native(item.id)) button.setAttribute("aria-controls", this.native(item.id)!.element.id);
           else if (this.slots.has(item.id)) button.setAttribute("aria-controls", `widget-view-${encodeURIComponent(item.id)}`);
           else button.removeAttribute("aria-controls");
           button.tabIndex = item.id === selected || (!selected && index === 0) ? 0 : -1;
           if (chrome.tabs.children[index] !== button) chrome.tabs.insertBefore(button, chrome.tabs.children[index] ?? null);
         }
+        if (hadFocus && focus.isConnected && !focus.closest("[hidden]") && document.activeElement !== focus) focus.focus({ preventScroll: true });
       }
     } finally { this.rendering = false; }
   }

@@ -730,8 +730,13 @@ test("right context panel resizes with real pointer and keyboard input without r
   expect(await page.locator("#sidebar-session-controls").boundingBox()).toEqual(toolsBeforeCollapse);
   await expect(page.locator(".workspace-terminal-toolbar")).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("collapsed-widget-rail.png") });
+  const collapsedTerminal = await terminal.boundingBox();
   await expand.press("Enter");
   await expect(collapse).toBeFocused();
+  await expect(expand).toBeVisible();
+  await expect(border).toBeHidden();
+  expect(await terminal.boundingBox()).toEqual(collapsedTerminal);
+  await page.getByRole("button", { name: "Pin Widgets", exact: true }).click();
   await expect(expand).toBeHidden();
   await expect(border).toBeVisible();
   await page.reload();

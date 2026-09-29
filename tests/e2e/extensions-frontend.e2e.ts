@@ -195,6 +195,114 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
+for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area} widgets peek without resizing terminals and pin explicitly`, async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop auto-hide drawers");
+  await authorize(page);
+  await page.addInitScript(area => localStorage.setItem("wolfpack-widget-layout:v1", JSON.stringify({
+    placements: { "notes/notes": area }, widgets: { "alpha/shared": "closed", "beta/shared": "closed", "agent-context/context": "closed" },
+  })), area);
+  const resizes: { resizeId: number }[] = [], acks: { resizeId: number }[] = []; let sockets = 0;
+  page.on("websocket", socket => {
+    if (!socket.url().includes("/ws/pty")) return; sockets++;
+    socket.on("framesent", ({ payload }) => { if (typeof payload === "string") { try { const value = JSON.parse(payload); if (value.type === "resize") resizes.push(value); } catch {} } });
+    socket.on("framereceived", ({ payload }) => { if (typeof payload === "string") { try { const value = JSON.parse(payload); if (value.type === "resize_ack") acks.push(value); } catch {} } });
+  });
+  await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
+  if (area === "left") await dockPanel(page, "Sessions", "right");
+  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await expect(note).toBeVisible(); await note.fill("drawer draft");
+  const terminal = page.locator("#desktop-terminal-container");
+  await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
+  await page.evaluate(() => { (window as any).__drawerNodes = { note: document.querySelector("[data-context-view='notes/notes'] textarea"), canvas: document.querySelector("#desktop-terminal-container canvas") }; });
+  await page.clock.install();
+  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await page.clock.runFor(1000);
+  await expect(note).toBeHidden();
+  expect(resizes.at(-1)?.resizeId).toEqual(expect.any(Number));
+  await expect.poll(() => acks.at(-1)?.resizeId).toBe(resizes.at(-1)!.resizeId);
+  const box = await terminal.boundingBox(), count = resizes.length, attached = sockets;
+  const saved = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
+  const rail = page.getByRole("tab", { name: "Notes", exact: true });
+  await rail.hover(); await expect(note).toBeVisible();
+  await expect(page.locator(".widget-panel[data-peek=true]")).toHaveCount(1);
+  await note.focus(); await note.fill("drawer retained edit");
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.clock.runFor(400); await expect(note).toBeVisible(); // Focus prevents auto-hide.
+  await note.press("Escape"); await expect(note).toBeHidden(); await expect(rail).toBeFocused();
+  await rail.press("Enter"); await expect(note).toBeVisible();
+  await terminal.locator("canvas").click(); await page.clock.runFor(400);
+  await expect(note).toBeHidden();
+  const peekMetrics = { terminal: await terminal.boundingBox(), resizeFrames: resizes.length - count };
+  expect(peekMetrics.terminal).toEqual(box); expect(peekMetrics.resizeFrames).toBe(0); expect(sockets).toBe(attached);
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(saved);
+  await rail.click(); await expect(note).toHaveValue("drawer retained edit");
+  expect(await page.evaluate(() => { const saved = (window as any).__drawerNodes; return [saved.note === document.querySelector("[data-context-view='notes/notes'] textarea"), saved.canvas === document.querySelector("#desktop-terminal-container canvas")]; })).toEqual([true, true]);
+  await page.screenshot({ path: testInfo.outputPath(`${area}-widget-overlay.png`) });
+  await page.getByRole("button", { name: "Context full view", exact: true }).click();
+  await expect(note).toBeVisible(); await expect(terminal).toBeHidden();
+  await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await expect(note).toBeHidden(); await expect(rail).toBeFocused();
+  await rail.press("Enter");
+  const beforePin = resizes.length;
+  await page.getByRole("button", { name: "Pin Notes", exact: true }).click();
+  await expect(page.locator(".widget-panel[data-peek=true]")).toHaveCount(0);
+  await page.clock.runFor(1000);
+  expect(await terminal.boundingBox()).not.toEqual(box); expect(resizes.length).toBeGreaterThan(beforePin);
+  await expect(note).toBeVisible(); expect(sockets).toBe(attached);
+  await testInfo.attach("resize-proof", { contentType: "application/json", body: JSON.stringify({
+    area, collapsedTerminal: box, peek: peekMetrics, pinnedTerminal: await terminal.boundingBox(),
+    pinResizeFrames: resizes.length - beforePin, extraSockets: sockets - attached,
+  }, null, 2) });
+});
+
+test("collapsed rails preview the hovered widget and dismiss on scope and breakpoint changes", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop drawer lifecycle");
+  await authorize(page);
+  await page.addInitScript(() => localStorage.setItem("wolfpack-widget-layout:v1", JSON.stringify({ widgets: {
+    "alpha/shared": "collapsed", "beta/shared": "collapsed", "notes/notes": "closed", "agent-context/context": "closed",
+  } })));
+  await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
+  const saved = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
+  await page.getByRole("tab", { name: "Beta", exact: true }).hover();
+  await expect(page.locator("[data-context-view='beta/shared']")).toBeVisible();
+  await expect(page.locator(".widget-panel[data-peek=true]")).toHaveCount(1);
+  await page.getByRole("tab", { name: "Alpha", exact: true }).click();
+  await expect(page.locator("[data-context-view='alpha/shared']")).toBeVisible();
+  await page.getByRole("button", { name: "Collapse Alpha", exact: true }).press("Escape");
+  await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toBeFocused();
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Beta", exact: true })).toBeFocused();
+  await expect(page.locator("[data-context-view='beta/shared']")).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator(".widget-panel[data-peek=true]")).toHaveCount(0);
+  await showWidgets(page); await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(page.locator(".widget-panel[data-peek=true]")).toHaveCount(0);
+  await page.getByRole("tab", { name: "Alpha", exact: true }).hover();
+  await expect(page.locator("[data-context-view='alpha/shared']")).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(saved);
+  // A real drag from the overlay stays open through its hide deadline and pins at the destination.
+  await page.clock.install();
+  const handle = await page.getByRole("button", { name: "Move Alpha", exact: true }).boundingBox();
+  await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
+  await page.mouse.down(); await page.mouse.move(handle!.x + handle!.width / 2 + 8, handle!.y + handle!.height / 2);
+  const target = page.locator('[data-dock-target="bottom"]'); await expect(target).toBeVisible();
+  const drop = (await target.boundingBox())!;
+  await page.mouse.move(drop.x + drop.width / 2, drop.y + drop.height / 2);
+  await page.clock.runFor(400); await expect(page.locator("[data-context-view='alpha/shared']")).toBeVisible();
+  await page.mouse.up(); await expect(page.locator(".workspace-dock-targets")).toHaveCount(0);
+  await expect(page.locator("[data-context-view='alpha/shared']").locator("..").locator("..")).toHaveAttribute("data-widget-area", "bottom");
+  await expect(page.getByRole("button", { name: "Pin Alpha", exact: true })).toBeHidden();
+  await page.getByRole("button", { name: "Collapse Alpha", exact: true }).click();
+  const afterMove = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
+  await page.getByRole("tab", { name: "Beta", exact: true }).hover();
+  await expect(page.locator("[data-context-view='beta/shared']")).toBeVisible();
+  await page.locator(".card", { hasText: SESSION_B }).filter({ visible: true }).first().click();
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await expect(page.locator(".widget-panel[data-peek=true]")).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(afterMove);
+});
+
 test("widgets collapse individually and close without terminal chrome or lost drafts", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop widget collapse and close");
   await authorize(page);

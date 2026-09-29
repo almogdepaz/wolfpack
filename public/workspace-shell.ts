@@ -121,7 +121,9 @@ export function createWorkspaceShell(options: {
     for (const area of WIDGET_AREAS.filter(area => area !== "main")) {
       const enabled = desktop.matches && effective.fullView === "none" && areas.includes(area);
       const collapsed = collapsedAreas.includes(area);
-      const size = collapsed ? 44 : dimension(area);
+      const openSize = dimension(area);
+      const size = collapsed ? 44 : openSize;
+      root.style.setProperty(`--workspace-${area}-open-size`, `${openSize}px`);
       root.style.setProperty(`--workspace-${area}-size`, `${enabled ? size : 0}px`);
       root.style.setProperty(`--workspace-${area}-divider`, enabled && !collapsed ? "6px" : "0px");
       const divider = dividers[area];

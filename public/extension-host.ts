@@ -221,7 +221,7 @@ export class ExtensionHost {
     this.pausePollers();
     return true;
   }
-  dispose(): void { if (this.disposed) return; this.disposed = true; ++this.generation; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(true); this.registry.dispose(); }
+  dispose(): void { if (this.disposed) return; this.disposed = true; ++this.generation; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(true); this.panels.dispose(); this.registry.dispose(); }
 
   private async load(item: ExtensionCatalogInstallation, generation: number): Promise<void> {
     const existing = this.loaded.get(item.extensionId);
