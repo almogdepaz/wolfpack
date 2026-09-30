@@ -41,7 +41,8 @@ export class WidgetPanels {
   private message = "";
   private documentStatus: (id: string) => string | null = () => null;
   private areasKey = "";
-  private placeholderState: "open" | "collapsed" | "closed" = "open";
+  private placeholderState: "open" | "collapsed" = "open";
+  private mobileDismissed = false;
   private readonly mobileClosed = new Set<string>();
   private rendering = false;
   private selecting = false;
@@ -70,10 +71,11 @@ export class WidgetPanels {
   get availablePanels(): readonly { id: string; title: string }[] { return this.panelEntries(); }
   private native(id: string): NativeWorkspacePanel | undefined { return this.options.nativePanels?.find(panel => panel.id === id); }
   private mounted(id: string): boolean { return this.slots.has(id) || !!this.native(id); }
+  private get closed(): boolean { return this.presentation.desktop ? this.options.layout.widgetsClosed : this.mobileDismissed; }
   private panelEntries(includeHiddenWidgets = false): { id: string; title: string }[] {
     return [
       ...(this.presentation.desktop ? (this.options.nativePanels ?? []).filter(panel => this.nativeIds.includes(panel.id)).map(({ id, title }) => ({ id, title })) : []),
-      ...(this.presentation.visible || includeHiddenWidgets ? this.entries.filter(entry => this.presentation.desktop ? this.options.layout.widgetState(entry.id) !== "closed" : !this.mobileClosed.has(entry.id)).map(entry => ({ id: entry.id, title: entry.contribution.title })) : []),
+      ...(!this.closed && (this.presentation.visible || includeHiddenWidgets) ? this.entries.filter(entry => this.presentation.desktop ? this.options.layout.widgetState(entry.id) !== "closed" : !this.mobileClosed.has(entry.id)).map(entry => ({ id: entry.id, title: entry.contribution.title })) : []),
     ];
   }
   private ids(): string[] { return this.panelEntries().map(entry => entry.id); }
@@ -137,7 +139,7 @@ export class WidgetPanels {
   dispose(): void { this.clearPeek(); this.events.abort(); for (const chrome of this.chrome.values()) chrome.rail.remove(); }
   reopen(): void {
     if (this.presentation.desktop) { this.options.layout.reopenWidgets(); this.placeholderState = "open"; }
-    this.mobileClosed.clear();
+    this.mobileClosed.clear(); this.mobileDismissed = false;
     this.render();
   }
   private dismiss(area: WidgetArea, close: boolean): void {
@@ -149,7 +151,13 @@ export class WidgetPanels {
     if (id) {
       if (this.presentation.desktop) this.options.layout.setWidgetState(id, close ? "closed" : "collapsed");
       else if (close) this.mobileClosed.add(id);
-    } else if (this.presentation.desktop) this.placeholderState = close ? "closed" : "collapsed";
+    } else if (this.presentation.desktop && !close) this.placeholderState = "collapsed";
+    // Generic diagnostic chrome and the last widget share one workspace-wide close intent.
+    // It survives session/machine changes without touching native panels or SDK lifetimes.
+    if (close && (!id || !this.panelEntries().some(entry => !isNativePanel(entry.id)))) {
+      if (this.presentation.desktop) this.options.layout.closeWidgets();
+      else this.mobileDismissed = true;
+    }
     const next = this.panelEntries().find(entry => entry.id !== id && !this.collapsed(entry.id) && (!this.presentation.desktop || this.area(entry.id) === area));
     if (this.presentation.desktop || !next) this.options.onFocus?.(null);
     if (next) this.select(next.id);
@@ -203,7 +211,7 @@ export class WidgetPanels {
   setPresentation(next: WidgetPresentation): boolean {
     const previous = this.presentation;
     if (previous.visible === next.visible && previous.desktop === next.desktop && previous.focusArea === next.focusArea) return false;
-    if (previous.desktop !== next.desktop) { this.mobileSelection = null; this.mobileClosed.clear(); }
+    if (previous.desktop !== next.desktop) { this.mobileSelection = null; this.mobileClosed.clear(); this.mobileDismissed = false; }
     this.clearPeek(); this.presentation = next;
     this.render();
     return true;
@@ -273,7 +281,7 @@ export class WidgetPanels {
   }
   reset(): void {
     const selected = this.selectedId;
-    this.clearPeek(); this.options.layout.reset(); this.placeholderState = "open"; this.mobileClosed.clear();
+    this.clearPeek(); this.options.layout.reset(); this.placeholderState = "open"; this.mobileClosed.clear(); this.mobileDismissed = false;
     for (const area of WIDGET_AREAS) delete this.active[area];
     if (selected && this.slots.has(selected)) this.active.right = selected;
     this.render();
@@ -283,7 +291,7 @@ export class WidgetPanels {
     const ids = this.ids();
     const areas = WIDGET_AREAS.filter(area => ids.some(id => this.area(id) === area));
     // A diagnostic placeholder remains useful when no extensions are available.
-    if (!this.entries.length && this.placeholderState !== "closed" && this.presentation.visible && !areas.includes(this.options.layout.area(""))) areas.push(this.options.layout.area(""));
+    if (!this.entries.length && (!this.presentation.desktop || !this.closed) && this.presentation.visible && !areas.includes(this.options.layout.area(""))) areas.push(this.options.layout.area(""));
     return areas;
   }
   private visibleAreas(): readonly WidgetArea[] {
@@ -378,7 +386,7 @@ export class WidgetPanels {
         const entries = this.presentation.desktop ? pool.filter(entry => this.area(entry.id) === area) : area === mobileArea ? pool : [];
         if (selected && isNativePanel(selected) && entries.length === 1 && !this.options.layout.diagnostic) chrome.node.remove();
         else if (chrome.node.parentElement !== target) { target.prepend(chrome.node); if (hadFocus) focus.focus({ preventScroll: true }); }
-        chrome.placeholder.hidden = target !== chrome.placeholder || !this.presentation.visible || (this.presentation.desktop ? !this.visibleAreas().includes(area) : area !== mobileArea);
+        chrome.placeholder.hidden = target !== chrome.placeholder || !this.presentation.visible || (this.presentation.desktop && this.closed) || (this.presentation.desktop ? !this.visibleAreas().includes(area) : area !== mobileArea);
         const entry = entries.find(entry => entry.id === selected);
         const collapsed = collapsedAreas.includes(area) && !this.expanded(area);
         target.dataset.peek = String(this.peeking(area));
@@ -396,7 +404,7 @@ export class WidgetPanels {
         chrome.close.setAttribute("aria-label", chrome.close.title = `Close ${entry?.title ?? "Widgets"}`);
         chrome.full.setAttribute("aria-label", chrome.full.title = this.presentation.focusArea ? "Restore workspace" : "Context full view");
         chrome.full.setAttribute("aria-pressed", String(!!this.presentation.focusArea));
-        chrome.status.textContent = this.options.layout.diagnostic || (selected && isNativePanel(selected) ? "" : this.message || this.errors[area] || (selected ? this.documentStatus(selected) : entries.length ? "Select a context view." : this.entries.length ? "Widgets are closed. Reopen them in Settings." : "No enabled context views for this scope.")) || "";
+        chrome.status.textContent = this.options.layout.diagnostic || (selected && isNativePanel(selected) ? "" : this.closed ? "Widgets are closed. Reopen them in Settings." : this.message || this.errors[area] || (selected ? this.documentStatus(selected) : entries.length ? "Select a context view." : this.entries.length ? "Widgets are closed. Reopen them in Settings." : "No enabled context views for this scope.")) || "";
         // Native headers need a grip, not empty SDK status/tab owners.
         if (selected && isNativePanel(selected) && !chrome.status.textContent) chrome.status.remove();
         else if (!chrome.status.parentElement) chrome.node.append(chrome.status);

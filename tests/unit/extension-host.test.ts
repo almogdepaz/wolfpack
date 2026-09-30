@@ -123,6 +123,42 @@ describe("ExtensionHost", () => {
     expect(unregisters).toBe(1);
   });
 
+  test("workspace-wide close keeps native panels and registrations while suppressing SDK mounts in every scope", async () => {
+    container = new FakeElement();
+    const terminals = new FakeElement(), sessions = new FakeElement();
+    let sessionId: string | null = "22222222-2222-4222-8222-222222222222";
+    let saved: string | null = null, mounts = 0, disposals = 0, loads = 0, visible = false;
+    const layout = new WidgetLayout({ getItem: () => saved, setItem: (_key, value) => { saved = value; } });
+    layout.move("notes/view", "main"); layout.closeWidgets();
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement, widgetLayout: layout,
+      nativePanels: [{ id: ":terminals", title: "Terminals", element: terminals as unknown as HTMLElement }, { id: ":sessions", title: "Sessions", element: sessions as unknown as HTMLElement }],
+      scope: () => sessionId ? { sessionId } : { sessionId: null, unavailable: "Remote context unavailable." },
+      authFetch: async () => Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }),
+      bundleLoader: (async () => { loads++; return { default: (register: ExtensionRegistrationHost) => {
+        register.registerContextView({ id: "view", title: "Notes", mount() { mounts++; return { dispose() { disposals++; }, setVisible(value) { visible = value; } }; } });
+      } }; }) as never,
+    });
+    try {
+      host.setNativePanels([":terminals", ":sessions"]);
+      for (sessionId of [sessionId, "33333333-3333-4333-8333-333333333333", null]) {
+        await host.refresh(); host.select();
+        expect(host.availablePanels.map(panel => panel.id)).toEqual([":terminals", ":sessions"]);
+        expect(terminals.hidden).toBe(false); expect(sessions.hidden).toBe(false); expect(mounts).toBe(0);
+      }
+      host.reopenWidgets(); expect(layout.widgetsClosed).toBe(false); expect(mounts).toBe(0);
+      sessionId = "22222222-2222-4222-8222-222222222222"; await host.refresh(); host.select();
+      expect(mounts).toBe(1); expect(visible).toBe(true); expect(terminals.hidden).toBe(true);
+      layout.closeWidgets(); host.syncWidgetVisibility();
+      expect(visible).toBe(false); expect(disposals).toBe(0); expect(terminals.hidden).toBe(false);
+      expect(host.availablePanels.map(panel => panel.id)).toEqual([":terminals", ":sessions"]);
+      sessionId = null; await host.refresh();
+      expect(disposals).toBe(1); expect(loads).toBe(1);
+      expect(layout.preferences.placements).toEqual({ "notes/view": "main" });
+      expect(new WidgetLayout({ getItem: () => saved, setItem() {} }).widgetsClosed).toBe(true);
+    } finally { host.dispose(); }
+  });
+
   test("independent panels retain content parents, scope and desktop selections through mobile and area focus", async () => {
     container = new FakeElement();
     let saved: string | null = null;

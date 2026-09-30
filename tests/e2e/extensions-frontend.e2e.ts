@@ -195,9 +195,14 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-test("remote-session diagnostic widgets close after local views were registered", async ({ page }, testInfo) => {
+test("remote-session diagnostic widgets close across all sessions and reloads", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop remote diagnostic controls");
   await authorize(page);
+  // A sole widget mirrors the deployed workspace; no package install/update is performed.
+  await page.route("**/api/extensions", async route => {
+    const response = await route.fetch(), catalog = await response.json();
+    await route.fulfill({ response, json: { ...catalog, installations: catalog.installations.filter((item: { extensionId: string }) => item.extensionId === "notes") } });
+  });
   const origin = "https://widget-peer.example.ts.net", installationId = "33333333-3333-4333-8333-333333333333";
   const remoteId = "44444444-4444-4444-8444-444444444444";
   let extensionRequests = 0, remoteSockets = 0;
@@ -216,9 +221,15 @@ test("remote-session diagnostic widgets close after local views were registered"
   await page.routeWebSocket("wss://widget-peer.example.ts.net/**", () => { remoteSockets++; });
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [{ hostname: "widget-peer.example.ts.net", tailnetNodeId: "n-widget-peer", origin, online: true }] } }));
   await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
-  await page.getByRole("tab", { name: "Notes", exact: true }).click();
-  await expect(page.locator("[data-context-view='notes/notes'] textarea")).toBeVisible();
-  const preferences = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
+  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await expect(note).toBeVisible();
+  const preferences = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1") ?? '{"placements":{},"selected":{}}'));
+  const reopen = async () => {
+    await page.locator("#sidebar-settings-btn").click();
+    await page.getByRole("link", { name: "Widgets", exact: true }).click();
+    await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
+    await page.locator("#settings-back-btn").click();
+  };
   await page.locator('#sidebar-session-list .card', { hasText: "widget-remote" }).click();
   const diagnostic = page.getByText("Extension context is unavailable for a terminal served by another machine.", { exact: true });
   await expect(diagnostic).toBeVisible();
@@ -226,19 +237,28 @@ test("remote-session diagnostic widgets close after local views were registered"
   await page.getByRole("button", { name: "Close Widgets", exact: true }).click();
   await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
   expect(extensionRequests).toBe(requests); expect(remoteSockets).toBe(sockets);
-  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(preferences);
-  await page.locator("#sidebar-settings-btn").click();
-  await page.getByRole("link", { name: "Widgets", exact: true }).click();
-  await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
-  await page.locator("#settings-back-btn").click(); await expect(diagnostic).toBeVisible();
+  await openSession(page, SESSION_B); await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1") ?? "null"))).toEqual({ ...preferences, widgetsClosed: true });
+  await page.reload(); await openSession(page, SESSION_A);
+  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
+  await reopen(); await expect(note).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1") ?? "null"))).toEqual(preferences);
+  await page.getByRole("button", { name: "Close Notes", exact: true }).click();
+  await page.locator('#sidebar-session-list .card', { hasText: "widget-remote" }).click();
+  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
+  // Cold remote entry has no local registrations: the shared preference still wins.
+  await page.reload(); await page.locator('.card:visible', { hasText: "widget-remote" }).first().click();
+  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
+  await reopen(); await expect(diagnostic).toBeVisible();
   await page.getByRole("button", { name: "Collapse Widgets", exact: true }).click();
   const rail = page.getByRole("tab", { name: "Widgets", exact: true });
   await expect(rail).toBeVisible(); await rail.press("Enter"); await expect(diagnostic).toBeVisible();
   await page.getByRole("button", { name: "Close Widgets", exact: true }).click();
   await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
-  await page.locator('#sidebar-session-list .card', { hasText: SESSION_A }).click();
-  await expect(page.locator("[data-context-view='notes/notes'] textarea")).toBeVisible();
-  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(preferences);
+  await openSession(page, SESSION_A);
+  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
+  await reopen(); await expect(note).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1") ?? "null"))).toEqual(preferences);
 });
 
 for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area} widgets peek without resizing terminals and pin explicitly`, async ({ page }, testInfo) => {
@@ -808,6 +828,10 @@ test("mobile widget close and collapse recover locally without rewriting desktop
   await expect(canvas).toBeVisible(); await showWidgets(page);
   await expect(page.locator("[data-extension-status]:visible")).toHaveText("Widgets are closed. Reopen them in Settings.");
   expect(sockets).toHaveLength(attached); expect(await preferences()).toEqual(saved);
+  await page.locator("#back-btn").click(); await openSession(page, SESSION_B); await showWidgets(page);
+  await expect(page.locator("[data-extension-status]:visible")).toHaveText("Widgets are closed. Reopen them in Settings.");
+  await expect(page.locator("[data-extension-tabs] [role=tab]:visible")).toHaveCount(0);
+  expect(await preferences()).toEqual(saved);
   await page.locator("#back-btn").click(); // Mobile Settings is reached from Sessions.
   await openSettingsFromUi(page);
   await page.getByRole("link", { name: "Widgets", exact: true }).click();

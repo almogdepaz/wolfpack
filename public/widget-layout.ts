@@ -10,6 +10,7 @@ export const WIDGET_LAYOUT_KEY = "wolfpack-widget-layout:v1";
 const MAX_PLACEMENTS = 128;
 export type WidgetState = "open" | "collapsed" | "closed";
 export interface WidgetLayoutPreferences {
+  readonly widgetsClosed?: true;
   readonly widgets?: Readonly<Record<string, Exclude<WidgetState, "open">>>;
   readonly defaultArea?: WidgetArea;
   readonly placements: Readonly<Record<string, WidgetArea>>;
@@ -42,7 +43,7 @@ export function normalizeWidgetLayout(value: unknown): WidgetLayoutPreferences {
       if (viewId(value.selected[area])) selected[area] = value.selected[area];
     }
   }
-  return { placements, selected, ...(Object.keys(widgets).length ? { widgets } : {}), ...(record(value) && isWidgetArea(value.defaultArea) ? { defaultArea: value.defaultArea } : {}) };
+  return { placements, selected, ...(record(value) && value.widgetsClosed === true ? { widgetsClosed: true as const } : {}), ...(Object.keys(widgets).length ? { widgets } : {}), ...(record(value) && isWidgetArea(value.defaultArea) ? { defaultArea: value.defaultArea } : {}) };
 }
 
 /** Origin-local presentation preferences, never contribution registration or routing authority. */
@@ -57,6 +58,8 @@ export class WidgetLayout {
   }
   get preferences(): WidgetLayoutPreferences { return this.value; }
   get diagnostic(): string { return this.error; }
+  get widgetsClosed(): boolean { return this.value.widgetsClosed === true; }
+  closeWidgets(): void { this.value = { ...this.value, widgetsClosed: true }; this.persist(); }
   area(id: string): WidgetArea {
     if (id === TERMINALS_PANEL) return "main";
     return this.value.placements[id] ?? (id === SESSIONS_PANEL ? "left" : this.value.defaultArea ?? this.defaultArea);
@@ -69,7 +72,7 @@ export class WidgetLayout {
     this.persist();
   }
   reopenWidgets(): void {
-    this.value = normalizeWidgetLayout({ ...this.value, widgets: Object.fromEntries(Object.entries(this.value.widgets ?? {}).filter(([, state]) => state === "collapsed")) });
+    this.value = normalizeWidgetLayout({ ...this.value, widgetsClosed: undefined, widgets: Object.fromEntries(Object.entries(this.value.widgets ?? {}).filter(([, state]) => state === "collapsed")) });
     this.persist();
   }
   /** Resolve only available panels. Temporary catalog/visibility loss never rewrites saved placements. */

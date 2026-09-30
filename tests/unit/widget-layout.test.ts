@@ -19,6 +19,32 @@ describe("independent widget placement preferences", () => {
     layout.reopenWidgets();
     expect(layout.preferences).toEqual({ placements: {}, selected: {} });
   });
+  test("workspace close persists across sessions without rewriting individual layout and reopen clears it", () => {
+    const storage = memory(), layout = new WidgetLayout(storage);
+    layout.move("notes/one", "bottom"); layout.setWidgetState("notes/one", "collapsed");
+    layout.setWidgetState("notes/two", "closed");
+    const before = layout.preferences;
+    layout.closeWidgets();
+    const restored = new WidgetLayout(storage);
+    expect(restored.widgetsClosed).toBe(true);
+    expect(restored.preferences).toEqual({ ...before, widgetsClosed: true });
+    expect(restored.widgetState(":terminals")).toBe("open");
+    restored.reopenWidgets();
+    expect(new WidgetLayout(storage).widgetsClosed).toBe(false);
+    expect(restored.widgetState("notes/one")).toBe("collapsed");
+    expect(restored.widgetState("notes/two")).toBe("open");
+    expect(restored.preferences.placements).toEqual(before.placements);
+    expect(restored.preferences.selected).toEqual(before.selected);
+    restored.closeWidgets(); restored.reset();
+    expect(new WidgetLayout(storage).preferences).toEqual({ placements: {}, selected: {} });
+  });
+  test("workspace close accepts only a boolean and retains tab-local state on storage failure", () => {
+    for (const widgetsClosed of [false, "true", 1, [], {}]) expect(normalizeWidgetLayout({ widgetsClosed })).toEqual({ placements: {}, selected: {} });
+    expect(normalizeWidgetLayout({ widgetsClosed: true })).toEqual({ placements: {}, selected: {}, widgetsClosed: true });
+    const layout = new WidgetLayout({ getItem: () => null, setItem: () => { throw Error("blocked"); } });
+    layout.closeWidgets(); expect(layout.widgetsClosed).toBe(true); expect(layout.diagnostic).toContain("this tab only");
+    layout.reopenWidgets(); expect(layout.widgetsClosed).toBe(false);
+  });
   test("widget state is bounded presentation data, never native-panel visibility", () => {
     const layout = new WidgetLayout(memory({ widgets: { ":terminals": "closed", "bad/id/extra": "collapsed", "notes/one": "unknown", "notes/two": "closed" } }));
     expect(layout.preferences.widgets).toEqual({ "notes/two": "closed" });
