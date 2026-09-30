@@ -91,6 +91,38 @@ describe("ExtensionHost", () => {
     expect(disposals).toBe(1);
   });
 
+  test("unavailable remote scope exposes only native panels without unloading local registrations or preferences", async () => {
+    container = new FakeElement();
+    let sessionId: string | null = "22222222-2222-4222-8222-222222222222";
+    let saved: string | null = null, mounts = 0, disposals = 0, fetches = 0, registrations = 0, unregisters = 0;
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      widgetLayout: new WidgetLayout({ getItem: () => saved, setItem: (_key, value) => { saved = value; } }),
+      nativePanels: [{ id: ":terminals", title: "Terminal grid", element: new FakeElement() as unknown as HTMLElement }],
+      scope: () => sessionId ? { sessionId } : { sessionId: null, unavailable: "Extension context is unavailable for a terminal served by another machine." },
+      authFetch: async () => { fetches++; return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }); },
+      registerLayout: () => { registrations++; return () => { unregisters++; }; },
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => {
+        register.registerContextView({ id: "view", title: "Notes", mount() { mounts++; return { dispose() { disposals++; } }; } });
+        register.registerTerminalLayout({ id: "recipe", title: "Recipe", arrange: equalGridLayout });
+      } })) as never,
+    });
+    try {
+      host.setNativePanels([":terminals"]); await host.refresh(); host.select("notes/view");
+      const preferences = saved;
+      expect(mounts).toBe(1);
+      sessionId = null; await host.refresh();
+      expect(host.availablePanels.map(panel => panel.id)).toEqual([":terminals"]);
+      expect(rightChrome("[data-extension-status]")?.textContent).toContain("another machine");
+      host.select("notes/view"); expect(mounts).toBe(1); expect(disposals).toBe(1);
+      expect(fetches).toBe(1); expect(registrations).toBe(1); expect(unregisters).toBe(0); expect(saved).toBe(preferences);
+      sessionId = "22222222-2222-4222-8222-222222222222"; await host.refresh(); host.select();
+      expect(host.availablePanels.map(panel => panel.id)).toEqual([":terminals", "notes/view"]);
+      expect(mounts).toBe(2); expect(registrations).toBe(1); expect(unregisters).toBe(0); expect(saved).toBe(preferences);
+    } finally { host.dispose(); }
+    expect(unregisters).toBe(1);
+  });
+
   test("independent panels retain content parents, scope and desktop selections through mobile and area focus", async () => {
     container = new FakeElement();
     let saved: string | null = null;

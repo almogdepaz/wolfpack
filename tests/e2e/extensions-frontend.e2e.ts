@@ -195,6 +195,52 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
+test("remote-session diagnostic widgets close after local views were registered", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop remote diagnostic controls");
+  await authorize(page);
+  const origin = "https://widget-peer.example.ts.net", installationId = "33333333-3333-4333-8333-333333333333";
+  const remoteId = "44444444-4444-4444-8444-444444444444";
+  let extensionRequests = 0, remoteSockets = 0;
+  page.on("request", request => { if (new URL(request.url()).pathname.startsWith("/api/extensions")) extensionRequests++; });
+  // Browser peer boundary only: never contact a live peer or attach to its PTY.
+  await page.route(`${origin}/**`, route => {
+    const path = new URL(route.request().url()).pathname;
+    const json = path === "/api/machine" ? {
+      protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+      machine: { tailnetNodeId: "n-widget-peer", installationId, displayName: "Widget peer", origin },
+      wolfpack: { version: "test" }, capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+    } : path === "/api/sessions" ? { sessions: [{ name: "widget-remote", project: PROJECT, cmd: "shell", triage: "idle", identity: { wolfpackSessionId: remoteId } }] }
+      : path === "/api/ws-ticket" ? { ticket: "fixture" } : null;
+    return route.fulfill({ status: json ? 200 : 404, headers: { "Access-Control-Allow-Origin": "*" }, json: json ?? {} });
+  });
+  await page.routeWebSocket("wss://widget-peer.example.ts.net/**", () => { remoteSockets++; });
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [{ hostname: "widget-peer.example.ts.net", tailnetNodeId: "n-widget-peer", origin, online: true }] } }));
+  await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
+  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await expect(page.locator("[data-context-view='notes/notes'] textarea")).toBeVisible();
+  const preferences = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
+  await page.locator('#sidebar-session-list .card', { hasText: "widget-remote" }).click();
+  const diagnostic = page.getByText("Extension context is unavailable for a terminal served by another machine.", { exact: true });
+  await expect(diagnostic).toBeVisible();
+  const requests = extensionRequests, sockets = remoteSockets;
+  await page.getByRole("button", { name: "Close Widgets", exact: true }).click();
+  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
+  expect(extensionRequests).toBe(requests); expect(remoteSockets).toBe(sockets);
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(preferences);
+  await page.locator("#sidebar-settings-btn").click();
+  await page.getByRole("link", { name: "Widgets", exact: true }).click();
+  await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
+  await page.locator("#settings-back-btn").click(); await expect(diagnostic).toBeVisible();
+  await page.getByRole("button", { name: "Collapse Widgets", exact: true }).click();
+  const rail = page.getByRole("tab", { name: "Widgets", exact: true });
+  await expect(rail).toBeVisible(); await rail.press("Enter"); await expect(diagnostic).toBeVisible();
+  await page.getByRole("button", { name: "Close Widgets", exact: true }).click();
+  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
+  await page.locator('#sidebar-session-list .card', { hasText: SESSION_A }).click();
+  await expect(page.locator("[data-context-view='notes/notes'] textarea")).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(preferences);
+});
+
 for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area} widgets peek without resizing terminals and pin explicitly`, async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop auto-hide drawers");
   await authorize(page);
