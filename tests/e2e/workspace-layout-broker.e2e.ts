@@ -375,7 +375,9 @@ test("Sessions docking resizes the fixed grid without replacing live terminals",
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(saved);
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(terminal).toHaveAttribute("data-widget-area", "main");
-  await expect(sessions).toBeVisible(); // Native controls reappear asynchronously after the breakpoint change.
+  await expect(sessions).toBeVisible();
+  // CSS reveals the sidebar before the resize callback re-enables its drag control.
+  await expect(page.getByRole("button", { name: "Move Sessions", exact: true })).toBeVisible();
   await dockPanel(page, "Sessions", "left");
   await expect(sessions).toHaveAttribute("data-widget-area", "left");
   await expect(terminal).toHaveAttribute("data-widget-area", "main");
