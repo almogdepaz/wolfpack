@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { collapseInitialSessionMenu, startTestServer, type TestServer } from "./helpers.ts";
 
 const PEER_ORIGIN = "https://idle-peer.example.ts.net";
 const PEER_INSTALLATION_ID = "f9ae7025-30ad-4461-bc57-365431dbf00c";
@@ -160,6 +160,7 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
   });
   await page.goto(server.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const idle = visibleViewButton(page, "idle");
   const all = visibleViewButton(page, "all");
   await expect(idle).toHaveAccessibleName("Idle sessions");
@@ -286,6 +287,7 @@ test("desktop idle reorder stays inside visible cards", async ({ page }, testInf
     ],
   });
   await page.goto(server.baseUrl);
+  await collapseInitialSessionMenu(page);
   const list = page.locator("#sidebar-session-list");
   await selectIdleView(page);
   await expect(list.locator('.card[data-session-order-id="working-b-id"]')).toHaveCount(0);

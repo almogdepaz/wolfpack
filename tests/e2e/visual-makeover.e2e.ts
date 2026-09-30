@@ -5,13 +5,10 @@ let server: TestServer;
 
 test.beforeAll(async () => { server = await startTestServer(); });
 test.afterAll(() => server?.close());
-test.beforeEach(async ({ page }, testInfo) => {
+test.beforeEach(async ({ page }) => {
   await page.goto(server.baseUrl);
   await expect(page.getByRole("button", { name: "Open another-project", exact: true })).toBeVisible();
-  // Main's pinned sidebar owns the desktop chooser until explicitly expanded.
-  if (testInfo.project.name === "desktop") {
-    await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
-  }
+  // An unfocused desktop now opens this full menu directly.
   await expect(page.locator("#session-list .card").first()).toBeVisible();
 });
 
@@ -85,9 +82,6 @@ test("long machine names stay bounded without squeezing the session action", asy
     await route.fulfill({ response, json: { ...await response.json(), name: machineName } });
   });
   await page.reload();
-  if (testInfo.project.name === "desktop") {
-    await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
-  }
   const name = page.locator("#session-list .machine-header-name").first();
   await expect(name).toHaveText(machineName);
   await expect(name).toHaveAttribute("title", machineName);

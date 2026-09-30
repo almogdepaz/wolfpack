@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
+import { collapseInitialSessionMenu, openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
 
@@ -106,6 +106,7 @@ test("quick command form is modal and restores focus when cancelled", async ({ p
 
 test("sidebar details and actions remain independently pointer-accessible", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop sidebar layout");
+  await collapseInitialSessionMenu(page);
 
   const card = page.locator(".sidebar-sessions .card").filter({
     has: page.getByRole("button", { name: "Open test-project", exact: true }),

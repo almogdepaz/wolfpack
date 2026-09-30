@@ -251,12 +251,21 @@ export async function openSessionFromUi(page: Page, session: string, machine?: s
 
 /** Add or remove a session through its real grid toggle. */
 export async function toggleSessionGridFromUi(page: Page, session: string, machine?: string): Promise<void> {
+  // Grid controls belong to the sidebar, not the full-menu cards.
+  if (await page.locator("body").evaluate(node => node.classList.contains("sessions-expanded"))) await collapseInitialSessionMenu(page);
   await (await sessionAction(page, "toggle-grid", session, machine)).click();
 }
 
-/** Open settings through whichever real settings control is visible. */
+/** Sidebar-specific fixtures explicitly leave the default full Sessions menu. */
+export async function collapseInitialSessionMenu(page: Page): Promise<void> {
+  if ((page.viewportSize()?.width ?? 0) > 768) {
+    await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
+  }
+}
+
+/** Open settings through whichever real settings control is accessible. */
 export async function openSettingsFromUi(page: Page): Promise<void> {
-  await page.locator("#sidebar-settings-btn, #expanded-settings-btn, #gear-btn").filter({ visible: true }).first().click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
 }
 
 /** Layout uses ordinary Settings navigation, including its viewer suspension/return. */

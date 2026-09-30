@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gridSessionNames, openProjectPickerFromUi, openSessionFromUi, openSettingsFromUi, startTestServer, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
+import { collapseInitialSessionMenu, gridSessionNames, openProjectPickerFromUi, openSessionFromUi, openSettingsFromUi, startTestServer, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
 
 const PUBLIC_DIRECTORY = join(import.meta.dirname, "..", "..", "public");
 
@@ -1238,6 +1238,7 @@ test("replacement filters a mixed suspended grid without disrupting an unrelated
   await page.goto(server.baseUrl);
   await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
   await expect(visibleMachineGroup(page, otherIdentity)).toBeVisible();
+  await collapseInitialSessionMenu(page);
   await visibleSessionList(page).getByRole("button", { name: "Expand 1 child agent" }).click();
   await expect(visibleSessionList(page).getByRole("button", { name: "Open local-child" })).toBeVisible();
   await openSessionFromUi(page, "old-manual-one", peerIdentity);
@@ -1259,6 +1260,12 @@ test("replacement filters a mixed suspended grid without disrupting an unrelated
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
   await expect(page.locator("#delegation-grid-container .grid-cell")).toHaveCount(0);
   await expect.poll(() => gridSessionNames(page)).toEqual([]);
+  // The toolbar precedes async terminal initialization; measure continuity only
+  // once the focused child's own socket exists, not while all grid sockets are closed.
+  await expect.poll(() => page.evaluate(() =>
+    ((window as unknown as ReplacementSocketWindow).__replacementSockets ?? [])
+      .filter(socket => new URL(socket.url).searchParams.get("session") === "local-child").length,
+  )).toBe(1);
   const socketsBeforeReplacement = await page.evaluate(() => {
     const sockets = (window as unknown as ReplacementSocketWindow).__replacementSockets ?? [];
     return { count: sockets.length, closeCounts: sockets.map(socket => socket.closeCount) };
@@ -1760,7 +1767,7 @@ test("creates a remote session through a ready stable identity and fails closed 
   await page.goto(server.baseUrl);
   const peerGroup = visibleMachineGroup(page, peerIdentity);
   await expect(peerGroup).toBeVisible();
-  await peerGroup.getByRole("button", { name: "Start a session on verified peer" }).click();
+  await peerGroup.getByRole("button", { name: "Create your first session", exact: true }).click();
   await page.locator("#open-folder-action").click();
   const directoryPanel = page.locator("#directory-browser-panel");
   await expect(directoryPanel.locator("#directory-browser-current")).toHaveText("/remote/worktree");

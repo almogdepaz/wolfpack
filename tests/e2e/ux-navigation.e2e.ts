@@ -1,5 +1,5 @@
 import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
-import { gridSessionNames, openProjectPickerFromUi, openSessionFromUi, openSettingsFromUi, startTestServer, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
+import { collapseInitialSessionMenu, gridSessionNames, openProjectPickerFromUi, openSessionFromUi, openSettingsFromUi, startTestServer, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
 
 let srv: TestServer;
 
@@ -188,6 +188,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(cards.nth(4)).toContainText("missing parent: gone <parent> & \"quoted\"");
   await expect(cards.nth(4).locator("script")).toHaveCount(0);
 
+  await collapseInitialSessionMenu(page);
   const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card").first();
   const childSidebarCards = page.locator("#sidebar-session-list .sub-session-card");
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
@@ -496,6 +497,7 @@ test("desktop delegation grid focus suspends hidden grid terminals", async ({ pa
   });
   await page.goto(srv.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   await page.locator("#sidebar-session-list").getByRole("button", {
     name: "Open parent",
     exact: true,
@@ -620,6 +622,7 @@ test("focused delegation Settings Back retains the child inspection target", asy
     });
   });
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const sidebar = page.locator("#sidebar-session-list");
   await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
   await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
@@ -667,6 +670,7 @@ test("focused delegation terminal captures its child UUID for conflict inspectio
     });
   });
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const sidebar = page.locator("#sidebar-session-list");
   await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
   await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
@@ -702,6 +706,7 @@ test("desktop opens a child terminal with a return to its parent delegation grid
   });
   await page.goto(srv.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const sidebar = page.locator("#sidebar-session-list");
   await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
   await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
@@ -744,6 +749,7 @@ test("desktop stopping a focused child returns to its parent instead of session 
   });
   await page.goto(srv.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const sidebar = page.locator("#sidebar-session-list");
   await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
   await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");

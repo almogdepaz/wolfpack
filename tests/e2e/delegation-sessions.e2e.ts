@@ -1,4 +1,4 @@
-import { selectTerminalLayoutFromUi } from "./helpers.ts";
+import { collapseInitialSessionMenu, selectTerminalLayoutFromUi } from "./helpers.ts";
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
 import { openSessionFromUi, startTestServer, type TestServer } from "./helpers.ts";
 import { AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
@@ -156,6 +156,7 @@ test("collapsed delegation child retains its controller and broker attach when e
   ]);
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   await expect(page.locator("#sidebar-session-list .delegation-parent-card")).toBeVisible();
   await openSessionFromUi(page, "parent", "");
   const childCell = page.locator('#delegation-grid-container .delegation-grid-cell[data-session="child"]');
@@ -265,6 +266,7 @@ test("manual card order persists by stable identity and resets to server order",
   });
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const list = page.locator(testInfo.project.name === "desktop" ? "#sidebar-session-list" : "#session-list");
   const names = list.locator('.card[data-session-order-machine=""] .card-name');
   const cardNames = () => names.evaluateAll(elements => elements.map(element => element.firstChild?.textContent));
@@ -303,6 +305,7 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["three-renamed", "one-renamed", "two-renamed", "new"]);
 
   await page.reload();
+  await collapseInitialSessionMenu(page);
   await expect.poll(cardNames).toEqual(["three-renamed", "one-renamed", "two-renamed", "new"]);
 
   await list.getByRole("button", { name: "Reset session order" }).click();
@@ -318,6 +321,7 @@ test("desktop cmd+up/down follows the rendered manual card order", async ({ page
     fakeSession("three", "three-id"),
   ]);
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
 
   const list = page.locator("#sidebar-session-list");
   const threeCard = list.locator('.card[data-session-order-id="three-id"] .card-open');
@@ -414,6 +418,7 @@ test("direct card drag previews live movement and keeps delegation children atta
   ]);
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const list = page.locator(testInfo.project.name === "desktop" ? "#sidebar-session-list" : "#session-list");
   const parentCard = list.locator('.delegation-parent-card[data-session-order-machine=""]');
   const soloCard = list.locator('.card[data-session-order-machine=""][data-session-order-id="solo-id"]');
@@ -487,6 +492,7 @@ test("desktop escape cancels a nested card drag and restores the hierarchy", asy
   ]);
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const list = page.locator("#sidebar-session-list");
   const parentCard = list.locator('.delegation-parent-card[data-session-order-machine=""]');
   const childCard = list.locator('.sub-session-card[data-session-order-machine=""]');
@@ -554,6 +560,7 @@ test("expanded child cards stay compact and inside the session list", async ({ p
   ]);
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   if (testInfo.project.name === "desktop") {
     await expect.poll(async () => (await page.locator('#sidebar-session-list .delegation-parent-card[data-session-order-machine=""]').boundingBox())?.x ?? -1)
       .toBeGreaterThanOrEqual(0);

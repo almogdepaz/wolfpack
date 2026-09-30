@@ -20,6 +20,58 @@ test.beforeAll(async()=>{
 });
 test.afterAll(async()=>{await server?.teardown();if(home)removeOwnedTestServerHome(home);if(root)rmSync(root,{recursive:true,force:true})});
 
+for (const pinned of ['1', '0']) test(`initial unfocused desktop opens the full Sessions menu with pin preference ${pinned}`,async({page},info)=>{
+ test.skip(info.project.name!=='desktop','Desktop initial session menu');
+ await page.addInitScript(value=>{
+  localStorage.setItem('wolfpack-sidebar-pinned',value);
+  localStorage.setItem('wolfpack-widget-layout:v1',JSON.stringify({placements:{},selected:{},widgetsClosed:true}));
+ },pinned);
+ // Metadata-only filler makes a long menu; the test selects a real fixture terminal.
+ await page.route('**/api/sessions',async route=>{
+  const response=await route.fetch(), body=await response.json();
+  const filler=Array.from({length:16},(_,i)=>({name:`menu-row-${i}`,project:'project',cmd:'shell',triage:'idle',identity:{wolfpackSessionId:`10000000-0000-4000-8000-${String(i).padStart(12,'0')}`}}));
+  await route.fulfill({response,json:{...body,sessions:[...filler,...body.sessions]}});
+ });
+ const sockets:string[]=[];page.on('websocket',socket=>{if(socket.url().includes('/ws/pty'))sockets.push(socket.url())});
+ await page.goto(server.baseUrl);
+ const menu=page.locator('#sessions-view');
+ await expect(page.locator('body')).toHaveClass(/sessions-expanded/);
+ await expect(page.locator('#session-dashboard-controls')).toBeVisible();
+ await expect(page.locator('#desktop-sidebar')).toHaveClass(/collapsed/);
+ await expect(page.locator('#sidebar-session-controls')).toBeHidden();
+ await expect(menu.getByRole('button',{name:'Open tools-one',exact:true})).toBeVisible();
+ await expect.poll(async()=>{const bounds=await menu.boundingBox();return bounds&&{x:bounds.x,width:bounds.width}}).toEqual({x:0,width:page.viewportSize()!.width});
+ expect(sockets).toHaveLength(0);await expect(page.locator('#desktop-terminal-container canvas')).toHaveCount(0);
+ await page.screenshot({path:info.outputPath(`initial-menu-pinned-${pinned}.png`),animations:'disabled'});
+ const saved=await page.evaluate(()=>[localStorage.getItem('wolfpack-sidebar-pinned'),localStorage.getItem('wolfpack-widget-layout:v1')]);
+ await page.locator('#expanded-settings-btn').click();await expect(page.locator('#settings-view')).toBeVisible();
+ await page.locator('#settings-back-btn').click();await expect(page.locator('#session-dashboard-controls')).toBeVisible();
+ const open=menu.getByRole('button',{name:'Open tools-one',exact:true});
+ if(pinned==='1')await open.click();else await open.press('Enter');
+ await expect(page.locator('#desktop-terminal-container')).toHaveAttribute('data-terminal-load-state','live');
+ await expect(page.locator('#view-container')).toHaveJSProperty('scrollLeft',0);
+ await expect(page.locator('body')).not.toHaveClass(/sessions-expanded/);
+ if(pinned==='1')await expect(page.locator('#desktop-sidebar')).not.toHaveClass(/collapsed/);
+ else await expect(page.locator('#desktop-sidebar')).toHaveClass(/collapsed/);
+ expect(await page.evaluate(()=>[localStorage.getItem('wolfpack-sidebar-pinned'),localStorage.getItem('wolfpack-widget-layout:v1')])).toEqual(saved);
+ await expect(page.locator('.widget-panel:visible')).toHaveCount(0);
+ await page.screenshot({path:info.outputPath(`first-session-pinned-${pinned}.png`)});
+});
+
+test('empty unfocused desktop keeps first-session creation in the full menu',async({page},info)=>{
+ test.skip(info.project.name!=='desktop','Desktop empty session menu');
+ await page.route('**/api/sessions',route=>route.fulfill({json:{sessions:[]}}));
+ const sockets:string[]=[];page.on('websocket',socket=>{if(socket.url().includes('/ws/pty'))sockets.push(socket.url())});
+ await page.goto(server.baseUrl);
+ await expect(page.locator('body')).toHaveClass(/sessions-expanded/);
+ await page.getByRole('button',{name:'Create your first session',exact:true}).click();
+ await expect(page.locator('#projects-view')).toBeVisible();await page.keyboard.press('Escape');
+ await expect(page.locator('#session-dashboard-controls')).toBeVisible();
+ await expect(page.locator('body')).toHaveClass(/sessions-expanded/);
+ await expect(page.getByRole('button',{name:'Create your first session',exact:true})).toBeVisible();
+ expect(sockets).toHaveLength(0);
+});
+
 test('widget controls belong to their panel without global toggles or terminal remount',async({page},info)=>{
  test.skip(info.project.name!=='desktop','Desktop session controls');
  const sockets:string[]=[];page.on('websocket',socket=>{if(socket.url().includes('/ws/pty'))sockets.push(socket.url())});

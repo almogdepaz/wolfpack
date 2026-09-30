@@ -1337,6 +1337,14 @@ function applyViewVisibility(
 }
 
 function applyDesktopViewNavigation(viewName: string): void {
+  // With no focused workspace, Sessions is the full menu, not a sidebar beside a blank Main.
+  if (viewName === "sessions" && !state.currentSession && !hasPreservedGrid()) {
+    state.sessionsExpanded = true;
+    state.sidebarAutoExpanded = false;
+    document.body.classList.add("sessions-expanded");
+    document.getElementById("sidebar-expand-btn")?.classList.add("active");
+    setSidebarCollapsedImmediately(true);
+  }
   // Exit expanded sessions mode when navigating away from sessions.
   if (viewName !== "sessions" && state.sessionsExpanded) {
     state.sessionsExpanded = false;
@@ -1358,6 +1366,9 @@ function applyDesktopViewNavigation(viewName: string): void {
     loadAgentsSettings();
   }
   renderSidebar();
+  // Focused menu cards can scroll the shared viewport while the sidebar is reparented.
+  // Scrolling belongs to the individual views/terminals, never this horizontal viewport.
+  document.getElementById("view-container").scrollLeft = 0;
   syncSessionRefreshTimer();
 }
 

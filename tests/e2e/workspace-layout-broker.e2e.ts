@@ -270,6 +270,8 @@ test("adding a session to a tab-hidden grid reveals its dock", async ({ page }, 
   await page.goto(server!.baseUrl);
   await page.locator(".card", { hasText: names[0]! }).first().click();
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  await expect(page.locator("#view-container")).toHaveJSProperty("scrollLeft", 0);
+  await expect(page.getByRole("button", { name: "Move Sessions", exact: true })).toBeInViewport();
   await dockPanel(page, "Sessions", "main");
   await page.locator(`#sidebar-session-list [data-action="toggle-grid"][data-session="${names[1]}"]`).click();
   await expect(page.locator("#workspace-terminal-region")).toBeVisible();
