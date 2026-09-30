@@ -40,6 +40,8 @@ test("Changes package reads only its local project and pauses when collapsed", a
     const requests: string[] = [], sockets: string[] = [];
     page.on("request", request => { if (request.url().includes("/api/extensions/project/git-status/")) requests.push(request.url()); });
     page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets.push(socket.url()); });
+    // Install before the widget creates timers; replacing native timers later loses them.
+    await page.clock.install();
     await page.goto(server!.baseUrl); await openSession(page, SESSION_A); await showWidgets(page);
     const widget = page.getByRole("region", { name: "Git changes", exact: true });
     await expect(widget.getByRole("list", { name: "Staged files", exact: true })).toContainText("added.ts");
@@ -55,7 +57,7 @@ test("Changes package reads only its local project and pauses when collapsed", a
     await expect(widget.getByRole("list", { name: "Untracked files", exact: true })).toContainText("manual-refresh.ts");
     expect(readFileSync(join(project, ".git", "index"))).toEqual(index);
     const canvas = page.locator("#desktop-terminal-container canvas"); await canvas.evaluate(node => { (window as any).__changesCanvas = node; });
-    await page.clock.install(); const activeRequests = requests.length;
+    const activeRequests = requests.length;
     await page.clock.fastForward(5100); await expect.poll(() => requests.length).toBeGreaterThan(activeRequests);
     await page.getByRole("button", { name: "Collapse Changes", exact: true }).click(); await page.mouse.move(400, 600);
     await expect(widget).toBeHidden(); const hiddenRequests = requests.length, attached = sockets.length;
@@ -1019,7 +1021,7 @@ test("extension safe mode allows manager metadata but never code or documents un
   page.on("request", request => { if (new URL(request.url()).pathname.startsWith("/api/extensions")) extensionRequests.push(request.url()); });
   await page.goto(server!.baseUrl);
   await openSession(page, SESSION_A);
-  await expect(page.locator("[data-extension-status]")).toContainText("Safe mode prevents extension loading");
+  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
   expect(extensionRequests).toEqual([]);
 
   if (testInfo.project.name === "mobile-webkit") {

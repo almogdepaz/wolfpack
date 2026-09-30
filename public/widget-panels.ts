@@ -88,7 +88,7 @@ export class WidgetPanels {
   private peeking(area: WidgetArea): boolean { return this.peekArea === area && this.canPeek(area); }
   private expanded(area: WidgetArea): boolean { return this.peeking(area) || this.presentation.focusArea === area; }
   private clearPeekTimer(): void { if (this.peekTimer !== null) clearTimeout(this.peekTimer); this.peekTimer = null; }
-  private clearPeek(): void { this.clearPeekTimer(); this.peekArea = null; this.suppressPeekArea = null; }
+  private clearPeek(preserveHoverSuppression = false): void { this.clearPeekTimer(); this.peekArea = null; if (!preserveHoverSuppression) this.suppressPeekArea = null; }
   private hidePeek(focus = false): void {
     const area = this.peekArea;
     if (!area) return;
@@ -166,7 +166,8 @@ export class WidgetPanels {
   setNativePanels(ids: readonly string[]): void {
     const valid = (this.options.nativePanels ?? []).filter(panel => ids.includes(panel.id)).map(panel => panel.id);
     if (valid.join() === this.nativeIds.join()) return;
-    this.clearPeek(); this.nativeIds = valid;
+    // Native membership follows full-view changes asynchronously; retain explicit Collapse intent.
+    this.clearPeek(true); this.nativeIds = valid;
     this.render();
   }
   createContainer(entry: RegisteredContextView, wrapper: HTMLElement, signal: AbortSignal): HTMLElement {

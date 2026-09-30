@@ -210,7 +210,7 @@ export class ExtensionHost {
     this.select();
   }
   private availableViews() {
-    // Registrations survive scope changes; unavailable scopes have only dismissible diagnostic chrome.
+    // Registrations survive scope changes; unavailable scopes expose no SDK panels.
     if (!this.registry.scope) return [];
     return this.registry.entries().filter(entry => {
       const owner = this.owners.get(entry.id)?.extension;

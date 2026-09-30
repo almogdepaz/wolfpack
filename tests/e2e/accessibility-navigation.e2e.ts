@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockLayoutWidget } from "./widget-fixture.ts";
 import { collapseInitialSessionMenu, openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
@@ -136,6 +137,8 @@ test("sidebar details and actions remain independently pointer-accessible", asyn
 });
 
 test("Transcript is absent while context full-view recovery remains keyboard accessible", async ({ page }, testInfo) => {
+  await mockLayoutWidget(page, { "test-project": "11111111-1111-4111-8111-111111111111" });
+  await page.reload();
   await page.getByRole("button", { name: "Open test-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCount(0);

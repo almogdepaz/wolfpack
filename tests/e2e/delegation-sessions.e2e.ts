@@ -1,4 +1,5 @@
 import { collapseInitialSessionMenu, selectTerminalLayoutFromUi } from "./helpers.ts";
+import { mockLayoutWidget } from "./widget-fixture.ts";
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
 import { openSessionFromUi, startTestServer, type TestServer } from "./helpers.ts";
 import { AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
@@ -179,6 +180,7 @@ test("collapsed delegation child retains its controller and broker attach when e
 
 test("explicit workspace shell changes retain delegation panes and focus", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop workspace geometry behavior only");
+  await mockLayoutWidget(page);
   const attachCounts = new Map<string, number>();
   await page.routeWebSocket(/\/ws\/pty/, (ws: WebSocketRoute) => {
     const session = new URL(ws.url()).searchParams.get("session") ?? "";
@@ -199,8 +201,8 @@ test("explicit workspace shell changes retain delegation panes and focus", async
     });
   });
   await routeDelegationSessions(page, [
-    fakeSession("parent", "parent-id"),
-    fakeSession("child", "child-id", { id: "parent-id", name: "parent" }),
+    fakeSession("parent", "11111111-1111-4111-8111-111111111111"),
+    fakeSession("child", "22222222-2222-4222-8222-222222222222", { id: "11111111-1111-4111-8111-111111111111", name: "parent" }),
   ]);
   await page.goto(srv.baseUrl);
   await openSessionFromUi(page, "parent", "");

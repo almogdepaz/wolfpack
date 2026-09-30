@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { mockLayoutWidget } from './widget-fixture.ts';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { startTestServer, openSessionFromUi, toggleSessionGridFromUi, gridSessionNames } from './helpers';
@@ -33,6 +34,7 @@ for (const key of ['Enter', 'Space', 'Pointer']) test(`current grid close activa
 
 test('current startup preserves an explicitly focused widget control', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'desktop terminal startup focus contract');
+  await mockLayoutWidget(page, { 'test-project': '11111111-1111-4111-8111-111111111111' });
   const server = await startTestServer();
   try {
     let release: (() => void) | undefined;

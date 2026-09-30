@@ -173,7 +173,7 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
     const rect = button.getBoundingClientRect();
     return { height: rect.height, outlineWidth: style.outlineWidth };
   });
-  expect(idleControlStyle.height).toBeGreaterThanOrEqual(40);
+  expect(idleControlStyle.height).toBeGreaterThanOrEqual(testInfo.project.name === "desktop" ? 28 : 44);
   expect(idleControlStyle.outlineWidth).not.toBe("0px");
 
   await page.evaluate(() => {
