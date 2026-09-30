@@ -674,6 +674,7 @@ test("machine names expose drag-only reordering and Escape cancels a pending dra
   const group = mainGroup(page);
   const handle = group.locator(".machine-name-handle");
   const localGroup = page.locator('#session-list .machine-group[data-machine=""]');
+  await expect(localGroup).toBeVisible();
   const localBox = await localGroup.boundingBox();
   expect(localBox).not.toBeNull();
   await expect(group.locator(".machine-order-options, [data-machine-menu-offset]")).toHaveCount(0);
