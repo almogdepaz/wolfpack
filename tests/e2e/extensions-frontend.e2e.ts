@@ -110,7 +110,7 @@ async function authorize(page: Page, safeMode = false): Promise<void> {
 }
 
 async function openSession(page: Page, name: string): Promise<void> {
-  await page.locator(".card", { hasText: name }).first().click();
+  await page.locator(".card", { hasText: name }).filter({ visible: true }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
 }
 

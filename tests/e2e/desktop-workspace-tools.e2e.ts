@@ -37,12 +37,14 @@ test('widget controls belong to their panel without global toggles or terminal r
  const attached=sockets.length;
  await collapse.click();const restore=page.getByRole('tab',{name:'Widgets',exact:true});
  await expect(restore).toBeVisible();await restore.click();
+ await page.getByRole('button',{name:'Pin Widgets',exact:true}).click();
  await expect(collapse).toBeVisible();
  await filter.getByRole('button',{name:'Idle sessions'}).click();
  await filter.getByRole('button',{name:'All sessions'}).click();
  expect(await collapse.evaluate(node=>node===(window as any).__widgetCollapse)).toBe(true);
  await page.locator('[data-widget-full]:visible').click();await collapse.click();
  await expect(terminal).toBeVisible();await restore.click();
+ await page.getByRole('button',{name:'Pin Widgets',exact:true}).click();
  expect(await canvas.evaluate(node=>node===(window as any).__toolsCanvas)).toBe(true);expect(sockets).toHaveLength(attached);
  await page.getByRole('button',{name:'Expand sessions',exact:true}).click();
  await expect(page.locator('#session-dashboard-controls')).toBeVisible();
