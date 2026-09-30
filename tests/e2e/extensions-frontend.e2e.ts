@@ -2,7 +2,7 @@ import { dockPanel } from "./workspace-drag-helpers.ts";
 import { openSettingsFromUi, selectTerminalLayoutFromUi } from "./helpers.ts";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { PROVIDER_DEFINITIONS } from "../../src/provider-readiness.ts";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,6 +13,68 @@ import { createOwnedTestServerHome, removeOwnedTestServerHome, type OwnedTestSer
 test.skip(skipIfNoBroker.condition, skipIfNoBroker.reason);
 
 const ROOT = join(import.meta.dirname, "..", "..");
+
+test("Changes package reads only its local project and pauses when collapsed", async ({ page }, testInfo) => {
+  test.skip(!["desktop", "iphone-14"].includes(testInfo.project.name), "desktop and mobile widget lifecycle");
+  const project = join(root, "dev", PROJECT), other = join(root, "dev", "changes-other");
+  mkdirSync(other, { recursive: true });
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-C", cwd, ...args], {
+    env: { ...environment(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" }, timeout: 2000,
+  });
+  git(project, "init", "--initial-branch=main");
+  writeFileSync(join(project, "tracked.ts"), "initial\n"); writeFileSync(join(project, "deleted.ts"), "delete me\n");
+  git(project, "add", "."); git(project, "commit", "-m", "fixture");
+  writeFileSync(join(project, "added.ts"), "staged\n"); git(project, "add", "added.ts");
+  writeFileSync(join(project, "tracked.ts"), "unstaged\n"); rmSync(join(project, "deleted.ts"));
+  writeFileSync(join(project, "<img>.ts"), "literal filename\n");
+  const index = readFileSync(join(project, ".git", "index"));
+  runCli(["extensions", "install", join(ROOT, "examples", "extensions", "changes"), "--trust-browser-code"]);
+  try {
+    const response = await fetch(`${server!.baseUrl}/api/create`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token()}` }, body: JSON.stringify({ projectDir: other, cmd: "shell", sessionName: "changes-other-scope" }) });
+    expect(response.ok).toBe(true); await refreshSessionIds();
+    await authorize(page);
+    await page.route("**/api/extensions", async route => {
+      const response = await route.fetch(), catalog = await response.json();
+      await route.fulfill({ response, json: { ...catalog, installations: catalog.installations.filter((item: { extensionId: string }) => item.extensionId === "changes") } });
+    });
+    const requests: string[] = [], sockets: string[] = [];
+    page.on("request", request => { if (request.url().includes("/api/extensions/project/git-status/")) requests.push(request.url()); });
+    page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets.push(socket.url()); });
+    await page.goto(server!.baseUrl); await openSession(page, SESSION_A); await showWidgets(page);
+    const widget = page.getByRole("region", { name: "Git changes", exact: true });
+    await expect(widget.getByRole("list", { name: "Staged files", exact: true })).toContainText("added.ts");
+    await expect(widget.getByRole("list", { name: "Unstaged files", exact: true })).toContainText("tracked.ts");
+    await expect(widget.getByRole("list", { name: "Unstaged files", exact: true })).toContainText("deleted.ts");
+    await expect(widget.getByRole("list", { name: "Untracked files", exact: true })).toContainText("<img>.ts");
+    await expect(widget.locator("img")).toHaveCount(0); await expect(widget.locator(".branch")).toHaveText("main");
+    await expect(page.getByRole("button", { name: "Close Changes", exact: true })).toHaveCount(0);
+    expect(requests.every(url => new URL(url).searchParams.get("session") === sessionIds.get(SESSION_A))).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("changes-widget.png"), animations: "disabled" });
+    writeFileSync(join(project, "manual-refresh.ts"), "new\n");
+    await widget.getByRole("button", { name: "Refresh Git status" }).click();
+    await expect(widget.getByRole("list", { name: "Untracked files", exact: true })).toContainText("manual-refresh.ts");
+    expect(readFileSync(join(project, ".git", "index"))).toEqual(index);
+    const canvas = page.locator("#desktop-terminal-container canvas"); await canvas.evaluate(node => { (window as any).__changesCanvas = node; });
+    await page.clock.install(); const activeRequests = requests.length;
+    await page.clock.fastForward(5100); await expect.poll(() => requests.length).toBeGreaterThan(activeRequests);
+    await page.getByRole("button", { name: "Collapse Changes", exact: true }).click(); await page.mouse.move(400, 600);
+    await expect(widget).toBeHidden(); const hiddenRequests = requests.length, attached = sockets.length;
+    await page.clock.fastForward(15000);
+    expect(requests).toHaveLength(hiddenRequests); expect(sockets).toHaveLength(attached);
+    expect(await canvas.evaluate(node => node === (window as any).__changesCanvas)).toBe(true);
+    await page.clock.resume();
+    // Different local UUID and directory must not inherit the first repository's files.
+    if (testInfo.project.name !== "desktop") await page.locator("#back-btn").click();
+    await openSession(page, "changes-other-scope"); await showWidgets(page);
+    if (testInfo.project.name === "desktop") await page.getByRole("tab", { name: "Changes", exact: true }).click();
+    await expect(widget.getByRole("status")).toHaveText("Not a Git repository.");
+    await expect(widget.getByRole("list")).toHaveCount(0);
+    expect(new URL(requests.at(-1)!).searchParams.get("session")).toBe(sessionIds.get("changes-other-scope"));
+    git(other, "init", "--initial-branch=other");
+    await widget.getByRole("button", { name: "Refresh Git status" }).click();
+    await expect(widget.getByRole("status")).toHaveText("Working tree clean."); await expect(widget.locator(".branch")).toHaveText("other");
+  } finally { runCli(["extensions", "remove", "changes"]); }
+});
 const SECRET = "extensions-frontend-browser-auth-secret-123";
 const PROJECT = "extensions-browser";
 const SESSION_A = "extension-browser-scope";
@@ -195,7 +257,7 @@ test.afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-test("remote-session diagnostic widgets close across all sessions and reloads", async ({ page }, testInfo) => {
+test("remote scopes have no empty widget dock and preserve local collapse across sessions and reloads", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop remote diagnostic controls");
   await authorize(page);
   // A sole widget mirrors the deployed workspace; no package install/update is performed.
@@ -223,42 +285,37 @@ test("remote-session diagnostic widgets close across all sessions and reloads", 
   await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
   const note = page.locator("[data-context-view='notes/notes'] textarea");
   await expect(note).toBeVisible();
-  const preferences = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1") ?? '{"placements":{},"selected":{}}'));
-  const reopen = async () => {
-    await page.locator("#sidebar-settings-btn").click();
-    await page.getByRole("link", { name: "Widgets", exact: true }).click();
-    await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
-    await page.locator("#settings-back-btn").click();
-  };
-  await page.locator('#sidebar-session-list .card', { hasText: "widget-remote" }).click();
-  const diagnostic = page.getByText("Extension context is unavailable for a terminal served by another machine.", { exact: true });
-  await expect(diagnostic).toBeVisible();
-  const requests = extensionRequests, sockets = remoteSockets;
-  await page.getByRole("button", { name: "Close Widgets", exact: true }).click();
-  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
-  expect(extensionRequests).toBe(requests); expect(remoteSockets).toBe(sockets);
-  await openSession(page, SESSION_B); await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1") ?? "null"))).toEqual({ ...preferences, widgetsClosed: true });
-  await page.reload(); await openSession(page, SESSION_A);
-  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
-  await reopen(); await expect(note).toBeVisible();
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1") ?? "null"))).toEqual(preferences);
-  await page.getByRole("button", { name: "Close Notes", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Close Notes", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  const preferences = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
+  const requests = extensionRequests;
   await page.locator('#sidebar-session-list .card', { hasText: "widget-remote" }).click();
   await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
-  // Cold remote entry has no local registrations: the shared preference still wins.
+  await expect(page.locator("#workspace-context-divider")).toBeHidden();
+  await expect(page.getByRole("tab", { name: "Widgets", exact: true })).toHaveCount(0);
+  expect(extensionRequests).toBe(requests);
+  await page.locator("#sidebar-settings-btn").click();
+  await page.getByRole("link", { name: "Widgets", exact: true }).click();
+  const sockets = remoteSockets;
+  await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
+  expect(remoteSockets).toBe(sockets); // Widget action cannot attach; navigation deliberately reattaches.
+  await page.locator("#settings-back-btn").click();
+  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
+  await expect.poll(() => remoteSockets).toBe(sockets + 1);
+  await openSession(page, SESSION_B); await expect(note).toBeHidden();
+  await expect(page.getByRole("tab", { name: "Notes", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(preferences);
+  await page.reload(); await openSession(page, SESSION_A); await expect(note).toBeHidden();
+  await page.getByRole("tab", { name: "Notes", exact: true }).press("Enter"); await expect(note).toBeVisible();
+  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await page.locator('#sidebar-session-list .card', { hasText: "widget-remote" }).click();
+  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
+  // A cold remote entry has no registrations and must not create diagnostic rails either.
   await page.reload(); await page.locator('.card:visible', { hasText: "widget-remote" }).first().click();
   await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
-  await reopen(); await expect(diagnostic).toBeVisible();
-  await page.getByRole("button", { name: "Collapse Widgets", exact: true }).click();
-  const rail = page.getByRole("tab", { name: "Widgets", exact: true });
-  await expect(rail).toBeVisible(); await rail.press("Enter"); await expect(diagnostic).toBeVisible();
-  await page.getByRole("button", { name: "Close Widgets", exact: true }).click();
-  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
-  await openSession(page, SESSION_A);
-  await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
-  await reopen(); await expect(note).toBeVisible();
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1") ?? "null"))).toEqual(preferences);
+  await expect(page.getByRole("tab", { name: "Widgets", exact: true })).toHaveCount(0);
+  await openSession(page, SESSION_A); await expect(note).toBeHidden();
+  expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(preferences);
 });
 
 for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area} widgets peek without resizing terminals and pin explicitly`, async ({ page }, testInfo) => {
@@ -289,6 +346,8 @@ for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area}
   const box = await terminal.boundingBox(), count = resizes.length, attached = sockets;
   const saved = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
   const rail = page.getByRole("tab", { name: "Notes", exact: true });
+  // Collapse must stay collapsed under the stationary pointer; a new entry may peek.
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await rail.hover(); await expect(note).toBeVisible();
   await expect(page.locator(".widget-panel[data-peek=true]")).toHaveCount(1);
   await note.focus(); await note.fill("drawer retained edit");
@@ -369,8 +428,8 @@ test("collapsed rails preview the hovered widget and dismiss on scope and breakp
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(afterMove);
 });
 
-test("widgets collapse individually and close without terminal chrome or lost drafts", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== "desktop", "desktop widget collapse and close");
+test("widgets collapse individually without close controls, terminal chrome or lost drafts", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop widget collapse without close");
   await authorize(page);
   let sockets = 0;
   page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
@@ -396,17 +455,20 @@ test("widgets collapse individually and close without terminal chrome or lost dr
   await bottom.getByRole("tab", { name: "Notes", exact: true }).click();
   await expect(note).toHaveValue("retained collapsed draft");
   expect(await note.evaluate(node => node === (window as any).__collapsedNote.node && node.parentElement === (window as any).__collapsedNote.parent)).toBe(true);
-  await page.getByRole("button", { name: "Close Notes", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Close Notes", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
   await expect(note).toBeHidden();
-  await expect(page.getByRole("tab", { name: "Notes", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Notes", exact: true })).toBeVisible();
   await expect(page.locator("[data-context-view='alpha/shared']")).toBeVisible();
   expect(await terminal.locator("canvas").evaluate(node => node === (window as any).__collapseCanvas)).toBe(true);
   expect(sockets).toBe(attached);
-  await page.screenshot({ path: testInfo.outputPath("clean-terminal-widgets-closed.png") });
+  await page.screenshot({ path: testInfo.outputPath("clean-terminal-widgets-collapsed.png") });
   await page.locator("#sidebar-settings-btn").click();
   await page.getByRole("link", { name: "Widgets", exact: true }).click();
   await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
   await page.locator("#settings-back-btn").click();
+  await expect(note).toBeHidden();
+  await page.getByRole("tab", { name: "Notes", exact: true }).press("Enter");
   await expect(note).toHaveValue("retained collapsed draft");
 });
 
@@ -796,7 +858,7 @@ test("authenticated installed packages compose qualified local views and refresh
   }
 });
 
-test("mobile widget close and collapse recover locally without rewriting desktop preferences", async ({ page }, testInfo) => {
+test("mobile widget collapse recovers locally without closing views or rewriting desktop preferences", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "iphone-14", "responsive mobile widget recovery");
   await authorize(page);
   await page.addInitScript(() => {
@@ -814,23 +876,25 @@ test("mobile widget close and collapse recover locally without rewriting desktop
   const attached = sockets.length;
   const preferences = () => page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
   const saved = await preferences();
-  await page.getByRole("button", { name: "Close Alpha", exact: true }).click();
-  await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toHaveCount(0);
-  await expect(page.locator("[data-context-view='beta/shared']")).toBeVisible();
-  await page.getByRole("button", { name: "Collapse Beta", exact: true }).click();
-  await expect(canvas).toBeVisible();
-  await showWidgets(page);
-  await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Close Alpha", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Collapse Alpha", exact: true }).click();
+  await expect(canvas).toBeVisible(); await showWidgets(page);
+  await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toBeVisible();
+  await expect(alpha).toBeVisible();
   expect(await alpha.evaluate(node => node === (window as any).__mobileAlpha)).toBe(true);
   expect(await canvas.evaluate(node => node === (window as any).__mobileCloseCanvas)).toBe(true);
   expect(sockets).toHaveLength(attached); expect(await preferences()).toEqual(saved);
-  for (const title of ["Beta", "Agent Context", "Notes"]) await page.getByRole("button", { name: `Close ${title}`, exact: true }).click();
-  await expect(canvas).toBeVisible(); await showWidgets(page);
-  await expect(page.locator("[data-extension-status]:visible")).toHaveText("Widgets are closed. Reopen them in Settings.");
+  for (const title of ["Beta", "Agent Context", "Notes"]) {
+    await page.getByRole("tab", { name: title, exact: true }).click();
+    await expect(page.getByRole("button", { name: `Close ${title}`, exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: `Collapse ${title}`, exact: true }).click();
+    await expect(canvas).toBeVisible(); await showWidgets(page);
+    await expect(page.getByRole("tab", { name: title, exact: true })).toBeVisible();
+  }
   expect(sockets).toHaveLength(attached); expect(await preferences()).toEqual(saved);
   await page.locator("#back-btn").click(); await openSession(page, SESSION_B); await showWidgets(page);
-  await expect(page.locator("[data-extension-status]:visible")).toHaveText("Widgets are closed. Reopen them in Settings.");
-  await expect(page.locator("[data-extension-tabs] [role=tab]:visible")).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toBeVisible();
+  await expect(page.locator("[data-extension-tabs] [role=tab]:visible")).toHaveCount(4);
   expect(await preferences()).toEqual(saved);
   await page.locator("#back-btn").click(); // Mobile Settings is reached from Sessions.
   await openSettingsFromUi(page);

@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { start, skipIfNoBroker, type BrokerTestServer } from './broker-helpers.ts';
 import { createOwnedTestServerHome, removeOwnedTestServerHome, type OwnedTestServerHome } from './test-server-home.ts';
 import { openSettingsFromUi } from './helpers.ts';
+import { mockLayoutWidget } from './widget-fixture.ts';
+test.beforeEach(async ({page})=>{await mockLayoutWidget(page)});
 
 test.skip(skipIfNoBroker.condition, skipIfNoBroker.reason);
 let server: BrokerTestServer, home: OwnedTestServerHome, root: string;
@@ -72,6 +74,20 @@ test('empty unfocused desktop keeps first-session creation in the full menu',asy
  expect(sockets).toHaveLength(0);
 });
 
+test('no widgets means no desktop panel or collapsed rail',async({page},info)=>{
+ test.skip(info.project.name!=='desktop','Desktop empty widget docks');
+ await page.route('**/api/extensions',route=>route.fulfill({json:{safeMode:false,installations:[]}}));
+ await page.goto(server.baseUrl);await page.locator('.card',{hasText:'tools-one'}).filter({visible:true}).first().click();
+ await expect(page.locator('#desktop-terminal-container')).toHaveAttribute('data-terminal-load-state','live');
+ await expect(page.locator('.widget-panel:visible')).toHaveCount(0);
+ await expect(page.locator('#workspace-context-divider')).toBeHidden();
+ await expect(page.getByRole('tab',{name:'Widgets',exact:true})).toHaveCount(0);
+ await expect(page.getByRole('button',{name:'Move Sessions',exact:true})).toBeVisible();
+ const terminal=(await page.locator('#workspace-terminal-region').boundingBox())!;
+ expect(Math.round(terminal.x+terminal.width)).toBe(page.viewportSize()!.width);
+ await page.screenshot({path:info.outputPath('no-empty-widget-rail.png')});
+});
+
 test('widget controls belong to their panel without global toggles or terminal remount',async({page},info)=>{
  test.skip(info.project.name!=='desktop','Desktop session controls');
  const sockets:string[]=[];page.on('websocket',socket=>{if(socket.url().includes('/ws/pty'))sockets.push(socket.url())});
@@ -84,6 +100,7 @@ test('widget controls belong to their panel without global toggles or terminal r
  const filter=page.locator('#sidebar-session-controls').getByRole('group',{name:'Session view'});
  const collapse=page.getByRole('button',{name:'Collapse Widgets',exact:true});
  await expect(collapse).toBeVisible();
+ await expect(page.getByRole('button',{name:'Close Widgets',exact:true})).toHaveCount(0);
  await canvas.evaluate(node=>{(window as any).__toolsCanvas=node});
  await collapse.evaluate(node=>{(window as any).__widgetCollapse=node});
  const attached=sockets.length;

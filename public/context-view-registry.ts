@@ -156,6 +156,7 @@ export class ContextViewRegistry {
         theme: Object.freeze({}),
         storage: Object.freeze({ get: () => null, set: () => {}, remove: () => {} }),
         documents: Object.freeze({ read: async () => null, subscribe: () => () => {} }),
+        project: Object.freeze({ gitStatus: async () => { throw new Error("project data unavailable"); } }),
       }) as ExtensionViewContext;
       const content = this.options.createContainer?.(entry, element, abort.signal) ?? element;
       const controller = entry.contribution.mount(content, this.options.createContext?.(scope, abort.signal, entry.id) ?? fallbackContext);

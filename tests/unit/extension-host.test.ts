@@ -49,6 +49,33 @@ afterEach(() => {
 });
 
 describe("ExtensionHost", () => {
+  test("project Git status binds host scope, validates identity and aborts obsolete or caller-cancelled reads", async () => {
+    container = new FakeElement();
+    const id = "22222222-2222-4222-8222-222222222222";
+    let selected: { sessionId: string; unavailable?: string } = { sessionId: id };
+    let context!: ExtensionViewContext; let mismatch = false; let requests = 0;
+    let requestSignal: AbortSignal | undefined;
+    let release: ((response: Response) => void) | undefined;
+    const reply = () => Response.json({ installationId, scopeSessionId: mismatch ? "33333333-3333-4333-8333-333333333333" : id, extensionId: "changes", status: { state: "not-repository" } });
+    const host = new ExtensionHost({ container: container as unknown as HTMLElement, scope: () => selected,
+      authFetch: async (input, options) => {
+        if (String(input) === "/api/extensions") return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "changes", enabled: true, package: { name: "changes", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/changes/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
+        expect(String(input)).toBe(`/api/extensions/project/git-status/changes?session=${id}`); requests++; requestSignal = options?.signal as AbortSignal;
+        return requests > 2 ? new Promise<Response>(resolve => { release = resolve; }) : reply();
+      },
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => register.registerContextView({ id: "changes", title: "Changes", mount(_root, value) { context = value; return { dispose() {} }; } }) })) as never,
+    });
+    try {
+      await host.refresh(); host.select();
+      expect(await context.project.gitStatus()).toEqual({ state: "not-repository" });
+      mismatch = true; await expect(context.project.gitStatus()).rejects.toThrow("identity"); mismatch = false;
+      const abort = new AbortController(); const pending = context.project.gitStatus(abort.signal); abort.abort();
+      expect(requestSignal?.aborted).toBe(true); release!(reply()); await expect(pending).rejects.toThrow();
+      const stale = context.project.gitStatus(); selected = { sessionId: id, unavailable: "Remote scope unavailable" }; await host.refresh();
+      expect(requestSignal?.aborted).toBe(true); release!(reply()); await expect(stale).rejects.toThrow();
+      await expect(context.project.gitStatus()).rejects.toThrow(); expect(requests).toBe(4);
+    } finally { host.dispose(); }
+  });
   test("native panels preserve the full 32-view registry bound and recover Main without disposing content", async () => {
     container = new FakeElement();
     const parent = new FakeElement(), terminals = new FakeElement(), sessions = new FakeElement();
@@ -113,7 +140,7 @@ describe("ExtensionHost", () => {
       expect(mounts).toBe(1);
       sessionId = null; await host.refresh();
       expect(host.availablePanels.map(panel => panel.id)).toEqual([":terminals"]);
-      expect(rightChrome("[data-extension-status]")?.textContent).toContain("another machine");
+      expect(rightChrome("[data-extension-status]")).toBeUndefined(); // No empty remote dock.
       host.select("notes/view"); expect(mounts).toBe(1); expect(disposals).toBe(1);
       expect(fetches).toBe(1); expect(registrations).toBe(1); expect(unregisters).toBe(0); expect(saved).toBe(preferences);
       sessionId = "22222222-2222-4222-8222-222222222222"; await host.refresh(); host.select();
@@ -327,7 +354,7 @@ describe("ExtensionHost", () => {
     count = 1; await host.refresh(); host.select();
     expect(host.selectedId).toBe("view0/context"); expect(tabs().hidden).toBe(true);
     count = 0; await host.refresh(); host.select();
-    expect(host.selectedId).toBeNull(); expect(tabs().hidden).toBe(true);
+    expect(host.selectedId).toBeNull(); expect(tabs()).toBeUndefined(); // No empty selector/rail.
     count = 1; failMount = true; await host.refresh(); host.select();
     expect(host.selectedId).toBeNull(); expect(tabs().hidden).toBe(false);
     expect(host.diagnostic).toContain("broken view");
@@ -381,7 +408,8 @@ describe("ExtensionHost", () => {
     });
     await host.refresh();
     expect(loads).toBe(0);
-    expect(rightChrome("[data-extension-status]")?.textContent).toContain("catalog unavailable");
+    expect(rightChrome("[data-extension-status]")).toBeUndefined();
+    expect(host.availablePanels).toEqual([]);
     host.dispose();
   });
 
@@ -715,7 +743,7 @@ describe("ExtensionHost", () => {
     expect(terminals.hidden).toBe(true);
     host.select(":terminals");
     expect(terminals.hidden).toBe(false);
-    expect(rightChrome("[data-extension-status]")?.textContent).toContain("Safe mode prevents extension loading");
+    expect(rightChrome("[data-extension-status]")).toBeUndefined(); // Safe mode has no SDK dock.
     expect(requests).toBe(0);
     safeMode = false;
     host.dispose();

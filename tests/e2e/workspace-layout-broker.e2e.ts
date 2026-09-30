@@ -1,4 +1,5 @@
 import { dockPanel } from "./workspace-drag-helpers.ts";
+import { mockLayoutWidget } from "./widget-fixture.ts";
 import { selectTerminalLayoutFromUi } from "./helpers.ts";
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect, type Page } from "@playwright/test";
@@ -16,6 +17,8 @@ import {
 } from "./test-server-home.ts";
 
 test.skip(skipIfNoBroker.condition, skipIfNoBroker.reason);
+
+test.beforeEach(async ({ page }) => { await mockLayoutWidget(page); });
 
 const PROJECT_NAME = "wp-workspace-layout";
 const DESKTOP_SESSIONS = ["workspace-one", "workspace-two", "workspace-three", "workspace-four", "workspace-five"];
@@ -156,7 +159,8 @@ test("desktop dock dragging previews without changing layout and cancels safely"
   await expect(page.locator("#desktop-sidebar")).toHaveAttribute("data-widget-area", "bottom");
   await expect(handle).toBeFocused();
   await dockPanel(page, "Sessions", "left");
-  await page.getByRole("button", { name: "Close Widgets", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Close Widgets", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Collapse Widgets", exact: true }).click();
   await page.locator("#sidebar-collapse-btn").click();
   await expect(page.getByRole("button", { name: "Move Terminal grid", exact: true })).toHaveCount(0);
   await expect(page.locator("#workspace-terminal-region .workspace-context-header:visible")).toHaveCount(0);
@@ -668,7 +672,8 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator("#sidebar-settings-btn")).toBeVisible();
   await expect(page.locator("#workspace-terminal-full")).toHaveCount(0);
-  for (const label of ["Collapse Widgets", "Close Widgets", "Context full view"]) {
+  await expect(page.getByRole("button", { name: "Close Widgets", exact: true })).toHaveCount(0);
+  for (const label of ["Collapse Widgets", "Context full view"]) {
     const control = page.getByRole("button", { name: label, exact: true });
     await expect(control).toBeVisible();
     await expect(control).toHaveAttribute("title", label);

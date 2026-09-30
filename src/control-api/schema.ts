@@ -1,4 +1,5 @@
 import { CREATABLE_HARNESSES } from "../agent-kind.ts";
+import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
 import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
@@ -375,6 +376,13 @@ export const controlApiSource: ControlApiSource = {
   defs: {
     ...volatileRelayDefinitions,
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
+    GitFileChange: object({ path: { type: "string", minLength: 1, maxLength: 4096 }, previousPath: { type: "string", minLength: 1, maxLength: 4096 }, status: { type: "string", enum: GIT_CHANGE_KINDS } }, ["path", "status"]),
+    ProjectGitStatus: { oneOf: [
+      object({ state: { const: "not-repository" } }, ["state"]),
+      object({ state: { const: "ready" }, branch: { type: ["string", "null"], maxLength: 1024 }, detached: boolean(), truncated: boolean(),
+        staged: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES }, unstaged: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES }, untracked: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES },
+      }, ["state", "branch", "detached", "truncated", "staged", "unstaged", "untracked"]),
+    ] },
     ExtensionId: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
     ExtensionInstallationId: { type: "string", format: "uuid" },
     ExtensionDocumentCatalog: object({ id: ref("ExtensionId"), schemaVersion: { type: "integer", minimum: 1 } }, ["id", "schemaVersion"]),
@@ -857,6 +865,12 @@ export const controlApiSource: ControlApiSource = {
     "GET /api/extensions/assets/{installationId}/{assetPath}": {
       operationId: "getInstalledExtensionAsset", stable: true, auth: "jwt-when-configured",
       request: object({ extensionId: ref("ExtensionId"), packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, assetPath: string() }, ["extensionId", "packageDigest", "assetPath"]), response: { type: "string", contentMediaType: "text/javascript" }, errors: ["404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope"],
+    },
+    "GET /api/extensions/project/git-status/{extensionId}": {
+      operationId: "readExtensionProjectGitStatus", stable: true, auth: "jwt-when-configured",
+      request: object({ extensionId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["extensionId", "session"]),
+      response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), status: ref("ProjectGitStatus") }, ["installationId", "scopeSessionId", "extensionId", "status"]),
+      errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
     },
     "GET /api/extensions/documents/{extensionId}/{documentId}": {
       operationId: "readExtensionDocument", stable: true, auth: "jwt-when-configured",

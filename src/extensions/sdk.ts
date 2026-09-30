@@ -1,4 +1,5 @@
 import type { LayoutContext, TerminalLayout } from "./layout-contract.ts";
+import type { ProjectGitStatus } from "./git-status-contract.ts";
 
 /** Public authoring surface. It deliberately exposes no terminal DOM, auth token, or server filesystem. */
 export interface ContextViewController {
@@ -17,6 +18,8 @@ export interface ExtensionViewContext {
     set(key: string, value: string): void;
     remove(key: string): void;
   }>;
+  /** Local live session's server-owned project. No caller-supplied path or command. */
+  readonly project: Readonly<{ gitStatus(signal?: AbortSignal): Promise<ProjectGitStatus> }>;
   readonly documents: Readonly<{
     /** Resolves the current plain document, or null when this exact scope has none. */
     read(documentId: string): Promise<unknown | null>;

@@ -1258,7 +1258,9 @@ function teardownTerminalForViewChange(previousView: string, nextView: string): 
   } else if (isGridActive()) {
     suspendGridMode();
   } else {
-    destroyTerminal(nextView === "settings");
+    // Full-menu expansion suspends the viewer but can return to this exact session.
+    // Retain its UUID as for Settings; never reconstruct widget scope from a name.
+    destroyTerminal(nextView === "settings" || (nextView === "sessions" && state.sessionsExpanded));
   }
 }
 

@@ -26,12 +26,12 @@ leadStackLayout({ panes: [{ id: "one" }], selectedPaneId: "one", viewport: { wid
   } finally { rmSync(stage, { recursive: true, force: true }); }
 }, 20_000);
 
-type ComponentDependencies = { launch?: () => Promise<Browser>; onServer?: (url: string) => void; hostStyles?: boolean };
+type ComponentDependencies = { launch?: () => Promise<Browser>; onServer?: (url: string) => void; hostStyles?: boolean; sample?: "agent-context" | "changes" };
 
-async function component({ launch = () => chromium.launch({ headless: true, ...(process.env.WOLFPACK_WIDGET_BRAVE ? { executablePath: process.env.WOLFPACK_WIDGET_BRAVE } : {}) }), onServer, hostStyles = false }: ComponentDependencies = {}) {
+async function component({ launch = () => chromium.launch({ headless: true, ...(process.env.WOLFPACK_WIDGET_BRAVE ? { executablePath: process.env.WOLFPACK_WIDGET_BRAVE } : {}) }), onServer, hostStyles = false, sample = "agent-context" }: ComponentDependencies = {}) {
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) {
     const path = new URL(request.url).pathname;
-    if (path === "/ui.js") return new Response(Bun.file(join(root, "examples", "extensions", "agent-context", "dist", "ui.js")), { headers: { "content-type": "text/javascript" } });
+    if (path === "/ui.js") return new Response(Bun.file(join(root, "examples", "extensions", sample, "dist", "ui.js")), { headers: { "content-type": "text/javascript" } });
     if (path === "/styles.css") return new Response(Bun.file(join(root, "public", "styles.css")), { headers: { "content-type": "text/css" } });
     if (path === "/wolfpack-icon.svg") return new Response(Bun.file(join(root, "public", "wolfpack-icon.svg")), { headers: { "content-type": "image/svg+xml" } });
     return new Response(hostStyles ? '<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/styles.css"><div id="workspace-context-region"><div id="workspace-context-container"><section class="widget-panel" style="width:100%;flex:1;max-height:none"><div class="widget-content"><main></main></div></section></div></div>' : "<main></main>", { headers: { "content-type": "text/html" } });
@@ -44,11 +44,14 @@ async function component({ launch = () => chromium.launch({ headless: true, ...(
       const asset = "/ui.js"; const module = await import(asset); let contribution: any; let publish: any; let releases = 0;
       module.default({ registerContextView(value: any) { contribution = value; }, registerTerminalLayout() {} });
       let abort = new AbortController(); const storage = new Map<string, string>();
+      const git = { calls: 0, value: { state: "not-repository" } as any, fail: false, pending: false, signals: [] as AbortSignal[], releases: [] as Array<(value: any) => void> };
+      (globalThis as any).__git = git;
       const mount = () => contribution.mount(document.querySelector("main"), {
         signal: abort.signal, scope: { installationId: "installation", sessionId: "11111111-1111-4111-8111-111111111111" },
         selection: { selectedSessionId: null }, theme: {},
         storage: { get: (key: string) => storage.get(key) ?? null, set: (key: string, value: string) => storage.set(key, value), remove: (key: string) => storage.delete(key) },
         documents: { read: async () => null, subscribe(_id: string, listener: any) { publish = listener; listener(null, 0); return () => { releases++; }; } },
+        project: { gitStatus: async (signal: AbortSignal) => { git.calls++; git.signals.push(signal); if (git.fail) throw Error("unavailable"); return git.pending ? new Promise(resolve => git.releases.push(resolve)) : git.value; } },
       });
       let controller = mount();
       (globalThis as any).__sample = {
@@ -60,6 +63,54 @@ async function component({ launch = () => chromium.launch({ headless: true, ...(
     return { page, async close() { await browser!.close(); server.stop(true); } };
   } catch (error) { await browser?.close(); server.stop(true); throw error; }
 }
+
+test("Changes component retains stale data honestly, pauses hidden reads and ignores late responses after disposal", async () => {
+  const fixture = await component({ hostStyles: true, sample: "changes" });
+  try {
+    const { page } = fixture;
+    await page.clock.install();
+    await page.evaluate(() => (globalThis as any).__sample.controller.setVisible(true));
+    await page.waitForFunction(() => document.querySelector('.wolfpack-changes [role="status"]')?.textContent === "Not a Git repository.");
+    await page.clock.fastForward(5000);
+    await page.waitForFunction(() => (globalThis as any).__git.calls === 2);
+    const ready = { state: "ready", branch: null, detached: true, staged: [], unstaged: [], untracked: [], truncated: false };
+    await page.evaluate(value => { (globalThis as any).__git.value = value; }, ready);
+    await page.getByRole("button", { name: "Refresh Git status" }).click();
+    await page.waitForFunction(() => document.querySelector(".wolfpack-changes .branch")?.textContent === "Detached HEAD");
+    expect(await page.getByRole("status").textContent()).toBe("Working tree clean.");
+    await page.evaluate(value => { (globalThis as any).__git.value = { ...value, truncated: true, untracked: [{ path: "<img src=x>", status: "untracked" }] }; }, ready);
+    await page.getByRole("button", { name: "Refresh Git status" }).click();
+    await page.waitForFunction(() => document.querySelector('.wolfpack-changes [role="status"]')?.textContent?.includes("More changes"));
+    expect(await page.locator(".wolfpack-changes img").count()).toBe(0);
+    await page.locator(".wolfpack-changes .path").evaluate(node => { (globalThis as any).__retainedGitPath = node; });
+    await page.evaluate(() => { (globalThis as any).__git.fail = true; });
+    await page.getByRole("button", { name: "Refresh Git status" }).click();
+    await page.waitForFunction(() => document.querySelector('.wolfpack-changes [role="status"]')?.textContent?.includes("previous result"));
+    expect(await page.locator(".wolfpack-changes .path").textContent()).toBe("<img src=x>");
+    expect(await page.locator(".wolfpack-changes .path").evaluate(node => node === (globalThis as any).__retainedGitPath)).toBe(true);
+    const accessibility = await new AxeBuilder({ page }).include(".wolfpack-changes").withTags(["wcag2a", "wcag2aa"]).analyze();
+    expect(accessibility.violations.filter(v => ["serious", "critical"].includes(v.impact ?? ""))).toEqual([]);
+    await page.evaluate(() => { const git = (globalThis as any).__git; git.fail = false; git.pending = true; });
+    await page.getByRole("button", { name: "Refresh Git status" }).click();
+    await page.waitForFunction(() => (globalThis as any).__git.releases.length === 1);
+    const calls = await page.evaluate(() => (globalThis as any).__git.calls);
+    await page.clock.fastForward(15000); expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(calls);
+    await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" }); document.dispatchEvent(new Event("visibilitychange")); });
+    expect(await page.evaluate(() => (globalThis as any).__git.signals.at(-1).aborted)).toBe(true);
+    await page.clock.fastForward(20000); expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(calls);
+    await page.evaluate(value => {
+      const git = (globalThis as any).__git; git.pending = false; git.value = { ...value, branch: "current", detached: false };
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" }); document.dispatchEvent(new Event("visibilitychange"));
+    }, ready);
+    await page.waitForFunction(() => document.querySelector(".wolfpack-changes .branch")?.textContent === "current");
+    await page.evaluate(value => (globalThis as any).__git.releases[0]({ ...value, branch: "obsolete", detached: false }), ready);
+    expect(await page.locator(".wolfpack-changes .branch").textContent()).toBe("current");
+    const beforeDispose = await page.evaluate(() => { (globalThis as any).__sample.abort.abort(); return (globalThis as any).__git.calls; });
+    await page.clock.fastForward(20000);
+    expect(await page.locator(".wolfpack-changes").count()).toBe(0);
+    expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(beforeDispose);
+  } finally { await fixture.close(); }
+}, 20_000);
 
 test("component fixture releases server and partial browser after later startup rejection", async () => {
   let serverUrl = ""; let closes = 0;

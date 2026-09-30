@@ -1,4 +1,5 @@
 /** Stable authoring entry point published as wolfpack-bridge/extensions. */
+export type { ProjectGitStatus, GitFileChange, GitChangeKind } from "./git-status-contract.ts";
 export { EXTENSION_LIFECYCLE_RULES_VERSION, MAX_RETAINED_CONTEXT_VIEWS_PER_SCOPE } from "./sdk.ts";
 export type {
   ContextViewController,

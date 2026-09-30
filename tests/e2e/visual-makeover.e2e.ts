@@ -106,14 +106,16 @@ test("All and Idle form a quiet, keyboard-operable segmented control", async ({ 
   await expect(all).toHaveCSS("font-size", "12px");
   await expect(all).toHaveCSS("letter-spacing", /^(normal|0px)$/);
   await expect(all).toHaveCSS("color", testInfo.project.name === "desktop" ? "rgb(230, 238, 232)" : "rgb(237, 243, 239)");
-  const minimumHeight = testInfo.project.name === "desktop" ? 40 : 44;
+  const desktop = testInfo.project.name === "desktop";
+  const minimumHeight = desktop ? 28 : 44;
   const pillBox = (await filter.boundingBox())!;
-  await expect(filter).toHaveCSS("padding", "3px");
-  expect(pillBox.width).toBeLessThanOrEqual(108);
-  expect(pillBox.height).toBeLessThanOrEqual(minimumHeight + 8);
+  await expect(filter).toHaveCSS("padding", "2px");
+  expect(pillBox.width).toBeLessThanOrEqual(desktop ? 84 : 96);
+  expect(pillBox.height).toBeLessThanOrEqual(minimumHeight + 6);
   expect(await all.evaluate(el => getComputedStyle(el).boxShadow)).not.toContain("inset");
   for (const button of [all, idle]) {
     expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(minimumHeight);
+    if (!desktop) expect((await button.boundingBox())!.width).toBeGreaterThanOrEqual(44);
   }
   await all.focus();
   await page.keyboard.press("Tab");
@@ -134,6 +136,9 @@ test("All and Idle form a quiet, keyboard-operable segmented control", async ({ 
     await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
     const sidebar = page.locator("#sidebar-session-controls").getByRole("group", { name: "Session view" });
     await expect(sidebar).toBeVisible();
+    const sidebarBox = (await sidebar.boundingBox())!;
+    expect(sidebarBox.width).toBeLessThanOrEqual(84); expect(sidebarBox.height).toBeLessThanOrEqual(34);
+    await page.screenshot({ path: testInfo.outputPath("compact-sidebar-filter.png"), animations: "disabled" });
     await expect(sidebar.getByRole("button", { name: "All sessions", exact: true })).toHaveAttribute("aria-pressed", "true");
     await sidebar.getByRole("button", { name: "Idle sessions", exact: true }).click();
     await expect(sidebar.getByRole("button", { name: "Idle sessions", exact: true })).toHaveAttribute("aria-pressed", "true");

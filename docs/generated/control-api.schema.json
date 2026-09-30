@@ -148,6 +148,65 @@
         "409 ExtensionApiErrorEnvelope"
       ]
     },
+    "readExtensionProjectGitStatus": {
+      "route": "GET /api/extensions/project/git-status/{extensionId}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readExtensionProjectGitStatus:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readExtensionProjectGitStatus request",
+        "type": "object",
+        "properties": {
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "session": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "extensionId",
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readExtensionProjectGitStatus:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readExtensionProjectGitStatus response",
+        "type": "object",
+        "properties": {
+          "installationId": {
+            "$ref": "#/$defs/ExtensionInstallationId"
+          },
+          "scopeSessionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "status": {
+            "$ref": "#/$defs/ProjectGitStatus"
+          }
+        },
+        "required": [
+          "installationId",
+          "scopeSessionId",
+          "extensionId",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ExtensionApiErrorEnvelope",
+        "404 ExtensionApiErrorEnvelope",
+        "409 ExtensionApiErrorEnvelope",
+        "503 ExtensionApiErrorEnvelope"
+      ]
+    },
     "readExtensionDocument": {
       "route": "GET /api/extensions/documents/{extensionId}/{documentId}",
       "stable": true,
@@ -3768,6 +3827,107 @@
         "error"
       ],
       "additionalProperties": true
+    },
+    "GitFileChange": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "previousPath": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "added",
+            "modified",
+            "deleted",
+            "renamed",
+            "copied",
+            "type-changed",
+            "unmerged",
+            "untracked"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "ProjectGitStatus": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "not-repository"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "ready"
+            },
+            "branch": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 1024
+            },
+            "detached": {
+              "type": "boolean"
+            },
+            "truncated": {
+              "type": "boolean"
+            },
+            "staged": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GitFileChange"
+              },
+              "maxItems": 200
+            },
+            "unstaged": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GitFileChange"
+              },
+              "maxItems": 200
+            },
+            "untracked": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GitFileChange"
+              },
+              "maxItems": 200
+            }
+          },
+          "required": [
+            "state",
+            "branch",
+            "detached",
+            "truncated",
+            "staged",
+            "unstaged",
+            "untracked"
+          ],
+          "additionalProperties": false
+        }
+      ]
     },
     "ExtensionId": {
       "type": "string",

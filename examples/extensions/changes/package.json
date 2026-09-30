@@ -1,0 +1,13 @@
+{
+  "name": "wolfpack-extension-changes",
+  "version": "0.1.0",
+  "private": true,
+  "wolfpack": {
+    "manifestVersion": 1,
+    "apiVersion": 1,
+    "id": "changes",
+    "ui": "dist/ui.js",
+    "skills": [],
+    "documents": []
+  }
+}

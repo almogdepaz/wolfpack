@@ -1,4 +1,5 @@
 import { ExtensionContributionGate } from "../src/extensions/contribution-contract.ts";
+import { parseProjectGitStatus } from "../src/extensions/git-status-contract.ts";
 import { isExtensionIdentifier } from "../src/extensions/contribution-metadata.ts";
 import type { TerminalLayoutContribution } from "../src/extensions/layout-contract.ts";
 import type { ExtensionRegistration, ExtensionViewContext } from "../src/extensions/sdk.ts";
@@ -315,7 +316,20 @@ export class ExtensionHost {
       return release;
     };
     signal.addEventListener("abort", () => this.releaseViewDocuments(viewId), { once: true });
-    return Object.freeze({ signal, scope: Object.freeze({ ...scope }), selection: Object.freeze({ selectedSessionId: scope.sessionId }), theme: Object.freeze({}), storage: Object.freeze(storage), documents: Object.freeze({ read, subscribe }) });
+    const project = Object.freeze({ gitStatus: async (requestSignal?: AbortSignal) => {
+      const active = requestSignal ? AbortSignal.any([signal, requestSignal]) : signal;
+      const current = () => this.scopeIsCurrent(scope, active) && this.owners.get(viewId)?.extension === owner;
+      if (!current()) throw new Error("stale extension scope");
+      const url = `/api/extensions/project/git-status/${encodeURIComponent(extensionId)}?session=${encodeURIComponent(scope.sessionId)}`;
+      const response = await (this.options.authFetch ?? browserAuthFetch)(url, { cache: "no-store", signal: active });
+      if (!current()) throw new Error("stale extension scope");
+      if (!response.ok) throw new Error("project Git status unavailable");
+      const value: unknown = await response.json();
+      if (!current()) throw new Error("stale extension scope");
+      if (!record(value) || value.installationId !== scope.installationId || value.scopeSessionId !== scope.sessionId || value.extensionId !== extensionId) throw new Error("project Git status identity mismatch");
+      return parseProjectGitStatus(value.status);
+    } });
+    return Object.freeze({ signal, scope: Object.freeze({ ...scope }), selection: Object.freeze({ selectedSessionId: scope.sessionId }), theme: Object.freeze({}), storage: Object.freeze(storage), documents: Object.freeze({ read, subscribe }), project });
   }
 
   private assertDeclaredDocument(owner: ExtensionCatalogInstallation | undefined, documentId: string): void {
