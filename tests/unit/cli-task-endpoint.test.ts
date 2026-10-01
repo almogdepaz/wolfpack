@@ -3,17 +3,22 @@ import { randomUUID } from "node:crypto";
 import { qualifyRemoteTaskEndpoint, unqualifiedRemoteTaskEndpoint } from "../../src/cli/task-endpoint.ts";
 import { RELAY_ID } from "../../src/task-relay/domain.ts";
 
-function fixture() {
+function fixture(headers = new Headers({ "content-type": "application/json" })) {
   const origin = "https://peer.tail123.ts.net", epoch = randomUUID(), remoteEpoch = randomUUID();
   const source = { relay: RELAY_ID, id: randomUUID() }, target = { relay: RELAY_ID, id: randomUUID() }, alias = { relay: `${RELAY_ID}:peer:${randomUUID()}`, id: target.id };
   const transport = (endpoint: typeof source, epoch: string) => ({ profile: "volatile-v1", epoch, endpoint, leaseExpiresAt: new Date(Date.now() + 60_000).toISOString() });
   const remote = { ok: true, session: "worker", sessionId: "exact-remote-id", taskEndpoint: target, taskTransport: transport(target, remoteEpoch) };
   const local = { ok: true, sessionId: "exact-local-id", taskEndpoint: source, taskTransport: transport(source, epoch) };
   const resolved = { ok: true, profile: "volatile-v1", epoch, value: { kind: "resolved", endpoint: alias } };
-  const calls: Array<{ url: string; body: unknown }> = [];
-  const options = { origin, localBase: "http://127.0.0.1:1", callerSession: "parent", headers: new Headers({ "content-type": "application/json" }),
+  const calls: Array<{ url: string; body: unknown; headers: Headers }> = [];
+  const options = { origin, localBase: "http://127.0.0.1:1", callerSession: "parent", headers,
     fetch: Object.assign(async (url: RequestInfo | URL, init?: RequestInit) => {
-      expect(init?.redirect).toBe("error"); calls.push({ url: String(url), body: init?.body && JSON.parse(String(init.body)) });
+      const requestHeaders = new Headers(init?.headers);
+      expect(init?.redirect).toBe("error"); calls.push({ url: String(url), body: init?.body && JSON.parse(String(init.body)), headers: requestHeaders });
+      // The resolve-peer route rejects absent/non-JSON media types before resolution.
+      if (init?.method === "POST" && requestHeaders.get("content-type")?.split(";")[0]?.trim().toLowerCase() !== "application/json") {
+        return Response.json({ ok: false, error: { code: "INVALID_REQUEST" } }, { status: 400 });
+      }
       return Response.json(String(url).startsWith(origin) ? remote : init?.method === "POST" ? resolved : local);
     }, { preconnect: fetch.preconnect }) as typeof fetch };
   return { remote, local, resolved, calls, options, source, alias };
@@ -27,6 +32,25 @@ test("remote CLI endpoint selection resolves an exact session into the local epo
   expect(f.calls.map(call => call.url)).toEqual([f.options.origin + "/api/session-control/status?session=exact-remote-id", "http://127.0.0.1:1/api/session-control/status?session=parent", "http://127.0.0.1:1/api/task-relay/volatile-v1/resolve-peer"]);
   expect(f.calls[2]!.body).toEqual({ profile: "volatile-v1", epoch: f.local.taskTransport.epoch, callerSession: "parent", endpoint: f.source, origin: f.options.origin, target: f.remote.taskEndpoint });
   expect(f.remote.taskEndpoint.relay).toBe(RELAY_ID); // Do not mutate remote observation.
+});
+
+test("qualification after bodyless status GET supplies JSON POST headers without mutating caller headers", async () => {
+  // api.call() supplies no Content-Type for a bodyless status GET.
+  const headers = new Headers({ authorization: "Bearer test-token", "x-request-id": "status-request" });
+  const originalHeaders = [...headers.entries()];
+  const f = fixture(headers);
+  const result = await qualifyRemoteTaskEndpoint(f.remote, f.options);
+
+  expect(result).toMatchObject({ taskEndpoint: f.alias, taskRouting: { sourceEpoch: f.local.taskTransport.epoch } });
+  expect(result).not.toHaveProperty("taskEndpointError");
+  expect(f.calls).toHaveLength(3);
+  expect(f.calls.slice(0, 2).map(call => call.headers.get("content-type"))).toEqual([null, null]);
+  expect(f.calls[2]!.headers.get("content-type")).toBe("application/json");
+  for (const call of f.calls) {
+    expect(call.headers.get("authorization")).toBe("Bearer test-token");
+    expect(call.headers.get("x-request-id")).toBe("status-request");
+  }
+  expect([...headers.entries()]).toEqual(originalHeaders);
 });
 
 test("remote list/unavailable caller never presents an unqualified endpoint as locally routable", async () => {
