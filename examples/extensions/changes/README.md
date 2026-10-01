@@ -3,8 +3,10 @@
 A small, read-only Git status view. It uses host data, not an agent-authored document or bundled skill.
 
 - Branch (including unborn branches and detached HEAD).
-- Staged, unstaged and untracked groups, with literal filenames and status labels.
-- Manual Refresh and a five-second cadence only while the widget and page are visible.
+- Collapsible staged, unstaged and untracked groups, with counts, filename-first rows and muted directory context. Full literal paths remain available to assistive technology and in path tooltips; status letters have full accessible labels.
+- Unique changed-file count: a partially staged file appears in both groups but counts once in the summary. Refresh preserves disclosure state/focus and unchanged groups.
+- Automatic checks every five seconds after the previous read finishes, only while the widget and page are visible. Reopening the widget, returning to the browser/tab, or selecting a new session refreshes immediately. Concurrent triggers share the in-flight read; no Git hooks, terminal-output dependency or filesystem watcher is needed.
+- Manual Refresh remains available. Its quiet busy indicator respects reduced motion; the footer shows the last successful check without repeatedly announcing polling to screen readers.
 - Clean/non-repository/error states. Failed refreshes explicitly label previously displayed data as stale.
 - Collapse retains the widget; hiding, disposal and scope replacement abort requests. Empty desktop scopes have no widget rail.
 

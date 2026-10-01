@@ -83,11 +83,15 @@ test("Changes component retains stale data honestly, pauses hidden reads and ign
     await page.waitForFunction(() => document.querySelector('.wolfpack-changes [role="status"]')?.textContent?.includes("More changes"));
     expect(await page.locator(".wolfpack-changes img").count()).toBe(0);
     await page.locator(".wolfpack-changes .path").evaluate(node => { (globalThis as any).__retainedGitPath = node; });
+    const lastSuccess = await page.locator(".wolfpack-changes .updated").getAttribute("datetime");
+    await page.clock.fastForward(1000);
     await page.evaluate(() => { (globalThis as any).__git.fail = true; });
     await page.getByRole("button", { name: "Refresh Git status" }).click();
     await page.waitForFunction(() => document.querySelector('.wolfpack-changes [role="status"]')?.textContent?.includes("previous result"));
     expect(await page.locator(".wolfpack-changes .path").textContent()).toBe("<img src=x>");
     expect(await page.locator(".wolfpack-changes .path").evaluate(node => node === (globalThis as any).__retainedGitPath)).toBe(true);
+    expect(await page.locator(".wolfpack-changes .updated").getAttribute("datetime")).toBe(lastSuccess);
+    expect(await page.locator(".wolfpack-changes").getAttribute("data-stale")).toBe("true");
     const accessibility = await new AxeBuilder({ page }).include(".wolfpack-changes").withTags(["wcag2a", "wcag2aa"]).analyze();
     expect(accessibility.violations.filter(v => ["serious", "critical"].includes(v.impact ?? ""))).toEqual([]);
     await page.evaluate(() => { const git = (globalThis as any).__git; git.fail = false; git.pending = true; });
@@ -97,6 +101,7 @@ test("Changes component retains stale data honestly, pauses hidden reads and ign
     await page.clock.fastForward(15000); expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(calls);
     await page.evaluate(() => { Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" }); document.dispatchEvent(new Event("visibilitychange")); });
     expect(await page.evaluate(() => (globalThis as any).__git.signals.at(-1).aborted)).toBe(true);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await page.clock.fastForward(20000); expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(calls);
     await page.evaluate(value => {
       const git = (globalThis as any).__git; git.pending = false; git.value = { ...value, branch: "current", detached: false };
@@ -109,6 +114,89 @@ test("Changes component retains stale data honestly, pauses hidden reads and ign
     await page.clock.fastForward(20000);
     expect(await page.locator(".wolfpack-changes").count()).toBe(0);
     expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(beforeDispose);
+  } finally { await fixture.close(); }
+}, 20_000);
+
+test("Changes refreshes on browser focus, coalesces reads and ignores focus while hidden or disposed", async () => {
+  const fixture = await component({ hostStyles: true, sample: "changes" });
+  try {
+    const { page } = fixture; await page.clock.install();
+    await page.evaluate(() => (globalThis as any).__sample.controller.setVisible(true));
+    await page.waitForFunction(() => document.querySelector('.wolfpack-changes [role="status"]')?.textContent === "Not a Git repository.");
+    await page.evaluate(() => {
+      (globalThis as any).__git.value = { state: "ready", branch: "automatic", detached: false, staged: [], unstaged: [], untracked: [], truncated: false };
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(2);
+    await page.waitForFunction(() => document.querySelector(".wolfpack-changes .branch")?.textContent === "automatic");
+    await page.evaluate(() => {
+      (globalThis as any).__git.pending = true;
+      window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("focus")); document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(await page.getByRole("button", { name: "Refresh Git status" }).getAttribute("aria-busy")).toBe("true");
+    await page.clock.fastForward(15000);
+    expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(3);
+    await page.evaluate(() => { (globalThis as any).__sample.controller.setVisible(false); window.dispatchEvent(new Event("focus")); });
+    expect(await page.evaluate(() => (globalThis as any).__git.signals.at(-1).aborted)).toBe(true);
+    expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(3);
+    await page.evaluate(() => { (globalThis as any).__git.pending = false; (globalThis as any).__sample.controller.setVisible(true); });
+    expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(4);
+    await page.evaluate(() => { (globalThis as any).__sample.abort.abort(); window.dispatchEvent(new Event("focus")); });
+    await page.clock.fastForward(15000);
+    expect(await page.evaluate(() => (globalThis as any).__git.calls)).toBe(4);
+  } finally { await fixture.close(); }
+}, 20_000);
+
+test("Changes uses unique counts, literal filename hierarchy and stable keyboard disclosures across automatic refresh", async () => {
+  const fixture = await component({ hostStyles: true, sample: "changes" });
+  try {
+    const { page } = fixture; await page.clock.install();
+    await page.evaluate(() => {
+      (globalThis as any).__git.value = { state: "ready", branch: "feature/changes-refinement-with-a-long-branch-name", detached: false, truncated: false,
+        staged: [{ path: "src/widgets/changes.ts", status: "modified" }, { path: "src/components/new.ts", previousPath: "src/old.ts", status: "renamed" }],
+        unstaged: [{ path: "src/widgets/changes.ts", status: "modified" }, { path: "src/obsolete.ts", status: "deleted" }, { path: "conflict.ts", status: "unmerged" }],
+        untracked: [{ path: "new/<img src=x>.ts", status: "untracked" }, { path: `some/very/long/directory/${"x".repeat(200)}.ts`, status: "untracked" }, { path: "generated/", status: "untracked" }],
+      };
+      (globalThis as any).__sample.controller.setVisible(true);
+    });
+    await page.waitForFunction(() => document.querySelector(".wolfpack-changes .branch")?.textContent?.startsWith("feature/"));
+    expect(await page.locator(".wolfpack-changes .change-count").count()).toBe(1);
+    expect(await page.locator(".wolfpack-changes .change-count").textContent()).toBe("7 changed files");
+    expect(await page.getByRole("list", { name: "Staged files", exact: true }).locator(".file-name").first().textContent()).toBe("changes.ts");
+    expect(await page.getByRole("list", { name: "Staged files", exact: true }).locator(".directory").first().textContent()).toBe("src/widgets");
+    expect(await page.locator('.kind[aria-label="Modified"]').first().textContent()).toBe("M");
+    expect(await page.locator('.kind[aria-label="Unmerged"]').textContent()).toBe("!");
+    expect(await page.locator('.path[title="src/widgets/changes.ts"]').count()).toBe(2);
+    expect(await page.locator('.previous-path').textContent()).toBe("from src/old.ts");
+    expect(await page.locator(".wolfpack-changes img").count()).toBe(0);
+    const summary = page.locator('[data-group="staged"] summary');
+    await summary.focus(); await summary.press("Space");
+    expect(await page.locator('[data-group="staged"]').evaluate((node: HTMLDetailsElement) => node.open)).toBe(false);
+    await summary.evaluate(node => { (globalThis as any).__gitSummary = node; });
+    await page.evaluate(() => { (globalThis as any).__git.value.untracked.push({ path: "auto.ts", status: "untracked" }); });
+    await page.clock.fastForward(5000);
+    await page.waitForFunction(() => document.querySelector(".wolfpack-changes .change-count")?.textContent === "8 changed files");
+    expect(await summary.evaluate(node => node === (globalThis as any).__gitSummary && node === document.activeElement)).toBe(true);
+    expect(await page.locator('[data-group="staged"]').evaluate((node: HTMLDetailsElement) => node.open)).toBe(false);
+    await summary.press("Enter");
+    expect(await page.locator('[data-group="staged"]').evaluate((node: HTMLDetailsElement) => node.open)).toBe(true);
+    for (const width of [320, 900]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await page.locator(".wolfpack-changes").evaluate(node => node.scrollWidth <= node.clientWidth)).toBe(true);
+      const refresh = await page.getByRole("button", { name: "Refresh Git status" }).boundingBox();
+      expect(refresh!.height).toBeGreaterThanOrEqual(width === 320 ? 44 : 32);
+      const accessibility = await new AxeBuilder({ page }).include(".wolfpack-changes").withTags(["wcag2a", "wcag2aa"]).analyze();
+      expect(accessibility.violations.filter(v => ["serious", "critical"].includes(v.impact ?? ""))).toEqual([]);
+      if (process.env.WOLFPACK_WIDGET_ARTIFACTS) {
+        mkdirSync(process.env.WOLFPACK_WIDGET_ARTIFACTS, { recursive: true });
+        await page.screenshot({ path: join(process.env.WOLFPACK_WIDGET_ARTIFACTS, `changes-${width}.png`), fullPage: true, animations: "disabled" });
+      }
+    }
+    // If the focused group becomes empty, keep keyboard focus on an available widget control.
+    await summary.focus();
+    await page.evaluate(() => { (globalThis as any).__git.value.staged = []; window.dispatchEvent(new Event("focus")); });
+    await page.waitForFunction(() => (document.querySelector('[data-group="staged"]') as HTMLElement).hidden);
+    expect(await page.getByRole("button", { name: "Refresh Git status" }).evaluate(node => node === document.activeElement)).toBe(true);
   } finally { await fixture.close(); }
 }, 20_000);
 

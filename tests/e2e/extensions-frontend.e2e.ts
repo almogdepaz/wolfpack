@@ -22,10 +22,11 @@ test("Changes package reads only its local project and pauses when collapsed", a
     env: { ...environment(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" }, timeout: 2000,
   });
   git(project, "init", "--initial-branch=main");
-  writeFileSync(join(project, "tracked.ts"), "initial\n"); writeFileSync(join(project, "deleted.ts"), "delete me\n");
+  mkdirSync(join(project, "src"), { recursive: true });
+  writeFileSync(join(project, "src", "tracked.ts"), "initial\n"); writeFileSync(join(project, "deleted.ts"), "delete me\n");
   git(project, "add", "."); git(project, "commit", "-m", "fixture");
   writeFileSync(join(project, "added.ts"), "staged\n"); git(project, "add", "added.ts");
-  writeFileSync(join(project, "tracked.ts"), "unstaged\n"); rmSync(join(project, "deleted.ts"));
+  writeFileSync(join(project, "src", "tracked.ts"), "unstaged\n"); rmSync(join(project, "deleted.ts"));
   writeFileSync(join(project, "<img>.ts"), "literal filename\n");
   const index = readFileSync(join(project, ".git", "index"));
   runCli(["extensions", "install", join(ROOT, "examples", "extensions", "changes"), "--trust-browser-code"]);
@@ -49,6 +50,8 @@ test("Changes package reads only its local project and pauses when collapsed", a
     await expect(widget.getByRole("list", { name: "Unstaged files", exact: true })).toContainText("deleted.ts");
     await expect(widget.getByRole("list", { name: "Untracked files", exact: true })).toContainText("<img>.ts");
     await expect(widget.locator("img")).toHaveCount(0); await expect(widget.locator(".branch")).toHaveText("main");
+    await expect(widget.locator(".change-count")).toHaveText("4 changed files");
+    await expect(widget.getByRole("list", { name: "Unstaged files", exact: true }).locator(".directory")).toHaveText("src");
     await expect(page.getByRole("button", { name: "Close Changes", exact: true })).toHaveCount(0);
     expect(requests.every(url => new URL(url).searchParams.get("session") === sessionIds.get(SESSION_A))).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("changes-widget.png"), animations: "disabled" });
@@ -57,8 +60,12 @@ test("Changes package reads only its local project and pauses when collapsed", a
     await expect(widget.getByRole("list", { name: "Untracked files", exact: true })).toContainText("manual-refresh.ts");
     expect(readFileSync(join(project, ".git", "index"))).toEqual(index);
     const canvas = page.locator("#desktop-terminal-container canvas"); await canvas.evaluate(node => { (window as any).__changesCanvas = node; });
+    writeFileSync(join(project, "src", "automatic-refresh.ts"), "appears without pressing Refresh\n");
     const activeRequests = requests.length;
     await page.clock.fastForward(5100); await expect.poll(() => requests.length).toBeGreaterThan(activeRequests);
+    await expect(widget.getByRole("list", { name: "Untracked files", exact: true })).toContainText("automatic-refresh.ts");
+    await expect(widget.locator(".change-count")).toHaveText("6 changed files");
+    expect(readFileSync(join(project, ".git", "index"))).toEqual(index);
     await page.getByRole("button", { name: "Collapse Changes", exact: true }).click(); await page.mouse.move(400, 600);
     await expect(widget).toBeHidden(); const hiddenRequests = requests.length, attached = sockets.length;
     await page.clock.fastForward(15000);
