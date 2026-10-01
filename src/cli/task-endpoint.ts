@@ -50,7 +50,9 @@ export async function qualifyRemoteTaskEndpoint(value: unknown, options: RemoteE
   const expired = new Promise<never>((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error("endpoint resolution deadline")); }, 12_000); });
   const request = async (url: string, init?: RequestInit) => {
     if (controller.signal.aborted) throw new Error("endpoint deadline");
-    return body(await (options.fetch ?? fetch)(url, { ...init, headers: options.headers, redirect: "error", cache: "no-store", signal: controller.signal }), controller.signal);
+    const headers = new Headers(options.headers);
+    if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    return body(await (options.fetch ?? fetch)(url, { ...init, headers, redirect: "error", cache: "no-store", signal: controller.signal }), controller.signal);
   };
   try {
     return await Promise.race([expired, (async () => {
