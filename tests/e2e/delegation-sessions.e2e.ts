@@ -283,9 +283,14 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["one", "two", "three"]);
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-session-order"))).toBeNull();
 
-  const threeCard = list.locator('.card[data-session-order-machine=""][data-session-order-id="three-id"] .card-open');
-  await threeCard.focus();
+  const threeRow = list.locator('.card[data-session-order-machine=""][data-session-order-id="three-id"]');
+  // The names stay identical across this async refresh; wait for its new rendered data.
+  await expect(threeRow).toContainText("changed since review");
+  const threeCard = threeRow.locator(".card-open");
+  await threeCard.focus(); await expect(threeCard).toBeFocused();
   await page.keyboard.press("Alt+ArrowUp");
+  await expect.poll(cardNames).toEqual(["one", "three", "two"]);
+  await expect(threeCard).toBeFocused();
   await page.keyboard.press("Alt+ArrowUp");
   await expect.poll(cardNames).toEqual(["three", "one", "two"]);
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-session-order") ?? "null"))).toEqual({
