@@ -33,7 +33,6 @@ import type { OrderedResizeSettlement } from "./ordered-resize";
 import type { SessionInspectorTarget } from "./session-inspector";
 import {
   applyTerminalLayoutGeometry,
-  clearTerminalLayoutGeometry,
   nearestPaneInDirection,
   TerminalLayoutRegistry,
 } from "./terminal-layout-registry";
@@ -229,8 +228,8 @@ function appliedGeometry(surface: GridSurface): AppliedTerminalGeometry | null {
   return surface === "manual" ? manualAppliedGeometry : delegationAppliedGeometry;
 }
 
-/** Existing CSS cardinalities are the host's equal-grid built-in, not the SDK's generic helper. */
-function existingGridGeometry(paneIds: readonly string[], surface: GridSurface): TerminalLayout {
+/** The host equal-grid policy is authoritative for both rendered tracks and arrow navigation. */
+function hostGridGeometry(paneIds: readonly string[], surface: GridSurface): TerminalLayout {
   const count = paneIds.length;
   const tracks = (length: number) => Array.from({ length: Math.max(1, length) }, () => ({ size: 1 }));
   const placement = (paneId: string, row: number, column: number, rowSpan?: number, columnSpan?: number) => ({ paneId, row, column, rowSpan, columnSpan });
@@ -248,6 +247,20 @@ function visibleGridSessions(sessions: readonly GridSession[]): GridSession[] {
   return sessions.filter(session => !session._collapsed && !!session._cellElement);
 }
 
+/** Apply host geometry even during a zero-size mount; CSS used to supply this initial state. */
+function applyHostGridGeometry(container: HTMLElement, panes: readonly { readonly id: string; readonly element: HTMLElement }[], layout: TerminalLayout): void {
+  const tracks = (values: readonly { readonly size: number }[]) => values.map(track => `minmax(0, ${track.size}fr)`).join(" ");
+  container.style.gridTemplateRows = tracks(layout.rows);
+  container.style.gridTemplateColumns = tracks(layout.columns);
+  const byId = new Map(panes.map(pane => [pane.id, pane.element]));
+  for (const placement of layout.placements) {
+    const element = byId.get(placement.paneId);
+    if (!element) continue;
+    element.style.gridRow = `${placement.row + 1} / span ${placement.rowSpan ?? 1}`;
+    element.style.gridColumn = `${placement.column + 1} / span ${placement.columnSpan ?? 1}`;
+  }
+}
+
 function applyTerminalGeometry(container: HTMLElement | null, sessions: readonly GridSession[], focusIndex: number, surface: GridSurface): AppliedTerminalGeometry | null {
   if (!container || !workspaceTerminalLayouts || sessions.length === 0) return null;
   const visible = visibleGridSessions(sessions);
@@ -255,11 +268,21 @@ function applyTerminalGeometry(container: HTMLElement | null, sessions: readonly
   const panes = visible.map(session => ({ id: workspacePaneId(session), element: session._cellElement! }));
   const focused = sessions[focusIndex];
   const selectedPaneId = focused && visible.includes(focused) ? workspacePaneId(focused) : panes[0]!.id;
-  const layout = workspaceTerminalLayouts.selectedId === "equal-grid"
-    ? existingGridGeometry(panes.map(pane => pane.id), surface)
+  const equalGrid = workspaceTerminalLayouts.selectedId === "equal-grid";
+  const layout = equalGrid
+    ? hostGridGeometry(panes.map(pane => pane.id), surface)
     : workspaceTerminalLayouts.arrange(panes.map(pane => pane.id), selectedPaneId, { width: container.clientWidth, height: container.clientHeight });
-  if (workspaceTerminalLayouts.selectedId === "equal-grid") clearTerminalLayoutGeometry(container, panes);
+  // Equal-grid rendering uses the exact same host layout as navigation. The
+  // delegation policy keeps its historical 220px rows and scroll recovery;
+  // extension layouts retain the generic registry renderer.
+  if (equalGrid) applyHostGridGeometry(container, panes, layout);
   else applyTerminalLayoutGeometry(container, panes, layout);
+  if (equalGrid && surface === "delegation" && panes.length >= 5) {
+    container.style.gridTemplateRows = `repeat(${layout.rows.length}, minmax(220px, 1fr))`;
+    container.style.overflow = "auto";
+  } else {
+    container.style.overflow = "";
+  }
   const geometry = { paneIds: panes.map(pane => pane.id), layout };
   setAppliedGeometry(surface, geometry);
   return geometry;

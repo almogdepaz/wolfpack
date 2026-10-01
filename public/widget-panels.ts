@@ -41,6 +41,8 @@ export class WidgetPanels {
   private documentStatus: (id: string) => string | null = () => null;
   private areasKey = "";
   private rendering = false;
+  private renderPending = false;
+  private presentationRevision = 0;
   private selecting = false;
   // Peeking never changes the saved collapsed state or the shell's occupied tracks.
   private peekArea: WidgetArea | null = null;
@@ -205,7 +207,8 @@ export class WidgetPanels {
     const previous = this.presentation;
     if (previous.visible === next.visible && previous.desktop === next.desktop && previous.focusArea === next.focusArea) return false;
     if (previous.desktop !== next.desktop) this.mobileSelection = null;
-    this.clearPeek(); this.presentation = next;
+    this.clearPeek(); this.presentation = next; this.presentationRevision++;
+    if (this.rendering) this.renderPending = true;
     this.render();
     return true;
   }
@@ -324,58 +327,80 @@ export class WidgetPanels {
     return { node, header, title, tabs, buttons: new Map(), order: [], full, pin, collapse, status, placeholder, rail };
   }
   private render(): void {
-    if (this.rendering || this.selecting) return;
+    if (this.selecting) return;
+    if (this.rendering) { this.renderPending = true; return; }
     this.rendering = true;
     try {
-      const ids = this.ids();
+      const available = this.panelEntries(), includingHidden = this.panelEntries(true);
+      const ids = available.map(entry => entry.id);
+      // WidgetLayout resolves all placements as one mapping; do not rebuild it
+      // per panel while rendering a stable presentation.
+      const resolvedAreas = this.options.layout.areasFor(ids);
+      const areaFor = (id: string): WidgetArea => resolvedAreas[id] ?? this.options.layout.area(id);
       if (this.presentation.desktop) for (const area of WIDGET_AREAS) {
-        if (!ids.some(id => id === this.active[area] && this.area(id) === area)) delete this.active[area];
+        if (!ids.some(id => id === this.active[area] && areaFor(id) === area)) delete this.active[area];
         // Built-ins never wait for an extension catalog and never use the SDK registry.
         if (!this.active[area]) {
-          const saved = this.options.layout.selection(area, ids);
-          const retained = saved && this.mounted(saved) ? saved : ids.find(id => isNativePanel(id) && this.area(id) === area);
+          const saved = this.options.layout.selection(area, ids, resolvedAreas);
+          const retained = saved && this.mounted(saved) ? saved : ids.find(id => isNativePanel(id) && areaFor(id) === area);
           if (retained) this.active[area] = retained;
         }
       }
-      const areas = this.occupiedAreas();
-      const collapsedAreas = this.presentation.desktop ? areas.filter(area => this.minimized(area)) : [];
-      if (this.peekArea && !this.canPeek(this.peekArea)) this.clearPeek();
+      const areas = WIDGET_AREAS.filter(area => ids.some(id => areaFor(id) === area));
+      if (!this.presentation.desktop && !this.entries.length && this.presentation.visible && !areas.includes(this.options.layout.area(""))) areas.push(this.options.layout.area(""));
+      const collapsedAreas = this.presentation.desktop ? areas.filter(area => {
+        const members = ids.filter(id => areaFor(id) === area);
+        return members.length > 0 && members.every(id => this.collapsed(id));
+      }) : [];
+      const canPeek = (area: WidgetArea) => area !== "main" && this.presentation.desktop && this.presentation.visible && !this.presentation.focusArea && collapsedAreas.includes(area);
+      if (this.peekArea && !canPeek(this.peekArea)) this.clearPeek();
+      const peeking = (area: WidgetArea) => this.peekArea === area && canPeek(area);
+      const expanded = (area: WidgetArea) => peeking(area) || this.presentation.focusArea === area;
       const key = `${areas.join(",")}/${collapsedAreas.join(",")}`;
+      const revision = this.presentationRevision;
       if (key !== this.areasKey) { this.areasKey = key; this.options.onAreasChange?.(areas, collapsedAreas); }
-      for (const [id, slot] of this.slots) slot.dataset.widgetArea = this.area(id);
-      const visibleIds = this.visibleIds();
+      // The shell may synchronously call setPresentation from onAreasChange.
+      // Never consume visibility derived before that callback; a queued render
+      // derives one coherent snapshot from the settled presentation instead.
+      if (revision !== this.presentationRevision) return;
+      const visibleAreas = this.presentation.focusArea ? [areas.includes(this.presentation.focusArea) ? this.presentation.focusArea : areas[0]!] : areas;
+      const visibleIds = !this.presentation.desktop
+        ? this.presentation.visible && this.mobileSelection && this.slots.has(this.mobileSelection) ? [this.mobileSelection] : []
+        : visibleAreas.flatMap(area => this.active[area] && (!this.collapsed(this.active[area]!) || expanded(area)) && ids.includes(this.active[area]!) && this.mounted(this.active[area]!) ? [this.active[area]!] : []);
+      const mobileArea = this.mobileSelection ? areaFor(this.mobileSelection) : areas[0] ?? this.options.layout.area(this.entries[0]?.id ?? "");
+      for (const [id, slot] of this.slots) slot.dataset.widgetArea = areaFor(id);
       this.options.registry.setVisibleIds(visibleIds.filter(id => !isNativePanel(id)));
       for (const [id, slot] of this.slots) {
-        const collapsed = this.collapsed(id) && !this.expanded(this.area(id));
-        slot.dataset.peek = String(this.peeking(this.area(id)) && this.active[this.area(id)] === id);
+        const area = areaFor(id);
+        const collapsed = this.collapsed(id) && !expanded(area);
+        slot.dataset.peek = String(peeking(area) && this.active[area] === id);
         slot.dataset.collapsed = String(collapsed);
         const body = slot.querySelector<HTMLElement>(".widget-content");
         if (body) body.hidden = collapsed;
-        const showCollapsed = collapsed && this.active[this.area(id)] === id && this.presentation.visible && this.visibleAreas().includes(this.area(id));
+        const showCollapsed = collapsed && this.active[area] === id && this.presentation.visible && visibleAreas.includes(area);
         slot.hidden = !visibleIds.includes(id) && !showCollapsed;
       }
       for (const panel of this.options.nativePanels ?? []) {
-        panel.element.dataset.widgetArea = this.area(panel.id);
+        panel.element.dataset.widgetArea = areaFor(panel.id);
         const hidden = this.presentation.desktop && this.nativeIds.includes(panel.id) && !visibleIds.includes(panel.id);
         if (panel.element.hidden !== hidden) { panel.element.hidden = hidden; this.options.onGeometryChange?.(); }
       }
-      const mobileArea = this.mobileSelection ? this.area(this.mobileSelection) : areas[0] ?? this.options.layout.area(this.entries[0]?.id ?? "");
       for (const area of WIDGET_AREAS) {
         const chrome = this.chrome.get(area)!;
-        if (areas.includes(area) || this.entries.some(entry => this.options.layout.area(entry.id) === area)) { if (!chrome.placeholder.parentElement) this.options.container.append(chrome.placeholder); }
+        if (areas.includes(area) || this.entries.some(entry => areaFor(entry.id) === area)) { if (!chrome.placeholder.parentElement) this.options.container.append(chrome.placeholder); }
         else chrome.placeholder.remove();
         const selected = this.presentation.desktop ? this.active[area] : area === mobileArea ? this.mobileSelection : null;
         const target = selected ? this.native(selected)?.element ?? this.slots.get(selected) ?? chrome.placeholder : chrome.placeholder;
         const focus = document.activeElement as HTMLElement | null;
         const hadFocus = focus && (chrome.node.contains(focus) || chrome.rail.contains(focus));
-        const pool = this.panelEntries(!selected || !isNativePanel(selected));
-        const entries = this.presentation.desktop ? pool.filter(entry => this.area(entry.id) === area) : area === mobileArea ? pool : [];
+        const pool = !selected || !isNativePanel(selected) ? includingHidden : available;
+        const entries = this.presentation.desktop ? pool.filter(entry => areaFor(entry.id) === area) : area === mobileArea ? pool : [];
         if (selected && isNativePanel(selected) && entries.length === 1 && !this.options.layout.diagnostic) chrome.node.remove();
         else if (chrome.node.parentElement !== target) { target.prepend(chrome.node); if (hadFocus) focus.focus({ preventScroll: true }); }
-        chrome.placeholder.hidden = target !== chrome.placeholder || !this.presentation.visible || (this.presentation.desktop && this.closed) || (this.presentation.desktop ? !this.visibleAreas().includes(area) : area !== mobileArea);
+        chrome.placeholder.hidden = target !== chrome.placeholder || !this.presentation.visible || (this.presentation.desktop && this.closed) || (this.presentation.desktop ? !visibleAreas.includes(area) : area !== mobileArea);
         const entry = entries.find(entry => entry.id === selected);
-        const collapsed = collapsedAreas.includes(area) && !this.expanded(area);
-        target.dataset.peek = String(this.peeking(area));
+        const collapsed = collapsedAreas.includes(area) && !expanded(area);
+        target.dataset.peek = String(peeking(area));
         target.dataset.collapsed = String(collapsed);
         chrome.header.hidden = (!!selected && isNativePanel(selected)) || collapsed;
         chrome.title.textContent = `⠿ ${entry?.title ?? "Widgets"}`;
@@ -384,7 +409,7 @@ export class WidgetPanels {
         chrome.title.setAttribute("aria-label", `Move ${entry?.title ?? "Widgets"}`);
         chrome.title.title = `Drag ${entry?.title ?? "Widgets"} to dock`;
         chrome.full.hidden = !this.presentation.desktop || (!!selected && isNativePanel(selected));
-        chrome.pin.hidden = !this.peeking(area);
+        chrome.pin.hidden = !peeking(area);
         chrome.pin.setAttribute("aria-label", chrome.pin.title = `Pin ${entry?.title ?? "Widgets"}`);
         chrome.collapse.setAttribute("aria-label", chrome.collapse.title = `Collapse ${entry?.title ?? "Widgets"}`);
         chrome.full.setAttribute("aria-label", chrome.full.title = this.presentation.focusArea ? "Restore workspace" : "Context full view");
@@ -393,7 +418,7 @@ export class WidgetPanels {
         // Native headers need a grip, not empty SDK status/tab owners.
         if (selected && isNativePanel(selected) && !chrome.status.textContent) chrome.status.remove();
         else if (!chrome.status.parentElement) chrome.node.append(chrome.status);
-        const peek = this.peeking(area);
+        const peek = peeking(area);
         chrome.rail.hidden = !peek;
         if (peek) {
           // Keep the hit targets stationary; only host chrome moves, never widget content.
@@ -425,7 +450,7 @@ export class WidgetPanels {
             chrome.buttons.set(item.id, button);
           }
           button.textContent = item.title;
-          button.setAttribute("aria-selected", String(item.id === selected && (!this.collapsed(item.id) || this.expanded(area))));
+          button.setAttribute("aria-selected", String(item.id === selected && (!this.collapsed(item.id) || expanded(area))));
           if (this.native(item.id)) button.setAttribute("aria-controls", this.native(item.id)!.element.id);
           else if (this.slots.has(item.id)) button.setAttribute("aria-controls", `widget-view-${encodeURIComponent(item.id)}`);
           else button.removeAttribute("aria-controls");
@@ -434,6 +459,9 @@ export class WidgetPanels {
         }
         if (hadFocus && focus.isConnected && !focus.closest("[hidden]") && document.activeElement !== focus) focus.focus({ preventScroll: true });
       }
-    } finally { this.rendering = false; }
+    } finally {
+      this.rendering = false;
+      if (this.renderPending) { this.renderPending = false; this.render(); }
+    }
   }
 }

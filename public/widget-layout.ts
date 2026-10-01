@@ -91,8 +91,7 @@ export class WidgetLayout {
     this.value = { ...this.value, defaultArea: area };
     this.persist();
   }
-  selection(area: WidgetArea, available: readonly string[]): string | null {
-    const areas = this.areasFor(available);
+  selection(area: WidgetArea, available: readonly string[], areas: Readonly<Record<string, WidgetArea>> = this.areasFor(available)): string | null {
     const members = available.filter(id => areas[id] === area);
     const saved = this.value.selected[area];
     return saved && members.includes(saved) ? saved : members.length === 1 ? members[0]! : null;

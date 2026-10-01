@@ -31,7 +31,7 @@ export interface ExtensionHostOptions {
 }
 
 interface LoadedPackage { readonly fingerprint: string; readonly cleanup: (options?: { readonly preserveLayoutPreference?: boolean }) => void; }
-interface ViewOwner { readonly extension: ExtensionCatalogInstallation; readonly unregister: () => void; }
+interface ViewOwner { readonly extension: ExtensionCatalogInstallation; }
 type DocumentPollState = "fresh" | "stale" | "paused" | "error";
 
 type JsonRecord = Record<string, unknown>;
@@ -91,12 +91,13 @@ export class ExtensionHost {
   /** Subscriber counts by exact document key/view: hidden views must not keep another key polling. */
   private readonly pollerViewCounts = new Map<string, Map<string, number>>();
   private readonly pollerReaderViewCounts = new Map<string, Map<string, number>>();
-  private readonly viewPollerKeys = new Map<string, Set<string>>();
+
   /** Document keys observed by each mounted view, including one-shot reads. */
   private readonly viewDocumentKeys = new Map<string, Set<string>>();
   private readonly visibleViews = new Set<string>();
   private readonly documentStates = new Map<string, DocumentPollState>();
   private generation = 0;
+  private catalogOperation: { readonly scope: SelectedExtensionScope; readonly generation: number; readonly controller: AbortController; readonly promise: Promise<void> } | null = null;
   private currentScope: SelectedExtensionScope | null = null;
   private currentInstallationId: string | null = null;
   private catalog: ExtensionCatalogEnvelope | null = null;
@@ -127,55 +128,81 @@ export class ExtensionHost {
 
   async refresh(): Promise<void> {
     if (this.disposed) return;
-    const generation = ++this.generation;
-    this.catalog = null;
     const scope = this.options.scope();
-    const previousScope = this.currentScope;
-    if (previousScope?.sessionId !== scope?.sessionId) {
-      // Exact document/view scope changes immediately release their mounted and
-      // polling resources, but installed package/layout registrations belong to
-      // the catalog installation and remain stable across ordinary pane focus.
+    const sameScope = this.currentScope?.sessionId === scope?.sessionId && this.currentScope?.unavailable === scope?.unavailable;
+    // Scope teardown is synchronous. Catalog acquisition is deliberately a
+    // separate operation so repeated transition notifications cannot leave old
+    // views alive or start duplicate fetches.
+    if (!sameScope) {
+      ++this.generation;
+      this.catalogOperation?.controller.abort();
+      this.catalogOperation = null;
+      this.catalog = null;
       this.registry.setScope(null);
       this.cleanupScopeResources();
     }
     this.currentScope = scope;
-    if (!scope || !scope.sessionId || scope.unavailable) {
-      this.registry.setScope(null);
-      this.cleanupScopeResources();
+    if (!scope?.sessionId || scope.unavailable) {
       this.render(scope?.unavailable ?? contextScopeHint());
       return;
     }
-    if (this.options.safeMode?.()) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
+    // Re-evaluate safe mode even for an unchanged UUID; it is an immediate
+    // boundary and must abort a shared request before any import can happen.
+    if (this.options.safeMode?.()) {
+      ++this.generation;
+      this.catalogOperation?.controller.abort();
+      this.catalogOperation = null;
+      this.registry.setScope(null);
+      this.cleanupAll();
+      this.render("Safe mode prevents extension loading.");
+      return;
+    }
+    const pending = this.catalogOperation;
+    if (pending && pending.scope.sessionId === scope.sessionId && pending.scope.unavailable === scope.unavailable) {
+      return pending.promise;
+    }
+    const generation = ++this.generation;
+    const controller = new AbortController();
+    const operation = { scope, generation, controller };
+    const promise = this.acquireCatalog(operation);
+    this.catalogOperation = { ...operation, promise };
+    return promise;
+  }
+
+  private async acquireCatalog(operation: { readonly scope: SelectedExtensionScope; readonly generation: number; readonly controller: AbortController }): Promise<void> {
+    const { scope, generation, controller } = operation;
     try {
-      const response = await (this.options.authFetch ?? browserAuthFetch)("/api/extensions", { cache: "no-store" });
+      const response = await (this.options.authFetch ?? browserAuthFetch)("/api/extensions", { cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error(`catalog request failed (${response.status})`);
       const catalog = parseExtensionCatalog(await response.json());
-      if (this.disposed || generation !== this.generation) return;
+      if (this.disposed || controller.signal.aborted || generation !== this.generation || this.currentScope?.sessionId !== scope.sessionId || this.currentScope?.unavailable !== scope.unavailable) return;
+      // Coalesce through the complete transport/body boundary. Package loading
+      // is intentionally not coalesced: a post-catalog refresh revalidates it.
+      if (this.catalogOperation?.controller === controller) this.catalogOperation = null;
       if (catalog.safeMode) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
       const installationId = catalog.installations[0]?.installationId ?? null;
-      // A changed installation owns different trusted registrations. Ordinary
-      // session scope changes were already cleaned above without unregistering
-      // this installation's stable package/layout contributions.
       if (this.currentInstallationId !== installationId) {
         this.registry.setScope(null);
         this.cleanupAll();
       }
       this.currentInstallationId = installationId;
-      this.registry.setScope(installationId ? { installationId, sessionId: scope.sessionId } : null);
+      this.registry.setScope(installationId ? { installationId, sessionId: scope.sessionId! } : null);
       const active = new Set(catalog.installations.filter(item => item.enabled && item.ui).map(item => item.extensionId));
       for (const id of [...this.loaded.keys()]) if (!active.has(id)) this.cleanupPackage(id);
       for (const item of catalog.installations) if (item.enabled && item.ui) await this.load(item, generation);
-      if (generation === this.generation) {
+      if (!controller.signal.aborted && generation === this.generation && this.currentScope?.sessionId === scope.sessionId && this.currentScope?.unavailable === scope.unavailable) {
         this.catalog = catalog;
         try { this.options.onCatalogReady?.(); } catch {}
         this.render();
       }
     } catch {
-      if (generation === this.generation) {
+      if (!controller.signal.aborted && generation === this.generation && this.currentScope?.sessionId === scope.sessionId && this.currentScope?.unavailable === scope.unavailable) {
         this.registry.setScope(null);
         this.cleanupScopeResources();
         this.render("Extension catalog unavailable for the selected scope.");
       }
+    } finally {
+      if (this.catalogOperation?.controller === controller) this.catalogOperation = null;
     }
   }
 
@@ -224,7 +251,7 @@ export class ExtensionHost {
     this.pausePollers();
     return true;
   }
-  dispose(): void { if (this.disposed) return; this.disposed = true; ++this.generation; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(true); this.panels.dispose(); this.registry.dispose(); }
+  dispose(): void { if (this.disposed) return; this.disposed = true; ++this.generation; this.catalogOperation?.controller.abort(); this.catalogOperation = null; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(true); this.panels.dispose(); this.registry.dispose(); }
 
   private async load(item: ExtensionCatalogInstallation, generation: number): Promise<void> {
     const existing = this.loaded.get(item.extensionId);
@@ -261,7 +288,7 @@ export class ExtensionHost {
           requireActiveRegistration();
           const viewId = gate.register("context-view", contribution.id).qualifiedId;
           const unregister = this.registry.register(viewId, contribution);
-          this.owners.set(viewId, { extension: item, unregister });
+          this.owners.set(viewId, { extension: item });
           cleanups.push(() => { this.owners.delete(viewId); unregister(); });
         },
         registerTerminalLayout: contribution => {
@@ -354,9 +381,6 @@ export class ExtensionHost {
     const counts = this.pollerViewCounts.get(key) ?? new Map<string, number>();
     counts.set(viewId, (counts.get(viewId) ?? 0) + 1);
     this.pollerViewCounts.set(key, counts);
-    const keys = this.viewPollerKeys.get(viewId) ?? new Set<string>();
-    keys.add(key);
-    this.viewPollerKeys.set(viewId, keys);
     this.pausePoller(key);
     return poller;
   }
@@ -430,9 +454,6 @@ export class ExtensionHost {
       if (remainingForView > 0) counts.set(viewId, remainingForView); else counts.delete(viewId);
       if (counts.size === 0) this.pollerViewCounts.delete(key);
     }
-    const keys = this.viewPollerKeys.get(viewId);
-    if (remainingForView === 0) keys?.delete(key);
-    if (keys?.size === 0) this.viewPollerKeys.delete(viewId);
     this.releasePollerIfUnowned(key);
   }
   private releaseViewDocuments(viewId: string): void {
@@ -455,7 +476,7 @@ export class ExtensionHost {
   private cleanupPackage(extensionId: string, preserveLayoutPreference = false): void { const loaded = this.loaded.get(extensionId); if (!loaded) return; this.loaded.delete(extensionId); loaded.cleanup({ preserveLayoutPreference }); }
   private cleanupScopeResources(): void {
     for (const poller of this.pollers.values()) poller.dispose();
-    this.pollers.clear(); this.pollerViewCounts.clear(); this.pollerReaderViewCounts.clear(); this.viewPollerKeys.clear(); this.viewDocumentKeys.clear(); this.visibleViews.clear(); this.documentStates.clear();
+    this.pollers.clear(); this.pollerViewCounts.clear(); this.pollerReaderViewCounts.clear(); this.viewDocumentKeys.clear(); this.visibleViews.clear(); this.documentStates.clear();
   }
   private cleanupAll(preserveLayoutPreference = false): void {
     for (const id of [...this.loaded.keys()]) this.cleanupPackage(id, preserveLayoutPreference);

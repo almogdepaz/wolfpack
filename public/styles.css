@@ -1870,12 +1870,6 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
     min-height: 0;
     overflow: auto;
   }
-  #delegation-grid-container.grid-1 { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-  #delegation-grid-container.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); }
-  #delegation-grid-container.grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); }
-  #delegation-grid-container.grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
-  #delegation-grid-container.grid-5,
-  #delegation-grid-container.grid-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: minmax(220px, 1fr); }
   #delegation-grid-container .delegation-grid-cell:first-child {
     border-color: var(--accent-border);
   }
@@ -1907,19 +1901,7 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
   padding: 4px;
   height: auto;
 }
-/* Auto-layout classes set by JS */
-#desktop-grid-container.grid-1 { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
-#desktop-grid-container.grid-2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
-#desktop-grid-container.grid-3 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
-#desktop-grid-container.grid-3 .grid-cell:last-child { grid-column: 1 / -1; }
-#desktop-grid-container.grid-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
-#desktop-grid-container.grid-5 { grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
-#desktop-grid-container.grid-5 .grid-cell:nth-child(1) { grid-column: 1 / 3; }
-#desktop-grid-container.grid-5 .grid-cell:nth-child(2) { grid-column: 3 / 5; }
-#desktop-grid-container.grid-5 .grid-cell:nth-child(3) { grid-column: 5 / 7; }
-#desktop-grid-container.grid-5 .grid-cell:nth-child(4) { grid-column: 1 / 4; }
-#desktop-grid-container.grid-5 .grid-cell:nth-child(5) { grid-column: 4 / 7; }
-#desktop-grid-container.grid-6 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
+/* Host geometry is applied inline from public/app-grid.ts so rendered tracks and navigation share one authority. */
 
 .grid-cell {
   --grid-loading-focus-border: rgba(0,255,65,0.28);

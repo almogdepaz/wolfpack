@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { WidgetPanels } from "../../public/widget-panels.ts";
+import type { ContextViewRegistry } from "../../public/context-view-registry.ts";
 import { ExtensionHost } from "../../public/extension-host.ts";
 import { TerminalLayoutRegistry } from "../../public/terminal-layout-registry.ts";
 import { equalGridLayout } from "../../src/extensions/layout-contract.ts";
@@ -49,6 +51,79 @@ afterEach(() => {
 });
 
 describe("ExtensionHost", () => {
+  test("derives area membership once per render, including native repair and collapsed peek", () => {
+    container = new FakeElement();
+    const layout = new WidgetLayout({ getItem: () => null, setItem() {} });
+    const panels = new WidgetPanels({ container: container as unknown as HTMLElement, layout,
+      registry: { setVisibleIds() {} } as unknown as ContextViewRegistry, onSelect() {},
+      nativePanels: [{ id: ":terminals", title: "Terminals", element: new FakeElement() as unknown as HTMLElement }],
+    });
+    panels.setNativePanels([":terminals"]);
+    const entry = { id: "widgets/one", contribution: { id: "one", title: "One", mount() { return { dispose() {} }; } } };
+    panels.createContainer(entry, new FakeElement() as unknown as HTMLElement, new AbortController().signal);
+    panels.update([entry], "", () => null);
+    const count = spyOn(layout, "areasFor");
+    try {
+      panels.setPresentation({ visible: true, desktop: true, focusArea: "main" });
+      expect(count).toHaveBeenCalledTimes(1);
+      panels.setPresentation({ visible: true, desktop: true, focusArea: null });
+      layout.setWidgetState(entry.id, "collapsed");
+      // Exercise the retained peek render without counting the initiating input action.
+      (panels as any).active.right = entry.id; (panels as any).peekArea = "right";
+      count.mockClear();
+      panels.update([entry], "", () => null);
+      expect(count).toHaveBeenCalledTimes(1);
+    } finally { count.mockRestore(); panels.dispose(); }
+  });
+
+  test("reconciles a removed focused area before applying same-render visibility", () => {
+    container = new FakeElement();
+    const terminals = new FakeElement(), sessions = new FakeElement();
+    let focus: "left" | "main" = "left";
+    const panels = new WidgetPanels({ container: container as unknown as HTMLElement,
+      layout: new WidgetLayout({ getItem: () => null, setItem() {} }),
+      registry: { setVisibleIds() {} } as unknown as ContextViewRegistry, onSelect() {},
+      nativePanels: [{ id: ":terminals", title: "Terminals", element: terminals as unknown as HTMLElement }, { id: ":sessions", title: "Sessions", element: sessions as unknown as HTMLElement }],
+      onAreasChange(areas) { if (!areas.includes(focus)) { focus = "main"; panels.setPresentation({ visible: true, desktop: true, focusArea: focus }); } },
+    });
+    try {
+      panels.setNativePanels([":terminals", ":sessions"]);
+      panels.setPresentation({ visible: true, desktop: true, focusArea: "left" });
+      expect(terminals.hidden).toBe(true);
+      panels.setNativePanels([":terminals"]);
+      expect(String(focus)).toBe("main"); expect(terminals.hidden).toBe(false);
+    } finally { panels.dispose(); }
+  });
+
+  test.each(["scope", "unavailable", "safe-mode", "dispose"] as const)("coalesces a pending catalog body and fences ignored cancellation on %s", async transition => {
+    container = new FakeElement();
+    let scope: { sessionId: string; unavailable?: string } = { sessionId: "22222222-2222-4222-8222-222222222222" };
+    let safeMode = false, requests = 0, imports = 0;
+    const signals: AbortSignal[] = [];
+    let finish!: (value: unknown) => void;
+    let bodyStarted!: () => void;
+    const started = new Promise<void>(resolve => { bodyStarted = resolve; });
+    const host = new ExtensionHost({ container: container as unknown as HTMLElement, scope: () => scope, safeMode: () => safeMode,
+      authFetch: async (_input, options) => {
+        requests++; signals.push(options!.signal as AbortSignal);
+        if (requests > 1) return Response.json({ safeMode: false, installations: [] });
+        return { ok: true, json: () => { bodyStarted(); return new Promise(resolve => { finish = resolve; }); } } as Response;
+      }, bundleLoader: (async () => { imports++; return { default() {} }; }) as never,
+    });
+    try {
+      const first = host.refresh(); await started;
+      const duplicate = host.refresh(); expect(requests).toBe(1);
+      if (transition === "scope") scope = { sessionId: "33333333-3333-4333-8333-333333333333" };
+      if (transition === "unavailable") scope = { ...scope, unavailable: "Remote context unavailable" };
+      if (transition === "safe-mode") safeMode = true;
+      if (transition === "dispose") host.dispose(); else await host.refresh();
+      expect(signals[0]!.aborted).toBe(true);
+      finish({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true, package: { name: "notes", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
+      await Promise.all([first, duplicate]);
+      expect(imports).toBe(0); expect(host.availablePanels).toHaveLength(0);
+      expect(requests).toBe(transition === "scope" ? 2 : 1);
+    } finally { host.dispose(); }
+  });
   test("project Git status binds host scope, validates identity and aborts obsolete or caller-cancelled reads", async () => {
     container = new FakeElement();
     const id = "22222222-2222-4222-8222-222222222222";
@@ -527,18 +602,19 @@ describe("ExtensionHost", () => {
 
   test("drops a late bundle import after disable without disturbing another package", async () => {
     container = new FakeElement();
-    let notesEnabled = true; let resolveNotes!: (value: { default: ExtensionRegistration }) => void;
+    let notesEnabled = true; let resolveNotes!: (value: { default: ExtensionRegistration }) => void; let notesStarted!: () => void;
     const lateNotes = new Promise<{ default: ExtensionRegistration }>(resolve => { resolveNotes = resolve; });
+    const loadingNotes = new Promise<void>(resolve => { notesStarted = resolve; });
     const events: string[] = [];
     const installation = (id: string, enabled: boolean, digest: string) => ({ installationId, extensionId: id, enabled, package: { name: id, version: "1.0.0", digest }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/${id}/${digest}/dist/ui.js`, digest: "b".repeat(64), mime: "text/javascript" as const }, documents: [] });
     const host = new ExtensionHost({
       container: container as unknown as HTMLElement,
       scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
       authFetch: async () => Response.json({ safeMode: false, installations: [installation("notes", notesEnabled, "a".repeat(64)), installation("tasks", true, "c".repeat(64))] }),
-      bundleLoader: (async (url: string) => url.includes("/notes/") ? lateNotes : ({ default: (registration: ExtensionRegistrationHost) => registration.registerContextView({ id: "tab", title: "Tasks", mount: () => ({ dispose: () => events.push("dispose:tasks") }) }) })) as never,
+      bundleLoader: (async (url: string) => { if (url.includes("/notes/")) { notesStarted(); return lateNotes; } return { default: (registration: ExtensionRegistrationHost) => registration.registerContextView({ id: "tab", title: "Tasks", mount: () => ({ dispose: () => events.push("dispose:tasks") }) }) }; }) as never,
     });
     const first = host.refresh();
-    await Promise.resolve();
+    await loadingNotes;
     notesEnabled = false;
     await host.refresh();
     resolveNotes({ default: registration => registration.registerContextView({ id: "late", title: "Late", mount: () => ({ dispose: () => events.push("dispose:notes") }) }) });
@@ -549,6 +625,26 @@ describe("ExtensionHost", () => {
     expect(host.selectedId).toBe("tasks/tab");
     host.dispose();
     expect(events).toEqual(["dispose:tasks"]);
+  });
+
+  test("coalesces duplicate same-scope catalog acquisition but revalidates after it settles", async () => {
+    container = new FakeElement();
+    let calls = 0; let resolve!: (value: Response) => void;
+    const pending = new Promise<Response>(done => { resolve = done; });
+    const host = new ExtensionHost({
+      container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      authFetch: async () => { calls++; return pending; },
+    });
+    try {
+      const first = host.refresh(); await Promise.resolve();
+      const duplicate = host.refresh();
+      expect(calls).toBe(1);
+      resolve(Response.json({ safeMode: false, installations: [] }));
+      await Promise.all([first, duplicate]);
+      await host.refresh();
+      expect(calls).toBe(2);
+    } finally { host.dispose(); }
   });
 
   test("aborts and disposes the old scope before a replacement catalog crosses an async boundary", async () => {

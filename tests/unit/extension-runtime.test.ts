@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import Ajv2020 from "ajv/dist/2020.js";
+import * as fs from "node:fs";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +16,44 @@ afterEach(() => { for (const path of roots.splice(0)) rmSync(path, { recursive: 
 const backend = { async listSessionFacts() { return [{ name: "live", alive: true, identity: { wolfpackSessionId: sessionId } }]; } } as unknown as SessionBackend;
 
 describe("extension runtime integration", () => {
+  test("validates one registry snapshot per synchronous mutation and reads each declaration once", async () => {
+    const base = root(), runtime = new ExtensionRuntime({ root: join(base, "runtime") });
+    await runtime.install({ source: fixture(base), trustBrowserCode: true });
+    const { installation } = await runtime.install({ source: fixture(base, "1.1.0"), trustBrowserCode: true });
+    const registry = spyOn(runtime as any, "registry");
+    try {
+      for (const operation of [() => runtime.setEnabled("fixture", false), () => runtime.rollback("fixture"), () => runtime.remove("fixture")]) {
+        registry.mockClear(); operation(); expect(registry).toHaveBeenCalledTimes(1);
+      }
+    } finally { registry.mockRestore(); }
+    const open = spyOn(fs, "openSync");
+    try {
+      (runtime as any).declarations(installation.snapshot);
+      expect(open.mock.calls.filter(([path]) => path === join(installation.snapshot, "schemas/context.json"))).toHaveLength(1);
+    } finally { open.mockRestore(); }
+  });
+
+  test("catalog/assets never compile, validators reuse verified bytes with bounded retention and tampering still fails", async () => {
+    const base = root(), options = { root: join(base, "runtime") };
+    const { installation } = await new ExtensionRuntime(options).install({ source: fixture(base), trustBrowserCode: true });
+    const runtime = new ExtensionRuntime(options);
+    const compile = spyOn(Ajv2020.prototype, "compile");
+    const key = { installationId: runtime.installationId, scopeSessionId: sessionId, extensionId: "fixture", documentId: "context" };
+    try {
+      runtime.catalog(); runtime.asset("fixture", installation.package.digest, "dist/ui.js");
+      expect(compile).toHaveBeenCalledTimes(0);
+      const first = runtime.schema(key); expect(runtime.schema(key)).toBe(first);
+      expect(compile).toHaveBeenCalledTimes(1);
+      // Cache pressure must not become unbounded retention of admitted schemas.
+      for (let index = 0; index < 33; index++) (runtime as any).validator(Buffer.from(JSON.stringify({ const: index })));
+      expect((runtime as any).validatorCache.size).toBe(32);
+      const evicted = runtime.schema(key); expect(evicted).not.toBe(first);
+      expect(compile).toHaveBeenCalledTimes(35);
+      writeFileSync(join(installation.snapshot, "schemas/context.json"), JSON.stringify({ type: "object" }));
+      expect(() => runtime.schema(key)).toThrow("coherent owned registry");
+      expect(compile).toHaveBeenCalledTimes(35);
+    } finally { compile.mockRestore(); }
+  });
   test("installs immutable local snapshot, only serves manifest UI, and updates/rolls back", async () => {
     const base = root(); const runtime = new ExtensionRuntime({ root: join(base, "runtime") }); const source = fixture(base);
     const first = await runtime.install({ source, trustBrowserCode: true });
@@ -37,6 +77,14 @@ describe("extension runtime integration", () => {
     writeFileSync(join(installed.installation.snapshot, "dist", "ui.js"), "copied bytes changed after admission");
     expect(() => runtime.catalog()).toThrow("coherent owned registry");
   });
+  test("rejects invalid schemas before committing an installation", async () => {
+    const base = root(); const source = fixture(base);
+    writeFileSync(join(source, "schemas", "context.json"), JSON.stringify({ type: "not-a-json-schema-type" }));
+    const runtime = new ExtensionRuntime({ root: join(base, "runtime") });
+    await expect(runtime.install({ source, trustBrowserCode: true })).rejects.toThrow();
+    expect(runtime.catalog().installations).toEqual([]);
+  });
+
   test("qualifies same relative UI asset names by extension and immutable package digest", async () => {
     const base = root(); const runtime = new ExtensionRuntime({ root: join(base, "runtime") });
     const first = await runtime.install({ source: fixture(base, "1.0.0", "one"), trustBrowserCode: true });

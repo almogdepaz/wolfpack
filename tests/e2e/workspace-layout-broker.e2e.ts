@@ -828,6 +828,65 @@ test("real broker desktop keyboard follows the rendered narrow vertical layout",
   await expect(second).toHaveClass(/grid-focused/);
 });
 
+test("short delegation grids retain 220px rows, scrolling and controllers with five or more panes", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop delegation sizing policy");
+  await page.setViewportSize({ width: 1440, height: 400 });
+  const parent = "short-delegation-parent", children = Array.from({ length: 5 }, (_, i) => `short-delegation-child-${i}`);
+  await createShellSession(parent);
+  for (const child of children) await createChildSession(parent, child);
+  let sockets = 0;
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await page.goto(server!.baseUrl); await openSessionFromUi(page, parent, "");
+  const grid = page.locator("#delegation-grid-container"), cells = grid.locator(".grid-cell:not(.collapsed)");
+  await expect(grid.locator(".grid-cell.hydrated")).toHaveCount(6);
+  await expect(grid.locator('canvas')).toHaveCount(6);
+  await grid.locator("canvas").evaluateAll(nodes => { (window as any).__shortDelegationCanvases = nodes; });
+  const attached = sockets;
+  const assertRows = async (count: number) => {
+    await expect(cells).toHaveCount(count);
+    const geometry = await grid.evaluate(node => ({
+      rows: getComputedStyle(node).gridTemplateRows.split(" ").map(parseFloat),
+      overflow: getComputedStyle(node).overflowY, height: node.clientHeight, scroll: node.scrollHeight,
+      panes: [...node.querySelectorAll<HTMLElement>(".grid-cell:not(.collapsed)")].map(cell => cell.getBoundingClientRect().height),
+    }));
+    expect(geometry.rows).toHaveLength(2); expect(geometry.rows.every(row => row >= 220)).toBe(true);
+    expect(geometry.panes.every(height => height >= 220)).toBe(true);
+    expect(geometry.overflow).toBe("auto"); expect(geometry.scroll).toBeGreaterThan(geometry.height);
+    expect(await grid.evaluate(node => { node.scrollTop = node.scrollHeight; return node.scrollTop; })).toBeGreaterThan(0);
+  };
+  await assertRows(6);
+  await page.getByRole("button", { name: `Collapse ${children[0]}`, exact: true }).click();
+  await assertRows(5);
+  await page.getByRole("button", { name: `Expand ${children[0]}`, exact: true }).click();
+  await assertRows(6);
+  expect(await grid.locator("canvas").evaluateAll(nodes => nodes.every((node, index) => node === (window as any).__shortDelegationCanvases[index]))).toBe(true);
+  expect(sockets).toBe(attached);
+});
+
+test("moving the focused widget area from full view reconciles visibility and retains content", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop reentrant focused-area reconciliation");
+  const name = "focused-widget-move"; await createShellSession(name);
+  let sockets = 0;
+  page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
+  await page.goto(server!.baseUrl); await page.locator(".card", { hasText: name }).first().click();
+  const terminal = page.locator("#desktop-terminal-container"), content = page.locator('[data-context-view="test-widgets/view"]');
+  await expect(terminal).toHaveAttribute("data-terminal-load-state", "live"); await expect(content).toBeVisible();
+  await terminal.locator("canvas").evaluate(node => { (window as any).__focusedMoveCanvas = node; });
+  await content.evaluate(node => { (window as any).__focusedMoveContent = node; });
+  const attached = sockets;
+  await page.getByRole("button", { name: "Context full view", exact: true }).click();
+  await expect(page.locator("#workspace-shell")).toHaveAttribute("data-full-view", "context");
+  await expect(terminal).toBeHidden();
+  const grip = page.getByRole("button", { name: "Move Widgets", exact: true });
+  await grip.press("Space"); await grip.press("ArrowDown"); await grip.press("Enter");
+  await expect(page.locator("#workspace-shell")).toHaveAttribute("data-full-view", "none");
+  await expect(content).toBeVisible(); await expect(content.locator("..", {}).locator("..")).toHaveAttribute("data-widget-area", "bottom");
+  await expect(terminal).toBeVisible(); await expect(grip).toBeFocused();
+  expect(await content.evaluate(node => node === (window as any).__focusedMoveContent)).toBe(true);
+  expect(await terminal.locator("canvas").evaluate(node => node === (window as any).__focusedMoveCanvas)).toBe(true);
+  expect(sockets).toBe(attached);
+});
+
 test("real broker delegation collapse retains the child controller and canvas", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop delegation retention contract");
   const parent = "workspace-parent";

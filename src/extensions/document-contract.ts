@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync,
-} from "node:fs";
+import { lstatSync, mkdirSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import { canonicalJson } from "../canonical-json.ts";
 import { writePrivateJsonFile } from "../server/persistence.ts";
 import { boundedCanonicalJson, isPlainJsonObject, type JsonBudget } from "./bounded-json.ts";
+import { readBoundedRegularFile } from "./bounded-file.ts";
 
 export const EXTENSION_DOCUMENT_STORE_VERSION = 1;
 export const EXTENSION_DOCUMENT_LIMITS = {
@@ -256,31 +255,16 @@ export class ExtensionDocumentStore {
   }
   read(key: ExtensionDocumentKey): StoredExtensionDocument | null {
     validateDocumentKey(key);
-    let fd: number | undefined;
     try {
       if (!this.directoryExists()) return null;
-      try { fd = openSync(this.path(key), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+      let bytes: Buffer;
+      try { bytes = readBoundedRegularFile(this.path(key), EXTENSION_DOCUMENT_LIMITS.maxRecordBytes); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
-      const stat = fstatSync(fd);
-      const maximum = EXTENSION_DOCUMENT_LIMITS.maxRecordBytes;
-      if (!stat.isFile() || stat.size > maximum) throw new Error("record is not a bounded regular file");
-      // Read the same descriptor under a hard cap even if a corrupt file grows
-      // after fstat. Do not use a path-based, potentially unbounded readFile().
-      const buffer = Buffer.alloc(stat.size + 1);
-      let length = 0;
-      while (length < buffer.length) {
-        const count = readSync(fd, buffer, length, buffer.length - length, null);
-        if (!count) break;
-        length += count;
-      }
-      if (length !== stat.size) throw new Error("record changed size while being read");
-      const record: unknown = JSON.parse(buffer.subarray(0, length).toString("utf8"));
+      const record: unknown = JSON.parse(bytes.toString("utf8"));
       if (!isRecord(record) || canonicalJson(record.key) !== canonicalJson(key)) throw new Error("record identity/content/receipts are incoherent");
       return record;
     } catch {
       throw new ExtensionDocumentError("STORE_CORRUPT", "extension document cannot be read as a coherent bounded record");
-    } finally {
-      if (fd !== undefined) closeSync(fd);
     }
   }
   private totalUsage(): { documents: number; bytes: number } {
