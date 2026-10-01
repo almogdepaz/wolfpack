@@ -37,6 +37,8 @@ function runCli(args: readonly string[], env: Readonly<Record<string, string>> =
 interface DashboardServiceFixture {
   readonly serviceStartThrows: boolean;
   readonly running: readonly boolean[];
+  readonly port?: number;
+  readonly tailscaleHostname?: string;
 }
 
 function runServiceRestartCli(serviceRestartResult: boolean): CliResult {
@@ -89,7 +91,11 @@ function runDashboard(fixture: DashboardServiceFixture): CliResult {
   const home = mkdtempSync(join(tmpdir(), "wolfpack-cli-dashboard-"));
   const preloadPath = join(home, "service-fixture.ts");
   mkdirSync(join(home, ".wolfpack"), { recursive: true });
-  writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({ devDir: root, port: 18790 }));
+  writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({
+    devDir: root,
+    port: fixture.port ?? 18790,
+    tailscaleHostname: fixture.tailscaleHostname,
+  }));
   writeFileSync(preloadPath, `
     import { mock } from "bun:test";
     const running = ${JSON.stringify(fixture.running)};
@@ -310,6 +316,34 @@ describe("cli help dispatch", () => {
     expect(child.stderr).not.toContain("\x1b[");
     expect(child.stderr).not.toContain("No valid config found");
     expect(child.stderr).not.toContain("Scan to open on your phone");
+  });
+
+  test.each([18790, 24444])("local-only dashboard prints port %p without a QR or phone prompt", (port) => {
+    const child = runDashboard({ serviceStartThrows: false, running: [true, true, true], port });
+
+    expect(child.exitCode, child.stderr).toBe(0);
+    expect(child.stderr).toBe("");
+    expect(child.stdout).not.toMatch(/[▀▄█]/);
+    expect(child.stdout).not.toContain("Scan");
+    expect(child.stdout).not.toContain("Remote:");
+    expect(child.stdout).toContain(`Local: http://localhost:${port}/`);
+    expect(child.stdout).toContain("Open the local URL on this computer; Tailscale is not required for local access.");
+  });
+
+  test.each([18790, 24444])("tailnet dashboard prints both URLs below the QR with local port %p", (port) => {
+    const hostname = "workstation.tailnet.ts.net";
+    const child = runDashboard({ serviceStartThrows: false, running: [true, true, true], port, tailscaleHostname: hostname });
+
+    expect(child.exitCode, child.stderr).toBe(0);
+    expect(child.stderr).toBe("");
+    expect(child.stdout).toContain(`https://${hostname}`);
+    expect(child.stdout).toContain(`http://localhost:${port}/`);
+    const qrEnd = child.stdout.lastIndexOf("▀");
+    expect(qrEnd).toBeGreaterThan(-1);
+    expect(child.stdout.indexOf("Remote:")).toBeGreaterThan(qrEnd);
+    expect(child.stdout.indexOf("Local:")).toBeGreaterThan(child.stdout.indexOf("Remote:"));
+    expect(child.stdout).toContain("You can use either URL on this computer; the Tailnet URL requires Tailscale.");
+    expect(child.stdout).not.toContain("Both URLs work");
   });
 
   test("dashboard service-start diagnostics and retry help use stderr", () => {

@@ -759,6 +759,7 @@ describe("install.sh release binary staging", () => {
     const result = runWithControllingTty(fixtureRoot,
       ["/bin/bash", "-c", 'cat "$1" | bash', "piped-installer", join(process.cwd(), "install.sh")], {
         ...environment,
+        NO_COLOR: "1",
         OSTYPE: "linux-gnu",
         INSTALL_TEST_LOG: fixture.log,
         INSTALL_TEST_CHECKSUMS: fixture.checksums,
@@ -769,6 +770,10 @@ describe("install.sh release binary staging", () => {
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(String(result.stdout)).toContain("Setup complete — next steps:");
+    expect(String(result.stdout)).toContain("Local: http://localhost:24444/");
+    expect(String(result.stdout)).toContain("Open the local URL on this computer; Tailscale is not required for local access.");
+    expect(String(result.stdout)).not.toContain("Scan");
+    expect(String(result.stdout)).not.toMatch(/[▀▄█]/);
     expect(JSON.parse(readFileSync(join(fixture.home, ".wolfpack", "config.json"), "utf-8")).port).toBe(24444);
     expect(readFileSync(join(fixture.installDir, "wolfpack"))).toEqual(readFileSync(server));
     expect(readFileSync(join(fixture.installDir, "wolfpack-broker"))).toEqual(readFileSync(broker));
