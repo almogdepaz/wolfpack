@@ -53,8 +53,11 @@ function runServiceRestartCli(serviceRestartResult: boolean): CliResult {
       serviceStatus: () => {},
       isServiceInstalled: () => true,
       isServiceRunning: () => true,
+      installCandidatePair: () => { throw new Error("unexpected package installation"); },
       updateStableBinary: () => false,
       uninstall: () => {},
+      generatePlist: () => "",
+      generateSystemdUnit: () => "",
     }));
   `);
   try {
@@ -100,6 +103,7 @@ function runDashboard(fixture: DashboardServiceFixture): CliResult {
       serviceStatus: () => {},
       isServiceInstalled: () => true,
       isServiceRunning: () => running[runningCall++] ?? false,
+      installCandidatePair: () => { throw new Error("unexpected package installation"); },
       updateStableBinary: () => false,
       uninstall: () => {},
       generatePlist: () => "",
@@ -311,7 +315,7 @@ describe("cli help dispatch", () => {
   test("dashboard service-start diagnostics and retry help use stderr", () => {
     const child = runDashboard({ serviceStartThrows: true, running: [false] });
 
-    expect(child.exitCode).toBe(0);
+    expect(child.exitCode, child.stderr).toBe(0);
     expect(child.stdout).toContain("WOLFPACK");
     expect(child.stdout).not.toContain("Service startup failed");
     expect(child.stdout).not.toContain("Wolfpack service is not running");
@@ -325,7 +329,7 @@ describe("cli help dispatch", () => {
   test("dashboard restart warning uses stderr without contaminating dashboard output", () => {
     const child = runDashboard({ serviceStartThrows: false, running: [true, false] });
 
-    expect(child.exitCode).toBe(0);
+    expect(child.exitCode, child.stderr).toBe(0);
     expect(child.stdout).toContain("WOLFPACK");
     expect(child.stdout).not.toContain("Service was running but didn't restart.");
     expect(child.stderr).toContain("Service was running but didn't restart.");
@@ -333,10 +337,10 @@ describe("cli help dispatch", () => {
     expect(child.stderr).not.toContain("\x1b[");
   });
 
-  test("service restart exits nonzero when the lifecycle reports failure", () => {
-    const child = runServiceRestartCli(false);
+  test.each([false, true])("service restart exit status reflects lifecycle success %p", (success) => {
+    const child = runServiceRestartCli(success);
 
-    expect(child.exitCode).toBe(1);
+    expect(child.exitCode, child.stderr).toBe(success ? 0 : 1);
   });
 
   test("service help documents the restart-only server option", () => {

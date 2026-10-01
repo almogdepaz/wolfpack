@@ -39,9 +39,12 @@ Choose exactly one initial-assignment mode:
 
 ```bash
 wolfpack agent spawn --project-dir /absolute/worktree --name task-implementation --model "$IMPLEMENTER_MODEL" --task-worker --readiness-timeout-ms 30000 --json
+
+# inspect a target host's effective policy without creating a worker
+wolfpack agent spawn --project-dir /absolute/worktree --task-worker --task-worker-dry-run --json
 ```
 
-`--task-worker` requires Pi and explicit `--project-dir`; it rejects prompts/plans and `--notify-parent`. Success returns opaque `taskEndpoint` only after exact live session identity, canonical root, and relay v2 registration are verified. This is not model/task execution evidence. `TASK_WORKER_PREFLIGHT_FAILED` is before creation; `TASK_WORKER_NOT_READY` retains `createdSession` and cleanup disposition. `cleanup: "unconfirmed"` is not deletion evidence: inspect the returned stable ID before retrying, never resolve a reusable name. Do not silently downgrade to ordinary spawn when readiness is unsupported.
+`--task-worker` requires Pi and explicit `--project-dir`; it rejects prompts/plans and `--notify-parent`. Workers inherit Pi extension discovery by default; the target host may switch to isolated discovery or configure local allowlisted files through its private task-worker policy. Isolated disables discovery but still loads mandatory Pi Tasks and explicitly configured optional files. Use `--task-worker-policy-file <local-json-file>` only for an explicit per-spawn override; it is parsed locally and sent as typed data, never as shell argv. `--task-worker-dry-run --json` returns only redacted effective policy (env key names, never values) and creates no session. Inherit mode leaves Pi project trust intact; do not add `--approve` or assume a trusted project extension has executed. Success returns opaque `taskEndpoint` only after exact live session identity, canonical root, and relay v2 registration are verified. This is not model/task execution evidence. `TASK_WORKER_PREFLIGHT_FAILED` is before creation; `TASK_WORKER_NOT_READY` retains `createdSession` and cleanup disposition. `cleanup: "unconfirmed"` is not deletion evidence: inspect the returned stable ID before retrying, never resolve a reusable name. Do not silently downgrade to ordinary spawn when readiness is unsupported.
 
 Prefer one cohesive implementation handoff per approved PR or phase, not one per issue, commit, or checkpoint.
 

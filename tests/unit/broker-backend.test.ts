@@ -22,6 +22,7 @@ import {
 } from "../../src/server/backend";
 import { sessionIdentityStorePath } from "../../src/server/session-identity";
 import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
+import { SHELL } from "../../src/server/shell";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -482,7 +483,11 @@ describe("BrokerBackend.createSession", () => {
     expect(params.env.flat()).not.toContain(model);
   });
 
-  test("launches task workers with explicit argv resources and no initial prompt", async () => {
+  test.each([
+    [undefined, false],
+    ["inherit", false],
+    ["isolated", true],
+  ] as const)("launches task workers with explicit %s extension policy argv and no initial prompt", async (extensionPolicy, expectsNoExtensions) => {
     const executable = "/opt/homebrew/bin/pi";
     const extension = "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts";
     const model = "openai-codex/gpt-5.6-terra";
@@ -493,15 +498,26 @@ describe("BrokerBackend.createSession", () => {
     await backend.createSession("worker", "/tmp/worktree", "pi", loadSettings, {
       agentKind: "pi",
       model,
-      taskWorker: { executable, extension },
+      taskWorker: { executable, extension, ...(extensionPolicy === undefined ? {} : { extensionPolicy }) },
     });
 
     const create = client.requests.find((request) => request.method === "create_session");
     const params = create?.params as { command: string[]; env: Array<[string, string]> };
-    expect(params.command.slice(3)).toEqual(["wolfpack-agent", executable, extension, model]);
-    expect(params.command[2]).toEndWith('exec "$1" --no-extensions --extension "$2" --model "$3"');
-    expect(params.command[2]).not.toContain(executable);
-    expect(params.command[2]).not.toContain(extension);
+    const workerArgs = [
+      "wolfpack-agent",
+      executable,
+      ...(expectsNoExtensions ? ["--no-extensions"] : []),
+      "--extension",
+      extension,
+      "--model",
+      model,
+    ];
+    const shellCommand = params.command[2];
+    expect(params.command).toEqual([SHELL, "-lic", shellCommand, ...workerArgs]);
+    expect(shellCommand).toContain('exec "$@"');
+    expect(params.command.includes("--no-extensions")).toBe(expectsNoExtensions);
+    expect(shellCommand).not.toContain(executable);
+    expect(shellCommand).not.toContain(extension);
     expect(params.env).toContainEqual(["PI_TASK_WORKER", "1"]);
   });
 
