@@ -89,13 +89,13 @@
   },
   "license": "MIT",
   "dependencies": {
-    "ajv": "8.17.1",
+    "ajv": "8.20.0",
     "ghostty-web": "0.4.0",
     "qrcode-terminal": "^0.12.0",
     "semver": "7.7.2",
-    "tar": "7.4.3",
+    "tar": "7.5.22",
     "ws": "^8.21.0",
-    "yaml": "2.8.2"
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.10.2",

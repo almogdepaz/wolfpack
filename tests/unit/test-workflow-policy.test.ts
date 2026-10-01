@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 type WorkflowStep = {
+  readonly id?: string;
+  readonly if?: string;
   readonly name?: string;
   readonly uses?: string;
   readonly with?: Record<string, unknown>;
@@ -37,6 +39,17 @@ function jobSource(job: WorkflowJob): string {
 function runCommands(job: WorkflowJob): string[] {
   return (job.steps ?? []).flatMap(step => step.run ? [step.run] : []);
 }
+
+describe("pull request homepage diagnostics CI policy", () => {
+  test("uploads diagnostics only after QA ran, retaining strict missing-artifact checks", () => {
+    const steps = requireJob("test").steps ?? [];
+    const qa = steps.find(step => step.name === "Run homepage quality and resilience QA");
+    const upload = steps.find(step => step.name === "Upload homepage QA diagnostics");
+    expect(qa?.id).toBe("homepage-qa");
+    expect(upload?.if).toBe("always() && steps.homepage-qa.outcome != 'skipped'");
+    expect(upload?.with?.["if-no-files-found"]).toBe("error");
+  });
+});
 
 describe("pull request Ghostty VT behavior CI policy", () => {
   test("uses pinned actions and toolchains without latest in the Ghostty behavior job", () => {

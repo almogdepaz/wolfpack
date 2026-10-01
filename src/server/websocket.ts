@@ -1233,6 +1233,14 @@ function setupNewPtyEntry(
       // requests. It coalesces them instead of also scheduling a post-attach
       // debounce, so the newest request has one authoritative application.
       attachFinalizing = true;
+      // Settling also awaits observer detach after its last geometry check.
+      // Transfer requests received in that gap to the finalizer; otherwise a
+      // different-size ordered request loses its acknowledgement and leaves
+      // the browser's prefill barrier closed indefinitely.
+      attachFinalizationRequest = pendingAttachResizeAck;
+      if (!attachFinalizationRequest && requestedSize.current && !sameSize(requestedSize.current, appliedSize)) {
+        attachFinalizationRequest = { resizeId: undefined, ...requestedSize.current };
+      }
       attachLease = await sendSnapshotPrefill(ctx, appliedSize, prefillMode);
 
       if (!entryStillCurrent(entry, session, ws)) return;

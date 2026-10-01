@@ -8,8 +8,7 @@ let policyPath: string;
 
 async function openTaskWorkerSettings(page: Page): Promise<void> {
   await openSettingsFromUi(page);
-  const agentsSection = page.getByRole("link", { name: "Agents" });
-  if (await agentsSection.isVisible()) await agentsSection.click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await expect(page.getByLabel("Task worker extension discovery")).toBeVisible();
 }
 
@@ -20,8 +19,7 @@ async function returnAndReopenTaskWorkerSettings(page: Page): Promise<void> {
   const expandedSettings = page.locator("#expanded-settings-btn");
   if (await expandedSettings.boundingBox()) await expandedSettings.click();
   else await page.locator("#gear-btn").click();
-  const agentsSection = page.getByRole("link", { name: "Agents" });
-  if (await agentsSection.isVisible()) await agentsSection.click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await expect(page.getByLabel("Task worker extension discovery")).toBeVisible();
 }
 
@@ -38,6 +36,23 @@ test.beforeEach(async ({ page }) => {
   rmSync(policyPath, { force: true });
   await page.goto(server.baseUrl);
   await expect(page.locator(".card").first()).toBeVisible({ timeout: 15_000 });
+});
+
+test("task worker settings waits for Agents navigation readiness", async ({ page }) => {
+  // Exercise a delayed navigation surface, rather than sampling visibility once
+  // and silently skipping the required disclosure-opening click.
+  await page.addStyleTag({ content: `
+    #settings-view.visible #settings-section-nav {
+      animation: settings-nav-readiness 600ms steps(1, end);
+    }
+    @keyframes settings-nav-readiness {
+      from { visibility: hidden; }
+      to { visibility: visible; }
+    }
+  ` });
+  await openTaskWorkerSettings(page);
+  await expect(page.locator("#settings-advanced")).toHaveAttribute("open", "");
+  await expect(page.getByLabel("Task worker extension discovery")).toBeEnabled();
 });
 
 test("task worker extension discovery persists an accessible confirmed server value", async ({ page }) => {

@@ -78,10 +78,11 @@ jobs:
         run: bun run check:bundle-budgets
 
       - name: Run homepage quality and resilience QA
+        id: homepage-qa
         run: bunx playwright test tests/e2e/homepage-install.e2e.ts --project=desktop --project=iphone-se --project=iphone-14
 
       - name: Upload homepage QA diagnostics
-        if: always()
+        if: always() && steps.homepage-qa.outcome != 'skipped'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: homepage-quality-diagnostics
