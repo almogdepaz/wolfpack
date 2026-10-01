@@ -1149,7 +1149,7 @@ mod tests {
     }
 
     fn line_text(line: &crate::protocol::StyledLine) -> String {
-        line.cells.iter().map(|c| c.ch.as_str()).collect()
+        line.cells.iter().map(|c| c.ch.as_ref()).collect()
     }
 
     fn screen_contains(snap: &Snapshot, needle: &str) -> bool {
