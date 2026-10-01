@@ -183,7 +183,7 @@ On first setup, Wolfpack enables `shell` and supported agent CLIs detected on `P
 
 ## what success looks like
 
-A successful setup prints a local URL. When Tailscale is signed in and `tailscale serve` is verified, it also prints a private Tailnet HTTPS URL and QR code. Open the local URL on the host machine, or scan only the verified remote QR code from a trusted Tailnet device.
+A successful setup prints `http://localhost:<configured-port>/` for access on the host machine; Tailscale is not required for local access. When Tailscale is signed in and `tailscale serve` is verified, it prints a remote QR code, followed by the private Tailnet HTTPS URL and the localhost URL. Both URLs work on the host machine. On other devices, use the remote URL or QR code with Tailscale. Without verified remote access, no QR code is shown.
 
 Run the matching diagnosis command after setup:
 

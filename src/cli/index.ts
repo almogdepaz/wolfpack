@@ -4,7 +4,7 @@
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { printQR } from "../qr.js";
+import { printAccessUrls } from "./access-output.js";
 import { print, printError, printJson, bold, dim, red, yellow, WOLF } from "./formatting.js";
 import pkg from "../../package.json";
 import {
@@ -231,12 +231,7 @@ async function start() {
   print(dim(WOLF));
   print(bold("  WOLFPACK"));
   print("");
-  print(`  Local:    ${dim(`http://localhost:${config.port}/`)}`);
-  if (url) print(`  Remote:   ${dim(url)}`);
-  print("");
-  print(dim("  Scan to open on your phone:"));
-  print("");
-  printQR(url ?? `http://localhost:${config.port}/`);
+  printAccessUrls(config.port, url);
   print("");
 }
 

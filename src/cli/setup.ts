@@ -5,7 +5,7 @@ import { execSync, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { printQR } from "../qr.js";
+import { printAccessUrls } from "./access-output.js";
 import { print, bold, green, red, dim, yellow, WOLF } from "./formatting.js";
 import {
   WOLFPACK_DIR,
@@ -51,19 +51,11 @@ function printSetupCompletion(options: {
   readonly serviceRunning: boolean;
   readonly detectedProviders: readonly OpenableHarness[];
 }): void {
-  const localUrl = `http://localhost:${options.port}/`;
   const firstProvider = options.detectedProviders[0];
 
   print("");
   print(green("  Setup complete — next steps:"));
-  print(`  Local: ${bold(localUrl)}`);
-  if (options.remoteUrl) {
-    print(`  Remote: ${bold(options.remoteUrl)}`);
-    print("");
-    print(dim("  Scan the verified remote URL to open Wolfpack on your phone:"));
-    print("");
-    printQR(options.remoteUrl);
-  }
+  printAccessUrls(options.port, options.remoteUrl);
   const serviceNextStep = options.serviceRunning
     ? "  Service: running (check with 'wolfpack service status')."
     : options.serviceInstalled
