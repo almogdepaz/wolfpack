@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -67,7 +68,8 @@ pub struct CellAttrs {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StyledCell {
-    pub ch: String,
+    // Materialization borrows only static space/empty glyphs; other native text is owned.
+    pub ch: Cow<'static, str>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub attrs: CellAttrs,
 }

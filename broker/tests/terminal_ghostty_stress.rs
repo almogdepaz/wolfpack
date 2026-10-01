@@ -17,7 +17,7 @@ fn cell_text(snapshot: &Snapshot, row: usize, cols: std::ops::Range<usize>) -> S
         .iter()
         .skip(cols.start)
         .take(cols.end - cols.start)
-        .map(|cell| cell.ch.as_str())
+        .map(|cell| cell.ch.as_ref())
         .collect()
 }
 
