@@ -10,6 +10,6 @@ export function printAccessUrls(port: number, remoteUrl: string | null): void {
   }
   print(`  Local: ${bold(`http://localhost:${port}/`)}`);
   print(dim(remoteUrl
-    ? "  Both URLs work on this computer. On other devices, use the remote URL with Tailscale."
+    ? "  You can use either URL on this computer; the Tailnet URL requires Tailscale. On other devices, use the remote URL with Tailscale."
     : "  Open the local URL on this computer; Tailscale is not required for local access."));
 }

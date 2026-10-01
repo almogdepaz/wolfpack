@@ -278,7 +278,8 @@ describe("first-run setup", () => {
     expect(result.stdout).toContain(`Remote: https://${hostname}`);
     expect(result.stdout).toContain(`Local: http://localhost:${port}/`);
     expect(result.stdout).toContain("Scan the verified remote URL to open Wolfpack on your phone:");
-    expect(result.stdout).toContain("Both URLs work on this computer. On other devices, use the remote URL with Tailscale.");
+    expect(result.stdout).toContain("You can use either URL on this computer; the Tailnet URL requires Tailscale.");
+    expect(result.stdout).not.toContain("Both URLs work");
     const qrEnd = result.stdout.lastIndexOf("▀");
     expect(qrEnd).toBeGreaterThan(-1);
     expect(result.stdout.indexOf(`Remote: https://${hostname}`)).toBeGreaterThan(qrEnd);

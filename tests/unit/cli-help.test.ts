@@ -342,7 +342,8 @@ describe("cli help dispatch", () => {
     expect(qrEnd).toBeGreaterThan(-1);
     expect(child.stdout.indexOf("Remote:")).toBeGreaterThan(qrEnd);
     expect(child.stdout.indexOf("Local:")).toBeGreaterThan(child.stdout.indexOf("Remote:"));
-    expect(child.stdout).toContain("Both URLs work on this computer. On other devices, use the remote URL with Tailscale.");
+    expect(child.stdout).toContain("You can use either URL on this computer; the Tailnet URL requires Tailscale.");
+    expect(child.stdout).not.toContain("Both URLs work");
   });
 
   test("dashboard service-start diagnostics and retry help use stderr", () => {
