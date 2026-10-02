@@ -13,79 +13,11 @@ import { createOwnedTestServerHome, removeOwnedTestServerHome, type OwnedTestSer
 test.skip(skipIfNoBroker.condition, skipIfNoBroker.reason);
 
 const ROOT = join(import.meta.dirname, "..", "..");
-
-test("Changes package reads only its local project and pauses when collapsed", async ({ page }, testInfo) => {
-  test.skip(!["desktop", "iphone-14"].includes(testInfo.project.name), "desktop and mobile widget lifecycle");
-  const project = join(root, "dev", PROJECT), other = join(root, "dev", "changes-other");
-  mkdirSync(other, { recursive: true });
-  const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "-C", cwd, ...args], {
-    env: { ...environment(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.invalid", GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.invalid" }, timeout: 2000,
-  });
-  git(project, "init", "--initial-branch=main");
-  mkdirSync(join(project, "src"), { recursive: true });
-  writeFileSync(join(project, "src", "tracked.ts"), "initial\n"); writeFileSync(join(project, "deleted.ts"), "delete me\n");
-  git(project, "add", "."); git(project, "commit", "-m", "fixture");
-  writeFileSync(join(project, "added.ts"), "staged\n"); git(project, "add", "added.ts");
-  writeFileSync(join(project, "src", "tracked.ts"), "unstaged\n"); rmSync(join(project, "deleted.ts"));
-  writeFileSync(join(project, "<img>.ts"), "literal filename\n");
-  const index = readFileSync(join(project, ".git", "index"));
-  runCli(["extensions", "install", join(ROOT, "examples", "extensions", "changes"), "--trust-browser-code"]);
-  try {
-    const response = await fetch(`${server!.baseUrl}/api/create`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token()}` }, body: JSON.stringify({ projectDir: other, cmd: "shell", sessionName: "changes-other-scope" }) });
-    expect(response.ok).toBe(true); await refreshSessionIds();
-    await authorize(page);
-    await page.route("**/api/extensions", async route => {
-      const response = await route.fetch(), catalog = await response.json();
-      await route.fulfill({ response, json: { ...catalog, installations: catalog.installations.filter((item: { extensionId: string }) => item.extensionId === "changes") } });
-    });
-    const requests: string[] = [], sockets: string[] = [];
-    page.on("request", request => { if (request.url().includes("/api/extensions/project/git-status/")) requests.push(request.url()); });
-    page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets.push(socket.url()); });
-    // Install before the widget creates timers; replacing native timers later loses them.
-    await page.clock.install();
-    await page.goto(server!.baseUrl); await openSession(page, SESSION_A); await showWidgets(page);
-    const widget = page.getByRole("region", { name: "Git changes", exact: true });
-    await expect(widget.getByRole("list", { name: "Staged files", exact: true })).toContainText("added.ts");
-    await expect(widget.getByRole("list", { name: "Unstaged files", exact: true })).toContainText("tracked.ts");
-    await expect(widget.getByRole("list", { name: "Unstaged files", exact: true })).toContainText("deleted.ts");
-    await expect(widget.getByRole("list", { name: "Untracked files", exact: true })).toContainText("<img>.ts");
-    await expect(widget.locator("img")).toHaveCount(0); await expect(widget.locator(".branch")).toHaveText("main");
-    await expect(widget.locator(".change-count")).toHaveText("4 changed files");
-    await expect(widget.getByRole("list", { name: "Unstaged files", exact: true }).locator(".directory")).toHaveText("src");
-    await expect(page.getByRole("button", { name: "Close Changes", exact: true })).toHaveCount(0);
-    expect(requests.every(url => new URL(url).searchParams.get("session") === sessionIds.get(SESSION_A))).toBe(true);
-    await page.screenshot({ path: testInfo.outputPath("changes-widget.png"), animations: "disabled" });
-    writeFileSync(join(project, "manual-refresh.ts"), "new\n");
-    await widget.getByRole("button", { name: "Refresh Git status" }).click();
-    await expect(widget.getByRole("list", { name: "Untracked files", exact: true })).toContainText("manual-refresh.ts");
-    expect(readFileSync(join(project, ".git", "index"))).toEqual(index);
-    const canvas = page.locator("#desktop-terminal-container canvas"); await canvas.evaluate(node => { (window as any).__changesCanvas = node; });
-    writeFileSync(join(project, "src", "automatic-refresh.ts"), "appears without pressing Refresh\n");
-    const activeRequests = requests.length;
-    await page.clock.fastForward(5100); await expect.poll(() => requests.length).toBeGreaterThan(activeRequests);
-    await expect(widget.getByRole("list", { name: "Untracked files", exact: true })).toContainText("automatic-refresh.ts");
-    await expect(widget.locator(".change-count")).toHaveText("6 changed files");
-    expect(readFileSync(join(project, ".git", "index"))).toEqual(index);
-    await page.getByRole("button", { name: "Collapse Changes", exact: true }).click(); await page.mouse.move(400, 600);
-    await expect(widget).toBeHidden(); const hiddenRequests = requests.length, attached = sockets.length;
-    await page.clock.fastForward(15000);
-    expect(requests).toHaveLength(hiddenRequests); expect(sockets).toHaveLength(attached);
-    expect(await canvas.evaluate(node => node === (window as any).__changesCanvas)).toBe(true);
-    await page.clock.resume();
-    // Different local UUID and directory must not inherit the first repository's files.
-    if (testInfo.project.name !== "desktop") await page.locator("#back-btn").click();
-    await openSession(page, "changes-other-scope"); await showWidgets(page);
-    if (testInfo.project.name === "desktop") await page.getByRole("tab", { name: "Changes", exact: true }).click();
-    await expect(widget.getByRole("status")).toHaveText("Not a Git repository.");
-    await expect(widget.getByRole("list")).toHaveCount(0);
-    expect(new URL(requests.at(-1)!).searchParams.get("session")).toBe(sessionIds.get("changes-other-scope"));
-    git(other, "init", "--initial-branch=other");
-    await widget.getByRole("button", { name: "Refresh Git status" }).click();
-    await expect(widget.getByRole("status")).toHaveText("Working tree clean."); await expect(widget.locator(".branch")).toHaveText("other");
-  } finally { runCli(["extensions", "remove", "changes"]); }
-});
 const SECRET = "extensions-frontend-browser-auth-secret-123";
 const PROJECT = "extensions-browser";
+const GIT_PROBE_PROJECT = "extensions-git-probe";
+const GIT_PROBE_REPOSITORY_SESSION = "extension-git-probe-repository";
+const GIT_PROBE_NON_REPOSITORY_SESSION = "extension-git-probe-non-repository";
 const SESSION_A = "extension-browser-scope";
 const SESSION_B = "extension-browser-second";
 const DELEGATION_PARENT = "extension-browser-parent";
@@ -128,6 +60,13 @@ function token(): string {
   return `${header}.${payload}.${createHmac("sha256", SECRET).update(`${header}.${payload}`).digest("base64url")}`;
 }
 
+function writeGitProbePackage(): string {
+  const source = join(root, "git-probe"); mkdirSync(join(source, "dist"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(source, "package.json"), JSON.stringify({ name: "wolfpack-git-probe-fixture", version: "1.0.0", wolfpack: { manifestVersion: 1, apiVersion: 1, id: "git-probe", ui: "dist/ui.js", skills: [], documents: [] } }));
+  writeFileSync(join(source, "dist", "ui.js"), `export default host=>host.registerContextView({id:"probe",title:"Git probe",mount(root,context){let request;const read=()=>{request?.abort();request=new AbortController();root.textContent="loading";context.project.gitStatus(request.signal).then(value=>root.textContent=value.state==="ready"?"ready:"+(value.branch||"detached")+":"+value.untracked.length:"not-repository").catch(()=>root.textContent="cancelled")};return{setVisible(visible){if(visible)read();else request?.abort()},dispose(){request?.abort()}}}});\n`);
+  return source;
+}
+
 function writeGenericPackage(id: string, title: string, version = "1.0.0", withLayout = false): string {
   const source = join(root, id);
   mkdirSync(join(source, "dist"), { recursive: true, mode: 0o700 });
@@ -137,16 +76,16 @@ function writeGenericPackage(id: string, title: string, version = "1.0.0", withL
   return source;
 }
 
-async function createSession(name: string, parentSession?: string): Promise<void> {
+async function createSession(name: string, parentSession?: string, project = PROJECT): Promise<void> {
   const response = await fetch(`${server!.baseUrl}/api/create`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${token()}` },
-    body: JSON.stringify({ projectDir: join(root, "dev", PROJECT), cmd: "shell", sessionName: name, ...(parentSession ? { parentSession } : {}) }),
+    body: JSON.stringify({ projectDir: join(root, "dev", project), cmd: "shell", sessionName: name, ...(parentSession ? { parentSession } : {}) }),
   });
   expect(response.ok, `create ${name}: ${response.status} ${await response.text()}`).toBe(true);
 }
 
-async function refreshSessionIds(): Promise<void> {
+async function refreshSessionIds(names: readonly string[] = [SESSION_A, SESSION_B, DELEGATION_PARENT, DELEGATION_CHILD]): Promise<void> {
   await expect.poll(async () => {
     const response = await fetch(`${server!.baseUrl}/api/sessions`, { headers: { authorization: `Bearer ${token()}` } });
     const payload = await response.json() as { sessions?: Array<{ name?: string; identity?: { wolfpackSessionId?: string } }> };
@@ -154,7 +93,7 @@ async function refreshSessionIds(): Promise<void> {
       const id = session.identity?.wolfpackSessionId;
       if (session.name && id) sessionIds.set(session.name, id);
     }
-    return [SESSION_A, SESSION_B, DELEGATION_PARENT, DELEGATION_CHILD].every(name => sessionIds.has(name));
+    return names.every(name => sessionIds.has(name));
   }).toBe(true);
 }
 
@@ -264,6 +203,52 @@ test.afterAll(async () => {
   if (home) removeOwnedTestServerHome(home);
   home = undefined;
   if (root) rmSync(root, { recursive: true, force: true });
+});
+
+test("generic Git probe fences a late authenticated status response across an exact-session change", async ({ page }, testInfo) => {
+  test.skip(!["desktop", "iphone-14"].includes(testInfo.project.name), "desktop and iPhone probe lifecycle");
+  const repository = join(root, "dev", GIT_PROBE_PROJECT), source = writeGitProbePackage();
+  mkdirSync(repository, { recursive: true, mode: 0o700 });
+  const gitEnvironment = { ...environment(), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  execFileSync("git", ["init", "--initial-branch=main", repository], { env: gitEnvironment });
+  execFileSync("git", ["config", "user.email", "probe@example.test"], { cwd: repository, env: gitEnvironment });
+  execFileSync("git", ["config", "user.name", "Git Probe"], { cwd: repository, env: gitEnvironment });
+  writeFileSync(join(repository, "tracked.txt"), "tracked\n"); execFileSync("git", ["add", "tracked.txt"], { cwd: repository, env: gitEnvironment }); execFileSync("git", ["commit", "-m", "fixture"], { cwd: repository, env: gitEnvironment });
+  writeFileSync(join(repository, "untracked.txt"), "untracked\n");
+  const indexPath = join(repository, ".git", "index"), indexBeforeBrowserRequest = readFileSync(indexPath);
+  let installed = false, repositorySessionId = "", nonRepositorySessionId = "";
+  try {
+    runCli(["extensions", "install", source, "--trust-browser-code"]); installed = true;
+    await createSession(GIT_PROBE_REPOSITORY_SESSION, undefined, GIT_PROBE_PROJECT);
+    await createSession(GIT_PROBE_NON_REPOSITORY_SESSION);
+    await refreshSessionIds([GIT_PROBE_REPOSITORY_SESSION, GIT_PROBE_NON_REPOSITORY_SESSION]);
+    repositorySessionId = sessionIds.get(GIT_PROBE_REPOSITORY_SESSION)!; nonRepositorySessionId = sessionIds.get(GIT_PROBE_NON_REPOSITORY_SESSION)!;
+    await authorize(page);
+    await page.route("**/api/extensions", async route => { const response = await route.fetch(), catalog = await response.json(); await route.fulfill({ response, json: { ...catalog, installations: catalog.installations.filter((item: { extensionId: string }) => item.extensionId === "git-probe") } }); });
+    let releaseFirstResponse: (() => void) | undefined, firstRequest = true; const requests: string[] = [], sockets: string[] = [];
+    page.on("request", request => { if (request.url().includes("/api/extensions/project/git-status/")) requests.push(request.url()); }); page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets.push(socket.url()); });
+    await page.route("**/api/extensions/project/git-status/git-probe?**", async route => {
+      const response = await route.fetch();
+      if (firstRequest) { firstRequest = false; await new Promise<void>(resolve => { releaseFirstResponse = resolve; }); }
+      await route.fulfill({ response });
+    });
+    await page.goto(server!.baseUrl); await openSession(page, GIT_PROBE_REPOSITORY_SESSION); await showWidgets(page);
+    const probe = page.locator("[data-context-view='git-probe/probe']"); await expect(probe).toContainText("loading");
+    await expect.poll(() => Boolean(releaseFirstResponse)).toBe(true);
+    expect(new URL(requests.at(-1)!).searchParams.get("session")).toBe(repositorySessionId);
+    const canvas = page.locator("#desktop-terminal-container canvas");
+    await switchSession(page, GIT_PROBE_NON_REPOSITORY_SESSION, testInfo); await showWidgets(page);
+    await canvas.evaluate(node => { (window as any).__probeCanvas = node; }); const socketCount = sockets.length;
+    releaseFirstResponse!(); await expect(probe).toContainText("not-repository");
+    expect(new URL(requests.at(-1)!).searchParams.get("session")).toBe(nonRepositorySessionId); expect(readFileSync(indexPath)).toEqual(indexBeforeBrowserRequest);
+    expect(await canvas.evaluate(node => node === (window as any).__probeCanvas)).toBe(true); expect(sockets).toHaveLength(socketCount);
+    await page.getByRole("button", { name: "Collapse Git probe", exact: true }).click(); await expect(probe).toBeHidden();
+  } finally {
+    if (repositorySessionId) runCli(["kill", repositorySessionId, "--json"], server!.port);
+    if (nonRepositorySessionId) runCli(["kill", nonRepositorySessionId, "--json"], server!.port);
+    if (installed) runCli(["extensions", "remove", "git-probe"]);
+    rmSync(source, { recursive: true, force: true }); rmSync(repository, { recursive: true, force: true });
+  }
 });
 
 test("remote scopes have no empty widget dock and preserve local collapse across sessions and reloads", async ({ page }, testInfo) => {

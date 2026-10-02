@@ -8,8 +8,8 @@ import type { ExtensionRegistration } from "../../src/extensions/sdk.ts";
 const root = join(import.meta.dirname, "..", "..");
 const sample = (name: string, path: string) => join(root, "examples", "extensions", name, path);
 
-test("Agent Context, Notes and Changes are independently packaged self-contained extension samples", () => {
-  for (const name of ["agent-context", "notes", "changes"]) {
+test("Agent Context and Notes are independently packaged self-contained extension samples", () => {
+  for (const name of ["agent-context", "notes"]) {
     for (const file of ["package.json", "README.md", "src/ui.ts", "dist/ui.js"]) expect(existsSync(sample(name, file))).toBe(true);
     const manifest = JSON.parse(readFileSync(sample(name, "package.json"), "utf8"));
     expect(manifest.wolfpack.id).toBe(name);
@@ -21,17 +21,14 @@ test("Agent Context, Notes and Changes are independently packaged self-contained
   expect(existsSync(sample("agent-context", "skills/wolfpack-agent-context/references/context-format.md"))).toBe(true);
 });
 
-test("Agent Context and Changes contribute views without duplicating host layout recipes", async () => {
-  for (const [name, id] of [["agent-context", "context"], ["changes", "changes"]]) {
+test("Agent Context contributes a view without duplicating host layout recipes", async () => {
+  for (const [name, id] of [["agent-context", "context"]]) {
     const register: ExtensionRegistration = (await import(sample(name, "dist/ui.js"))).default;
     const views: string[] = []; const layouts: string[] = [];
     register({ registerContextView: view => { views.push(view.id); }, registerTerminalLayout: layout => { layouts.push(layout.title); } });
     expect(views).toEqual([id]);
     expect(layouts).toEqual([]);
   }
-  const { wolfpack } = JSON.parse(readFileSync(sample("changes", "package.json"), "utf8"));
-  expect(wolfpack.skills).toEqual([]);
-  expect(wolfpack.documents).toEqual([]);
 });
 
 test("Agent Context view models keep hostile text inert and distinguish empty and failed data", async () => {

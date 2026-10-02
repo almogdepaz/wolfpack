@@ -13,7 +13,7 @@ if (existsSync(bridge)) throw new Error("refusing to replace an existing sample 
 mkdirSync(modules, { recursive: true });
 symlinkSync(root, bridge, "dir");
 try {
-  for (const name of ["agent-context", "notes", "changes"]) {
+  for (const name of ["agent-context", "notes"]) {
     const output = join(root, "examples", "extensions", name, "dist", "ui.js");
     mkdirSync(dirname(output), { recursive: true });
     const result = await Bun.build({

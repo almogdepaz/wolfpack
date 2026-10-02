@@ -131,14 +131,14 @@ describe("ExtensionHost", () => {
     let context!: ExtensionViewContext; let mismatch = false; let requests = 0;
     let requestSignal: AbortSignal | undefined;
     let release: ((response: Response) => void) | undefined;
-    const reply = () => Response.json({ installationId, scopeSessionId: mismatch ? "33333333-3333-4333-8333-333333333333" : id, extensionId: "changes", status: { state: "not-repository" } });
+    const reply = () => Response.json({ installationId, scopeSessionId: mismatch ? "33333333-3333-4333-8333-333333333333" : id, extensionId: "git-view", status: { state: "not-repository" } });
     const host = new ExtensionHost({ container: container as unknown as HTMLElement, scope: () => selected,
       authFetch: async (input, options) => {
-        if (String(input) === "/api/extensions") return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "changes", enabled: true, package: { name: "changes", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/changes/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
-        expect(String(input)).toBe(`/api/extensions/project/git-status/changes?session=${id}`); requests++; requestSignal = options?.signal as AbortSignal;
+        if (String(input) === "/api/extensions") return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "git-view", enabled: true, package: { name: "git-view-fixture", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/git-view/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
+        expect(String(input)).toBe(`/api/extensions/project/git-status/git-view?session=${id}`); requests++; requestSignal = options?.signal as AbortSignal;
         return requests > 2 ? new Promise<Response>(resolve => { release = resolve; }) : reply();
       },
-      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => register.registerContextView({ id: "changes", title: "Changes", mount(_root, value) { context = value; return { dispose() {} }; } }) })) as never,
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => register.registerContextView({ id: "git-view", title: "Git view", mount(_root, value) { context = value; return { dispose() {} }; } }) })) as never,
     });
     try {
       await host.refresh(); host.select();
