@@ -818,6 +818,13 @@ test("real broker desktop keyboard follows the rendered narrow vertical layout",
   await selectTerminalLayoutFromUi(page, "lead-stack");
   const first = page.locator(`#desktop-grid-container .grid-cell[data-session="${names[0]}"]`);
   const second = page.locator(`#desktop-grid-container .grid-cell[data-session="${names[1]}"]`);
+  // Selecting a layout schedules ordered terminal resizes. The rendered track
+  // placement and completed transition are the authoritative mode boundary;
+  // a selected <option> alone can precede that live-grid reconciliation.
+  await expect(first).toHaveCSS("grid-row", "1 / span 1");
+  await expect(second).toHaveCSS("grid-row", "2 / span 1");
+  await expect(first).not.toHaveClass(/transitioning/);
+  await expect(second).not.toHaveClass(/transitioning/);
   const [firstBox, secondBox] = await Promise.all([first.boundingBox(), second.boundingBox()]);
   expect(firstBox).not.toBeNull();
   expect(secondBox).not.toBeNull();

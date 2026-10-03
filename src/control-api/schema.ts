@@ -952,7 +952,7 @@ export const controlApiSource: ControlApiSource = {
       response: object({ safeMode: boolean(), installations: arrayOf(ref("ExtensionCatalogInstallation")) }, ["safeMode", "installations"]),
       errors: [],
     },
-    "GET /api/extensions/assets/{installationId}/{assetPath}": {
+    "GET /api/extensions/assets/{extensionId}/{packageDigest}/{assetPath}": {
       operationId: "getInstalledExtensionAsset", stable: true, auth: "jwt-when-configured",
       request: object({ extensionId: ref("ExtensionId"), packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, assetPath: string() }, ["extensionId", "packageDigest", "assetPath"]), response: { type: "string", contentMediaType: "text/javascript" }, errors: ["404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope"],
     },

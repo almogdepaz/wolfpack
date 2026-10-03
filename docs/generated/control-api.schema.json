@@ -109,7 +109,7 @@
       "errors": []
     },
     "getInstalledExtensionAsset": {
-      "route": "GET /api/extensions/assets/{installationId}/{assetPath}",
+      "route": "GET /api/extensions/assets/{extensionId}/{packageDigest}/{assetPath}",
       "stable": true,
       "auth": "jwt-when-configured",
       "request": {

@@ -79,6 +79,10 @@ describe("control api schema generation", () => {
 });
 
 describe("control api schema", () => {
+  test("publishes the runtime asset route with extension ID and immutable package digest", () => {
+    expect(httpOperation("getInstalledExtensionAsset").route).toBe("GET /api/extensions/assets/{extensionId}/{packageDigest}/{assetPath}");
+  });
+
   test("publishes the opaque relay adapter contract", () => {
     const endpointOperation = httpOperation("operateVolatileTaskRelay");
     const peerTopology = httpOperation("resolveVerifiedVolatilePeer");
