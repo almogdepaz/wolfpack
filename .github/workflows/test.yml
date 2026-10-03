@@ -62,6 +62,9 @@ jobs:
       - name: Run all unit and snapshot tests
         run: bun test tests/unit/ tests/snapshot/
 
+      - name: Install critical Playwright browsers
+        run: bunx playwright install --with-deps chromium webkit
+
       - name: Run every integration test except auth in one explicit shard
         run: |
           mapfile -d '' files < <(find tests/integration -name '*.test.ts' ! -name 'auth-middleware.test.ts' -print0 | sort -z)
@@ -74,14 +77,12 @@ jobs:
       - name: Enforce browser bundle budgets
         run: bun run check:bundle-budgets
 
-      - name: Install critical Playwright browsers
-        run: bunx playwright install --with-deps chromium webkit
-
       - name: Run homepage quality and resilience QA
+        id: homepage-qa
         run: bunx playwright test tests/e2e/homepage-install.e2e.ts --project=desktop --project=iphone-se --project=iphone-14
 
       - name: Upload homepage QA diagnostics
-        if: always()
+        if: always() && steps.homepage-qa.outcome != 'skipped'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: homepage-quality-diagnostics

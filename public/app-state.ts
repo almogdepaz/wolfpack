@@ -48,7 +48,7 @@ export function getTerminalFontFamily() {
 
 // ── Settings (persisted to localStorage) ──
 
-export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", debugPanel:false};
+export const wpDefaults = {animations:true, haptics:true, notifications:false, enterSends: window.innerWidth > 768, holdToSend:false, termFontSize:"medium", termFont:"default", debugPanel:false, extensionSafeMode:false};
 
 function loadWpSettings() {
   const stored = loadStoredJson("wp-effects", {});

@@ -1,10 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { collapseInitialSessionMenu, startTestServer, type TestServer } from "./helpers.ts";
 
 const installationId = "2af8af29-c4fe-44f9-8a99-2a0e35952d74";
 const peerIdentity = `n-peer:${installationId}`;
 
 let server: TestServer;
+
+// Optional display metadata must never escape to real hosts in peer fixtures.
+test.beforeEach(async ({ page }) => {
+  await page.route("https://**/api/info", route => route.fulfill({ status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "optional metadata unavailable" }));
+});
 
 test.beforeAll(async () => {
   server = await startTestServer();
@@ -14,7 +19,7 @@ test.afterAll(async () => {
   await server?.close();
 });
 
-async function installMachineFixture(page: Page, withSessions = false): Promise<void> {
+async function installMachineFixture(page: Page, withSessions = false, displayName = "verified peer"): Promise<void> {
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({ candidates: [{
@@ -32,7 +37,7 @@ async function installMachineFixture(page: Page, withSessions = false): Promise<
       machine: {
         tailnetNodeId: "n-peer",
         installationId,
-        displayName: "verified peer",
+        displayName,
         origin: "https://peer.example.ts.net",
       },
       wolfpack: { version: "test" },
@@ -54,10 +59,105 @@ function sidebarGroup(page: Page) {
   return page.locator(`#sidebar-session-list .machine-group[data-machine="${peerIdentity}"]`);
 }
 
+const localInstallationId = "77d7b892-711f-4005-b62e-509d1d09a165";
+
+for (const { hostname, localName, peerName } of [
+  { hostname: "oldsgt", localName: "Almog’s MacBook Pro", peerName: "sgt" },
+  { hostname: "Mac", localName: "sgt", peerName: "Almog’s MacBook Pro" },
+]) test(`local and remote render server-owned names when opened on ${hostname}`, async ({ page }, testInfo) => {
+  await installMachineFixture(page, true, peerName);
+  let infoRequests = 0;
+  await page.route(`${server.baseUrl}/api/info`, route => {
+    infoRequests++;
+    return route.fulfill({ json: { name: localName, version: "test", machineId: localInstallationId } });
+  });
+  let machineRequests = 0;
+  await page.route(`${server.baseUrl}/api/machine`, route => {
+    machineRequests++;
+    return route.fulfill({ json: { machine: { installationId: localInstallationId, displayName: localName, origin: "https://not-a-routing-authority.example.ts.net" }, wolfpack: { version: "not-version-authority" } } });
+  });
+  await page.goto(server.baseUrl);
+  const local = page.locator('.machine-group[data-machine=""]').filter({ visible: true });
+  await collapseInitialSessionMenu(page);
+  const peer = testInfo.project.name === "desktop" ? sidebarGroup(page) : mainGroup(page);
+  await expect(local.locator(".machine-header-name")).toHaveText(localName);
+  await expect(local.locator(".machine-header-name")).toHaveAttribute("title", localName);
+  await expect(peer.locator(".machine-header-name")).toHaveText(peerName);
+  await expect(local.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", "");
+  await expect(peer.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", peerIdentity);
+  await local.getByRole("button", { name: `Collapse ${localName}`, exact: true }).click();
+  await expect(local.getByRole("button", { name: `Expand ${localName}`, exact: true })).toHaveAttribute("aria-expanded", "false");
+  await local.getByRole("button", { name: `Expand ${localName}`, exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath("advertised-names.png") });
+  if (testInfo.project.name === "desktop") {
+    await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
+    await expect(page.locator('#session-list .machine-group[data-machine=""] .machine-header-name')).toHaveText(localName);
+  }
+  expect(infoRequests).toBe(1);
+  expect(machineRequests).toBe(0);
+});
+
+test("local server name stays usable without a Tailnet handshake lookup", async ({ page }) => {
+  await installMachineFixture(page, true);
+  await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ json: { name: "hostname-fallback", version: "test", machineId: localInstallationId } }));
+  let machineRequests = 0;
+  await page.route(`${server.baseUrl}/api/machine`, route => {
+    machineRequests++;
+    return route.fulfill({ status: 503, json: { error: "tailnet unavailable" } });
+  });
+  await page.goto(server.baseUrl);
+  const local = page.locator('.machine-group[data-machine=""]').filter({ visible: true });
+  await expect(local.locator(".machine-header-name")).toHaveText("hostname-fallback");
+  await expect(local.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", "");
+  await expect(page.locator("#settings-version")).toHaveText("wolfpack vtest");
+  expect(machineRequests).toBe(0);
+});
+
+for (const { localName, peerName } of [
+  { localName: "Mac", peerName: "Almog’s MacBook Pro" },
+  { localName: "oldsgt", peerName: "sgt" },
+]) test(`legacy local metadata keeps ${localName} and advertised peer ${peerName}`, async ({ page }, testInfo) => {
+  await installMachineFixture(page, true, peerName);
+  await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ contentType: "application/json", body: JSON.stringify({ name: localName, version: "test" }) }));
+  let infoRequests = 0;
+  await page.route("https://peer.example.ts.net/api/info", route => {
+    infoRequests++;
+    return route.fulfill({ contentType: "application/json", headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ name: "peer-MacBook-Pro", machineId: installationId, version: "not-routing-authority" }) });
+  });
+  await page.goto(server.baseUrl);
+  await collapseInitialSessionMenu(page);
+  const group = testInfo.project.name === "desktop" ? sidebarGroup(page) : mainGroup(page);
+  await expect(group.locator(".machine-header-name")).toHaveText(peerName);
+  await expect(group.locator(".machine-header-name")).toHaveAttribute("title", peerName);
+  await expect(page.locator('.machine-group[data-machine=""] .machine-header-name').filter({ visible: true })).toHaveText(localName);
+  await expect(group).toHaveAttribute("data-machine", peerIdentity);
+  await expect(group.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", peerIdentity);
+  await group.getByRole("button", { name: `Collapse ${peerName}`, exact: true }).click();
+  await expect(group.getByRole("button", { name: `Expand ${peerName}`, exact: true })).toHaveAttribute("aria-expanded", "false");
+  await group.getByRole("button", { name: `Expand ${peerName}`, exact: true }).click();
+  if (testInfo.project.name === "desktop") {
+    await page.screenshot({ path: testInfo.outputPath("full-machine-name-sidebar.png") });
+    await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
+    await expect(mainGroup(page).locator(".machine-header-name")).toHaveText(peerName);
+  }
+  expect(infoRequests).toBe(0);
+  await page.screenshot({ path: testInfo.outputPath("full-machine-name.png") });
+});
+
+test("unmatched display metadata leaves the verified peer label and sessions usable", async ({ page }, testInfo) => {
+  await installMachineFixture(page, true);
+  await page.route("https://peer.example.ts.net/api/info", route => route.fulfill({ contentType: "application/json", headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ name: "wrong-installation-MacBook", machineId: "00000000-0000-4000-8000-000000000000" }) }));
+  await page.goto(server.baseUrl);
+  await collapseInitialSessionMenu(page);
+  const group = testInfo.project.name === "desktop" ? sidebarGroup(page) : mainGroup(page);
+  await expect(group.locator(".machine-header-name")).toHaveText("verified peer");
+  await expect(group.getByRole("button", { name: "Open peer-session", exact: true })).toBeVisible();
+  await expect(group.getByRole("button", { name: "Open peer-session", exact: true })).toHaveAttribute("data-machine", peerIdentity);
+});
+
 test("compact machine headers make the name the drag handle and reserve the chevron for collapse", async ({ page }, testInfo) => {
   await installMachineFixture(page);
   await page.goto(server.baseUrl);
-  if (testInfo.project.name === "desktop") await page.getByRole("button", { name: "Expand sessions" }).click();
 
   const group = mainGroup(page);
   const name = group.locator(".machine-name-handle");
@@ -101,6 +201,7 @@ test("empty sidebar machine groups keep a header create action on their own mach
   });
   await page.goto(server.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const group = sidebarGroup(page);
   const expandedCreate = group.getByRole("button", { name: "Start a session on verified peer" });
   await expect(expandedCreate).toBeVisible();
@@ -108,6 +209,7 @@ test("empty sidebar machine groups keep a header create action on their own mach
   await expect(page.locator("#create-project-action")).toHaveAttribute("aria-label", "Create project on verified peer");
 
   await page.goto(server.baseUrl);
+  await collapseInitialSessionMenu(page);
   const reloadedGroup = sidebarGroup(page);
   await reloadedGroup.getByRole("button", { name: "Collapse verified peer" }).click();
   await expect(reloadedGroup.getByRole("button", { name: "Start a session on verified peer" })).toHaveCount(0);
@@ -125,6 +227,7 @@ test("machine collapse controls retain valid hidden bodies on both desktop surfa
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const assertCollapseRelationship = async (group: ReturnType<typeof mainGroup>) => {
     const toggle = group.getByRole("button", { name: "Collapse verified peer" });
     const bodyId = await toggle.getAttribute("aria-controls");
@@ -170,7 +273,6 @@ test("expanded desktop machine cards retain the intended adjacent-card gap", asy
     ] }),
   }));
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Expand sessions" }).click();
 
   const cards = mainGroup(page).locator(".card");
   await expect(cards).toHaveCount(2);
@@ -185,6 +287,7 @@ test("machine drag order is shared while main and sidebar collapse remain indepe
   test.skip(testInfo.project.name !== "desktop", "desktop owns both machine presentation surfaces");
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
+  await collapseInitialSessionMenu(page);
 
   const peerHandle = sidebarGroup(page).locator(".machine-name-handle");
   const localGroup = page.locator('#sidebar-session-list .machine-group[data-machine=""]');
@@ -212,6 +315,7 @@ test("machine drag order is shared while main and sidebar collapse remain indepe
     });
 
   await page.reload();
+  await collapseInitialSessionMenu(page);
   await expect.poll(() => page.locator("#sidebar-session-list > .machine-group").evaluateAll(groups =>
     groups.map(group => (group as HTMLElement).dataset.machine ?? ""),
   )).toEqual([peerIdentity, ""]);
@@ -223,7 +327,6 @@ test("machine drag order is shared while main and sidebar collapse remain indepe
 test("machine headers expose drag-only reordering", async ({ page }, testInfo) => {
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
-  if (testInfo.project.name === "desktop") await page.getByRole("button", { name: "Expand sessions" }).click();
 
   const group = mainGroup(page);
   await expect(group.locator(".machine-name-handle")).toHaveCount(1);
@@ -236,6 +339,7 @@ test("all-collapsed sidebar groups retain chooser ownership and toggle focus", a
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const groups = page.locator("#sidebar-session-list > .machine-group");
   await expect(groups).toHaveCount(2);
   for (let index = 0; index < 2; index++) {
@@ -261,6 +365,7 @@ test("single-machine sidebar retains its collapsed group and toggle focus", asyn
   }));
   await page.goto(server.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const group = page.locator('#sidebar-session-list > .machine-group[data-machine=""]');
   await expect(group).toHaveCount(1);
   await group.locator(".machine-collapse-toggle").click();
@@ -282,6 +387,7 @@ test("native wheel scrolling remains available outside machine reorder handles",
   }));
   await page.goto(server.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const list = page.locator("#sidebar-session-list");
   await expect(list.locator(".card")).toHaveCount(24);
   await list.hover();
@@ -390,6 +496,7 @@ test("revoked ordered peer is never rendered as the local machine", async ({ pag
   });
 
   await page.goto(server.baseUrl);
+  await collapseInitialSessionMenu(page);
   await expect(sidebarGroup(page).getByRole("button", { name: "Open peer-session" })).toBeVisible();
   const peerHandle = sidebarGroup(page).locator(".machine-name-handle");
   await peerHandle.hover();
@@ -452,10 +559,10 @@ test("outside machine drop cancels a previously valid preview", async ({ page },
   test.skip(testInfo.project.name !== "desktop", "desktop pointer drop regression");
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Expand sessions" }).click();
 
   const peerHandle = mainGroup(page).locator(".machine-name-handle");
   const localGroup = page.locator('#session-list .machine-group[data-machine=""]');
+  await expect(localGroup).toBeVisible();
   const localBox = await localGroup.boundingBox();
   expect(localBox).not.toBeNull();
   await peerHandle.hover();
@@ -478,6 +585,7 @@ test("sidebar chooser teardown cancels an active machine drag safely", async ({ 
   page.on("pageerror", error => pageErrors.push(error.message));
   await page.goto(server.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const handle = sidebarGroup(page).locator(".machine-name-handle");
   await handle.hover();
   await page.mouse.down();
@@ -530,7 +638,6 @@ test("session refresh teardown cannot restore a dragged sidebar group", async ({
   page.on("pageerror", error => pageErrors.push(error.message));
 
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Expand sessions" }).click();
   await expect(page.locator("#session-list > .machine-group")).toHaveCount(2);
   for (const toggle of await page.locator("#session-list .machine-collapse-toggle").all()) await toggle.click();
   await page.getByRole("button", { name: "Collapse sessions" }).click();
@@ -563,11 +670,11 @@ test("machine names expose drag-only reordering and Escape cancels a pending dra
   test.skip(testInfo.project.name !== "desktop", "desktop pointer cancellation regression");
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
-  if (testInfo.project.name === "desktop") await page.getByRole("button", { name: "Expand sessions" }).click();
 
   const group = mainGroup(page);
   const handle = group.locator(".machine-name-handle");
   const localGroup = page.locator('#session-list .machine-group[data-machine=""]');
+  await expect(localGroup).toBeVisible();
   const localBox = await localGroup.boundingBox();
   expect(localBox).not.toBeNull();
   await expect(group.locator(".machine-order-options, [data-machine-menu-offset]")).toHaveCount(0);

@@ -1,4 +1,5 @@
 import { CREATABLE_HARNESSES } from "../agent-kind.ts";
+import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
 import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
@@ -416,6 +417,25 @@ export const controlApiSource: ControlApiSource = {
   defs: {
     ...volatileRelayDefinitions,
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
+    GitFileChange: object({ path: { type: "string", minLength: 1, maxLength: 4096 }, previousPath: { type: "string", minLength: 1, maxLength: 4096 }, status: { type: "string", enum: GIT_CHANGE_KINDS } }, ["path", "status"]),
+    ProjectGitStatus: { oneOf: [
+      object({ state: { const: "not-repository" } }, ["state"]),
+      object({ state: { const: "ready" }, branch: { type: ["string", "null"], maxLength: 1024 }, detached: boolean(), truncated: boolean(),
+        staged: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES }, unstaged: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES }, untracked: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES },
+      }, ["state", "branch", "detached", "truncated", "staged", "unstaged", "untracked"]),
+    ] },
+    ExtensionId: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
+    ExtensionInstallationId: { type: "string", format: "uuid" },
+    ExtensionDocumentCatalog: object({ id: ref("ExtensionId"), schemaVersion: { type: "integer", minimum: 1 } }, ["id", "schemaVersion"]),
+    ExtensionCatalogInstallation: object({
+      installationId: ref("ExtensionInstallationId"), extensionId: ref("ExtensionId"),
+      package: object({ name: string(), version: string(), digest: { type: "string", pattern: "^[a-f0-9]{64}$" } }, ["name", "version", "digest"]),
+      enabled: boolean(), ui: object({ path: string(), url: string(), digest: { type: "string", pattern: "^[a-f0-9]{64}$" }, mime: { const: "text/javascript" } }, ["path", "url", "digest", "mime"]),
+      documents: arrayOf(ref("ExtensionDocumentCatalog")),
+    }, ["installationId", "extensionId", "package", "enabled", "documents"]),
+    ExtensionApiError: object({ code: string(), message: string(), currentRevision: { type: "integer", minimum: 0 } }, ["code", "message"]),
+    ExtensionApiErrorEnvelope: object({ error: ref("ExtensionApiError") }, ["error"]),
+    ExtensionDocumentReceipt: object({ requestId: { type: "string", format: "uuid" }, scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), revision: { type: "integer", minimum: 1 }, acceptedAt: string(), payloadDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, baseRevision: { type: "integer", minimum: 0 }, schemaVersion: { type: "integer", minimum: 1 } }, ["requestId", "scopeSessionId", "extensionId", "documentId", "revision", "acceptedAt", "payloadDigest", "baseRevision", "schemaVersion"]),
     TaskWorkerCreatedSession: object({
       session: ref("SessionName"),
       sessionId: ref("SessionId"),
@@ -926,6 +946,30 @@ export const controlApiSource: ControlApiSource = {
       auth: "public",
       response: ref("MachineHandshake"),
       errors: ["503 ErrorEnvelope"],
+    },
+    "GET /api/extensions": {
+      operationId: "listInstalledExtensions", stable: true, auth: "jwt-when-configured",
+      response: object({ safeMode: boolean(), installations: arrayOf(ref("ExtensionCatalogInstallation")) }, ["safeMode", "installations"]),
+      errors: [],
+    },
+    "GET /api/extensions/assets/{extensionId}/{packageDigest}/{assetPath}": {
+      operationId: "getInstalledExtensionAsset", stable: true, auth: "jwt-when-configured",
+      request: object({ extensionId: ref("ExtensionId"), packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, assetPath: string() }, ["extensionId", "packageDigest", "assetPath"]), response: { type: "string", contentMediaType: "text/javascript" }, errors: ["404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope"],
+    },
+    "GET /api/extensions/project/git-status/{extensionId}": {
+      operationId: "readExtensionProjectGitStatus", stable: true, auth: "jwt-when-configured",
+      request: object({ extensionId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["extensionId", "session"]),
+      response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), status: ref("ProjectGitStatus") }, ["installationId", "scopeSessionId", "extensionId", "status"]),
+      errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
+    },
+    "GET /api/extensions/documents/{extensionId}/{documentId}": {
+      operationId: "readExtensionDocument", stable: true, auth: "jwt-when-configured",
+      request: object({ extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["extensionId", "documentId", "session"]),
+      response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), revision: { type: "integer", minimum: 0 }, document: {} }, ["installationId", "scopeSessionId", "extensionId", "documentId", "revision", "document"]), errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
+    },
+    "POST /api/extensions/documents/{extensionId}/{documentId}": {
+      operationId: "publishExtensionDocument", stable: true, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: object({ sessionId: { type: "string", format: "uuid" }, document: {}, ifRevision: { type: "integer", minimum: 0 }, requestId: { type: "string", format: "uuid" }, schemaVersion: { type: "integer", minimum: 1 } }, ["sessionId", "document", "ifRevision", "requestId", "schemaVersion"]), response: object({ receipt: ref("ExtensionDocumentReceipt") }, ["receipt"]), errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "413 ExtensionApiErrorEnvelope", "422 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
     },
     "GET /api/task-relay/profile": {
       operationId: "getTaskRelayProfile", stable: false, auth: "jwt-when-configured",

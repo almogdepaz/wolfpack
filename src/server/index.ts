@@ -35,6 +35,7 @@ import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
 import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
+import { getExtensionRouteService } from "./extension-routes.ts";
 
 const log = createLogger("server");
 
@@ -178,23 +179,20 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
       return;
     }
 
-    const key = `${req.method ?? "GET"} ${url.pathname}`;
-    const handler = routes[key];
-    if (handler) {
-      try {
+    try {
+      if (await getExtensionRouteService().handle(req, res, url)) return;
+      const key = `${req.method ?? "GET"} ${url.pathname}`;
+      const handler = routes[key];
+      if (handler) {
         await handler(req, res);
-      } catch (err) {
-        log.error("route error", { error: String(err) });
-        if (!res.headersSent) json(res, { error: "internal error" }, 500);
-      }
-    } else {
-      const safePath = url.pathname.replace(/^\/+/, "");
-      if (safePath && !safePath.includes("\0") && !safePath.includes("/")) {
-        serveFile(res, safePath, req);
       } else {
-        res.writeHead(404);
-        res.end("Not Found");
+        const safePath = url.pathname.replace(/^\/+/, "");
+        if (safePath && !safePath.includes("\0") && !safePath.includes("/")) serveFile(res, safePath, req);
+        else { res.writeHead(404); res.end("Not Found"); }
       }
+    } catch (err) {
+      log.error("route error", { error: String(err) });
+      if (!res.headersSent) json(res, { error: "internal error" }, 500);
     }
   });
 

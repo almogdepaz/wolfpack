@@ -1,3 +1,5 @@
+import { collapseInitialSessionMenu, selectTerminalLayoutFromUi } from "./helpers.ts";
+import { mockLayoutWidget } from "./widget-fixture.ts";
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
 import { openSessionFromUi, startTestServer, type TestServer } from "./helpers.ts";
 import { AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
@@ -129,7 +131,7 @@ test("desktop parent grid opens every child session expanded", async ({ page }, 
   await expect.poll(focusedSession).toBe(visualSessions[1]);
 });
 
-test("collapsed delegation child remounts once when expanded", async ({ page }, testInfo) => {
+test("collapsed delegation child retains its controller and broker attach when expanded", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop delegation grid behavior only");
 
   const attachCounts = new Map<string, number>();
@@ -155,6 +157,7 @@ test("collapsed delegation child remounts once when expanded", async ({ page }, 
   ]);
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   await expect(page.locator("#sidebar-session-list .delegation-parent-card")).toBeVisible();
   await openSessionFromUi(page, "parent", "");
   const childCell = page.locator('#delegation-grid-container .delegation-grid-cell[data-session="child"]');
@@ -168,11 +171,87 @@ test("collapsed delegation child remounts once when expanded", async ({ page }, 
   await expect(page.locator("#delegation-grid-container .delegation-grid-cell.collapsed")).toHaveCount(1);
   await page.keyboard.press("Meta+Shift+ArrowRight");
   await expect.poll(focusedSession).toBe("parent");
-  await expect.poll(() => closeCounts.get("child") ?? 0).toBe(1);
+  await expect.poll(() => closeCounts.get("child") ?? 0).toBe(0);
   await page.getByRole("button", { name: "Expand child" }).click();
 
   await expect(childCell).toHaveAttribute("data-terminal-load-state", "live");
+  expect(attachCounts.get("child")).toBe(1);
+});
+
+test("explicit workspace shell changes retain delegation panes and focus", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop workspace geometry behavior only");
+  await mockLayoutWidget(page);
+  const attachCounts = new Map<string, number>();
+  await page.routeWebSocket(/\/ws\/pty/, (ws: WebSocketRoute) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message) as { readonly type?: string; readonly prefillMode?: string };
+      if (frame.type === "resize") {
+        ws.send(JSON.stringify({ ...frame, type: "resize_ack" }));
+        return;
+      }
+      if (frame.type !== "attach") return;
+      attachCounts.set(session, (attachCounts.get(session) ?? 0) + 1);
+      ws.send(JSON.stringify({ type: "attach_ack", capabilities: ["ordered-resize-ack"] }));
+      ws.send(Buffer.from(`${session}-WORKSPACE\r\n`));
+      if (frame.prefillMode === "viewport") ws.send(JSON.stringify({ type: "prefill_viewport" }));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await routeDelegationSessions(page, [
+    fakeSession("parent", "11111111-1111-4111-8111-111111111111"),
+    fakeSession("child", "22222222-2222-4222-8222-222222222222", { id: "11111111-1111-4111-8111-111111111111", name: "parent" }),
+  ]);
+  await page.goto(srv.baseUrl);
+  await openSessionFromUi(page, "parent", "");
+  const child = page.locator('#delegation-grid-container .delegation-grid-cell[data-session="child"]');
+  await expect(child).toHaveAttribute("data-terminal-load-state", "live");
+  await child.click();
+  await expect(child).toHaveClass(/grid-focused/);
+  await selectTerminalLayoutFromUi(page, "lead-stack");
+  await expect(child).toHaveAttribute("data-terminal-load-state", "live");
+  await expect(child).toHaveClass(/grid-focused/);
+  // The Settings page suspends viewers; returning must restore the same workspace.
+  expect(attachCounts.get("parent")).toBe(2);
   expect(attachCounts.get("child")).toBe(2);
+  await expect(page.locator("#delegation-grid-container")).toHaveAttribute("style", /grid-template-columns/);
+  await page.getByRole("button", { name: "Collapse Widgets", exact: true }).click();
+  await expect(page.getByRole("tab", { name: "Widgets", exact: true })).toBeVisible();
+  await page.getByRole("tab", { name: "Widgets", exact: true }).click();
+  await page.locator("[data-widget-full]:visible").click();
+  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+  await page.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await expect(child).toHaveClass(/grid-focused/);
+  expect(attachCounts.get("parent")).toBe(2);
+  expect(attachCounts.get("child")).toBe(2);
+});
+
+test("workspace shell mobile recovery keeps a visible terminal usable", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile-webkit", "mobile WebKit workspace behavior only");
+  let attaches = 0;
+  await page.routeWebSocket(/\/ws\/pty/, (ws: WebSocketRoute) => {
+    ws.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message) as { readonly type?: string };
+      if (frame.type !== "attach") return;
+      attaches++;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from("MOBILE-WORKSPACE\r\n"));
+      ws.send(JSON.stringify({ type: "prefill_done" }));
+      ws.send(JSON.stringify({ type: "pty_ready" }));
+    });
+  });
+  await routeDelegationSessions(page, [fakeSession("parent", "parent-id")]);
+  await page.goto(srv.baseUrl);
+  await openSessionFromUi(page, "parent", "");
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
+  await page.locator("#workspace-restore").click();
+  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+  await page.locator("#workspace-context-back").click();
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
+  expect(attaches).toBe(1);
 });
 
 test("manual card order persists by stable identity and resets to server order", async ({ page }, testInfo) => {
@@ -189,6 +268,7 @@ test("manual card order persists by stable identity and resets to server order",
   });
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const list = page.locator(testInfo.project.name === "desktop" ? "#sidebar-session-list" : "#session-list");
   const names = list.locator('.card[data-session-order-machine=""] .card-name');
   const cardNames = () => names.evaluateAll(elements => elements.map(element => element.firstChild?.textContent));
@@ -203,9 +283,14 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["one", "two", "three"]);
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-session-order"))).toBeNull();
 
-  const threeCard = list.locator('.card[data-session-order-machine=""][data-session-order-id="three-id"] .card-open');
-  await threeCard.focus();
+  const threeRow = list.locator('.card[data-session-order-machine=""][data-session-order-id="three-id"]');
+  // The names stay identical across this async refresh; wait for its new rendered data.
+  await expect(threeRow).toContainText("changed since review");
+  const threeCard = threeRow.locator(".card-open");
+  await threeCard.focus(); await expect(threeCard).toBeFocused();
   await page.keyboard.press("Alt+ArrowUp");
+  await expect.poll(cardNames).toEqual(["one", "three", "two"]);
+  await expect(threeCard).toBeFocused();
   await page.keyboard.press("Alt+ArrowUp");
   await expect.poll(cardNames).toEqual(["three", "one", "two"]);
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-session-order") ?? "null"))).toEqual({
@@ -227,6 +312,7 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["three-renamed", "one-renamed", "two-renamed", "new"]);
 
   await page.reload();
+  await collapseInitialSessionMenu(page);
   await expect.poll(cardNames).toEqual(["three-renamed", "one-renamed", "two-renamed", "new"]);
 
   await list.getByRole("button", { name: "Reset session order" }).click();
@@ -242,6 +328,7 @@ test("desktop cmd+up/down follows the rendered manual card order", async ({ page
     fakeSession("three", "three-id"),
   ]);
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
 
   const list = page.locator("#sidebar-session-list");
   const threeCard = list.locator('.card[data-session-order-id="three-id"] .card-open');
@@ -338,6 +425,7 @@ test("direct card drag previews live movement and keeps delegation children atta
   ]);
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const list = page.locator(testInfo.project.name === "desktop" ? "#sidebar-session-list" : "#session-list");
   const parentCard = list.locator('.delegation-parent-card[data-session-order-machine=""]');
   const soloCard = list.locator('.card[data-session-order-machine=""][data-session-order-id="solo-id"]');
@@ -411,6 +499,7 @@ test("desktop escape cancels a nested card drag and restores the hierarchy", asy
   ]);
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const list = page.locator("#sidebar-session-list");
   const parentCard = list.locator('.delegation-parent-card[data-session-order-machine=""]');
   const childCard = list.locator('.sub-session-card[data-session-order-machine=""]');
@@ -478,6 +567,7 @@ test("expanded child cards stay compact and inside the session list", async ({ p
   ]);
 
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   if (testInfo.project.name === "desktop") {
     await expect.poll(async () => (await page.locator('#sidebar-session-list .delegation-parent-card[data-session-order-machine=""]').boundingBox())?.x ?? -1)
       .toBeGreaterThanOrEqual(0);

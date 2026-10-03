@@ -1,0 +1,13 @@
+{
+  "name": "wolfpack-extension-notes",
+  "version": "0.1.0",
+  "private": true,
+  "wolfpack": {
+    "manifestVersion": 1,
+    "apiVersion": 1,
+    "id": "notes",
+    "ui": "dist/ui.js",
+    "skills": [],
+    "documents": []
+  }
+}

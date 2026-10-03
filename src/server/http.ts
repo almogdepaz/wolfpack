@@ -16,6 +16,7 @@ import {
 } from "../tailnet-machine-contract.js";
 import type { MachineHandshake, TailnetMachineCandidate } from "../tailnet-machine-contract.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
+import { getMachineDisplayName } from "../machine-display-name.js";
 import { isValidProjectName, MAX_SESSION_NAME_LENGTH, projectLabelToSessionName } from "../validation.js";
 
 const log = createLogger("http");
@@ -261,7 +262,9 @@ export function generateCspNonce(): string {
 function buildCsp(nonce: string): string {
   return [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}'`,
+    // Authenticated extension modules are fetched as verified bytes and imported
+    // from Blob URLs; no unsafe-eval or remote script source is permitted.
+    `script-src 'self' 'nonce-${nonce}' blob:`,
     "style-src 'self' 'unsafe-inline'",
     "connect-src 'self' wss: https:",
     "img-src 'self' data:",
@@ -500,6 +503,7 @@ export async function getLocalMachineHandshake(
     return buildMachineHandshakeFromTailnetStatus({
       status,
       installationId: getInstallationId(),
+      displayName: getMachineDisplayName(),
       version,
     });
   } catch (error: unknown) {

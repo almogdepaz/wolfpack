@@ -476,6 +476,52 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.closeReason).toBe("input rate limit exceeded");
   });
 
+  for (const prefillMode of ["full", "viewport"] as const) test(`${prefillMode} attach reconciles resizes received while the settling observer detaches`, async () => {
+    backend.deferSubscriptionCleanup = true;
+    backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));
+    const ws = new FakeWs();
+    const events: string[] = [];
+    backend.onResizeComplete = (cols, rows) => events.push(`resize:${cols}x${rows}`);
+    ws.onSend = data => {
+      if (typeof data !== "string") return;
+      const frame = JSON.parse(data);
+      if (frame.type === "resize_ack") events.push(`ack:${frame.resizeId}`);
+      if (frame.type === "pty_ready") events.push("pty_ready");
+    };
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode });
+    await waitFor(() => backend.subscriptionCleanupRequested);
+    // The settle loop has finished but still awaits the broker observer's
+    // detach. These requests belong to neither the loop nor the finalizer yet.
+    ws.pushJson({ type: "resize", resizeId: 42, cols: 120, rows: 40 });
+    ws.pushJson({ type: "resize", resizeId: 43, cols: 132, rows: 50 });
+    backend.releaseSubscriptionCleanup();
+    await waitFor(() => ws.hasJsonType("pty_ready"));
+
+    expect(backend.resizeCalls.filter(call => call.cols === 132 && call.rows === 50)).toHaveLength(1);
+    expect(backend.resizeCalls.some(call => call.cols === 120 && call.rows === 40)).toBe(false);
+    expect(ws.jsonFrames()).not.toContainEqual({ type: "resize_ack", resizeId: 42, cols: 120, rows: 40 });
+    expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 43, cols: 132, rows: 50 });
+    expect(events.indexOf("resize:132x50")).toBeLessThan(events.indexOf("ack:43"));
+    expect(events.indexOf("ack:43")).toBeLessThan(events.indexOf("pty_ready"));
+  });
+
+  for (const prefillMode of ["full", "viewport"] as const) test(`${prefillMode} attach preserves legacy resizes received during observer detach`, async () => {
+    backend.deferSubscriptionCleanup = true;
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode });
+    await waitFor(() => backend.subscriptionCleanupRequested);
+    ws.pushJson({ type: "resize", cols: 132, rows: 50 });
+    backend.releaseSubscriptionCleanup();
+    await waitFor(() => ws.hasJsonType("pty_ready"));
+    expect(backend.resizeCalls).toEqual([
+      { name: SESSION, cols: 80, rows: 24 },
+      { name: SESSION, cols: 132, rows: 50 },
+    ]);
+    expect(ws.hasJsonType("resize_ack")).toBe(false);
+  });
+
   for (const prefillMode of ["full", "viewport", "none"] as const) test(`final ${prefillMode} attach reconciliation applies and acknowledges a boundary resize exactly once`, async () => {
     const ws = new FakeWs();
     const events: string[] = [];

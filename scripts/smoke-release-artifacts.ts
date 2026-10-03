@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { validatePublicationArtifacts } from "./publish-policy";
 import { assertExactVersionOutput } from "./release-version-policy";
 
@@ -21,21 +21,31 @@ function run(command: string[], options: { cwd?: string; env?: Record<string, st
   return result.stdout.toString();
 }
 
-function packedArchive(output: string, subject: string): string {
+function packedArchives(output: string, platformName: string): { platform: string; main: string } {
   let parsed: unknown;
   try {
     parsed = JSON.parse(output);
   } catch (error) {
-    throw new Error(`${subject} npm pack did not return JSON`, { cause: error });
+    throw new Error("release packages npm pack did not return JSON", { cause: error });
   }
-  if (!Array.isArray(parsed) || parsed.length !== 1 || typeof parsed[0] !== "object" || parsed[0] === null) {
-    throw new Error(`${subject} npm pack returned an invalid result`);
+  if (!Array.isArray(parsed) || parsed.length !== 2 || parsed.some(entry => !entry || typeof entry !== "object" || Array.isArray(entry))) {
+    throw new Error("npm pack returned an invalid result");
   }
-  const filename = (parsed[0] as { readonly filename?: unknown }).filename;
-  if (typeof filename !== "string" || filename.length === 0) {
-    throw new Error(`${subject} npm pack result has no filename`);
-  }
-  return filename;
+  // Match by identity, not npm's output order; each exact package must occur once.
+  const results = parsed;
+  const archiveFor = (name: string): string => {
+    const entries = results.filter(entry => entry.name === name && entry.version === productVersion);
+    if (entries.length !== 1) throw new Error(`npm pack did not return exactly one ${name}@${productVersion}`);
+    const filename: unknown = entries[0].filename;
+    if (typeof filename !== "string" || !filename.endsWith(".tgz") || basename(filename) !== filename || filename.includes("\\")) {
+      throw new Error(`npm pack returned an invalid archive filename for ${name}`);
+    }
+    return filename;
+  };
+  const platform = archiveFor(platformName);
+  const main = archiveFor("wolfpack-bridge");
+  if (platform === main) throw new Error("npm pack returned duplicate archive filenames");
+  return { platform, main };
 }
 
 function installedPlatformPackage(home: string, target: string, productVersion: string): string {
@@ -67,29 +77,43 @@ function assertInstalledPayload(input: string, installed: string, label: string)
     throw new Error(`${label} owner-executable mode differs after installation`);
   }
 }
-assertExactVersionOutput(run([cli, "--version"]), `${productVersion}\n`, "CLI");
-assertExactVersionOutput(
-  run([broker, "--version"]),
-  `wolfpack-broker ${brokerVersion}\n`,
-  "broker",
-);
-if (!run([cli, "--help"]).includes("Usage:")) throw new Error("CLI help smoke returned no usage");
+// These read-only probes are independent. Settle every child (including failures)
+// before packing; installed payload, signature and public-alias checks stay ordered.
+const initialChecks = await Promise.allSettled([
+  [cli, "--version"], [broker, "--version"], [cli, "--help"],
+].map(async command => {
+  const child = Bun.spawn(command, { cwd: root, stdout: "pipe", stderr: "pipe" });
+  try {
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+    ]);
+    if (exitCode !== 0) throw new Error(`${command.join(" ")} failed: ${stderr}`);
+    return stdout;
+  } finally {
+    if (child.exitCode === null) { child.kill(); await child.exited; }
+  }
+}));
+function checked(result: PromiseSettledResult<string>): string {
+  if (result.status === "rejected") throw result.reason;
+  return result.value;
+}
+assertExactVersionOutput(checked(initialChecks[0]!), `${productVersion}\n`, "CLI");
+assertExactVersionOutput(checked(initialChecks[1]!), `wolfpack-broker ${brokerVersion}\n`, "broker");
+if (!checked(initialChecks[2]!).includes("Usage:")) throw new Error("CLI help smoke returned no usage");
 
-const platformPackage = join(root, "dist", "npm", `wolfpack-bridge-${target}`);
+const platformPackageName = `wolfpack-bridge-${target}`;
+const platformPackage = join(root, "dist", "npm", platformPackageName);
 if (!existsSync(join(platformPackage, "package.json"))) throw new Error(`missing platform package: ${platformPackage}`);
 const home = mkdtempSync(join(tmpdir(), "wolfpack-package-smoke-"));
 try {
   const packs = join(home, "packs");
-  run(["mkdir", "-p", packs]);
-  const platformTar = packedArchive(
-    run(["npm", "pack", platformPackage, "--pack-destination", packs, "--json"]),
-    "platform package",
+  mkdirSync(packs);
+  // npm supports multiple package paths. Pack both real archives in one process
+  // instead of paying a second npm startup/configuration cost on every smoke.
+  const { platform: platformTar, main: mainTar } = packedArchives(
+    run(["npm", "pack", platformPackage, root, "--pack-destination", packs, "--json"]),
+    platformPackageName,
   );
-  const mainTar = packedArchive(
-    run(["npm", "pack", root, "--pack-destination", packs, "--json"]),
-    "main package",
-  );
-  const platformPackageName = `wolfpack-bridge-${target}`;
   writeFileSync(join(home, "package.json"), `${JSON.stringify({
     name: "wolfpack-release-smoke",
     private: true,

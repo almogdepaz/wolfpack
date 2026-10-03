@@ -284,11 +284,20 @@ test("cmd+shift+arrow follows the rendered five-cell grid arrangement", async ({
   await expect.poll(focusedSession).toBe(THIRD_GRID_SESSION);
   await page.keyboard.press("Meta+Shift+ArrowUp");
   await expect.poll(focusedSession).toBe("prompt-project");
+  // Registry navigation prioritizes primary-axis distance between placement
+  // centers, not the legacy index-only gridArrowNav mapping. The wide bottom
+  // pane is immediately left of the top-right pane's center.
+  await page.keyboard.press("Meta+Shift+ArrowLeft");
+  await expect.poll(focusedSession).toBe(THIRD_GRID_SESSION);
+  await page.keyboard.press("Meta+Shift+ArrowDown"); // boundary uses legacy wrap
+  await expect.poll(focusedSession).toBe("prompt-project");
+  await page.keyboard.press("Meta+Shift+ArrowDown");
+  await expect.poll(focusedSession).toBe(THIRD_GRID_SESSION);
   await page.keyboard.press("Meta+Shift+ArrowLeft");
   await expect.poll(focusedSession).toBe("another-project");
-  await page.keyboard.press("Meta+Shift+ArrowDown");
+  await page.keyboard.press("Meta+Shift+ArrowLeft");
   await expect.poll(focusedSession).toBe("error-project");
-  await page.keyboard.press("Meta+Shift+ArrowDown");
+  await page.keyboard.press("Meta+Shift+ArrowLeft");
   await expect.poll(focusedSession).toBe("test-project");
   await page.keyboard.press("Meta+Shift+ArrowLeft");
   await expect.poll(focusedSession).toBe("test-project");
@@ -954,11 +963,15 @@ test("navigating away from terminal with active grid suspends grid state", async
   expect(tails).toEqual(expect.arrayContaining([expect.stringContaining("test-project-PREFILL"), expect.stringContaining("another-project-PREFILL")]));
 });
 
-test("transcript button clears grid-cell close controls", async ({ page }) => {
+test("removed Transcript entry leaves grid-cell close controls unobstructed", async ({ page }) => {
   await loadApp(page);
   await openTwoCellGrid(page);
-
-  await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCSS("top", "40px");
+  await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCount(0);
+  const remove = page.getByRole("button", { name: "Remove another-project from grid", exact: true });
+  await expect(page.locator('#desktop-grid-container .grid-cell.hydrated')).toHaveCount(2);
+  await expect(remove).toBeVisible();
+  await remove.click();
+  await expect(page.locator('#desktop-terminal-container canvas')).toBeVisible();
 });
 
 test("re-adding the remaining preserved session from settings reinitializes terminal view", async ({ page }) => {

@@ -1,5 +1,5 @@
 import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
-import { gridSessionNames, openProjectPickerFromUi, openSessionFromUi, openSettingsFromUi, startTestServer, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
+import { collapseInitialSessionMenu, gridSessionNames, openProjectPickerFromUi, openSessionFromUi, openSettingsFromUi, startTestServer, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
 
 let srv: TestServer;
 
@@ -188,6 +188,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(cards.nth(4)).toContainText("missing parent: gone <parent> & \"quoted\"");
   await expect(cards.nth(4).locator("script")).toHaveCount(0);
 
+  await collapseInitialSessionMenu(page);
   const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card").first();
   const childSidebarCards = page.locator("#sidebar-session-list .sub-session-card");
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
@@ -288,8 +289,11 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
     .evaluate((button: HTMLButtonElement) => button.click());
 
   await expect(page.locator("#delegation-grid-shell")).toBeVisible();
-  await expect(page.locator("#delegation-grid-title")).toHaveText("delegation-parent grid");
-  await expect(page.locator("#delegation-grid-summary")).toHaveText("2 children");
+  await expect(page.locator(".delegation-grid-header, #delegation-grid-title, #delegation-grid-summary")).toHaveCount(0);
+  const shellBox = (await page.locator("#delegation-grid-shell").boundingBox())!;
+  const gridBox = (await page.locator("#delegation-grid-container").boundingBox())!;
+  expect(gridBox.y).toBe(shellBox.y);
+  await page.screenshot({ path: testInfo.outputPath("delegation-grid-without-banner.png") });
   await expect(page.locator("#delegation-collapse-idle, #delegation-expand-all, #delegation-focus-parent, #delegation-exit-grid")).toHaveCount(0);
   await expect(page.locator("#delegation-grid-container .grid-cell-label")).toHaveText([
     "delegation-parent",
@@ -339,8 +343,10 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(page.locator('#delegation-grid-container .grid-cell[data-stability-marker="same-cell"]')).toHaveCount(1);
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/transitioning/);
 
-  await page.locator('#delegation-grid-container .grid-cell[data-session="idle-child"] .delegation-cell-collapse').click();
   const collapsedIdleCell = page.locator('#delegation-grid-container .grid-cell[data-session="idle-child"]');
+  await expect(collapsedIdleCell.locator('canvas')).toBeVisible();
+  await collapsedIdleCell.locator('canvas').evaluate(node => { (window as any).__collapsedIdleCanvas = node; });
+  await collapsedIdleCell.locator('.delegation-cell-collapse').click();
   await expect(collapsedIdleCell).toHaveClass(/collapsed/);
   await expect(collapsedIdleCell).toBeHidden();
   const collapsedIdleTab = page.getByRole("button", { name: "Expand idle-child" });
@@ -352,13 +358,15 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(page.locator('#delegation-grid-container .grid-cell[data-session="attention-child"]')).not.toHaveClass(/collapsed/);
-  await expect(collapsedIdleCell.locator("canvas")).toHaveCount(0);
+  await expect(collapsedIdleCell.locator("canvas")).toHaveCount(1);
+  await expect(collapsedIdleCell.locator("canvas")).toBeHidden();
   // Restored-session affordances use a defined edge, not a neon glow.
   await expect(collapsedIdleTab).toHaveCSS("border-top-style", "solid");
   await expect(collapsedIdleTab).toHaveCSS("border-top-width", "1px");
   await collapsedIdleTab.click();
   await expect(collapsedIdleCell).not.toHaveClass(/collapsed/);
   await expect(collapsedIdleCell).toBeVisible();
+  expect(await collapsedIdleCell.locator('canvas').evaluate(node => node === (window as any).__collapsedIdleCanvas)).toBe(true);
   await page.mouse.move(1, 100);
   await expect(sidebar).not.toHaveClass(/collapsed/);
   await expect(sidebar).not.toHaveClass(/collapsed/);
@@ -462,6 +470,8 @@ test("desktop delegation focus makes suspended manual-grid sessions available to
   await manualOneGridButton.click();
 
   await expect.poll(() => gridSessionNames(page)).toEqual(["child", "manual-one"]);
+  // Do not race keyboard activation against the new cells' initial autofocus.
+  await expect(page.locator('#desktop-grid-container .grid-cell[data-terminal-load-state="live"]')).toHaveCount(2);
   await openSessionFromUi(page, "child");
   await expect(page.locator("#delegation-focus-toolbar")).toBeVisible();
   await openSessionFromUi(page, "manual-one");
@@ -487,6 +497,7 @@ test("desktop delegation grid focus suspends hidden grid terminals", async ({ pa
   });
   await page.goto(srv.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   await page.locator("#sidebar-session-list").getByRole("button", {
     name: "Open parent",
     exact: true,
@@ -582,7 +593,7 @@ test("delegation root selection replaces a suspended single inspection target", 
   await expect.poll(() => rootAttaches).toBe(1);
   await openSettingsFromUi(page);
   await page.locator("#settings-back-btn").click();
-  const inspect = page.locator("#desktop-conflict-overlay").getByRole("button", { name: "Inspect root", exact: true });
+  const inspect = page.locator('#delegation-grid-container .grid-cell[data-session="root"]').getByRole("button", { name: "Inspect root", exact: true });
   await expect(inspect).toBeVisible();
   await inspect.click();
   await expect(page.getByRole("dialog", { name: "Inspect root", exact: true })).toContainText("root Settings snapshot");
@@ -611,6 +622,7 @@ test("focused delegation Settings Back retains the child inspection target", asy
     });
   });
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const sidebar = page.locator("#sidebar-session-list");
   await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
   await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
@@ -658,6 +670,7 @@ test("focused delegation terminal captures its child UUID for conflict inspectio
     });
   });
   await page.goto(srv.baseUrl);
+  await collapseInitialSessionMenu(page);
   const sidebar = page.locator("#sidebar-session-list");
   await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
   await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
@@ -693,6 +706,7 @@ test("desktop opens a child terminal with a return to its parent delegation grid
   });
   await page.goto(srv.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const sidebar = page.locator("#sidebar-session-list");
   await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
   await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
@@ -735,6 +749,7 @@ test("desktop stopping a focused child returns to its parent instead of session 
   });
   await page.goto(srv.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const sidebar = page.locator("#sidebar-session-list");
   await sidebar.getByRole("button", { name: "Expand 1 child agent" }).click();
   await sidebar.getByRole("button", { name: "Open child", exact: true }).press("Enter");
@@ -1052,8 +1067,9 @@ test("desktop selects a filtered project instead of creating its typed prefix", 
 
   await page.goto(srv.baseUrl);
   await openProjectPickerFromUi(page);
-  await page.locator("#new-project-name").fill("wo");
   const projectCards = page.locator("#project-list .card");
+  await expect(projectCards).toHaveCount(2);
+  await page.locator("#new-project-name").fill("wo");
   await expect(projectCards).toHaveText(["wolfpack"]);
   await page.keyboard.press("ArrowDown");
   await expect(projectCards.nth(0)).toHaveClass(/keyboard-selected/);
@@ -1082,8 +1098,9 @@ test("click selects a filtered project through final create", async ({ page }) =
 
   await page.goto(srv.baseUrl);
   await openProjectPickerFromUi(page);
-  await page.locator("#new-project-name").fill("wo");
   const projectCards = page.locator("#project-list .card");
+  await expect(projectCards).toHaveCount(2); // the asynchronous picker load resets its filter
+  await page.locator("#new-project-name").fill("wo");
   await expect(projectCards).toHaveText(["wolfpack"]);
   await projectCards.first().click();
 
@@ -1113,6 +1130,7 @@ test("desktop enter selects the first filtered project without arrow navigation"
 
   await page.goto(srv.baseUrl);
   await openProjectPickerFromUi(page);
+  await expect(page.locator("#project-list .card")).toHaveCount(3);
   await page.locator("#new-project-name").fill("wo");
   await expect(page.locator("#project-list .card")).toHaveText(["wolfpack", "wolfpack-tools"]);
   await page.keyboard.press("Enter");
@@ -1153,7 +1171,7 @@ test("create failure returns to the agent form with the entered session name and
   await expect(sessionName).toBeFocused();
 });
 
-test("stop confirmation is styled, cancellable, and restores focus", async ({ page }) => {
+test("stop confirmation is styled, cancellable, and restores focus", async ({ page }, testInfo) => {
   const killRequests: unknown[] = [];
   await page.route("**/api/kill", async (route) => {
     killRequests.push(route.request().postDataJSON());
@@ -1185,9 +1203,9 @@ test("stop confirmation is styled, cancellable, and restores focus", async ({ pa
       confirmTransform: confirmStyle.textTransform,
     };
   })).toEqual({
-    titleColor: "rgb(237, 243, 239)",
+    titleColor: testInfo.project.name === "desktop" ? "rgb(230, 238, 232)" : "rgb(237, 243, 239)",
     titleTransform: "none",
-    cancelBackground: "rgb(28, 33, 30)",
+    cancelBackground: testInfo.project.name === "desktop" ? "rgb(27, 36, 30)" : "rgb(28, 33, 30)",
     cancelBorderRadius: "9px",
     cancelTransform: "none",
     confirmBackground: "rgba(204, 51, 51, 0.12)",

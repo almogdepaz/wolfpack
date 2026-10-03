@@ -25,7 +25,9 @@ const result = await Bun.build({
   entrypoints: [ENTRY],
   target: "browser",
   format: "iife",
-  minify: { whitespace: true, syntax: true, identifiers: false },
+  // IIFE identifiers are private; public property names and window hooks remain.
+  // Internal diagnostic names are minified (Bun 1.4.2 ignores keepNames here).
+  minify: { whitespace: true, syntax: true, identifiers: true },
 });
 
 if (!result.success) {

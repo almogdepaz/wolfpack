@@ -3,7 +3,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
-import { hostname } from "node:os";
+import { getMachineDisplayName } from "../machine-display-name.js";
 import { execFile } from "node:child_process";
 import { createLogger, errMsg } from "../log.js";
 import { clampCols, clampRows } from "../validation.js";
@@ -92,9 +92,8 @@ export const routes: Record<
   },
 
   "GET /api/info": (_req, res) => {
-    const name = hostname()
-      .replace(/\.local$/, "")
-      .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
+    res.setHeader("Cache-Control", "no-store");
+    const name = getMachineDisplayName();
     json(res, { name, version: VERSION, machineId: getTaskGateway().machineId });
   },
 

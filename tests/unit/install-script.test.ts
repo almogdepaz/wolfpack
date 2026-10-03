@@ -321,9 +321,16 @@ printf '${serviceManager} %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
 case "$*" in *${inactiveCommand}*) exit 3 ;; esac
 exit 0
 `);
+  // Succeed at discovery so setup never falls through to the operator's macOS
+  // app bundle. Malformed fixture status keeps remote access unavailable without
+  // invoking sign-in, opening an app, or attempting Tailscale Serve.
   writeExecutable(join(managerBin, "tailscale"), `#!/bin/sh
 printf 'tailscale %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
-exit 1
+case "$*" in
+  version) printf 'fixture tailscale\\n' ;;
+  'status --self --json') printf 'fixture-invalid-json\\n' ;;
+  *) printf 'unexpected tailscale %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"; exit 97 ;;
+esac
 `);
   if (process.platform === "linux") {
     writeExecutable(join(managerBin, "loginctl"), "#!/bin/sh\nprintf 'yes\\n'\n");
@@ -336,6 +343,18 @@ printf 'unexpected ${command} %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
 exit 97
 `);
   }
+  if (process.platform === "linux") {
+    // Linux setup wraps this one read-only command in sudo. Never invoke real
+    // sudo, and keep every other privileged command denied by the fixture.
+    writeExecutable(join(managerBin, "sudo"), `#!/bin/sh
+if [ "$#" -eq 4 ] && [ "$1" = tailscale ] && [ "$2" = status ] && [ "$3" = --self ] && [ "$4" = --json ]; then
+  shift
+  exec "$INSTALL_TEST_TAILSCALE_BIN" "$@"
+fi
+printf 'unexpected sudo %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
+exit 97
+`);
+  }
   const built = spawnSync(process.execPath, ["build", "--compile", "src/cli/index.ts", "--outfile", server], {
     cwd: process.cwd(), encoding: "utf-8", timeout: 20_000,
   });
@@ -344,6 +363,7 @@ exit 97
   const environment = packageFixtureEnvironment(root, {
     PATH: managerBin,
     INSTALL_TEST_MANAGER_LOG: join(root, "manager.log"),
+    INSTALL_TEST_TAILSCALE_BIN: join(managerBin, "tailscale"),
   });
   expectClosedManagerPath(managerBin, environment, [
     "launchctl", "tailscale", "systemctl", "loginctl", "sudo", "brew", "apt", "open",
@@ -490,9 +510,9 @@ esac
   }, 45_000);
 
   test.each([
-    ["accepted", [], "n\n\ny\n24444\n\n\n", true],
-    ["declined", [], "n\n\ny\n24444\nn\n", false],
-    ["deferred", ["--defer-service-restart"], "n\n\ny\n24444\n", false],
+    ["accepted", [], "\ny\n24444\n\n", true],
+    ["declined", [], "\ny\n24444\nn\n", false],
+    ["deferred", ["--defer-service-restart"], "\ny\n24444\n", false],
   ] as const)("package runner setup %s installs its colocated pair only after acceptance", (_case, setupArgs, input, installsPair) => {
     fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-setup-owner-")));
     const { packageBin, server, broker } = createPackageRunnerFixture(fixtureRoot);
@@ -506,7 +526,7 @@ esac
       [process.execPath, join(packageBin, "run.cjs"), "setup", ...setupArgs], environment, input);
 
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    expect(String(result.stdout)).toContain("Phone and remote access stay unavailable");
+    expect(String(result.stdout)).toContain("Tailscale returned malformed identity data; remote access remains unavailable.");
     const stableServer = join(stableBin, "wolfpack");
     if (installsPair) {
       expect(readFileSync(stableServer)).toEqual(readFileSync(server));
@@ -517,6 +537,8 @@ esac
     }
     const managerLog = readFileSync(commands, "utf-8");
     expect(managerLog).toContain("tailscale version");
+    expect(managerLog).toContain("tailscale status --self --json");
+    expect(managerLog).not.toContain("tailscale serve");
     expect(managerLog).not.toContain("unexpected");
     if (!installsPair) expect(managerLog).not.toMatch(/(?:bootstrap|enable|start)/);
   }, 45_000);
@@ -730,9 +752,9 @@ esac
 
 describe("install.sh release binary staging", () => {
   test.each([
-    ["fresh acceptance", false, true, "n\n\ny\n24444\n\n"],
-    ["fresh decline", false, false, "n\n\ny\n24444\nn\n"],
-    ["managed deferred setup", true, true, "n\n\ny\n24444\n"],
+    ["fresh acceptance", false, true, "\ny\n24444\n\n"],
+    ["fresh decline", false, false, "\ny\n24444\nn\n"],
+    ["managed deferred setup", true, true, "\ny\n24444\n"],
   ] as const)("piped installer %s runs real setup and the pair owner", (_case, managed, activates, input) => {
     const fixture = prepareFixture();
     const server = join(fixtureRoot, "candidate-server");
@@ -779,7 +801,10 @@ describe("install.sh release binary staging", () => {
     expect(readFileSync(join(fixture.installDir, "wolfpack-broker"))).toEqual(readFileSync(broker));
     const managerLog = readFileSync(join(fixtureRoot, "manager.log"), "utf-8");
     expect(managerLog).toContain("tailscale version");
+    expect(managerLog).toContain("tailscale status --self --json");
+    expect(managerLog).not.toContain("tailscale serve");
     expect(managerLog).not.toContain("unexpected");
+    expect(String(result.stdout)).toContain("Tailscale returned malformed identity data; remote access remains unavailable.");
     for (const [label, unit] of [["com.wolfpack.server", "wolfpack"], ["com.wolfpack.broker", "wolfpack-broker"]]) {
       const starts = managerLog.split("\n").filter(line => process.platform === "darwin"
         ? line.startsWith("launchctl bootstrap ") && line.endsWith(`/${label}.plist`)

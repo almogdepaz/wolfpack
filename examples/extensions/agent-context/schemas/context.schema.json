@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "goal", "planItems", "decisions", "blockers", "nextSteps"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "goal": { "type": "string", "maxLength": 16000 },
+    "planItems": {
+      "type": "array", "maxItems": 200,
+      "items": { "type": "object", "additionalProperties": false, "required": ["id", "text", "status"], "properties": { "id": { "type": "string", "maxLength": 128 }, "text": { "type": "string", "maxLength": 16000 }, "status": { "enum": ["pending", "in_progress", "complete", "blocked"] } } }
+    },
+    "decisions": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 16000 } },
+    "blockers": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 16000 } },
+    "nextSteps": { "type": "array", "maxItems": 200, "items": { "type": "string", "maxLength": 16000 } }
+  }
+}
