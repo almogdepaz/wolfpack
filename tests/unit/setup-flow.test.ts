@@ -70,7 +70,11 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
           }
           return childProcess.execSync(command, options);
         },
-        execFileSync: (_file, args) => {
+        execFileSync: (file, args) => {
+          if (fixture?.failsTailscaleInstallation && file === "brew" && args[0] === "--version") return "";
+          if (fixture?.failsTailscaleInstallation && file === "brew" && args[0] === "install" && args.includes("tailscale")) {
+            throw new Error("simulated Tailscale install failure");
+          }
           if (args[0] === "status") return fixture.tailscale.selfStatus ?? JSON.stringify({ Self: { DNSName: fixture.tailscale.hostname + "." } });
           if (args[0] === "serve" && args[1] === "status") return JSON.stringify(fixture.tailscale.serveStatus);
           return "";

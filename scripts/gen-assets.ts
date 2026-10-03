@@ -9,13 +9,13 @@
  */
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
 const ROOT = join(import.meta.dirname, "..");
 const PUBLIC_DIR = join(ROOT, "public");
 const OUT_FILE = join(ROOT, "src", "public-assets.ts");
-const ASSET_VERSION_TOKEN = "__WOLFPACK_ASSET_VERSION__";
+const ASSET_VERSION_MARKER = "__WOLFPACK_ASSET_VERSION__";
 
 const MIME_MAP: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -42,14 +42,14 @@ function isText(ext: string): boolean {
 
 // Bundle ghostty-web into public/ (replaces old xterm copy step)
 console.log("bundling ghostty-web...");
-execSync("bun run scripts/bundle-ghostty.ts", {
+execFileSync("bun", ["run", "scripts/bundle-ghostty.ts"], {
   cwd: join(import.meta.dirname, ".."),
   stdio: "inherit",
 });
 
 // Bundle public/app.ts into public/app.bundle.js
 console.log("bundling app...");
-execSync("bun run scripts/bundle-app.ts", {
+execFileSync("bun", ["run", "scripts/bundle-app.ts"], {
   cwd: join(import.meta.dirname, ".."),
   stdio: "inherit",
 });
@@ -99,7 +99,7 @@ for (const file of files) {
     const source = readFileSync(filePath, "utf-8");
     let content = source;
     if (file === "index.html") {
-      content = versionIndexAssetUrls(source).replaceAll(ASSET_VERSION_TOKEN, assetVersion);
+      content = versionIndexAssetUrls(source).replaceAll(ASSET_VERSION_MARKER, assetVersion);
     } else if (file === "sw.js") {
       content = versionServiceWorkerAssetUrls(source);
     }
