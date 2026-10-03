@@ -68,7 +68,7 @@ describe("getJwtAuthConfig — present/enabled distinction", () => {
   });
 
   test("short secret: present=true, enabled=false, invalidReason set", () => {
-    const cfg = getJwtAuthConfig({ WOLFPACK_JWT_SECRET: "tooshort" });
+    const cfg = getJwtAuthConfig({ WOLFPACK_JWT_SECRET: "short" });
     expect(cfg.present).toBe(true);
     expect(cfg.enabled).toBe(false);
     expect(cfg.invalidReason).toContain("too short");
@@ -89,7 +89,7 @@ describe("getJwtAuthConfig — present/enabled distinction", () => {
 
   test("long secret: accepted", () => {
     const cfg = getJwtAuthConfig({
-      WOLFPACK_JWT_SECRET: "wolfpack-test-secret-long-enough-for-validation",
+      WOLFPACK_JWT_SECRET: "a".repeat(32),
     });
     expect(cfg.enabled).toBe(true);
     expect(cfg.present).toBe(true);
