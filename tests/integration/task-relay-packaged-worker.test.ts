@@ -89,13 +89,13 @@ test.skipIf(!cli)("packaged CLI/native broker/installed Pi tool loop survives se
       return new Response(chunk(delta, null) + chunk({}, tool ? "tool_calls" : "stop") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } });
     } catch (error) { modelError = String(error); return Response.json({ error: modelError }, { status: 500 }); }
   } });
-  writeFileSync(join(agent, "models.json"), JSON.stringify({ providers: { fixture: { baseUrl: `${model.url.origin}/v1`, api: "openai-completions", apiKey: "private-fixture-only", compat: { supportsUsageInStreaming: false }, models: ["parent", "child"].map(id => ({ id, contextWindow: 128000, maxTokens: 1024 })) } } }), { mode: 0o600 });
+  writeFileSync(join(agent, "models.json"), JSON.stringify({ providers: { fixture: { baseUrl: `${model.url.origin}/v1`, api: "openai-completions", apiKey: randomUUID(), compat: { supportsUsageInStreaming: false }, models: ["parent", "child"].map(id => ({ id, contextWindow: 128000, maxTokens: 1024 })) } } }), { mode: 0o600 });
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [installed], defaultProvider: "fixture", defaultModel: "parent", compaction: { enabled: false }, quietStartup: true }), { mode: 0o600 });
   const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserved") });
   const port = reservation.port!; await reservation.stop(true);
   writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({ port, devDir: root }), { mode: 0o600 });
   const env = { PATH: path, HOME: home, SHELL: "/bin/bash", TERM: "xterm-256color", PI_TELEMETRY: "0", WOLFPACK_PORT: String(port), WOLFPACK_BROKER_SOCKET: socket,
-    WOLFPACK_JWT_SECRET: "private-packaged-worker-secret-at-least-thirty-two", WOLFPACK_SERVICE: "1" };
+    WOLFPACK_JWT_SECRET: randomUUID().repeat(2), WOLFPACK_SERVICE: "1" };
   const processes: ReturnType<typeof Bun.spawn>[] = [];
   const spawn = (command: string[], label: string) => {
     const process = Bun.spawn(command, { cwd: root, env, stdin: "ignore", stdout: Bun.file(join(root, label + ".stdout")), stderr: Bun.file(join(root, label + ".stderr")) }); processes.push(process); return process;

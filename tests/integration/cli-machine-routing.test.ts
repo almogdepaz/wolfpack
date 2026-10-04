@@ -2,13 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import { MACHINE_CAPABILITY } from "../../src/tailnet-machine-contract.ts";
 import type { Subprocess } from "bun";
 
 const root = process.cwd();
 const cliEntry = join(root, "src/cli/index.ts");
 const ORIGIN = "https://peer.example.ts.net";
-const JWT_SECRET = "remote-cli-test-secret-that-is-at-least-32-bytes";
+const JWT_SECRET = randomBytes(32).toString("hex");
 const tempHomes: string[] = [];
 
 function handshake(origin = ORIGIN): object {

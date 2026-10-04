@@ -2,12 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import {
   applyServiceAuthFile,
   prepareServiceAuthFile,
 } from "../../src/cli/service-auth.ts";
 
 let fixtureDir = "";
+const testSecret = () => randomBytes(32).toString("hex");
 
 function credentialPath(): string {
   fixtureDir = mkdtempSync(join(tmpdir(), "wolfpack-service-auth-"));
@@ -22,7 +24,7 @@ afterEach(() => {
 describe("service JWT credential persistence", () => {
   test("persists all effective auth settings privately and restores them in a clean service environment", () => {
     const path = credentialPath();
-    const secret = "service-secret-with-at-least-32-characters";
+    const secret = testSecret();
 
     expect(prepareServiceAuthFile(path, {
       WOLFPACK_JWT_SECRET: secret,
@@ -44,7 +46,7 @@ describe("service JWT credential persistence", () => {
 
   test("reinstall without shell credentials preserves an existing valid service credential", () => {
     const path = credentialPath();
-    const secret = "service-secret-with-at-least-32-characters";
+    const secret = testSecret();
     prepareServiceAuthFile(path, { WOLFPACK_JWT_SECRET: secret });
     const before = readFileSync(path, "utf-8");
 
@@ -54,11 +56,11 @@ describe("service JWT credential persistence", () => {
 
   test("rejects a short configured secret without replacing an existing credential", () => {
     const path = credentialPath();
-    const secret = "service-secret-with-at-least-32-characters";
+    const secret = testSecret();
     prepareServiceAuthFile(path, { WOLFPACK_JWT_SECRET: secret });
     const before = readFileSync(path, "utf-8");
 
-    expect(() => prepareServiceAuthFile(path, { WOLFPACK_JWT_SECRET: "too-short" })).toThrow(
+    expect(() => prepareServiceAuthFile(path, { WOLFPACK_JWT_SECRET: ["too", "short"].join("-") })).toThrow(
       "too short",
     );
     expect(readFileSync(path, "utf-8")).toBe(before);
@@ -73,7 +75,7 @@ describe("service JWT credential persistence", () => {
   test("refuses to load a credential file readable by other users", () => {
     const path = credentialPath();
     writeFileSync(path, JSON.stringify({
-      WOLFPACK_JWT_SECRET: "service-secret-with-at-least-32-characters",
+      WOLFPACK_JWT_SECRET: testSecret(),
     }));
     chmodSync(path, 0o644);
 

@@ -8,7 +8,7 @@
  * Run: bun run scripts/publish.ts
  * Prerequisite: WOLFPACK_BUILD_MODE=package-all bun run scripts/build.ts
  */
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { validatePublicationArtifacts } from "./publish-policy";
@@ -24,7 +24,7 @@ const PLATFORM_PACKAGES = [
 ];
 
 const dryRun = process.argv.includes("--dry-run");
-const publishArgs = dryRun ? "--dry-run" : "";
+const publishArgs = dryRun ? ["--dry-run"] : [];
 
 function commandStderr(error: unknown): string {
   if (typeof error !== "object" || error === null || !("stderr" in error)) return "";
@@ -44,7 +44,7 @@ for (const pkg of PLATFORM_PACKAGES) {
   const pkgDir = join(NPM_DIR, pkg);
   console.log(`\n  ${pkg}`);
   try {
-    execSync(`npm publish ${publishArgs}`, { cwd: pkgDir, stdio: "inherit" });
+    execFileSync("npm", ["publish", ...publishArgs], { cwd: pkgDir, stdio: "inherit" });
   } catch (error: unknown) {
     const stderr = commandStderr(error);
     if (stderr.includes("EPUBLISHCONFLICT") || stderr.includes("cannot publish over") || stderr.includes("previously published versions")) {
@@ -59,7 +59,7 @@ for (const pkg of PLATFORM_PACKAGES) {
 // publish main package
 console.log("\n=== publishing main package ===");
 try {
-  execSync(`npm publish ${publishArgs}`, { cwd: ROOT, stdio: "inherit" });
+  execFileSync("npm", ["publish", ...publishArgs], { cwd: ROOT, stdio: "inherit" });
 } catch (_error: unknown) {
   console.error("failed to publish wolfpack-bridge");
   process.exit(1);

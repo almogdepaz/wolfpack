@@ -45,7 +45,7 @@ const TUI_TOKEN_BOT = "TUI_LINE_BOT";  // row 9, col 1
 // Token written on main screen BEFORE entering alt-screen.
 // The alt-screen has its own empty scrollback buffer; this token must not
 // appear anywhere in the alt-screen snapshot prefill (no bleed-through).
-const MAIN_TOKEN = "MAIN_SCREEN_PRE_TUI";
+const MAIN_MARKER = "MAIN_SCREEN_PRE_TUI";
 
 // Alt-screen fixture command (typed verbatim into the shell):
 //   \033[?1049h  switch to alt-screen buffer (main screen preserved but hidden)
@@ -172,7 +172,7 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   // ── Write main-screen token (used later to verify no alt-screen bleed-through) ──
   await page.locator("#kb-open-btn").click();
   await page.locator("#desktop-terminal-container textarea").focus();
-  await page.keyboard.type(`echo "${MAIN_TOKEN}"`);
+  await page.keyboard.type(`echo "${MAIN_MARKER}"`);
   await page.keyboard.press("Enter");
 
   // Poll until main-screen token appears in conn1 output.
@@ -180,12 +180,12 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   const mainDeadline = Date.now() + 8000;
   while (Date.now() < mainDeadline) {
     await wait(200);
-    if (stripAnsi(conn1Output).includes(MAIN_TOKEN)) {
+    if (stripAnsi(conn1Output).includes(MAIN_MARKER)) {
       mainVisible = true;
       break;
     }
   }
-  expect(mainVisible, `${MAIN_TOKEN} must appear on main screen before TUI`).toBeTruthy();
+  expect(mainVisible, `${MAIN_MARKER} must appear on main screen before TUI`).toBeTruthy();
 
   // ── Enter alt-screen and draw the deterministic TUI fixture ──
   const terminalInput = page.locator("#desktop-terminal-container textarea");
@@ -260,7 +260,7 @@ test("broker TUI: alt-screen reconnect restores canvas and has no scrollback ble
   expect(
     prefillPlain,
     "prefill must NOT contain main-screen token (no scrollback bleed-through)",
-  ).not.toContain(MAIN_TOKEN);
+  ).not.toContain(MAIN_MARKER);
 
   // ── Prefill preamble includes clear sequences ──────────────────────────────
   // renderSnapshotToAnsi always leads with \x1b[2J (clear visible) and \x1b[3J

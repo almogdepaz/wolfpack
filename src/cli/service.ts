@@ -442,12 +442,12 @@ export interface ServiceActionOptions {
 
 function launchdBootout() {
   try {
-    execSync(`launchctl bootout ${LAUNCHD_TARGET} 2>/dev/null`);
+    execFileSync("launchctl", ["bootout", LAUNCHD_TARGET], { stdio: "ignore" });
   } catch {
     // fallback: pre-1.4 versions used deprecated `launchctl load`, which
     // `bootout` can't always remove — try the legacy unload path
     try {
-      execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null`);
+      execFileSync("launchctl", ["unload", PLIST_PATH], { stdio: "ignore" });
     } catch (e: unknown) {
       log.warn("launchdBootout: legacy unload also failed", { error: errMsg(e) });
     }
@@ -455,13 +455,13 @@ function launchdBootout() {
 }
 
 function launchdBootstrap() {
-  execSync(`launchctl bootstrap ${LAUNCHD_DOMAIN} "${PLIST_PATH}"`);
-  execSync(`launchctl kickstart ${LAUNCHD_TARGET}`);
+  execFileSync("launchctl", ["bootstrap", LAUNCHD_DOMAIN, PLIST_PATH]);
+  execFileSync("launchctl", ["kickstart", LAUNCHD_TARGET]);
 }
 
 function isLaunchdServiceLoaded(): boolean {
   try {
-    execSync(`launchctl print ${LAUNCHD_TARGET} 2>&1`, { stdio: "ignore" });
+    execFileSync("launchctl", ["print", LAUNCHD_TARGET], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -469,12 +469,12 @@ function isLaunchdServiceLoaded(): boolean {
 }
 
 function launchdBootoutBroker() {
-  try { execSync(`launchctl bootout ${BROKER_LAUNCHD_TARGET} 2>/dev/null`); } catch { /* expected when not loaded */ }
+  try { execFileSync("launchctl", ["bootout", BROKER_LAUNCHD_TARGET], { stdio: "ignore" }); } catch { /* expected when not loaded */ }
 }
 
 function launchdBootstrapBroker() {
-  execSync(`launchctl bootstrap ${LAUNCHD_DOMAIN} "${BROKER_PLIST_PATH}"`);
-  execSync(`launchctl kickstart ${BROKER_LAUNCHD_TARGET}`);
+  execFileSync("launchctl", ["bootstrap", LAUNCHD_DOMAIN, BROKER_PLIST_PATH]);
+  execFileSync("launchctl", ["kickstart", BROKER_LAUNCHD_TARGET]);
 }
 
 /** Try to build the broker from source via cargo if a Cargo.toml is reachable.
@@ -493,7 +493,7 @@ export function ensureBrokerBinary(): string | null {
   }
   print(dim("  Building wolfpack-broker (cargo build --release)..."));
   try {
-    execSync(`cargo build --release --manifest-path "${manifest}" --bin wolfpack-broker`, {
+    execFileSync("cargo", ["build", "--release", "--manifest-path", manifest, "--bin", "wolfpack-broker"], {
       stdio: "inherit",
     });
   } catch (e: unknown) {
@@ -546,8 +546,8 @@ function brokerServiceInstall(): void {
     }
     try {
       execSync("systemctl --user daemon-reload");
-      execSync(`systemctl --user enable ${BROKER_SYSTEMD_SERVICE}`);
-      if (!preserveRunningBroker) execSync(`systemctl --user start ${BROKER_SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "enable", BROKER_SYSTEMD_SERVICE]);
+      if (!preserveRunningBroker) execFileSync("systemctl", ["--user", "start", BROKER_SYSTEMD_SERVICE]);
     } catch (e: unknown) {
       log.error("broker systemctl enable/start failed", { error: errMsg(e) });
       print(red(`  Failed to enable/start broker: ${errMsg(e)}`));
@@ -567,7 +567,7 @@ function brokerServiceStop(): void {
   if (IS_MACOS) {
     launchdBootoutBroker();
   } else if (IS_LINUX) {
-    try { execSync(`systemctl --user stop ${BROKER_SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected when not running */ }
+    try { execFileSync("systemctl", ["--user", "stop", BROKER_SYSTEMD_SERVICE], { stdio: "ignore" }); } catch { /* expected when not running */ }
   }
   cleanupBrokerSocket();
   print(green("  Wolfpack broker stopped."));
@@ -589,7 +589,7 @@ function brokerServiceUninstall(): void {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker plist", { error: errMsg(e) });
     }
   } else if (IS_LINUX) {
-    try { execSync(`systemctl --user disable ${BROKER_SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected when not enabled */ }
+    try { execFileSync("systemctl", ["--user", "disable", BROKER_SYSTEMD_SERVICE], { stdio: "ignore" }); } catch { /* expected when not enabled */ }
     try { unlinkSync(BROKER_SYSTEMD_PATH); } catch (e: unknown) {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker unit", { error: errMsg(e) });
     }
@@ -636,7 +636,7 @@ export function refreshInstalledServerService(options: { readonly reload?: boole
     mkdirSync(join(homedir(), ".config", "systemd", "user"), { recursive: true });
     writeFileSync(SYSTEMD_PATH, generateSystemdUnit(serviceAuthPath));
     execSync("systemctl --user daemon-reload");
-    if (wasRunning) execSync(`systemctl --user restart ${SYSTEMD_SERVICE}`);
+    if (wasRunning) execFileSync("systemctl", ["--user", "restart", SYSTEMD_SERVICE]);
   }
   print(dim(`  Refreshed installed server service descriptor${wasLoaded ? " and reloaded it" : ""}.`));
 }
@@ -796,14 +796,14 @@ export function serviceInstall() {
       process.exit(1);
     }
     try {
-      execSync(`systemctl --user enable ${SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "enable", SYSTEMD_SERVICE]);
     } catch (e: unknown) {
       log.error("systemctl enable failed", { error: errMsg(e) });
       print(red(`  Failed to enable service: ${errMsg(e)}`));
       process.exit(1);
     }
     try {
-      execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "start", SYSTEMD_SERVICE]);
     } catch (e: unknown) {
       log.error("systemctl start failed", { error: errMsg(e) });
       print(red(`  Failed to start service: ${errMsg(e)}`));
@@ -834,8 +834,8 @@ export function serviceUninstall() {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("serviceUninstall: failed to remove plist", { error: errMsg(e) });
     }
   } else if (IS_LINUX) {
-    try { execSync(`systemctl --user stop ${SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected: exits non-zero when service not running */ }
-    try { execSync(`systemctl --user disable ${SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected: exits non-zero when already disabled */ }
+    try { execFileSync("systemctl", ["--user", "stop", SYSTEMD_SERVICE], { stdio: "ignore" }); } catch { /* expected: exits non-zero when service not running */ }
+    try { execFileSync("systemctl", ["--user", "disable", SYSTEMD_SERVICE], { stdio: "ignore" }); } catch { /* expected: exits non-zero when already disabled */ }
     try { unlinkSync(SYSTEMD_PATH); } catch (e: unknown) {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("serviceUninstall: failed to remove unit file", { error: errMsg(e) });
     }
@@ -895,7 +895,7 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
     if (IS_MACOS) {
       launchdBootout();
     } else if (IS_LINUX) {
-      execSync(`systemctl --user stop ${SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "stop", SYSTEMD_SERVICE]);
     }
     serverStopped = true;
     print(green("  Wolfpack service stopped."));
@@ -926,7 +926,7 @@ export function serviceStart(_options: ServiceActionOptions = {}): boolean {
     if (IS_MACOS) {
       launchdBootstrap();
     } else if (IS_LINUX) {
-      execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "start", SYSTEMD_SERVICE]);
     }
     print(green("  Wolfpack service started."));
     return true;
@@ -983,10 +983,10 @@ export function serviceRestart(options: ServiceActionOptions = {}): boolean {
 export function isServiceRunning(): boolean {
   try {
     if (IS_MACOS) {
-      const out = execSync(`launchctl print ${LAUNCHD_TARGET} 2>&1`, { encoding: "utf-8" });
+      const out = execFileSync("launchctl", ["print", LAUNCHD_TARGET], { encoding: "utf-8" });
       return /pid\s*=\s*\d+/i.test(out);
     } else if (IS_LINUX) {
-      const out = execSync(`systemctl --user is-active ${SYSTEMD_SERVICE} 2>&1`, { encoding: "utf-8" }).trim();
+      const out = execFileSync("systemctl", ["--user", "is-active", SYSTEMD_SERVICE], { encoding: "utf-8" }).trim();
       return out === "active";
     }
   } catch { /* expected: command exits non-zero when service inactive */ }
@@ -996,10 +996,10 @@ export function isServiceRunning(): boolean {
 export function isBrokerServiceRunning(): boolean {
   try {
     if (IS_MACOS) {
-      const out = execSync(`launchctl print ${BROKER_LAUNCHD_TARGET} 2>&1`, { encoding: "utf-8" });
+      const out = execFileSync("launchctl", ["print", BROKER_LAUNCHD_TARGET], { encoding: "utf-8" });
       return /pid\s*=\s*\d+/i.test(out);
     } else if (IS_LINUX) {
-      const out = execSync(`systemctl --user is-active ${BROKER_SYSTEMD_SERVICE} 2>&1`, { encoding: "utf-8" }).trim();
+      const out = execFileSync("systemctl", ["--user", "is-active", BROKER_SYSTEMD_SERVICE], { encoding: "utf-8" }).trim();
       return out === "active";
     }
   } catch { /* expected: command exits non-zero when broker is inactive */ }
@@ -1024,7 +1024,7 @@ export function serviceStatus() {
   print(dim(`  Version: ${VERSION}`));
   if (IS_MACOS) {
     try {
-      const out = execSync(`launchctl print ${LAUNCHD_TARGET} 2>&1`, { encoding: "utf-8" });
+      const out = execFileSync("launchctl", ["print", LAUNCHD_TARGET], { encoding: "utf-8" });
       const pidMatch = out.match(/pid\s*=\s*(\d+)/i);
       if (pidMatch) {
         print(green(`  Wolfpack is running (PID ${pidMatch[1]})`));
@@ -1040,10 +1040,11 @@ export function serviceStatus() {
     }
   } else if (IS_LINUX) {
     try {
-      const out = execSync(`systemctl --user is-active ${SYSTEMD_SERVICE} 2>&1`, { encoding: "utf-8" }).trim();
+      const out = execFileSync("systemctl", ["--user", "is-active", SYSTEMD_SERVICE], { encoding: "utf-8" }).trim();
       if (out === "active") {
-        const pidOut = execSync(
-          `systemctl --user show ${SYSTEMD_SERVICE} --property=MainPID --value`,
+        const pidOut = execFileSync(
+          "systemctl",
+          ["--user", "show", SYSTEMD_SERVICE, "--property=MainPID", "--value"],
           { encoding: "utf-8" },
         ).trim();
         print(green(`  Wolfpack is running (PID ${pidOut})`));
