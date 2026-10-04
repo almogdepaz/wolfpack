@@ -24,7 +24,7 @@ import { createLogger, errMsg } from "../log.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
 import { prepareServiceAuthFile } from "./service-auth.js";
 import { rotateLogFile } from "./logs.js";
-import { waitForApplicationReady } from "./readiness.js";
+import { requireManagedCurl, waitForApplicationReady } from "./readiness.js";
 
 const log = createLogger("service");
 import {
@@ -178,6 +178,7 @@ export async function installCandidatePair(
     throw new Error("Missing or invalid config. Run 'wolfpack setup' before reinstalling managed services.");
   }
 
+  if (mode === "explicit" || wasManaged) requireManagedCurl();
   const serverChanged = candidateDiffers(candidates.server, STABLE_SERVER_PATH, "wolfpack");
   const brokerChanged = candidateDiffers(candidates.broker, STABLE_BROKER_PATH, "wolfpack-broker");
   if (brokerChanged && managed.brokerRunning) confirmBrokerReplacement();
@@ -631,6 +632,7 @@ export function refreshInstalledServerService(options: { readonly reload?: boole
   // launchd can have a loaded KeepAlive job between process instances. It
   // still holds an in-memory copy of the old plist and must be re-bootstrapped.
   const wasLoaded = reload && (IS_MACOS ? isLaunchdServiceLoaded() : wasRunning);
+  if (wasLoaded) requireManagedCurl();
   const authState = prepareServiceAuthFile(SERVICE_AUTH_PATH);
   const serviceAuthPath = authState === "absent" ? undefined : SERVICE_AUTH_PATH;
 
@@ -718,14 +720,15 @@ function configureLinger(): void {
 }
 
 export function serviceInstall() {
-  if (IS_MACOS) {
-    rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
-    rotateLogFile(BROKER_LOG_PATH);
-  }
   const config = loadConfig();
   if (!config) {
     print(red("  Run 'wolfpack setup' first."));
     process.exit(1);
+  }
+  requireManagedCurl();
+  if (IS_MACOS) {
+    rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
+    rotateLogFile(BROKER_LOG_PATH);
   }
 
   let serviceAuthPath: string | undefined;
@@ -924,6 +927,7 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
 }
 
 export function serviceStart(_options: ServiceActionOptions = {}): boolean {
+  requireManagedCurl();
   if (IS_MACOS) {
     rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
     rotateLogFile(BROKER_LOG_PATH);
@@ -977,6 +981,7 @@ function brokerRestartPrompt(activeBrokerSessions: number | null): string {
 }
 
 export function serviceRestart(options: ServiceActionOptions = {}): boolean {
+  requireManagedCurl();
   const activeBrokerSessions = readBrokerSessionCount(loadConfig());
   const promptedForBroker = options.broker === undefined;
   const restartBroker = options.broker ?? (

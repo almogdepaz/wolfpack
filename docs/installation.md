@@ -26,6 +26,8 @@ The installer downloads and verifies the matching `wolfpack` and `wolfpack-broke
 
 Declining login services remains effective: ordinary `wolfpack` runs in the foreground without installing services. It reuses a healthy existing broker and leaves that broker's sessions alive on shutdown. If it starts its own broker, Ctrl-C or shutdown stops that broker too and ends its sessions. Package foreground startup uses the matching package broker rather than replacing managed binaries. Use explicit `wolfpack service install` when you want login services.
 
+Managed service installation, activation, restart, upgrade, and loaded-service reload require runnable `curl` on `PATH` for bounded loopback health checks. Wolfpack checks this before disruptive managed changes; install curl or fix PATH before retrying. Foreground startup, declined-service setup, fresh binary-only skip-setup installation, and non-activating operations do not require curl. The installer's `wget` fallback downloads release assets only; it does not satisfy the managed-service health-check prerequisite. Wolfpack does not install curl automatically.
+
 On later runs, the owner validates the pair and required configuration before disrupting managed services. An unchanged running broker is preserved; replacing a running broker warns that its sessions will end and requires confirmation before stopping it. For an existing managed installation, setup defers activation to the owner, which installs or repairs the required services after setup succeeds. The shell does not perform a separate restart. Installation or activation failure returns nonzero; fix the reported cause and rerun the same installer.
 
 ### Bunx or npm: no persistent CLI

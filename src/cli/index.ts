@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { printAccessUrls } from "./access-output.js";
-import { waitForApplicationReady } from "./readiness.js";
+import { requireManagedCurl, waitForApplicationReady } from "./readiness.js";
 import { print, printError, printJson, bold, dim, red, WOLF } from "./formatting.js";
 import pkg from "../../package.json";
 import {
@@ -215,7 +215,8 @@ async function start() {
     return;
   }
 
-  // CLI invocation — ensure service is running the current version
+  // CLI invocation — check tooling before staging/replacing managed binaries.
+  requireManagedCurl();
   const url = remoteUrl(config);
   const wasRunning = isServiceRunning();
   if (packageCandidates && !wasRunning) {

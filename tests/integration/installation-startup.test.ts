@@ -209,6 +209,7 @@ afterAll(() => {
 for (const entry of ["source", "package"] as const) {
   test(`${entry}: decline login services then ordinary start serves without descriptors`, async () => {
     const f = fixture();
+    rmSync(join(f.env.PATH!, "curl")); // declined setup and foreground need no curl
     rmSync(join(f.home, ".wolfpack", "config.json"));
     const args = entry === "source" ? [process.execPath, join(repository, "src/cli/index.ts")] : [process.execPath, runner];
     const setup = spawnSync("/usr/bin/python3", ["-I", "-S", "-B", join(repository, "tests/fixtures/installation-setup-pty.py"), ...args, "setup"], { cwd: f.home, env: f.env, input: `\n${f.port}\nskip\nn\nn\n`, encoding: "utf8", timeout: 20000 });
@@ -353,6 +354,103 @@ for (const boundary of ["unavailable", "degraded", "refused", "healthy", "instal
     } finally { receipt(f, { phase: "before-backstop", boundary, exitCode: child.exitCode }); }
   }, 20000);
 }
+
+for (const tooling of ["missing", "unlaunchable"] as const) {
+  for (const action of ["ordinary", "install", "start", "restart", "pair", "upgrade", "refresh"] as const) {
+    test(`curl ${tooling} ${action}: prerequisite fails before managed mutations`, async () => {
+      const f = fixture();
+      managedFixture(f, false);
+      rmSync(join(f.env.PATH!, "curl"));
+      if (tooling === "unlaunchable") executable(join(f.env.PATH!, "curl"), "#!/missing-fixture-interpreter\n");
+      const state = join(f.home, ".wolfpack");
+      executable(join(state, "bin", "wolfpack"), "#!/bin/sh\nexit 17\n");
+      for (const name of ["wolfpack.log", "broker.log"]) writeFileSync(join(state, name), "untouched log\n");
+      const paths = ["bin/wolfpack", "bin/wolfpack-broker", "service-auth.json", "wolfpack.log", "broker.log"].map(path => join(state, path));
+      paths.push(join(f.home, "Library/LaunchAgents/com.wolfpack.server.plist"), join(f.home, ".config/systemd/user/wolfpack.service"));
+      const snapshot = () => paths.map(path => existsSync(path) ? readFileSync(path, "base64") : null);
+      const before = snapshot();
+      let args: readonly string[];
+      if (action === "pair" || action === "refresh") {
+        const entry = join(f.home, "action.ts");
+        const invocation = action === "pair"
+          ? `await service.installCandidatePair({server:${JSON.stringify(compiled)},broker:${JSON.stringify(join(suite, "package/wolfpack-broker"))}},'explicit');`
+          : "service.refreshInstalledServerService();";
+        writeFileSync(entry, `import * as service from ${JSON.stringify(join(repository, "src/cli/service.ts"))}; ${invocation}`);
+        args = [process.execPath, entry];
+      } else if (action === "upgrade") {
+        args = [compiled, "install", join(suite, "package/wolfpack-broker")];
+      } else if (action === "ordinary") args = [compiled];
+      else args = [process.execPath, join(repository, "src/cli/index.ts"), "service", action, ...(action === "restart" ? ["--broker"] : [])];
+      const started = Date.now();
+      const child = launch(args, f, "managed", { WOLFPACK_INSTALL_SKIP_SETUP: "1" });
+      const stopped = await until(() => exited(child), 12000);
+      const output = readFileSync(join(f.home, "managed.log"), "utf8");
+      const commands = readFileSync(join(f.home, "manager.log"), "utf8").trim().split("\n").filter(Boolean);
+      const domain = `gui/${process.getuid!()}`;
+      const readOnly = new Set([
+        `launchctl print ${domain}/com.wolfpack.server`, `launchctl print ${domain}/com.wolfpack.broker`,
+        "systemctl --user is-active wolfpack", "systemctl --user is-active wolfpack-broker",
+      ]);
+      const after = snapshot();
+      receipt(f, { tooling, action, stopped, durationMs: Date.now() - started, before, after, commands, output });
+      expect(stopped).toBe(true);
+      expect(child.exitCode).not.toBe(0);
+      expect(output).toContain("requires runnable curl on PATH");
+      expect(output).not.toContain("Application startup timed out");
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(after).toEqual(before);
+      expect(commands.every(command => readOnly.has(command))).toBe(true);
+      expect(output).not.toContain("Local: http");
+    }, 16000);
+  }
+}
+
+test("fresh bootstrap checks curl at service acceptance, after harmless binary staging", () => {
+  const f = fixture();
+  rmSync(join(f.env.PATH!, "curl"));
+  rmSync(join(f.home, ".wolfpack", "config.json"));
+  const result = spawnSync("/usr/bin/python3", ["-I", "-S", "-B", join(repository, "tests/fixtures/installation-setup-pty.py"), compiled, "install", join(suite, "package/wolfpack-broker")], {
+    cwd: f.home, env: f.env, input: `\n${f.port}\nskip\nn\ny\n`, encoding: "utf8", timeout: 20000,
+  });
+  const output = result.stdout + result.stderr;
+  writeFileSync(join(f.home, "setup.log"), output);
+  receipt(f, { status: result.status, error: result.error?.message, output });
+  expect(result.status).toBe(1);
+  expect(output).toContain("Start wolfpack automatically on login?");
+  expect(output).toContain("requires runnable curl on PATH");
+  expect(readFileSync(join(f.home, ".wolfpack/bin/wolfpack"))).toEqual(readFileSync(compiled));
+  expect(existsSync(join(f.home, ".wolfpack/service-auth.json"))).toBe(false);
+  assertNoDescriptors(f);
+  expect(readFileSync(join(f.home, "manager.log"), "utf8")).not.toMatch(/(?:bootstrap|bootout|kickstart|daemon-reload|enable|restart)/);
+}, 25000);
+
+test("curl-free fresh skip-setup installs only the binary pair", async () => {
+  const f = fixture();
+  rmSync(join(f.env.PATH!, "curl"));
+  const child = launch([compiled, "install", join(suite, "package/wolfpack-broker")], f, "managed", { WOLFPACK_INSTALL_SKIP_SETUP: "1" });
+  const stopped = await until(() => exited(child), 3000);
+  receipt(f, { stopped, exitCode: child.exitCode });
+  expect(stopped).toBe(true);
+  expect(child.exitCode).toBe(0);
+  expect(readFileSync(join(f.home, ".wolfpack/bin/wolfpack"))).toEqual(readFileSync(compiled));
+  assertNoDescriptors(f);
+});
+
+test("curl-free non-activating refresh does not require the activation prerequisite", async () => {
+  const f = fixture();
+  managedFixture(f, false);
+  rmSync(join(f.env.PATH!, "curl"));
+  const entry = join(f.home, "refresh.ts");
+  writeFileSync(entry, `import {refreshInstalledServerService} from ${JSON.stringify(join(repository, "src/cli/service.ts"))}; refreshInstalledServerService({reload:false});`);
+  const child = launch([process.execPath, entry], f, "managed");
+  const stopped = await until(() => exited(child), 3000);
+  const output = readFileSync(join(f.home, "managed.log"), "utf8");
+  receipt(f, { stopped, exitCode: child.exitCode, output });
+  expect(stopped).toBe(true);
+  expect(child.exitCode).toBe(0);
+  expect(output).toContain("Refreshed installed server service descriptor");
+  expect(output).not.toContain("and reloaded it");
+});
 
 test("occupied unrelated healthy port cannot bless foreground child and owned broker stops", async () => {
   const f = fixture();
