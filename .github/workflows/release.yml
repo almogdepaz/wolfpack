@@ -89,13 +89,13 @@ jobs:
           bun run scripts/broker-artifacts.ts stage --root=. --binary=staging/bun-darwin-arm64/wolfpack-broker --metadata=staging/bun-darwin-arm64/broker-artifact.json --target=bun-darwin-arm64 --mode=release
           bun run scripts/broker-artifacts.ts stage --root=. --binary=staging/bun-darwin-x64/wolfpack-broker --metadata=staging/bun-darwin-x64/broker-artifact.json --target=bun-darwin-x64 --mode=release
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: broker-bun-darwin-arm64
           path: staging/bun-darwin-arm64
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: broker-bun-darwin-x64
           path: staging/bun-darwin-x64
@@ -142,13 +142,13 @@ jobs:
           bun run scripts/broker-artifacts.ts stage --root=. --binary=staging/bun-linux-x64/wolfpack-broker --metadata=staging/bun-linux-x64/broker-artifact.json --target=bun-linux-x64 --mode=release
           bun run scripts/broker-artifacts.ts stage --root=. --binary=staging/bun-linux-arm64/wolfpack-broker --metadata=staging/bun-linux-arm64/broker-artifact.json --target=bun-linux-arm64 --mode=release
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: broker-bun-linux-x64
           path: staging/bun-linux-x64
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: broker-bun-linux-arm64
           path: staging/bun-linux-arm64
@@ -207,7 +207,7 @@ jobs:
         run: tar -czf "$RUNNER_TEMP/release-build-bundle.tar.gz" dist
 
       - name: Upload build bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-build-bundle-${{ github.sha }}
           path: ${{ runner.temp }}/release-build-bundle.tar.gz
@@ -247,7 +247,7 @@ jobs:
         run: scripts/create-final-release-bundle.sh
 
       - name: Upload final bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-final-bundle-${{ github.sha }}
           path: ${{ runner.temp }}/release-final-bundle.tar.gz
