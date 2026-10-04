@@ -5,7 +5,7 @@ import { createServer as createHttpServer } from "node:http";
 import type { Server } from "node:http";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -203,6 +203,40 @@ async function stopPeerServer(peer: PeerServer | undefined): Promise<void> {
   if (peer.process.exitCode === null) {
     peer.process.kill("SIGKILL");
     await exited;
+  }
+}
+
+function diagnosticError(error: unknown): { readonly name: string; readonly message: string; readonly stack?: string } {
+  return error instanceof Error ? { name: error.name, message: error.message, stack: error.stack }
+    : { name: typeof error, message: String(error) };
+}
+
+function retainHttpPeerFailure(
+  fixture: HttpPeerFixture,
+  sender: PeerServer | undefined,
+  receiver: PeerServer | undefined,
+  error: unknown,
+  observedFetchError: unknown,
+): void {
+  try {
+    const evidence = mkdtempSync(join(tmpdir(), "wp-task-peer-failure-"));
+    const peer = (value: PeerServer | undefined) => value === undefined ? null : {
+      exitCode: value.process.exitCode, signalCode: value.process.signalCode,
+      stdout: value.stdout.value, stderr: value.stderr.value,
+    };
+    const snapshot = {
+      error: diagnosticError(error), observedFetchError: observedFetchError === undefined ? null : diagnosticError(observedFetchError),
+      fixture, sender: peer(sender), receiver: peer(receiver),
+      dispatches: existsSync(fixture.dispatchLogPath) ? readFileSync(fixture.dispatchLogPath, "utf8") : null,
+    };
+    writeFileSync(join(evidence, "receipt.json"), JSON.stringify(snapshot));
+    console.info(JSON.stringify({ event: "task-gateway-peer-failure", receipt: evidence, ...snapshot }));
+  } catch (captureError) {
+    console.error(JSON.stringify({
+      event: "task-gateway-peer-failure-capture-failed",
+      error: diagnosticError(error), observedFetchError: observedFetchError === undefined ? null : diagnosticError(observedFetchError),
+      captureError: diagnosticError(captureError),
+    }));
   }
 }
 
@@ -796,6 +830,7 @@ describe("cross-process peer task gateway", () => {
     const fixture = await createHttpPeerFixture("sender-concurrency");
     let sender: PeerServer | undefined;
     let receiver: PeerServer | undefined;
+    let observedFetchError: unknown;
     try {
       receiver = await spawnPeerServer(peerServerOptions(fixture, "receiver"));
       sender = await spawnPeerServer(peerServerOptions(fixture, "sender", [{ type: TASK_EVENT_TYPE.INFORMATION, count: 20 }], true, undefined, undefined, undefined, 100));
@@ -803,13 +838,21 @@ describe("cross-process peer task gateway", () => {
         callerSession: "parent", to: { machine: fixture.receiverOrigin, sessionId: "receiver-id" }, task: "serialize concurrent sender delivery",
       });
       if (typeof sent.taskId !== "string") throw new Error("expected remote task receipt");
+      // Observe any unexpected in-flight rejection immediately, even if the
+      // independent dispatch assertion fails before this result is consumed.
       const sending = postPeerRequest(sender.base, "/api/tasks/v1/message", {
         callerSession: "parent", taskId: sent.taskId, type: "information", message: "force concurrent durable delivery attempts",
+      }).then(response => ({ response }), error => {
+        observedFetchError = error;
+        console.error(JSON.stringify({ event: "task-gateway-in-flight-fetch-rejection", error: diagnosticError(error) }));
+        return { error };
       });
       await waitForPeerDispatch(fixture, TASK_EVENT_TYPE.INFORMATION);
       const statuses = await Promise.all(Array.from({ length: 8 }, () => fetch(`${sender!.base}/api/tasks/v1/status?callerSession=parent&taskId=${sent.taskId}`)));
       expect(statuses.map((response) => response.status)).toEqual(Array.from({ length: 8 }, () => 200));
-      expect((await sending).status).toBe(503);
+      const sendingResult = await sending;
+      if ("error" in sendingResult) throw sendingResult.error;
+      expect(sendingResult.response.status).toBe(503);
       await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
       sender = undefined;
       receiver = undefined;
@@ -832,6 +875,9 @@ describe("cross-process peer task gateway", () => {
       await stopPeerServer(sender);
       sender = undefined;
       expect(peerDispatches(fixture).filter((entry) => entry.role === "sender" && entry.path === "/api/tasks/v1/peer/event" && entry.eventId === event.id)).toHaveLength(4);
+    } catch (error) {
+      retainHttpPeerFailure(fixture, sender, receiver, error, observedFetchError);
+      throw error;
     } finally {
       await Promise.all([stopPeerServer(sender), stopPeerServer(receiver)]);
       rmSync(fixture.root, { recursive: true, force: true });
