@@ -345,7 +345,9 @@ exit 97
   }
   // Only fixture Tailscale status may pass through sudo; never run host sudo/open.
   writeExecutable(join(managerBin, "sudo"), `#!/bin/sh
-if [ "$1" = '${managerBin}/tailscale' ] && [ "$2" = "status" ]; then shift; exec '${managerBin}/tailscale' "$@"; fi
+if [ "$#" -eq 4 ] && { [ "$1" = '${managerBin}/tailscale' ] || [ "$1" = "tailscale" ]; } && [ "$2" = "status" ] && [ "$3" = "--self" ] && [ "$4" = "--json" ]; then
+  shift; exec '${managerBin}/tailscale' "$@"
+fi
 printf 'unexpected sudo %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
 exit 97
 `);
@@ -382,6 +384,27 @@ afterEach(() => {
 });
 
 describe("install entrypoint parity", () => {
+  test("setup sudo fixture accepts Linux PATH and absolute Tailscale status only", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-setup-sudo-")));
+    const { server, broker } = createPackageRunnerFixture(fixtureRoot);
+    const environment = prepareSetupPair(fixtureRoot, server, broker);
+    const managerBin = environment.PATH!;
+    const results = [
+      ["tailscale", "status", "--self", "--json"],
+      [join(managerBin, "tailscale"), "status", "--self", "--json"],
+      ["/usr/bin/tailscale", "status", "--self", "--json"],
+      ["tailscale", "up"],
+      [join(managerBin, "tailscale"), "status", "--self", "--json", "extra"],
+    ].map(args => {
+      const child = spawnSync(join(managerBin, "sudo"), args, { cwd: fixtureRoot, env: environment, encoding: "utf8", timeout: 1000 });
+      return { args, status: child.status, stdout: child.stdout, stderr: child.stderr };
+    });
+    const evidence = mkdtempSync(join(tmpdir(), "wp-setup-sudo-receipt-"));
+    writeFileSync(join(evidence, "results.json"), JSON.stringify(results));
+    console.info(`setup sudo fixture receipt: ${evidence}`);
+    expect(results.map(result => result.status)).toEqual([0, 0, 97, 97, 97]);
+    for (const result of results.slice(0, 2)) expect(JSON.parse(result.stdout)).toEqual({ BackendState: "NeedsLogin" });
+  }, 25000);
   test("package exposes both the installed CLI name and the bunx package-name alias", () => {
     const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8"));
 
