@@ -37,7 +37,6 @@ function runCli(args: readonly string[], env: Readonly<Record<string, string>> =
 interface DashboardServiceFixture {
   readonly serviceStartThrows: boolean;
   readonly running: readonly boolean[];
-  readonly port?: number;
   readonly tailscaleHostname?: string;
 }
 
@@ -87,13 +86,23 @@ function runServiceRestartCli(serviceRestartResult: boolean): CliResult {
   }
 }
 
-function runDashboard(fixture: DashboardServiceFixture): CliResult {
+interface DashboardResult extends CliResult {
+  readonly port: number;
+}
+
+async function runDashboard(fixture: DashboardServiceFixture): Promise<DashboardResult> {
   const home = mkdtempSync(join(tmpdir(), "wolfpack-cli-dashboard-"));
+  // Output tests still isolate service managers, but readiness uses real HTTP.
+  const listener = fixture.running.every(Boolean) ? Bun.serve({
+    hostname: "127.0.0.1", port: 0,
+    fetch: () => Response.json({ status: "ready", broker: { state: "ready" } }),
+  }) : undefined;
+  const port = listener?.port ?? 18790;
   const preloadPath = join(home, "service-fixture.ts");
   mkdirSync(join(home, ".wolfpack"), { recursive: true });
   writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({
     devDir: root,
-    port: fixture.port ?? 18790,
+    port,
     tailscaleHostname: fixture.tailscaleHostname,
   }));
   writeFileSync(preloadPath, `
@@ -104,8 +113,8 @@ function runDashboard(fixture: DashboardServiceFixture): CliResult {
       serviceInstall: () => {},
       serviceUninstall: () => {},
       serviceStop: () => {},
-      serviceStart: ${fixture.serviceStartThrows ? '() => { throw new Error("simulated dashboard service start failure"); }' : "() => {}"},
-      serviceRestart: () => {},
+      serviceStart: ${fixture.serviceStartThrows ? '() => { throw new Error("simulated dashboard service start failure"); }' : "() => true"},
+      serviceRestart: () => true,
       serviceStatus: () => {},
       isServiceInstalled: () => true,
       isServiceRunning: () => running[runningCall++] ?? false,
@@ -118,18 +127,17 @@ function runDashboard(fixture: DashboardServiceFixture): CliResult {
   `);
   const { WOLFPACK_SERVICE: _serviceMode, ...environment } = process.env;
   try {
-    const child = Bun.spawnSync([process.execPath, "--preload", preloadPath, cliEntry], {
+    const child = Bun.spawn([process.execPath, "--preload", preloadPath, cliEntry], {
       cwd: root,
       env: { ...environment, HOME: home, NO_COLOR: "1" },
-      stdout: "pipe",
-      stderr: "pipe",
+      stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 3000,
     });
-    return {
-      exitCode: child.exitCode,
-      stdout: child.stdout.toString(),
-      stderr: child.stderr.toString(),
-    };
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+    ]);
+    return { exitCode, stdout, stderr, port };
   } finally {
+    listener?.stop(true);
     rmSync(home, { recursive: true, force: true });
   }
 }
@@ -318,8 +326,9 @@ describe("cli help dispatch", () => {
     expect(child.stderr).not.toContain("Scan to open on your phone");
   });
 
-  test.each([18790, 24444])("local-only dashboard prints port %p without a QR or phone prompt", (port) => {
-    const child = runDashboard({ serviceStartThrows: false, running: [true, true, true], port });
+  test("local-only dashboard prints its configured port without a QR or phone prompt", async () => {
+    const child = await runDashboard({ serviceStartThrows: false, running: [true, true, true] });
+    const port = child.port;
 
     expect(child.exitCode, child.stderr).toBe(0);
     expect(child.stderr).toBe("");
@@ -330,9 +339,10 @@ describe("cli help dispatch", () => {
     expect(child.stdout).toContain("Open the local URL on this computer; Tailscale is not required for local access.");
   });
 
-  test.each([18790, 24444])("tailnet dashboard prints both URLs below the QR with local port %p", (port) => {
+  test("tailnet dashboard prints both URLs below the QR with its configured local port", async () => {
     const hostname = "workstation.tailnet.ts.net";
-    const child = runDashboard({ serviceStartThrows: false, running: [true, true, true], port, tailscaleHostname: hostname });
+    const child = await runDashboard({ serviceStartThrows: false, running: [true, true, true], tailscaleHostname: hostname });
+    const port = child.port;
 
     expect(child.exitCode, child.stderr).toBe(0);
     expect(child.stderr).toBe("");
@@ -346,28 +356,22 @@ describe("cli help dispatch", () => {
     expect(child.stdout).not.toContain("Both URLs work");
   });
 
-  test("dashboard service-start diagnostics and retry help use stderr", () => {
-    const child = runDashboard({ serviceStartThrows: true, running: [false] });
+  test("dashboard service-start failure exits nonzero with stderr and no access URLs", async () => {
+    const child = await runDashboard({ serviceStartThrows: true, running: [false] });
 
-    expect(child.exitCode, child.stderr).toBe(0);
-    expect(child.stdout).toContain("WOLFPACK");
-    expect(child.stdout).not.toContain("Service startup failed");
-    expect(child.stdout).not.toContain("Wolfpack service is not running");
-    expect(child.stderr).toContain("Service startup failed: Error: simulated dashboard service start failure");
-    expect(child.stderr).toContain("Run 'wolfpack service install' to retry.");
-    expect(child.stderr).toContain("Wolfpack service is not running.");
-    expect(child.stderr).toContain("wolfpack service start");
+    expect(child.exitCode, child.stderr).toBe(1);
+    expect(child.stdout).toBe("");
+    expect(child.stderr).toContain("simulated dashboard service start failure");
     expect(child.stderr).not.toContain("\x1b[");
   });
 
-  test("dashboard restart warning uses stderr without contaminating dashboard output", () => {
-    const child = runDashboard({ serviceStartThrows: false, running: [true, false] });
+  test("dashboard failed restart exits nonzero without access URLs", async () => {
+    const child = await runDashboard({ serviceStartThrows: false, running: [true, false] });
 
-    expect(child.exitCode, child.stderr).toBe(0);
-    expect(child.stdout).toContain("WOLFPACK");
-    expect(child.stdout).not.toContain("Service was running but didn't restart.");
-    expect(child.stderr).toContain("Service was running but didn't restart.");
-    expect(child.stderr).toContain("Run wolfpack service start to restart it.");
+    expect(child.exitCode, child.stderr).toBe(1);
+    expect(child.stdout).toBe("");
+    expect(child.stderr).toContain("Wolfpack service is not running.");
+    expect(child.stderr).toContain("wolfpack service start");
     expect(child.stderr).not.toContain("\x1b[");
   });
 

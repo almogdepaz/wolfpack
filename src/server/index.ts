@@ -2,6 +2,7 @@
  * Wolfpack server — HTTP + WebSocket server creation, CORS, startup.
  */
 import { createServer } from "node:http";
+import { SERVER_LISTENING } from "../server-startup-contract.js";
 import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { WebSocketServer } from "ws";
 
@@ -337,6 +338,7 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
 
   server.listen(port, host, () => {
     log.info("server started", { url: `http://localhost:${port}/` });
+    process.send?.({ type: SERVER_LISTENING, port });
   });
 }
 

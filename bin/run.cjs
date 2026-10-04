@@ -17,7 +17,7 @@ if (!process.versions.bun) {
   }
 }
 
-const { execFileSync } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const { lstatSync, readFileSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const { platform, arch } = require("node:os");
@@ -110,12 +110,37 @@ function findBinary() {
 
 const binary = findBinary();
 
+function reportExecutionFailure(error) {
+  console.error(`wolfpack: failed to execute ${binary}`);
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
+
 try {
-  execFileSync(binary, process.argv.slice(2), { stdio: "inherit" });
-} catch (e) {
-  if (typeof e.status !== "number") {
-    console.error(`wolfpack: failed to execute ${binary}`);
-    console.error(e instanceof Error ? e.message : String(e));
-  }
-  process.exit(typeof e.status === "number" ? e.status : 1);
+  const child = spawn(binary, process.argv.slice(2), { stdio: "inherit" });
+  let failed = false;
+  let terminationForwarded = false;
+  const onError = (error) => {
+    failed = true;
+    reportExecutionFailure(error);
+  };
+  const forwardSignal = (signal) => {
+    if (terminationForwarded) return;
+    terminationForwarded = true;
+    try { child.kill(signal); }
+    catch (error) { onError(error); }
+  };
+  const onSigterm = () => forwardSignal("SIGTERM");
+  const onSigint = () => forwardSignal("SIGINT");
+  process.on("SIGTERM", onSigterm);
+  process.on("SIGINT", onSigint);
+  child.once("error", onError);
+  child.once("close", (code, signal) => {
+    process.off("SIGTERM", onSigterm);
+    process.off("SIGINT", onSigint);
+    if (code === null && !failed) onError(new Error(`child terminated by ${signal}`));
+    process.exitCode = failed || code === null ? 1 : code;
+  });
+} catch (error) {
+  reportExecutionFailure(error);
 }

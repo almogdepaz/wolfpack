@@ -107,6 +107,15 @@ fi
 
 echo ""
 
+# Open the controlling terminal once, before staging or requesting assets.
+# Readability alone does not prove /dev/tty can actually be opened.
+if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" != "1" ]; then
+  if ! { exec 3</dev/tty; } 2>/dev/null; then
+    echo "  $(red '✗') Setup requires an interactive terminal. Re-run this installer from one."
+    exit 1
+  fi
+fi
+
 # ── Download binaries ──
 
 TARGET=$(detect_target)
@@ -219,11 +228,7 @@ if $IS_MACOS; then
 fi
 
 if [ "${WOLFPACK_INSTALL_SKIP_SETUP:-0}" != "1" ]; then
-  if [ ! -r /dev/tty ]; then
-    echo "  $(red '✗') Setup requires an interactive terminal. Re-run this installer from one."
-    exit 1
-  fi
-  "$STAGED_WOLFPACK" install "$STAGED_BROKER" < /dev/tty
+  "$STAGED_WOLFPACK" install "$STAGED_BROKER" <&3
 else
   "$STAGED_WOLFPACK" install "$STAGED_BROKER"
 fi

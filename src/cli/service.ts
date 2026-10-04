@@ -24,6 +24,7 @@ import { createLogger, errMsg } from "../log.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
 import { prepareServiceAuthFile } from "./service-auth.js";
 import { rotateLogFile } from "./logs.js";
+import { requireManagedCurl, waitForApplicationReady } from "./readiness.js";
 
 const log = createLogger("service");
 import {
@@ -104,7 +105,7 @@ interface InstallationCandidatePair {
 
 type InstallationMode = "bootstrap" | "explicit";
 
-function validateExecutableCandidate(path: string, name: string): void {
+export function validateExecutableCandidate(path: string, name: string): void {
   let stat: ReturnType<typeof lstatSync>;
   try {
     stat = lstatSync(path);
@@ -177,6 +178,7 @@ export async function installCandidatePair(
     throw new Error("Missing or invalid config. Run 'wolfpack setup' before reinstalling managed services.");
   }
 
+  if (mode === "explicit" || wasManaged) requireManagedCurl();
   const serverChanged = candidateDiffers(candidates.server, STABLE_SERVER_PATH, "wolfpack");
   const brokerChanged = candidateDiffers(candidates.broker, STABLE_BROKER_PATH, "wolfpack-broker");
   if (brokerChanged && managed.brokerRunning) confirmBrokerReplacement();
@@ -611,6 +613,14 @@ function isBrokerServiceInstalled(): boolean {
   return false;
 }
 
+function requireApplicationReady(): void {
+  const config = loadConfig();
+  if (!config) throw new Error("Missing or invalid config. Run 'wolfpack setup' first.");
+  if (!waitForApplicationReady(config.port)) {
+    throw new Error(`Application startup timed out at localhost:${config.port}: /api/health must report ready app and broker. Check ~/.wolfpack/wolfpack.log and ~/.wolfpack/broker.log.`);
+  }
+}
+
 /**
  * Rewrite the installed server descriptor after setup changes descriptor-backed
  * config, optionally reloading it. The independent broker and its PTYs are untouched.
@@ -622,6 +632,7 @@ export function refreshInstalledServerService(options: { readonly reload?: boole
   // launchd can have a loaded KeepAlive job between process instances. It
   // still holds an in-memory copy of the old plist and must be re-bootstrapped.
   const wasLoaded = reload && (IS_MACOS ? isLaunchdServiceLoaded() : wasRunning);
+  if (wasLoaded) requireManagedCurl();
   const authState = prepareServiceAuthFile(SERVICE_AUTH_PATH);
   const serviceAuthPath = authState === "absent" ? undefined : SERVICE_AUTH_PATH;
 
@@ -638,6 +649,7 @@ export function refreshInstalledServerService(options: { readonly reload?: boole
     execSync("systemctl --user daemon-reload");
     if (wasRunning) execFileSync("systemctl", ["--user", "restart", SYSTEMD_SERVICE]);
   }
+  if (wasLoaded) requireApplicationReady();
   print(dim(`  Refreshed installed server service descriptor${wasLoaded ? " and reloaded it" : ""}.`));
 }
 
@@ -708,14 +720,15 @@ function configureLinger(): void {
 }
 
 export function serviceInstall() {
-  if (IS_MACOS) {
-    rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
-    rotateLogFile(BROKER_LOG_PATH);
-  }
   const config = loadConfig();
   if (!config) {
     print(red("  Run 'wolfpack setup' first."));
     process.exit(1);
+  }
+  requireManagedCurl();
+  if (IS_MACOS) {
+    rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
+    rotateLogFile(BROKER_LOG_PATH);
   }
 
   let serviceAuthPath: string | undefined;
@@ -767,6 +780,7 @@ export function serviceInstall() {
       print(dim(`  Try manually: launchctl bootstrap gui/$(id -u) "${PLIST_PATH}"`));
       process.exit(1);
     }
+    requireApplicationReady();
     print("");
     print(green("  Wolfpack service installed and started."));
     print(dim(`  Plist: ${PLIST_PATH}`));
@@ -810,6 +824,7 @@ export function serviceInstall() {
       print(dim(`  Check logs: journalctl --user -u ${SYSTEMD_SERVICE}`));
       process.exit(1);
     }
+    requireApplicationReady();
     configureLinger();
     print("");
     print(green("  Wolfpack service installed and started."));
@@ -912,6 +927,7 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
 }
 
 export function serviceStart(_options: ServiceActionOptions = {}): boolean {
+  requireManagedCurl();
   if (IS_MACOS) {
     rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
     rotateLogFile(BROKER_LOG_PATH);
@@ -928,11 +944,12 @@ export function serviceStart(_options: ServiceActionOptions = {}): boolean {
     } else if (IS_LINUX) {
       execFileSync("systemctl", ["--user", "start", SYSTEMD_SERVICE]);
     }
+    requireApplicationReady();
     print(green("  Wolfpack service started."));
     return true;
   } catch (e: unknown) {
     log.error("failed to start service", { error: errMsg(e) });
-    print(red("  Failed to start service."));
+    print(red(`  Failed to start service: ${errMsg(e)}`));
     return false;
   }
 }
@@ -964,6 +981,7 @@ function brokerRestartPrompt(activeBrokerSessions: number | null): string {
 }
 
 export function serviceRestart(options: ServiceActionOptions = {}): boolean {
+  requireManagedCurl();
   const activeBrokerSessions = readBrokerSessionCount(loadConfig());
   const promptedForBroker = options.broker === undefined;
   const restartBroker = options.broker ?? (
