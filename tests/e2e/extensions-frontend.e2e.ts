@@ -67,15 +67,20 @@ function writeGitProbePackage(): string {
   return source;
 }
 
-function writeGenericPackage(id: string, title: string, version = "1.0.0", withLayout = false): string {
+function writeGenericPackage(id: string, title: string, version = "1.0.0", withLayout = false, withDocument = false): string {
   const source = join(root, id);
   mkdirSync(join(source, "dist"), { recursive: true, mode: 0o700 });
-  writeFileSync(join(source, "package.json"), JSON.stringify({ name: `wolfpack-${id}`, version, wolfpack: { manifestVersion: 1, apiVersion: 1, id, ui: "dist/ui.js", skills: [], documents: [] } }));
+  if (withDocument) { mkdirSync(join(source, "schemas"), { recursive: true }); mkdirSync(join(source, "skills", `wolfpack-${id}`), { recursive: true }); }
+  const documents = withDocument ? [{ id: "shared", schemaVersion: 1, schema: "schemas/shared.json" }] : [];
+  const skills = withDocument ? [`skills/wolfpack-${id}`] : [];
+  writeFileSync(join(source, "package.json"), JSON.stringify({ name: `wolfpack-${id}`, version, wolfpack: { manifestVersion: 1, apiVersion: 1, id, ui: "dist/ui.js", skills, documents } }));
+  if (withDocument) { writeFileSync(join(source, "schemas", "shared.json"), JSON.stringify({ type: "object", required: ["schemaVersion", "goal"], properties: { schemaVersion: { const: 1 }, goal: { type: "string" } } })); writeFileSync(join(source, "skills", `wolfpack-${id}`, "SKILL.md"), `---\nname: wolfpack-${id}\ndescription: synthetic fixture\n---\n`); }
   const layout = withLayout ? `host.registerTerminalLayout({ id: "recipe", title: ${JSON.stringify(`${title} recipe`)}, arrange(context) { return { version: 1, rows: Array.from({ length: Math.max(1, context.panes.length) }, () => ({ size: 1 })), columns: [{ size: 1 }], placements: context.panes.map((pane, row) => ({ paneId: pane.id, row, column: 0 })) }; } });` : "";
-  writeFileSync(join(source, "dist", "ui.js"), `export default host => { host.registerContextView({ id: "shared", title: ${JSON.stringify(title)}, mount(container) { container.textContent = ${JSON.stringify(`${title} mounted`)}; return { dispose() {} }; } }); ${layout} };\n`);
+  const documentCode = withDocument ? `const heading=document.createElement("h2");root.append(heading);const release=context.documents.subscribe("shared",(value)=>{heading.textContent=value&&typeof value==="object"&&typeof value.goal==="string"?value.goal:"No document"});` : "";
+  // Framework-only fixture: namespaced storage/document/lifecycle API, never product widget code.
+  writeFileSync(join(source, "dist", "ui.js"), `export default host => { host.registerContextView({ id: "shared", title: ${JSON.stringify(title)}, mount(container, context) { const root=document.createElement("section"), label=document.createElement("label"), editor=document.createElement("textarea"), state=document.createElement("span"); state.textContent=${JSON.stringify(`${title} mounted`)}; label.textContent=${JSON.stringify(`${title} local draft`)}; editor.value=context.storage.get("draft")||""; editor.addEventListener("input",()=>context.storage.set("draft",editor.value)); label.append(editor);root.append(state,label);${documentCode}container.replaceChildren(root);return { setVisible(visible){root.hidden=!visible},dispose(){${withDocument ? 'release();' : ''}root.remove()} }; } }); ${layout} };\n`);
   return source;
 }
-
 async function createSession(name: string, parentSession?: string, project = PROJECT): Promise<void> {
   const response = await fetch(`${server!.baseUrl}/api/create`, {
     method: "POST",
@@ -105,7 +110,7 @@ function writeContext(filename: string, goal: string, schemaVersion = 1): string
 
 function publishContext(sessionName: string, goal: string, ifRevision: number): string {
   return runCli([
-    "extension-data", "publish", "agent-context/context", "--session", sessionIds.get(sessionName)!,
+    "extension-data", "publish", "delta/shared", "--session", sessionIds.get(sessionName)!,
     "--file", writeContext(`${sessionName}-${randomUUID()}.json`, goal), "--if-revision", String(ifRevision),
     "--request-id", randomUUID(), "--json",
   ], server!.port);
@@ -150,8 +155,8 @@ async function refreshThroughSessionSwitch(page: Page, testInfo: TestInfo): Prom
 
 async function selectAgentContext(page: Page): Promise<void> {
   await showWidgets(page);
-  await expect(page.getByRole("tab", { name: /Agent Context/ })).toBeVisible({ timeout: 5_000 });
-  await page.getByRole("tab", { name: /Agent Context/ }).click();
+  await expect(page.getByRole("tab", { name: /Delta/ })).toBeVisible({ timeout: 5_000 });
+  await page.getByRole("tab", { name: /Delta/ }).click();
 }
 
 // Production boundary: the compiled public CLI snapshots ordinary packages
@@ -174,11 +179,13 @@ test.beforeAll(async () => {
   expect(build.status, build.stderr.toString()).toBe(0);
   alphaSource = writeGenericPackage("alpha", "Alpha", "1.0.0", true);
   const beta = writeGenericPackage("beta", "Beta");
+  const gamma = writeGenericPackage("gamma", "Gamma");
+  const delta = writeGenericPackage("delta", "Delta", "1.0.0", false, true);
   runCli(["extensions", "install", alphaSource, "--trust-browser-code"]);
   runCli(["extensions", "install", beta, "--trust-browser-code"]);
-  runCli(["extensions", "install", join(ROOT, "examples", "extensions", "agent-context"), "--trust-browser-code", "--skills", "pi"]);
-  runCli(["extensions", "install", join(ROOT, "examples", "extensions", "notes"), "--trust-browser-code"]);
-  expect(existsSync(join(home.path, ".pi", "agent", "skills", "wolfpack-agent-context", "SKILL.md"))).toBe(true);
+  runCli(["extensions", "install", delta, "--trust-browser-code", "--skills", "pi"]);
+  runCli(["extensions", "install", gamma, "--trust-browser-code"]);
+  expect(existsSync(join(home.path, ".pi", "agent", "skills", "wolfpack-delta", "SKILL.md"))).toBe(true);
   server = await start({ envOverrides: environment() });
   const readiness = await (await fetch(`${server.baseUrl}/api/providers`, { headers: { authorization: `Bearer ${token()}` } })).json();
   expect(readiness.providers).toHaveLength(PROVIDER_DEFINITIONS.length);
@@ -257,7 +264,7 @@ test("remote scopes have no empty widget dock and preserve local collapse across
   // A sole widget mirrors the deployed workspace; no package install/update is performed.
   await page.route("**/api/extensions", async route => {
     const response = await route.fetch(), catalog = await response.json();
-    await route.fulfill({ response, json: { ...catalog, installations: catalog.installations.filter((item: { extensionId: string }) => item.extensionId === "notes") } });
+    await route.fulfill({ response, json: { ...catalog, installations: catalog.installations.filter((item: { extensionId: string }) => item.extensionId === "gamma") } });
   });
   const origin = "https://widget-peer.example.ts.net", installationId = "33333333-3333-4333-8333-333333333333";
   const remoteId = "44444444-4444-4444-8444-444444444444";
@@ -277,10 +284,10 @@ test("remote scopes have no empty widget dock and preserve local collapse across
   await page.routeWebSocket("wss://widget-peer.example.ts.net/**", () => { remoteSockets++; });
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [{ hostname: "widget-peer.example.ts.net", tailnetNodeId: "n-widget-peer", origin, online: true }] } }));
   await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
-  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  const note = page.locator("[data-context-view='gamma/shared'] textarea");
   await expect(note).toBeVisible();
-  await expect(page.getByRole("button", { name: "Close Notes", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Close Gamma", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Collapse Gamma", exact: true }).click();
   const preferences = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
   const requests = extensionRequests;
   await page.locator('#sidebar-session-list .card', { hasText: "widget-remote" }).click();
@@ -297,11 +304,11 @@ test("remote scopes have no empty widget dock and preserve local collapse across
   await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
   await expect.poll(() => remoteSockets).toBe(sockets + 1);
   await openSession(page, SESSION_B); await expect(note).toBeHidden();
-  await expect(page.getByRole("tab", { name: "Notes", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Gamma", exact: true })).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(preferences);
   await page.reload(); await openSession(page, SESSION_A); await expect(note).toBeHidden();
-  await page.getByRole("tab", { name: "Notes", exact: true }).press("Enter"); await expect(note).toBeVisible();
-  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await page.getByRole("tab", { name: "Gamma", exact: true }).press("Enter"); await expect(note).toBeVisible();
+  await page.getByRole("button", { name: "Collapse Gamma", exact: true }).click();
   await page.locator('#sidebar-session-list .card', { hasText: "widget-remote" }).click();
   await expect(page.locator(".widget-panel:visible")).toHaveCount(0);
   // A cold remote entry has no registrations and must not create diagnostic rails either.
@@ -316,7 +323,7 @@ for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area}
   test.skip(testInfo.project.name !== "desktop", "desktop auto-hide drawers");
   await authorize(page);
   await page.addInitScript(area => localStorage.setItem("wolfpack-widget-layout:v1", JSON.stringify({
-    placements: { "notes/notes": area }, widgets: { "alpha/shared": "closed", "beta/shared": "closed", "agent-context/context": "closed" },
+    placements: { "gamma/shared": area }, widgets: { "alpha/shared": "closed", "beta/shared": "closed", "delta/shared": "closed" },
   })), area);
   const resizes: { resizeId: number }[] = [], acks: { resizeId: number }[] = []; let sockets = 0;
   page.on("websocket", socket => {
@@ -326,20 +333,20 @@ for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area}
   });
   await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
   if (area === "left") await dockPanel(page, "Sessions", "right");
-  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  const note = page.locator("[data-context-view='gamma/shared'] textarea");
   await expect(note).toBeVisible(); await note.fill("drawer draft");
   const terminal = page.locator("#desktop-terminal-container");
   await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
-  await page.evaluate(() => { (window as any).__drawerNodes = { note: document.querySelector("[data-context-view='notes/notes'] textarea"), canvas: document.querySelector("#desktop-terminal-container canvas") }; });
+  await page.evaluate(() => { (window as any).__drawerNodes = { note: document.querySelector("[data-context-view='gamma/shared'] textarea"), canvas: document.querySelector("#desktop-terminal-container canvas") }; });
   await page.clock.install();
-  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await page.getByRole("button", { name: "Collapse Gamma", exact: true }).click();
   await page.clock.runFor(1000);
   await expect(note).toBeHidden();
   expect(resizes.at(-1)?.resizeId).toEqual(expect.any(Number));
   await expect.poll(() => acks.at(-1)?.resizeId).toBe(resizes.at(-1)!.resizeId);
   const box = await terminal.boundingBox(), count = resizes.length, attached = sockets;
   const saved = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
-  const rail = page.getByRole("tab", { name: "Notes", exact: true });
+  const rail = page.getByRole("tab", { name: "Gamma", exact: true });
   // Collapse must stay collapsed under the stationary pointer; a new entry may peek.
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await rail.hover(); await expect(note).toBeVisible();
@@ -355,7 +362,7 @@ for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area}
   expect(peekMetrics.terminal).toEqual(box); expect(peekMetrics.resizeFrames).toBe(0); expect(sockets).toBe(attached);
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(saved);
   await rail.click(); await expect(note).toHaveValue("drawer retained edit");
-  expect(await page.evaluate(() => { const saved = (window as any).__drawerNodes; return [saved.note === document.querySelector("[data-context-view='notes/notes'] textarea"), saved.canvas === document.querySelector("#desktop-terminal-container canvas")]; })).toEqual([true, true]);
+  expect(await page.evaluate(() => { const saved = (window as any).__drawerNodes; return [saved.note === document.querySelector("[data-context-view='gamma/shared'] textarea"), saved.canvas === document.querySelector("#desktop-terminal-container canvas")]; })).toEqual([true, true]);
   await page.screenshot({ path: testInfo.outputPath(`${area}-widget-overlay.png`) });
   await page.getByRole("button", { name: "Context full view", exact: true }).click();
   await expect(note).toBeVisible(); await expect(terminal).toBeHidden();
@@ -363,7 +370,7 @@ for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area}
   await expect(note).toBeHidden(); await expect(rail).toBeFocused();
   await rail.press("Enter");
   const beforePin = resizes.length;
-  await page.getByRole("button", { name: "Pin Notes", exact: true }).click();
+  await page.getByRole("button", { name: "Pin Gamma", exact: true }).click();
   await expect(page.locator(".widget-panel[data-peek=true]")).toHaveCount(0);
   await page.clock.runFor(1000);
   expect(await terminal.boundingBox()).not.toEqual(box); expect(resizes.length).toBeGreaterThan(beforePin);
@@ -378,7 +385,7 @@ test("collapsed rails preview the hovered widget and dismiss on scope and breakp
   test.skip(testInfo.project.name !== "desktop", "desktop drawer lifecycle");
   await authorize(page);
   await page.addInitScript(() => localStorage.setItem("wolfpack-widget-layout:v1", JSON.stringify({ widgets: {
-    "alpha/shared": "collapsed", "beta/shared": "collapsed", "notes/notes": "closed", "agent-context/context": "closed",
+    "alpha/shared": "collapsed", "beta/shared": "collapsed", "gamma/shared": "closed", "delta/shared": "closed",
   } })));
   await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
   const saved = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
@@ -433,26 +440,26 @@ test("widgets collapse individually without close controls, terminal chrome or l
   await expect(page.locator("#workspace-context-collapse")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Move Terminal grid", exact: true })).toHaveCount(0);
   await expect(page.locator("#workspace-terminal-region .workspace-context-header:visible")).toHaveCount(0);
-  await page.getByRole("tab", { name: "Notes", exact: true }).click();
-  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await page.getByRole("tab", { name: "Gamma", exact: true }).click();
+  const note = page.locator("[data-context-view='gamma/shared'] textarea");
   await note.fill("retained collapsed draft");
   await note.evaluate(node => { (window as any).__collapsedNote = { node, parent: node.parentElement }; });
   await terminal.locator("canvas").evaluate(node => { (window as any).__collapseCanvas = node; });
   const attached = sockets;
-  await dockPanel(page, "Notes", "bottom");
+  await dockPanel(page, "Gamma", "bottom");
   await page.getByRole("tab", { name: "Alpha", exact: true }).click();
-  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await page.getByRole("button", { name: "Collapse Gamma", exact: true }).click();
   await expect(note).toBeHidden();
   const bottom = page.locator('.widget-panel[data-widget-area="bottom"]:visible');
-  await expect(bottom.getByRole("tab", { name: "Notes", exact: true })).toBeVisible();
+  await expect(bottom.getByRole("tab", { name: "Gamma", exact: true })).toBeVisible();
   expect((await bottom.boundingBox())!.height).toBeLessThanOrEqual(48);
-  await bottom.getByRole("tab", { name: "Notes", exact: true }).click();
+  await bottom.getByRole("tab", { name: "Gamma", exact: true }).click();
   await expect(note).toHaveValue("retained collapsed draft");
   expect(await note.evaluate(node => node === (window as any).__collapsedNote.node && node.parentElement === (window as any).__collapsedNote.parent)).toBe(true);
-  await expect(page.getByRole("button", { name: "Close Notes", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Close Gamma", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Collapse Gamma", exact: true }).click();
   await expect(note).toBeHidden();
-  await expect(page.getByRole("tab", { name: "Notes", exact: true })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Gamma", exact: true })).toBeVisible();
   await expect(page.locator("[data-context-view='alpha/shared']")).toBeVisible();
   expect(await terminal.locator("canvas").evaluate(node => node === (window as any).__collapseCanvas)).toBe(true);
   expect(sockets).toBe(attached);
@@ -462,7 +469,7 @@ test("widgets collapse individually without close controls, terminal chrome or l
   await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
   await page.locator("#settings-back-btn").click();
   await expect(note).toBeHidden();
-  await page.getByRole("tab", { name: "Notes", exact: true }).press("Enter");
+  await page.getByRole("tab", { name: "Gamma", exact: true }).press("Enter");
   await expect(note).toHaveValue("retained collapsed draft");
 });
 
@@ -475,19 +482,19 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await openSession(page, SESSION_A);
   const terminal = page.locator("#desktop-terminal-container");
   await expect(terminal).toHaveAttribute("data-terminal-load-state", "live");
-  await page.getByRole("tab", { name: "Notes", exact: true }).click();
-  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await page.getByRole("tab", { name: "Gamma", exact: true }).click();
+  const note = page.locator("[data-context-view='gamma/shared'] textarea");
   await note.fill("independent retained draft");
   await note.evaluate(node => { (window as any).__independentNote = { node, parent: node.parentElement, view: node.closest("[data-context-view]") }; });
   const canvas = terminal.locator("canvas");
   await canvas.evaluate(node => { (window as any).__independentCanvas = node; });
   const attached = sockets;
-  await dockPanel(page, "Notes", "bottom");
+  await dockPanel(page, "Gamma", "bottom");
   const right = page.locator('.widget-panel[data-widget-area="right"]:visible');
   const bottom = page.locator('.widget-panel[data-widget-area="bottom"]:visible');
   await right.getByRole("tab", { name: "Alpha", exact: true }).click();
   await expect(bottom.locator("textarea")).toHaveValue("independent retained draft");
-  await expect(right.locator("[data-context-view='alpha/shared']")).toHaveText("Alpha mounted");
+  await expect(right.locator("[data-context-view='alpha/shared']")).toContainText("Alpha mounted");
   const terminalBox = (await page.locator("#workspace-terminal-region").boundingBox())!;
   const rightBox = (await right.boundingBox())!; const bottomBox = (await bottom.boundingBox())!;
   expect(rightBox.x).toBeGreaterThanOrEqual(terminalBox.x + terminalBox.width);
@@ -508,7 +515,7 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveCSS("border-bottom-width", "1px");
   await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveCSS("box-shadow", "rgb(69, 237, 126) 0px 2px 0px 0px inset");
   await expect(bottom.getByRole("tab", { name: "Alpha", exact: true })).toHaveCSS("font-weight", "600");
-  await bottom.getByRole("tab", { name: "Notes", exact: true }).click();
+  await bottom.getByRole("tab", { name: "Gamma", exact: true }).click();
   await expect(note).toHaveValue("independent retained draft");
   await bottom.getByRole("tab", { name: "Alpha", exact: true }).click();
   await dockPanel(page, "Alpha", "right");
@@ -553,13 +560,13 @@ test("session navigation reveals a terminal behind a widget tab or full view wit
   await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
   const terminal = page.locator("#workspace-terminal-region");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
-  await page.getByRole("tab", { name: "Notes", exact: true }).click();
-  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await page.getByRole("tab", { name: "Gamma", exact: true }).click();
+  const note = page.locator("[data-context-view='gamma/shared'] textarea");
   await note.fill("retained through native tab recovery");
   await note.evaluate(node => { (window as any).__recoverNote = { node, parent: node.parentElement }; });
   await terminal.locator("canvas").evaluate(node => { (window as any).__recoverCanvas = { node, parent: node.parentElement }; });
   const attached = sockets;
-  await dockPanel(page, "Notes", "main");
+  await dockPanel(page, "Gamma", "main");
   const placements = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1")!).placements);
   for (const full of [false, true]) {
     await expect(note).toBeVisible();
@@ -568,7 +575,7 @@ test("session navigation reveals a terminal behind a widget tab or full view wit
     await page.locator("#sidebar-session-list .card", { hasText: SESSION_A }).click();
     await expect(terminal).toBeVisible();
     await expect(page.locator("#workspace-shell")).toHaveAttribute("data-full-view", "none");
-    await page.getByRole("tab", { name: "Notes", exact: true }).click();
+    await page.getByRole("tab", { name: "Gamma", exact: true }).click();
     await expect(note).toHaveValue("retained through native tab recovery");
   }
   expect(await note.evaluate(node => node === (window as any).__recoverNote.node && node.parentElement === (window as any).__recoverNote.parent)).toBe(true);
@@ -577,7 +584,7 @@ test("session navigation reveals a terminal behind a widget tab or full view wit
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-widget-layout:v1")!).placements)).toEqual(placements);
   await page.getByRole("tab", { name: "Terminal grid", exact: true }).click();
   await page.screenshot({ path: testInfo.outputPath("terminal-recovered-widget-retained.png") });
-  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await page.getByRole("tab", { name: "Gamma", exact: true }).click();
   // Explicit opening intent must survive a saved widget tab arriving with a late catalog.
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -586,10 +593,10 @@ test("session navigation reveals a terminal behind a widget tab or full view wit
   try {
     await page.reload(); await openSession(page, SESSION_A);
     release();
-    await expect(page.getByRole("tab", { name: "Notes", exact: true })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Gamma", exact: true })).toBeVisible();
     await expect(terminal).toBeVisible();
   } finally { release(); await page.unroute(catalogUrl); }
-  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await page.getByRole("tab", { name: "Gamma", exact: true }).click();
   await expect(note).toHaveValue("retained through native tab recovery");
   await page.locator(".widget-panel").filter({ has: note }).getByRole("button", { name: "Context full view", exact: true }).click();
   const saved = await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
@@ -611,30 +618,30 @@ test("native panels share widget areas and Main recovers without losing a draft 
   await page.goto(server!.baseUrl); await openSession(page, SESSION_A);
   const terminal = page.locator("#workspace-terminal-region"), sessions = page.locator("#desktop-sidebar");
   await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
-  await page.getByRole("tab", { name: "Notes", exact: true }).click();
-  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await page.getByRole("tab", { name: "Gamma", exact: true }).click();
+  const note = page.locator("[data-context-view='gamma/shared'] textarea");
   await note.fill("native docking retained draft");
   await note.evaluate(node => { (window as any).__dockingNote = { node, parent: node.parentElement }; });
   await terminal.locator("canvas").evaluate(node => { (window as any).__dockingCanvas = node; });
   const attached = sockets;
-  await dockPanel(page, "Notes", "main");
+  await dockPanel(page, "Gamma", "main");
   await expect(terminal).toBeHidden();
   await dockPanel(page, "Sessions", "right");
   await expect(terminal).toBeHidden(); await expect(note).toBeVisible();
   await expect(sessions).toHaveAttribute("data-widget-area", "right");
-  await expect(sessions.getByRole("tab", { name: "Agent Context", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Collapse Notes", exact: true }).click();
+  await expect(sessions.getByRole("tab", { name: "Delta", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Collapse Gamma", exact: true }).click();
   await expect(note).toBeHidden(); await expect(terminal).toBeVisible();
   await expect(terminal).toHaveAttribute("data-widget-area", "main");
-  await page.getByRole("tab", { name: "Notes", exact: true }).click();
+  await page.getByRole("tab", { name: "Gamma", exact: true }).click();
   await expect(note).toHaveValue("native docking retained draft"); await expect(terminal).toBeHidden();
-  await dockPanel(page, "Notes", "bottom");
+  await dockPanel(page, "Gamma", "bottom");
   await expect(terminal).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("widget-bottom-sessions-right-grid-main.png") });
   const saved = await page.evaluate(() => [localStorage.getItem("wolfpack-widget-layout:v1"), localStorage.getItem("wolfpack-workspace-shell")]);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator("#workspace-restore").click();
-  await page.getByRole("tab", { name: "Agent Context", exact: true }).click();
+  await page.getByRole("tab", { name: "Delta", exact: true }).click();
   await page.locator("#workspace-context-back").click();
   await page.setViewportSize({ width: 1440, height: 900 });
   await expect(note).toHaveValue("native docking retained draft"); await expect(terminal).toBeVisible();
@@ -729,17 +736,17 @@ test("hiding widgets from another settings tab pauses documents without replacin
   test.skip(testInfo.project.name !== "desktop", "desktop retained-terminal and cross-tab visibility boundary");
   await authorize(page);
   let reads = 0; let sockets = 0;
-  page.on("request", request => { if (request.url().includes("/documents/agent-context/context")) reads++; });
+  page.on("request", request => { if (request.url().includes("/documents/delta/shared")) reads++; });
   page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets++; });
   await page.goto(server!.baseUrl); await openSession(page, SESSION_A); await selectAgentContext(page);
-  const view = page.locator("[data-context-view='agent-context/context']");
+  const view = page.locator("[data-context-view='delta/shared']");
   await expect(view.locator("h2")).toBeVisible();
   const canvas = page.locator("#desktop-terminal-container canvas");
   const oldView = await view.elementHandle(); const oldCanvas = await canvas.elementHandle();
   const attached = sockets;
   for (const position of ["bottom", "full-screen", "right"] as const) {
-    if (position === "full-screen") await page.getByRole("region", { name: "Agent Context widget", exact: true }).getByRole("button", { name: "Context full view", exact: true }).click();
-    else await dockPanel(page, "Agent Context", position);
+    if (position === "full-screen") await page.getByRole("region", { name: "Delta widget", exact: true }).getByRole("button", { name: "Context full view", exact: true }).click();
+    else await dockPanel(page, "Delta", position);
     await page.screenshot({ path: testInfo.outputPath(`installed-widget-${position}.png`), animations: "disabled" });
   }
   expect(await view.evaluate((node, previous) => node === previous, oldView)).toBe(true);
@@ -749,10 +756,10 @@ test("hiding widgets from another settings tab pauses documents without replacin
   try {
     await authorize(managerPage);
     await managerPage.goto(`${server!.baseUrl}/#settings-extensions`);
-    const checkbox = managerPage.getByRole("checkbox", { name: "Show widgets from agent-context", exact: true });
+    const checkbox = managerPage.getByRole("checkbox", { name: "Show widgets from delta", exact: true });
     await checkbox.uncheck();
     await expect(view).toBeHidden();
-    await expect(page.getByRole("tab", { name: /Agent Context/ })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: /Delta/ })).toHaveCount(0);
     const hiddenReads = reads; await page.waitForTimeout(2_300); expect(reads).toBe(hiddenReads);
     await checkbox.check(); await selectAgentContext(page);
     await expect.poll(() => reads).toBeGreaterThan(hiddenReads);
@@ -781,27 +788,27 @@ test("authenticated installed packages compose qualified local views and refresh
   await showWidgets(page);
   await expect(page.getByRole("tab", { name: "Alpha" })).toBeVisible({ timeout: 5_000 });
   await expect(page.getByRole("tab", { name: "Beta" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: /Agent Context/ })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Notes" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /Delta/ })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "Gamma" })).toBeVisible();
   await page.getByRole("tab", { name: "Alpha" }).click();
-  await expect(page.locator("[data-context-view='alpha/shared']")).toHaveText("Alpha mounted");
+  await expect(page.locator("[data-context-view='alpha/shared']")).toContainText("Alpha mounted");
   await page.getByRole("tab", { name: "Beta" }).click();
-  await expect(page.locator("[data-context-view='beta/shared']")).toHaveText("Beta mounted");
+  await expect(page.locator("[data-context-view='beta/shared']")).toContainText("Beta mounted");
 
   await selectAgentContext(page);
-  const heading = page.locator("[data-context-view='agent-context/context'] h2");
+  const heading = page.locator("[data-context-view='delta/shared'] h2");
   await expect(heading).toContainText(HOSTILE_GOAL);
-  await expect(page.locator("[data-context-view='agent-context/context'] img")).toHaveCount(0);
+  await expect(page.locator("[data-context-view='delta/shared'] img")).toHaveCount(0);
   expect(await page.evaluate(() => (window as unknown as { __extensionHostile?: number }).__extensionHostile ?? 0)).toBe(0);
   publishContext(SESSION_A, "revision two", 1);
   await expect(heading).toContainText("revision two", { timeout: 5_000 });
 
-  await page.getByRole("tab", { name: "Notes" }).click();
-  const note = page.locator("[data-context-view='notes/notes'] textarea");
+  await page.getByRole("tab", { name: "Gamma" }).click();
+  const note = page.locator("[data-context-view='gamma/shared'] textarea");
   await note.fill("retained note draft");
   await note.evaluate((editor: HTMLTextAreaElement) => editor.setSelectionRange(3, 11));
   await selectAgentContext(page);
-  await page.getByRole("tab", { name: "Notes" }).click();
+  await page.getByRole("tab", { name: "Gamma" }).click();
   await expect(note).toHaveValue("retained note draft");
   expect(await note.evaluate((editor: HTMLTextAreaElement) => [editor.selectionStart, editor.selectionEnd])).toEqual([3, 11]);
 
@@ -811,7 +818,7 @@ test("authenticated installed packages compose qualified local views and refresh
     const selected = page.locator(`#desktop-grid-container .grid-cell[data-session="${SESSION_A}"]`);
     await selected.click();
     await selectAgentContext(page);
-    await expect(page.locator("[data-context-view='agent-context/context'] h2")).toContainText("revision two", { timeout: 5_000 });
+    await expect(page.locator("[data-context-view='delta/shared'] h2")).toContainText("revision two", { timeout: 5_000 });
     const readTail = () => selected.evaluate(cell => (window as unknown as { __wolfpackTest: { serializeTerminalTail(node: Element, lines: number): string } }).__wolfpackTest.serializeTerminalTail(cell, 200));
     await selected.click();
     await page.keyboard.type("printf 'WP%s\\n' EXTENSION_RETENTION");
@@ -856,7 +863,7 @@ test("mobile widget collapse recovers locally without closing views or rewriting
   test.skip(testInfo.project.name !== "iphone-14", "responsive mobile widget recovery");
   await authorize(page);
   await page.addInitScript(() => {
-    localStorage.setItem("wolfpack-widget-layout:v1", JSON.stringify({ placements: { "notes/notes": "bottom" }, selected: { right: "alpha/shared" } }));
+    localStorage.setItem("wolfpack-widget-layout:v1", JSON.stringify({ placements: { "gamma/shared": "bottom" }, selected: { right: "alpha/shared" } }));
     localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ fullView: "context", contextArea: "bottom", splitSize: 440 }));
   });
   const sockets: string[] = [];
@@ -878,7 +885,7 @@ test("mobile widget collapse recovers locally without closing views or rewriting
   expect(await alpha.evaluate(node => node === (window as any).__mobileAlpha)).toBe(true);
   expect(await canvas.evaluate(node => node === (window as any).__mobileCloseCanvas)).toBe(true);
   expect(sockets).toHaveLength(attached); expect(await preferences()).toEqual(saved);
-  for (const title of ["Beta", "Agent Context", "Notes"]) {
+  for (const title of ["Beta", "Delta", "Gamma"]) {
     await page.getByRole("tab", { name: title, exact: true }).click();
     await expect(page.getByRole("button", { name: `Close ${title}`, exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: `Collapse ${title}`, exact: true }).click();
@@ -899,20 +906,20 @@ test("mobile widget collapse recovers locally without closing views or rewriting
   expect(await preferences()).toEqual(saved);
 });
 
-test("a sole Agent Context opens directly without its redundant tab and multiple views retain their tabs", async ({ page }, testInfo) => {
+test("a sole Delta opens directly without its redundant tab and multiple views retain their tabs", async ({ page }, testInfo) => {
   test.skip(!["desktop", "iphone-14"].includes(testInfo.project.name), "desktop and responsive touch single-view contract");
   const catalog = JSON.parse(runCli(["extensions", "list", "--json"]));
-  const others = catalog.installations.filter((item: { extensionId: string; enabled: boolean }) => item.extensionId !== "agent-context" && item.enabled).map((item: { extensionId: string }) => item.extensionId);
+  const others = catalog.installations.filter((item: { extensionId: string; enabled: boolean }) => item.extensionId !== "delta" && item.enabled).map((item: { extensionId: string }) => item.extensionId);
   try {
     for (const id of others) runCli(["extensions", "disable", id]);
     await authorize(page);
     await page.addInitScript(() => {
       localStorage.setItem("wolfpack-workspace-shell", JSON.stringify({ contextCollapsed: true }));
-      localStorage.setItem("wolfpack-terminal-layout", "agent-context/lead-stack");
+      localStorage.setItem("wolfpack-terminal-layout", "delta/legacy-missing");
     });
     await page.goto(server!.baseUrl);
     await openSession(page, SESSION_A);
-    const view = page.locator("[data-context-view='agent-context/context']");
+    const view = page.locator("[data-context-view='delta/shared']");
     await expect(page.locator("[data-extension-tabs] [role='tab']")).toHaveCount(1);
     await expect(view).toHaveCount(0); // collapsed shell never auto-mounts a view
     if (testInfo.project.name === "desktop") {
@@ -921,22 +928,22 @@ test("a sole Agent Context opens directly without its redundant tab and multiple
       await page.getByRole("button", { name: "Reopen closed widgets", exact: true }).click();
       await page.locator("#settings-back-btn").click();
     } else await page.getByRole("button", { name: "Widgets", exact: true }).click();
-    const current = JSON.parse(runCli(["extension-data", "read", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port));
+    const current = JSON.parse(runCli(["extension-data", "read", "delta/shared", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port));
     await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
     const layouts = page.locator("#workspace-terminal-layout");
     await expect(layouts.locator("option", { hasText: /^Lead \+ stack$/ })).toHaveCount(1);
-    await expect(layouts.locator('option[value="agent-context/lead-stack"]')).toHaveCount(0);
+    await expect(layouts.locator('option[value="delta/legacy-missing"]')).toHaveCount(0);
     await expect(layouts).toHaveValue("equal-grid"); // existing missing-recipe fallback, not a legacy alias
     await selectTerminalLayoutFromUi(page, "lead-stack");
     await showWidgets(page);
     await expect(page.locator("[data-extension-tabs]")).toBeHidden();
-    await expect(page.getByRole("tab", { name: "Agent Context", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Delta", exact: true })).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("single-context-no-tab.png") });
-    runCli(["extensions", "enable", "notes"]);
+    runCli(["extensions", "enable", "gamma"]);
     await refreshThroughSessionSwitch(page, testInfo);
-    await expect(page.getByRole("tab", { name: "Agent Context", exact: true })).toBeVisible();
-    await page.getByRole("tab", { name: "Notes", exact: true }).click();
-    runCli(["extensions", "disable", "notes"]);
+    await expect(page.getByRole("tab", { name: "Delta", exact: true })).toBeVisible();
+    await page.getByRole("tab", { name: "Gamma", exact: true }).click();
+    runCli(["extensions", "disable", "gamma"]);
     await refreshThroughSessionSwitch(page, testInfo);
     await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
     await expect(layouts).toHaveValue("lead-stack");
@@ -969,7 +976,7 @@ test("installed package disable re-enable remove reinstall and update preserve a
   await refreshThroughSessionSwitch(page, testInfo);
   await expect(page.getByRole("tab", { name: "Alpha Updated" })).toBeVisible();
   await page.getByRole("tab", { name: "Alpha Updated" }).click();
-  await expect(page.locator("[data-context-view='alpha/shared']")).toHaveText("Alpha Updated mounted");
+  await expect(page.locator("[data-context-view='alpha/shared']")).toContainText("Alpha Updated mounted");
 
   runCli(["extensions", "remove", "alpha"]);
   await refreshThroughSessionSwitch(page, testInfo);
@@ -991,13 +998,13 @@ test("real CLI invalid scope schema and CAS rejection keep the good browser docu
   await page.goto(server!.baseUrl);
   await openSession(page, SESSION_A);
   await selectAgentContext(page);
-  const heading = page.locator("[data-context-view='agent-context/context'] h2");
-  const read = JSON.parse(runCli(["extension-data", "read", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port)) as { revision: number; document: { goal: string } };
+  const heading = page.locator("[data-context-view='delta/shared'] h2");
+  const read = JSON.parse(runCli(["extension-data", "read", "delta/shared", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port)) as { revision: number; document: { goal: string } };
   await expect(heading).toContainText(read.document.goal, { timeout: 5_000 });
   const invalidSchema = writeContext("invalid-schema.json", "must not render", 999);
-  const invalidSchemaResult = runCliAttempt(["extension-data", "publish", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--file", invalidSchema, "--if-revision", String(read.revision), "--request-id", randomUUID(), "--json"], server!.port);
-  const staleCasResult = runCliAttempt(["extension-data", "publish", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--file", writeContext("stale-cas.json", "must not render"), "--if-revision", "0", "--request-id", randomUUID(), "--json"], server!.port);
-  const invalidScopeResult = runCliAttempt(["extension-data", "publish", "agent-context/context", "--session", "session-name", "--file", writeContext("invalid-scope.json", "must not render"), "--if-revision", String(read.revision), "--request-id", randomUUID(), "--json"], server!.port);
+  const invalidSchemaResult = runCliAttempt(["extension-data", "publish", "delta/shared", "--session", sessionIds.get(SESSION_A)!, "--file", invalidSchema, "--if-revision", String(read.revision), "--request-id", randomUUID(), "--json"], server!.port);
+  const staleCasResult = runCliAttempt(["extension-data", "publish", "delta/shared", "--session", sessionIds.get(SESSION_A)!, "--file", writeContext("stale-cas.json", "must not render"), "--if-revision", "0", "--request-id", randomUUID(), "--json"], server!.port);
+  const invalidScopeResult = runCliAttempt(["extension-data", "publish", "delta/shared", "--session", "session-name", "--file", writeContext("invalid-scope.json", "must not render"), "--if-revision", String(read.revision), "--request-id", randomUUID(), "--json"], server!.port);
   expect(invalidSchemaResult.status).not.toBe(0);
   expect(staleCasResult.status).not.toBe(0);
   expect(invalidScopeResult.status).not.toBe(0);
@@ -1030,7 +1037,7 @@ test("extension safe mode allows manager metadata but never code or documents un
   await page.locator(testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn").click();
   if (testInfo.project.name === "mobile-webkit") await openSession(page, SESSION_A);
   await showWidgets(page);
-  await expect(page.getByRole("tab", { name: /Agent Context/ })).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole("tab", { name: /Delta/ })).toBeVisible({ timeout: 5_000 });
   expect(extensionRequests.some(url => new URL(url).pathname === "/api/extensions")).toBe(true);
 });
 
@@ -1067,13 +1074,13 @@ test("ordinary context-hide controls pause polling and preserve retained workspa
   await authorize(page);
   let reads = 0;
   const sockets: string[] = [];
-  page.on("request", request => { if (new URL(request.url()).pathname === "/api/extensions/documents/agent-context/context") reads++; });
+  page.on("request", request => { if (new URL(request.url()).pathname === "/api/extensions/documents/delta/shared") reads++; });
   page.on("websocket", socket => { if (socket.url().includes("/ws/pty")) sockets.push(socket.url()); });
   await page.goto(server!.baseUrl);
   await openSession(page, SESSION_A);
   await selectAgentContext(page);
-  const contextView = page.locator("[data-context-view='agent-context/context']");
-  const current = JSON.parse(runCli(["extension-data", "read", "agent-context/context", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port)) as { document: { goal: string } };
+  const contextView = page.locator("[data-context-view='delta/shared']");
+  const current = JSON.parse(runCli(["extension-data", "read", "delta/shared", "--session", sessionIds.get(SESSION_A)!, "--json"], server!.port)) as { document: { goal: string } };
   await expect(contextView.locator("h2")).toContainText(current.document.goal);
   await contextView.evaluate(node => { (window as unknown as { __extensionRetainedContext?: Element }).__extensionRetainedContext = node; });
   const canvas = page.locator("#desktop-terminal-container canvas");
@@ -1081,14 +1088,14 @@ test("ordinary context-hide controls pause polling and preserve retained workspa
   const selectedLayout = await page.locator("#workspace-terminal-layout").inputValue();
   const attached = sockets.length;
 
-  const button = testInfo.project.name === "desktop" ? page.getByRole("button", { name: "Collapse Agent Context", exact: true }) : page.locator("#workspace-context-back");
+  const button = testInfo.project.name === "desktop" ? page.getByRole("button", { name: "Collapse Delta", exact: true }) : page.locator("#workspace-context-back");
   if (testInfo.project.name === "mobile-webkit") await button.tap();
   else await button.click();
   await expect(contextView).toBeHidden();
   const atHide = reads;
   await page.waitForTimeout(2_300);
   expect(reads, "collapse must pause selected context polling").toBe(atHide);
-  if (testInfo.project.name === "desktop") await page.getByRole("tab", { name: "Agent Context", exact: true }).click();
+  if (testInfo.project.name === "desktop") await page.getByRole("tab", { name: "Delta", exact: true }).click();
   else await page.locator("#workspace-restore").click();
   await expect.poll(() => reads).toBeGreaterThan(atHide);
   expect(await contextView.evaluate(node => node === (window as unknown as { __extensionRetainedContext?: Element }).__extensionRetainedContext)).toBe(true);
@@ -1113,14 +1120,14 @@ test("delegation grid and focused terminal scope follow the exact selected broke
   const childCell = page.locator(`#delegation-grid-container .grid-cell[data-session="${DELEGATION_CHILD}"]`);
   await expect(childCell).toHaveClass(/hydrated/, { timeout: 10_000 });
   await selectAgentContext(page);
-  await expect(page.locator("[data-context-view='agent-context/context'] h2")).toContainText("delegation parent", { timeout: 5_000 });
+  await expect(page.locator("[data-context-view='delta/shared'] h2")).toContainText("delegation parent", { timeout: 5_000 });
   await childCell.click();
   await selectAgentContext(page);
-  await expect(page.locator("[data-context-view='agent-context/context'] h2")).toContainText("delegation child", { timeout: 5_000 });
+  await expect(page.locator("[data-context-view='delta/shared'] h2")).toContainText("delegation child", { timeout: 5_000 });
   await childCell.getByRole("button", { name: `Focus ${DELEGATION_CHILD}` }).click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 10_000 });
   await selectAgentContext(page);
-  await expect(page.locator("[data-context-view='agent-context/context'] h2")).toContainText("delegation child", { timeout: 5_000 });
+  await expect(page.locator("[data-context-view='delta/shared'] h2")).toContainText("delegation child", { timeout: 5_000 });
   expect(documentSessions).toContain(sessionIds.get(DELEGATION_PARENT)!);
   expect(documentSessions).toContain(sessionIds.get(DELEGATION_CHILD)!);
   expect(documentSessions.every(id => id === sessionIds.get(DELEGATION_PARENT) || id === sessionIds.get(DELEGATION_CHILD))).toBe(true);

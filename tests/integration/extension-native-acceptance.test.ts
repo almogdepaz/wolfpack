@@ -9,7 +9,7 @@ const FIXTURE = join(ROOT, "tests", "integration", "fixtures", "extension-native
 // native acceptance coverage.
 const broker = process.env.WOLFPACK_BROKER_BIN ?? join(ROOT, "broker", "target", "release", "wolfpack-broker");
 
-test("compiled public extension CLI persists documents through a real isolated broker-backed server", async () => {
+test("compiled public extension CLI preserves generic package, skill, scoped document and CAS ownership through a real isolated broker-backed server", async () => {
   expect(existsSync(broker)).toBe(true);
   const result = Bun.spawnSync([process.execPath, FIXTURE], {
     cwd: ROOT,

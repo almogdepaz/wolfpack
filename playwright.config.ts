@@ -12,6 +12,9 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${process.env.WOLFPACK_TEST_PORT || 18799}`,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
+    // Explicit local verification may use the approved installed Brave binary;
+    // CI keeps Playwright-managed browser selection unchanged.
+    ...(process.env.WOLFPACK_PLAYWRIGHT_EXECUTABLE ? { launchOptions: { executablePath: process.env.WOLFPACK_PLAYWRIGHT_EXECUTABLE } } : {}),
   },
   projects: [
     {

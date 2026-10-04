@@ -137,16 +137,23 @@ async function createShell(name: string) {
   if (!backend) fail("broker backend unavailable");
   return backend.createSession(name, project, "shell", () => ({ agentCmd: "shell" }));
 }
-async function packagedSampleSource(): Promise<string> {
-  const source = join(ROOT, "examples", "extensions", "agent-context"); const packs = join(sandbox, "packs"); mkdirSync(packs, { recursive: true, mode: 0o700 });
+async function packagedSyntheticSource(): Promise<string> {
+  // Framework acceptance deliberately builds a minimal synthetic package. Product
+  // extensions are verified in the independent extensions repository.
+  const source = join(sandbox, "synthetic-context"), packs = join(sandbox, "packs");
+  mkdirSync(join(source, "dist"), { recursive: true, mode: 0o700 }); mkdirSync(join(source, "schemas"), { recursive: true }); mkdirSync(join(source, "skills", "wolfpack-synthetic-context"), { recursive: true }); mkdirSync(packs, { recursive: true, mode: 0o700 });
+  writeFileSync(join(source, "package.json"), JSON.stringify({ name: "wolfpack-synthetic-context", version: "1.0.0", wolfpack: { manifestVersion: 1, apiVersion: 1, id: "synthetic-context", ui: "dist/ui.js", skills: ["skills/wolfpack-synthetic-context"], documents: [{ id: "context", schemaVersion: 1, schema: "schemas/context.json" }] } }));
+  writeFileSync(join(source, "dist", "ui.js"), 'export default host => host.registerContextView({ id: "context", title: "Synthetic", mount() { return { dispose() {} }; } });\n');
+  writeFileSync(join(source, "schemas", "context.json"), JSON.stringify({ type: "object", required: ["schemaVersion", "goal"], properties: { schemaVersion: { const: 1 }, goal: { type: "string" } } }));
+  writeFileSync(join(source, "skills", "wolfpack-synthetic-context", "SKILL.md"), "---\nname: wolfpack-synthetic-context\ndescription: generic fixture\n---\n");
   const packed = Bun.spawnSync(["npm", "pack", "--ignore-scripts", "--json", "--pack-destination", packs], { cwd: source, env: childEnv(), stdout: "pipe", stderr: "pipe" });
-  if (packed.exitCode !== 0) fail(`sample package pack failed: ${packed.stderr.toString().slice(-1000)}`);
+  if (packed.exitCode !== 0) fail(`synthetic package pack failed: ${packed.stderr.toString().slice(-1000)}`);
   const value = JSON.parse(packed.stdout.toString()) as Array<{ filename?: string }>; const filename = value[0]?.filename;
-  if (!filename) fail("sample package pack returned no filename"); const archive = join(packs, filename); const integrity = `sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`;
+  if (!filename) fail("synthetic package pack returned no filename"); const archive = join(packs, filename); const integrity = `sha512-${createHash("sha512").update(readFileSync(archive)).digest("base64")}`;
   const { inspectNpmTarball, extractVerifiedNpmTarball } = await import("../../../src/extensions/package-security.ts");
-  await inspectNpmTarball(archive); const extracted = await extractVerifiedNpmTarball(archive, join(sandbox, "sample-extract"), { integrity });
-  const required = ["dist/ui.js", "schemas/context.schema.json", "skills/wolfpack-agent-context/SKILL.md"];
-  if (!required.every((path) => existsSync(join(extracted, path)))) fail("packed sample omitted a declared UI/schema/skill file");
+  await inspectNpmTarball(archive); const extracted = await extractVerifiedNpmTarball(archive, join(sandbox, "synthetic-extract"), { integrity });
+  const required = ["dist/ui.js", "schemas/context.json", "skills/wolfpack-synthetic-context/SKILL.md"];
+  if (!required.every((path) => existsSync(join(extracted, path)))) fail("packed synthetic fixture omitted declared UI/schema/skill file");
   return extracted;
 }
 async function expectSelfContext(cli: string, port: number, sessionId: string): Promise<string> {
@@ -166,7 +173,7 @@ async function expectSelfContext(cli: string, port: number, sessionId: string): 
   return context.sessionId;
 }
 async function expectRead(cli: string, port: number, sessionId: string, revision: number, goal: string | null, decisionDetails?: string): Promise<void> {
-  const data = JSON.parse(runCli(cli, ["extension-data", "read", "agent-context/context", "--session", sessionId, "--json"], port));
+  const data = JSON.parse(runCli(cli, ["extension-data", "read", "synthetic-context/context", "--session", sessionId, "--json"], port));
   if (data.revision !== revision || (goal === null ? data.document !== null : data.document?.goal !== goal)) fail(`unexpected read response ${JSON.stringify(data)}`);
   if (decisionDetails !== undefined && data.document?.decisions?.[0] !== decisionDetails) fail("structured bullet details did not round-trip through the compiled CLI");
 }
@@ -176,11 +183,11 @@ try {
   mkdirSync(bin, { recursive: true, mode: 0o700 });
   mkdirSync(project, { recursive: true, mode: 0o700 });
   await assertOwnedPersistentPaths();
-  const source = await packagedSampleSource();
+  const source = await packagedSyntheticSource();
   // Keep a second compiled declaration at a non-1 schema version. This proves
   // extension-data resolves the installed declaration rather than hardcoding 1.
   const nonOneSource = join(sandbox, "non-one-extension"); mkdirSync(join(nonOneSource, "dist"), { recursive: true }); mkdirSync(join(nonOneSource, "schemas"), { recursive: true });
-  writeFileSync(join(nonOneSource, "package.json"), JSON.stringify({ name: "native-version-fixture", version: "1.0.0", wolfpack: { manifestVersion: 1, apiVersion: 1, id: "native", ui: "dist/ui.js", skills: [], documents: [{ id: "context", schemaVersion: 7, schema: "schemas/context.json" }] } }));
+  writeFileSync(join(nonOneSource, "package.json"), JSON.stringify({ name: "native-version-fixture", version: "1.0.0", wolfpack: { manifestVersion: 1, apiVersion: 1, id: "non-one", ui: "dist/ui.js", skills: [], documents: [{ id: "context", schemaVersion: 7, schema: "schemas/context.json" }] } }));
   writeFileSync(join(nonOneSource, "dist", "ui.js"), "export const nativeVersionFixture = true;\n");
   writeFileSync(join(nonOneSource, "schemas", "context.json"), JSON.stringify({ type: "object", required: ["goal"], properties: { goal: { type: "string" } }, additionalProperties: false }));
   const nonOneDocument = join(sandbox, "non-one.json"); writeFileSync(nonOneDocument, JSON.stringify({ goal: "non-one declaration version" }));
@@ -201,7 +208,7 @@ try {
   run([process.execPath, "build", "--compile", "--entry-naming", "[name].js", join(ROOT, "tests", "integration", "fixtures", "extension-native-server.ts"), workerEntry, "--outfile", serverBin]);
   runCli(cli, ["extensions", "install", source, "--trust-browser-code", "--skills", "pi"], 18790);
   runCli(cli, ["extensions", "install", nonOneSource, "--trust-browser-code"], 18790);
-  if (!existsSync(join(home, ".pi", "agent", "skills", "wolfpack-agent-context", "SKILL.md"))) fail("installed sample skill was not deployed into the owned discovery root");
+  if (!existsSync(join(home, ".pi", "agent", "skills", "wolfpack-synthetic-context", "SKILL.md"))) fail("installed sample skill was not deployed into the owned discovery root");
   await startBroker();
   const original = await createShell("native-scope");
   let port = await startServer(serverBin);
@@ -211,40 +218,40 @@ try {
   if (unauthenticated.status !== 401) fail(`catalog accepted unauthenticated request (${unauthenticated.status})`);
   const catalogResponse = await fetch(`http://127.0.0.1:${port}/api/extensions`, { headers: { Authorization: `Bearer ${jwt()}` } });
   const catalog = await catalogResponse.json() as any;
-  const installed = catalog.installations?.find((item: any) => item.extensionId === "agent-context"); const nonOne = catalog.installations?.find((item: any) => item.extensionId === "native");
+  const installed = catalog.installations?.find((item: any) => item.extensionId === "synthetic-context"); const nonOne = catalog.installations?.find((item: any) => item.extensionId === "non-one");
   if (!catalogResponse.ok || installed?.documents?.[0]?.schemaVersion !== 1 || nonOne?.documents?.[0]?.schemaVersion !== 7 || typeof installed?.ui?.url !== "string") fail(`catalog did not expose installed declaration: ${JSON.stringify(catalog)}`);
   const asset = await fetch(`http://127.0.0.1:${port}${installed.ui.url}`, { headers: { Authorization: `Bearer ${jwt()}` } });
-  if (!asset.ok || (await asset.text()).includes("wolfpack-bridge/extensions")) fail("authenticated sample asset was not served as a self-contained installed bundle");
+  if (!asset.ok || (await asset.text()).includes("wolfpack-bridge/extensions")) fail("authenticated synthetic asset was not served as a self-contained installed bundle");
 
   // This must be the first compiled publication so an extension-data mutant
   // that sends schemaVersion: 1 is rejected before sample coverage can mask it.
-  runCli(cli, ["extension-data", "publish", "native/context", "--session", original.wolfpackSessionId, "--file", nonOneDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port);
+  runCli(cli, ["extension-data", "publish", "non-one/context", "--session", original.wolfpackSessionId, "--file", nonOneDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port);
   const requestId = randomUUID();
-  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", selfScope, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port);
+  runCli(cli, ["extension-data", "publish", "synthetic-context/context", "--session", selfScope, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port);
   await expectRead(cli, port, original.wolfpackSessionId, 1, "retained across compiled server restart");
-  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", "not-a-uuid", "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 2);
-  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", randomUUID(), "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
+  runCli(cli, ["extension-data", "publish", "synthetic-context/context", "--session", "not-a-uuid", "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 2);
+  runCli(cli, ["extension-data", "publish", "synthetic-context/context", "--session", randomUUID(), "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
 
   await stop(server); server = undefined;
   port = await startServer(serverBin);
   await expectSelfContext(cli, port, original.wolfpackSessionId);
-  const retry = JSON.parse(runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
+  const retry = JSON.parse(runCli(cli, ["extension-data", "publish", "synthetic-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
   if (retry.receipt?.revision !== 1 || retry.receipt?.requestId !== requestId) fail(`identical retry did not return retained receipt: ${JSON.stringify(retry)}`);
-  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
-  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "1", "--request-id", randomUUID(), "--json"], port);
+  runCli(cli, ["extension-data", "publish", "synthetic-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port, 1);
+  runCli(cli, ["extension-data", "publish", "synthetic-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "1", "--request-id", randomUUID(), "--json"], port);
   await expectRead(cli, port, original.wolfpackSessionId, 2, "revision two", "Use collapsible details\n\nKeep supporting detail separate from the headline.");
 
   await backend!.killSessionById(original.wolfpackSessionId);
-  const retainedAfterExit = JSON.parse(runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
+  const retainedAfterExit = JSON.parse(runCli(cli, ["extension-data", "publish", "synthetic-context/context", "--session", original.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", requestId, "--json"], port));
   if (retainedAfterExit.receipt?.revision !== 1) fail("retained retry was revalidated after terminal exit");
-  runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "2", "--request-id", randomUUID(), "--json"], port, 1);
+  runCli(cli, ["extension-data", "publish", "synthetic-context/context", "--session", original.wolfpackSessionId, "--file", secondDocument, "--if-revision", "2", "--request-id", randomUUID(), "--json"], port, 1);
   const replacement = await createShell("native-scope");
   if (replacement.wolfpackSessionId === original.wolfpackSessionId) fail("same-name shell did not receive a new broker UUID");
   await expectSelfContext(cli, port, replacement.wolfpackSessionId);
   const stale = Bun.spawnSync([cli, "session", "current-context", "--json"], { cwd: sandbox, env: { ...childEnv(port), WOLFPACK_SESSION_ID: original.wolfpackSessionId, WOLFPACK_SESSION_NAME: "native-scope", WOLFPACK_PROJECT_DIR: project, WOLFPACK_AGENT_KIND: "shell" }, stdout: "pipe", stderr: "pipe" });
   if (stale.exitCode === 0 || JSON.parse(stale.stdout.toString()).ok !== false) fail("stale self identity borrowed a replacement by name");
   await expectRead(cli, port, replacement.wolfpackSessionId, 0, null);
-  const replacementPublish = runCli(cli, ["extension-data", "publish", "agent-context/context", "--session", replacement.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port);
+  const replacementPublish = runCli(cli, ["extension-data", "publish", "synthetic-context/context", "--session", replacement.wolfpackSessionId, "--file", firstDocument, "--if-revision", "0", "--request-id", randomUUID(), "--json"], port);
   try { await expectRead(cli, port, replacement.wolfpackSessionId, 1, "retained across compiled server restart"); }
   catch (error) { fail(`${error instanceof Error ? error.message : String(error)}; replacement publish=${replacementPublish}`); }
   process.stdout.write("extension-native-acceptance: compiled CLI/server + in-session verified UUID/restart/CAS/isolation OK\n");
