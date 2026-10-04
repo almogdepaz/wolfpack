@@ -359,11 +359,6 @@ function installerStagingDirectories(installDir: string): readonly string[] {
   return readdirSync(installDir).filter((entry) => entry.startsWith(".install."));
 }
 
-const setsidLookup = process.platform === "linux"
-  ? spawnSync("/bin/sh", ["-c", "command -v setsid"], { encoding: "utf-8" })
-  : null;
-const setsidPath = setsidLookup?.stdout?.trim() || undefined;
-
 afterEach(() => {
   if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
   fixtureRoot = "";
@@ -417,7 +412,7 @@ describe("install entrypoint parity", () => {
     expect(packedManifest.optionalDependencies).toEqual(manifest.optionalDependencies);
   }, 7500);
 
-  test.each([false, true])("package runner repairs its pair and retries activation (existing descriptor: %p)", (installed) => {
+  test.each([false, true])("explicit package install repairs its pair but refuses unavailable activation (existing descriptor: %p)", (installed) => {
     fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-package-owner-")));
     const { packageBin, platformRoot, server, broker } = createPackageRunnerFixture(fixtureRoot);
     const managerBin = join(fixtureRoot, "manager-bin");
@@ -428,7 +423,10 @@ describe("install entrypoint parity", () => {
     const descriptor = join(descriptorDirectory, process.platform === "darwin" ? "com.wolfpack.server.plist" : "wolfpack.service");
     mkdirSync(managerBin);
     mkdirSync(join(fixtureRoot, "home", ".wolfpack"));
-    writeFileSync(join(fixtureRoot, "home", ".wolfpack", "config.json"), JSON.stringify({ devDir: join(fixtureRoot, "home", "Dev"), port: 24444 }));
+    const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+    const port = reservation.port!;
+    reservation.stop(true);
+    writeFileSync(join(fixtureRoot, "home", ".wolfpack", "config.json"), JSON.stringify({ devDir: join(fixtureRoot, "home", "Dev"), port }));
     if (installed) {
       mkdirSync(descriptorDirectory, { recursive: true });
       writeFileSync(descriptor, "installed\n");
@@ -465,12 +463,18 @@ esac
     });
     // A missing fake must never fall through to the host service manager.
     expectClosedManagerPath(managerBin, environment, ["launchctl", "systemctl", "loginctl"]);
-
+    symlinkSync("/usr/bin/curl", join(managerBin, "curl"));
+    const evidence = mkdtempSync(join(tmpdir(), "wp-pair-retry-receipt-"));
+    let attemptIndex = 0;
     for (const fails of [true, true, false]) {
-      const attempt = spawnSync(process.execPath, [join(packageBin, "run.cjs")], {
+      const attempt = spawnSync(process.execPath, [join(packageBin, "run.cjs"), "service", "install"], {
         cwd: fixtureRoot, encoding: "utf-8", env: { ...environment, INSTALL_TEST_FAIL_SERVER_START: fails ? "1" : "0" }, timeout: 20_000,
       });
-      expect(attempt.status, `${attempt.stdout}\n${attempt.stderr}`).toBe(fails ? 1 : 0);
+      writeFileSync(join(evidence, `${attemptIndex++}.json`), JSON.stringify({ fails, port, status: attempt.status, error: attempt.error?.message, stdout: attempt.stdout, stderr: attempt.stderr, commands: readFileSync(commands, "utf8") }), { mode: 0o600 });
+      expect(attempt.error).toBeUndefined();
+      expect(attempt.status, `${attempt.stdout}\n${attempt.stderr}`).toBe(1);
+      expect(attempt.stdout).not.toContain("service installed and started");
+      if (!fails) expect(attempt.stderr).toContain("Application startup timed out");
       expect(existsSync(join(managedBin, "wolfpack")), attempt.stderr).toBe(true);
       expect(readFileSync(join(managedBin, "wolfpack"))).toEqual(readFileSync(server));
       expect(readFileSync(join(managedBin, "wolfpack-broker"))).toEqual(readFileSync(broker));
@@ -833,7 +837,7 @@ describe("install.sh release binary staging", () => {
     expect(installerStagingDirectories(fixture.installDir)).toEqual([]);
   });
 
-  test.skipIf(!setsidPath)("does not invoke setup or restart without a controlling tty on Linux", () => {
+  test("fails before downloads without a controlling terminal", () => {
     const fixture = prepareFixture();
     const serviceDir = join(fixture.home, ".config", "systemd", "user");
     mkdirSync(serviceDir, { recursive: true });
@@ -843,13 +847,21 @@ describe("install.sh release binary staging", () => {
       port: 18790,
     }));
 
-    const result = spawnSync(setsidPath!, ["--wait", "bash", join(process.cwd(), "install.sh")], {
+    const result = spawnSync("/usr/bin/python3", ["-I", "-S", "-B", "-c", "import os,sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])", "/bin/bash", join(process.cwd(), "install.sh")], {
+      // Explicit setsid: no controlling terminal, on macOS as well as Linux.
       encoding: "utf-8",
+      timeout: 5000,
       env: installerEnvironment(fixture, { WOLFPACK_INSTALL_SKIP_SETUP: "0" }),
     });
+    const downloads = readFileSync(fixture.log, "utf-8");
+    const evidence = mkdtempSync(join(tmpdir(), "wp-terminal-receipt-"));
+    writeFileSync(join(evidence, "receipt.json"), JSON.stringify({ status: result.status, error: result.error?.message, stdout: result.stdout, stderr: result.stderr, downloads, commands: readFileSync(fixture.commandLog, "utf-8") }), { mode: 0o600 });
+    console.info(`terminal fixture receipt: ${evidence}`);
 
+    expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
-    expect(readFileSync(fixture.log, "utf-8")).toContain("wolfpack-linux-x64");
+    expect(downloads).toBe("");
+    expect(String(result.stdout)).toContain("interactive terminal");
     const commands = readFileSync(fixture.commandLog, "utf-8");
     expect(commands).not.toContain("install");
     expect(commands).not.toContain("setup");

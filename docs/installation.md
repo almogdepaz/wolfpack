@@ -24,6 +24,8 @@ curl -fsSL "https://raw.githubusercontent.com/almogdepaz/wolfpack/${WOLFPACK_REL
 
 The installer downloads and verifies the matching `wolfpack` and `wolfpack-broker` releases, then delegates installation and interactive setup to the staged server. Package-triggered installation uses the same pair owner. After setup, if you accepted the login service, open the printed URL. If you declined the login service, run `wolfpack`, then open the printed URL. In either case, run `wolfpack doctor` to verify the installation.
 
+Declining login services remains effective: ordinary `wolfpack` runs in the foreground without installing services. It reuses a healthy existing broker and leaves that broker's sessions alive on shutdown. If it starts its own broker, Ctrl-C or shutdown stops that broker too and ends its sessions. Package foreground startup uses the matching package broker rather than replacing managed binaries. Use explicit `wolfpack service install` when you want login services.
+
 On later runs, the owner validates the pair and required configuration before disrupting managed services. An unchanged running broker is preserved; replacing a running broker warns that its sessions will end and requires confirmation before stopping it. For an existing managed installation, setup defers activation to the owner, which installs or repairs the required services after setup succeeds. The shell does not perform a separate restart. Installation or activation failure returns nonzero; fix the reported cause and rerun the same installer.
 
 ### Bunx or npm: no persistent CLI
@@ -46,7 +48,7 @@ The normal curl command retrieves the [bootstrap installer source](https://githu
 
 In execution order, the installer:
 
-1. requires Bash and accepts only macOS or Linux on x64 or arm64;
+1. requires Bash and accepts only macOS or Linux on x64 or arm64; unless `WOLFPACK_INSTALL_SKIP_SETUP=1`, opens the controlling terminal before requesting release assets or creating staging files;
 2. creates a private staging directory under `~/.wolfpack/bin`, then downloads the matching `wolfpack`, `wolfpack-broker`, and `checksums-sha256.txt` release assets there;
 3. rejects failed or empty downloads and unavailable SHA-256 tooling, selects each binary's exact filename from the checksum list, and verifies both binaries before replacement; ordinary exits and failures run the EXIT cleanup trap;
 4. on macOS, clears downloaded quarantine/provenance attributes and applies an ad-hoc local signature to both staged binaries before replacement—this permits local execution but is **not** Wolfpack publisher identity verification;

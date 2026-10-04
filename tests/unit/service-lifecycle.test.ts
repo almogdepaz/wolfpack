@@ -55,7 +55,9 @@ await mock.module("node:child_process", () => ({
     return "";
   }),
   spawn: mock(() => undefined),
-  spawnSync: mock(() => ({ status: 0, stdout: "", stderr: "" })),
+  // Descriptor/lifecycle tests isolate HTTP at the command boundary;
+  // application-readiness and installation-startup exercise real readiness.
+  spawnSync: mock((command: string) => ({ status: 0, stdout: command === "curl" ? JSON.stringify({ status: "ready", broker: { state: "ready" } }) : "", stderr: command === "curl" ? "200" : "" })),
 }));
 
 await mock.module("../../src/cli/config.js", () => ({
@@ -439,7 +441,7 @@ await mock.module("node:child_process", () => ({
     return "";
   }),
   spawn: mock(() => undefined),
-  spawnSync: mock(() => ({ status: 0, stdout: "", stderr: "" })),
+  spawnSync: mock((command: string) => ({ status: 0, stdout: command === "curl" ? JSON.stringify({ status: "ready", broker: { state: "ready" } }) : "", stderr: command === "curl" ? "200" : "" })),
 }));
 
 await mock.module("../../src/cli/config.js", () => ({

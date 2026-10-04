@@ -24,6 +24,7 @@ import { createLogger, errMsg } from "../log.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
 import { prepareServiceAuthFile } from "./service-auth.js";
 import { rotateLogFile } from "./logs.js";
+import { waitForApplicationReady } from "./readiness.js";
 
 const log = createLogger("service");
 import {
@@ -104,7 +105,7 @@ interface InstallationCandidatePair {
 
 type InstallationMode = "bootstrap" | "explicit";
 
-function validateExecutableCandidate(path: string, name: string): void {
+export function validateExecutableCandidate(path: string, name: string): void {
   let stat: ReturnType<typeof lstatSync>;
   try {
     stat = lstatSync(path);
@@ -611,6 +612,14 @@ function isBrokerServiceInstalled(): boolean {
   return false;
 }
 
+function requireApplicationReady(): void {
+  const config = loadConfig();
+  if (!config) throw new Error("Missing or invalid config. Run 'wolfpack setup' first.");
+  if (!waitForApplicationReady(config.port)) {
+    throw new Error(`Application startup timed out at localhost:${config.port}: /api/health must report ready app and broker. Check ~/.wolfpack/wolfpack.log and ~/.wolfpack/broker.log.`);
+  }
+}
+
 /**
  * Rewrite the installed server descriptor after setup changes descriptor-backed
  * config, optionally reloading it. The independent broker and its PTYs are untouched.
@@ -638,6 +647,7 @@ export function refreshInstalledServerService(options: { readonly reload?: boole
     execSync("systemctl --user daemon-reload");
     if (wasRunning) execSync(`systemctl --user restart ${SYSTEMD_SERVICE}`);
   }
+  if (wasLoaded) requireApplicationReady();
   print(dim(`  Refreshed installed server service descriptor${wasLoaded ? " and reloaded it" : ""}.`));
 }
 
@@ -767,6 +777,7 @@ export function serviceInstall() {
       print(dim(`  Try manually: launchctl bootstrap gui/$(id -u) "${PLIST_PATH}"`));
       process.exit(1);
     }
+    requireApplicationReady();
     print("");
     print(green("  Wolfpack service installed and started."));
     print(dim(`  Plist: ${PLIST_PATH}`));
@@ -810,6 +821,7 @@ export function serviceInstall() {
       print(dim(`  Check logs: journalctl --user -u ${SYSTEMD_SERVICE}`));
       process.exit(1);
     }
+    requireApplicationReady();
     configureLinger();
     print("");
     print(green("  Wolfpack service installed and started."));
@@ -928,11 +940,12 @@ export function serviceStart(_options: ServiceActionOptions = {}): boolean {
     } else if (IS_LINUX) {
       execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
     }
+    requireApplicationReady();
     print(green("  Wolfpack service started."));
     return true;
   } catch (e: unknown) {
     log.error("failed to start service", { error: errMsg(e) });
-    print(red("  Failed to start service."));
+    print(red(`  Failed to start service: ${errMsg(e)}`));
     return false;
   }
 }
