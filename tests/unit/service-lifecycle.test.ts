@@ -25,37 +25,50 @@ let failServerStop = false;
 let failServerStart = false;
 let currentConfig = { devDir: "/tmp/old-dev", port: 18790 };
 
+function recordExec(command: string): string {
+  // Keep lifecycle assertions command-oriented while the implementation uses
+  // structured child-process arguments instead of shell strings.
+  if (command === "systemctl --user is-active wolfpack" || command === "systemctl --user is-active wolfpack-broker") {
+    command += " 2>&1";
+  } else if (command === "systemctl --user stop wolfpack-broker") {
+    command += " 2>/dev/null";
+  }
+  execCommands.push(command);
+  if (command === "systemctl --user is-active wolfpack 2>&1") return serviceActive ? "active\n" : "inactive\n";
+  if (command === "systemctl --user is-active wolfpack-broker 2>&1") return !trackBrokerState || brokerActive ? "active\n" : "inactive\n";
+  ownerEvents.push(command);
+  if (command === "systemctl --user stop wolfpack") {
+    if (failServerStop) throw new Error("server stop failed");
+    serviceActive = false;
+  }
+  if (command === "systemctl --user stop wolfpack-broker 2>/dev/null" && trackBrokerState) brokerActive = false;
+  if (command === "systemctl --user start wolfpack") {
+    if (failServerStart) throw new Error("server start failed");
+    serviceActive = true;
+  }
+  if (command === "systemctl --user start wolfpack-broker" && trackBrokerState) brokerActive = true;
+  return "";
+}
+
 await mock.module("node:child_process", () => ({
   execFile: mock(() => undefined),
   execFileSync: mock((command: string, args?: string[]) => {
-    execFileCalls.push({ command, args: args ?? [] });
+    const commandArgs = args ?? [];
+    execFileCalls.push({ command, args: commandArgs });
+    const result = recordExec([command, ...commandArgs].join(" "));
     if (command === "sudo" && failLingerElevation) throw new Error("fixture elevation refused");
-    if (command === "curl" && args?.some((arg) => arg.includes("/api/backend"))) return curlBackendResponse;
-    if (command === "loginctl" && args?.[0] === "show-user") {
+    if (command === "curl" && commandArgs.some((arg) => arg.includes("/api/backend"))) return curlBackendResponse;
+    if (command === "loginctl" && commandArgs[0] === "show-user") {
       if (lingerStatus instanceof Error) throw lingerStatus;
       return lingerStatus;
     }
-    return "";
+    return result;
   }),
-  execSync: mock((command: string) => {
-    execCommands.push(command);
-    if (command === "systemctl --user is-active wolfpack 2>&1") return serviceActive ? "active\n" : "inactive\n";
-    if (command === "systemctl --user is-active wolfpack-broker 2>&1") return !trackBrokerState || brokerActive ? "active\n" : "inactive\n";
-    ownerEvents.push(command);
-    if (command === "systemctl --user stop wolfpack") {
-      if (failServerStop) throw new Error("server stop failed");
-      serviceActive = false;
-    }
-    if (command === "systemctl --user stop wolfpack-broker 2>/dev/null" && trackBrokerState) brokerActive = false;
-    if (command === "systemctl --user start wolfpack") {
-      if (failServerStart) throw new Error("server start failed");
-      serviceActive = true;
-    }
-    if (command === "systemctl --user start wolfpack-broker" && trackBrokerState) brokerActive = true;
-    return "";
-  }),
+  execSync: mock((command: string) => recordExec(command)),
   spawn: mock(() => undefined),
-  spawnSync: mock(() => ({ status: 0, stdout: "", stderr: "" })),
+  // Descriptor/lifecycle tests isolate HTTP at the command boundary;
+  // application-readiness and installation-startup exercise real readiness.
+  spawnSync: mock((command: string) => ({ status: 0, stdout: command === "curl" ? JSON.stringify({ status: "ready", broker: { state: "ready" } }) : "", stderr: command === "curl" ? "200" : "" })),
 }));
 
 await mock.module("../../src/cli/config.js", () => ({
@@ -430,7 +443,14 @@ import { homedir } from "node:os";
 const execCommands: string[] = [];
 await mock.module("node:child_process", () => ({
   execFile: mock(() => undefined),
-  execFileSync: mock(() => ""),
+  execFileSync: mock((command: string, args?: string[]) => {
+    const rendered = [command, ...(args ?? [])].join(" ");
+    execCommands.push(rendered);
+    // A loaded KeepAlive launchd job can legitimately be between process
+    // instances and therefore have no pid in launchctl's output.
+    if (rendered.includes("launchctl print gui/")) return "state = waiting\n";
+    return "";
+  }),
   execSync: mock((command: string) => {
     execCommands.push(command);
     // A loaded KeepAlive launchd job can legitimately be between process
@@ -439,7 +459,7 @@ await mock.module("node:child_process", () => ({
     return "";
   }),
   spawn: mock(() => undefined),
-  spawnSync: mock(() => ({ status: 0, stdout: "", stderr: "" })),
+  spawnSync: mock((command: string) => ({ status: 0, stdout: command === "curl" ? JSON.stringify({ status: "ready", broker: { state: "ready" } }) : "", stderr: command === "curl" ? "200" : "" })),
 }));
 
 await mock.module("../../src/cli/config.js", () => ({
@@ -482,11 +502,11 @@ test("writes and starts the broker before the server on macOS", () => {
   expect(brokerPlist).toContain("<string>" + brokerBin + "</string>");
   expect(serverPlist).toContain("<string>com.wolfpack.server</string>");
   expect(launchdLifecycleCommands()).toEqual([
-    "launchctl bootout " + domain + "/com.wolfpack.broker 2>/dev/null",
-    "launchctl bootstrap " + domain + " \"" + brokerPlistPath + "\"",
+    "launchctl bootout " + domain + "/com.wolfpack.broker",
+    "launchctl bootstrap " + domain + " " + brokerPlistPath,
     "launchctl kickstart " + domain + "/com.wolfpack.broker",
-    "launchctl bootout " + domain + "/com.wolfpack.server 2>/dev/null",
-    "launchctl bootstrap " + domain + " \"" + serverPlistPath + "\"",
+    "launchctl bootout " + domain + "/com.wolfpack.server",
+    "launchctl bootstrap " + domain + " " + serverPlistPath,
     "launchctl kickstart " + domain + "/com.wolfpack.server",
   ]);
 });

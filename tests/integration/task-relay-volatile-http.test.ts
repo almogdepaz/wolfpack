@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, type Socket, type AddressInfo } from "node:net";
@@ -16,7 +16,7 @@ const relayRoot = join(root, "relay"); mkdirSync(relayRoot); mkdirSync(join(root
 const sentinel = join(relayRoot, "relay-state.json");
 writeFileSync(sentinel, "not JSON: historical relay state must not be read or rewritten\n");
 const original = readFileSync(sentinel);
-const secret = "synthetic-volatile-http-secret-not-a-production-credential";
+const secret = randomBytes(32).toString("hex");
 const token = (() => {
   const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
   const value = `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ sub: "fixture", aud: "volatile-http", exp: Math.floor(Date.now() / 1000) + 600 })}`;

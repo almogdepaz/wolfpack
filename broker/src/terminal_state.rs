@@ -4,6 +4,7 @@
 //! snapshot contract. This module owns only terminal semantics through the
 //! narrow checked C shim.
 
+use std::borrow::Cow;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
@@ -456,9 +457,9 @@ fn cursor_from_meta(meta: WpGhosttySnapshotMeta) -> CursorState {
 
 fn cell_to_styled(cell: &WpGhosttyCell, text: &[u8]) -> Result<StyledCell, TerminalStateError> {
     let ch = if cell.continuation != 0 {
-        String::new()
+        Cow::Borrowed("")
     } else if cell.text_len == 0 {
-        " ".to_string()
+        Cow::Borrowed(" ")
     } else {
         let start = cell.text_offset as usize;
         let len = cell.text_len as usize;
@@ -476,7 +477,11 @@ fn cell_to_styled(cell: &WpGhosttyCell, text: &[u8]) -> Result<StyledCell, Termi
                 len,
                 buffer_len: text.len(),
             })?;
-        String::from_utf8_lossy(slice).into_owned()
+        if slice == b" " {
+            Cow::Borrowed(" ")
+        } else {
+            Cow::Owned(String::from_utf8_lossy(slice).into_owned())
+        }
     };
     Ok(StyledCell {
         ch,
@@ -568,7 +573,74 @@ mod tests {
     use super::*;
 
     fn line_text(line: &StyledLine) -> String {
-        line.cells.iter().map(|cell| cell.ch.as_str()).collect()
+        line.cells.iter().map(|cell| cell.ch.as_ref()).collect()
+    }
+
+    #[test]
+    fn snapshot_glyphs_outlive_terminal_and_mutate_independently() {
+        let mut terminal = TerminalState::try_new(8, 2).expect("real terminal");
+        terminal.try_feed("\x1b[1m 界é\x1b[0m".as_bytes()).expect("native feed");
+        let mut snapshot = terminal.try_snapshot_with_reflow(Uuid::nil(), 1, 0, None, None)
+            .expect("snapshot");
+        drop(terminal);
+        assert_eq!(snapshot.visible_screen[0].cells[0].ch, " ");
+        assert!(snapshot.visible_screen[0].cells[0].attrs.bold);
+        assert_eq!(snapshot.visible_screen[0].cells[1].ch, "界");
+        assert_eq!(snapshot.visible_screen[0].cells[2].ch, "");
+        assert_eq!(snapshot.visible_screen[0].cells[3].ch, "é");
+        assert!(matches!(snapshot.visible_screen[0].cells[0].ch, Cow::Borrowed(" ")));
+        assert!(matches!(snapshot.visible_screen[0].cells[1].ch, Cow::Owned(_)));
+        assert!(matches!(snapshot.visible_screen[0].cells[2].ch, Cow::Borrowed("")));
+        assert!(matches!(snapshot.visible_screen[0].cells[3].ch, Cow::Owned(_)));
+        assert!(matches!(snapshot.visible_screen[0].cells[4].ch, Cow::Borrowed(" ")));
+        let original = snapshot.clone();
+        snapshot.visible_screen[0].cells[0].ch.to_mut().push('x');
+        snapshot.visible_screen[0].cells[2].ch.to_mut().push('!');
+        assert_eq!(original.visible_screen[0].cells[0].ch, " ");
+        assert_eq!(original.visible_screen[0].cells[2].ch, "");
+        assert_eq!(snapshot.visible_screen[0].cells[0].ch, " x");
+        assert_eq!(snapshot.visible_screen[0].cells[2].ch, "!");
+        let encoded = serde_json::to_string(&original).expect("wire serialize");
+        let mut decoded: Snapshot = serde_json::from_str(&encoded).expect("wire deserialize");
+        drop(encoded);
+        assert_eq!(decoded, original);
+        assert!(decoded.visible_screen.iter().chain(&decoded.scrollback)
+            .flat_map(|line| &line.cells)
+            .all(|cell| matches!(cell.ch, Cow::Owned(_))));
+        decoded.visible_screen[0].cells[0].ch.to_mut().push('y');
+        assert_eq!(decoded.visible_screen[0].cells[0].ch, " y");
+        assert_eq!(original.visible_screen[0].cells[0].ch, " ");
+    }
+
+    #[test]
+    fn converted_text_owns_native_buffer_and_preserves_lossy_utf8() {
+        let implicit = cell_to_styled(&WpGhosttyCell::default(), &[])
+            .expect("real implicit-space conversion");
+        assert!(matches!(implicit.ch, Cow::Borrowed(" ")));
+        let explicit = cell_to_styled(&WpGhosttyCell {
+            text_len: 1,
+            ..Default::default()
+        }, b" ").expect("real explicit-space conversion");
+        assert!(matches!(explicit.ch, Cow::Borrowed(" ")));
+        let continuation = cell_to_styled(&WpGhosttyCell {
+            continuation: 1,
+            ..Default::default()
+        }, &[]).expect("real wide-continuation conversion");
+        assert!(matches!(continuation.ch, Cow::Borrowed("")));
+        let nonblank = cell_to_styled(&WpGhosttyCell {
+            text_len: 1,
+            ..Default::default()
+        }, b"a").expect("real nonblank conversion");
+        assert_eq!(nonblank.ch, "a");
+        assert!(matches!(nonblank.ch, Cow::Owned(_)));
+        let bytes = vec![0xff, b'a'];
+        let cell = cell_to_styled(&WpGhosttyCell {
+            text_len: 2,
+            ..Default::default()
+        }, &bytes).expect("real checked conversion");
+        drop(bytes);
+        assert_eq!(cell.ch, "�a");
+        assert!(matches!(cell.ch, Cow::Owned(_)));
     }
 
     #[test]
@@ -634,7 +706,7 @@ mod tests {
                     attrs: CellAttrs::default(),
                 },
                 StyledCell {
-                    ch: String::new(),
+                    ch: String::new().into(),
                     attrs: CellAttrs::default(),
                 },
                 StyledCell {
@@ -649,12 +721,12 @@ mod tests {
             out.iter()
                 .flat_map(|row| row.cells.iter())
                 .filter(|cell| !cell.ch.is_empty() && cell.ch != " ")
-                .map(|cell| cell.ch.as_str())
+                .map(|cell| cell.ch.as_ref())
                 .collect::<String>(),
             "a界b"
         );
         for row in out {
-            assert_ne!(row.cells.first().map(|cell| cell.ch.as_str()), Some(""));
+            assert_ne!(row.cells.first().map(|cell| cell.ch.as_ref()), Some(""));
         }
     }
 

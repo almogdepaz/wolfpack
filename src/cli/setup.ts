@@ -1,11 +1,11 @@
 /**
  * Interactive setup wizard.
  */
-import { execSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { homedir } from "node:os";
-import { printQR } from "../qr.js";
+import { homedir, tmpdir } from "node:os";
+import { printAccessUrls } from "./access-output.js";
 import { print, bold, green, red, dim, yellow, WOLF } from "./formatting.js";
 import {
   WOLFPACK_DIR,
@@ -51,19 +51,11 @@ function printSetupCompletion(options: {
   readonly serviceRunning: boolean;
   readonly detectedProviders: readonly OpenableHarness[];
 }): void {
-  const localUrl = `http://localhost:${options.port}/`;
   const firstProvider = options.detectedProviders[0];
 
   print("");
   print(green("  Setup complete — next steps:"));
-  print(`  Local: ${bold(localUrl)}`);
-  if (options.remoteUrl) {
-    print(`  Remote: ${bold(options.remoteUrl)}`);
-    print("");
-    print(dim("  Scan the verified remote URL to open Wolfpack on your phone:"));
-    print("");
-    printQR(options.remoteUrl);
-  }
+  printAccessUrls(options.port, options.remoteUrl);
   const serviceNextStep = options.serviceRunning
     ? "  Service: running (check with 'wolfpack service status')."
     : options.serviceInstalled
@@ -81,7 +73,7 @@ function printSetupCompletion(options: {
 function installPackages(pkgs: string[]) {
   if (IS_MACOS) {
     try {
-      execSync("brew --version", { stdio: "ignore" });
+      execFileSync("brew", ["--version"], { stdio: "ignore" });
     } catch { /* expected: homebrew not installed */
       print(red("  Homebrew is required to install dependencies."));
       print(dim("  Install from https://brew.sh"));
@@ -91,15 +83,15 @@ function installPackages(pkgs: string[]) {
     const brewCasks = pkgs.filter((p) => p === "tailscale");
     if (brewPkgs.length > 0) {
       print(`  Installing ${brewPkgs.join(", ")}...`);
-      execSync(`brew install --quiet ${brewPkgs.join(" ")}`, { stdio: "inherit" });
+      execFileSync("brew", ["install", "--quiet", ...brewPkgs], { stdio: "inherit" });
     }
     if (brewCasks.length > 0) {
       print("  Installing Tailscale (GUI app)...");
-      execSync("brew install --cask --quiet tailscale", { stdio: "inherit" });
+      execFileSync("brew", ["install", "--cask", "--quiet", "tailscale"], { stdio: "inherit" });
     }
   } else if (IS_LINUX) {
     try {
-      execSync("apt --version", { stdio: "ignore" });
+      execFileSync("apt", ["--version"], { stdio: "ignore" });
     } catch { /* expected: apt not available on this system */
       print(red("  apt is required to install dependencies."));
       return;
@@ -107,15 +99,21 @@ function installPackages(pkgs: string[]) {
     const aptPkgs = pkgs.filter((p) => p !== "tailscale");
     if (aptPkgs.length > 0) {
       print(`  Installing ${aptPkgs.join(", ")}...`);
-      execSync(`sudo apt update -qq && sudo apt install -y -qq ${aptPkgs.join(" ")}`, { stdio: "inherit" });
+      execFileSync("sudo", ["apt", "update", "-qq"], { stdio: "inherit" });
+      execFileSync("sudo", ["apt", "install", "-y", "-qq", ...aptPkgs], { stdio: "inherit" });
     }
     if (pkgs.includes("tailscale")) {
       print("  Installing Tailscale...");
-      // Security note: curl-pipe-sh without hash verification. This is the official
-      // Tailscale install pattern (https://tailscale.com/kb/1031/install-linux) and
-      // only runs during interactive user-initiated setup, not unattended. No practical
-      // alternative exists for cross-distro interactive CLI installation.
-      execSync("curl -fsSL https://tailscale.com/install.sh | sudo sh", { stdio: "inherit" });
+      // This is the official Tailscale install endpoint. Download before execution
+      // rather than piping a network response into a privileged shell.
+      const installDir = mkdtempSync(join(tmpdir(), "wolfpack-tailscale-install-"));
+      const installScript = join(installDir, "install.sh");
+      try {
+        execFileSync("curl", ["-fsSL", "https://tailscale.com/install.sh", "-o", installScript], { stdio: "inherit" });
+        execFileSync("sudo", ["sh", installScript], { stdio: "inherit" });
+      } finally {
+        rmSync(installDir, { recursive: true, force: true });
+      }
     }
   } else {
     print(red("  Unsupported platform. Please install manually: " + pkgs.join(", ")));
@@ -145,7 +143,7 @@ function configureInteractiveTailscaleRemoteAccess(options: {
   if (self.status !== "ready" && (self.status === "logged-out" || self.status === "unavailable")) {
     if (IS_MACOS) {
       print(dim("  Launching Tailscale.app for sign-in..."));
-      try { execSync("open /Applications/Tailscale.app", { stdio: "ignore" }); } catch (e: unknown) {
+      try { execFileSync("open", ["/Applications/Tailscale.app"], { stdio: "ignore" }); } catch (e: unknown) {
         log.warn("setup: failed to launch Tailscale.app", { error: e instanceof Error ? e.message : String(e) });
       }
     } else if (IS_LINUX) {

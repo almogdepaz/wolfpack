@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
 
 process.env.WOLFPACK_TEST = "1";
-process.env.WOLFPACK_JWT_SECRET = "wolfpack-test-secret-long-enough-for-validation";
+process.env.WOLFPACK_JWT_SECRET = randomBytes(32).toString("hex");
 process.env.WOLFPACK_JWT_AUDIENCE = "wolfpack-client";
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
   Self: { ID: "n-auth-test", DNSName: "auth-test.example.ts.net.", HostName: "auth-test" },
@@ -27,7 +27,7 @@ const {
 } = await import("../../src/server/index.ts");
 const { server } = createServerInstance();
 
-const AUTH_SECRET = "wolfpack-test-secret-long-enough-for-validation";
+const AUTH_SECRET = process.env.WOLFPACK_JWT_SECRET!;
 const AUTH_AUDIENCE = "wolfpack-client";
 
 let port = 0;
@@ -376,7 +376,7 @@ describe("JWT auth middleware", () => {
     const now = Math.floor(Date.now() / 1000);
     const token = createJwt(
       { sub: "test", aud: AUTH_AUDIENCE, iat: now - 10, exp: now + 300 },
-      { secret: "wrong-secret-entirely" },
+      { secret: randomBytes(32).toString("hex") },
     );
     const res = await fetch(`${baseUrl}/api/projects`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -557,7 +557,7 @@ describe("JWT auth middleware", () => {
     const now = Math.floor(Date.now() / 1000);
     const token = createJwt(
       { sub: "test", aud: AUTH_AUDIENCE, iat: now - 10, exp: now + 300 },
-      { secret: "wrong-secret" },
+      { secret: randomBytes(32).toString("hex") },
     );
     const { status, ws } = await rawUpgrade(
       `/ws/pty?session=auth-session&token=${encodeURIComponent(token)}`,

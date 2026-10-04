@@ -24,6 +24,7 @@ import { createLogger, errMsg } from "../log.js";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
 import { prepareServiceAuthFile } from "./service-auth.js";
 import { rotateLogFile } from "./logs.js";
+import { requireManagedCurl, waitForApplicationReady } from "./readiness.js";
 
 const log = createLogger("service");
 import {
@@ -104,7 +105,7 @@ interface InstallationCandidatePair {
 
 type InstallationMode = "bootstrap" | "explicit";
 
-function validateExecutableCandidate(path: string, name: string): void {
+export function validateExecutableCandidate(path: string, name: string): void {
   let stat: ReturnType<typeof lstatSync>;
   try {
     stat = lstatSync(path);
@@ -177,6 +178,7 @@ export async function installCandidatePair(
     throw new Error("Missing or invalid config. Run 'wolfpack setup' before reinstalling managed services.");
   }
 
+  if (mode === "explicit" || wasManaged) requireManagedCurl();
   const serverChanged = candidateDiffers(candidates.server, STABLE_SERVER_PATH, "wolfpack");
   const brokerChanged = candidateDiffers(candidates.broker, STABLE_BROKER_PATH, "wolfpack-broker");
   if (brokerChanged && managed.brokerRunning) confirmBrokerReplacement();
@@ -442,12 +444,12 @@ export interface ServiceActionOptions {
 
 function launchdBootout() {
   try {
-    execSync(`launchctl bootout ${LAUNCHD_TARGET} 2>/dev/null`);
+    execFileSync("launchctl", ["bootout", LAUNCHD_TARGET], { stdio: "ignore" });
   } catch {
     // fallback: pre-1.4 versions used deprecated `launchctl load`, which
     // `bootout` can't always remove — try the legacy unload path
     try {
-      execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null`);
+      execFileSync("launchctl", ["unload", PLIST_PATH], { stdio: "ignore" });
     } catch (e: unknown) {
       log.warn("launchdBootout: legacy unload also failed", { error: errMsg(e) });
     }
@@ -455,13 +457,13 @@ function launchdBootout() {
 }
 
 function launchdBootstrap() {
-  execSync(`launchctl bootstrap ${LAUNCHD_DOMAIN} "${PLIST_PATH}"`);
-  execSync(`launchctl kickstart ${LAUNCHD_TARGET}`);
+  execFileSync("launchctl", ["bootstrap", LAUNCHD_DOMAIN, PLIST_PATH]);
+  execFileSync("launchctl", ["kickstart", LAUNCHD_TARGET]);
 }
 
 function isLaunchdServiceLoaded(): boolean {
   try {
-    execSync(`launchctl print ${LAUNCHD_TARGET} 2>&1`, { stdio: "ignore" });
+    execFileSync("launchctl", ["print", LAUNCHD_TARGET], { stdio: "ignore" });
     return true;
   } catch {
     return false;
@@ -469,12 +471,12 @@ function isLaunchdServiceLoaded(): boolean {
 }
 
 function launchdBootoutBroker() {
-  try { execSync(`launchctl bootout ${BROKER_LAUNCHD_TARGET} 2>/dev/null`); } catch { /* expected when not loaded */ }
+  try { execFileSync("launchctl", ["bootout", BROKER_LAUNCHD_TARGET], { stdio: "ignore" }); } catch { /* expected when not loaded */ }
 }
 
 function launchdBootstrapBroker() {
-  execSync(`launchctl bootstrap ${LAUNCHD_DOMAIN} "${BROKER_PLIST_PATH}"`);
-  execSync(`launchctl kickstart ${BROKER_LAUNCHD_TARGET}`);
+  execFileSync("launchctl", ["bootstrap", LAUNCHD_DOMAIN, BROKER_PLIST_PATH]);
+  execFileSync("launchctl", ["kickstart", BROKER_LAUNCHD_TARGET]);
 }
 
 /** Try to build the broker from source via cargo if a Cargo.toml is reachable.
@@ -493,7 +495,7 @@ export function ensureBrokerBinary(): string | null {
   }
   print(dim("  Building wolfpack-broker (cargo build --release)..."));
   try {
-    execSync(`cargo build --release --manifest-path "${manifest}" --bin wolfpack-broker`, {
+    execFileSync("cargo", ["build", "--release", "--manifest-path", manifest, "--bin", "wolfpack-broker"], {
       stdio: "inherit",
     });
   } catch (e: unknown) {
@@ -546,8 +548,8 @@ function brokerServiceInstall(): void {
     }
     try {
       execSync("systemctl --user daemon-reload");
-      execSync(`systemctl --user enable ${BROKER_SYSTEMD_SERVICE}`);
-      if (!preserveRunningBroker) execSync(`systemctl --user start ${BROKER_SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "enable", BROKER_SYSTEMD_SERVICE]);
+      if (!preserveRunningBroker) execFileSync("systemctl", ["--user", "start", BROKER_SYSTEMD_SERVICE]);
     } catch (e: unknown) {
       log.error("broker systemctl enable/start failed", { error: errMsg(e) });
       print(red(`  Failed to enable/start broker: ${errMsg(e)}`));
@@ -567,7 +569,7 @@ function brokerServiceStop(): void {
   if (IS_MACOS) {
     launchdBootoutBroker();
   } else if (IS_LINUX) {
-    try { execSync(`systemctl --user stop ${BROKER_SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected when not running */ }
+    try { execFileSync("systemctl", ["--user", "stop", BROKER_SYSTEMD_SERVICE], { stdio: "ignore" }); } catch { /* expected when not running */ }
   }
   cleanupBrokerSocket();
   print(green("  Wolfpack broker stopped."));
@@ -589,7 +591,7 @@ function brokerServiceUninstall(): void {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker plist", { error: errMsg(e) });
     }
   } else if (IS_LINUX) {
-    try { execSync(`systemctl --user disable ${BROKER_SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected when not enabled */ }
+    try { execFileSync("systemctl", ["--user", "disable", BROKER_SYSTEMD_SERVICE], { stdio: "ignore" }); } catch { /* expected when not enabled */ }
     try { unlinkSync(BROKER_SYSTEMD_PATH); } catch (e: unknown) {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("failed to remove broker unit", { error: errMsg(e) });
     }
@@ -611,6 +613,14 @@ function isBrokerServiceInstalled(): boolean {
   return false;
 }
 
+function requireApplicationReady(): void {
+  const config = loadConfig();
+  if (!config) throw new Error("Missing or invalid config. Run 'wolfpack setup' first.");
+  if (!waitForApplicationReady(config.port)) {
+    throw new Error(`Application startup timed out at localhost:${config.port}: /api/health must report ready app and broker. Check ~/.wolfpack/wolfpack.log and ~/.wolfpack/broker.log.`);
+  }
+}
+
 /**
  * Rewrite the installed server descriptor after setup changes descriptor-backed
  * config, optionally reloading it. The independent broker and its PTYs are untouched.
@@ -622,6 +632,7 @@ export function refreshInstalledServerService(options: { readonly reload?: boole
   // launchd can have a loaded KeepAlive job between process instances. It
   // still holds an in-memory copy of the old plist and must be re-bootstrapped.
   const wasLoaded = reload && (IS_MACOS ? isLaunchdServiceLoaded() : wasRunning);
+  if (wasLoaded) requireManagedCurl();
   const authState = prepareServiceAuthFile(SERVICE_AUTH_PATH);
   const serviceAuthPath = authState === "absent" ? undefined : SERVICE_AUTH_PATH;
 
@@ -636,8 +647,9 @@ export function refreshInstalledServerService(options: { readonly reload?: boole
     mkdirSync(join(homedir(), ".config", "systemd", "user"), { recursive: true });
     writeFileSync(SYSTEMD_PATH, generateSystemdUnit(serviceAuthPath));
     execSync("systemctl --user daemon-reload");
-    if (wasRunning) execSync(`systemctl --user restart ${SYSTEMD_SERVICE}`);
+    if (wasRunning) execFileSync("systemctl", ["--user", "restart", SYSTEMD_SERVICE]);
   }
+  if (wasLoaded) requireApplicationReady();
   print(dim(`  Refreshed installed server service descriptor${wasLoaded ? " and reloaded it" : ""}.`));
 }
 
@@ -708,14 +720,15 @@ function configureLinger(): void {
 }
 
 export function serviceInstall() {
-  if (IS_MACOS) {
-    rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
-    rotateLogFile(BROKER_LOG_PATH);
-  }
   const config = loadConfig();
   if (!config) {
     print(red("  Run 'wolfpack setup' first."));
     process.exit(1);
+  }
+  requireManagedCurl();
+  if (IS_MACOS) {
+    rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
+    rotateLogFile(BROKER_LOG_PATH);
   }
 
   let serviceAuthPath: string | undefined;
@@ -767,6 +780,7 @@ export function serviceInstall() {
       print(dim(`  Try manually: launchctl bootstrap gui/$(id -u) "${PLIST_PATH}"`));
       process.exit(1);
     }
+    requireApplicationReady();
     print("");
     print(green("  Wolfpack service installed and started."));
     print(dim(`  Plist: ${PLIST_PATH}`));
@@ -796,20 +810,21 @@ export function serviceInstall() {
       process.exit(1);
     }
     try {
-      execSync(`systemctl --user enable ${SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "enable", SYSTEMD_SERVICE]);
     } catch (e: unknown) {
       log.error("systemctl enable failed", { error: errMsg(e) });
       print(red(`  Failed to enable service: ${errMsg(e)}`));
       process.exit(1);
     }
     try {
-      execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "start", SYSTEMD_SERVICE]);
     } catch (e: unknown) {
       log.error("systemctl start failed", { error: errMsg(e) });
       print(red(`  Failed to start service: ${errMsg(e)}`));
       print(dim(`  Check logs: journalctl --user -u ${SYSTEMD_SERVICE}`));
       process.exit(1);
     }
+    requireApplicationReady();
     configureLinger();
     print("");
     print(green("  Wolfpack service installed and started."));
@@ -834,8 +849,8 @@ export function serviceUninstall() {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("serviceUninstall: failed to remove plist", { error: errMsg(e) });
     }
   } else if (IS_LINUX) {
-    try { execSync(`systemctl --user stop ${SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected: exits non-zero when service not running */ }
-    try { execSync(`systemctl --user disable ${SYSTEMD_SERVICE} 2>/dev/null`); } catch { /* expected: exits non-zero when already disabled */ }
+    try { execFileSync("systemctl", ["--user", "stop", SYSTEMD_SERVICE], { stdio: "ignore" }); } catch { /* expected: exits non-zero when service not running */ }
+    try { execFileSync("systemctl", ["--user", "disable", SYSTEMD_SERVICE], { stdio: "ignore" }); } catch { /* expected: exits non-zero when already disabled */ }
     try { unlinkSync(SYSTEMD_PATH); } catch (e: unknown) {
       if ((e as NodeJS.ErrnoException)?.code !== "ENOENT") log.warn("serviceUninstall: failed to remove unit file", { error: errMsg(e) });
     }
@@ -895,7 +910,7 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
     if (IS_MACOS) {
       launchdBootout();
     } else if (IS_LINUX) {
-      execSync(`systemctl --user stop ${SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "stop", SYSTEMD_SERVICE]);
     }
     serverStopped = true;
     print(green("  Wolfpack service stopped."));
@@ -912,6 +927,7 @@ export function serviceStop(options: ServiceActionOptions = {}): boolean {
 }
 
 export function serviceStart(_options: ServiceActionOptions = {}): boolean {
+  requireManagedCurl();
   if (IS_MACOS) {
     rotateLogFile(join(WOLFPACK_DIR, "wolfpack.log"));
     rotateLogFile(BROKER_LOG_PATH);
@@ -926,13 +942,14 @@ export function serviceStart(_options: ServiceActionOptions = {}): boolean {
     if (IS_MACOS) {
       launchdBootstrap();
     } else if (IS_LINUX) {
-      execSync(`systemctl --user start ${SYSTEMD_SERVICE}`);
+      execFileSync("systemctl", ["--user", "start", SYSTEMD_SERVICE]);
     }
+    requireApplicationReady();
     print(green("  Wolfpack service started."));
     return true;
   } catch (e: unknown) {
     log.error("failed to start service", { error: errMsg(e) });
-    print(red("  Failed to start service."));
+    print(red(`  Failed to start service: ${errMsg(e)}`));
     return false;
   }
 }
@@ -964,6 +981,7 @@ function brokerRestartPrompt(activeBrokerSessions: number | null): string {
 }
 
 export function serviceRestart(options: ServiceActionOptions = {}): boolean {
+  requireManagedCurl();
   const activeBrokerSessions = readBrokerSessionCount(loadConfig());
   const promptedForBroker = options.broker === undefined;
   const restartBroker = options.broker ?? (
@@ -983,10 +1001,10 @@ export function serviceRestart(options: ServiceActionOptions = {}): boolean {
 export function isServiceRunning(): boolean {
   try {
     if (IS_MACOS) {
-      const out = execSync(`launchctl print ${LAUNCHD_TARGET} 2>&1`, { encoding: "utf-8" });
+      const out = execFileSync("launchctl", ["print", LAUNCHD_TARGET], { encoding: "utf-8" });
       return /pid\s*=\s*\d+/i.test(out);
     } else if (IS_LINUX) {
-      const out = execSync(`systemctl --user is-active ${SYSTEMD_SERVICE} 2>&1`, { encoding: "utf-8" }).trim();
+      const out = execFileSync("systemctl", ["--user", "is-active", SYSTEMD_SERVICE], { encoding: "utf-8" }).trim();
       return out === "active";
     }
   } catch { /* expected: command exits non-zero when service inactive */ }
@@ -996,10 +1014,10 @@ export function isServiceRunning(): boolean {
 export function isBrokerServiceRunning(): boolean {
   try {
     if (IS_MACOS) {
-      const out = execSync(`launchctl print ${BROKER_LAUNCHD_TARGET} 2>&1`, { encoding: "utf-8" });
+      const out = execFileSync("launchctl", ["print", BROKER_LAUNCHD_TARGET], { encoding: "utf-8" });
       return /pid\s*=\s*\d+/i.test(out);
     } else if (IS_LINUX) {
-      const out = execSync(`systemctl --user is-active ${BROKER_SYSTEMD_SERVICE} 2>&1`, { encoding: "utf-8" }).trim();
+      const out = execFileSync("systemctl", ["--user", "is-active", BROKER_SYSTEMD_SERVICE], { encoding: "utf-8" }).trim();
       return out === "active";
     }
   } catch { /* expected: command exits non-zero when broker is inactive */ }
@@ -1024,7 +1042,7 @@ export function serviceStatus() {
   print(dim(`  Version: ${VERSION}`));
   if (IS_MACOS) {
     try {
-      const out = execSync(`launchctl print ${LAUNCHD_TARGET} 2>&1`, { encoding: "utf-8" });
+      const out = execFileSync("launchctl", ["print", LAUNCHD_TARGET], { encoding: "utf-8" });
       const pidMatch = out.match(/pid\s*=\s*(\d+)/i);
       if (pidMatch) {
         print(green(`  Wolfpack is running (PID ${pidMatch[1]})`));
@@ -1040,10 +1058,11 @@ export function serviceStatus() {
     }
   } else if (IS_LINUX) {
     try {
-      const out = execSync(`systemctl --user is-active ${SYSTEMD_SERVICE} 2>&1`, { encoding: "utf-8" }).trim();
+      const out = execFileSync("systemctl", ["--user", "is-active", SYSTEMD_SERVICE], { encoding: "utf-8" }).trim();
       if (out === "active") {
-        const pidOut = execSync(
-          `systemctl --user show ${SYSTEMD_SERVICE} --property=MainPID --value`,
+        const pidOut = execFileSync(
+          "systemctl",
+          ["--user", "show", SYSTEMD_SERVICE, "--property=MainPID", "--value"],
           { encoding: "utf-8" },
         ).trim();
         print(green(`  Wolfpack is running (PID ${pidOut})`));

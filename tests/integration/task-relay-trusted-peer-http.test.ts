@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +9,7 @@ import { validateControlApiSchemaValue as validate, type JsonObject } from "../c
 import { buildControlApiSchema } from "../../src/control-api/schema.ts";
 import { qualifyRemoteTaskEndpoint } from "../../src/cli/task-endpoint.ts";
 const profile = "volatile-v1", route = "/api/task-relay/volatile-v1", schema = buildControlApiSchema() as JsonObject;
-const secret = "private-tailnet-relay-fixture-secret-at-least-32";
+const secret = randomBytes(32).toString("hex");
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 const signed = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ exp: Math.floor(Date.now() / 1000) + 600 })}`;
 const headers = { "content-type": "application/json", authorization: `Bearer ${signed}.${createHmac("sha256", secret).update(signed).digest("base64url")}` };

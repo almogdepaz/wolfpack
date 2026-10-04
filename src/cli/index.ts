@@ -4,8 +4,9 @@
  */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { printQR } from "../qr.js";
-import { print, printError, printJson, bold, dim, red, yellow, WOLF } from "./formatting.js";
+import { printAccessUrls } from "./access-output.js";
+import { requireManagedCurl, waitForApplicationReady } from "./readiness.js";
+import { print, printError, printJson, bold, dim, red, WOLF } from "./formatting.js";
 import pkg from "../../package.json";
 import {
   loadConfig,
@@ -205,42 +206,44 @@ async function start() {
     return;
   }
 
-  // CLI invocation — ensure service is running the current version
+  // A declined login service stays declined. Decide before staging/installing.
+  if (!isServiceInstalled()) {
+    const { startForeground } = await import("./foreground.js");
+    await startForeground(config, () => {
+      print(dim(WOLF));
+      print(bold("  WOLFPACK"));
+      print("");
+      printAccessUrls(config.port, remoteUrl(config));
+      print("");
+    }, packageCandidates?.broker);
+    return;
+  }
+
+  // CLI invocation — check tooling before staging/replacing managed binaries.
+  requireManagedCurl();
   const url = remoteUrl(config);
   const wasRunning = isServiceRunning();
   if (packageCandidates && !wasRunning) {
     await installCandidatePair(packageCandidates, "explicit");
   } else {
     const binaryUpdated = updateStableBinary();
-    try {
-      const action = planBinaryUpdateAction(binaryUpdated, wasRunning, isServiceInstalled());
-      if (action === "server-restart") {
-        print(dim("  Updated server binary; restarting server only so broker sessions stay attached to the broker."));
-        serviceRestart({ broker: false, skipBrokerSessionWarning: true });
-      } else if (action === "start") serviceStart();
-      else if (action === "install") serviceInstall();
-    } catch (e) {
-      printError(red(`  Service startup failed: ${e}`));
-      printError(dim("  Run 'wolfpack service install' to retry."));
-    }
+    const action = planBinaryUpdateAction(binaryUpdated, wasRunning, isServiceInstalled());
+    if (action === "server-restart") {
+      print(dim("  Updated server binary; restarting server only so broker sessions stay attached to the broker."));
+      if (!serviceRestart({ broker: false, skipBrokerSessionWarning: true })) throw new Error("Service restart failed.");
+    } else if (action === "start") {
+      if (!serviceStart()) throw new Error("Service startup failed.");
+    } else if (action === "install") serviceInstall();
   }
-  if (wasRunning && !isServiceRunning()) {
-    printError(yellow("  Service was running but didn't restart."));
-    printError(yellow(`  Run ${bold("wolfpack service start")} to restart it.`));
-  } else if (!isServiceRunning()) {
-    printError(yellow("  Wolfpack service is not running."));
-    printError(yellow(`  Run ${bold("wolfpack service start")} or ${bold("wolfpack service install")} to launch it.`));
+  if (!isServiceRunning()) throw new Error("Wolfpack service is not running. Run 'wolfpack service start' to retry.");
+  if (!waitForApplicationReady(config.port)) {
+    throw new Error(`Application startup timed out at localhost:${config.port}: app and broker must be ready. Check ~/.wolfpack/wolfpack.log and ~/.wolfpack/broker.log.`);
   }
 
   print(dim(WOLF));
   print(bold("  WOLFPACK"));
   print("");
-  print(`  Local:    ${dim(`http://localhost:${config.port}/`)}`);
-  if (url) print(`  Remote:   ${dim(url)}`);
-  print("");
-  print(dim("  Scan to open on your phone:"));
-  print("");
-  printQR(url ?? `http://localhost:${config.port}/`);
+  printAccessUrls(config.port, url);
   print("");
 }
 
@@ -327,7 +330,9 @@ async function runServiceCommand(argv: readonly string[]): Promise<void> {
   }
   else if (serviceCommand.action === "uninstall") serviceUninstall();
   else if (serviceCommand.action === "stop") serviceStop(serviceCommand.broker ? { broker: true } : {});
-  else if (serviceCommand.action === "start") serviceStart();
+  else if (serviceCommand.action === "start") {
+    if (!serviceStart()) process.exitCode = 1;
+  }
   else if (serviceCommand.action === "restart") {
     const restarted = serviceCommand.serverOnly
       ? serviceRestart({ broker: false, skipBrokerSessionWarning: true })

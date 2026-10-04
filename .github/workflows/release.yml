@@ -14,7 +14,7 @@ jobs:
     outputs:
       prerelease: ${{ steps.classify.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -50,7 +50,7 @@ jobs:
     needs: classify-release
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-12
         with:
@@ -89,13 +89,13 @@ jobs:
           bun run scripts/broker-artifacts.ts stage --root=. --binary=staging/bun-darwin-arm64/wolfpack-broker --metadata=staging/bun-darwin-arm64/broker-artifact.json --target=bun-darwin-arm64 --mode=release
           bun run scripts/broker-artifacts.ts stage --root=. --binary=staging/bun-darwin-x64/wolfpack-broker --metadata=staging/bun-darwin-x64/broker-artifact.json --target=bun-darwin-x64 --mode=release
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: broker-bun-darwin-arm64
           path: staging/bun-darwin-arm64
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: broker-bun-darwin-x64
           path: staging/bun-darwin-x64
@@ -105,7 +105,7 @@ jobs:
     needs: classify-release
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-12
         with:
@@ -142,13 +142,13 @@ jobs:
           bun run scripts/broker-artifacts.ts stage --root=. --binary=staging/bun-linux-x64/wolfpack-broker --metadata=staging/bun-linux-x64/broker-artifact.json --target=bun-linux-x64 --mode=release
           bun run scripts/broker-artifacts.ts stage --root=. --binary=staging/bun-linux-arm64/wolfpack-broker --metadata=staging/bun-linux-arm64/broker-artifact.json --target=bun-linux-arm64 --mode=release
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: broker-bun-linux-x64
           path: staging/bun-linux-x64
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: broker-bun-linux-arm64
           path: staging/bun-linux-arm64
@@ -159,7 +159,7 @@ jobs:
     needs: [classify-release, broker-darwin, broker-linux]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -207,7 +207,7 @@ jobs:
         run: tar -czf "$RUNNER_TEMP/release-build-bundle.tar.gz" dist
 
       - name: Upload build bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-build-bundle-${{ github.sha }}
           path: ${{ runner.temp }}/release-build-bundle.tar.gz
@@ -218,7 +218,7 @@ jobs:
     needs: build
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -247,7 +247,7 @@ jobs:
         run: scripts/create-final-release-bundle.sh
 
       - name: Upload final bundle
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-final-bundle-${{ github.sha }}
           path: ${{ runner.temp }}/release-final-bundle.tar.gz
@@ -287,7 +287,7 @@ jobs:
             dist/checksums-sha256.txt
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
           prerelease: ${{ needs.classify-release.outputs.prerelease }}
@@ -311,7 +311,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

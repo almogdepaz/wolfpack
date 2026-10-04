@@ -70,7 +70,11 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
           }
           return childProcess.execSync(command, options);
         },
-        execFileSync: (_file, args) => {
+        execFileSync: (file, args) => {
+          if (fixture?.failsTailscaleInstallation && file === "brew" && args[0] === "--version") return "";
+          if (fixture?.failsTailscaleInstallation && file === "brew" && args[0] === "install" && args.includes("tailscale")) {
+            throw new Error("simulated Tailscale install failure");
+          }
           if (args[0] === "status") return fixture.tailscale.selfStatus ?? JSON.stringify({ Self: { DNSName: fixture.tailscale.hostname + "." } });
           if (args[0] === "serve" && args[1] === "status") return JSON.stringify(fixture.tailscale.serveStatus);
           return "";
@@ -166,9 +170,9 @@ function expectSuccessfulSetup(result: SetupFlowResult): void {
 function expectLocalOnlyActivation(result: SetupFlowResult, port = 18790): void {
   expect(result.stdout).toContain(`Local: http://localhost:${port}/`);
   expect(result.stdout).not.toContain("Remote:");
-  expect(result.stdout).not.toContain(
-    "Scan the verified remote URL to open Wolfpack on your phone:",
-  );
+  expect(result.stdout).not.toContain("Scan");
+  expect(result.stdout).not.toMatch(/[▀▄█]/);
+  expect(result.stdout).toContain("Open the local URL on this computer; Tailscale is not required for local access.");
 }
 
 afterEach(() => {
@@ -253,17 +257,17 @@ describe("first-run setup", () => {
     });
   });
 
-  test("persists and presents the verified remote URL when Tailscale is installed", () => {
+  test.each([18790, 24444])("persists and presents both URLs below the verified remote QR with local port %p", (port) => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
     temporaryHomes.push(home);
     const configPath = join(home, ".wolfpack", "config.json");
     const hostname = "new.tailnet.ts.net";
 
-    const result = runSetupFlow(home, { tailscale: {
+    const result = runSetupFlow(home, { setupOptions: { port }, tailscale: {
       hostname,
       serveStatus: {
         Web: {
-          [`${hostname}:443`]: { Handlers: { "/": { Proxy: "http://127.0.0.1:18790" } } },
+          [`${hostname}:443`]: { Handlers: { "/": { Proxy: `http://127.0.0.1:${port}` } } },
         },
       },
     } });
@@ -271,12 +275,19 @@ describe("first-run setup", () => {
     expectSuccessfulSetup(result);
     expect(JSON.parse(readFileSync(configPath, "utf-8"))).toEqual({
       devDir: join(home, "Dev"),
-      port: 18790,
+      port,
       tailscaleHostname: hostname,
     });
     expect(result.stdout).toContain(`Tailscale serving at https://${hostname}/`);
     expect(result.stdout).toContain(`Remote: https://${hostname}`);
+    expect(result.stdout).toContain(`Local: http://localhost:${port}/`);
     expect(result.stdout).toContain("Scan the verified remote URL to open Wolfpack on your phone:");
+    expect(result.stdout).toContain("You can use either URL on this computer; the Tailnet URL requires Tailscale.");
+    expect(result.stdout).not.toContain("Both URLs work");
+    const qrEnd = result.stdout.lastIndexOf("▀");
+    expect(qrEnd).toBeGreaterThan(-1);
+    expect(result.stdout.indexOf(`Remote: https://${hostname}`)).toBeGreaterThan(qrEnd);
+    expect(result.stdout.indexOf(`Local: http://localhost:${port}/`)).toBeGreaterThan(result.stdout.indexOf("Remote:"));
     expect(result.stdout).not.toContain("Tailscale serve was not verified");
   });
 

@@ -98,7 +98,7 @@
     "yaml": "2.9.1"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.10.2",
+    "@axe-core/playwright": "4.13.0",
     "@playwright/test": "^1.58.2",
     "@types/semver": "7.7.0",
     "@types/ws": "^8.18.1",

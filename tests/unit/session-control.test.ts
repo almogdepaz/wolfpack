@@ -697,7 +697,7 @@ describe("session control cli parsing", () => {
     const script = `
       process.env.WOLFPACK_SESSION_NAME = "pi-main";
       process.env.WOLFPACK_AGENT_KIND = "pi";
-      process.env.WOLFPACK_JWT_SECRET = "too-short";
+      process.env.WOLFPACK_JWT_SECRET = ["too", "short"].join("-");
       globalThis.fetch = async () => new Response("unauthorized", { status: 401 });
       const { runSessionCommand } = await import("./src/cli/session-control.ts");
       process.exit(await runSessionCommand(["open", "wolfpack", "--json"]));

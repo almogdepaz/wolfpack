@@ -24,6 +24,10 @@ curl -fsSL "https://raw.githubusercontent.com/almogdepaz/wolfpack/${WOLFPACK_REL
 
 The installer downloads and verifies the matching `wolfpack` and `wolfpack-broker` releases, then delegates installation and interactive setup to the staged server. Package-triggered installation uses the same pair owner. After setup, if you accepted the login service, open the printed URL. If you declined the login service, run `wolfpack`, then open the printed URL. In either case, run `wolfpack doctor` to verify the installation.
 
+Declining login services remains effective: ordinary `wolfpack` runs in the foreground without installing services. It reuses a healthy existing broker and leaves that broker's sessions alive on shutdown. If it starts its own broker, Ctrl-C or shutdown stops that broker too and ends its sessions. Package foreground startup uses the matching package broker rather than replacing managed binaries. Use explicit `wolfpack service install` when you want login services.
+
+Managed service installation, activation, restart, upgrade, and loaded-service reload require runnable `curl` on `PATH` for bounded loopback health checks. Wolfpack checks this before disruptive managed changes; install curl or fix PATH before retrying. Foreground startup, declined-service setup, fresh binary-only skip-setup installation, and non-activating operations do not require curl. The installer's `wget` fallback downloads release assets only; it does not satisfy the managed-service health-check prerequisite. Wolfpack does not install curl automatically.
+
 On later runs, the owner validates the pair and required configuration before disrupting managed services. An unchanged running broker is preserved; replacing a running broker warns that its sessions will end and requires confirmation before stopping it. For an existing managed installation, setup defers activation to the owner, which installs or repairs the required services after setup succeeds. The shell does not perform a separate restart. Installation or activation failure returns nonzero; fix the reported cause and rerun the same installer.
 
 ### Bunx or npm: no persistent CLI
@@ -46,7 +50,7 @@ The normal curl command retrieves the [bootstrap installer source](https://githu
 
 In execution order, the installer:
 
-1. requires Bash and accepts only macOS or Linux on x64 or arm64;
+1. requires Bash and accepts only macOS or Linux on x64 or arm64; unless `WOLFPACK_INSTALL_SKIP_SETUP=1`, opens the controlling terminal before requesting release assets or creating staging files;
 2. creates a private staging directory under `~/.wolfpack/bin`, then downloads the matching `wolfpack`, `wolfpack-broker`, and `checksums-sha256.txt` release assets there;
 3. rejects failed or empty downloads and unavailable SHA-256 tooling, selects each binary's exact filename from the checksum list, and verifies both binaries before replacement; ordinary exits and failures run the EXIT cleanup trap;
 4. on macOS, clears downloaded quarantine/provenance attributes and applies an ad-hoc local signature to both staged binaries before replacement—this permits local execution but is **not** Wolfpack publisher identity verification;
@@ -183,7 +187,7 @@ On first setup, Wolfpack enables `shell` and supported agent CLIs detected on `P
 
 ## what success looks like
 
-A successful setup prints a local URL. When Tailscale is signed in and `tailscale serve` is verified, it also prints a private Tailnet HTTPS URL and QR code. Open the local URL on the host machine, or scan only the verified remote QR code from a trusted Tailnet device.
+A successful setup prints `http://localhost:<configured-port>/` for access on the host machine; Tailscale is not required for local access. When Tailscale is signed in and `tailscale serve` is verified, it prints a remote QR code, followed by the private Tailnet HTTPS URL and the localhost URL. You can use either URL on the host machine; the Tailnet URL requires Tailscale. On other devices, use the remote URL or QR code with Tailscale. Without verified remote access, no QR code is shown.
 
 Run the matching diagnosis command after setup:
 
