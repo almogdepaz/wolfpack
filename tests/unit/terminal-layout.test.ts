@@ -69,6 +69,22 @@ describe("terminal layout", () => {
     expect({ cols: term.cols, rows: term.rows }).toEqual({ cols: 120, rows: 30 });
   });
 
+  for (const viewportY of [0, 8]) {
+    test(`only the live bottom viewport defers requested resize presentation (offset ${viewportY})`, () => {
+      let deferred: boolean | undefined;
+      const term = {
+        cols: 80, rows: 24, viewportY,
+        getScrollbackLength: () => 100,
+        scrollToLine: () => {},
+        resize: (cols: number, rows: number, options?: { readonly deferPresentation: boolean }) => {
+          term.cols = cols; term.rows = rows; deferred = options?.deferPresentation;
+        },
+      };
+      expect(commitTerminalResizePreservingScroll(term, { cols: 80, rows: 40 }, true)).toBe(true);
+      expect({ cols: term.cols, rows: term.rows, deferred }).toEqual({ cols: 80, rows: 40, deferred: viewportY === 0 });
+    });
+  }
+
   test("keeps legacy peers functional without ordered resize capability", () => {
     const sent: Array<{ readonly cols: number; readonly rows: number }> = [];
     const term = {

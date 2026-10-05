@@ -128,6 +128,38 @@ describe("terminal connection lifecycle", () => {
     expect(lifecycle.onPrefillDone()).toEqual({ activateHydration: false });
   });
 
+  test("stale replacement writes cannot consume a new epoch's hydration completion", () => {
+    const lifecycle = createTerminalConnectionLifecycle();
+    lifecycle.beginReplacementPrefill(false);
+    expect(lifecycle.onBinaryData()).toEqual({ activateHydration: true });
+    const staleWrite = lifecycle.beginHydrationWrite();
+
+    lifecycle.beginConnection();
+    lifecycle.beginReplacementPrefill(false);
+    const currentWrite = lifecycle.beginHydrationWrite();
+
+    expect(lifecycle.finishHydrationWrite(staleWrite)).toBe(false);
+    expect(lifecycle.pendingHydrationWrites).toBe(1);
+    expect(lifecycle.onPrefillDone()).toEqual({ activateHydration: true });
+    expect(lifecycle.finishHydrationWrite(currentWrite)).toBe(true);
+    expect(lifecycle.pendingHydrationWrites).toBe(0);
+    expect(lifecycle.onBinaryData()).toEqual({ activateHydration: false });
+  });
+
+  test("takeover supersedes deferred replacement without a second hydration activation", () => {
+    const lifecycle = createTerminalConnectionLifecycle();
+    lifecycle.beginReplacementPrefill(false);
+    lifecycle.beginHydrationWrite();
+    expect(lifecycle.onControlGranted()).toEqual({ activateHydration: true });
+    expect(lifecycle.pendingHydrationWrites).toBe(0);
+    lifecycle.onReplacePrefill();
+    expect(lifecycle.onPrefillDone()).toEqual({ activateHydration: false });
+    expect(lifecycle.onBinaryData()).toEqual({ activateHydration: false });
+    const takeoverWrite = lifecycle.beginHydrationWrite();
+    expect(lifecycle.finishHydrationWrite(takeoverWrite)).toBe(true);
+    expect(lifecycle.pendingHydrationWrites).toBe(0);
+  });
+
   test("reset clears writes and replacement state without advancing the epoch", () => {
     const lifecycle = createTerminalConnectionLifecycle();
     lifecycle.beginReplacementPrefill(false);

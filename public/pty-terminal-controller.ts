@@ -682,7 +682,8 @@ export function createPtyTerminalController(
       onPtyReady: () => { if (isCurrent() && opts.onPtyReady) opts.onPtyReady(); },
       onResizeAck: (cols, rows) => {
         if (!isCurrent() || !_term) return;
-        if (commitTerminalResizePreservingScroll(_term, { cols, rows })) {
+        const deferPresentation = _initialPrefillComplete && !_hydration?.pending;
+        if (commitTerminalResizePreservingScroll(_term, { cols, rows }, deferPresentation)) {
           recordFirstFit({ cols, rows });
           forceRepaint();
           resizeLifecycle.scheduleResizeRehydrate();
