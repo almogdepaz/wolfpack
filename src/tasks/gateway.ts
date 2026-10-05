@@ -1055,7 +1055,7 @@ export function getTaskGateway(): TaskGateway {
   return singleton;
 }
 
-export function __resetTaskGatewayForTests(): void {
+export function __resetTaskGatewayForTests(options?: GatewayOptions): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("task gateway reset is test-only");
-  singleton = undefined;
+  singleton = options === undefined ? undefined : new TaskGateway(options);
 }
