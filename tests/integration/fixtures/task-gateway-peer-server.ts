@@ -21,14 +21,6 @@ const taskRelay = process.env.WOLFPACK_TEST_TASK_RELAY === "1";
 if (!Number.isInteger(crashBeforePeerEventAttempt) || crashBeforePeerEventAttempt < 0) throw new Error("peer event crash attempt must be a non-negative integer");
 if (!Number.isInteger(peerEventResponseDelayMs) || peerEventResponseDelayMs < 0) throw new Error("peer event response delay must be a non-negative integer");
 let crashBeforePeerEventCount = 0;
-if (process.env.WOLFPACK_TEST_FAST_RETRY === "1") {
-  const nativeSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => nativeSetTimeout(
-    handler,
-    typeof timeout === "number" && timeout >= 1_000 ? 1 : timeout,
-    ...args,
-  )) as typeof setTimeout;
-}
 const peerEventResponseLoss = new Map<string, number>();
 for (const entry of JSON.parse(process.env.WOLFPACK_TEST_PEER_EVENT_RESPONSE_LOSS ?? "[]") as unknown[]) {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw new Error("peer event response loss must be an object");
@@ -143,7 +135,11 @@ class PeerBackend extends MockBackend {
 }
 
 __setTestBackend(new PeerBackend({ sessions: [role === "sender" ? "parent" : "receiver"] }));
-const { getTaskGateway } = await import("../../../src/tasks/gateway.ts");
+const { getTaskGateway, __resetTaskGatewayForTests } = await import("../../../src/tasks/gateway.ts");
+if (process.env.WOLFPACK_TEST_FAST_RETRY === "1") {
+  // Accelerate only peer retry backoff, not HTTP keepalive or unrelated deadlines.
+  __resetTaskGatewayForTests({ root: taskRoot, sleep: () => new Promise((resolve) => setTimeout(resolve, 1)) });
+}
 const { createServerInstance } = await import("../../../src/server/index.ts");
 await getTaskGateway().initialize();
 const { server } = createServerInstance();

@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { AddressInfo } from "node:net";
 import { createServer } from "node:net";
-import { createServer as createHttpServer } from "node:http";
+import { Agent, createServer as createHttpServer, get as httpGet } from "node:http";
+import type { Socket } from "node:net";
 import type { Server } from "node:http";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -772,6 +773,37 @@ describe("cross-process peer task gateway", () => {
       rmSync(fixture.root, { recursive: true, force: true });
     }
   }, 20_000);
+
+  test("fast peer retries preserve HTTP keepalive between requests", async () => {
+    const fixture = await createHttpPeerFixture("fast-retry-keepalive");
+    const agent = new Agent({ keepAlive: true, maxSockets: 1 });
+    let sender: PeerServer | undefined;
+    try {
+      sender = await spawnPeerServer(peerServerOptions(fixture, "sender", [], true));
+      const inboxUrl = `${sender.base}/api/tasks/v1/inbox?callerSession=parent&cursor=0`;
+      const requestInbox = (): Promise<Socket> => new Promise((resolve, reject) => {
+        const request = httpGet(inboxUrl, { agent }, (response) => {
+          const socket = response.socket;
+          response.resume();
+          response.once("error", reject);
+          response.once("end", () => {
+            if (response.statusCode !== 200 || !socket) reject(new Error(`expected a successful inbox response with a socket (status ${response.statusCode}, socket ${Boolean(socket)})`));
+            else resolve(socket);
+          });
+        });
+        request.once("error", reject);
+      });
+      const firstSocket = await requestInbox();
+      // Retry acceleration must not shorten the HTTP server's 6-second idle deadline.
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      expect(firstSocket.destroyed).toBe(false);
+      expect(await requestInbox()).toBe(firstSocket);
+    } finally {
+      agent.destroy();
+      await stopPeerServer(sender);
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
 
   test("finalizes a four-attempt sender intent after a crash before the delivery failure record", async () => {
     const fixture = await createHttpPeerFixture("sender-exhaustion-finalization");

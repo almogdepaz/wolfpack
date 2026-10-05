@@ -48,17 +48,17 @@
       "sha512-6YLx+kxXu5GJceG4ozFg+33a2EMTdjYwWGloJ3sb9Kta5pp+ZNS53uxGVog5JetIY8s++P5UrtX+cri+u0VAVg=="
     ],
     "@playwright/test": [
-      "@playwright/test@1.58.2",
+      "@playwright/test@1.63.0",
       "",
       {
         "dependencies": {
-          "playwright": "1.58.2"
+          "playwright": "1.63.0"
         },
         "bin": {
           "playwright": "cli.js"
         }
       },
-      "sha512-akea+6bHYBBfA9uQqSYmlJXn61cTa+jbO87xVLCWbTqbWadRVmhxlXATaOjOgcBaWU4ePo0wB41KMFv3o35IXA=="
+      "sha512-oxMK4vllB9RK5NQ2l1pq1IfOf2AvnEuj/vYGDj0H2nMtmtZpKtCwt/l00GEO6xjGfpBNAvjovvYdCm50dRQkpQ=="
     ],
     "@types/node": [
       "@types/node@25.5.0",
@@ -102,14 +102,6 @@
       },
       "sha512-bxV1FgK7yBIzjRe5zBozIM4Bem11ZJcCXSrjWRG3YWLt8yFDePu4cLjpebO8OvPeIE9trbyPF4fuj3Cia4Fj3w=="
     ],
-    "fsevents": [
-      "fsevents@2.3.2",
-      "",
-      {
-        "os": "darwin"
-      },
-      "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="
-    ],
     "ghostty-web": [
       "ghostty-web@0.4.0",
       "",
@@ -117,20 +109,17 @@
       "sha512-0puDBik2qapbD/QQBW9o5ZHfXnZBqZWx/ctBiVtKZ6ZLds4NYb+wZuw1cRLXZk9zYovIQ908z3rvFhexAvc5Hg=="
     ],
     "playwright": [
-      "playwright@1.58.2",
+      "playwright@1.63.0",
       "",
       {
         "dependencies": {
-          "playwright-core": "1.58.2"
-        },
-        "optionalDependencies": {
-          "fsevents": "2.3.2"
+          "playwright-core": "1.63.0"
         },
         "bin": {
           "playwright": "cli.js"
         }
       },
-      "sha512-vA30H8Nvkq/cPBnNw4Q8TWz1EJyqgpuinBcHET0YVJVFldr8JDNiU9LaWAE1KqSkRYazuaBhTpB5ZzShOezQ6A=="
+      "sha512-+7ziBLidS4NaNCdt57SUDT+wYmmd5fmiQejUic/kb+YsYSCPyOOE9sebzMjNmQrsnNpDJqd4WHvV/8lfKfUDUg=="
     ],
     "playwright-core": [
       "playwright-core@1.58.2",
@@ -296,6 +285,16 @@
         }
       },
       "sha512-3NxN8+78OdzbT7C/WjGsyfPAtJaN3FNDsWxv7Y7mcDsT/oOmgW8BpyQQFFBnvZE3j9Y2Sdz1ULFLezL7Eb2yFw=="
+    ],
+    "playwright/playwright-core": [
+      "playwright-core@1.63.0",
+      "",
+      {
+        "bin": {
+          "playwright-core": "cli.js"
+        }
+      },
+      "sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg=="
     ]
   }
 }
