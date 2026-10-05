@@ -9,7 +9,7 @@ Read this before changing test harness behavior, shared fixtures, Playwright/e2e
 
 `tests` owns unit, integration, snapshot, Playwright/e2e, schema, fixture, and real-broker regression contracts under `tests/**`. It does not own production behavior, generated schemas, browser bundles, screenshots, or broker binaries. When tests appear to define behavior, route to the corresponding production module first, then use tests for expected observable outcomes and regression intent.
 
-`bunfig.toml` now preloads `tests/test-preload.ts` for Bun tests; although the config file is contextless, test isolation semantics belong here. The preload creates an owned temporary `WOLFPACK_TASK_RELAY_ROOT` and removes it after the test run, preventing local relay state leakage.
+`bunfig.toml` now preloads `tests/test-preload.ts` for Bun tests; although the config file is contextless, test isolation semantics belong here. The preload owns temporary-root isolation and cleanup; consult `tests/test-preload.ts` for exact setup. This fixture does not imply that production relay transport is durable.
 
 ## Test Families
 
@@ -23,7 +23,7 @@ Read this before changing test harness behavior, shared fixtures, Playwright/e2e
 
 ### Test environment isolation
 
-- `tests/test-preload.ts` owns task-relay temp-root isolation for Bun tests. New tests that depend on durable relay state should not use the operator's default `~/.wolfpack` path.
+- `tests/test-preload.ts` owns task-relay temp-root isolation for Bun tests. Persistence fixtures must not use the operator's default `~/.wolfpack` path; distinguish durable task data from volatile relay state.
 - `tests/e2e/test-server-home.ts` creates/removes only owned temporary homes with a marker token, verifies canonical temp parent, rejects symlink/non-owned paths, and refuses broad deletion. Use it for e2e server-home cleanup instead of ad hoc `rm -rf` paths.
 - `WOLFPACK_TEST` enables test-only hooks and shorter cache TTLs in production modules. Tests may use those hooks; production code must not depend on them.
 
@@ -36,6 +36,18 @@ Read this before changing test harness behavior, shared fixtures, Playwright/e2e
 - `tests/unit/task-worker-readiness.test.ts` covers launch-resource preflight, executable symlinks vs dangling/missing resources, exact session/project/harness/liveness checks, deadline handling, endpoint lookup, and exact-ID cleanup outcomes.
 - `tests/e2e/task-worker-readiness.e2e.ts` optionally launches real Pi + Pi Tasks against an isolated broker/relay when prerequisites exist. Skips are environmental; a pass proves exact live session ID, Pi harness, project root, relay endpoint, and exact-ID teardown.
 - `tests/e2e/task-worker-early-exit.e2e.ts` covers readiness failure when the worker exits too early.
+
+### Relay worker, process, package, and installation coverage
+
+Select the boundary under test, not just unit/integration/e2e labels:
+
+- **Compiled worker embedding/adapters:** `tests/integration/task-relay-worker-compiled.test.ts` and `tests/integration/task-relay-compiled-adapter.test.ts` cover compiled worker delivery boundaries that helper/browser passes do not establish.
+- **Isolated relay processes:** `tests/integration/task-relay-volatile-process.test.ts` covers volatile relay process/reset behavior; in-process tests are not restart/rebind evidence.
+- **Packaged artifacts:** `tests/integration/task-relay-packaged-worker.test.ts` owns packaged CLI/native broker/Pi prerequisites and its explicit private-artifact gate. Read the suite and its fixtures for artifact selection; an artifact skip does not verify packaged behavior.
+- **Installation/startup lifecycle:** `tests/integration/installation-startup.test.ts` covers actual installation and startup decisions, including broker ownership/replacement. Service descriptor snapshots alone do not prove activation behavior.
+- **Relay peer auth:** `tests/integration/task-relay-trusted-peer-http.test.ts` covers the relay HTTP trust boundary; keep it distinct from durable task gateway tests.
+
+Use each suite and its fixture imports as prerequisite authority; do not infer compiled, cross-process, or packaged correctness from a narrow helper pass.
 
 ### Passive inspection and terminal conflict coverage
 
@@ -77,7 +89,8 @@ Read this before changing test harness behavior, shared fixtures, Playwright/e2e
 
 - Bun preload/isolation: `bunfig.toml`, `tests/test-preload.ts`.
 - Shared e2e fixtures: `tests/e2e/helpers.ts`, `tests/e2e/broker-helpers.ts`, `tests/e2e/test-server.ts`, `tests/e2e/test-server-broker.ts`, `tests/e2e/test-server-home.ts`.
-- Task/readiness: `tests/unit/task-worker-readiness.test.ts`, `tests/e2e/task-worker-readiness.e2e.ts`, `tests/e2e/task-worker-early-exit.e2e.ts`, `tests/integration/task-gateway.test.ts`, `tests/unit/task-relay.test.ts`.
+- Task/readiness: `tests/unit/task-worker-readiness.test.ts`, `tests/e2e/task-worker-readiness.e2e.ts`, `tests/e2e/task-worker-early-exit.e2e.ts`, `tests/integration/task-gateway.test.ts`.
+- Relay compiled/process/package/lifecycle: use the focused suites in Relay worker, process, package, and installation coverage above for fixtures and prerequisites.
 - Passive/session control: `tests/e2e/broker-passive-inspection.e2e.ts`, `tests/unit/session-snapshot.test.ts`, `tests/unit/session-inspector.test.ts`, `tests/unit/session-control*.test.ts`.
 - Activity/push/UI: `tests/unit/session-activity-observation.test.ts`, `tests/unit/quiet-alert-policy.test.ts`, `tests/unit/push.test.ts`, `tests/e2e/idle-session-view.e2e.ts`, `tests/e2e/session-state-visualization.e2e.ts`.
 - Visual/accessibility/grid: `tests/e2e/visual-makeover.e2e.ts`, `tests/e2e/ui-polish.e2e.ts`, `tests/e2e/ux-navigation.e2e.ts`, `tests/e2e/accessibility-navigation.e2e.ts`, `tests/e2e/grid.e2e.ts`.

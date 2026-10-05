@@ -15,15 +15,17 @@ It does not own browser rendering, TypeScript client reconnect policy, HTTP auth
 
 ### Wire framing is the first resource boundary
 
-`broker/src/codec.rs` validates frame kind and per-kind payload budgets before allocating or writing payload data. Binary output frames carry UUID + final per-session sequence + owned bytes. JSON control/event frames share the same 5-byte length-prefixed envelope. Unknown kind, oversize payload, short binary payload, malformed JSON, or inverse-direction frame tears down only that connection.
+`broker/src/codec.rs` validates frame kind and per-kind payload budgets before allocating or writing payload data. Binary output frames carry UUID + final per-session sequence + owned bytes. JSON control/event frames share a length-prefixed envelope; exact layout and size limits are source-owned by `broker/src/codec.rs` and `broker/src/protocol.rs`. Unknown kind, oversize payload, short binary payload, malformed JSON, or inverse-direction frame tears down only that connection.
 
-Output frame writes now compute the 24-byte-prefix payload length with checked arithmetic and refuse oversize output before writing any partial header/body. Do not reintroduce saturating casts or partial sync writes for output frames.
+Output frame writes compute the binary-prefix payload length with checked arithmetic and refuse oversize output before writing any partial header/body. Do not reintroduce saturating casts or partial sync writes for output frames.
 
-Only clients may send `control_request` and `input_binary`; `control_response`, `output_binary`, and `event` are broker-to-client only. `server::dispatch_frame` drops connections on direction violations as a protocol-sync failure.
+Client requests/input and broker responses/output/events have distinct directions. Exact frame variants belong to `broker/src/protocol.rs`; `server::dispatch_frame` in `broker/src/server.rs` drops connections on direction violations as a protocol-sync failure.
 
 ### Socket path and process umask are security-sensitive startup state
 
-`server::start` creates/hardens the parent directory, refuses non-socket paths, distinguishes live vs stale sockets by connecting, removes stale socket files, binds under an owner-only `0o077` umask, then chmods the socket. A process-wide `SocketBindUmaskGuard` serializes umask changes behind a mutex and restores the previous umask immediately after bind. Keep this ordering: removing before bind prevents clobbering arbitrary files, and umask-before-bind removes the pre-chmod exposure window.
+`prepare_socket_parent` in `broker/src/server.rs` creates missing parent directories but validates existing parents without changing their permissions: wrong ownership or group/other write access is rejected, not repaired by chmod. Socket integration regressions under `broker/tests/**` cover this boundary; exact permission masks remain source-owned.
+
+`server::start` refuses non-socket paths, distinguishes live vs stale sockets by connecting, removes stale socket files, binds under an owner-only umask, then chmods the socket. A process-wide `SocketBindUmaskGuard` serializes umask changes behind a mutex and restores the previous umask immediately after bind. Keep this ordering: removing before bind prevents clobbering arbitrary files, and umask-before-bind removes the pre-chmod exposure window. Exact socket modes and ordering are authoritative in `broker/src/server.rs`.
 
 The default socket path derives from `XDG_RUNTIME_DIR` or user home. The binary adds an srt-specific bind-error explanation only for permission-denied failures with `SANDBOX_RUNTIME`; this is not broker authorization.
 
