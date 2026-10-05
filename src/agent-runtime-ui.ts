@@ -21,11 +21,24 @@ export interface SessionRuntimeUiInput {
     readonly freshness?: AgentStatusFreshness | string;
     readonly source?: AgentStatusSourceKind | string;
     readonly stale?: boolean;
+    readonly unseen?: boolean;
+    readonly message?: string;
+    readonly observedAt?: string;
+    readonly changedAt?: string;
   };
   readonly triage?: TriageStatus | string;
 }
 
+export const SESSION_ATTENTION = {
+  NONE: "none",
+  NEEDS_INPUT: "needs-input",
+  FAILED: "failed",
+  UPDATED: "updated",
+} as const;
+export type SessionAttention = typeof SESSION_ATTENTION[keyof typeof SESSION_ATTENTION];
+
 export interface SessionRuntimeUi {
+  readonly attention: SessionAttention;
   readonly dot: string;
   readonly card: string;
   readonly label: string;
@@ -33,7 +46,7 @@ export interface SessionRuntimeUi {
   readonly badge: string;
 }
 
-const RUNTIME_UI: Record<AgentStatusState, SessionRuntimeUi> = {
+const RUNTIME_UI: Record<AgentStatusState, Omit<SessionRuntimeUi, "attention">> = {
   [AGENT_STATUS_STATE.RUNNING]: { dot: "green", card: "active-session", label: "running", title: "running", badge: "running" },
   [AGENT_STATUS_STATE.WORKING]: { dot: "green", card: "active-session", label: "working", title: "working", badge: "working" },
   [AGENT_STATUS_STATE.AUDIT]: { dot: "green", card: "active-session", label: "audit", title: "audit", badge: "audit" },
@@ -75,5 +88,10 @@ export function sessionRuntimeState(input: SessionRuntimeUiInput): AgentStatusSt
 }
 
 export function sessionRuntimeUi(input: SessionRuntimeUiInput): SessionRuntimeUi {
-  return RUNTIME_UI[sessionRuntimeState(input)];
+  const state = sessionRuntimeState(input);
+  const attention = state === AGENT_STATUS_STATE.NEEDS_INPUT ? SESSION_ATTENTION.NEEDS_INPUT
+    : state === AGENT_STATUS_STATE.FAILED ? SESSION_ATTENTION.FAILED
+      : input.runtimeState?.unseen === true ? SESSION_ATTENTION.UPDATED
+        : SESSION_ATTENTION.NONE;
+  return { ...RUNTIME_UI[state], attention };
 }

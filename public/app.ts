@@ -69,7 +69,10 @@ import {
   SECURITY_AND_TRUST_URL,
   SESSION_CONTROL_CREATE_URL,
 } from "../src/documentation-links";
-import { sessionRuntimeState, sessionRuntimeUi } from "../src/agent-runtime-ui";
+import { SESSION_ATTENTION, sessionRuntimeState, sessionRuntimeUi } from "../src/agent-runtime-ui";
+import { sessionAttentionCounts, sessionAttentionSummary, sessionStatusDetails } from "./session-attention";
+import type { SessionAttentionCounts } from "./session-attention";
+import { replaceSessionChooserHtml } from "./session-chooser-render";
 import type { SessionInspectorTarget } from "./session-inspector";
 import {
   delegationChildSummaryText,
@@ -1490,21 +1493,60 @@ function activityHtml(session: DelegationSessionLike): string {
   return session.runtimeState?.unseen ? '<div class="session-activity">changed since review</div>' : "";
 }
 
+function currentAttentionCounts(): SessionAttentionCounts {
+  return sessionAttentionCounts(state.lastSessionGroups.filter(group => group.online).flatMap(group => group.sessions));
+}
+
+function attentionViewMarksHtml(): string {
+  const counts = currentAttentionCounts();
+  const urgent = counts.needsInput + counts.failed;
+  return `Focus${urgent ? ` <span class="session-attention-count" aria-hidden="true">${urgent}</span>` : ""}${counts.updated ? ' <span class="session-update-dot" aria-hidden="true">●</span>' : ""}`;
+}
+
 function sessionCardViewControlsHtml(): string {
   const selectedView = state.sessionCardView;
   const button = (view: SessionCardView, label: string, accessibleLabel: string): string => {
     const selected = selectedView === view;
     return `<button type="button" class="session-card-view-button${selected ? " selected" : ""}" data-action="set-session-card-view" data-session-card-view="${view}" aria-pressed="${selected}" aria-label="${accessibleLabel}">${label}</button>`;
   };
-  return `<div class="session-card-view-filter" role="group" aria-label="Session view">${button(SESSION_CARD_VIEW.ALL, "All", "All sessions")}${button(SESSION_CARD_VIEW.IDLE, "Idle", "Idle sessions")}</div>`;
+  const summary = sessionAttentionSummary(currentAttentionCounts());
+  return `<div class="session-card-view-filter" role="group" aria-label="Session view">${button(SESSION_CARD_VIEW.ALL, "All", "All sessions")}${button(SESSION_CARD_VIEW.IDLE, "Idle", "Idle sessions")}${button(SESSION_CARD_VIEW.ATTENTION, attentionViewMarksHtml(), `Attention sessions: ${summary}`)}</div><div class="session-attention-summary" role="status" aria-label="Attention on connected machines">${summary}</div>`;
 }
 
 function syncSessionCardViewControls(): void {
+  const summary = sessionAttentionSummary(currentAttentionCounts());
   document.querySelectorAll<HTMLButtonElement>("[data-session-card-view]").forEach((button) => {
     const selected = button.dataset.sessionCardView === state.sessionCardView;
     button.classList.toggle("selected", selected);
     button.setAttribute("aria-pressed", String(selected));
+    if (button.dataset.sessionCardView === SESSION_CARD_VIEW.ATTENTION) {
+      button.innerHTML = attentionViewMarksHtml();
+      button.setAttribute("aria-label", `Attention sessions: ${summary}`);
+    }
   });
+  document.querySelectorAll<HTMLElement>(".session-attention-summary").forEach(element => {
+    if (element.textContent !== summary) element.textContent = summary;
+  });
+}
+
+function sessionStatusButtonHtml(session: DelegationSessionLike, machineUrl: string): string {
+  const sessionId = sessionIdentityId(session);
+  if (!sessionId) return "";
+  return `<button type="button" class="session-status-btn" data-action="session-status" data-session-id="${escAttr(sessionId)}" data-machine="${escAttr(machineUrl)}" aria-label="Status details: ${escAttr(session.name)}" title="Status details">ⓘ</button>`;
+}
+
+async function showSessionStatus(sessionId: string, machineUrl = ""): Promise<void> {
+  const group = state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === machineUrl);
+  const session = group?.sessions.find(candidate => sessionIdentityId(candidate) === sessionId);
+  if (!session) return;
+  const focusReturn = document.activeElement;
+  await showAppDialog({ title: `Status: ${session.name}`, message: sessionStatusDetails(session), confirmLabel: "Close", cancelLabel: null });
+  if (focusReturn instanceof HTMLElement && !focusReturn.isConnected) {
+    const replacement = Array.from(document.querySelectorAll<HTMLButtonElement>(".session-status-btn")).find(button =>
+      button.dataset.sessionId === sessionId && (button.dataset.machine || "") === machineUrl
+      && button.getClientRects().length > 0 && !button.closest("[inert]"));
+    replacement?.focus({ preventScroll: true });
+  }
 }
 
 function setSessionCardView(view: SessionCardView): void {
@@ -1519,10 +1561,13 @@ function sessionCardRows(
   rows: readonly DelegationSessionRow<DelegationSessionLike>[],
 ): readonly DelegationSessionRow<DelegationSessionLike>[] {
   if (state.sessionCardView === SESSION_CARD_VIEW.ALL) return rows;
+  if (state.sessionCardView === SESSION_CARD_VIEW.ATTENTION) {
+    return rows.filter(row => sessionRuntimeUi(row.session).attention !== SESSION_ATTENTION.NONE);
+  }
   return rows.filter((row) => sessionRuntimeState(row.session) === AGENT_STATUS_STATE.IDLE);
 }
 
-type SessionCardEmptyKind = "idle" | "source-empty" | null;
+type SessionCardEmptyKind = "idle" | "attention" | "source-empty" | null;
 
 interface SessionCardGroupPresentation {
   readonly rows: readonly DelegationSessionRow<DelegationSessionLike>[];
@@ -1533,11 +1578,11 @@ function sessionCardGroupPresentation(
   sessions: readonly DelegationSessionLike[],
   machineUrl: string,
 ): SessionCardGroupPresentation {
-  if (sessions.length === 0) {
-    return { rows: [], empty: state.sessionCardView === SESSION_CARD_VIEW.IDLE ? "idle" : "source-empty" };
-  }
+  const empty = state.sessionCardView === SESSION_CARD_VIEW.ATTENTION ? "attention"
+    : state.sessionCardView === SESSION_CARD_VIEW.IDLE ? "idle" : "source-empty";
+  if (sessions.length === 0) return { rows: [], empty };
   const rows = sessionCardRows(sessionOrderRows(sessions, machineUrl));
-  return { rows, empty: rows.length === 0 ? "idle" : null };
+  return { rows, empty: rows.length === 0 ? empty : null };
 }
 
 function delegationCardAttributes(row: DelegationSessionRow<DelegationSessionLike>): { readonly className: string; readonly dataAttribute: string } {
@@ -1559,7 +1604,7 @@ function sidebarDelegationParentKey(machineUrl: string, parentSessionId: string)
 }
 
 function sidebarDelegationToggleHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string): string {
-  if (!row.childSummary) return "";
+  if (state.sessionCardView === SESSION_CARD_VIEW.ATTENTION || !row.childSummary) return "";
   const sessionId = sessionIdentityId(row.session);
   if (!sessionId) return "";
   const key = sidebarDelegationParentKey(machineUrl, sessionId);
@@ -1571,6 +1616,7 @@ function sidebarDelegationToggleHtml(row: DelegationSessionRow<DelegationSession
 }
 
 function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSessionLike>[], machineUrl: string): DelegationSessionRow<DelegationSessionLike>[] {
+  if (state.sessionCardView === SESSION_CARD_VIEW.ATTENTION) return [...rows];
   const renderedSessionIds = new Set(rows.map(row => sessionIdentityId(row.session)).filter((id): id is string => id !== null));
   const hiddenSessionIds = new Set<string>();
   const visibleRows: DelegationSessionRow<DelegationSessionLike>[] = [];
@@ -1595,6 +1641,7 @@ function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSes
 }
 
 function renderSessionListFromState(): void {
+  syncSessionCardViewControls();
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
   const multiMachine = getWorkspaceMachines().length > 0;
@@ -1607,7 +1654,7 @@ function renderSessionListFromState(): void {
       : "";
   if (html !== state.lastSessionsHtml) {
     machineGroupEventController?.cancelForRender();
-    el.innerHTML = html;
+    replaceSessionChooserHtml(el, html);
     state.lastSessionsHtml = html;
   }
 }
@@ -1748,6 +1795,14 @@ function idleSessionEmptyHtml(): string {
   </section>`;
 }
 
+function filteredSessionEmptyHtml(kind: "idle" | "attention"): string {
+  if (kind === "idle") return idleSessionEmptyHtml();
+  return `<section class="idle-session-empty" aria-label="No attention items">
+    <h2>No attention items</h2>
+    <p>No source-backed input requests, failures, or unseen updates in this view. Quiet does not mean complete.</p>
+  </section>`;
+}
+
 function zeroSessionOnboardingHtml(machineUrl: string): string {
   return `<section class="zero-session-card" aria-label="No sessions yet">
     <h2>No sessions yet</h2>
@@ -1785,8 +1840,8 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
     bodyHtml += '<div class="group-status">Connecting...</div>';
   } else if (g.online) {
     const presentation = sessionCardGroupPresentation(g.sessions, machineKey);
-    if (presentation.empty === "idle") {
-      bodyHtml += idleSessionEmptyHtml();
+    if (presentation.empty === "idle" || presentation.empty === "attention") {
+      bodyHtml += filteredSessionEmptyHtml(presentation.empty);
     } else if (presentation.rows.length) {
       const useCollapsibleSessionCards = !isDesktop();
       const rows = useCollapsibleSessionCards
@@ -1809,6 +1864,7 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
             <div class="card-preview">${esc(lastLine)}</div>
             ${activityHtml(s)}
           </div>
+          ${sessionStatusButtonHtml(s, machineKey)}
           <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
         </div>`;
       }).join("");
@@ -2040,7 +2096,6 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
 async function loadSessionsOnce(refreshSignal: AbortSignal) {
   const myEpoch = ++state.loadSessionsEpoch;
   const isCurrentLoad = (): boolean => myEpoch === state.loadSessionsEpoch;
-  const el = document.getElementById("session-list");
   const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
@@ -2050,12 +2105,7 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
     if (!isCurrentLoad()) return; // stale call, discard
     state.lastSessionGroups = [g];
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
-    const html = renderMachineGroupHtml(g, false, "main", 0);
-    if (html !== state.lastSessionsHtml) {
-      machineGroupEventController?.cancelForRender();
-      el.innerHTML = html;
-      state.lastSessionsHtml = html;
-    }
+    renderSessionListFromState();
     syncDelegationWorkspace();
     checkStateTransitions([g]);
     state.firstLoad = false;
@@ -2095,13 +2145,7 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
   const renderVisibleGroups = () => {
     const visible = visibleGroupsInOrder();
     state.lastSessionGroups = visible;
-    const presentationGroups = machineGroupsInPresentationOrder(visible);
-    const html = presentationGroups.map((group, index) => renderMachineGroupHtml(group, true, "main", index)).join("");
-    if (html !== state.lastSessionsHtml) {
-      machineGroupEventController?.cancelForRender();
-      el.innerHTML = html;
-      state.lastSessionsHtml = html;
-    }
+    renderSessionListFromState();
     renderSidebar();
   };
 
@@ -4434,7 +4478,7 @@ document.addEventListener("keydown", (e) => {
     const renderedTargets = renderedSessionNavigationTargets();
     const targets = renderedTargets.length > 0
       ? renderedTargets
-      : state.sessionCardView === SESSION_CARD_VIEW.IDLE
+      : state.sessionCardView !== SESSION_CARD_VIEW.ALL
         ? []
         : state.allSessions.map(session => ({ name: session.name, machineUrl: session.machineUrl || "" }));
     if (targets.length === 0) return;
@@ -4914,8 +4958,8 @@ function _renderSidebarNow() {
         const presentation = sessionCardGroupPresentation(g.sessions, "");
         bodyHtml = presentation.rows.length
           ? visibleDelegationRows(presentation.rows, "").map(row => sidebarCardHtml(row, "")).join("")
-          : presentation.empty === "idle"
-            ? idleSessionEmptyHtml()
+          : presentation.empty === "idle" || presentation.empty === "attention"
+            ? filteredSessionEmptyHtml(presentation.empty)
             : '<div class="sidebar-no-sessions">No active sessions</div>';
       }
       html += `<div class="machine-group" data-machine="" data-machine-surface="sidebar">${machineHeaderHtml(g, "sidebar", bodyId, false, collapsed, "green", "online", "")}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
@@ -4933,8 +4977,8 @@ function _renderSidebarNow() {
         const presentation = sessionCardGroupPresentation(g.sessions, g.machine.url);
         if (presentation.rows.length) {
           bodyHtml = visibleDelegationRows(presentation.rows, g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
-        } else if (presentation.empty === "idle") {
-          bodyHtml = idleSessionEmptyHtml();
+        } else if (presentation.empty === "idle" || presentation.empty === "attention") {
+          bodyHtml = filteredSessionEmptyHtml(presentation.empty);
         }
       } else if (g.pending) {
         bodyHtml = '<div class="sidebar-conn-status">Connecting...</div>';
@@ -4948,7 +4992,7 @@ function _renderSidebarNow() {
   if (html === _lastSidebarHtml) return;
   machineGroupEventController?.cancelForRender();
   _lastSidebarHtml = html;
-  el.innerHTML = html;
+  replaceSessionChooserHtml(el, html);
 }
 
 function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string) {
@@ -4976,6 +5020,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-preview">${esc(lastLine)}</div>
       ${activityHtml(s)}
     </div>
+    ${sessionStatusButtonHtml(s, machineUrl)}
     ${gridBtn}
     <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
   </div>`;
@@ -5113,7 +5158,7 @@ function moveSessionCard(
 function moveSessionCardByOffset(moving: SessionOrderCardReference, offset: -1 | 1): boolean {
   const context = sessionOrderContext(moving.machineUrl);
   if (!context) return false;
-  const siblings = state.sessionCardView === SESSION_CARD_VIEW.IDLE
+  const siblings = state.sessionCardView !== SESSION_CARD_VIEW.ALL
     ? renderedSessionOrderSiblingScope(moving)
     : sessionOrderSiblingScope(context, moving);
   const index = siblings.findIndex(identity => identity.sessionId === moving.sessionId);
@@ -5355,6 +5400,7 @@ function bindHtmlEventListeners(): void {
     agentToggle: (command, enabled) => { void toggleAgentEnabled(command, enabled); },
     toggleGrid,
     setSessionCardView,
+    sessionStatus: (sessionId, machine) => { void showSessionStatus(sessionId, machine); },
     machineGroupCollapse: updateMachineGroupCollapse,
   });
 

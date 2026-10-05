@@ -362,12 +362,13 @@ test("haptics only fresh episodes and fails closed for stale or malformed facts 
   await expect.poll(() => page.evaluate(() => window.__quietAlertHaptics!)).toEqual([[200, 100, 200]]);
 });
 
-test("removes attention controls and unseen decoration", async ({ page }) => {
+test("attention filter does not expose blanket acknowledgement controls", async ({ page }) => {
   await page.goto(server.baseUrl);
 
   await expect(page.locator("#sessions-attention-toolbar")).toHaveCount(0);
   await expect(page.locator(".attention-session, .unseen-marker, .attention-clear-btn")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /attention|clear unseen/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /clear unseen/i })).toHaveCount(0);
+  await expect(page.locator('[data-session-card-view="attention"]').filter({ visible: true })).toHaveCount(1);
 });
 
 test("shows semantic labels only for source-backed runtime state", async ({ page }) => {
@@ -460,7 +461,7 @@ test("opening a terminal clears its acknowledged review change after websocket o
   const card = page.getByRole("button", { name: "Open structured" }).locator("xpath=..");
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
   expect(acknowledgements).toEqual([]);
-  await card.click();
+  await card.getByRole("button", { name: "Open structured", exact: true }).press("Enter");
   await websocket.firstSocket;
   expect(acknowledgements).toEqual([]);
 
@@ -535,7 +536,7 @@ test("a delayed acknowledgement cannot clobber a newer runtime transition", asyn
 
   const card = page.getByRole("button", { name: "Open structured" }).locator("xpath=..");
   expect(acknowledgements).toEqual([]);
-  await card.click();
+  await card.getByRole("button", { name: "Open structured", exact: true }).press("Enter");
   await websocket.firstSocket;
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   expect(acknowledgements).toEqual([]);

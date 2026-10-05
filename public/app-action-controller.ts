@@ -1,8 +1,9 @@
 export const SESSION_CARD_VIEW = {
   ALL: "all",
   IDLE: "idle",
+  ATTENTION: "attention",
 } as const;
-export const SESSION_CARD_VIEWS = [SESSION_CARD_VIEW.ALL, SESSION_CARD_VIEW.IDLE] as const;
+export const SESSION_CARD_VIEWS = [SESSION_CARD_VIEW.ALL, SESSION_CARD_VIEW.IDLE, SESSION_CARD_VIEW.ATTENTION] as const;
 export type SessionCardView = typeof SESSION_CARD_VIEWS[number];
 
 export function isSessionCardView(value: string): value is SessionCardView {
@@ -25,6 +26,7 @@ export interface DelegatedAppActions {
   agentToggle(command: string, enabled: boolean): void;
   toggleGrid(session: string, machine: string, event: MouseEvent): void;
   setSessionCardView(view: SessionCardView): void;
+  sessionStatus(sessionId: string, machine?: string): void;
   machineGroupCollapse(machine: string, surface: "main" | "sidebar"): void;
 }
 
@@ -46,6 +48,7 @@ export function bindDelegatedAppActions(root: Document, actions: DelegatedAppAct
     else if (action === "delegation-toggle" && button.dataset.delegationKey) actions.delegationToggle(button.dataset.delegationKey, event);
     else if (action === "new-session") actions.newSession(machine);
     else if (action === "open-session" && session) actions.openSession(session, machine);
+    else if (action === "session-status" && button.dataset.sessionId) actions.sessionStatus(button.dataset.sessionId, machine);
     else if (action === "kill-session" && session) actions.killSession(session, event, machine);
     else if (action === "retry-machine") actions.retryMachine(machine || "", event);
     else if (action === "select-project" && button.dataset.project) actions.selectProject(button.dataset.project);

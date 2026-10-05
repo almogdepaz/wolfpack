@@ -25,13 +25,18 @@ function fallbackRuntimeState(state: "idle" | "output") {
   };
 }
 
-function manifestRuntimeState(state: "working" | "needs-input" | "done" | "failed" | "idle") {
+function manifestRuntimeState(state: "working" | "needs-input" | "done" | "failed" | "idle", unseen = false) {
   return {
     state,
     authority: "manifest",
     freshness: "fresh",
     source: "local-manifest",
     stale: false,
+    unseen,
+    transitionSequence: 7,
+    observedAt: "2026-10-01T12:00:00.000Z",
+    changedAt: "2026-10-01T11:59:00.000Z",
+    message: "Operator decision required <not HTML>",
   };
 }
 
@@ -142,7 +147,7 @@ function visibleSessionCardNames(page: Page): Promise<string[]> {
   return visibleSessionCards(page).locator(".card-name-text").allTextContents();
 }
 
-function visibleViewButton(page: Page, view: "all" | "idle") {
+function visibleViewButton(page: Page, view: "all" | "idle" | "attention") {
   return page.locator(`[data-action="set-session-card-view"][data-session-card-view="${view}"]`).filter({ visible: true });
 }
 
@@ -153,6 +158,178 @@ async function selectIdleView(page: Page): Promise<void> {
 async function dispatchVisibleRefresh(page: Page): Promise<void> {
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
 }
+
+test("attention distinguishes required action from updates and preserves placement", async ({ page }) => {
+  const parent = { id: "parent-id", name: "parent" };
+  const needing = session("need", manifestRuntimeState("needs-input"));
+  const fixture = await installSessionFixture(page, {
+    localSessions: [
+      needing,
+      session("failed", manifestRuntimeState("failed", true)),
+      session("updated", manifestRuntimeState("done", true)),
+      session(parent.name, manifestRuntimeState("working")),
+      session("child", manifestRuntimeState("needs-input"), { parent }),
+      session("stale", { ...manifestRuntimeState("needs-input"), freshness: "stale", stale: true }),
+      session("quiet", fallbackRuntimeState("idle")),
+    ],
+  });
+  const sockets: string[] = [];
+  page.on("websocket", (socket) => sockets.push(socket.url()));
+  await page.goto(server.baseUrl);
+  const focus = visibleViewButton(page, "attention");
+  await expect(focus).toHaveAccessibleName("Attention sessions: 2 need input, 1 failed, 1 updated since review");
+  await expect(focus.locator(".session-attention-count")).toHaveText("3");
+  await expect(focus.locator(".session-update-dot")).toBeVisible();
+  await focus.press("Enter");
+  await expect.poll(() => visibleSessionCardNames(page)).toEqual(["need", "failed", "updated", "child"]);
+  await expect(visibleSessionCards(page).locator(".delegation-parent-missing")).toHaveCount(0);
+  await expect(visibleViewButton(page, "attention")).toHaveAttribute("aria-pressed", "true");
+
+  fixture.setLocalSessions([
+    needing,
+    session("failed", manifestRuntimeState("failed", true)),
+    session("updated", manifestRuntimeState("done", true)),
+    session(parent.name, manifestRuntimeState("working")),
+    session("child", manifestRuntimeState("working"), { parent }),
+    session("stale", { ...manifestRuntimeState("needs-input"), freshness: "stale", stale: true }),
+    session("quiet", manifestRuntimeState("needs-input")),
+  ]);
+  await visibleViewButton(page, "attention").focus();
+  await dispatchVisibleRefresh(page);
+  await expect.poll(() => visibleSessionCardNames(page)).toEqual(["need", "failed", "updated", "quiet"]);
+  await expect(visibleViewButton(page, "attention")).toBeFocused();
+  expect(sockets).toEqual([]);
+  await visibleViewButton(page, "all").click();
+  await page.getByRole("button", { name: "Expand 1 child agent", exact: true }).filter({ visible: true }).click();
+  await expect.poll(() => visibleSessionCardNames(page)).toEqual(["need", "failed", "updated", "parent", "child", "stale", "quiet"]);
+});
+
+test("attention counts and details retain verified peer scope for duplicate session names", async ({ page }) => {
+  await installSessionFixture(page, {
+    localSessions: [session("shared", manifestRuntimeState("done", true))],
+    peerSessions: [
+      session("shared", manifestRuntimeState("needs-input")),
+      session("peer-stale", { ...manifestRuntimeState("failed"), stale: true, freshness: "stale" }),
+    ],
+  });
+  await page.goto(server.baseUrl);
+  const peer = visibleDashboard(page).locator(`.machine-group[data-machine="${PEER_IDENTITY}"]`);
+  await expect(peer).toBeVisible();
+  await expect(visibleViewButton(page, "attention")).toHaveAccessibleName("Attention sessions: 1 need input, 0 failed, 1 updated since review");
+  await visibleViewButton(page, "attention").click();
+  await expect.poll(() => visibleSessionCardNames(page)).toEqual(["shared", "shared"]);
+  await peer.getByRole("button", { name: "Status details: shared", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Status: shared", exact: true });
+  await expect(dialog).toContainText("Runtime: needs input");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  const local = visibleDashboard(page).locator('.machine-group[data-machine=""]');
+  await local.getByRole("button", { name: "Status details: shared", exact: true }).click();
+  await expect(dialog).toContainText("Runtime: done");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+});
+
+test("attention exposes urgent children without changing the normal collapsed view", async ({ page }) => {
+  const parent = { id: "parent-id", name: "parent" };
+  await installSessionFixture(page, { localSessions: [
+    session(parent.name, manifestRuntimeState("needs-input")),
+    session("child", manifestRuntimeState("failed"), { parent }),
+  ] });
+  await page.goto(server.baseUrl);
+  await expect.poll(() => visibleSessionCardNames(page)).toEqual(["parent"]);
+  await visibleViewButton(page, "attention").click();
+  await expect.poll(() => visibleSessionCardNames(page)).toEqual(["parent", "child"]);
+  await visibleViewButton(page, "all").click();
+  await expect.poll(() => visibleSessionCardNames(page)).toEqual(["parent"]);
+});
+
+test("primary session action remains clickable alongside status details", async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem("wp-draft||test-project", "retain this draft"));
+  await installSessionFixture(page, { localSessions: [session("test-project", manifestRuntimeState("needs-input"))] });
+  const sockets: string[] = [];
+  page.on("websocket", (socket) => sockets.push(socket.url()));
+  await page.goto(server.baseUrl);
+  await page.getByRole("button", { name: "Open test-project", exact: true }).filter({ visible: true }).click();
+  await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
+  await expect.poll(() => sockets.length).toBe(1);
+  await expect(page.getByRole("dialog", { name: "Status: test-project", exact: true })).not.toBeVisible();
+  if (testInfo.project.name === "desktop") {
+    const canvasLocator = page.locator("#terminal-view canvas").first();
+    await expect(canvasLocator).toBeVisible();
+    const canvas = await canvasLocator.elementHandle();
+    if (!canvas) throw new Error("terminal canvas was not mounted");
+    await expect(page.locator("#msg-input")).toHaveValue("retain this draft");
+    await visibleViewButton(page, "attention").click();
+    await expect(page.locator("#msg-input")).toHaveValue("retain this draft");
+    expect(await canvas.evaluate(node => node.isConnected)).toBe(true);
+    await visibleViewButton(page, "all").click();
+    expect(await canvas.evaluate(node => node.isConnected)).toBe(true);
+    expect(sockets).toHaveLength(1);
+  }
+});
+
+test("status details are read-only, disclose provenance, and retain keyboard focus", async ({ page }) => {
+  await installSessionFixture(page, { localSessions: [session("need", manifestRuntimeState("needs-input"))] });
+  const sockets: string[] = [];
+  page.on("websocket", (socket) => sockets.push(socket.url()));
+  await page.goto(server.baseUrl);
+  const details = page.getByRole("button", { name: "Status details: need", exact: true }).filter({ visible: true });
+  await details.focus();
+  await details.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Status: need", exact: true });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText("Operator decision required <not HTML>");
+  await expect(dialog).toContainText("local manifest (agent-reported, not verification)");
+  await expect(dialog).toContainText("Freshness: fresh");
+  await expect(dialog).toContainText("2026-10-01T12:00:00.000Z");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(details).toBeFocused();
+  expect(sockets).toEqual([]);
+});
+
+test("status snapshot survives refresh and returns focus to the exact session", async ({ page }) => {
+  const fixture = await installSessionFixture(page, { localSessions: [session("need", manifestRuntimeState("needs-input"))] });
+  await page.goto(server.baseUrl);
+  const details = page.getByRole("button", { name: "Status details: need", exact: true }).filter({ visible: true });
+  await details.focus();
+  await details.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Status: need", exact: true });
+  await expect(dialog).toBeVisible();
+  fixture.setLocalSessions([session("need", { ...manifestRuntimeState("working"), message: "Newer report" })]);
+  const before = fixture.sessionRequestCount();
+  await dispatchVisibleRefresh(page);
+  await expect.poll(() => fixture.sessionRequestCount()).toBeGreaterThan(before);
+  await expect(visibleDashboard(page).locator(".triage-badge")).toHaveText("working");
+  await expect(dialog).toContainText("Operator decision required <not HTML>");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(details).toBeFocused();
+});
+
+test("status focus does not transfer to a replacement with the same session name", async ({ page }) => {
+  const fixture = await installSessionFixture(page, { localSessions: [session("need", manifestRuntimeState("needs-input"))] });
+  await page.goto(server.baseUrl);
+  const details = page.getByRole("button", { name: "Status details: need", exact: true }).filter({ visible: true });
+  await details.focus();
+  await details.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Status: need", exact: true });
+  await expect(dialog).toBeVisible();
+  const replacement = session("need", manifestRuntimeState("failed"));
+  fixture.setLocalSessions([{ ...replacement, identity: { ...replacement.identity, wolfpackSessionId: "replacement-id" } }]);
+  await dispatchVisibleRefresh(page);
+  await expect(details).toHaveAttribute("data-session-id", "replacement-id");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(details).not.toBeFocused();
+});
+
+test("attention zero state does not claim idle or task success", async ({ page }) => {
+  await installSessionFixture(page, { localSessions: [session("quiet", fallbackRuntimeState("idle"))] });
+  await page.goto(server.baseUrl);
+  await visibleViewButton(page, "attention").click();
+  await expect(visibleDashboard(page).getByRole("heading", { name: "No attention items" })).toBeVisible();
+  await expect(visibleSessionCards(page)).toHaveCount(0);
+  await expect(visibleDashboard(page)).toContainText("Quiet does not mean complete.");
+  await visibleViewButton(page, "all").click();
+  await expect.poll(() => visibleSessionCardNames(page)).toEqual(["quiet"]);
+});
 
 test("session-card controls are accessible, synchronized, and reject invalid views", async ({ page }, testInfo) => {
   await installSessionFixture(page, {

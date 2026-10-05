@@ -286,6 +286,35 @@ header h1 {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+.session-attention-count {
+  display: inline-block;
+  min-width: 16px;
+  padding: 2px 4px;
+  border-radius: 999px;
+  background: var(--danger-hot);
+  color: var(--bg-base);
+}
+.session-update-dot { color: var(--cmd-accent); }
+.session-attention-summary {
+  margin: 6px 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+.session-status-btn {
+  flex-shrink: 0;
+  min-width: 40px;
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.session-status-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.session-status-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .list {
   flex: 1;
   overflow-y: auto;
@@ -321,6 +350,9 @@ header h1 {
   background: transparent;
   cursor: pointer;
 }
+/* Keep the primary action's hit target clear of its sibling controls. */
+.card:has(> .session-status-btn) .card-open { right: 100px; }
+.card:has(> .session-status-btn):has(> .grid-btn) .card-open { right: 144px; }
 .card > :not(.card-open) {
   position: relative;
   z-index: 2;
@@ -2933,6 +2965,7 @@ body.no-animations, body.no-animations * {
 .app-dialog form { display: grid; gap: 20px; padding: 24px; }
 .app-dialog h2 { margin: 0; color: var(--text-primary); font-size: 20px; font-weight: 600; letter-spacing: -0.4px; }
 .app-dialog p { margin: 0; color: var(--text-secondary); line-height: 1.5; }
+#app-dialog-message { white-space: pre-line; overflow-wrap: anywhere; }
 #app-dialog-fields { display: grid; gap: 12px; }
 .app-dialog-field { display: grid; gap: 8px; color: var(--text-secondary); font-size: 12px; font-weight: 500; letter-spacing: 0; }
 .app-dialog-field input { width: 100%; box-sizing: border-box; border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 10px 12px; background: var(--bg-base); color: var(--text-primary); font: inherit; text-transform: none; letter-spacing: normal; }
