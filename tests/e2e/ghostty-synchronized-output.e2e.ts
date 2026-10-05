@@ -5,6 +5,23 @@ import { createHash } from "node:crypto";
 import { startTestServer } from "./helpers.ts";
 import type { TestServer } from "./helpers.ts";
 
+interface NativeCell {
+  readonly codepoint: number;
+  readonly width: number;
+  readonly fg_r: number;
+  readonly fg_g: number;
+  readonly fg_b: number;
+  readonly bg_r: number;
+  readonly bg_g: number;
+  readonly bg_b: number;
+  readonly flags: number;
+  readonly grapheme_len: number;
+}
+interface NativeSnapshotCell extends NativeCell { readonly text: string }
+interface NativeSnapshot {
+  readonly history: ReadonlyArray<ReadonlyArray<NativeSnapshotCell>>;
+  readonly live: ReadonlyArray<ReadonlyArray<NativeSnapshotCell>>;
+}
 interface SyncTerminal {
   readonly cols: number;
   readonly rows: number;
@@ -12,11 +29,14 @@ interface SyncTerminal {
   readonly options: { fontSize: number };
   readonly wasmTerm: {
     getMode(mode: number): boolean;
-    getViewport(): ReadonlyArray<{ readonly codepoint: number; readonly width: number }>;
+    getViewport(): ReadonlyArray<NativeCell>;
+    getScrollbackLine(offset: number): ReadonlyArray<NativeCell> | null;
+    getGraphemeString(row: number, col: number): string;
+    getScrollbackGraphemeString(offset: number, col: number): string;
   };
   readonly renderer: { render(buffer: object, force: boolean, offset: number, history: SyncTerminal): void };
   open(container: HTMLElement): void;
-  write(bytes: string): void;
+  write(bytes: string | Uint8Array): void;
   resize(cols: number, rows: number, options?: { readonly deferPresentation: boolean }): void;
   getScrollbackLength(): number;
   scrollToLine(line: number): void;
@@ -36,6 +56,14 @@ interface SyncFixture {
   readonly committed: string;
 }
 interface SyncWindow { readonly GhosttyWeb: SyncApi; syncFixture: SyncFixture }
+interface ReferenceWindow extends SyncWindow {
+  resizeReference: {
+    readonly term: SyncTerminal;
+    readonly canvas: HTMLCanvasElement;
+    readonly container: HTMLElement;
+    readonly snapshot: (term: SyncTerminal) => NativeSnapshot;
+  };
+}
 
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer(); });
@@ -79,8 +107,44 @@ async function seedResizeHistory(page: Page): Promise<void> {
   });
 }
 
+async function openResizeReference(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const { term: actual, api } = (window as unknown as SyncWindow).syncFixture;
+    const term = new api.Terminal({ ghostty: await api.Ghostty.load(), cols: actual.cols, rows: actual.rows, scrollback: 2000, cursorBlink: false });
+    const container = document.createElement("div");
+    document.body.append(container);
+    term.open(container);
+    term.write("\x1b[?25l\x1b[37m\x1b[HCOMMITTED 界 e\u0301");
+    term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+    const canvas = container.querySelector("canvas");
+    if (!canvas) throw new Error("reference native canvas missing");
+    // Both paths use real native state. Clone borrowed viewport cells before
+    // reading history; no shared helper reimplements parsing or reflow.
+    const snapshot = (terminal: SyncTerminal): NativeSnapshot => {
+      const cells = terminal.wasmTerm.getViewport().map((cell) => ({ ...cell }));
+      const live = Array.from({ length: terminal.rows }, (_, row) =>
+        cells.slice(row * terminal.cols, (row + 1) * terminal.cols).map((cell, col) => ({
+          ...cell, text: cell.width === 0 ? "" : cell.grapheme_len > 0
+            ? terminal.wasmTerm.getGraphemeString(row, col) : String.fromCodePoint(cell.codepoint || 32),
+        })));
+      const history = Array.from({ length: terminal.getScrollbackLength() }, (_, offset) => {
+        const line = terminal.wasmTerm.getScrollbackLine(offset);
+        if (!line) throw new Error(`native history line ${offset} missing`);
+        return line.map((cell, col) => ({
+          ...cell, text: cell.width === 0 ? "" : cell.grapheme_len > 0
+            ? terminal.wasmTerm.getScrollbackGraphemeString(offset, col) : String.fromCodePoint(cell.codepoint || 32),
+        }));
+      });
+      return { history, live };
+    };
+    (window as unknown as ReferenceWindow).resizeReference = { term, canvas, container, snapshot };
+  });
+}
+
 test.afterEach(async ({ page }) => {
   await page.evaluate(() => {
+    const reference = (window as unknown as ReferenceWindow).resizeReference;
+    if (reference) { reference.term.dispose(); reference.container.remove(); }
     const fixture = (window as unknown as SyncWindow).syncFixture;
     if (fixture) { fixture.term.dispose(); fixture.container.remove(); }
   });
@@ -235,6 +299,158 @@ for (const format of ["esm", "umd"] as const) {
     });
     expect(observation).toEqual({ initiallyHeld: true, clearParsed: true, clearPresented: true, historyImmediate: true });
   });
+
+  for (const synchronized of [true, false]) {
+    test(`fragmented redraw preserves exact final native content and pixels (sync ${synchronized}, ${format})`, async ({ page }, testInfo) => {
+      await openFixture(page, format);
+      await openResizeReference(page);
+      const observation = await page.evaluate(async (synchronized) => {
+        const { term, canvas } = (window as unknown as SyncWindow).syncFixture;
+        const reference = (window as unknown as ReferenceWindow).resizeReference;
+        const history = Array.from({ length: 80 }, (_, row) => `H${row}|界|e\u0301`).join("\r\n");
+        const live = Array.from({ length: term.rows }, (_, row) => `OLD${row}|界|e\u0301`).join("\r\n");
+        for (const terminal of [term, reference.term]) {
+          terminal.write(`\x1b[32m${history}\r\n\x1b[37m${live}`);
+          terminal.renderer.render(terminal.wasmTerm, true, terminal.viewportY, terminal);
+        }
+        const committed = canvas.toDataURL();
+        term.resize(80, 40, { deferPresentation: true });
+        reference.term.resize(80, 40);
+        const fragments = synchronized ? ["\x1b[?202", "6h"] : [];
+        const modeObservations = [];
+        for (const fragment of fragments) {
+          term.write(fragment); reference.term.write(fragment);
+          const immediateHeld = canvas.toDataURL() === committed;
+          const mode = term.wasmTerm.getMode(2026);
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          modeObservations.push({ fragment, mode, immediateHeld, afterFrameHeld: canvas.toDataURL() === committed });
+        }
+        const text = Array.from({ length: term.rows }, (_, row) => `NEW${row}|界|e\u0301|👩‍💻`).join("\r\n");
+        const bytes = new TextEncoder().encode(`\x1b[H\x1b[2J\x1b[1;38;2;17;83;149m${text}`);
+        const first = bytes.subarray(0, bytes.indexOf(10) + 1);
+        term.write(first); reference.term.write(first);
+        term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+        const firstDirtyHeld = canvas.toDataURL() === committed;
+        const modeAfterFirst = term.wasmTerm.getMode(2026);
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        const acrossFramesHeld = canvas.toDataURL() === committed;
+        // Split inside UTF-8 and CSI sequences, not only at row boundaries.
+        for (let offset = first.length; offset < bytes.length; offset += 7) {
+          const chunk = bytes.subarray(offset, offset + 7);
+          term.write(chunk); reference.term.write(chunk);
+        }
+        const beforeEndHeld = canvas.toDataURL() === committed;
+        if (synchronized) { term.write("\x1b[?2026l"); reference.term.write("\x1b[?2026l"); }
+        term.renderer.render(term.wasmTerm, false, term.viewportY, term);
+        reference.term.renderer.render(reference.term.wasmTerm, true, reference.term.viewportY, reference.term);
+        const state = reference.snapshot(term);
+        const actualText = state.live.map((row) => row.filter((cell) => cell.width > 0).map((cell) => cell.text).join("").trimEnd()).join("\r\n");
+        const styled = state.live[0].find((cell) => cell.codepoint === 78);
+        return {
+          firstDirtyHeld, acrossFramesHeld, beforeEndHeld,
+          diagnostics: { modeObservations, modeAfterFirst, actualText, expectedText: text },
+          nativeExact: JSON.stringify(state) === JSON.stringify(reference.snapshot(reference.term)),
+          liveTextExact: actualText === text,
+          trueColorExact: !!styled && styled.fg_r === 17 && styled.fg_g === 83 && styled.fg_b === 149,
+          pixelsExact: canvas.toDataURL() === reference.canvas.toDataURL(),
+        };
+      }, synchronized);
+      // Unsynchronized first-dirty release is an explicit characterization,
+      // NOT a promise of atomic application-frame completion.
+      await testInfo.attach("fragment-observations", { body: Buffer.from(JSON.stringify(observation.diagnostics, null, 2)), contentType: "application/json" });
+      const { diagnostics, ...contract } = observation;
+      expect(contract).toEqual({ firstDirtyHeld: synchronized, acrossFramesHeld: synchronized,
+        beforeEndHeld: synchronized, nativeExact: true, liveTextExact: true, trueColorExact: true, pixelsExact: true });
+    });
+  }
+
+  test(`resize reflow preserves exact history graphemes and attributes (${format})`, async ({ page }) => {
+    await openFixture(page, format);
+    await openResizeReference(page);
+    const observations = await page.evaluate(() => {
+      const { term, canvas } = (window as unknown as SyncWindow).syncFixture;
+      const reference = (window as unknown as ReferenceWindow).resizeReference;
+      const lines = Array.from({ length: 60 }, (_, row) => `H${row.toString().padStart(3, "0")}|界|e\u0301|👩‍💻|${"x".repeat(45)}`);
+      const stream = `\x1b[H\x1b[2J\x1b[1;38;2;17;83;149;48;2;9;27;45m${lines.join("\r\n")}`;
+      for (const terminal of [term, reference.term]) {
+        terminal.write(stream);
+        terminal.renderer.render(terminal.wasmTerm, true, terminal.viewportY, terminal);
+      }
+      const expectedText = lines.join("");
+      const observations = [];
+      for (const [cols, rows] of [[32, 16], [96, 40], [80, 24]]) {
+        const committed = canvas.toDataURL();
+        term.resize(cols, rows, { deferPresentation: true });
+        reference.term.resize(cols, rows);
+        const held = canvas.toDataURL() === committed;
+        const state = reference.snapshot(term);
+        const all = [...state.history, ...state.live].flat();
+        const text = all.filter((cell) => cell.width > 0 && cell.text.trim() !== "").map((cell) => cell.text).join("");
+        const content = all.filter((cell) => cell.codepoint > 32 && cell.width > 0);
+        const attributesExact = content.every((cell) => cell.fg_r === 17 && cell.fg_g === 83 && cell.fg_b === 149
+          && cell.bg_r === 9 && cell.bg_g === 27 && cell.bg_b === 45);
+        const nativeExact = JSON.stringify(state) === JSON.stringify(reference.snapshot(reference.term));
+        // History navigation cancels the hold without injecting a write that
+        // would alter the content under preservation test.
+        term.scrollToLine(1); reference.term.scrollToLine(1);
+        term.renderer.render(term.wasmTerm, false, term.viewportY, term);
+        reference.term.renderer.render(reference.term.wasmTerm, true, reference.term.viewportY, reference.term);
+        observations.push({ cols, rows, held, nativeExact, textExact: text === expectedText, attributesExact,
+          pixelsExact: canvas.toDataURL() === reference.canvas.toDataURL() });
+        term.scrollToLine(0); reference.term.scrollToLine(0);
+        term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+        reference.term.renderer.render(reference.term.wasmTerm, true, reference.term.viewportY, reference.term);
+      }
+      return observations;
+    });
+    expect(observations).toEqual([[32, 16], [96, 40], [80, 24]].map(([cols, rows]) => ({
+      cols, rows, held: true, nativeExact: true, textExact: true, attributesExact: true, pixelsExact: true,
+    })));
+  });
+
+  for (const firstGate of ["sync", "resize"] as const) {
+    test(`overlapping presentation deadlines preserve force intent (${firstGate} first, ${format})`, async ({ page }) => {
+      await openFixture(page, format);
+      await seedResizeHistory(page);
+      await page.clock.install();
+      await page.evaluate((firstGate) => {
+        const { term } = (window as unknown as SyncWindow).syncFixture;
+        if (firstGate === "sync") term.write("\x1b[?2026h");
+        else term.resize(80, 30, { deferPresentation: true });
+      }, firstGate);
+      await page.clock.fastForward(600);
+      await page.evaluate((firstGate) => {
+        const { term } = (window as unknown as SyncWindow).syncFixture;
+        if (firstGate === "sync") term.resize(80, 30, { deferPresentation: true });
+        else term.write("\x1b[?2026h");
+      }, firstGate);
+      await page.clock.fastForward(500);
+      const heldBySecondGate = await page.evaluate(() => {
+        const { term, canvas, committed } = (window as unknown as SyncWindow).syncFixture;
+        term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+        return canvas.toDataURL() === committed;
+      });
+      expect(heldBySecondGate).toBe(true);
+      await page.clock.fastForward(600);
+      const recovery = await page.evaluate(() => {
+        const { term, canvas, committed } = (window as unknown as SyncWindow).syncFixture;
+        term.renderer.render(term.wasmTerm, false, term.viewportY, term);
+        const timeoutRecovered = canvas.toDataURL() !== committed;
+        term.write("\x1b[?2026l");
+        const previous = canvas.toDataURL();
+        term.resize(80, 40, { deferPresentation: true });
+        term.write("\x1b[?2026h\x1b[HNEW_PENDING");
+        term.scrollToLine(1);
+        term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+        const historyRequested = term.viewportY > 0;
+        const historyCannotBypassSync = canvas.toDataURL() === previous;
+        term.write("\x1b[H\x1b[2JCOMPLETE\x1b[?2026l");
+        term.renderer.render(term.wasmTerm, false, term.viewportY, term);
+        return { timeoutRecovered, historyRequested, historyCannotBypassSync, finalReleased: canvas.toDataURL() !== previous };
+      });
+      expect(recovery).toEqual({ timeoutRecovered: true, historyRequested: true, historyCannotBypassSync: true, finalReleased: true });
+    });
+  }
 
   test(`holding or disposing one terminal does not block another isolated terminal (${format})`, async ({ page }) => {
     await openFixture(page, format);
