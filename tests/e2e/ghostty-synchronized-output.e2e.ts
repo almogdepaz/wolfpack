@@ -17,7 +17,10 @@ interface SyncTerminal {
   readonly renderer: { render(buffer: object, force: boolean, offset: number, history: SyncTerminal): void };
   open(container: HTMLElement): void;
   write(bytes: string): void;
-  resize(cols: number, rows: number): void;
+  resize(cols: number, rows: number, options?: { readonly deferPresentation: boolean }): void;
+  getScrollbackLength(): number;
+  scrollToLine(line: number): void;
+  clear(): void;
   dispose(): void;
 }
 interface SyncApi {
@@ -62,6 +65,18 @@ async function openFixture(page: Page, format: "esm" | "umd"): Promise<void> {
     if (!canvas) throw new Error("native renderer canvas missing");
     (window as unknown as SyncWindow).syncFixture = { term, api, canvas, container, committed: canvas.toDataURL() };
   }, format);
+}
+
+async function seedResizeHistory(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const fixture = (window as unknown as SyncWindow).syncFixture;
+    const { term, canvas } = fixture;
+    const history = Array.from({ length: 200 }, (_, row) => `GREEN_HISTORY_${row}`).join("\r\n");
+    const live = Array.from({ length: term.rows }, (_, row) => `LIVE_${row}_STABLE 界 e\u0301`).join("\r\n");
+    term.write(`\x1b[32m${history}\r\n\x1b[37m${live}`);
+    term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+    (window as unknown as SyncWindow).syncFixture = { ...fixture, committed: canvas.toDataURL() };
+  });
 }
 
 test.afterEach(async ({ page }) => {
@@ -134,6 +149,93 @@ for (const format of ["esm", "umd"] as const) {
     expect(recovery).toEqual({ watchdogReleased: true, nextHeld: true });
   });
 
+  test(`resize presentation retains pixels across reflow until visible output (${format})`, async ({ page }) => {
+    await openFixture(page, format);
+    await seedResizeHistory(page);
+    const observation = await page.evaluate(async () => {
+      const { term, canvas, committed } = (window as unknown as SyncWindow).syncFixture;
+      const totalRows = term.getScrollbackLength() + term.rows;
+      term.resize(80, 40, { deferPresentation: true });
+      const parsed = term.wasmTerm.getViewport().filter((cell) => cell.width !== 0)
+        .map((cell) => String.fromCodePoint(cell.codepoint || 32)).join("");
+      const retainedRows = term.getScrollbackLength() + term.rows;
+      term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+      const forcedHeld = canvas.toDataURL() === committed;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+      const automaticHeld = canvas.toDataURL() === committed;
+      // A cursor query is input to the parser, not a new display frame.
+      term.write("\x1b[6n");
+      term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+      const queryHeld = canvas.toDataURL() === committed;
+      term.write("\x1b[?2026h\x1b[H\x1b[32mINTERMEDIATE_GREEN");
+      term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+      const transactionHeld = canvas.toDataURL() === committed;
+      const live = Array.from({ length: term.rows }, (_, row) => `RESIZED_${row}_STABLE 界 e\u0301`).join("\r\n");
+      term.write(`\x1b[H\x1b[2J\x1b[37m${live}\x1b[?2026l`);
+      term.renderer.render(term.wasmTerm, false, term.viewportY, term);
+      return {
+        logicalRows: term.rows, nativeHistoryExposed: parsed.includes("GREEN_HISTORY_"),
+        historyPreserved: totalRows === retainedRows, forcedHeld, automaticHeld, queryHeld, transactionHeld,
+        updated: canvas.toDataURL() !== committed,
+      };
+    });
+    expect(observation).toEqual({ logicalRows: 40, nativeHistoryExposed: true, historyPreserved: true,
+      forcedHeld: true, automaticHeld: true, queryHeld: true, transactionHeld: true, updated: true });
+  });
+
+  test(`resize presentation has a bounded deadline across repeated resizes (${format})`, async ({ page }) => {
+    await openFixture(page, format);
+    await seedResizeHistory(page);
+    await page.clock.install();
+    const initiallyHeld = await page.evaluate(() => {
+      const { term, canvas, committed } = (window as unknown as SyncWindow).syncFixture;
+      term.resize(80, 30, { deferPresentation: true });
+      return canvas.toDataURL() === committed;
+    });
+    expect(initiallyHeld).toBe(true);
+    await page.clock.fastForward(900);
+    await page.evaluate(() => (window as unknown as SyncWindow).syncFixture.term.resize(80, 40, { deferPresentation: true }));
+    await page.clock.fastForward(200);
+    const observation = await page.evaluate(() => {
+      const { term, canvas, committed } = (window as unknown as SyncWindow).syncFixture;
+      term.renderer.render(term.wasmTerm, false, term.viewportY, term);
+      const recovered = canvas.toDataURL() !== committed;
+      const previous = canvas.toDataURL();
+      term.resize(80, 45, { deferPresentation: true });
+      const nextHeld = canvas.toDataURL() === previous;
+      term.write("\x1b[H\x1b[2JUNSYNCHRONIZED_OUTPUT 界 e\u0301");
+      term.renderer.render(term.wasmTerm, false, term.viewportY, term);
+      const outputReleased = canvas.toDataURL() !== previous;
+      const beforeOrdinaryResize = canvas.toDataURL();
+      term.resize(80, 46, { deferPresentation: true });
+      term.resize(80, 48);
+      return { recovered, nextHeld, outputReleased, ordinaryResizeImmediate: canvas.toDataURL() !== beforeOrdinaryResize };
+    });
+    expect(observation).toEqual({ recovered: true, nextHeld: true, outputReleased: true, ordinaryResizeImmediate: true });
+  });
+
+  test(`resize presentation yields to explicit clear and history navigation (${format})`, async ({ page }) => {
+    await openFixture(page, format);
+    await seedResizeHistory(page);
+    const observation = await page.evaluate(() => {
+      const { term, canvas, committed } = (window as unknown as SyncWindow).syncFixture;
+      term.resize(80, 40, { deferPresentation: true });
+      const initiallyHeld = canvas.toDataURL() === committed;
+      term.clear();
+      term.renderer.render(term.wasmTerm, false, term.viewportY, term);
+      const clearParsed = term.wasmTerm.getViewport().every((cell) => cell.codepoint === 0 || cell.codepoint === 32);
+      const clearPresented = canvas.toDataURL() !== committed;
+      term.write("\x1b[HAFTER_CLEAR 界 e\u0301");
+      term.renderer.render(term.wasmTerm, true, term.viewportY, term);
+      const beforeHistory = canvas.toDataURL();
+      term.resize(80, 45, { deferPresentation: true });
+      term.scrollToLine(1);
+      term.renderer.render(term.wasmTerm, false, term.viewportY, term);
+      return { initiallyHeld, clearParsed, clearPresented, historyImmediate: canvas.toDataURL() !== beforeHistory && term.viewportY > 0 };
+    });
+    expect(observation).toEqual({ initiallyHeld: true, clearParsed: true, clearPresented: true, historyImmediate: true });
+  });
+
   test(`holding or disposing one terminal does not block another isolated terminal (${format})`, async ({ page }) => {
     await openFixture(page, format);
     const observation = await page.evaluate(async () => {
@@ -147,6 +249,7 @@ for (const format of ["esm", "umd"] as const) {
         if (!otherCanvas) throw new Error("second native canvas missing");
         const blank = otherCanvas.toDataURL();
         term.write("\x1b[?2026hPENDING");
+        term.resize(90, 30, { deferPresentation: true });
         term.renderer.render(term.wasmTerm, true, term.viewportY, term);
         other.write("\x1b[?25lINDEPENDENT 界 e\u0301");
         other.renderer.render(other.wasmTerm, true, other.viewportY, other);
