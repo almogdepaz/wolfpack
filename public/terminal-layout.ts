@@ -17,7 +17,7 @@ export interface TerminalLayoutTerm {
     ) => void;
   };
   getScrollbackLength?(): number;
-  resize?(cols: number, rows: number): void;
+  resize?(cols: number, rows: number, options?: { readonly deferPresentation: boolean }): void;
   scrollToLine(line: number): void;
 }
 
@@ -81,6 +81,7 @@ export function fitTerminalPreservingScroll(
 export function commitTerminalResizePreservingScroll(
   term: TerminalLayoutTerm | null,
   dimensions: TerminalDimensions,
+  deferPresentation = false,
 ): boolean {
   if (!term || dimensions.cols < 1 || dimensions.rows < 1 || !term.resize) return false;
   const before = { cols: term.cols, rows: term.rows };
@@ -89,7 +90,7 @@ export function commitTerminalResizePreservingScroll(
   const viewportY = term.viewportY ?? 0;
   const oldScrollbackLength = term.getScrollbackLength?.() ?? 0;
   const wasAtBottom = viewportY === 0;
-  term.resize(dimensions.cols, dimensions.rows);
+  term.resize(dimensions.cols, dimensions.rows, { deferPresentation: deferPresentation && wasAtBottom });
 
   if (!wasAtBottom && viewportY > 0) {
     const newScrollbackLength = term.getScrollbackLength?.() ?? oldScrollbackLength;

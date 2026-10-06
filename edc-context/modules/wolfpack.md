@@ -3,7 +3,9 @@
 
 ## When To Read This
 
-Read this before changing TypeScript server/CLI/browser behavior, session create/open/control, child-agent spawning, Pi task-worker readiness, terminal attach/reconnect/inspection, Tailnet peer discovery, browser UI/grid/session cards, task/relay/push notifications, setup/service/install, provider detection, generated public assets, or Control API schema source. For Rust broker internals, this module owns only the TypeScript client/backend boundary; inspect `edc-context/modules/broker.md` and `broker/**` before relying on broker implementation details.
+Read this before changing TypeScript server/CLI/browser behavior, session create/open/control, child-agent spawning, Pi task-worker readiness, terminal attach/reconnect/inspection, Tailnet peer discovery, browser UI/grid/session cards, task/relay/push notifications, setup/service/install, provider detection, generated public assets, or Control API schema source. For Rust broker internals, this module owns only the TypeScript client/backend boundary; read the relevant `edc-context/modules/broker.md` section before relying on broker implementation details.
+
+Select internal sections first: terminal/browser work uses Broker Integration and Terminal Attach; task transport uses Tasks, Relay, Notifications, Activity, and Agent Status; launch/install work uses Setup, Service, Install, Providers, and Packaging. Read only the matching harness guidance in `edc-context/modules/tests.md`; relay worker changes need compiled/process coverage, while packaged delivery and installation need artifact/lifecycle coverage.
 
 Do not use `public/app.bundle.js`, `public/ghostty-web.bundle.js`, `src/public-assets.ts`, generated docs schemas, screenshots, or site assets as source truth. Route back to TypeScript source, schema source, and build scripts.
 
@@ -17,7 +19,7 @@ Do not use `public/app.bundle.js`, `public/ghostty-web.bundle.js`, `src/public-a
 
 ## Core Runtime Model
 
-1. CLI/setup writes config, optional provider settings/Pi integration, and installs or refreshes services. Broker starts before server; server-only restarts preserve broker-owned PTYs.
+1. Package launch, foreground startup, and managed service installation are separate paths (see Setup, Service, Install, Providers, and Packaging). Broker starts before server; server-only restarts preserve broker-owned PTYs, not volatile relay state.
 2. Browser and CLI call authenticated HTTP routes. Session create/open validates mutually exclusive project selectors, command/harness, names, prompt sources, model constraints, task-worker flags, and project paths before calling `backend.createSession`.
 3. `BrokerBackend.createSession` converts canonical harness IDs through `resolveAgentCommand`, executes via `SHELL -lic`, injects Wolfpack identity env vars, and passes model/prompt/task-worker values as argv data rather than shell-interpolated prose.
 4. Terminal viewing uses `/ws/pty`: attach, geometry settlement, broker snapshot/prefill, replay/live subscription, input gating until the subscription boundary, and `pty_ready`. Browser hydration and live-state indicators must agree with server/broker sequence semantics.
@@ -48,8 +50,8 @@ This is the highest-coupling browser/server area.
 - `attach_ack` is immediate, but server-side input remains gated until the replay-capable live subscription is ready. Removing the gate can lose bytes between snapshot and live stream.
 - Ordered resize support is negotiated by `attach_ack`; browser barriers and server coalescing must preserve one authoritative geometry application per resize id.
 - Browser live status now goes through `createTerminalLiveGate`: hydration must complete, and mobile also waits for post-mount handlers, before a terminal is marked live.
-- `public/terminal-loading-ui.ts` owns visual states (`prefill-loading`, `hydrating`, `reconnecting`, `viewer-conflict`, `displaced`, `live`, `ended`, `failed`) and slow-load indicators. Keep ARIA labels/status and class/data-state updates in sync.
-- Occupied-session overlays offer **Inspect** beside **Take Control** when a stable session ID is known. `public/session-inspector.ts` is read-only: it calls `GET /api/session-control/snapshot?sessionId=<uuid>`, never attaches, resizes, subscribes, sends input, or takes control. It refreshes at most every 2s, aborts stale requests, pauses when hidden, and shows stale text explicitly.
+- `public/terminal-loading-ui.ts` owns the exact visual-state inventory and slow-load indicators across loading, reconnect/conflict, live, and terminal end/failure phases. Keep ARIA labels/status and class/data-state updates in sync.
+- Occupied-session overlays offer **Inspect** beside **Take Control** when a stable session ID is known. `public/session-inspector.ts` is read-only: it calls `GET /api/session-control/snapshot?sessionId=<uuid>`, never attaches, resizes, subscribes, sends input, or takes control. It bounds refresh cadence, aborts stale requests, pauses when hidden, and shows stale text explicitly; exact cadence is source-owned by `public/session-inspector.ts`.
 - Slow viewers are closed rather than buffered indefinitely because broker snapshots/replay are recovery.
 - Ghostty workarounds remain contracts: isolated WASM for grid cells, canvas/hydration handling, DOM-backed scrollbar patching, and scroll-lock monkey patches compensate for ghostty-web behavior.
 
@@ -61,13 +63,13 @@ This is the highest-coupling browser/server area.
 - Session-card filtering depends on typed runtime state (`sessionRuntimeState`) rather than terminal prose. Empty Idle state, keyboard/navigation behavior, and action buttons are accessibility contracts.
 - Grid and delegation-grid cells carry stable `sessionId` when possible so conflict inspection and single-terminal restoration pin exact targets.
 - `createTailnetDiscoveryAutoRefresh` coalesces refresh requests while visible, serializes in-flight refreshes, stops timers when hidden, and treats background errors as non-fatal UI events.
-- Browser peer requests use ready canonical origins from `TailnetPeerRegistry`; tokens are per-origin/sessionStorage scoped. Task relay peer delivery is trusted Tailnet HTTP policy and currently rejects JWT-authenticated federation.
+- Browser peer requests use ready canonical origins from `TailnetPeerRegistry`; tokens are per-origin/sessionStorage scoped. Volatile relay peer transport can add owner-API bearer authentication (`src/server/relay-peer-transport.ts`, `src/task-relay/peer-transport.ts`); it separately requires trusted-client/peer, topology, and epoch verification (`src/server/volatile-relay-routes.ts`). Do not transfer durable task gateway policy from `src/tasks/**` to relay auth. Use `tests/integration/task-relay-trusted-peer-http.test.ts` for relay HTTP regression coverage.
 
 ## Tasks, Relay, Notifications, Activity, and Agent Status
 
-- Pi Tasks use append-only ledgers with immutable assignment hashes, scoped idempotency, inbox/outbox records, two-phase remote receipt/ack, and lifecycle cleanup. Local sends resolve a stable Pi session ID; remote sends are constrained to canonical Tailnet origins and reject absolute context refs.
-- `canonicalJson` now directly emits deterministic JSON with UTF-16 key ordering, skips `undefined` object fields, serializes array holes as `null`, and rejects non-finite/non-JSON values. Changing this is a data migration for tasks and relay digests.
-- Task Relay v2 is an opaque-envelope protocol. Its store validates exact version-2 state, maintains per-endpoint mailbox cursor watermarks, resets exact legacy `version: 1` state to empty v2, and fails closed on malformed v2/JSON. Retention defaults to 24h and prunes mailbox/outbox/registration state without pruning peer routes.
+- `src/tasks/**` owns durable task ledgers, immutable assignment hashes, scoped idempotency, receipt/ack, and lifecycle cleanup. Local sends resolve a stable Pi session ID; remote task sends use canonical Tailnet origins and reject absolute context refs. This durable authority is separate from relay transport.
+- `src/canonical-json.ts` owns deterministic serialization and exact ordering/value rules. Changes can invalidate stored task hashes and ledgers; inspect the source before changing serialization, rather than treating relay transport as durable storage.
+- Task Relay is volatile, epoch-bound opaque-envelope transport. `src/task-relay/gateway.ts` selects the memory-owned profile and rejects retired profiles; `src/task-relay/memory-store.ts` and `src/task-relay/volatile-gateway.ts` own in-memory state and explicitly exclude disk history, recovery, replay, and background spooling. Reset requires endpoint rebind and may leave delivery uncertain; do not assume restart preserves delivery state. `src/task-relay/worker-client.ts` and `src/task-relay/worker-entry.ts` own the worker/reset boundary; exact envelope rules and limits remain source-owned by `src/task-relay/domain.ts`.
 - Session observation uses broker `outputSequence` as the cheap invalidation signal, shares in-flight rendered visible-screen captures per sequence, uses ownership/policy epochs to prevent stale observations from mutating canonical activity state, and degrades to known summaries when the broker is unavailable.
 - Quiet alerts are reduced from rendered activity episodes. Policy invalidation increments an epoch, clears pending episode/history/delivery ownership, freezes recipient generations at episode emission, debounces delivery, and retries failed endpoints only for still-registered original recipients.
 - Push subscriptions are local persistent state under `~/.wolfpack`, exact-host allowlisted, VAPID-local, and notification URLs use bounded session target routes.
@@ -75,8 +77,10 @@ This is the highest-coupling browser/server area.
 ## Setup, Service, Install, Providers, and Packaging
 
 - Setup now factors Tailscale Serve verification, service reconciliation, optional Pi integration, and service activation. Descriptor changes refresh installed service descriptors; remote-origin policy changes perform server-only restart when needed; broker restarts are avoided unless explicitly required.
-- Initial settings seed `shell` plus detected installed openable providers (`claude`, `codex`, `gemini`, `cursor`, `pi`). Provider readiness probes PATH executables with bounded `--version` calls and auth status remains `unknown`.
-- `bin/install.cjs` / `bin/run.cjs` and service staging paths must stay aligned with optional broker artifacts and managed binaries.
+- Initial settings seed shell plus detected installed openable providers. The exact provider set and readiness rules belong to `src/agent-kind.ts`, `src/provider-readiness.ts`, and `src/initial-provider-settings.ts`; readiness probes executable availability, not authenticated readiness.
+- **Package launch:** `bin/run.cjs` resolves and executes an exact optional platform pair; it is not a package lifecycle service installer.
+- **Foreground startup:** `src/cli/index.ts` owns CLI launch routing and foreground broker ownership; do not equate it with managed-service activation.
+- **Managed installation:** `installCandidatePair` in `src/cli/service.ts` owns validation, staging, broker replacement confirmation, and service decisions; `install.sh` is the installation entry point. Consult these owners for per-file replacement versus pair/activation atomicity; do not assume one atomic transaction. Verify lifecycle behavior with `tests/integration/installation-startup.test.ts`.
 - `scripts/build.ts` regenerates embedded assets. Release/package-all still requires clean tracked source and validates prebuilt broker artifacts by target/version/revision/architecture/sha256.
 - `scripts/gen-control-api-schema.ts` generates `docs/generated/control-api.schema.json` from `src/control-api/schema.ts`; update schema source for route/message changes instead of hand-editing generated output.
 
@@ -85,7 +89,7 @@ This is the highest-coupling browser/server area.
 - Broker protocol/session changes affect `src/broker/*`, `src/server/broker-backend.ts`, `src/server/websocket.ts`, browser terminal clients/controllers, docs, and real-broker tests.
 - Terminal UI/hydration/inspection changes cross browser modules, server snapshot/control routes, broker snapshot limits, generated Control API schema, docs/session-control, and e2e visual/accessibility tests.
 - Task-worker/readiness changes cross CLI parsing, API routes, session-open/create contracts, broker exact-ID cleanup, task-relay endpoint registration, Pi skill guidance, generated schema/docs, and unit/e2e tests.
-- Canonical JSON or relay-store changes are durable-data changes for task ledgers, relay digests, idempotency, and restart recovery.
+- Canonical JSON/task-store changes affect durable task hashes and idempotency. Relay memory/worker changes affect epochs, reset/rebind, and delivery uncertainty, not disk recovery; use compiled/process checks and packaged-worker checks when shipping artifacts.
 - Auth/Tailnet changes affect server routes/upgrades, browser peer discovery/fetch, CLI machine routing, docs/site exposure wording, skill behavior, and integration/e2e fixtures.
 - Build/install/provider changes affect package metadata, optional broker packages, service descriptors, setup docs, release tests, and server-only vs broker-restart claims.
 
@@ -105,5 +109,8 @@ This is the highest-coupling browser/server area.
 - Broker TS boundary: `src/server/backend-contract.ts`, `src/server/backend.ts`, `src/server/broker-backend.ts`, `src/broker/client.ts`, `src/broker/codec.ts`, `src/broker/snapshot-render.ts`.
 - Terminal/browser: `src/server/websocket.ts`, `public/app.ts`, `public/app-grid.ts`, `public/session-inspector.ts`, `public/terminal-bootstrap.ts`, `public/terminal-loading-ui.ts`, `public/pty-socket-client.ts`, `public/pty-terminal-controller.ts`, `public/ordered-resize.ts`.
 - Activity/notifications/status: `src/server/session-observation.ts`, `src/session-activity.ts`, `src/quiet-alert-policy.ts`, `src/server/push.ts`, `src/server/agent-status.ts`.
-- Tasks/relay/canonical data: `src/tasks/*`, `src/task-relay/*`, `src/canonical-json.ts`.
-- Setup/build/schema/providers: `src/cli/setup.ts`, `src/provider-readiness.ts`, `src/initial-provider-settings.ts`, `scripts/build.ts`, `scripts/broker-artifacts.ts`, `scripts/gen-control-api-schema.ts`, `src/control-api/schema.ts`.
+- Durable tasks/canonical data: `src/tasks/*`, `src/canonical-json.ts`.
+- Volatile relay/worker: `src/task-relay/gateway.ts`, `src/task-relay/memory-store.ts`, `src/task-relay/volatile-gateway.ts`, `src/task-relay/domain.ts`, `src/task-relay/worker-client.ts`, `src/task-relay/worker-entry.ts`.
+- Relay peer auth: `src/server/relay-peer-transport.ts`, `src/task-relay/peer-transport.ts`, `src/server/volatile-relay-routes.ts`.
+- Launch/install lifecycle: `bin/run.cjs`, `src/cli/index.ts`, `src/cli/service.ts`, `install.sh`, `tests/integration/installation-startup.test.ts`.
+- Setup/build/schema/providers: `src/cli/setup.ts`, `src/agent-kind.ts`, `src/provider-readiness.ts`, `src/initial-provider-settings.ts`, `scripts/build.ts`, `scripts/broker-artifacts.ts`, `scripts/gen-control-api-schema.ts`, `src/control-api/schema.ts`.
