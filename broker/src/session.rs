@@ -232,10 +232,16 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
-    pub fn spawn(opts: SpawnOptions, events: EventSender) -> Result<Self, SpawnError> {
+    pub fn spawn(mut opts: SpawnOptions, events: EventSender) -> Result<Self, SpawnError> {
         if opts.command.is_empty() {
             return Err(SpawnError::EmptyCommand);
         }
+
+        // Identity is broker-owned and must reach the child at launch, including
+        // when a caller accidentally forwards its parent's session environment.
+        let id = Uuid::new_v4();
+        opts.env.retain(|(key, _)| key != "WOLFPACK_SESSION_ID");
+        opts.env.push(("WOLFPACK_SESSION_ID".into(), id.to_string()));
 
         let pty_system = native_pty_system();
         let pair = pty_system
@@ -281,7 +287,6 @@ impl Session {
             .map_err(|e| SpawnError::WriterTake(e.to_string()))?;
 
         let pid = child.process_id();
-        let id = Uuid::new_v4();
         let state = SessionState {
             id,
             name: opts.name,
@@ -1068,6 +1073,39 @@ mod tests {
         // Cleanup so the test doesn't leak a sleep process.
         let _ = sess.kill(libc::SIGKILL);
         assert!(sess.wait_for_exit(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn spawn_injects_its_own_uuid_and_overrides_supplied_identity() {
+        let mut previous = None;
+        for _ in 0..2 {
+            let mut options = opts(vec!["/bin/sh", "-c", "printf '%s' \"$WOLFPACK_SESSION_ID\""]);
+            options.env = vec![
+                ("WOLFPACK_SESSION_ID".into(), "parent-session-id".into()),
+                ("WOLFPACK_SESSION_ID".into(), "caller-override".into()),
+            ];
+            let session = spawn_session(options).expect("spawn");
+            assert!(session.output_bus().wait_closed(Duration::from_secs(5)));
+            assert!(session.wait_for_exit(Duration::from_secs(5)));
+            let info = session.info();
+            let id = info.id.to_string();
+            assert_ne!(previous.as_ref(), Some(&id));
+            assert_eq!(
+                info.env
+                    .iter()
+                    .filter(|(key, _)| key == "WOLFPACK_SESSION_ID")
+                    .map(|(_, value)| value.as_str())
+                    .collect::<Vec<_>>(),
+                vec![id.as_str()]
+            );
+            let snapshot = session.snapshot_terminal(None, None).expect("snapshot");
+            assert!(
+                screen_contains(&snapshot, &id),
+                "child must receive its own broker UUID"
+            );
+            assert!(!screen_contains(&snapshot, "caller-override"));
+            previous = Some(id);
+        }
     }
 
     #[test]

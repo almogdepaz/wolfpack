@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
+import { mockLayoutWidget } from "./widget-fixture.ts";
+import { collapseInitialSessionMenu, openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
 
@@ -106,6 +107,7 @@ test("quick command form is modal and restores focus when cancelled", async ({ p
 
 test("sidebar details and actions remain independently pointer-accessible", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop sidebar layout");
+  await collapseInitialSessionMenu(page);
 
   const card = page.locator(".sidebar-sessions .card").filter({
     has: page.getByRole("button", { name: "Open test-project", exact: true }),
@@ -134,15 +136,33 @@ test("sidebar details and actions remain independently pointer-accessible", asyn
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
 });
 
-test("terminal transcript exposes authoritative plain text without a second parser", async ({ page }) => {
+test("Transcript is absent while context full-view recovery remains keyboard accessible", async ({ page }, testInfo) => {
+  await mockLayoutWidget(page, { "test-project": "11111111-1111-4111-8111-111111111111" });
+  await page.reload();
   await page.getByRole("button", { name: "Open test-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
-
-  await page.getByRole("button", { name: "Read session transcript" }).click();
-  const dialog = page.getByRole("dialog", { name: "Session transcript" });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("log")).toContainText("mock-terminal-ready");
-
-  await dialog.getByRole("button", { name: "Close transcript" }).click();
-  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("button", { name: "Read session transcript" })).toHaveCount(0);
+  // Exercise recovery after initial attachment. Startup's existing autofocus can
+  // otherwise land between focus() and Enter (also reproduced on deployed assets).
+  await expect(page.locator("#desktop-terminal-container")).toHaveAttribute("data-terminal-load-state", "live");
+  if (testInfo.project.name !== "desktop") {
+    const show = page.locator("#workspace-restore");
+    await show.focus(); await show.press("Enter");
+    const back = page.getByRole("button", { name: "Back to terminal", exact: true });
+    await expect(back).toBeFocused();
+    await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+    await back.press("Enter");
+    await expect(show).toBeFocused();
+    await expect(page.locator("#workspace-terminal-region")).toBeVisible();
+    return;
+  }
+  const full = page.locator("[data-widget-full]:visible");
+  await expect(full).toHaveAccessibleName("Context full view");
+  await full.focus(); await full.press("Enter");
+  await expect(full).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#workspace-terminal-region")).toBeHidden();
+  const restore = page.getByRole("button", { name: "Restore workspace", exact: true });
+  await restore.focus(); await restore.press("Enter");
+  await expect(full).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#workspace-terminal-region")).toBeVisible();
 });

@@ -35,6 +35,86 @@ function taskWorkerFailureCli(
   });
 }
 
+const SELF_ID = "11111111-1111-4111-8111-111111111111";
+const SELF_STATUS = {
+  ok: true, sessionId: SELF_ID, session: "self", projectDir: "/repo/self", harness: "pi", state: "active",
+  terminal: { exists: true, alive: true, status: "ready" },
+};
+function currentContextCli(options: { env?: Record<string, string>; body?: unknown; status?: number; output?: "json" | "shell"; offline?: boolean } = {}) {
+  const script = `
+    Object.assign(process.env, ${JSON.stringify({ WOLFPACK_SESSION_ID: SELF_ID, WOLFPACK_SESSION_NAME: "self", WOLFPACK_PROJECT_DIR: "/repo/self", WOLFPACK_AGENT_KIND: "pi", ...options.env })});
+    let calls = 0;
+    globalThis.fetch = async (url, init) => {
+      calls++;
+      if (calls !== 1 || new URL(url).pathname !== "/api/session-control/status" || new URL(url).searchParams.get("session") !== process.env.WOLFPACK_SESSION_ID) throw new Error("not an exact-ID lookup");
+      if (init?.method && init.method !== "GET") throw new Error("lookup must be read-only");
+      if (!(init?.signal instanceof AbortSignal)) throw new Error("request must have a deadline");
+      if (${options.offline === true}) throw new Error("offline");
+      return Response.json(${JSON.stringify(options.body === undefined ? SELF_STATUS : options.body)}, { status: ${options.status ?? 200} });
+    };
+    const { runSessionCommand } = await import("./src/cli/session-control.ts");
+    const code = await runSessionCommand(["current-context", "--${options.output ?? "json"}"]);
+    process.stderr.write("\\nCALLS:" + calls);
+    process.exit(code);
+  `;
+  return Bun.spawnSync([process.execPath, "-e", script], { cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+}
+
+describe("verified current session context", () => {
+  test("verifies the injected UUID with one exact-ID lookup", () => {
+    const result = currentContextCli();
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.stdout.toString())).toEqual({ ok: true, verified: true, sessionId: SELF_ID, session: "self", projectDir: "/repo/self", harness: "pi" });
+    expect(result.stderr.toString()).toContain("CALLS:1");
+  });
+  test("has no name or project fallback without a canonical injected UUID", () => {
+    for (const id of ["", "self", "../self", SELF_ID.toUpperCase().replace("11111111", "AAAAAAAA"), ` ${SELF_ID}`]) {
+      const result = currentContextCli({ env: { WOLFPACK_SESSION_ID: id } });
+      expect(result.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+      expect(JSON.parse(result.stdout.toString()).ok).toBe(false);
+      expect(result.stderr.toString()).toContain("CALLS:0");
+    }
+  });
+  test("requires complete injected identity without querying by name", () => {
+    for (const [key, value] of [["WOLFPACK_SESSION_NAME", ""], ["WOLFPACK_PROJECT_DIR", "relative"], ["WOLFPACK_AGENT_KIND", ""]] as const) {
+      const result = currentContextCli({ env: { [key]: value } });
+      expect(result.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+      expect(result.stderr.toString()).toContain("CALLS:0");
+    }
+  });
+  test("accepts the existing custom harness kind and safely quotes shell identity", () => {
+    const projectDir = "/repo/it's a project";
+    const result = currentContextCli({ output: "shell", env: { WOLFPACK_PROJECT_DIR: projectDir, WOLFPACK_AGENT_KIND: "custom" }, body: { ...SELF_STATUS, projectDir, harness: "custom" } });
+    expect(result.exitCode).toBe(0);
+    const evaluated = Bun.spawnSync(["/bin/sh", "-c", `${result.stdout.toString()}\nprintf '%s' \"$WOLFPACK_PROJECT_DIR\"`], { env: { ...process.env }, stdout: "pipe", stderr: "pipe" });
+    expect(evaluated.exitCode).toBe(0);
+    expect(evaluated.stdout.toString()).toBe(projectDir);
+  });
+  test("rejects replacement, mismatched project/name/harness, dead or malformed responses", () => {
+    for (const body of [null, {}, { ...SELF_STATUS, sessionId: "22222222-2222-4222-8222-222222222222" }, { ...SELF_STATUS, projectDir: "/other" }, { ...SELF_STATUS, session: "other" }, { ...SELF_STATUS, harness: "shell" }, { ...SELF_STATUS, state: "exited" }, { ...SELF_STATUS, terminal: { exists: true, alive: false, status: "dead" } }, { ...SELF_STATUS, terminal: { exists: false, alive: true, status: "ready" } }, { ...SELF_STATUS, terminal: { exists: true, alive: false, status: "ready" } }]) {
+      const result = currentContextCli({ body });
+      expect(result.exitCode).not.toBe(0);
+      expect(JSON.parse(result.stdout.toString()).ok).toBe(false);
+    }
+  });
+  test("does not turn API failure or unavailability into guessed identity", () => {
+    for (const options of [{ status: 404, body: { error: "missing" } }, { status: 401, body: { error: "unauthorized" } }, { offline: true }]) {
+      const result = currentContextCli(options);
+      expect(result.exitCode).not.toBe(0);
+      expect(JSON.parse(result.stdout.toString()).ok).toBe(false);
+      expect(result.stderr.toString()).toContain("CALLS:1");
+    }
+  });
+  test("shell output exports the verified UUID and refuses partial output on failure", () => {
+    const result = currentContextCli({ output: "shell" });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toContain(`WOLFPACK_SESSION_ID='${SELF_ID}'`);
+    const failed = currentContextCli({ output: "shell", env: { WOLFPACK_SESSION_ID: "" } });
+    expect(failed.exitCode).not.toBe(0);
+    expect(failed.stdout.toString()).toBe("");
+  });
+});
+
 function taskWorkerPolicyFileScript(policyPath: string): string {
   return `
     const target = {

@@ -7,7 +7,10 @@ import { request } from "node:http";
 import { BrokerClient } from "../../src/broker/client.js";
 
 const repository = process.cwd();
-const brokerBinary = join(repository, "broker/target/release/wolfpack-broker");
+// CI can use its checked-out broker build; isolated local verification supplies
+// the explicitly trusted prebuilt broker without rebuilding or downloading it.
+const brokerBinary = process.env.WOLFPACK_BROKER_BIN
+  ?? join(repository, "broker/target/release/wolfpack-broker");
 // Short paths are required for macOS Unix sockets. Retain receipts separately.
 const suite = mkdtempSync("/tmp/wp-installation-");
 const evidence = mkdtempSync("/tmp/wp-installation-evidence-");

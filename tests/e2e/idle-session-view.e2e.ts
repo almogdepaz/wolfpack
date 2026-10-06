@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { collapseInitialSessionMenu, startTestServer, type TestServer } from "./helpers.ts";
 
 const PEER_ORIGIN = "https://idle-peer.example.ts.net";
 const PEER_INSTALLATION_ID = "f9ae7025-30ad-4461-bc57-365431dbf00c";
@@ -160,6 +160,7 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
   });
   await page.goto(server.baseUrl);
 
+  await collapseInitialSessionMenu(page);
   const idle = visibleViewButton(page, "idle");
   const all = visibleViewButton(page, "all");
   await expect(idle).toHaveAccessibleName("Idle sessions");
@@ -172,7 +173,7 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
     const rect = button.getBoundingClientRect();
     return { height: rect.height, outlineWidth: style.outlineWidth };
   });
-  expect(idleControlStyle.height).toBeGreaterThanOrEqual(40);
+  expect(idleControlStyle.height).toBeGreaterThanOrEqual(testInfo.project.name === "desktop" ? 28 : 44);
   expect(idleControlStyle.outlineWidth).not.toBe("0px");
 
   await page.evaluate(() => {
@@ -190,7 +191,16 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
   await expect(page.locator('[data-session-card-view][aria-pressed="true"]').filter({ visible: true })).toHaveCount(1);
   if (testInfo.project.name === "desktop") {
     await page.locator("#sidebar-expand-btn").click();
-    await expect(visibleViewButton(page, "idle")).toHaveAttribute("aria-pressed", "true");
+    // Both control sets can be CSS-visible during the sidebar transition.
+    // Scope the destination and verify the completed viewport geometry.
+    const expandedIdle = page.locator("#session-dashboard-controls").getByRole("button", { name: "Idle sessions", exact: true });
+    await expect(expandedIdle).toBeVisible();
+    await expect(expandedIdle).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("#sidebar-session-list")).not.toBeInViewport();
+    await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
+    const sidebarIdle = page.locator("#sidebar-session-controls").getByRole("button", { name: "Idle sessions", exact: true });
+    await expect(sidebarIdle).toBeInViewport();
+    await expect(sidebarIdle).toHaveAttribute("aria-pressed", "true");
   }
 });
 
@@ -277,6 +287,7 @@ test("desktop idle reorder stays inside visible cards", async ({ page }, testInf
     ],
   });
   await page.goto(server.baseUrl);
+  await collapseInitialSessionMenu(page);
   const list = page.locator("#sidebar-session-list");
   await selectIdleView(page);
   await expect(list.locator('.card[data-session-order-id="working-b-id"]')).toHaveCount(0);
@@ -285,8 +296,10 @@ test("desktop idle reorder stays inside visible cards", async ({ page }, testInf
   await idleA.focus();
   await page.keyboard.press("Alt+ArrowDown");
   const replacementIdleA = list.locator('.card[data-session-order-id="idle-a-id"] .card-open');
+  // Sidebar rendering is frame-scheduled; the old focused row is not proof
+  // that the replacement order has rendered yet.
+  await expect.poll(() => visibleSessionCardNames(page)).toEqual(["idle-c", "idle-a"]);
   await expect(replacementIdleA).toBeFocused();
-  expect(await visibleSessionCardNames(page)).toEqual(["idle-c", "idle-a"]);
   await expect(page.locator("#session-order-status")).toHaveText("idle-a moved to position 2");
 
   await visibleViewButton(page, "all").click();

@@ -5,7 +5,8 @@ import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir, hostname } from "node:os";
+import { tmpdir } from "node:os";
+import { getMachineDisplayName } from "../../src/machine-display-name.ts";
 import pkg from "../../package.json";
 import { SESSION_CREATE_ERROR } from "../../src/session-create-contract.ts";
 import {
@@ -304,10 +305,8 @@ describe("GET /api/info", () => {
     const res = await get("/api/info");
     expect(res.status).toBe(200);
     const data = await res.json();
-    const expectedName = hostname()
-      .replace(/\.local$/, "")
-      .replace(/\.tail[a-z0-9-]*\.ts\.net$/i, "");
-    expect(data.name).toBe(expectedName);
+    expect(data.name).toBe(getMachineDisplayName());
+    expect(res.headers.get("cache-control")).toBe("no-store");
     expect(data.version).toBe(pkg.version);
   });
 

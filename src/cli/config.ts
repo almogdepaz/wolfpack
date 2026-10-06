@@ -107,7 +107,8 @@ export function isPortInUse(port: number): boolean {
     const p = port;
     if (!isValidPort(p)) return false;
     if (IS_MACOS) {
-      const out = execFileSync("lsof", ["-i", `:${p}`, "-t"], {
+      // Match Linux's TCP-listener semantics, not UDP or a client's endpoint.
+      const out = execFileSync("lsof", ["-nP", "-a", `-iTCP:${p}`, "-sTCP:LISTEN", "-t"], {
         encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
       }).trim();
       return out.length > 0;
@@ -128,7 +129,7 @@ export function killPortHolder(port: number): boolean {
     if (!isValidPort(p)) return false;
     let pid: number | null = null;
     if (IS_MACOS) {
-      const out = execFileSync("lsof", ["-i", `:${p}`, "-t"], {
+      const out = execFileSync("lsof", ["-nP", "-a", `-iTCP:${p}`, "-sTCP:LISTEN", "-t"], {
         encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"],
       }).trim();
       pid = out ? Number(out.split("\n")[0]) : null;

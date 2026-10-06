@@ -18,8 +18,17 @@ import {
   scheduleGridStabilizedFit, isSessionInGrid, toggleGrid,
   canOpenMultiTerminalGrid, disposeDelegationGrid, gridInspectionTarget,
   renderDelegationGridCells, setDelegationGridMembers, suspendDelegationGridTerminals,
+  initWorkspaceTerminalLayouts, selectWorkspaceTerminalLayout,
 } from "./app-grid";
 import type { DelegationGridMember } from "./app-grid";
+import { TerminalLayoutRegistry } from "./terminal-layout-registry";
+import { createWorkspaceShell, loadWorkspaceShellPreferences } from "./workspace-shell";
+import { WidgetLayout, SESSIONS_PANEL, TERMINALS_PANEL } from "./widget-layout";
+import { createWorkspaceDocking } from "./workspace-docking";
+import { ExtensionHost } from "./extension-host";
+import { WidgetVisibility, WIDGET_VISIBILITY_PREFIX } from "./widget-visibility";
+import { createWidgetManager } from "./widget-manager";
+import { resolveWorkspaceExtensionScope } from "./extension-scope";
 
 import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-controller";
 import type { SessionCardView } from "./app-action-controller";
@@ -1247,14 +1256,20 @@ function teardownTerminalForViewChange(previousView: string, nextView: string): 
   closeTerminalTranscript();
   if (state.activeDelegationRoot) {
     destroyTerminal(nextView === "settings");
-    teardownDelegationWorkspace();
+    // Preserve the existing Settings return priority for a suspended manual grid.
+    if (nextView === "settings" && !hasPreservedGrid()) suspendDelegationGridTerminals();
+    else teardownDelegationWorkspace();
     if (isGridActive()) suspendGridMode();
   } else if (isGridActive()) {
     suspendGridMode();
   } else {
-    destroyTerminal(nextView === "settings");
+    // Full-menu expansion suspends the viewer but can return to this exact session.
+    // Retain its UUID as for Settings; never reconstruct widget scope from a name.
+    destroyTerminal(nextView === "settings" || (nextView === "sessions" && state.sessionsExpanded));
   }
 }
+
+let cancelViewTransition: (() => void) | null = null;
 
 function applyViewVisibility(
   previousView: HTMLElement | null,
@@ -1262,6 +1277,9 @@ function applyViewVisibility(
   animate: boolean,
   goingForward: boolean,
 ): void {
+  // A prior animation's timeout or transitionend must not hide a newer view.
+  cancelViewTransition?.();
+  cancelViewTransition = null;
   if (animate && previousView) {
     const fg = goingForward ? nextView : previousView;
     const bg = goingForward ? previousView : nextView;
@@ -1287,22 +1305,33 @@ function applyViewVisibility(
     bg.style.transform = goingForward ? "translate3d(-30%,0,0)" : "translate3d(0,0,0)";
 
     let cleaned = false;
-    const cleanup = (): void => {
-      if (cleaned) return;
-      cleaned = true;
+    const resetStyles = (): void => {
       [fg, bg].forEach(el => {
         el.style.transition = "";
         el.style.zIndex = "";
         el.style.transform = "";
         el.classList.remove("swiping");
       });
+    };
+    const cancel = (): void => {
+      if (cleaned) return;
+      cleaned = true;
+      clearTimeout(timer);
+      fg.removeEventListener("transitionend", cleanup);
+      resetStyles();
+    };
+    const cleanup = (): void => {
+      if (cleaned) return;
+      cancel();
+      if (cancelViewTransition === cancel) cancelViewTransition = null;
       document.querySelectorAll(".view").forEach(view => {
         if (view !== nextView) view.classList.remove("visible");
       });
       nextView.classList.add("visible");
     };
     fg.addEventListener("transitionend", cleanup, { once: true });
-    setTimeout(cleanup, 350);
+    const timer = setTimeout(cleanup, 350);
+    cancelViewTransition = cancel;
     return;
   }
 
@@ -1315,6 +1344,14 @@ function applyViewVisibility(
 }
 
 function applyDesktopViewNavigation(viewName: string): void {
+  // With no focused workspace, Sessions is the full menu, not a sidebar beside a blank Main.
+  if (viewName === "sessions" && !state.currentSession && !hasPreservedGrid()) {
+    state.sessionsExpanded = true;
+    state.sidebarAutoExpanded = false;
+    document.body.classList.add("sessions-expanded");
+    document.getElementById("sidebar-expand-btn")?.classList.add("active");
+    setSidebarCollapsedImmediately(true);
+  }
   // Exit expanded sessions mode when navigating away from sessions.
   if (viewName !== "sessions" && state.sessionsExpanded) {
     state.sessionsExpanded = false;
@@ -1337,6 +1374,9 @@ function applyDesktopViewNavigation(viewName: string): void {
     void loadTaskWorkerExtensionPolicySettings();
   }
   renderSidebar();
+  // Focused menu cards can scroll the shared viewport while the sidebar is reparented.
+  // Scrolling belongs to the individual views/terminals, never this horizontal viewport.
+  document.getElementById("view-container").scrollLeft = 0;
   syncSessionRefreshTimer();
 }
 
@@ -1424,6 +1464,7 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
   stopDebugPanelRefresh(previousView, viewName);
   teardownTerminalForViewChange(previousView, viewName);
   setState({ currentView: viewName });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   applyViewVisibility(previousElement, nextElement, animate, goingForward);
 
   // Stop timers immediately (don't defer these).
@@ -1852,18 +1893,6 @@ function delegationGridMember(row: DelegationSessionRow<DelegationSessionLike>, 
   };
 }
 
-function updateDelegationGridHeader(context: DelegationWorkspaceContext): void {
-  const title = document.getElementById("delegation-grid-title");
-  const summary = document.getElementById("delegation-grid-summary");
-  if (title) title.textContent = `${context.root.name} grid`;
-  if (summary) {
-    const childSummary = context.members[0]?.childSummary;
-    summary.textContent = childSummary
-      ? delegationChildSummaryText(childSummary)
-      : `${Math.max(0, context.members.length - 1)} child agents`;
-  }
-}
-
 function setDelegationWorkspaceDisplay(mode: "grid" | "focus" | "off"): void {
   document.body.classList.toggle("delegation-workspace", mode !== "off");
   document.body.classList.toggle("delegation-grid-active", mode === "grid");
@@ -1901,7 +1930,6 @@ function syncDelegationWorkspace(): void {
   const focusedStillExists = !state.focusedDelegationSession
     || members.some(member => member.session === state.focusedDelegationSession);
   setDelegationGridMembers(members);
-  updateDelegationGridHeader(context);
 
   if (!focusedStillExists) {
     destroyTerminal();
@@ -1926,7 +1954,6 @@ function prepareDelegationWorkspace(rootSession: string, machineUrl: string): De
     delegationMachine: machineUrl,
   });
   setDelegationGridMembers(context.members.map(row => delegationGridMember(row, machineUrl)));
-  updateDelegationGridHeader(context);
   return context;
 }
 
@@ -1943,8 +1970,10 @@ function openDelegationGrid(rootSession: string, machineUrl = ""): void {
     currentSession: context.root.name,
     currentMachine: machineUrl,
   });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   setDelegationWorkspaceDisplay("grid");
   showView("terminal", true);
+  revealWorkspaceTerminals();
   renderDelegationGridCells();
   renderSidebar();
 }
@@ -1966,10 +1995,12 @@ function focusDelegationSession(sessionName: string, machineUrl = ""): void {
     currentSession: sessionName,
     currentMachine: machineUrl,
   });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   const label = document.getElementById("delegation-focus-label");
   if (label) label.textContent = `${sessionName} terminal`;
   setDelegationWorkspaceDisplay("focus");
   showView("terminal", true);
+  revealWorkspaceTerminals();
   void initTerminal(TERMINAL_PREFILL_MODE.FULL);
   renderSidebar();
 }
@@ -2230,6 +2261,7 @@ async function openSession(name, machineUrl) {
     return;
   }
   if (isDesktop()) {
+    revealWorkspaceTerminals();
     const delegation = delegationWorkspaceContext(name, targetMachine);
     if (delegation) {
       if (delegation.root.name === name) openDelegationGrid(name, targetMachine);
@@ -2282,10 +2314,12 @@ async function openSession(name, machineUrl) {
   destroyTerminal();
   state.termTarget = inspectionTarget;
   setState({ currentSession: name, currentMachine: machineUrl || "" });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   recordRecent(state.currentMachine, name);
   wpMetrics.reset();
   restoreDraft();
   showView("terminal");
+  revealWorkspaceTerminals();
   __wfTraceEvent(trace, "dom.view.created");
   void initTerminal(TERMINAL_PREFILL_MODE.FULL);
   renderSidebar();
@@ -2695,6 +2729,7 @@ function selectBrowsedDirectory(): void {
 function showTerminalLoading(label: string): void {
   clearPreservedGrid();
   showView("terminal");
+  revealWorkspaceTerminals();
   const dtc = document.getElementById("desktop-terminal-container");
   dtc.style.display = "block";
   dtc.innerHTML = '<span class="loading-text">Starting session in ' + esc(label) + '\u2026</span>';
@@ -3176,19 +3211,16 @@ function removeDesktopConflictOverlay() {
   if (el) el.remove();
 }
 
-function mobileKeyboardShiftElements(): HTMLElement[] {
-  return [
-    document.getElementById("conn-status"),
-    document.getElementById("desktop-terminal-container"),
-    document.getElementById("desktop-grid-container"),
-    document.getElementById("cmd-palette"),
-    document.getElementById("kb-accessory"),
-  ].filter((el): el is HTMLElement => !!el);
+function setMobileKeyboardInset(insetPx: number): void {
+  // Shrink the view rather than translating its canvas above the clipped
+  // workspace. This also keeps the first row and accessory in the viewport.
+  const view = document.getElementById("terminal-view");
+  if (view) view.style.bottom = insetPx > 0 ? `${insetPx}px` : "";
 }
 
-function setMobileKeyboardShift(offsetPx: number): void {
-  const transform = offsetPx > 0 ? `translateY(-${offsetPx}px)` : "";
-  for (const el of mobileKeyboardShiftElements()) el.style.transform = transform;
+function terminalMayTakeFocus(container: HTMLElement): boolean {
+  const active = document.activeElement;
+  return active === document.body || active === container || container.contains(active);
 }
 
 type TerminalSlowLoadIndicator = ReturnType<typeof createTerminalSlowPathIndicator>;
@@ -3285,7 +3317,7 @@ function handleTerminalControlGranted(
   setTerminalLoadVisualState(container, "hydrating");
   slowLoad.start("restoring terminal control");
   if (isMobile) setMobileGhosttyKeyboardOpen(state.kbAccessoryOpen);
-  else state.terminalController?.focus();
+  else if (terminalMayTakeFocus(container)) state.terminalController?.focus();
 }
 
 function handleTerminalDisconnected(
@@ -3377,7 +3409,7 @@ function createTerminalBootstrapController(
     hydrationSilenceMs: INITIAL_HYDRATION_SILENCE_MS,
     disableStdin: isMobile,
     getHydrationElement: () => document.getElementById("desktop-terminal-container"),
-    shouldFocus: () => !isMobile,
+    shouldFocus: () => !isMobile && terminalMayTakeFocus(container),
     shouldReconnect: () => !!state.terminalController?.term,
     onOpen: (wasReconnect) => {
       handleTerminalOpened(container, slowLoad, wasReconnect);
@@ -3438,10 +3470,10 @@ function setupMobileTerminalViewport(): void {
       offsetTop: window.visualViewport.offsetTop ?? 0,
     });
     const kbOpen = kbHeight > 150;
-    // Shift terminal sub-elements without changing their layout height.
-    // ghostty-web sees no container resize → no reflow → no scroll-through.
-    // Keep #terminal-view transform reserved for mobile view/swipe navigation.
-    setMobileKeyboardShift(kbOpen ? kbHeight : 0);
+    // Keep the view within the visual viewport; offsetTop is already
+    // subtracted by keyboardOcclusionHeight. Normal layout drives terminal
+    // geometry, without moving its first rendered row above the clip.
+    setMobileKeyboardInset(kbOpen ? kbHeight : 0);
     // Viewport is authoritative for collapse only. Opening remains an
     // explicit keyboard-button action so layout changes cannot enable stdin.
     if (!kbOpen && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
@@ -3535,7 +3567,7 @@ function destroyTerminal(preserveTarget = false) {
   // Reset terminal positioning
   const termView = document.getElementById("terminal-view");
   if (termView) { termView.style.bottom = ""; termView.style.transform = ""; }
-  setMobileKeyboardShift(0);
+  setMobileKeyboardInset(0);
   if (state.kbResizeTimer) { clearTimeout(state.kbResizeTimer); state.kbResizeTimer = null; }
   const container = document.getElementById("desktop-terminal-container");
   container.removeAttribute("inputmode");
@@ -3991,6 +4023,7 @@ async function switchSession(val) {
       state.termTarget = currentTarget?.session === name && currentTarget.machine === machineUrl
         ? currentTarget
         : pinnedSessionInspectionTarget(name, machineUrl);
+      document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
       void initTerminal();
     }
     return;
@@ -4005,6 +4038,7 @@ async function switchSession(val) {
   destroyTerminal();
   state.termTarget = inspectionTarget;
   setState({ currentSession: name, currentMachine: machineUrl });
+  document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   recordRecent(machineUrl, name);
   restoreDraft();
   loadSessionSwitcher();
@@ -4376,7 +4410,7 @@ document.addEventListener("keydown", (e) => {
     showProjectPickerPanel("projects", document.getElementById("create-project-action"));
     return;
   }
-  if (state.focusedDelegationSession) {
+  if (state.currentView === "terminal" && state.focusedDelegationSession) {
     e.preventDefault();
     e.stopPropagation();
     returnToDelegationGrid();
@@ -4507,6 +4541,7 @@ document.getElementById("new-project-create-name")?.addEventListener("keydown", 
 const SETTINGS_SECTION_IDS = new Set([
   "settings-effects",
   "settings-terminal",
+  "settings-extensions",
   "settings-input",
   "settings-machines",
   "settings-agents",
@@ -4528,7 +4563,11 @@ function revealSettingsSection(sectionId: string, updateLocation = true): void {
     if (link.hash === `#${sectionId}`) link.setAttribute("aria-current", "location");
     else link.removeAttribute("aria-current");
   });
-  requestAnimationFrame(() => section.scrollIntoView({ block: "start", behavior: "smooth" }));
+  requestAnimationFrame(() => {
+    // Scroll only the Settings list, never the horizontally translated view stack.
+    const list = section.closest<HTMLElement>("#settings-view > .list");
+    if (list) list.scrollTo({ top: list.scrollTop + section.getBoundingClientRect().top - list.getBoundingClientRect().top, behavior: "smooth" });
+  });
 }
 
 let settingsFocusReturn: HTMLElement | null = null;
@@ -4636,6 +4675,7 @@ async function showSettings() {
   requestAnimationFrame(() => focusTarget?.focus({ preventScroll: true }));
   renderMachinesList();
   void loadQuietAlertSettings();
+  void widgetManager.refresh();
   toggleDebugPanel();
 }
 
@@ -4870,6 +4910,8 @@ function syncSessionChooserOwnership(): boolean {
   const sessionDashboardControls = document.getElementById("session-dashboard-controls");
   const sessionList = document.getElementById("session-list");
   if (sessionDashboardControls) sessionDashboardControls.hidden = sidebarOwns;
+  const sidebarControls = document.getElementById("sidebar-session-controls");
+  if (sidebarControls) sidebarControls.hidden = !sidebarOwns;
   if (sessionList) sessionList.hidden = sidebarOwns;
   return sidebarOwns;
 }
@@ -4903,7 +4945,7 @@ function _renderSidebarNow() {
   const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
-  let html = sessionCardViewControlsHtml();
+  let html = "";
   if (!multiMachine) {
     const g = state.lastSessionGroups.find(group => group.machine.url === "");
     if (g) {
@@ -5286,7 +5328,7 @@ function initSidebar() {
   sidebar.addEventListener("mouseleave", () => {
     if (state.sidebarAutoExpanded && !state.sidebarPinned) {
       sidebarAutoCollapseTimer = setTimeout(() => {
-        if (state.sidebarAutoExpanded && !sidebarSessionOrderDragActive && !sidebarMachineGroupDragActive) {
+        if (state.sidebarAutoExpanded && !sidebarSessionOrderDragActive && !sidebarMachineGroupDragActive && !sidebar.matches(":focus-within") && !document.querySelector("dialog[open]")) {
           state.sidebarTransitionIsHover = true;
           sidebar.classList.add("collapsed");
           state.sidebarCollapsed = true;
@@ -5353,7 +5395,11 @@ function bindHtmlEventListeners(): void {
     agentRemove: command => { void removeAgent(command); },
     createAgentSession: command => { void createSessionWithAgent(command); },
     agentToggle: (command, enabled) => { void toggleAgentEnabled(command, enabled); },
-    toggleGrid,
+    toggleGrid: (session, machine, event) => {
+      const adding = !isSessionInGrid(session, machine);
+      toggleGrid(session, machine, event);
+      if (adding && isSessionInGrid(session, machine)) revealWorkspaceTerminals();
+    },
     setSessionCardView,
     machineGroupCollapse: updateMachineGroupCollapse,
   });
@@ -5374,6 +5420,10 @@ function bindHtmlEventListeners(): void {
 
   // Delegation workspace
   on("delegation-focus-back", "click", () => returnToDelegationGrid());
+  const layoutPicker = $("workspace-terminal-layout") as HTMLSelectElement | null;
+  layoutPicker?.addEventListener("change", () => {
+    selectWorkspaceTerminalLayout(layoutPicker.value);
+  });
 
   // Drawer / overlays
   on("drawer-backdrop", "click", () => closeDrawer());
@@ -5430,6 +5480,11 @@ function bindHtmlEventListeners(): void {
   on("setting-enterSends", "change", function(this: HTMLInputElement) { toggleSetting("enterSends", this.checked); });
   on("setting-holdToSend", "change", function(this: HTMLInputElement) { toggleSetting("holdToSend", this.checked); });
   on("setting-debugPanel", "change", function(this: HTMLInputElement) { toggleSetting("debugPanel", this.checked); toggleDebugPanel(); });
+  on("setting-extensionSafeMode", "change", function(this: HTMLInputElement) {
+    toggleSetting("extensionSafeMode", this.checked);
+    widgetManager.render();
+    document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
+  });
 
   // Term font size buttons
   document.querySelectorAll(".term-size-btn").forEach((btn) => {
@@ -5463,7 +5518,6 @@ function bindHtmlEventListeners(): void {
   if (debugResetBtn) debugResetBtn.addEventListener("click", () => { wpMetrics.reset(); renderDebugPanel(); });
 
   // Terminal view
-  on("terminal-transcript-btn", "click", () => { void showTerminalTranscript(); });
   on("terminal-transcript-close", "click", () => closeTerminalTranscript());
 
   // Keyboard accessory
@@ -5492,9 +5546,122 @@ initGridDeps({
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
 });
 
+const workspaceTerminalLayouts = new TerminalLayoutRegistry();
+initWorkspaceTerminalLayouts(workspaceTerminalLayouts);
+const workspaceLayoutPicker = document.getElementById("workspace-terminal-layout") as HTMLSelectElement | null;
+if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
+const widgetVisibility = new WidgetVisibility(localStorage);
+const widgetLayout = new WidgetLayout(localStorage, loadWorkspaceShellPreferences(localStorage).panelPlacement);
+let extensionHost: ExtensionHost | null = null;
+const workspaceShell = createWorkspaceShell({
+  onTerminalGeometryChange: () => scheduleGridStabilizedFit(),
+  onWidgetPresentationChange: presentation => { if (extensionHost?.setPresentation(presentation)) extensionHost.select(); },
+  onReset: () => extensionHost?.resetWorkspaceLayout(),
+});
+window.addEventListener("resize", () => scheduleGridStabilizedFit());
+
+/** Explicit terminal navigation must also select its dock tab; geometry alone cannot reveal it. */
+function revealWorkspaceTerminals(): void {
+  if (!isDesktop() || state.currentView !== "terminal") return;
+  if (workspaceShell?.preferences.fullView === "context") workspaceShell.focusPanel(null);
+  // A saved widget tab can arrive after the native panel, when its catalog finishes loading.
+  const saved = widgetLayout.preferences.selected[widgetLayout.area(TERMINALS_PANEL)];
+  if (document.getElementById("workspace-terminal-region")?.hidden || (saved && saved !== TERMINALS_PANEL)) extensionHost?.select(TERMINALS_PANEL);
+}
+
+function selectedExtensionScope(): { readonly sessionId: string | null; readonly unavailable?: string } | null {
+  const delegationGrid = state.activeDelegationRoot && !state.focusedDelegationSession;
+  const manualGrid = !delegationGrid && isGridActive();
+  const grid = delegationGrid
+    ? state.delegationGridSessions[state.delegationGridFocusIndex]
+    : manualGrid ? state.gridSessions[state.gridFocusIndex] : undefined;
+  return resolveWorkspaceExtensionScope({
+    workspaceActive: state.currentView === "terminal",
+    activeSurface: delegationGrid ? "delegation-grid" : manualGrid ? "manual-grid" : "single",
+    selectedGridPane: grid ? { sessionId: grid.sessionId, machine: grid.machine || "" } : undefined,
+    singleTerminal: state.termTarget,
+  }, LOCAL_MACHINE_IDENTITY);
+}
+
+const extensionHostContainer = document.getElementById("workspace-context-container");
+extensionHost = extensionHostContainer ? new ExtensionHost({
+  container: extensionHostContainer,
+  scope: selectedExtensionScope,
+  safeMode: () => wpSettings.extensionSafeMode,
+  widgetVisible: item => widgetVisibility.isVisible(item),
+  widgetLayout,
+  nativePanels: [
+    { id: TERMINALS_PANEL, title: "Terminal grid", element: document.getElementById("workspace-terminal-region")! },
+    { id: SESSIONS_PANEL, title: "Sessions", element: document.getElementById("desktop-sidebar")! },
+  ],
+  onPanelGeometryChange: () => scheduleGridStabilizedFit(),
+  onWidgetAreasChange: (areas, collapsed) => workspaceShell?.setPanelAreas(areas, collapsed),
+  onWidgetFocus: area => workspaceShell?.focusPanel(area),
+  registerLayout: contribution => {
+    const unregister = workspaceTerminalLayouts.register(contribution);
+    const option = document.createElement("option");
+    option.value = contribution.id;
+    option.textContent = contribution.title;
+    workspaceLayoutPicker?.append(option);
+    if (workspaceTerminalLayouts.selectedId === contribution.id) {
+      if (workspaceLayoutPicker) workspaceLayoutPicker.value = contribution.id;
+      selectWorkspaceTerminalLayout(contribution.id);
+    }
+    return options => {
+      option.remove();
+      unregister(options);
+      if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
+      // Page teardown preserves the saved qualified preference for the next
+      // verified catalog load; no dying-page geometry update may overwrite it.
+      if (!options?.preservePreference) selectWorkspaceTerminalLayout(workspaceTerminalLayouts.selectedId);
+    };
+  },
+  onCatalogReady: () => {
+    extensionHost?.select();
+    if (!workspaceTerminalLayouts.finalizeRestoration()) return;
+    if (workspaceLayoutPicker) workspaceLayoutPicker.value = workspaceTerminalLayouts.selectedId;
+    selectWorkspaceTerminalLayout(workspaceTerminalLayouts.selectedId);
+  },
+}) : null;
+if (workspaceShell) extensionHost?.setPresentation(workspaceShell.widgetPresentation);
+const workspaceDocking = createWorkspaceDocking({
+  layout: widgetLayout,
+  active: () => state.currentView === "terminal",
+  sessionsPinned: () => state.sidebarPinned && !state.sessionsExpanded,
+  panels: () => extensionHost?.availablePanels ?? [],
+  setNativePanels: ids => extensionHost?.setNativePanels(ids),
+  move: (id, area) => extensionHost?.moveWidget(id, area),
+});
+const widgetManager = createWidgetManager({ root: document.getElementById("settings-extensions")!, visibility: widgetVisibility, safeMode: () => wpSettings.extensionSafeMode });
+document.getElementById("workspace-reopen-widgets")?.addEventListener("click", () => {
+  if (isDesktop()) workspaceShell?.setPreferences({ contextCollapsed: false, fullView: "none" });
+  extensionHost?.reopenWidgets();
+});
+const unsubscribeWidgetVisibility = widgetVisibility.subscribe(() => extensionHost?.syncWidgetVisibility());
+const onWidgetStorage = (event: StorageEvent) => {
+  if (event.storageArea === localStorage && (event.key === null || event.key.startsWith(WIDGET_VISIBILITY_PREFIX))) widgetVisibility.changed();
+};
+window.addEventListener("storage", onWidgetStorage);
+document.addEventListener("wolfpack-extension-scope-change", () => {
+  workspaceDocking.sync();
+  if (state.currentView !== "terminal") workspaceShell?.closeMobileView();
+  void extensionHost?.refresh();
+});
+window.addEventListener("pagehide", event => {
+  if (!(event as PageTransitionEvent).persisted) {
+    widgetManager.dispose();
+    workspaceDocking.dispose();
+    unsubscribeWidgetVisibility();
+    window.removeEventListener("storage", onWidgetStorage);
+    extensionHost?.dispose();
+  }
+});
+void extensionHost?.refresh();
+
 initSettings();
-const sessionDashboardControls = document.getElementById("session-dashboard-controls");
-if (sessionDashboardControls) sessionDashboardControls.innerHTML = sessionCardViewControlsHtml();
+for (const id of ["dashboard-session-filter", "sidebar-session-filter"]) {
+  document.getElementById(id)!.innerHTML = sessionCardViewControlsHtml();
+}
 purgeLegacyTerminalRecoverySnapshots();
 renderCmdPalette();
 initSidebar(); // Init sidebar early so pin/expand/hover handlers are ready

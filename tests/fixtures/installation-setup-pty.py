@@ -43,4 +43,14 @@ finally:
         json.dump({"pid": pid, "status": status, "timedOut": timed_out, "output": output.decode(errors="replace")}, receipt)
     sys.stdout.buffer.write(output)
 
-sys.exit(124 if timed_out else os.waitstatus_to_exitcode(status))
+if timed_out:
+    sys.exit(124)
+# `os.waitstatus_to_exitcode` is absent from the system Python on supported
+# macOS installations. Keep ordinary child exits and expose signal termination
+# as conventional nonzero shell statuses (128 + signal); raw wait status stays
+# in setup-receipt.json and is intentionally not claimed equivalent.
+if os.WIFEXITED(status):
+    sys.exit(os.WEXITSTATUS(status))
+if os.WIFSIGNALED(status):
+    sys.exit(128 + os.WTERMSIG(status))
+sys.exit(1)

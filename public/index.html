@@ -54,6 +54,7 @@
       </div>
       <div class="header-right">
         <div id="header-machine-label" class="machine-label"></div>
+        <button id="workspace-restore" class="settings-gear icon-btn" type="button" aria-expanded="false" aria-controls="workspace-context-region" aria-label="Widgets" title="Widgets" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
         <button class="settings-gear icon-btn" id="gear-btn" type="button" aria-label="Settings" title="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
       </div>
     </header>
@@ -62,11 +63,13 @@
         <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
         <h1>WOLFPACK</h1>
         <div class="sidebar-controls">
+          <button id="workspace-sessions-drag" data-dock-handle=":sessions" type="button" aria-label="Move Sessions" aria-describedby="workspace-dock-help" title="Drag Sessions to dock" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M8 7l4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg></button>
           <button id="sidebar-settings-btn" type="button" title="Settings" aria-label="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
           <button id="sidebar-expand-btn" type="button" title="Expand sessions" aria-label="Expand sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/></svg></button>
           <button id="sidebar-collapse-btn" type="button" title="Pin sidebar" aria-label="Pin sidebar"><span class="pin-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 6 6M14 3l7 7-4 1-4 4-1 4-7-7 4-1 4-4 1-4ZM5 19l4-4"/></svg></span></button>
         </div>
       </div>
+      <div id="sidebar-session-controls" class="session-chooser-controls" hidden><div id="sidebar-session-filter"></div></div>
       <div id="sidebar-session-list" class="sidebar-sessions"></div>
     </nav>
     <script src="/sidebar-bootstrap.js?v=__WOLFPACK_ASSET_VERSION__"></script>
@@ -105,6 +108,9 @@
       </div>
     </dialog>
 
+    <p id="workspace-dock-help" class="visually-hidden">Drag to a highlighted dock, or press Space then an arrow: Left, Right, Up for Main, Down for Bottom. Enter docks; Escape cancels.</p>
+    <p id="workspace-dock-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></p>
+
     <main id="view-container">
     <!-- Sessions view -->
     <div id="sessions-view" class="view visible" role="region" aria-label="Sessions">
@@ -118,7 +124,7 @@
           <button id="expanded-collapse-btn" type="button" title="Collapse sessions" aria-label="Collapse sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 9-5-5M4 9V4h5M15 9l5-5M15 4h5v5M9 15l-5 5M4 15v5h5M15 15l5 5M20 15v5h-5"/></svg></button>
         </div>
       </div>
-      <div id="session-dashboard-controls"></div>
+      <div id="session-dashboard-controls" class="session-chooser-controls"><div id="dashboard-session-filter"></div></div>
       <div id="session-list" class="list"></div>
     </div>
     <p id="session-order-instructions" class="visually-hidden">Drag the card to reorder it, or press Alt with an up or down arrow.</p>
@@ -242,6 +248,7 @@
       <nav id="settings-section-nav" class="settings-section-nav" aria-label="Settings sections">
         <a href="#settings-effects">Effects</a>
         <a href="#settings-terminal">Terminal</a>
+        <a href="#settings-extensions">Widgets</a>
         <a href="#settings-input">Input</a>
         <a href="#settings-machines">Machines</a>
         <a href="#settings-agents">Agents</a>
@@ -287,6 +294,9 @@
         </div>
         <div class="settings-section" id="settings-terminal">
           <div class="settings-label">Terminal</div>
+          <label class="settings-toggle" for="workspace-terminal-layout">Terminal layout
+            <select id="workspace-terminal-layout"><option value="equal-grid">Equal grid</option><option value="lead-stack">Lead + stack</option><option value="vertical-stack">Vertical stack</option></select>
+          </label>
           <div class="settings-subsection">
             <div class="settings-sub-heading">Font size</div>
             <div class="preset-row">
@@ -303,6 +313,22 @@
               <button class="term-font-btn preset-btn font-alt" data-font="alt">Alt Mono</button>
             </div>
           </div>
+        </div>
+        <div class="settings-section" id="settings-extensions">
+          <div class="settings-label">Widgets</div>
+          <p class="settings-description">Show or hide widgets from installed extensions in this browser. Hiding does not disable extension code, terminal layouts, or shared data.</p>
+          <button class="discover-btn" type="button" id="workspace-reset-layout">Reset workspace layout</button>
+          <p class="settings-description">Restore panel positions and sizes without changing terminal membership or the terminal layout recipe.</p>
+          <p class="settings-description" data-workspace-layout-status role="status" hidden></p>
+          <button class="discover-btn" type="button" data-widget-refresh>Refresh installed extensions</button>
+          <button class="discover-btn" type="button" id="workspace-reopen-widgets">Reopen closed widgets</button>
+          <p class="settings-description" data-widget-status role="status" aria-live="polite"></p>
+          <div data-widget-list></div>
+          <p class="settings-description">Install, update, enable, or remove trusted packages using the existing CLI: <code>wolfpack extensions --help</code>. Browser extensions run trusted code, not sandboxed content.</p>
+          <label class="settings-toggle">
+            <input type="checkbox" id="setting-extensionSafeMode"> Safe mode (do not load browser extensions)
+          </label>
+          <p class="settings-description">Reload after enabling safe mode to recover from untrusted extension code that is already running.</p>
         </div>
         <div class="settings-section" id="settings-input">
           <div class="settings-label">Input</div>
@@ -381,7 +407,6 @@
 
     <!-- Terminal view -->
     <div id="terminal-view" class="view" role="region" aria-label="Terminal" aria-hidden="true" inert>
-      <button id="terminal-transcript-btn" class="terminal-transcript-btn" type="button" aria-label="Read session transcript">transcript</button>
       <dialog id="terminal-transcript-dialog" class="terminal-transcript-dialog" aria-labelledby="terminal-transcript-title">
         <div class="terminal-transcript-header">
           <h2 id="terminal-transcript-title">Session transcript</h2>
@@ -399,20 +424,22 @@
       >
         Reconnecting...
       </div>
+      <div id="workspace-shell" data-context-placement="right" data-full-view="none">
+        <aside id="workspace-context-region" aria-label="Context workspace">
+          <div id="workspace-mobile-header" class="workspace-context-header" hidden>
+            <strong>Widgets</strong><button id="workspace-context-back" type="button" hidden>Back to terminal</button>
+          </div>
+          <div id="workspace-context-container" aria-live="polite"></div>
+        </aside>
+        <div id="workspace-left-divider" class="workspace-divider" role="separator" tabindex="0" aria-label="Resize left panels" aria-controls="desktop-sidebar workspace-terminal-region workspace-context-region" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="560" aria-valuenow="272" hidden></div>
+        <div id="workspace-context-divider" class="workspace-divider" role="separator" tabindex="0" aria-label="Resize right panels" aria-controls="desktop-sidebar workspace-terminal-region workspace-context-region" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="560" aria-valuenow="320"></div>
+        <div id="workspace-bottom-divider" class="workspace-divider" role="separator" tabindex="0" aria-label="Resize bottom panels" aria-controls="desktop-sidebar workspace-terminal-region workspace-context-region" aria-orientation="horizontal" aria-valuemin="140" aria-valuemax="480" aria-valuenow="240" hidden></div>
+        <main id="workspace-terminal-region" class="workspace-native-panel" data-widget-area="main" aria-label="Terminal workspace">
       <div id="delegation-focus-toolbar" class="delegation-focus-return">
         <button id="delegation-focus-back" type="button">← Back to session grid</button>
         <span id="delegation-focus-label"></span>
       </div>
       <section id="delegation-grid-shell" class="delegation-grid-shell" aria-label="Session grid">
-        <div class="delegation-grid-header">
-          <div class="delegation-grid-heading">
-            <div class="flex-row">
-              <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
-              <strong id="delegation-grid-title">session grid</strong>
-            </div>
-            <span id="delegation-grid-summary"></span>
-          </div>
-        </div>
         <div id="delegation-collapsed-strip" class="delegation-collapsed-strip" aria-label="Collapsed sessions"></div>
         <div id="delegation-grid-container"></div>
       </section>
@@ -429,6 +456,8 @@
         <button class="kb-key kb-git" type="button" aria-label="Show git status">git</button>
         <button class="kb-key kb-copy" type="button" aria-label="Copy session">copy</button>
         <button class="kb-key kb-open" id="kb-open-btn" type="button" aria-label="Show keyboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2.5"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg></button>
+      </div>
+        </main>
       </div>
       <div id="input-bar">
         <textarea

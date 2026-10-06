@@ -5,13 +5,10 @@ let server: TestServer;
 
 test.beforeAll(async () => { server = await startTestServer(); });
 test.afterAll(() => server?.close());
-test.beforeEach(async ({ page }, testInfo) => {
+test.beforeEach(async ({ page }) => {
   await page.goto(server.baseUrl);
   await expect(page.getByRole("button", { name: "Open another-project", exact: true })).toBeVisible();
-  // Main's pinned sidebar owns the desktop chooser until explicitly expanded.
-  if (testInfo.project.name === "desktop") {
-    await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
-  }
+  // An unfocused desktop now opens this full menu directly.
   await expect(page.locator("#session-list .card").first()).toBeVisible();
 });
 
@@ -24,7 +21,7 @@ test("session chrome keeps the original logo and readable, untransformed names",
   const name = page.locator("#session-list .card-name").first();
   await expect(name).toHaveCSS("text-transform", "none");
   await expect(name).toHaveCSS("text-shadow", "none");
-  expect(await name.evaluate((element) => getComputedStyle(element).fontFamily)).toContain("ui-monospace");
+  await expect(name).toHaveCSS("font-family", /ui-monospace/);
   const viewport = page.viewportSize()!;
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(viewport.width);
 });
@@ -57,7 +54,8 @@ test("machine names stay quiet and the labelled session action keeps its existin
   await expect(name).toHaveCSS("font-size", "11px");
   await expect(name).toHaveCSS("color", "rgb(143, 159, 149)");
   await expect(name).toHaveCSS("text-transform", "uppercase");
-  expect(await name.evaluate(element => getComputedStyle(element).fontFamily)).toContain("ui-monospace");
+  // Re-resolve the name across session-list refreshes, like the other CSS assertions above.
+  await expect(name).toHaveCSS("font-family", /ui-monospace/);
   const add = page.locator("#session-list .machine-add-btn").first();
   await expect(add).toHaveText("New session");
   await expect(add.locator("svg")).toHaveAttribute("aria-hidden", "true");
@@ -79,14 +77,11 @@ test("machine names stay quiet and the labelled session action keeps its existin
 
 test("long machine names stay bounded without squeezing the session action", async ({ page }, testInfo) => {
   const machineName = "studio-macbook-pro-with-a-very-long-machine-name";
-  await page.route("**/api/info", async route => {
+  await page.route(`${server.baseUrl}/api/info`, async route => {
     const response = await route.fetch();
     await route.fulfill({ response, json: { ...await response.json(), name: machineName } });
   });
   await page.reload();
-  if (testInfo.project.name === "desktop") {
-    await page.getByRole("button", { name: "Expand sessions", exact: true }).click();
-  }
   const name = page.locator("#session-list .machine-header-name").first();
   await expect(name).toHaveText(machineName);
   await expect(name).toHaveAttribute("title", machineName);
@@ -110,13 +105,17 @@ test("All and Idle form a quiet, keyboard-operable segmented control", async ({ 
   await expect(all).toHaveCSS("border-radius", "999px");
   await expect(all).toHaveCSS("font-size", "12px");
   await expect(all).toHaveCSS("letter-spacing", /^(normal|0px)$/);
-  await expect(all).toHaveCSS("color", "rgb(237, 243, 239)");
-  const minimumHeight = testInfo.project.name === "desktop" ? 40 : 44;
+  await expect(all).toHaveCSS("color", testInfo.project.name === "desktop" ? "rgb(230, 238, 232)" : "rgb(237, 243, 239)");
+  const desktop = testInfo.project.name === "desktop";
+  const minimumHeight = desktop ? 28 : 44;
   const pillBox = (await filter.boundingBox())!;
-  expect(pillBox.width).toBeLessThanOrEqual(104);
-  expect(pillBox.height).toBeLessThanOrEqual(minimumHeight + 4);
+  await expect(filter).toHaveCSS("padding", "2px");
+  expect(pillBox.width).toBeLessThanOrEqual(desktop ? 84 : 96);
+  expect(pillBox.height).toBeLessThanOrEqual(minimumHeight + 6);
+  expect(await all.evaluate(el => getComputedStyle(el).boxShadow)).not.toContain("inset");
   for (const button of [all, idle]) {
     expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(minimumHeight);
+    if (!desktop) expect((await button.boundingBox())!.width).toBeGreaterThanOrEqual(44);
   }
   await all.focus();
   await page.keyboard.press("Tab");
@@ -135,8 +134,11 @@ test("All and Idle form a quiet, keyboard-operable segmented control", async ({ 
       return Math.abs(element.getBoundingClientRect().x - card.getBoundingClientRect().x);
     })).toBeLessThanOrEqual(1);
     await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
-    const sidebar = page.locator("#sidebar-session-list").getByRole("group", { name: "Session view" });
+    const sidebar = page.locator("#sidebar-session-controls").getByRole("group", { name: "Session view" });
     await expect(sidebar).toBeVisible();
+    const sidebarBox = (await sidebar.boundingBox())!;
+    expect(sidebarBox.width).toBeLessThanOrEqual(84); expect(sidebarBox.height).toBeLessThanOrEqual(34);
+    await page.screenshot({ path: testInfo.outputPath("compact-sidebar-filter.png"), animations: "disabled" });
     await expect(sidebar.getByRole("button", { name: "All sessions", exact: true })).toHaveAttribute("aria-pressed", "true");
     await sidebar.getByRole("button", { name: "Idle sessions", exact: true }).click();
     await expect(sidebar.getByRole("button", { name: "Idle sessions", exact: true })).toHaveAttribute("aria-pressed", "true");

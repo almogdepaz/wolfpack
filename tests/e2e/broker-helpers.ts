@@ -165,22 +165,22 @@ export async function start(opts?: {
     });
   });
 
-  // 5. Teardown: kill server first, then broker, then optionally dump stderr
+  // 5. Teardown: kill server first, then broker, and await both children before
+  // deleting owned paths. A sent signal is not process-termination evidence.
+  async function terminate(proc: ChildProcess): Promise<void> {
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    const exited = new Promise<void>(resolve => proc.once("exit", () => resolve()));
+    try { proc.kill("SIGTERM"); } catch { /* process already exited */ }
+    await Promise.race([exited, wait(3000)]);
+    if (proc.exitCode === null && proc.signalCode === null) {
+      try { proc.kill("SIGKILL"); } catch { /* process already exited */ }
+      await Promise.race([exited, wait(3000)]);
+    }
+    if (proc.exitCode === null && proc.signalCode === null) throw new Error("test child did not terminate");
+  }
   async function teardown(): Promise<void> {
-    try { serverProc.kill("SIGTERM"); } catch { /* swallow */ }
-    await wait(200);
-    try {
-      if (brokerProc.exitCode === null) {
-        brokerProc.kill("SIGTERM");
-        await Promise.race([
-          new Promise<void>((r) => brokerProc.once("exit", () => r())),
-          wait(3000),
-        ]);
-        if (brokerProc.exitCode === null) {
-          try { brokerProc.kill("SIGKILL"); } catch { /* swallow */ }
-        }
-      }
-    } catch { /* swallow */ }
+    await terminate(serverProc);
+    await terminate(brokerProc);
     try { rmSync(socketDir, { recursive: true, force: true }); } catch { /* swallow */ }
     if (process.env.WOLFPACK_BROKER_DEBUG && brokerStderr) {
       process.stderr.write("[broker stderr]\n" + brokerStderr + "\n");

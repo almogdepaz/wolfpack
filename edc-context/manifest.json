@@ -21,7 +21,9 @@
           "bin/",
           "src/",
           "public/",
-          "scripts/"
+          "scripts/",
+          "examples/extensions/",
+          "sdk/"
         ]
       }
     },
@@ -129,17 +131,17 @@
       "patches/**"
     ]
   },
-  "generatedAt": "2026-09-07T17:39:43Z",
-  "sourceCommit": "cbc513e48e75b85646154befb886cb854b483458",
+  "generatedAt": "2026-09-16T23:58:41Z",
+  "sourceCommit": "7f2846f74a071e51fda4ce0ad8fb4c9776f527c2",
   "coverage": {
-    "contextMappedFileCount": 436,
-    "contextlessFileCount": 94,
+    "contextMappedFileCount": 572,
+    "contextlessFileCount": 103,
     "uncoveredFileCount": 0,
     "ambiguousPathCount": 0,
     "ignoredFileCount": 0,
     "ignoreSource": "none",
     "ignoreGlobs": [],
-    "mappedFileCount": 436,
-    "unmappedFileCount": 94
+    "mappedFileCount": 572,
+    "unmappedFileCount": 103
   }
 }

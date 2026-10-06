@@ -3,6 +3,7 @@
   "include": [
     "app-debug.ts",
     "delegation-sessions.ts",
+    "extension-loader.ts",
     "ghostty-prewarm-pool.ts",
     "machine-group-preferences.ts",
     "machine-group-ui.ts",

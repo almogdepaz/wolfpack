@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getMachineDisplayName } from "../../src/machine-display-name.ts";
 import {
   TAILSCALE_STATUS_CACHE_TTL_MS,
   TAILSCALE_STATUS_TIMEOUT_MS,
@@ -67,7 +68,7 @@ describe("local machine handshake", () => {
         machine: {
           tailnetNodeId: "n-local",
           installationId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
-          displayName: "local",
+          displayName: getMachineDisplayName(),
           origin: "https://local.example.ts.net",
         },
         wolfpack: { version: "test-version" },

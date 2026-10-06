@@ -312,7 +312,7 @@ function expectClosedManagerPath(
   }
 }
 
-function prepareSetupPair(root: string, server: string, broker: string, managerBin = join(root, "manager-bin")): NodeJS.ProcessEnv {
+function prepareSetupManager(root: string, managerBin = join(root, "manager-bin")): NodeJS.ProcessEnv {
   mkdirSync(managerBin, { recursive: true });
   mkdirSync(join(root, "tmp"), { recursive: true });
   mkdirSync(join(root, "home", "Dev"), { recursive: true });
@@ -324,12 +324,15 @@ printf '${serviceManager} %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
 case "$*" in *${inactiveCommand}*) exit 3 ;; esac
 exit 0
 `);
+  // Succeed at discovery so setup never falls through to the operator's macOS
+  // app bundle. A signed-out fixture keeps remote access unavailable; every
+  // manager/app command remains a fixture executable, never an operator tool.
   writeExecutable(join(managerBin, "tailscale"), `#!/bin/sh
 printf 'tailscale %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
 case "$1" in
-  version) exit 0 ;;
-  status) printf '{"BackendState":"NeedsLogin"}\\n'; exit 0 ;;
-  *) exit 97 ;;
+  version) printf 'fixture tailscale\\n' ;;
+  status) printf '{"BackendState":"NeedsLogin"}\\n' ;;
+  *) printf 'unexpected tailscale %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"; exit 97 ;;
 esac
 `);
   if (process.platform === "linux") {
@@ -344,6 +347,8 @@ exit 97
 `);
   }
   // Only fixture Tailscale status may pass through sudo; never run host sudo/open.
+  // Both PATH and the fixture's absolute executable are accepted because Linux
+  // setup calls the latter through sudo.
   writeExecutable(join(managerBin, "sudo"), `#!/bin/sh
 if [ "$#" -eq 4 ] && { [ "$1" = '${managerBin}/tailscale' ] || [ "$1" = "tailscale" ]; } && [ "$2" = "status" ] && [ "$3" = "--self" ] && [ "$4" = "--json" ]; then
   shift; exec '${managerBin}/tailscale' "$@"
@@ -355,11 +360,6 @@ exit 97
 printf 'denied open %s\\n' "$*" >> "$INSTALL_TEST_MANAGER_LOG"
 exit 97
 `);
-  const built = spawnSync(process.execPath, ["build", "--compile", "src/cli/index.ts", "--outfile", server], {
-    cwd: process.cwd(), encoding: "utf-8", timeout: 20_000,
-  });
-  expect(built.status, built.stderr).toBe(0);
-  writeExecutable(broker, "#!/bin/sh\nprintf 'new broker\\n'\n");
   const environment = packageFixtureEnvironment(root, {
     PATH: managerBin,
     INSTALL_TEST_MANAGER_LOG: join(root, "manager.log"),
@@ -367,6 +367,16 @@ exit 97
   expectClosedManagerPath(managerBin, environment, [
     "launchctl", "tailscale", "systemctl", "loginctl", "sudo", "brew", "apt", "open",
   ]);
+  return environment;
+}
+
+function prepareSetupPair(root: string, server: string, broker: string, managerBin = join(root, "manager-bin")): NodeJS.ProcessEnv {
+  const environment = prepareSetupManager(root, managerBin);
+  const built = spawnSync(process.execPath, ["build", "--compile", "src/cli/index.ts", "--outfile", server], {
+    cwd: process.cwd(), encoding: "utf-8", timeout: 20_000,
+  });
+  expect(built.status, built.stderr).toBe(0);
+  writeExecutable(broker, "#!/bin/sh\nprintf 'new broker\\n'\n");
   return environment;
 }
 
@@ -386,23 +396,40 @@ afterEach(() => {
 describe("install entrypoint parity", () => {
   test("setup sudo fixture accepts Linux PATH and absolute Tailscale status only", () => {
     fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "wolfpack-setup-sudo-")));
-    const { server, broker } = createPackageRunnerFixture(fixtureRoot);
-    const environment = prepareSetupPair(fixtureRoot, server, broker);
+    const environment = prepareSetupManager(fixtureRoot);
     const managerBin = environment.PATH!;
+    const capture = (command: string, args: readonly string[]) => {
+      const started = performance.now();
+      const child = spawnSync(command, args, { cwd: fixtureRoot, env: environment, encoding: "utf8", timeout: 1000 });
+      return {
+        command, args, status: child.status, signal: child.signal,
+        error: child.error ? { code: (child.error as NodeJS.ErrnoException).code, message: child.error.message } : null,
+        durationMs: performance.now() - started, stdout: child.stdout, stderr: child.stderr,
+      };
+    };
+    // Setup discovers Tailscale before it asks sudo for its status. Exercise
+    // that real fixture executable under the same one-second child budget.
+    const discovery = capture(join(managerBin, "tailscale"), ["version"]);
     const results = [
       ["tailscale", "status", "--self", "--json"],
       [join(managerBin, "tailscale"), "status", "--self", "--json"],
       ["/usr/bin/tailscale", "status", "--self", "--json"],
       ["tailscale", "up"],
       [join(managerBin, "tailscale"), "status", "--self", "--json", "extra"],
-    ].map(args => {
-      const child = spawnSync(join(managerBin, "sudo"), args, { cwd: fixtureRoot, env: environment, encoding: "utf8", timeout: 1000 });
-      return { args, status: child.status, stdout: child.stdout, stderr: child.stderr };
-    });
+    ].map(args => capture(join(managerBin, "sudo"), args));
     const evidence = mkdtempSync(join(tmpdir(), "wp-setup-sudo-receipt-"));
-    writeFileSync(join(evidence, "results.json"), JSON.stringify(results));
+    writeFileSync(join(evidence, "results.json"), JSON.stringify({ discovery, results }));
     console.info(`setup sudo fixture receipt: ${evidence}`);
-    expect(results.map(result => result.status)).toEqual([0, 0, 97, 97, 97]);
+    expect(discovery.status).toBe(0);
+    expect(discovery.stdout).toBe("fixture tailscale\n");
+    const expectedStatuses = [0, 0, 97, 97, 97];
+    const statuses = results.map(result => result.status);
+    // Retain failure diagnostics in the runner log even when an outer owned
+    // temporary root is later removed with the on-disk receipt.
+    if (JSON.stringify(statuses) !== JSON.stringify(expectedStatuses)) {
+      throw new Error(`setup sudo fixture results: ${JSON.stringify({ discovery, results })}`);
+    }
+    expect(statuses).toEqual(expectedStatuses);
     for (const result of results.slice(0, 2)) expect(JSON.parse(result.stdout)).toEqual({ BackendState: "NeedsLogin" });
   }, 25000);
   test("package exposes both the installed CLI name and the bunx package-name alias", () => {
@@ -561,6 +588,8 @@ esac
     }
     const managerLog = readFileSync(commands, "utf-8");
     expect(managerLog).toContain("tailscale version");
+    expect(managerLog).toContain("tailscale status --self --json");
+    expect(managerLog).not.toContain("tailscale serve");
     expect(managerLog).not.toContain("unexpected");
     if (!installsPair) expect(managerLog).not.toMatch(/(?:bootstrap|enable|start)/);
   }), 45_000);
@@ -823,7 +852,10 @@ describe("install.sh release binary staging", () => {
     expect(readFileSync(join(fixture.installDir, "wolfpack-broker"))).toEqual(readFileSync(broker));
     const managerLog = readFileSync(join(fixtureRoot, "manager.log"), "utf-8");
     expect(managerLog).toContain("tailscale version");
+    expect(managerLog).toContain("tailscale status --self --json");
+    expect(managerLog).not.toContain("tailscale serve");
     expect(managerLog).not.toContain("unexpected");
+    expect(String(result.stdout)).toContain("phone and remote access remain unavailable");
     for (const [label, unit] of [["com.wolfpack.server", "wolfpack"], ["com.wolfpack.broker", "wolfpack-broker"]]) {
       const starts = managerLog.split("\n").filter(line => process.platform === "darwin"
         ? line.startsWith("launchctl bootstrap ") && line.endsWith(`/${label}.plist`)
