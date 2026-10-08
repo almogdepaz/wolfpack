@@ -52,6 +52,7 @@
     "test:e2e:headed": "bunx playwright test --headed",
     "gen:schema": "bun run scripts/gen-control-api-schema.ts",
     "perf:terminal-load": "bun scripts/terminal-load-perf.ts",
+    "perf:keystroke": "bun scripts/terminal-keystroke-perf.ts",
     "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/ && bunx tsc --noEmit -p public/tsconfig.strict.json",
     "check:bundle-budgets": "bun run scripts/check-bundle-budgets.ts",
     "check:context": "bun run scripts/check-context-links.ts",
