@@ -148,6 +148,7 @@ export function createPtySocketClient(
   let _hasAttached = false;
   let _attachUsesProposedDimensions = false;
   let _orderedResizeBarrier = false;
+  let _resizeGeneration = 0;
   type DeferredOrderedResizeFrame =
     | { readonly kind: "binary"; readonly data: ArrayBuffer; readonly bytes: number }
     | { readonly kind: "control"; readonly message: SocketControlMessage; readonly bytes: number };
@@ -286,8 +287,9 @@ export function createPtySocketClient(
       : opts.getTermDimensions();
     if (!dims) return;
     const key = dims.cols + "x" + dims.rows;
-    if (forceOrderedResize) sendResizeRequest(createResizeRequest(dims));
-    else if (key !== _lastSentResize) sendResizeRequest(createResizeRequest(dims));
+    if (forceOrderedResize || key !== _lastSentResize) {
+      void queueResize(dims, { force: forceOrderedResize, immediate: true });
+    }
     ws.send(JSON.stringify({ type: "layout_stable", cols: dims.cols, rows: dims.rows, reason }));
     const layoutMetrics = opts.getLayoutMetrics?.() ?? null;
     __wfTraceEvent(_trace, "layout_stable.send", {
@@ -299,8 +301,13 @@ export function createPtySocketClient(
   }
 
   function sendLayoutStableAfterPaint(forceOrderedResize = false): void {
+    const socket = ws;
+    const generation = _resizeGeneration;
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => { sendLayoutStable("after-paint", forceOrderedResize); });
+      requestAnimationFrame(() => {
+        if (ws !== socket || _resizeGeneration !== generation) return;
+        sendLayoutStable("after-paint", forceOrderedResize);
+      });
     });
   }
 
@@ -308,16 +315,46 @@ export function createPtySocketClient(
   let _lastSentResize = "";
   const _orderedResize = new OrderedResizeTracker();
   let _resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  let _pendingResizeRequest: OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number } | null = null;
+  let _pendingResizeProposal: {
+    readonly dimensions: TermDimensions;
+    readonly force: boolean;
+    readonly ready: boolean;
+  } | null = null;
+  let _drainingOrderedResize = false;
+  // Superseded proposals share one settlement: the latest outstanding geometry
+  // must be acknowledged (or the lifecycle cancelled), not an intermediate ack.
+  let _resizeSettlement: {
+    readonly promise: Promise<OrderedResizeSettlement>;
+    readonly resolve: (settlement: OrderedResizeSettlement) => void;
+  } | null = null;
+
+  function waitForResizeSettlement(): Promise<OrderedResizeSettlement> {
+    if (!_pendingResizeProposal && !_orderedResize.hasPending()) return Promise.resolve("acknowledged");
+    if (!_resizeSettlement) {
+      // Promise executors run synchronously, before the resolver is stored.
+      let resolve!: (settlement: OrderedResizeSettlement) => void;
+      const promise = new Promise<OrderedResizeSettlement>((settle) => { resolve = settle; });
+      _resizeSettlement = { promise, resolve };
+    }
+    return _resizeSettlement.promise;
+  }
+
+  function settleResize(settlement: OrderedResizeSettlement): void {
+    const pending = _resizeSettlement;
+    _resizeSettlement = null;
+    pending?.resolve(settlement);
+  }
 
   function clearQueuedResizeRequest(): void {
     if (_resizeDebounceTimer) clearTimeout(_resizeDebounceTimer);
     _resizeDebounceTimer = null;
-    _pendingResizeRequest = null;
+    _pendingResizeProposal = null;
   }
 
   function cancelResizeLifecycle(): void {
+    _resizeGeneration++;
     clearQueuedResizeRequest();
+    settleResize("cancelled");
     _orderedResize.clear();
     _supportsOrderedResize = false;
     _orderedResizeBarrier = false;
@@ -333,7 +370,6 @@ export function createPtySocketClient(
 
   function sendResizeRequest(request: OrderedResizeRequest | { readonly type: "resize"; readonly cols: number; readonly rows: number }): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    clearQueuedResizeRequest();
     _lastSentResize = `${request.cols}x${request.rows}`;
     // An ordered resize is a broker/local geometry transaction. Hold output
     // only once the request actually leaves this socket; queued proposals may
@@ -342,31 +378,48 @@ export function createPtySocketClient(
     ws.send(JSON.stringify(request));
   }
 
+  function flushQueuedResize(): void {
+    if (!_pendingResizeProposal?.ready || _orderedResize.hasPending() || _drainingOrderedResize) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const proposal = _pendingResizeProposal;
+    clearQueuedResizeRequest();
+    if (shouldSendResizeRequest(proposal.dimensions, _lastSentResize, proposal.force)) {
+      // Allocate the ID only at transmission. New proposals must never invalidate
+      // the acknowledgment of geometry already in flight.
+      sendResizeRequest(createResizeRequest(proposal.dimensions));
+    }
+    if (!_orderedResize.hasPending()) settleResize("acknowledged");
+  }
+
   function queueResize(dims: TermDimensions, options: { readonly force?: boolean; readonly immediate?: boolean } = {}): Promise<OrderedResizeSettlement> {
     if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve("cancelled");
     const key = `${dims.cols}x${dims.rows}`;
-    const pendingProposalSupersedesLastSent = _supportsOrderedResize
-      && _orderedResize.hasPending()
-      && !_orderedResize.hasPendingDimensions(dims);
-    if (!options.force && key === _lastSentResize && !pendingProposalSupersedesLastSent) {
-      if (!_supportsOrderedResize) clearQueuedResizeRequest();
-      return _supportsOrderedResize ? _orderedResize.waitForSettlement() : Promise.resolve("acknowledged");
+    const force = options.force === true || _pendingResizeProposal?.force === true;
+    if (!force && key === _lastSentResize) {
+      // Reverting to the sent geometry cancels a not-yet-sent proposal, but an
+      // active ordered transaction still needs its acknowledgment.
+      clearQueuedResizeRequest();
+      if (!_orderedResize.hasPending()) settleResize("acknowledged");
+      return _supportsOrderedResize ? waitForResizeSettlement() : Promise.resolve("acknowledged");
     }
-    clearQueuedResizeRequest();
-    const request = createResizeRequest(dims);
-    _pendingResizeRequest = request;
-    if (options.immediate) {
-      sendResizeRequest(request);
-    } else {
+    _pendingResizeProposal = {
+      dimensions: dims,
+      force,
+      ready: options.immediate === true || _pendingResizeProposal?.ready === true,
+    };
+    if (_pendingResizeProposal.ready) {
+      flushQueuedResize();
+    } else if (!_resizeDebounceTimer) {
+      // Latest-value delivery with a bounded window, not a trailing debounce.
+      // One in-flight transaction also prevents starving the server's debounce.
       _resizeDebounceTimer = setTimeout(() => {
         _resizeDebounceTimer = null;
-        const pending = _pendingResizeRequest;
-        _pendingResizeRequest = null;
-        if (!pending || !shouldSendResizeRequest(pending, _lastSentResize, options.force === true)) return;
-        sendResizeRequest(pending);
+        if (!_pendingResizeProposal) return;
+        _pendingResizeProposal = { ..._pendingResizeProposal, ready: true };
+        flushQueuedResize();
       }, RESIZE_SEND_DEBOUNCE_MS);
     }
-    return _supportsOrderedResize ? _orderedResize.waitForSettlement() : Promise.resolve("acknowledged");
+    return _supportsOrderedResize ? waitForResizeSettlement() : Promise.resolve("acknowledged");
   }
 
   function sendFitResize(options?: { force?: boolean; fit?: boolean; immediate?: boolean }): Promise<OrderedResizeSettlement> {
@@ -403,7 +456,10 @@ export function createPtySocketClient(
     const frames = _deferredOrderedResizeFrames;
     _deferredOrderedResizeFrames = [];
     _deferredOrderedResizeBytes = 0;
+    const socket = ws;
+    const generation = _resizeGeneration;
     for (const frame of frames) {
+      if (ws !== socket || _resizeGeneration !== generation) break;
       if (frame.kind === "binary") handleBinaryFrame(frame.data);
       else {
         const handler = terminalControlHandlers[frame.message.type] ?? applicationControlHandlers[frame.message.type];
@@ -432,8 +488,17 @@ export function createPtySocketClient(
     const dimensions = _orderedResize.acknowledge(message);
     if (!dimensions) return;
     _lastSentResize = `${dimensions.cols}x${dimensions.rows}`;
-    opts.onResizeAck?.(dimensions.cols, dimensions.rows);
-    releaseOrderedResizeBarrier();
+    _drainingOrderedResize = true;
+    try {
+      opts.onResizeAck?.(dimensions.cols, dimensions.rows);
+      releaseOrderedResizeBarrier();
+    } finally {
+      _drainingOrderedResize = false;
+    }
+    // The previous geometry and all its buffered frames must land before the
+    // next send can establish another output barrier (including callback sends).
+    flushQueuedResize();
+    if (!_pendingResizeProposal && !_orderedResize.hasPending()) settleResize("acknowledged");
   }
 
   function handlePtyReady(): void {
