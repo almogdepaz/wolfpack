@@ -11,6 +11,7 @@ import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
 import { gridSessionNames, openSessionFromUi, openSettingsFromUi, startTestServer, terminalTail, toggleSessionGridFromUi, type TestServer } from "./helpers.ts";
 import { CLOSE_CODE_DISPLACED, CLOSE_CODE_PREFILL_TIMEOUT, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
 import { TAKE_CONTROL_FALLBACK_MS } from "../../public/take-control-coordinator.ts";
+import { PTY_ATTACH_CAPABILITY } from "../../src/pty-websocket-contract.ts";
 
 let srv: TestServer;
 
@@ -99,6 +100,28 @@ async function routeHydratedPty(
     });
   });
   return sockets;
+}
+
+async function routeOrderedPty(
+  page: Page,
+  onResize: (socket: WebSocketRoute, ack: string) => void,
+  onAttach: () => void = () => {},
+): Promise<void> {
+  await page.routeWebSocket(/\/ws\/pty/, (socket) => {
+    socket.onMessage((message) => {
+      if (typeof message !== "string") return;
+      const frame = JSON.parse(message) as { readonly type: string };
+      if (frame.type === "attach") {
+        socket.send(JSON.stringify({ type: "attach_ack", capabilities: [PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK] }));
+        socket.send(Buffer.from("GRID-RESIZE-FIXTURE\r\n"));
+        socket.send(JSON.stringify({ type: "prefill_done" }));
+        socket.send(JSON.stringify({ type: "pty_ready" }));
+        onAttach();
+      } else if (frame.type === "resize") {
+        onResize(socket, JSON.stringify({ ...frame, type: "resize_ack" }));
+      }
+    });
+  });
 }
 
 type PtyClientMessage = {
@@ -435,6 +458,67 @@ test("grid topology add waits one frame after relayout repaint before revealing 
 
   expect(states.afterRepaintRequestFrame).toEqual([true, true]);
   expect(states.afterRevealFrame).toEqual([false, false]);
+});
+
+test("superseded sidebar grid resize does not suppress subsequent container resizes", async ({ page }) => {
+  let holdAcknowledgements = false;
+  let resizeCount = 0;
+  const held: Array<{ readonly socket: WebSocketRoute; readonly ack: string }> = [];
+  await routeOrderedPty(page, (socket, ack) => {
+    resizeCount++;
+    if (holdAcknowledgements) held.push({ socket, ack });
+    else socket.send(ack);
+  });
+  await loadApp(page);
+  await openTwoCellGrid(page);
+  const cells = page.locator("#desktop-grid-container .grid-cell");
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2);
+  await expect(page.locator("#desktop-grid-container .grid-cell.transitioning")).toHaveCount(0);
+
+  holdAcknowledgements = true;
+  await page.locator("#sidebar-collapse-btn").click();
+  // Drive the real sidebar finalizer without depending on the CSS/fallback timer.
+  await page.evaluate(() => document.getElementById("desktop-sidebar")!.dispatchEvent(
+    new TransitionEvent("transitionend", { propertyName: "margin-left" }),
+  ));
+  await expect.poll(() => held.length).toBeGreaterThanOrEqual(2);
+  await page.setViewportSize({ width: 1180, height: 720 });
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  holdAcknowledgements = false;
+  for (const { socket, ack } of held.splice(0)) socket.send(ack);
+  await expect(page.locator("#desktop-grid-container .grid-cell.transitioning")).toHaveCount(0);
+  await expect(cells.locator("canvas")).toHaveCount(2);
+
+  const beforeContainerResize = resizeCount;
+  await page.evaluate(() => { document.getElementById("desktop-grid-container")!.style.width = "700px"; });
+  await expect.poll(() => resizeCount, { message: "container resize must remain active after the sidebar fit is superseded" })
+    .toBeGreaterThan(beforeContainerResize);
+});
+
+test("grid resize interrupted by reconnect reveals recovered cells without another layout event", async ({ page }) => {
+  let interruptResize = false;
+  let interrupted = false;
+  let attachCount = 0;
+  await routeOrderedPty(page, (socket, ack) => {
+    if (interruptResize && !interrupted) {
+      interrupted = true;
+      void socket.close({ code: 1001, reason: "fixture resize interruption" });
+    } else socket.send(ack);
+  }, () => { attachCount++; });
+  await loadApp(page);
+  await openTwoCellGrid(page);
+  await expect(page.locator("#desktop-grid-container .grid-cell.hydrated")).toHaveCount(2);
+  await expect(page.locator("#desktop-grid-container .grid-cell.transitioning")).toHaveCount(0);
+  const beforeInterruption = attachCount;
+  interruptResize = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+  await expect.poll(() => interrupted).toBe(true);
+  await expect.poll(() => attachCount).toBeGreaterThan(beforeInterruption);
+  await expect(page.locator('#desktop-grid-container .grid-cell[data-terminal-load-state="live"]')).toHaveCount(2);
+  await expect(page.locator("#desktop-grid-container .grid-cell.transitioning")).toHaveCount(0);
+  for (const canvas of await page.locator("#desktop-grid-container .grid-cell canvas").all()) {
+    await expect(canvas).toBeVisible();
+  }
 });
 
 test("addToGrid hides single terminal container before grid cells mount", async ({ page }) => {

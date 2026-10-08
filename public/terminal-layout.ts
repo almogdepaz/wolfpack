@@ -122,10 +122,9 @@ export function syncTerminalLayout(options: SyncTerminalLayoutOptions): Promise<
     ? fitAddon.proposeDimensions?.()
     : undefined;
   if (options.ptyClient && proposed) {
-    const dimensionsChanged = shouldSendResizeAfterGridFit(before, proposed);
-    return dimensionsChanged
-      ? options.ptyClient.sendResize(proposed.cols, proposed.rows)
-      : Promise.resolve();
+    // Committed geometry cannot deduplicate a reversal of queued/in-flight work.
+    // The socket owner compares proposals against its pending resize state.
+    return options.ptyClient.sendResize(proposed.cols, proposed.rows);
   }
 
   const after = fitTerminalPreservingScroll(options);
