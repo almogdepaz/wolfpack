@@ -517,8 +517,10 @@ test("desktop delegation grid uses the same isolated terminal gate as manual gri
   await page.route("**/ghostty-web.bundle.js*", async (route) => {
     const response = await route.fetch();
     const body = await response.text();
+    // Match the wrapper's definition regardless of its exact body/layout so
+    // bundler changes cannot silently turn this into a false "shim missing".
     const patched = body.replace(
-      /window\.createIsolatedGhostty = function\(\) \{[\s\S]*?return GhosttyWeb\.Ghostty\.load\(\);\n\};/,
+      /window\.createIsolatedGhostty = function\(\) \{[\s\S]*?\};/,
       "window.createIsolatedGhostty = undefined;",
     );
     if (patched === body) throw new Error("missing createIsolatedGhostty shim");
