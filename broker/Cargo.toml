@@ -37,3 +37,7 @@ sha2 = "0.10"
 tempfile = "3"
 # Test-only virtual-time support for deterministic registry expiry coverage.
 tokio = { version = "1", features = ["test-util"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
