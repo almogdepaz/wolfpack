@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -328,7 +328,39 @@ describe("agent runtime state persistence and acknowledgement", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test("acknowledgement survives restart and newer transition becomes unseen", () => {
+  test("observation-only changes leave persisted content and inode unchanged", () => {
+    const input = {
+      sessionKey: "s1",
+      broker: { state: "alive" as const, observedAt: OBSERVED_AT },
+      sources: [],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+    };
+    const seed = deriveAgentRuntimeState(input);
+    writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { s1: seed } }));
+    const store = new AgentRuntimeStateStore(path);
+    const before = readFileSync(path, "utf8");
+    const inode = statSync(path).ino;
+    const later = "2026-07-25T00:01:00.000Z";
+    expect(store.reduce({ ...input, broker: { state: "alive", observedAt: later },
+      fallback: { rawOutputChanged: false, observedAt: later } }).observedAt).toBe(later);
+    store.flush();
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(statSync(path).ino).toBe(inode);
+  });
+
+  test("semantic reductions do not write before the debounce window", () => {
+    const store = new AgentRuntimeStateStore(path);
+    store.reduce({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+    });
+    expect(existsSync(path)).toBe(false);
+    store.cancelScheduledPersist();
+  });
+
+  test("acknowledgement survives restart and newer transition becomes unseen", async () => {
     const store = new AgentRuntimeStateStore(path);
     const first = store.reduce({
       sessionKey: "s1",
@@ -341,6 +373,7 @@ describe("agent runtime state persistence and acknowledgement", () => {
 
     const acked = store.acknowledge("s1", first.transitionSequence, "2026-07-25T00:01:00.000Z");
     expect(acked?.unseen).toBe(false);
+    await store.flushForShutdown();
 
     const restarted = new AgentRuntimeStateStore(path);
     expect(restarted.get("s1")?.acknowledgedSequence).toBe(first.transitionSequence);
@@ -357,6 +390,7 @@ describe("agent runtime state persistence and acknowledgement", () => {
     expect(next.transitionSequence).toBe(first.transitionSequence + 1);
     expect(next.unseen).toBe(true);
     expect(next.acknowledgedSequence).toBe(first.transitionSequence);
+    await restarted.flushForShutdown();
   });
 
   test("migrates absent persistence file to empty schema v1 store", () => {
@@ -364,7 +398,7 @@ describe("agent runtime state persistence and acknowledgement", () => {
     expect(store.snapshot()).toEqual({ schemaVersion: 1, sessions: {} });
   });
 
-  test("batches observation reductions into one explicit persistence flush", () => {
+  test("batches observation reductions into one explicit persistence flush", async () => {
     const store = new AgentRuntimeStateStore(path);
     for (const sessionKey of ["s1", "s2"]) {
       store.reduce({
@@ -379,6 +413,8 @@ describe("agent runtime state persistence and acknowledgement", () => {
     expect(existsSync(path)).toBe(false);
 
     store.flush();
+    expect(existsSync(path)).toBe(false);
+    await store.flushForShutdown();
 
     expect(existsSync(path)).toBe(true);
     expect(statSync(path).mode & 0o777).toBe(0o600);

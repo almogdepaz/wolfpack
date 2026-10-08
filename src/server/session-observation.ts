@@ -18,6 +18,7 @@ import type {
 import type { TriageStatus } from "../triage.js";
 import {
   collectAgentStatusSources,
+  flushAgentRuntimeStateForShutdown,
   getAgentRuntimeStateStore,
 } from "./agent-status.js";
 import type { AgentRuntimeState, AgentRuntimeStateStore } from "./agent-status.js";
@@ -604,10 +605,14 @@ export function startSessionNotificationObserver(): void {
   );
 }
 
-export function stopSessionNotificationObserver(): void {
-  if (!sessionNotificationObservationTimer) return;
-  clearInterval(sessionNotificationObservationTimer);
-  sessionNotificationObservationTimer = null;
+export async function stopSessionNotificationObserver(): Promise<void> {
+  if (sessionNotificationObservationTimer) {
+    clearInterval(sessionNotificationObservationTimer);
+    sessionNotificationObservationTimer = null;
+  }
+  // Let already-running collections finish their reductions before draining.
+  await Promise.allSettled([dashboardObservationPromise, sessionNotificationObservationPromise]);
+  await flushAgentRuntimeStateForShutdown();
 }
 
 export function forgetSessionObservation(sessionId: string, sessionName: string): void {
