@@ -33,7 +33,7 @@ use uuid::Uuid;
 use crate::output_bus::{OutputBus, Subscription};
 use crate::protocol::{Event, SessionInfo, Snapshot};
 use crate::ring_buffer::OutputChunk;
-use crate::terminal_state::{TerminalState, TerminalStateError};
+use crate::terminal_state::{RawSnapshot, TerminalState, TerminalStateError};
 
 /// Shared async-event sink. Every lifecycle transition (`session_started`,
 /// `session_exited`, `session_resized`, `snapshot_invalidated`) is published
@@ -206,7 +206,7 @@ pub struct Session {
     writer: Mutex<Box<dyn Write + Send>>,
     /// Canonical terminal-state emulator. The drainer thread feeds every PTY
     /// byte chunk through this before forwarding to subscribers; readers
-    /// (`snapshot_terminal`) lock it to materialise a `protocol::Snapshot`.
+    /// (`snapshot_terminal`) lock it only to capture raw snapshot buffers.
     terminal: Arc<Mutex<TerminalState>>,
     /// Monotonic snapshot version. Bumped under the `terminal` lock once per
     /// drained chunk so `(state, seq)` stays consistent for snapshotters.
@@ -220,6 +220,9 @@ pub struct Session {
     /// connection writer, outside the terminal lock; identical sequence/key
     /// requests reuse this immutable `Arc` without cloning its cell graph.
     snapshot_cache: Mutex<Option<CachedSnapshot>>,
+    /// Resize changes terminal truth without advancing the output seq. Prevent
+    /// an in-flight off-lock conversion from repopulating an invalidated cache.
+    snapshot_generation: AtomicU64,
 }
 
 impl std::fmt::Debug for Session {
@@ -365,6 +368,7 @@ impl Session {
             seq,
             bus,
             snapshot_cache: Mutex::new(None),
+            snapshot_generation: AtomicU64::new(0),
         })
     }
 
@@ -461,7 +465,11 @@ impl Session {
             cols,
             rows,
             events,
-            || *self.snapshot_cache.lock().expect("snapshot cache poisoned") = None,
+            || {
+                let mut cache = self.snapshot_cache.lock().expect("snapshot cache poisoned");
+                self.snapshot_generation.fetch_add(1, Ordering::SeqCst);
+                *cache = None;
+            },
         );
         result
     }
@@ -483,23 +491,9 @@ impl Session {
         scrollback_lines: Option<u32>,
         target_cols: Option<u16>,
     ) -> Result<Arc<Snapshot>, TerminalStateError> {
-        let id = self.id();
-        let term = self.terminal.lock().expect("terminal poisoned");
-        // Read seq under the same lock the drainer holds while bumping it,
-        // so the returned (state, seq) pair is consistent.
-        let seq = self.seq.load(Ordering::SeqCst);
-        if let Some(cached) = self.cached_snapshot(seq, scrollback_lines, target_cols) {
-            return Ok(cached);
-        }
-        let snapshot = Arc::new(term.try_snapshot_with_reflow(
-            id,
-            seq,
-            now_ms(),
-            scrollback_lines.map(|n| n as usize),
-            target_cols.map(|c| c as usize),
-        )?);
-        self.cache_snapshot(seq, scrollback_lines, target_cols, Arc::clone(&snapshot));
-        Ok(snapshot)
+        self.capture_and_materialize(
+            scrollback_lines, target_cols, |_| (), RawSnapshot::materialize,
+        ).map(|(snapshot, ())| snapshot)
     }
 
     /// Atomically capture terminal state and establish the replay/live cut.
@@ -508,24 +502,41 @@ impl Session {
         scrollback_lines: Option<u32>,
         target_cols: Option<u16>,
     ) -> Result<(Arc<Snapshot>, Subscription), TerminalStateError> {
+        self.capture_and_materialize(
+            scrollback_lines,
+            target_cols,
+            |seq| self.bus.subscribe(Some(seq)),
+            RawSnapshot::materialize,
+        )
+    }
+
+    fn capture_and_materialize<T>(
+        &self,
+        scrollback_lines: Option<u32>,
+        target_cols: Option<u16>,
+        at_capture: impl FnOnce(u64) -> T,
+        materialize: impl FnOnce(RawSnapshot) -> Result<Snapshot, TerminalStateError>,
+    ) -> Result<(Arc<Snapshot>, T), TerminalStateError> {
         let id = self.id();
         let term = self.terminal.lock().expect("terminal poisoned");
+        // Seq and the subscription cut are captured under the drainer's lock.
         let seq = self.seq.load(Ordering::SeqCst);
-        let snapshot = if let Some(cached) = self.cached_snapshot(seq, scrollback_lines, target_cols) {
-            cached
-        } else {
-            let snapshot = Arc::new(term.try_snapshot_with_reflow(
-                id,
-                seq,
-                now_ms(),
-                scrollback_lines.map(|n| n as usize),
-                target_cols.map(|c| c as usize),
-            )?);
-            self.cache_snapshot(seq, scrollback_lines, target_cols, Arc::clone(&snapshot));
-            snapshot
-        };
-        let subscription = self.bus.subscribe(Some(seq));
-        Ok((snapshot, subscription))
+        if let Some(cached) = self.cached_snapshot(seq, scrollback_lines, target_cols) {
+            return Ok((cached, at_capture(seq)));
+        }
+        let generation = self.snapshot_generation.load(Ordering::SeqCst);
+        let raw = term.try_capture_snapshot(
+            id,
+            seq,
+            now_ms(),
+            scrollback_lines.map(|n| n as usize),
+            target_cols.map(|c| c as usize),
+        )?;
+        let captured = at_capture(seq);
+        drop(term);
+        let snapshot = Arc::new(materialize(raw)?);
+        self.cache_snapshot(seq, generation, scrollback_lines, target_cols, Arc::clone(&snapshot));
+        Ok((snapshot, captured))
     }
 
     fn cached_snapshot(
@@ -547,16 +558,22 @@ impl Session {
     fn cache_snapshot(
         &self,
         seq: u64,
+        generation: u64,
         scrollback_lines: Option<u32>,
         target_cols: Option<u16>,
         snapshot: Arc<Snapshot>,
     ) {
-        *self.snapshot_cache.lock().expect("snapshot cache poisoned") = Some(CachedSnapshot {
-            seq,
-            scrollback_lines,
-            target_cols,
-            snapshot,
-        });
+        let mut cache = self.snapshot_cache.lock().expect("snapshot cache poisoned");
+        if self.snapshot_generation.load(Ordering::SeqCst) == generation
+            && self.seq.load(Ordering::SeqCst) == seq
+        {
+            *cache = Some(CachedSnapshot {
+                seq,
+                scrollback_lines,
+                target_cols,
+                snapshot,
+            });
+        }
     }
 
     /// Block (up to `timeout`) until the reaper marks this session not-alive.
@@ -1217,6 +1234,98 @@ mod tests {
                 .map(line_text)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn styled_conversion_runs_without_terminal_lock() {
+        for subscribe in [false, true] {
+            let sess = spawn_session(opts(vec!["printf", "styled"])).expect("spawn");
+            assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
+            let terminal = Arc::clone(&sess.terminal);
+            let observed = Arc::new(AtomicU64::new(0));
+            let probe_observed = Arc::clone(&observed);
+            crate::terminal_state::CONVERSION_PROBE.with(|probe| {
+                *probe.borrow_mut() = Some(Box::new(move || {
+                    assert!(terminal.try_lock().is_ok(), "styled conversion holds terminal lock");
+                    probe_observed.fetch_add(1, Ordering::SeqCst);
+                }));
+            });
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if subscribe {
+                    sess.snapshot_and_subscribe(None, Some(40)).expect("snapshot subscribe");
+                } else {
+                    sess.snapshot_terminal(None, Some(40)).expect("snapshot");
+                }
+            }));
+            crate::terminal_state::CONVERSION_PROBE.with(|probe| *probe.borrow_mut() = None);
+            assert!(result.is_ok(), "conversion must release terminal lock");
+            assert!(observed.load(Ordering::SeqCst) > 0, "probe must exercise real conversion");
+        }
+    }
+
+    #[test]
+    fn output_advances_during_materialization_and_atomic_subscription_retains_it() {
+        let sess = spawn_session(opts(vec!["cat"])).expect("spawn");
+        let mut observer = sess.output_bus().subscribe(None);
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+        let marker = b"POST-CAPTURE";
+        let (snapshot, mut sub) = sess.capture_and_materialize(None, None,
+            |seq| sess.bus.subscribe(Some(seq)),
+            |raw| {
+                // This is the actual materialization boundary, not a delay:
+                // require the real PTY drainer to publish before allowing
+                // conversion to finish. Holding the terminal lock deadlocks.
+                sess.write_stdin(b"POST-CAPTURE\n").expect("input");
+                runtime.block_on(async {
+                    tokio::time::timeout(Duration::from_secs(5), async {
+                        let mut bytes = Vec::new();
+                        loop {
+                            let chunk = observer.receiver.recv().await.expect("live output");
+                            bytes.extend_from_slice(&chunk.data);
+                            if bytes.windows(marker.len()).any(|w| w == marker) {
+                                break;
+                            }
+                        }
+                    }).await
+                }).expect("drainer blocked during materialization");
+                raw.materialize()
+            }).expect("snapshot and subscription");
+        assert!(!screen_contains(&snapshot, "POST-CAPTURE"));
+        assert_eq!(sub.current_seq, snapshot.seq);
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut bytes = Vec::new();
+                loop {
+                    let chunk = sub.receiver.recv().await.expect("atomic live output");
+                    assert!(chunk.seq > snapshot.seq);
+                    bytes.extend_from_slice(&chunk.data);
+                    if bytes.windows(marker.len()).any(|w| w == marker) {
+                        break;
+                    }
+                }
+            }).await
+        }).expect("post-capture bytes lost");
+        let _ = sess.kill(libc::SIGKILL);
+        assert!(sess.wait_for_exit(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn resize_during_materialization_cannot_repopulate_stale_cache() {
+        let (events, _) = broadcast::channel(16);
+        let sess = spawn_session(opts(vec!["sleep", "30"])).expect("spawn");
+        let (before, ()) = sess.capture_and_materialize(None, None, |_| (), |raw| {
+            sess.resize(132, 50, &events).expect("resize during conversion");
+            raw.materialize()
+        }).expect("captured snapshot");
+        assert_eq!((before.cols, before.rows), (80, 24));
+        assert!(sess.snapshot_cache.lock().expect("snapshot cache poisoned").is_none());
+        let after = sess.snapshot_terminal(None, None).expect("post-resize snapshot");
+        assert_eq!(after.seq, before.seq, "resize does not advance output seq");
+        assert_eq!((after.cols, after.rows), (132, 50));
+        let repeated = sess.snapshot_terminal(None, None).expect("cache hit");
+        assert!(Arc::ptr_eq(&after, &repeated));
+        let _ = sess.kill(libc::SIGKILL);
+        assert!(sess.wait_for_exit(Duration::from_secs(5)));
     }
 
     #[test]

@@ -179,7 +179,7 @@ impl GhosttyTerminal {
         Ok(meta)
     }
 
-    fn title(&self, title_len: usize) -> Result<Option<String>, TerminalStateError> {
+    fn title(&self, title_len: usize) -> Result<Option<Vec<u8>>, TerminalStateError> {
         if title_len == 0 {
             return Ok(None);
         }
@@ -206,7 +206,7 @@ impl GhosttyTerminal {
             });
         }
         bytes.truncate(written);
-        Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+        Ok(Some(bytes))
     }
 
     fn rows(
@@ -215,9 +215,14 @@ impl GhosttyTerminal {
         start_y: usize,
         row_count: u16,
         cols: u16,
-    ) -> Result<Vec<StyledLine>, TerminalStateError> {
+    ) -> Result<RawRows, TerminalStateError> {
         if row_count == 0 {
-            return Ok(Vec::new());
+            return Ok(RawRows {
+                rows: Vec::new(),
+                cells: Vec::new(),
+                text: Vec::new(),
+                cols: usize::from(cols),
+            });
         }
         let row_count_usize = usize::from(row_count);
         let cols_usize = usize::from(cols);
@@ -278,20 +283,12 @@ impl GhosttyTerminal {
         }
         text.truncate(written);
 
-        rows.into_iter()
-            .enumerate()
-            .map(|(row_idx, row)| {
-                let start = row_idx * cols_usize;
-                let cells = cells[start..start + cols_usize]
-                    .iter()
-                    .map(|cell| cell_to_styled(cell, &text))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(StyledLine {
-                    cells,
-                    wrapped: row.wrapped != 0,
-                })
-            })
-            .collect()
+        Ok(RawRows {
+            rows,
+            cells,
+            text,
+            cols: cols_usize,
+        })
     }
 }
 
@@ -306,6 +303,68 @@ impl Drop for GhosttyTerminal {
 // per-session mutex. The raw handle is never shared independently of this Rust
 // wrapper, and all methods require `&mut self` for mutation.
 unsafe impl Send for GhosttyTerminal {}
+
+/// Owned extraction buffers; no native terminal handle escapes capture.
+struct RawRows {
+    rows: Vec<WpGhosttyRow>,
+    cells: Vec<WpGhosttyCell>,
+    text: Vec<u8>,
+    cols: usize,
+}
+
+impl RawRows {
+    fn materialize(self) -> Result<Vec<StyledLine>, TerminalStateError> {
+        self.rows
+            .into_iter()
+            .enumerate()
+            .map(|(row_idx, row)| {
+                let start = row_idx * self.cols;
+                let cells = self.cells[start..start + self.cols]
+                    .iter()
+                    .map(|cell| cell_to_styled(cell, &self.text))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(StyledLine {
+                    cells,
+                    wrapped: row.wrapped != 0,
+                })
+            })
+            .collect()
+    }
+}
+
+pub(crate) struct RawSnapshot {
+    session_id: Uuid,
+    seq: u64,
+    captured_at_ms: u64,
+    meta: WpGhosttySnapshotMeta,
+    visible_screen: RawRows,
+    scrollback: RawRows,
+    title: Option<Vec<u8>>,
+    target_cols: Option<usize>,
+}
+
+impl RawSnapshot {
+    pub(crate) fn materialize(self) -> Result<Snapshot, TerminalStateError> {
+        let visible_screen = self.visible_screen.materialize()?;
+        let mut scrollback = self.scrollback.materialize()?;
+        if let Some(target_cols) = self.target_cols.filter(|cols| *cols > 0) {
+            scrollback = reflow_styled_lines(&scrollback, target_cols);
+        }
+        Ok(Snapshot {
+            session_id: self.session_id,
+            seq: self.seq,
+            cols: self.meta.cols,
+            rows: self.meta.rows,
+            visible_screen,
+            scrollback,
+            cursor: cursor_from_meta(self.meta),
+            modes: modes_from_meta(self.meta),
+            scroll_region: scroll_region_from_meta(self.meta),
+            title: self.title.map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+            captured_at_ms: self.captured_at_ms,
+        })
+    }
+}
 
 pub struct TerminalState {
     ghostty: GhosttyTerminal,
@@ -343,6 +402,21 @@ impl TerminalState {
         scrollback_limit: Option<usize>,
         target_cols: Option<usize>,
     ) -> Result<Snapshot, TerminalStateError> {
+        self.try_capture_snapshot(
+            session_id, seq, captured_at_ms, scrollback_limit, target_cols,
+        )?.materialize()
+    }
+
+    /// Copy bounded native rows/text and metadata while the caller holds the
+    /// terminal ordering lock. Styled allocation and reflow happen afterward.
+    pub(crate) fn try_capture_snapshot(
+        &self,
+        session_id: Uuid,
+        seq: u64,
+        captured_at_ms: u64,
+        scrollback_limit: Option<usize>,
+        target_cols: Option<usize>,
+    ) -> Result<RawSnapshot, TerminalStateError> {
         let meta = self.ghostty.meta("snapshot")?;
         let visible_screen =
             self.ghostty
@@ -355,32 +429,22 @@ impl TerminalState {
                 .unwrap_or(meta.scrollback_rows)
         };
         let scrollback_start = meta.scrollback_rows.saturating_sub(scrollback_count);
-        let mut scrollback = Vec::new();
-        if scrollback_count > 0 {
-            let row_count = u16::try_from(scrollback_count).unwrap_or(u16::MAX);
-            scrollback = self.ghostty.rows(
-                WpGhosttyRowSource::History,
-                scrollback_start,
-                row_count,
-                meta.cols,
-            )?;
-        }
-        if let Some(target_cols) = target_cols.filter(|cols| *cols > 0) {
-            scrollback = reflow_styled_lines(&scrollback, target_cols);
-        }
-
-        Ok(Snapshot {
+        let row_count = u16::try_from(scrollback_count).unwrap_or(u16::MAX);
+        let scrollback = self.ghostty.rows(
+            WpGhosttyRowSource::History,
+            scrollback_start,
+            row_count,
+            meta.cols,
+        )?;
+        Ok(RawSnapshot {
             session_id,
             seq,
-            cols: meta.cols,
-            rows: meta.rows,
+            captured_at_ms,
+            meta,
             visible_screen,
             scrollback,
-            cursor: cursor_from_meta(meta),
-            modes: modes_from_meta(meta),
-            scroll_region: scroll_region_from_meta(meta),
             title: self.ghostty.title(meta.title_len)?,
-            captured_at_ms,
+            target_cols,
         })
     }
 }
@@ -455,7 +519,19 @@ fn cursor_from_meta(meta: WpGhosttySnapshotMeta) -> CursorState {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static CONVERSION_PROBE: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        std::cell::RefCell::new(None);
+}
+
 fn cell_to_styled(cell: &WpGhosttyCell, text: &[u8]) -> Result<StyledCell, TerminalStateError> {
+    #[cfg(test)]
+    CONVERSION_PROBE.with(|probe| {
+        if let Some(probe) = probe.borrow_mut().as_mut() {
+            probe();
+        }
+    });
     let ch = if cell.continuation != 0 {
         Cow::Borrowed("")
     } else if cell.text_len == 0 {
@@ -574,6 +650,17 @@ mod tests {
 
     fn line_text(line: &StyledLine) -> String {
         line.cells.iter().map(|cell| cell.ch.as_ref()).collect()
+    }
+
+    #[test]
+    fn dense_styled_snapshot_matches_pre_split_json() {
+        let mut terminal = TerminalState::try_new(4, 2).expect("real terminal");
+        terminal.try_feed("\x1b]2;fixture\x07\x1b[1;31mAB界\r\nCDef\r\n\x1b[0;44mghij\r\nklmn".as_bytes())
+            .expect("native feed");
+        let snapshot = terminal.try_snapshot_with_reflow(Uuid::nil(), 7, 123, None, Some(3))
+            .expect("snapshot");
+        let encoded = serde_json::to_string(&snapshot).expect("serialize");
+        assert_eq!(encoded, include_str!("../tests/fixtures/dense-styled-snapshot.json").trim());
     }
 
     #[test]

@@ -51,6 +51,21 @@ const OUTPUT_FORWARD_BUFFER_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// frame and this depth caps queued data before socket backpressure applies.
 const INPUT_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const INPUT_QUEUE_CAPACITY: usize = INPUT_QUEUE_MAX_BYTES / MAX_INPUT_BINARY_PAYLOAD as usize;
+/// Bound pending control payloads while one ordered worker is busy. Socket
+/// backpressure still applies when this budget is exhausted.
+const CONTROL_REQUEST_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const CONTROL_REQUEST_QUEUE_CAPACITY: usize =
+    CONTROL_REQUEST_QUEUE_MAX_BYTES / crate::codec::MAX_CONTROL_REQUEST_PAYLOAD as usize;
+
+struct ConnectionSubscriptions(HashMap<Uuid, JoinHandle<()>>);
+
+impl Drop for ConnectionSubscriptions {
+    fn drop(&mut self) {
+        for (_, handle) in self.0.drain() {
+            handle.abort();
+        }
+    }
+}
 
 /// Private successful-write acknowledgement for a control boundary. A
 /// subscription forwarder waits on this instead of treating queue insertion as
@@ -369,9 +384,16 @@ async fn handle_connection(
     let event_writer_tx = writer_tx.clone();
     let event_task = tokio::spawn(forward_events(event_rx, event_writer_tx));
 
-    // session_id -> handle of the per-session forwarder task. `unsubscribe`
-    // aborts the entry; closing the connection aborts all entries below.
-    let mut subs: HashMap<Uuid, JoinHandle<()>> = HashMap::new();
+    // One ordered control worker preserves response and subscription operation
+    // order, but cannot prevent the read loop from enqueueing keyboard input.
+    let (request_tx, request_rx) = mpsc::channel(CONTROL_REQUEST_QUEUE_CAPACITY);
+    let control_task = tokio::spawn(handle_control_requests(
+        request_rx,
+        router,
+        Arc::clone(&registry),
+        writer_tx.clone(),
+        output_tx.clone(),
+    ));
 
     loop {
         tokio::select! {
@@ -386,12 +408,8 @@ async fn handle_connection(
                 Ok(frame) => {
                     if !dispatch_frame(
                         frame,
-                        router.as_ref(),
-                        &registry,
-                        &writer_tx,
-                        &output_tx,
+                        &request_tx,
                         &input_tx,
-                        &mut subs,
                     )
                     .await
                     {
@@ -420,9 +438,12 @@ async fn handle_connection(
 
     // Cleanly tear down per-session forwarders, then the event forwarder,
     // then drop both senders so the writer task observes EOF and exits.
-    for (_, h) in subs.drain() {
-        h.abort();
-    }
+    // Abort drops the subscription owner and discards queued requests. A
+    // spawn_blocking operation already running finishes, but its result is
+    // dropped: no response or replacement forwarder can outlive this worker.
+    control_task.abort();
+    let _ = control_task.await;
+    drop(request_tx);
     event_task.abort();
     drop(input_tx);
     if let Err(error) = input_task.await {
@@ -532,29 +553,15 @@ async fn connection_writer(
     }
 }
 
-/// Returns `false` if the writer queue is closed (peer gone), so the
-/// caller can stop the read loop instead of looping on dead writes.
+/// Returns `false` if a worker queue is closed or the frame direction is
+/// invalid, so the caller stops reading rather than enqueueing dead work.
 async fn dispatch_frame(
     frame: Frame,
-    router: &SessionRouter,
-    registry: &Arc<Registry>,
-    writer_tx: &mpsc::Sender<QueuedControl>,
-    output_tx: &mpsc::Sender<Frame>,
+    request_tx: &mpsc::Sender<ControlRequest>,
     input_tx: &mpsc::Sender<InputFrame>,
-    subs: &mut HashMap<Uuid, JoinHandle<()>>,
 ) -> bool {
     match frame {
-        Frame::ControlRequest(req) => match req.method.as_str() {
-            methods::SNAPSHOT_SUBSCRIBE => {
-                handle_snapshot_subscribe(req, registry, writer_tx, output_tx, subs).await
-            }
-            methods::SUBSCRIBE => handle_subscribe(req, registry, writer_tx, output_tx, subs).await,
-            methods::UNSUBSCRIBE => handle_unsubscribe(req, writer_tx, subs).await,
-            _ => {
-                let resp = router.handle(req);
-                send_response(writer_tx, resp).await
-            }
-        },
+        Frame::ControlRequest(req) => request_tx.send(req).await.is_ok(),
         Frame::InputBinary(inp) => input_tx.send(inp).await.is_ok(),
         Frame::ControlResponse(_) | Frame::OutputBinary(_) | Frame::Event(_) => {
             // Spec: these flow broker→client only. Receiving one from a client
@@ -563,6 +570,46 @@ async fn dispatch_frame(
             // by signalling the read loop to tear down — reconnect can recover.
             warn!("broker received outbound-only frame from client; dropping connection");
             false
+        }
+    }
+}
+
+async fn handle_control_requests(
+    mut requests: mpsc::Receiver<ControlRequest>,
+    router: Arc<SessionRouter>,
+    registry: Arc<Registry>,
+    writer_tx: mpsc::Sender<QueuedControl>,
+    output_tx: mpsc::Sender<Frame>,
+) {
+    // Dropping this owner on normal exit OR cancellation aborts all forwarders.
+    let mut subs = ConnectionSubscriptions(HashMap::new());
+    while let Some(req) = requests.recv().await {
+        let sent = match req.method.as_str() {
+            methods::SNAPSHOT_SUBSCRIBE => {
+                handle_snapshot_subscribe(req, &registry, &writer_tx, &output_tx, &mut subs.0).await
+            }
+            methods::SUBSCRIBE => {
+                handle_subscribe(req, &registry, &writer_tx, &output_tx, &mut subs.0).await
+            }
+            methods::UNSUBSCRIBE => handle_unsubscribe(req, &writer_tx, &mut subs.0).await,
+            _ => {
+                let router = Arc::clone(&router);
+                let id = req.id;
+                let response = match tokio::task::spawn_blocking(move || router.handle(req)).await {
+                    Ok(response) => response,
+                    Err(error) => ControlResponse::err(
+                        id,
+                        ProtocolError {
+                            code: ErrorCode::InternalError,
+                            message: format!("request task failed: {error}"),
+                        },
+                    ),
+                };
+                send_response(&writer_tx, response).await
+            }
+        };
+        if !sent {
+            break;
         }
     }
 }
@@ -625,40 +672,36 @@ async fn handle_snapshot_subscribe(
         Some(session) => session,
         None => return send_response(writer_tx, unknown_session(id, params.session_id)).await,
     };
-    let snapshot_permit = match registry.try_acquire_snapshot() {
-        Some(permit) => permit,
-        None => {
+    let registry = Arc::clone(registry);
+    let result = tokio::task::spawn_blocking(move || {
+        // Own the registry and acquire inside the closure: cancellation of the
+        // awaiting task must not release this permit while work is still running.
+        let _permit = registry
+            .try_acquire_snapshot()
+            .ok_or_else(|| SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.to_string())?;
+        session
+            .snapshot_and_subscribe(params.scrollback_lines, params.target_cols)
+            .map_err(|error| format!("terminal snapshot failed: {error}"))
+    })
+    .await
+    .map_err(|error| format!("terminal snapshot task failed: {error}"))
+    .and_then(|result| result);
+    let (snapshot, sub) = match result {
+        Ok(result) => result,
+        Err(message) => {
             return send_response(
                 writer_tx,
                 ControlResponse::err(
                     id,
                     ProtocolError {
                         code: ErrorCode::InternalError,
-                        message: SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.into(),
+                        message,
                     },
                 ),
             )
             .await;
         }
     };
-    let (snapshot, sub) =
-        match session.snapshot_and_subscribe(params.scrollback_lines, params.target_cols) {
-            Ok(result) => result,
-            Err(error) => {
-                return send_response(
-                    writer_tx,
-                    ControlResponse::err(
-                        id,
-                        ProtocolError {
-                            code: ErrorCode::InternalError,
-                            message: format!("terminal snapshot failed: {error}"),
-                        },
-                    ),
-                )
-                .await;
-            }
-        };
-    drop(snapshot_permit);
     if let Some(previous) = subs.remove(&params.session_id) {
         previous.abort();
     }
@@ -1032,6 +1075,20 @@ mod tests {
             ));
         }
         assert_eq!(current_process_umask(), TEST_BASELINE_UMASK);
+    }
+
+    #[tokio::test]
+    async fn dropping_subscription_owner_aborts_forwarders() {
+        let (finished, cancelled) = oneshot::channel::<()>();
+        let forwarder = tokio::spawn(async move {
+            let _finished = finished;
+            std::future::pending::<()>().await;
+        });
+        let mut subs = ConnectionSubscriptions(HashMap::new());
+        subs.0.insert(Uuid::new_v4(), forwarder);
+        drop(subs);
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(5), cancelled)
+            .await.expect("forwarder leaked on owner cancellation").is_err());
     }
 
     #[tokio::test]

@@ -4,14 +4,15 @@ use std::time::Duration;
 
 use serde_json::json;
 use tempfile::tempdir;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::broadcast;
 use tokio::time::timeout;
 use uuid::Uuid;
 
 use wolfpack_broker::codec::{
-    read_frame_async, write_frame_async, Frame, OutputFrame, FRAME_KIND_CONTROL_REQUEST,
+    read_frame_async, write_frame_async, Frame, InputFrame, OutputFrame, FRAME_KIND_CONTROL_REQUEST,
+    FRAME_KIND_CONTROL_RESPONSE, FRAME_KIND_EVENT,
 };
 use wolfpack_broker::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ResponsePayload, Status,
@@ -466,6 +467,157 @@ async fn resize_round_trip_updates_session_info_and_snapshot_dimensions() {
         other => panic!("unexpected: {other:?}"),
     }
 
+    drop(stream);
+    h.shutdown().await;
+}
+
+/// Current-thread runtime makes inline blocking observable without clock thresholds.
+/// Observe the response header, not completion of its multi-MB JSON body: slow
+/// serialization/socket backpressure must not produce a false positive.
+#[tokio::test]
+async fn input_overtakes_full_history_snapshot_on_same_connection() {
+    assert_input_overtakes_full_history(methods::SNAPSHOT).await;
+}
+
+#[tokio::test]
+async fn input_overtakes_full_history_snapshot_subscribe_on_same_connection() {
+    assert_input_overtakes_full_history(methods::SNAPSHOT_SUBSCRIBE).await;
+}
+
+async fn assert_input_overtakes_full_history(method: &str) {
+    let h = Harness::boot().await;
+    let mut control = connect(&h.socket_path).await;
+    let mut observer = connect(&h.socket_path).await;
+    let mut req = create_request(1, Some("heavy-history"), &["sh", "-c",
+        "i=0; while [ \"$i\" -lt 52 ]; do read start; awk 'BEGIN { for (i=0;i<200;i++) s=s \"x\"; for (i=0;i<100;i++) print s }'; printf 'BATCH-READY\\n'; i=$((i+1)); done; exec cat"]);
+    req.params["cols"] = json!(200);
+    let heavy = match round_trip(&mut control, req).await.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session.id,
+        other => panic!("unexpected: {other:?}"),
+    };
+    let input = match round_trip(&mut control,
+        create_request(2, Some("input-target"), &["cat"])).await.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session.id,
+        other => panic!("unexpected: {other:?}"),
+    };
+    for (id, session_id) in [(3, heavy), (4, input)] {
+        assert_eq!(round_trip(&mut observer, ControlRequest {
+            id, method: methods::SUBSCRIBE.into(),
+            params: json!({ "session_id": session_id }),
+        }).await.status, Status::Ok);
+    }
+    // A single 5200-line burst can overflow the existing 256-chunk broadcast
+    // window when native reads are small. Child/client handshakes bound setup
+    // batches without sleeps or any production-limit changes.
+    let mut history_bytes = 0;
+    timeout(TEST_TIMEOUT, async {
+        for _ in 0..52 {
+            write_frame_async(&mut control, &Frame::InputBinary(InputFrame {
+                session_id: heavy, data: b"start\n".to_vec(),
+            })).await.expect("start history batch");
+            let mut batch = Vec::new();
+            loop {
+                let frame = read_frame_async(&mut observer).await.expect("history output");
+                assert!(!matches!(frame, Frame::Event(Event::SubscriptionDropped { .. })),
+                    "history subscription dropped: {frame:?}");
+                if let Frame::OutputBinary(output) = frame {
+                    if output.session_id == heavy {
+                        batch.extend_from_slice(&output.data);
+                        if batch.windows(b"BATCH-READY".len()).any(|w| w == b"BATCH-READY") {
+                            break;
+                        }
+                    }
+                }
+            }
+            history_bytes += batch.len();
+        }
+    }).await.expect("history ready timeout");
+    assert!(history_bytes >= 200 * 5200, "full history must be populated");
+
+    let marker = format!("MARK-{}", Uuid::new_v4());
+    write_frame_async(&mut control, &Frame::ControlRequest(ControlRequest {
+        id: 5, method: method.into(), params: json!({ "session_id": heavy }),
+    })).await.expect("request snapshot");
+    write_frame_async(&mut control, &Frame::InputBinary(InputFrame {
+        session_id: input, data: format!("{marker}\n").into_bytes(),
+    })).await.expect("input after snapshot");
+
+    let response_start = async {
+        loop {
+            let mut header = [0; 5];
+            control.read_exact(&mut header).await.expect("response header");
+            if header[0] == FRAME_KIND_CONTROL_RESPONSE { break; }
+            assert_eq!(header[0], FRAME_KIND_EVENT);
+            let len = u32::from_be_bytes(header[1..5].try_into().expect("length")) as usize;
+            let mut event = vec![0; len];
+            control.read_exact(&mut event).await.expect("event body");
+        }
+    };
+    let marker_output = async {
+        let mut bytes = Vec::new();
+        loop {
+            if let Frame::OutputBinary(output) = read_frame_async(&mut observer).await.expect("marker output") {
+                if output.session_id == input {
+                    bytes.extend_from_slice(&output.data);
+                    if bytes.windows(marker.len()).any(|w| w == marker.as_bytes()) { break; }
+                }
+            }
+        }
+    };
+    let overtook = timeout(TEST_TIMEOUT, async {
+        tokio::select! {
+            biased;
+            () = response_start => false,
+            () = marker_output => true,
+        }
+    }).await.expect("ordering timeout");
+    drop(control);
+    drop(observer);
+    h.shutdown().await;
+    assert!(overtook, "snapshot response started before queued input was observed");
+}
+
+#[tokio::test]
+async fn queued_controls_preserve_snapshot_resize_and_subscription_order() {
+    let h = Harness::boot().await;
+    let mut stream = connect(&h.socket_path).await;
+    let session_id = match round_trip(&mut stream,
+        create_request(1, Some("ordered-controls"), &["sleep", "30"])).await.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session.id,
+        other => panic!("unexpected: {other:?}"),
+    };
+    for (id, method, params) in [
+        (2, methods::SNAPSHOT, json!({ "session_id": session_id })),
+        (3, methods::RESIZE, json!({ "session_id": session_id, "cols": 132, "rows": 50 })),
+        (4, methods::SNAPSHOT_SUBSCRIBE, json!({ "session_id": session_id })),
+        (5, methods::UNSUBSCRIBE, json!({ "session_id": session_id })),
+    ] {
+        write_frame_async(&mut stream, &Frame::ControlRequest(ControlRequest {
+            id, method: method.into(), params,
+        })).await.expect("enqueue control");
+    }
+    timeout(TEST_TIMEOUT, async {
+        for id in 2..=5 {
+            let response = loop {
+                match read_frame_async(&mut stream).await.expect("ordered response") {
+                    Frame::ControlResponse(response) => break response,
+                    Frame::Event(_) => continue,
+                    other => panic!("unexpected: {other:?}"),
+                }
+            };
+            assert_eq!(response.id, id, "controls must retain wire request order");
+            assert_eq!(response.status, Status::Ok);
+            match response.payload.expect("payload") {
+                ResponsePayload::Snapshot { snapshot } => assert_eq!((snapshot.cols, snapshot.rows), (80, 24)),
+                ResponsePayload::SnapshotSubscribe { snapshot, current_seq, .. } => {
+                    assert_eq!((snapshot.cols, snapshot.rows), (132, 50));
+                    assert_eq!(snapshot.seq, current_seq);
+                }
+                ResponsePayload::Resize { ok } | ResponsePayload::Unsubscribe { ok } => assert!(ok),
+                other => panic!("unexpected payload: {other:?}"),
+            }
+        }
+    }).await.expect("ordered controls timeout");
     drop(stream);
     h.shutdown().await;
 }
