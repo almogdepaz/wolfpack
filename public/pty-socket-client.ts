@@ -14,7 +14,9 @@ import {
   type LayoutStablePrefillMode,
 } from "../src/terminal-layout-stable-debug";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
-import { PTY_ATTACH_CAPABILITY } from "../src/pty-websocket-contract";
+import { PTY_ATTACH_CAPABILITY, PTY_LIVENESS_MESSAGE } from "../src/pty-websocket-contract";
+import { MOBILE_FOREGROUND_PROBE_MS } from "../src/mobile-foreground";
+import { classifyDisconnect } from "../src/take-control-logic";
 import { splitTerminalInputBytes } from "../src/terminal-input";
 import {
   CLOSE_CODE_PREFILL_TIMEOUT,
@@ -67,6 +69,7 @@ export interface PtySocketClientOpts {
   readonly getProposedDimensions?: () => TermDimensions | null;
   readonly getLayoutMetrics?: () => TerminalLayoutMetrics | null;
   readonly fitTerminal: () => void;
+  readonly isTerminalReady?: () => boolean;
   readonly onBinaryData?: (data: Uint8Array<ArrayBuffer>) => void;
   readonly onAttach?: () => void;
   readonly onOpen?: (wasReconnect: boolean) => void;
@@ -102,6 +105,8 @@ export function buildPtyWebSocketUrl(options: BuildPtyWebSocketUrlOptions): stri
 
 export interface PtySocketClient {
   connect(): void;
+  notifyTerminalReady(): void;
+  probe(epoch?: number): Promise<boolean>;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
   scheduleReconnect(): void;
   sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean; readonly immediate?: boolean }): Promise<OrderedResizeSettlement>;
@@ -129,6 +134,36 @@ export function createPtySocketClient(
   let hasConnected = false;
   let connectGeneration = 0;
   let connectPending = false;
+  let pendingProbe: Promise<boolean> | null = null;
+  let finishProbe: ((alive: boolean) => void) | null = null;
+
+  let probeEpoch = 0;
+  function probe(epoch = 0): Promise<boolean> {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return Promise.resolve(false);
+    if (pendingProbe && probeEpoch === epoch) return pendingProbe;
+    finishProbe?.(false);
+    probeEpoch = epoch;
+    pendingProbe = new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => complete(false), MOBILE_FOREGROUND_PROBE_MS);
+      const complete = (alive: boolean): void => {
+        // Even an already-queued old timer must not finish a newer probe.
+        if (finishProbe !== complete) return;
+        clearTimeout(timer);
+        finishProbe = null;
+        pendingProbe = null;
+        resolve(alive);
+      };
+      finishProbe = complete;
+    });
+    const result = pendingProbe;
+    try {
+      if (!send(JSON.stringify({ type: PTY_LIVENESS_MESSAGE.PING }))) finishProbe?.(false);
+    } catch (error: unknown) {
+      console.warn("[pty-ws] foreground probe send failed:", error);
+      finishProbe?.(false);
+    }
+    return result;
+  }
   let consumeReset = !!opts.resetPty;
   let _initialPrefillMode = opts.prefillMode || TERMINAL_PREFILL_MODE.FULL;
   let _attachAckTimer: ReturnType<typeof setTimeout> | null = null;
@@ -172,7 +207,7 @@ export function createPtySocketClient(
   let _takeControlOnAttach = !!opts.takeControlOnAttach;
 
   function sendAttachHandshake() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN || opts.isTerminalReady?.() === false) return;
     cancelResizeLifecycle();
     _attachUsesProposedDimensions = _hasAttached;
     if (!_attachUsesProposedDimensions) {
@@ -592,6 +627,7 @@ export function createPtySocketClient(
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
       const message = parsed as Readonly<Record<string, unknown>>;
       if (typeof message.type !== "string") return;
+      if (message.type === PTY_LIVENESS_MESSAGE.PONG) { finishProbe?.(true); return; }
       const typedMessage = message as SocketControlMessage;
       if (_orderedResizeBarrier && isOrderedResizeBarrierControl(typedMessage.type)) {
         deferOrderedResizeFrame({ kind: "control", message: typedMessage, bytes: new TextEncoder().encode(raw).byteLength });
@@ -636,6 +672,7 @@ export function createPtySocketClient(
     if (connectPending) return;
 
     const generation = ++connectGeneration;
+    let connectFailed = false;
     connectPending = true;
     const origin = opts.machine ? dependencies.resolveReadyMachineOrigin(opts.machine) : location.origin;
     void (origin && dependencies.getBrowserAuthToken(origin) ? dependencies.requestWebSocketTicket(opts.machine) : Promise.resolve(undefined)).then((ticket) => {
@@ -674,18 +711,24 @@ export function createPtySocketClient(
         __wfTraceEvent(_trace, "ws.close", { code: ev.code, reason: String(ev.reason || "") });
         __wfTraceRafStop(_trace);
         ws = null;
+        finishProbe?.(false);
         resetAttachLifecycle();
+        if (classifyDisconnect(ev.code, ev.reason) !== "reconnect") _rc.block();
         if (opts.onDisconnected) opts.onDisconnected(ev.code, ev.reason);
       };
 
       sock.onerror = () => {};
     }).catch((error: unknown) => {
       if (generation === connectGeneration) {
+        connectFailed = true;
         console.warn("[pty-ws] ticket request failed:", error);
-        scheduleReconnect();
       }
     }).finally(() => {
-      if (generation === connectGeneration) connectPending = false;
+      if (generation !== connectGeneration) return;
+      // Release pending ownership before evaluating retry readiness. Mount
+      // may have become ready between the rejection handler and this callback.
+      connectPending = false;
+      if (connectFailed) scheduleReconnect();
     });
   }
 
@@ -727,6 +770,7 @@ export function createPtySocketClient(
   }
 
   function retireSocket(socket: WebSocket): void {
+    finishProbe?.(false);
     socket.onopen = null;
     socket.onmessage = null;
     socket.onclose = null;
@@ -757,6 +801,9 @@ export function createPtySocketClient(
   function reconnect(reconnectOpts?: { takeControl?: boolean }) {
     connectGeneration++;
     _rc.cancel();
+    // Explicit retry/takeover may leave a terminal-blocked state; mount's
+    // automatic reconciliation must not, but this fresh attempt may retry.
+    if (_rc.isBlocked) _rc.reset();
     resetAttachLifecycle();
     _takeControlOnAttach = !!(reconnectOpts && reconnectOpts.takeControl);
     if (ws) retireSocket(ws);
@@ -765,6 +812,17 @@ export function createPtySocketClient(
 
   return {
     connect,
+    notifyTerminalReady: () => {
+      if (_hasAttached || _rc.isBlocked || opts.isTerminalReady?.() === false) return;
+      if (!ws) {
+        // Mount owns this readiness notification. Recover only after its
+        // normal ownership predicate allows retry; pending connects coalesce.
+        if (opts.shouldReconnect?.() !== false) connect();
+        return;
+      }
+      sendAttachHandshake();
+    },
+    probe,
     reconnect,
     scheduleReconnect,
     sendFitResize,

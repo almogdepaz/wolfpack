@@ -607,6 +607,7 @@ export function createPtyTerminalController(
 
     syncLayout({ forceSend: false, repaint: true, reason: "mount" });
     _mounting = false;
+    _ptyClient?.notifyTerminalReady();
   }
 
   /**
@@ -634,6 +635,7 @@ export function createPtyTerminalController(
       machine: opts.machine || "",
       resetPty: opts.resetPty,
       prefillMode: opts.prefillMode,
+      isTerminalReady: () => !!_term && !_mounting,
       getTermDimensions: () => _term ? { cols: _term.cols, rows: _term.rows } : null,
       getProposedDimensions: () => _fitAddon?.proposeDimensions?.() ?? (_term ? { cols: _term.cols, rows: _term.rows } : null),
       getLayoutMetrics: () => {
@@ -648,6 +650,10 @@ export function createPtyTerminalController(
       fitTerminal: fitTerminalPreserveScroll,
       shouldReconnect: opts.shouldReconnect,
       onAttach: () => {
+        if (!_hydrationStarted && _hydration) {
+          startHydration();
+          _hydrationStarted = true;
+        }
         _initialPrefillComplete = opts.prefillMode === TERMINAL_PREFILL_MODE.NONE;
       },
       onOpen: (wasReconnect) => {

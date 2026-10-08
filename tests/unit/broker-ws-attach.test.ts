@@ -291,6 +291,30 @@ function attachWs(ws: FakeWs, session = SESSION): void {
 }
 
 describe("broker WS attach: snapshot + subscribe path", () => {
+  test("application ping replies pong without attaching or sending broker traffic", () => {
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "ping" });
+    expect(ws.jsonFrames()).toContainEqual({ type: "pong" });
+    expect(backend.resizeCalls).toEqual([]);
+    expect(backend.writeCalls).toEqual([]);
+    expect(backend.prefillCalls).toEqual([]);
+    expect(backend.subscriptionCount).toBe(0);
+  });
+  test("pending viewer ping replies only to that viewer without taking control", () => {
+    const owner = new FakeWs();
+    const pending = new FakeWs();
+    attachWs(owner);
+    attachWs(pending);
+    pending.pushJson({ type: "ping" });
+    expect(pending.jsonFrames()).toContainEqual({ type: "pong" });
+    expect(owner.hasJsonType("pong")).toBe(false);
+    expect(owner.readyState).toBe(1);
+    expect(backend.resizeCalls).toEqual([]);
+    expect(backend.writeCalls).toEqual([]);
+    expect(backend.subscriptionCount).toBe(0);
+  });
+
   test("attach establishes probe and forwarding subscriptions before pty_ready", async () => {
     const attachEvents: string[] = [];
     backend.prefill.set(SESSION, Buffer.from("snapshot bytes\n"));

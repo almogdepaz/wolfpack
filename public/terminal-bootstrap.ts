@@ -1,3 +1,18 @@
+/** Open transport while WASM mounts; the socket's readiness gate defers attach. */
+export async function mountAndConnectTerminal(
+  controller: { readonly mount: (container: HTMLElement) => Promise<void>; readonly connect: () => void; readonly dispose: () => void },
+  container: HTMLElement,
+): Promise<void> {
+  try {
+    const mounting = controller.mount(container);
+    controller.connect();
+    await mounting;
+  } catch (error: unknown) {
+    controller.dispose();
+    throw error;
+  }
+}
+
 export interface TerminalLiveGate {
   readonly onHydrationStart: () => void;
   readonly onHydrated: () => void;
