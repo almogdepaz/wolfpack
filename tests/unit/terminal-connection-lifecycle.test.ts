@@ -4,6 +4,8 @@ import {
   createTerminalConnectionLifecycle,
 } from "../../src/terminal-connection-lifecycle.ts";
 
+import { mountAndConnectTerminal } from "../../public/terminal-bootstrap.ts";
+
 const SOCKET_OPEN_CASES = [
   ["first attach with authoritative prefill", false, false, true, TERMINAL_REHYDRATION_ACTION.NONE],
   ["first attach without authoritative prefill", false, false, false, TERMINAL_REHYDRATION_ACTION.NONE],
@@ -14,6 +16,20 @@ const SOCKET_OPEN_CASES = [
 ] as const;
 
 describe("terminal connection lifecycle", () => {
+  test("connect starts before asynchronous mount resolves", async () => {
+    const events: string[] = [];
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const mounted = mountAndConnectTerminal({
+      mount: async () => { events.push("mount.start"); await pending; events.push("mount.done"); },
+      connect: () => { events.push("connect"); },
+      dispose: () => { events.push("dispose"); },
+    }, {} as HTMLElement);
+    expect(events).toEqual(["mount.start", "connect"]);
+    release();
+    await mounted;
+    expect(events).toEqual(["mount.start", "connect", "mount.done"]);
+  });
   test.each(SOCKET_OPEN_CASES)(
     "selects the expected rehydration action for %s",
     (_label, wasReconnect, hydrationStarted, hasAuthoritativePrefill, rehydrationAction) => {

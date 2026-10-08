@@ -63,7 +63,7 @@ import {
   revealTerminalConflict,
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
-import { createTerminalLiveGate } from "./terminal-bootstrap";
+import { createTerminalLiveGate, mountAndConnectTerminal } from "./terminal-bootstrap";
 import type { TerminalLiveGate } from "./terminal-bootstrap";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import {
@@ -71,6 +71,7 @@ import {
   resolveGhosttyPrewarmDebugTiming,
 } from "../src/ghostty-prewarm-debug";
 import { DEFAULT_GHOSTTY_PREWARM_POOL_SIZE } from "../src/ghostty-prewarm-policy";
+import { resumeMobileTerminal } from "../src/mobile-foreground";
 import { AGENT_KIND } from "../src/agent-kind";
 import {
   FIRST_SESSION_GUIDE_URL,
@@ -305,11 +306,18 @@ function scheduleGhosttyPrewarm(): void {
   else window.setTimeout(warm, timing.delayMs);
 }
 
+let ghosttyPrewarmRefillPending = false;
+
 function scheduleGhosttyPrewarmRefillForConsumedInstance(): void {
   if (typeof window.createIsolatedGhostty !== "function") return;
   scheduleGhosttyPrewarmRefill({
     prewarm: () => ghosttyPrewarmPool.prewarm(),
-    schedule: (task) => { window.setTimeout(task, 0); },
+    schedule: (task) => {
+      requestAnimationFrame(() => {
+        if (window.requestIdleCallback) window.requestIdleCallback(task, { timeout: 2_000 });
+        else window.setTimeout(task, 0);
+      });
+    },
     waitUntilReady: () => window.ghosttyReady,
     onError: (error) => console.debug("[wf] ghostty prewarm refill skipped:", error),
   });
@@ -613,11 +621,11 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   // shared singleton is safe.
   let isolatedGhostty: unknown = null;
   let usedPrewarmedGhostty = false;
-  const prewarmedGhostty = ghosttyPrewarmPool.take();
+  const prewarmedGhostty = await ghosttyPrewarmPool.take();
   if (prewarmedGhostty.instance) {
     isolatedGhostty = prewarmedGhostty.instance;
     usedPrewarmedGhostty = true;
-    scheduleGhosttyPrewarmRefillForConsumedInstance();
+    ghosttyPrewarmRefillPending = true;
   } else if (typeof window.createIsolatedGhostty === "function") {
     try { isolatedGhostty = await window.createIsolatedGhostty(); }
     catch (e) { console.error("[wf] createIsolatedGhostty failed, falling back to shared singleton (grid mode will be disabled):", e); }
@@ -752,7 +760,16 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
 }
 
 function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTerminalController {
-  return createStrictPtyTerminalController(opts, {
+  return createStrictPtyTerminalController({
+    ...opts,
+    onHydrated: () => {
+      opts.onHydrated?.();
+      if (ghosttyPrewarmRefillPending) {
+        ghosttyPrewarmRefillPending = false;
+        scheduleGhosttyPrewarmRefillForConsumedInstance();
+      }
+    },
+  }, {
     createTerminalInstance,
     shouldSuppressContainerResize: () => {
       if (!isDesktop()) return false;
@@ -3514,9 +3531,11 @@ async function initTerminal(
     liveGate,
   });
 
-  await state.terminalController.mount(container);
-  if (!state.terminalController) return; // disposed while awaiting WASM init
-  if (!state.terminalController.term) {
+  const controller = state.terminalController;
+  await mountAndConnectTerminal(controller, container);
+  if (state.terminalController !== controller) return; // disposed/replaced while mounting
+  if (!controller.term) {
+    controller.dispose();
     showTerminalMountFailure(container, slowLoad);
     return;
   }
@@ -3528,7 +3547,6 @@ async function initTerminal(
   // Hydration can complete while mount awaits Ghostty. Do not expose a live
   // terminal on mobile until its post-mount handlers are ready.
   liveGate.onPostMountReady();
-  connectDesktopWs();
 }
 
 function waitForAnimationFrame(): Promise<void> {
@@ -4119,7 +4137,14 @@ function activeGridTerminalSessions(): typeof state.gridSessions | null {
   return isGridActive() ? state.gridSessions : null;
 }
 
+let terminalVisibilityEpoch = 0;
+const mobileForegroundEnvironment = {
+  isVisible: () => document.visibilityState === "visible",
+  visibilityEpoch: () => terminalVisibilityEpoch,
+};
+
 document.addEventListener("visibilitychange", () => {
+  terminalVisibilityEpoch++;
   if (document.visibilityState === "visible") {
     const hiddenDuration = _hiddenAt ? Date.now() - _hiddenAt : 0;
     _hiddenAt = 0;
@@ -4128,18 +4153,15 @@ document.addEventListener("visibilitychange", () => {
     tailnetDiscoveryAutoRefresh.sync(true);
     if (state.currentSession && state.currentView === "terminal") {
       if (!isDesktop()) {
-        // Mobile: always force-reconnect — iOS/Android background tabs kill
-        // TCP silently while readyState still reports OPEN.
+        // Short mobile suspensions probe TCP before paying for rehydration.
         const gridSessions = activeGridTerminalSessions();
         if (gridSessions) {
           for (const gs of gridSessions) {
             if (!gs.controller || gs._displaced) continue;
-            gs.controller.resetRetry();
-            gs.controller.reconnect();
+            void resumeMobileTerminal(gs.controller, hiddenDuration, mobileForegroundEnvironment);
           }
         } else if (state.terminalController?.term) {
-          state.terminalController.resetRetry();
-          state.terminalController.reconnect();
+          void resumeMobileTerminal(state.terminalController, hiddenDuration, mobileForegroundEnvironment);
         }
       } else if (hiddenDuration > DESKTOP_STALE_THRESHOLD_MS) {
         // Desktop: force-reconnect if tab was backgrounded >60s.

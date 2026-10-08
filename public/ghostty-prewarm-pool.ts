@@ -51,10 +51,12 @@ export class GhosttyPrewarmPool<TInstance> {
     this.onError = options.onError ?? (() => {});
   }
 
-  take(): GhosttyPrewarmTakeResult<TInstance> {
+  take(): GhosttyPrewarmTakeResult<TInstance> | Promise<GhosttyPrewarmTakeResult<TInstance>> {
     const instance = this.idle.shift();
-    if (!instance) return { instance: null, prewarmed: false };
-    return { instance, prewarmed: true };
+    if (instance !== undefined) return { instance, prewarmed: true };
+    const pending = this.pending.values().next().value;
+    if (pending) return pending.then(() => this.take());
+    return { instance: null, prewarmed: false };
   }
 
   prewarm(): Promise<void> | null {

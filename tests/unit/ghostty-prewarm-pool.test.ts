@@ -24,6 +24,46 @@ describe("GhosttyPrewarmPool", () => {
     expect(pool.take()).toEqual({ instance: null, prewarmed: false });
   });
 
+  test("take waits for an in-flight prewarm rather than starting another instance", async () => {
+    let resolve!: (instance: string) => void;
+    let created = 0;
+    const pool = new GhosttyPrewarmPool({ maxSize: 1, create: () => {
+      created++;
+      return new Promise<string>((ready) => { resolve = ready; });
+    } });
+    const warming = pool.prewarm();
+    const taking = pool.take();
+    resolve("pending-instance");
+    expect(await taking).toEqual({ instance: "pending-instance", prewarmed: true });
+    await warming;
+    expect(created).toBe(1);
+    expect(await pool.take()).toEqual({ instance: null, prewarmed: false });
+  });
+
+  test("concurrent takes cannot share the same pending isolated instance", async () => {
+    let resolve!: (instance: object) => void;
+    const instance = {};
+    const pool = new GhosttyPrewarmPool({ maxSize: 1, create: () => new Promise<object>((ready) => { resolve = ready; }) });
+    pool.prewarm();
+    const first = pool.take();
+    const second = pool.take();
+    resolve(instance);
+    expect(await first).toEqual({ instance, prewarmed: true });
+    expect(await second).toEqual({ instance: null, prewarmed: false });
+  });
+
+  test("taking a failing pending prewarm returns empty and permits retry", async () => {
+    let reject!: (error: Error) => void;
+    const pool = new GhosttyPrewarmPool({ maxSize: 1, create: () => new Promise<string>((_ready, fail) => { reject = fail; }) });
+    pool.prewarm();
+    const taking = pool.take();
+    reject(new Error("creation failed"));
+    expect(await taking).toEqual({ instance: null, prewarmed: false });
+    expect(pool.prewarm()).not.toBeNull();
+    reject(new Error("retry failed"));
+    await pool.take();
+  });
+
   test("failed prewarm does not poison later prewarm", async () => {
     let attempts = 0;
     const errors: unknown[] = [];

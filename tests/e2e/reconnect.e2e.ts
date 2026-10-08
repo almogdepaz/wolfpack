@@ -11,6 +11,7 @@
  */
 import { test, expect, type WebSocketRoute } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers.ts";
+import { MOBILE_FOREGROUND_PROBE_MS } from "../../src/mobile-foreground.ts";
 
 let srv: TestServer;
 
@@ -60,6 +61,44 @@ function setupWsProxy(page: import("@playwright/test").Page) {
     },
   };
 }
+
+test("visibility resume probes a healthy mobile terminal without reconnecting or hiding it", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile foreground lifecycle");
+  let connections = 0;
+  let pongs = 0;
+  await page.routeWebSocket(/\/ws\/pty/, (socket) => {
+    connections++;
+    const upstream = socket.connectToServer();
+    socket.onMessage((message) => upstream.send(message));
+    upstream.onMessage((message) => {
+      if (typeof message === "string") {
+        const parsed: unknown = JSON.parse(message);
+        if (parsed && typeof parsed === "object" && "type" in parsed && parsed.type === "pong") pongs++;
+      }
+      socket.send(message);
+    });
+    socket.onClose((code, reason) => upstream.close({ code, reason }));
+    upstream.onClose((code, reason) => socket.close({ code, reason }));
+  });
+  await page.goto(srv.baseUrl);
+  await page.locator(".card", { hasText: "test-project" }).first().click();
+  const canvas = page.locator("#desktop-terminal-container canvas");
+  await expect(canvas).toBeVisible();
+  await page.evaluate(() => {
+    let visible = false;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visible ? "visible" : "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    visible = true;
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect.poll(() => pongs).toBe(1);
+  // Observe beyond the whole liveness deadline so a delayed replacement
+  // connection cannot escape an instantaneous healthy-pong assertion.
+  await page.waitForTimeout(MOBILE_FOREGROUND_PROBE_MS + 100);
+  expect(connections).toBe(1);
+  await expect(canvas).toBeVisible();
+  await expect(page.locator("#conn-status")).toBeHidden();
+});
 
 test("WS disconnect shows reconnecting banner then recovers", async ({
   page,

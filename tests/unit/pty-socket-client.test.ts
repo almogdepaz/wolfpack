@@ -1,7 +1,11 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { PTY_ATTACH_CAPABILITY } from "../../src/pty-websocket-contract.ts";
 import { syncTerminalLayout } from "../../public/terminal-layout.ts";
 import { createPtySocketClient, type PtySocketClientDependencies, type PtySocketClientOpts } from "../../public/pty-socket-client.ts";
+
+import { mountAndConnectTerminal } from "../../public/terminal-bootstrap.ts";
+import { resumeMobileTerminal } from "../../src/mobile-foreground.ts";
+import { CLOSE_CODE_DISPLACED, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
 
 const ORIGINAL_WEBSOCKET = globalThis.WebSocket;
 const ORIGINAL_LOCATION = globalThis.location;
@@ -152,6 +156,188 @@ describe("PTY socket client", () => {
     client.close();
   });
 
+  test("opens ticket and socket before mount, but attaches only after the fitted terminal is ready", async () => {
+    let mounted = false;
+    let fitted = false;
+    let tickets = 0;
+    const options = {
+      ...clientOpts({ fitTerminal: () => { fitted = true; } }),
+      isTerminalReady: () => mounted,
+    };
+    const client = createPtySocketClient(options, dependencies({
+      getBrowserAuthToken: () => "token",
+      requestWebSocketTicket: async () => { tickets++; return "ticket"; },
+    }));
+    try {
+      client.connect();
+      expect(tickets).toBe(1);
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      expect(socket.jsonFrames()).toEqual([]);
+      expect(fitted).toBe(false);
+      mounted = true;
+      client.notifyTerminalReady();
+      expect(fitted).toBe(true);
+      expect(socket.jsonFrames()[0]).toEqual({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    } finally {
+      client.close();
+    }
+  });
+
+  for (const failure of ["ticket", "socket"] as const) {
+    test(`deferred mount recovers an early ${failure} failure and attaches exactly once`, async () => {
+      let mounted = false;
+      let tickets = 0;
+      let release!: () => void;
+      const pendingMount = new Promise<void>((resolve) => { release = resolve; });
+      const client = createPtySocketClient(clientOpts({
+        isTerminalReady: () => mounted,
+        shouldReconnect: () => mounted,
+        onDisconnected: () => client.scheduleReconnect(),
+      }), dependencies({
+        getBrowserAuthToken: () => "token",
+        requestWebSocketTicket: async () => {
+          tickets++;
+          if (failure === "ticket" && tickets === 1) throw new Error("early ticket failure");
+          return "ticket";
+        },
+      }));
+      const mounting = mountAndConnectTerminal({
+        mount: async () => { await pendingMount; mounted = true; client.notifyTerminalReady(); },
+        connect: () => client.connect(),
+        dispose: () => client.close(),
+      }, {} as HTMLElement);
+      try {
+        for (let i = 0; i < 5; i++) await flushPromises();
+        if (failure === "socket") {
+          FakeWebSocket.instances[0].open();
+          FakeWebSocket.instances[0].close(1006);
+        }
+        release();
+        await mounting;
+        for (let i = 0; i < 5; i++) await flushPromises();
+        const socket = FakeWebSocket.instances.at(-1);
+        expect(socket?.readyState).toBe(FakeWebSocket.CONNECTING);
+        socket?.open();
+        client.notifyTerminalReady();
+        expect(socket?.jsonFrames().filter((frame) => (frame as { type: string }).type === "attach")).toHaveLength(1);
+        expect(tickets).toBe(2);
+      } finally { release(); client.close(); }
+    });
+  }
+
+  for (let ticks = 0; ticks < 10; ticks++) {
+    test(`ticket rejection and deferred mount readiness interleave, ticks=${ticks}`, async () => {
+      let mounted = false;
+      let tickets = 0;
+      let retries = 0;
+      let release!: () => void;
+      let rejectTicket!: (error: Error) => void;
+      const pendingMount = new Promise<void>((resolve) => { release = resolve; });
+      const firstTicket = new Promise<string>((_resolve, reject) => { rejectTicket = reject; });
+      const client = createPtySocketClient(clientOpts({
+        isTerminalReady: () => mounted,
+        shouldReconnect: () => mounted,
+        onReconnecting: () => { retries++; },
+      }), dependencies({
+        getBrowserAuthToken: () => "token",
+        requestWebSocketTicket: () => {
+          tickets++;
+          return tickets === 1 ? firstTicket : Promise.resolve("ticket");
+        },
+      }));
+      const timers = spyOn(globalThis, "setTimeout");
+      const mounting = mountAndConnectTerminal({
+        mount: async () => { await pendingMount; mounted = true; client.notifyTerminalReady(); },
+        connect: () => client.connect(),
+        dispose: () => client.close(),
+      }, {} as HTMLElement);
+      try {
+        rejectTicket(new Error("interleaved ticket failure"));
+        for (let i = 0; i < ticks; i++) await Promise.resolve();
+        release();
+        await mounting;
+        for (let i = 0; i < 10; i++) await Promise.resolve();
+        expect(FakeWebSocket.instances.length === 1 || retries === 1).toBe(true);
+        expect(retries).toBeLessThanOrEqual(1);
+        if (FakeWebSocket.instances.length === 0) {
+          const callback = timers.mock.calls.at(-1)?.[0];
+          const handle = timers.mock.results.at(-1)?.value as ReturnType<typeof setTimeout> | undefined;
+          // Fire the real retry callback without leaving its native timer alive.
+          clearTimeout(handle);
+          if (typeof callback !== "function") throw new Error("missing scheduled retry");
+          callback();
+          for (let i = 0; i < 10; i++) await Promise.resolve();
+        }
+        expect(FakeWebSocket.instances).toHaveLength(1);
+        const socket = FakeWebSocket.instances[0];
+        socket.open();
+        client.notifyTerminalReady();
+        expect(socket.jsonFrames().filter((frame) => (frame as { type: string }).type === "attach")).toHaveLength(1);
+        expect(tickets).toBe(2);
+      } finally { release(); client.close(); timers.mockRestore(); }
+    });
+  }
+
+  test("mount rejection after early open closes transport and cannot reconnect", async () => {
+    let reject!: (error: Error) => void;
+    const mount = new Promise<void>((_resolve, fail) => { reject = fail; });
+    const client = createPtySocketClient(clientOpts({ isTerminalReady: () => false }), dependencies());
+    const mounting = mountAndConnectTerminal({ mount: () => mount, connect: () => client.connect(), dispose: () => client.close() }, {} as HTMLElement);
+    const failed = mounting.catch(() => {});
+    try {
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      reject(new Error("mount failed"));
+      await failed;
+      expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+      expect(client.retryBlocked).toBe(true);
+      client.scheduleReconnect();
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally { client.close(); }
+  });
+
+  for (const [code, reason] of [[CLOSE_CODE_DISPLACED, "displaced"], [CLOSE_CODE_SESSION_UNAVAILABLE, "unavailable"], [1000, WS_CLOSE_REASONS.PTY_EXITED], [1000, WS_CLOSE_REASONS.PTY_TEARDOWN]] as const) {
+    test(`mount readiness does not revive terminal-blocked close ${code} ${reason}`, async () => {
+      let mounted = false;
+      const client = createPtySocketClient(clientOpts({ isTerminalReady: () => mounted }), dependencies());
+      try {
+        client.connect();
+        await flushPromises();
+        const socket = FakeWebSocket.instances[0];
+        socket.open();
+        socket.close(code, reason);
+        mounted = true;
+        client.notifyTerminalReady();
+        await flushPromises();
+        expect(client.retryBlocked).toBe(true);
+        expect(FakeWebSocket.instances).toHaveLength(1);
+      } finally { client.close(); }
+    });
+  }
+
+  test("explicit takeover retry may recover after a terminal-blocked close", async () => {
+    let rejectTicket = false;
+    let retries = 0;
+    const client = createPtySocketClient(clientOpts({ onReconnecting: () => { retries++; } }), dependencies({
+      getBrowserAuthToken: () => "token",
+      requestWebSocketTicket: async () => { if (rejectTicket) throw new Error("takeover ticket failed"); return "ticket"; },
+    }));
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.close(CLOSE_CODE_DISPLACED);
+      rejectTicket = true;
+      client.reconnect({ takeControl: true });
+      for (let i = 0; i < 5; i++) await flushPromises();
+      expect(retries).toBe(1);
+    } finally { client.close(); }
+  });
+
   test("blocks reconnect when a remote machine has no ready route", async () => {
     let unavailable = 0;
     const client = createPtySocketClient(
@@ -165,6 +351,10 @@ describe("PTY socket client", () => {
     expect(FakeWebSocket.instances).toHaveLength(0);
     expect(unavailable).toBe(1);
     expect(client.retryBlocked).toBe(true);
+    client.notifyTerminalReady();
+    await flushPromises();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(unavailable).toBe(1);
 
     client.close();
   });
@@ -640,6 +830,86 @@ describe("PTY socket client", () => {
     } finally {
       client.close();
     }
+  });
+
+  test("foreground orchestration ignores the old epoch timeout and arms a fresh deadline", async () => {
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    client.connect();
+    await flushPromises();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    let visible = true;
+    let epoch = 1;
+    let reconnects = 0;
+    const controller = { ptyClient: client, isConnected: true, forceRepaint: () => {}, resetRetry: () => {}, reconnect: () => { reconnects++; } };
+    const environment = { isVisible: () => visible, visibilityEpoch: () => epoch };
+    const timers = spyOn(globalThis, "setTimeout");
+    try {
+      const first = resumeMobileTerminal(controller, 1_000, environment);
+      const oldTimeout = timers.mock.calls.at(-1)?.[0];
+      visible = false; epoch++;
+      visible = true; epoch++;
+      const second = resumeMobileTerminal(controller, 1_000, environment);
+      if (typeof oldTimeout !== "function") throw new Error("missing old probe timer");
+      oldTimeout();
+      await flushPromises();
+      expect(reconnects).toBe(0);
+      expect(timers.mock.calls.filter(([, delay]) => delay === 400)).toHaveLength(2);
+      socket.message(JSON.stringify({ type: "pong" }));
+      await Promise.all([first, second]);
+      expect(reconnects).toBe(0);
+    } finally { client.close(); timers.mockRestore(); }
+  });
+
+  test("foreground probe resolves on pong without reattaching", async () => {
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    client.connect();
+    await flushPromises();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    const before = socket.jsonFrames().length;
+    try {
+      const probe = client.probe();
+      expect(socket.jsonFrames().slice(before)).toEqual([{ type: "ping" }]);
+      socket.message(JSON.stringify({ type: "pong" }));
+      expect(await probe).toBe(true);
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally {
+      client.close();
+    }
+  });
+
+  test("a foreground probe send failure reports a dead socket rather than throwing", async () => {
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    client.connect();
+    await flushPromises();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    socket.send = () => { throw new Error("network unavailable"); };
+    try { expect(await client.probe()).toBe(false); }
+    finally { client.close(); }
+  });
+
+  test("foreground probe times out at 400ms and retiring a socket cancels a pending probe", async () => {
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    client.connect();
+    await flushPromises();
+    FakeWebSocket.instances[0].open();
+    const timers = spyOn(globalThis, "setTimeout");
+    try {
+      const pending = client.probe();
+      expect(client.probe()).toBe(pending);
+      const timer = timers.mock.calls.at(-1);
+      expect(timer?.[1]).toBe(400);
+      const callback = timer?.[0];
+      if (typeof callback !== "function") throw new Error("missing probe timeout");
+      callback(); // Advance this real boundary callback without any wall-clock sleep.
+      expect(await pending).toBe(false);
+      const cancelled = client.probe();
+      client.close();
+      expect(await cancelled).toBe(false);
+      expect(await client.probe()).toBe(false);
+    } finally { client.close(); timers.mockRestore(); }
   });
 
   test("buffers terminal output behind ordered resize until resize_ack", async () => {

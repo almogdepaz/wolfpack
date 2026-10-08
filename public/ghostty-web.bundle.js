@@ -33,14 +33,34 @@ window.Ghostty = GhosttyWeb.Ghostty;
 // when adding a 2nd grid cell. createIsolatedGhostty() returns a Ghostty backed
 // by its OWN WASM Instance (fresh Memory) so terminals can't corrupt each other.
 //
-// Each call recompiles+instantiates (~50ms). Acceptable for grid mode (handful of
-// cells); not in any hot path.
-window.createIsolatedGhostty = function() {
-  // Reuse Ghostty.load()'s logic: it tries the embedded data: URL, file paths,
-  // and ./ghostty-vt.wasm. Each call returns a brand-new Ghostty wrapping a
-  // fresh WebAssembly.Instance — exactly what we want for per-terminal isolation.
-  return GhosttyWeb.Ghostty.load();
+// Preserve Ghostty.load()'s embedded-URL/fallback selection, but compile each
+// source only once, including the singleton init. Each load still instantiates
+// a fresh Instance + Memory. The public constructor accepts that instance.
+var compiledModules = new Map();
+GhosttyWeb.Ghostty.loadFromPath = async function(path) {
+  var compiled = compiledModules.get(path);
+  if (!compiled) {
+    compiled = fetch(path).then(async function(response) {
+      if (!response.ok) throw new Error("Failed to fetch WASM: " + response.status);
+      var bytes = await response.arrayBuffer();
+      if (!bytes.byteLength) throw new Error("WASM file is empty: " + path);
+      return WebAssembly.compile(bytes);
+    });
+    compiledModules.set(path, compiled);
+    compiled.catch(function() { compiledModules.delete(path); });
+  }
+  var module = await compiled;
+  var instance = await WebAssembly.instantiate(module, {
+    env: {
+      log: function(offset, length) {
+        var bytes = new Uint8Array(instance.exports.memory.buffer, offset, length);
+        console.log("[ghostty-vt]", new TextDecoder().decode(bytes));
+      }
+    }
+  });
+  return new GhosttyWeb.Ghostty(instance);
 };
+window.createIsolatedGhostty = function() { return GhosttyWeb.Ghostty.load(); };
 
 // Auto-init WASM — consumers await window.ghosttyReady before creating terminals
 window.wasmFailed = false;

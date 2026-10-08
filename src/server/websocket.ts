@@ -37,7 +37,7 @@ import {
   TERMINAL_PREFILL_MODE,
 } from "../terminal-prefill.js";
 import type { TerminalPrefillMode } from "../terminal-prefill.js";
-import { PTY_ATTACH_CAPABILITY } from "../pty-websocket-contract.js";
+import { PTY_ATTACH_CAPABILITY, PTY_LIVENESS_MESSAGE } from "../pty-websocket-contract.js";
 
 const log = createLogger("ws");
 const PTY_BINARY_BYTES_PER_SEC = PTY_BINARY_FRAME_MAX_BYTES * 60;
@@ -541,6 +541,10 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
         }
         const str = String(raw);
         const msg = JSON.parse(str);
+        if (msg?.type === PTY_LIVENESS_MESSAGE.PING) {
+          safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: PTY_LIVENESS_MESSAGE.PONG }));
+          return;
+        }
         if (msg.type === "attach" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const pm = typeof msg.prefillMode === "string" ? msg.prefillMode : undefined;
           pendingAttachDims = { cols: msg.cols, rows: msg.rows, prefillMode: pm };
@@ -1327,6 +1331,12 @@ function setupNewPtyEntry(
         if (!rl.allow()) return;
         if (raw.length > MAX_WS_MESSAGE_BYTES) return; // reject oversized JSON frames
         const msg = JSON.parse(String(raw));
+        // Application-level probe: keep normal frame/rate limits, but never
+        // forward this control message into the PTY or change attach state.
+        if (msg?.type === PTY_LIVENESS_MESSAGE.PING) {
+          safeViewerSend(entry, session, JSON.stringify({ type: PTY_LIVENESS_MESSAGE.PONG }));
+          return;
+        }
         if (
           msg.type === "attach" &&
           typeof msg.cols === "number" &&

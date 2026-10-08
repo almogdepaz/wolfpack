@@ -1613,7 +1613,6 @@ body.no-animations, body.no-animations * {
   max-width: 100%;
   opacity: 0;
   visibility: hidden;
-  transition: opacity 80ms ease;
 }
 #desktop-terminal-container.hydrated:not(.transitioning) canvas {
   opacity: 1;
@@ -1939,7 +1938,6 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
   max-width: 100%;
   opacity: 0;
   visibility: hidden;
-  transition: opacity 80ms ease;
 }
 .grid-cell.hydrated:not(.grid-loading):not(.transitioning) canvas {
   opacity: 1;
