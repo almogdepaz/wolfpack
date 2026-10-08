@@ -30,6 +30,7 @@ class FakeWs {
   bufferedAmount = 0;
   closeCode: number | null = null;
   closeReason: string | null = null;
+  terminateCalls = 0;
   onSend: ((data: Buffer | string) => void) | null = null;
   private listeners = new Map<string, Listener[]>();
 
@@ -47,6 +48,10 @@ class FakeWs {
     this.emit("close", this.closeCode, this.closeReason);
   }
   ping(): void {}
+  terminate(): void {
+    this.terminateCalls++;
+    this.close(1006, "terminated");
+  }
   on(event: string, handler: Listener): void {
     let arr = this.listeners.get(event);
     if (!arr) { arr = []; this.listeners.set(event, arr); }
@@ -454,7 +459,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.binaryFrames().some((frame) => frame.equals(input))).toBe(true);
   });
 
-  async function attachWithClock(): Promise<FakeWs> {
+  async function attachWithClock(outputAck = false): Promise<FakeWs> {
     jest.useFakeTimers({ now: 1000 });
     const ws = new FakeWs();
     const ready = new Promise<void>((resolve) => {
@@ -463,12 +468,281 @@ describe("broker WS attach: snapshot + subscribe path", () => {
       };
     });
     attachWs(ws);
-    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none", capabilities: outputAck ? ["output-ack"] : [] });
     await ready;
     ws.frames.length = 0;
     jest.advanceTimersByTime(16);
     return ws;
   }
+
+  test("output ack window releases exactly acknowledged credit in FIFO order", async () => {
+    const ws = await attachWithClock(true);
+    const chunks = Array.from({ length: 8 }, (_, index) => Buffer.alloc(128 * 1024, index));
+    for (const chunk of chunks) backend.emitData(SESSION, chunk);
+    jest.advanceTimersByTime(8);
+    expect(Buffer.concat(ws.binaryFrames())).toEqual(Buffer.concat(chunks.slice(0, 4)));
+    ws.pushBinary(Buffer.from("input remains live"));
+    expect(Buffer.from(backend.writeCalls.at(-1)!.data)).toEqual(Buffer.from("input remains live"));
+    ws.pushJson({ type: "ack", bytes: 256 * 1024 });
+    expect(Buffer.concat(ws.binaryFrames())).toEqual(Buffer.concat(chunks.slice(0, 6)));
+    ws.pushJson({ type: "ack", bytes: 512 * 1024 });
+    expect(Buffer.concat(ws.binaryFrames())).toEqual(Buffer.concat(chunks));
+    expect(ws.closeCode).toBeNull();
+  });
+
+  test.each(["ack", "input", "control", "ping"] as const)("heartbeat counts inbound %s as liveness without a pong", async (kind) => {
+    const ws = await attachWithClock(true);
+    backend.emitData(SESSION, Buffer.alloc(128 * 1024, 1));
+    jest.advanceTimersByTime(25_000);
+    expect(ws.terminateCalls).toBe(0);
+    if (kind === "ack") ws.pushJson({ type: "ack", bytes: 128 * 1024 });
+    else if (kind === "input") ws.pushBinary(Buffer.from("echo"));
+    else if (kind === "control") ws.pushJson({ type: "layout_stable", cols: 80, rows: 24 });
+    else ws.emit("ping", Buffer.from("alive"));
+    jest.advanceTimersByTime(25_000);
+    expect(ws.terminateCalls).toBe(0);
+    expect(ws.readyState).toBe(1);
+    expect(activePtySessions.has(SESSION)).toBe(true);
+  });
+
+  test("pending viewer heartbeat counts inbound attach traffic without a pong", async () => {
+    const active = await attachWithClock(true);
+    const pending = new FakeWs();
+    attachWs(pending);
+    jest.advanceTimersByTime(25_000);
+    active.pushJson({ type: "layout_stable", cols: 80, rows: 24 });
+    pending.pushJson({ type: "attach", cols: 80, rows: 24, capabilities: ["output-ack"] });
+    jest.advanceTimersByTime(25_000);
+    expect(active.terminateCalls).toBe(0);
+    expect(pending.terminateCalls).toBe(0);
+    expect(pending.readyState).toBe(1);
+  });
+
+  test("heartbeat still terminates a viewer silent for two ticks", async () => {
+    const ws = await attachWithClock(true);
+    jest.advanceTimersByTime(25_000);
+    expect(ws.readyState).toBe(1);
+    jest.advanceTimersByTime(25_000);
+    expect(ws.terminateCalls).toBe(1);
+    expect(ws.readyState).toBe(3);
+    expect(activePtySessions.has(SESSION)).toBe(false);
+  });
+
+  test("session exit drains credit-blocked accepted output before the terminal close", async () => {
+    const ws = await attachWithClock(true);
+    const stream = Buffer.concat([Buffer.alloc(512 * 1024, 1), Buffer.alloc(512 * 1024, 2)]);
+    backend.emitData(SESSION, stream);
+    backend.emitExit(SESSION, 0);
+    expect(ws.readyState).toBe(1);
+    expect(backend.dataListeners.get(SESSION)?.size ?? 0).toBe(0);
+    const writesBefore = backend.writeCalls.length;
+    const resizesBefore = backend.resizeCalls.length;
+    ws.pushBinary(Buffer.from("must not reach exited PTY"));
+    ws.pushJson({ type: "resize", cols: 132, rows: 50 });
+    backend.emitData(SESSION, Buffer.from("not accepted after exit"));
+    jest.advanceTimersByTime(80);
+    expect(backend.writeCalls).toHaveLength(writesBefore);
+    expect(backend.resizeCalls).toHaveLength(resizesBefore);
+    ws.pushJson({ type: "ack", bytes: 256 * 1024 });
+    expect(ws.readyState).toBe(1);
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(768 * 1024);
+    ws.pushJson({ type: "ack", bytes: 512 * 1024 });
+    expect(Buffer.concat(ws.binaryFrames()).equals(stream)).toBe(true);
+    expect(ws.closeCode).toBe(4001);
+    expect(ws.closeReason).toBe("session unavailable");
+    expect(activePtySessions.has(SESSION)).toBe(false);
+  });
+
+  test("session exit bounds a non-acking viewer's drain wait to five seconds", async () => {
+    const ws = await attachWithClock(true);
+    backend.emitData(SESSION, Buffer.alloc(1024 * 1024, 1));
+    backend.emitExit(SESSION, 0);
+    expect(ws.readyState).toBe(1);
+    jest.advanceTimersByTime(4999);
+    expect(ws.readyState).toBe(1);
+    jest.advanceTimersByTime(1);
+    expect(ws.closeCode).toBe(4001);
+    expect(ws.closeReason).toBe("session unavailable");
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
+    expect(activePtySessions.has(SESSION)).toBe(false);
+  });
+
+  test("disconnect during exit draining cancels its deadline and discards the detached FIFO", async () => {
+    const ws = await attachWithClock(true);
+    backend.emitData(SESSION, Buffer.alloc(1024 * 1024, 1));
+    backend.emitExit(SESSION, 0);
+    expect(ws.readyState).toBe(1);
+    ws.close();
+    expect(jest.getTimerCount()).toBe(0);
+    jest.advanceTimersByTime(5000);
+    expect(ws.closeCode).toBe(1000);
+    expect(activePtySessions.has(SESSION)).toBe(false);
+  });
+
+  test("final progress ack drains output after normal control bucket exhaustion", async () => {
+    const ws = await attachWithClock(true);
+    for (let index = 0; index < 60; index++) {
+      ws.pushJson({ type: "layout_stable", cols: 80, rows: 24 });
+    }
+    const stream = Buffer.alloc(1024 * 1024, 1);
+    backend.emitData(SESSION, stream);
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
+    // The final cumulative ack must work even when every resize/layout token
+    // is spent. No more producer output, control traffic or reconnect follows.
+    ws.pushJson({ type: "ack", bytes: 512 * 1024 });
+    jest.advanceTimersByTime(1000);
+    expect(Buffer.concat(ws.binaryFrames()).equals(stream)).toBe(true);
+    expect(ws.closeCode).toBeNull();
+    expect(activePtySessions.has(SESSION)).toBe(true);
+  });
+
+  test("non-progress ack traffic cannot consume resize control admission", async () => {
+    const ws = await attachWithClock(true);
+    for (let index = 0; index < 100; index++) ws.pushJson({ type: "ack", bytes: 0 });
+    ws.pushJson({ type: "resize", resizeId: 42, cols: 132, rows: 50 });
+    jest.advanceTimersByTime(80);
+    await Promise.resolve();
+    expect(backend.resizeCalls.at(-1)).toEqual({ name: SESSION, cols: 132, rows: 50 });
+    expect(ws.closeCode).toBeNull();
+  });
+
+  test("output ack does not shorten an in-window coalescing deadline", async () => {
+    const ws = await attachWithClock(true);
+    backend.emitData(SESSION, Buffer.from("hello"));
+    backend.emitData(SESSION, Buffer.alloc(1025, 1));
+    ws.pushJson({ type: "ack", bytes: 5 });
+    expect(ws.binaryFrames()).toHaveLength(1);
+    jest.advanceTimersByTime(7);
+    expect(ws.binaryFrames()).toHaveLength(1);
+    jest.advanceTimersByTime(1);
+    expect(ws.binaryFrames()).toHaveLength(2);
+  });
+
+  test("output exactly filling remaining credit retains the in-window eight-ms deadline", async () => {
+    const ws = await attachWithClock(true);
+    backend.emitData(SESSION, Buffer.alloc(512 * 1024 - 5, 1));
+    backend.emitData(SESSION, Buffer.from("hello"));
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024 - 5);
+    jest.advanceTimersByTime(8);
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
+  });
+
+  test("output ack window splits oversized output at the credit boundary", async () => {
+    const ws = await attachWithClock(true);
+    const chunks = [Buffer.alloc(512 * 1024 - 3, 1), Buffer.alloc(128 * 1024, 2)];
+    for (const chunk of chunks) backend.emitData(SESSION, chunk);
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
+    expect(ws.binaryFrames().at(-1)?.length).toBe(3);
+    ws.pushJson({ type: "ack", bytes: 128 * 1024 });
+    expect(Buffer.concat(ws.binaryFrames())).toEqual(Buffer.concat(chunks));
+  });
+
+  test("output ack viewer closes only when its single pending queue exceeds one MiB", async () => {
+    const ws = await attachWithClock(true);
+    for (let index = 0; index < 12; index++) backend.emitData(SESSION, Buffer.alloc(128 * 1024, index));
+    jest.advanceTimersByTime(8);
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
+    expect(ws.closeCode).toBeNull();
+    backend.emitData(SESSION, Buffer.from("x"));
+    expect(ws.closeCode).toBe(1011);
+    expect(ws.closeReason).toBe("slow viewer");
+    backend.emitData(SESSION, Buffer.alloc(128 * 1024));
+    ws.pushJson({ type: "ack", bytes: 512 * 1024 });
+    jest.advanceTimersByTime(100);
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
+    expect(activePtySessions.has(SESSION)).toBe(false);
+  });
+
+  test("output ack overflow during synchronous subscribe activation releases its listener", async () => {
+    const ws = new FakeWs();
+    backend.onLiveSubscribe = () => {
+      backend.onLiveSubscribe = null;
+      backend.emitData(SESSION, Buffer.alloc(1536 * 1024 + 1));
+    };
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none", capabilities: ["output-ack"] });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(ws.closeReason).toBe("slow viewer");
+    expect(backend.dataListeners.get(SESSION)?.size ?? 0).toBe(0);
+    expect(ws.hasJsonType("pty_ready")).toBe(false);
+  });
+
+  test("output ack ignores garbage, decreasing and beyond-sent cumulative counters", async () => {
+    const ws = await attachWithClock(true);
+    const stream = Buffer.alloc(1024 * 1024, 1);
+    backend.emitData(SESSION, stream);
+    for (const bytes of [undefined, null, "524288", -1, 0.5, Number.MAX_SAFE_INTEGER + 1, 512 * 1024 + 1]) {
+      ws.pushJson({ type: "ack", bytes });
+    }
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
+    expect(ws.closeCode).toBeNull();
+    ws.pushJson({ type: "ack", bytes: 256 * 1024 });
+    for (const bytes of [128 * 1024, 256 * 1024, 0]) ws.pushJson({ type: "ack", bytes });
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(768 * 1024);
+    ws.pushJson({ type: "ack", bytes: 768 * 1024 });
+    expect(Buffer.concat(ws.binaryFrames())).toEqual(stream);
+  });
+
+  test("prefill debits the same output ack window as live data", async () => {
+    const prefill = Buffer.alloc(128 * 1024, 1);
+    const live = Buffer.alloc(512 * 1024, 2);
+    backend.prefill.set(SESSION, prefill);
+    const ws = new FakeWs();
+    const ready = new Promise<void>((resolve) => {
+      ws.onSend = (data) => {
+        if (typeof data === "string" && JSON.parse(data).type === "pty_ready") resolve();
+      };
+    });
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "viewport", capabilities: ["output-ack"] });
+    await ready;
+    backend.emitData(SESSION, live);
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
+    ws.pushJson({ type: "ack", bytes: prefill.length });
+    expect(Buffer.concat(ws.binaryFrames())).toEqual(Buffer.concat([prefill, live]));
+  });
+
+  test("pending-viewer takeover retains output-ack and negotiates before synchronous live output", async () => {
+    const original = await attachWithClock();
+    const replacement = new FakeWs();
+    const ready = new Promise<void>((resolve) => {
+      replacement.onSend = (data) => {
+        if (typeof data === "string" && JSON.parse(data).type === "pty_ready") resolve();
+      };
+    });
+    attachWs(replacement);
+    const stream = Buffer.alloc(512 * 1024 + 100, 1);
+    backend.onLiveSubscribe = () => {
+      backend.onLiveSubscribe = null;
+      backend.emitData(SESSION, stream);
+    };
+    replacement.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none", capabilities: ["output-ack"], takeControl: true });
+    await ready;
+    const ackIndex = replacement.frames.findIndex((frame) => typeof frame === "string" && JSON.parse(frame).type === "attach_ack");
+    const outputIndex = replacement.frames.findIndex((frame) => Buffer.isBuffer(frame));
+    expect(ackIndex).toBeLessThan(outputIndex);
+    expect(replacement.jsonFrames()).toContainEqual({ type: "attach_ack", capabilities: ["ordered-resize-ack", "output-ack"] });
+    expect(Buffer.concat(replacement.binaryFrames()).length).toBe(512 * 1024);
+    replacement.pushJson({ type: "ack", bytes: 256 * 1024 });
+    expect(Buffer.concat(replacement.binaryFrames()).equals(stream)).toBe(true);
+    expect(original.closeCode).toBe(4002);
+  });
+
+  test("output acknowledgements coexist with normal controls at one MiB per second", async () => {
+    const ws = await attachWithClock(true);
+    for (let index = 0; index < 16; index++) {
+      backend.emitData(SESSION, Buffer.alloc(64 * 1024, index));
+      jest.advanceTimersByTime(8);
+      ws.pushJson({ type: "ack", bytes: (index + 1) * 64 * 1024 });
+      ws.pushJson({ type: "layout_stable", cols: 80, rows: 24 });
+      jest.advanceTimersByTime(54);
+    }
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(1024 * 1024);
+    backend.emitData(SESSION, Buffer.alloc(512 * 1024, 16));
+    expect(Buffer.concat(ws.binaryFrames()).length).toBe(1536 * 1024);
+    expect(ws.closeCode).toBeNull();
+  });
 
   test("isolated five-byte broker output reaches the viewer without a timer wait", async () => {
     const ws = await attachWithClock();
@@ -827,21 +1101,14 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(activePtySessions.has(SESSION)).toBe(false);
   });
 
-  test("slow viewer is closed before output exceeds its bounded queue", async () => {
-    const ws = new FakeWs();
-    attachWs(ws);
-    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
-    await wait(20);
-    ws.frames.length = 0;
-
+  test("legacy viewer ignores stale bufferedAmount and has no output ack window", async () => {
+    const ws = await attachWithClock();
     ws.bufferedAmount = 1024 * 1024;
-    backend.emitData(SESSION, new Uint8Array([0x41, 0x42, 0x43]));
-    await wait(25);
-
-    expect(ws.binaryFrames()).toEqual([]);
-    expect(ws.closeCode).toBe(1011);
-    expect(ws.closeReason).toBe("slow viewer");
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    const stream = Buffer.alloc(2 * 1024 * 1024, 0x41);
+    backend.emitData(SESSION, stream);
+    expect(Buffer.concat(ws.binaryFrames())).toEqual(stream);
+    expect(ws.closeCode).toBeNull();
+    expect(activePtySessions.has(SESSION)).toBe(true);
   });
 
   test("viewport attach applies initial resize without full desktop settle wait", async () => {

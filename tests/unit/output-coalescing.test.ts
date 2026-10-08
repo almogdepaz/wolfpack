@@ -11,6 +11,23 @@ const DEFAULT_INPUT = {
 };
 
 describe("output coalescing decision", () => {
+  test("holds output without a timer when the ack window is exhausted", () => {
+    expect(decideOutputCoalescing({ ...DEFAULT_INPUT, availableBytes: 0 })).toBe("buffer_until_ack");
+    expect(decideOutputCoalescing({ ...DEFAULT_INPUT, availableBytes: 0, nextBytes: 128 * 1024 })).toBe("buffer_until_ack");
+  });
+
+  test("flushes in order when output exceeds the remaining ack credit", () => {
+    expect(decideOutputCoalescing({ ...DEFAULT_INPUT, availableBytes: 4 })).toBe("flush_then_send");
+    expect(decideOutputCoalescing({ ...DEFAULT_INPUT, availableBytes: 100, queuedBytes: 96 })).toBe("flush_then_send");
+  });
+
+  test("preserves leading edge and coalescing decisions inside the ack window", () => {
+    expect(decideOutputCoalescing({ ...DEFAULT_INPUT, availableBytes: 512 * 1024 })).toBe("send_now");
+    expect(decideOutputCoalescing({ ...DEFAULT_INPUT, availableBytes: 512 * 1024, nextBytes: 1025 })).toBe("buffer");
+    expect(decideOutputCoalescing({ ...DEFAULT_INPUT, availableBytes: 5 })).toBe("send_now");
+    expect(decideOutputCoalescing({ ...DEFAULT_INPUT, availableBytes: 5, sinceLastSendMs: 15 })).toBe("buffer");
+  });
+
   test("sends isolated small output immediately at the idle boundary", () => {
     expect(decideOutputCoalescing(DEFAULT_INPUT)).toBe("send_now");
     expect(decideOutputCoalescing({ ...DEFAULT_INPUT, nextBytes: 1024 })).toBe("send_now");

@@ -78,6 +78,16 @@ function resizeFrames(socket: FakeWebSocket): ResizeFrame[] {
     typeof frame === "object" && frame !== null && "type" in frame && frame.type === "resize");
 }
 
+interface OutputAckFrame {
+  readonly type: "ack";
+  readonly bytes: number;
+}
+
+function outputAckFrames(socket: FakeWebSocket): OutputAckFrame[] {
+  return socket.jsonFrames().filter((frame): frame is OutputAckFrame =>
+    typeof frame === "object" && frame !== null && "type" in frame && frame.type === "ack");
+}
+
 function acknowledge(socket: FakeWebSocket, frame: ResizeFrame): void {
   socket.message(JSON.stringify({ ...frame, type: "resize_ack" }));
 }
@@ -140,6 +150,208 @@ beforeEach(() => installBrowserStubs());
 afterEach(() => restoreBrowserStubs());
 
 describe("PTY socket client", () => {
+  test("sends cumulative output acks at the 64KiB cadence and 50ms deadline", async () => {
+    jest.useFakeTimers();
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: ["output-ack"] }));
+      jest.advanceTimersByTime(100);
+      expect(outputAckFrames(socket)).toEqual([]);
+      socket.message(new ArrayBuffer(64 * 1024));
+      expect(outputAckFrames(socket)).toEqual([{ type: "ack", bytes: 64 * 1024 }]);
+      socket.message(new ArrayBuffer(10));
+      jest.advanceTimersByTime(40);
+      socket.message(new ArrayBuffer(20));
+      jest.advanceTimersByTime(9);
+      expect(outputAckFrames(socket)).toHaveLength(1);
+      jest.advanceTimersByTime(1);
+      expect(outputAckFrames(socket)).toEqual([
+        { type: "ack", bytes: 64 * 1024 }, { type: "ack", bytes: 64 * 1024 + 30 },
+      ]);
+      jest.advanceTimersByTime(200);
+      expect(outputAckFrames(socket)).toHaveLength(2);
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
+  });
+
+  test("retries a potentially full quiet window's last ack four times, then stops", async () => {
+    jest.useFakeTimers();
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: ["output-ack"] }));
+      // Real server output is sliced: each transmitted ack is below the
+      // potential-window threshold, but the quiet burst fills the window.
+      for (let index = 0; index < 4; index++) socket.message(new ArrayBuffer(128 * 1024));
+      expect(outputAckFrames(socket).at(-1)).toEqual({ type: "ack", bytes: 512 * 1024 });
+      const initialAcks = outputAckFrames(socket).length;
+      jest.advanceTimersByTime(249);
+      expect(outputAckFrames(socket)).toHaveLength(initialAcks);
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        jest.advanceTimersByTime(attempt === 1 ? 1 : 250);
+        expect(outputAckFrames(socket)).toHaveLength(initialAcks + attempt);
+        expect(outputAckFrames(socket).at(-1)).toEqual({ type: "ack", bytes: 512 * 1024 });
+      }
+      jest.advanceTimersByTime(2000);
+      expect(outputAckFrames(socket)).toHaveLength(initialAcks + 4);
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
+  });
+
+  test("new output cancels stale quiet retry and retries only the latest cumulative ack", async () => {
+    jest.useFakeTimers();
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: ["output-ack"] }));
+      socket.message(new ArrayBuffer(512 * 1024));
+      jest.advanceTimersByTime(200);
+      socket.message(new ArrayBuffer(10));
+      jest.advanceTimersByTime(50);
+      expect(outputAckFrames(socket)).toEqual([
+        { type: "ack", bytes: 512 * 1024 }, { type: "ack", bytes: 512 * 1024 + 10 },
+      ]);
+      jest.advanceTimersByTime(250);
+      expect(outputAckFrames(socket).at(-1)).toEqual({ type: "ack", bytes: 512 * 1024 + 10 });
+      expect(outputAckFrames(socket)).toHaveLength(3);
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
+  });
+
+  test.each(["close", "disconnect", "reconnect"] as const)("cancels full-window ack retry on %s", async (action) => {
+    jest.useFakeTimers();
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: ["output-ack"] }));
+      socket.message(new ArrayBuffer(512 * 1024));
+      if (action === "disconnect") socket.close();
+      else client[action]();
+      await flushPromises();
+      jest.advanceTimersByTime(2000);
+      expect(outputAckFrames(socket)).toEqual([{ type: "ack", bytes: 512 * 1024 }]);
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
+  });
+
+  test("acks received prefill before resize barrier release, without recounting on replay", async () => {
+    jest.useFakeTimers();
+    const chunks: number[] = [];
+    const client = createPtySocketClient(clientOpts({
+      prefillMode: "viewport", onBinaryData: (data) => chunks.push(data.length),
+    }), dependencies());
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: ["output-ack", PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK] }));
+      socket.message(new ArrayBuffer(64 * 1024));
+      expect(chunks).toEqual([]);
+      expect(outputAckFrames(socket)).toEqual([{ type: "ack", bytes: 64 * 1024 }]);
+      socket.message(JSON.stringify({ type: "prefill_done" }));
+      acknowledge(socket, resizeFrames(socket)[0]);
+      expect(chunks).toEqual([64 * 1024]);
+      jest.advanceTimersByTime(50);
+      expect(outputAckFrames(socket)).toHaveLength(1);
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
+  });
+
+  test.each(["close", "disconnect", "reconnect"] as const)("cancels pending output ack on %s and resets only for a new socket", async (action) => {
+    jest.useFakeTimers();
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: ["output-ack"] }));
+      socket.message(new ArrayBuffer(64 * 1024));
+      socket.message(new ArrayBuffer(10));
+      const staleMessage = socket.onmessage;
+      if (action === "disconnect") socket.close();
+      else client[action]();
+      await flushPromises();
+      staleMessage?.({ data: new ArrayBuffer(64 * 1024) });
+      jest.advanceTimersByTime(100);
+      expect(outputAckFrames(socket)).toEqual([{ type: "ack", bytes: 64 * 1024 }]);
+      if (action === "reconnect") {
+        const replacement = FakeWebSocket.instances[1];
+        replacement.open();
+        replacement.message(JSON.stringify({ type: "attach_ack", capabilities: ["output-ack"] }));
+        replacement.message(new ArrayBuffer(64 * 1024));
+        expect(outputAckFrames(replacement)).toEqual([{ type: "ack", bytes: 64 * 1024 }]);
+      }
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
+  });
+
+  test("keeps cumulative byte counters across same-socket take-control reattach", async () => {
+    jest.useFakeTimers();
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: ["output-ack"] }));
+      socket.message(new ArrayBuffer(64 * 1024));
+      socket.message(JSON.stringify({ type: "control_granted" }));
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: ["output-ack"] }));
+      socket.message(new ArrayBuffer(64 * 1024));
+      expect(outputAckFrames(socket)).toEqual([
+        { type: "ack", bytes: 64 * 1024 }, { type: "ack", bytes: 128 * 1024 },
+      ]);
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
+  });
+
+  test("does not ack output from a server without output-ack support", async () => {
+    jest.useFakeTimers();
+    const client = createPtySocketClient(clientOpts(), dependencies());
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack" }));
+      socket.message(new ArrayBuffer(128 * 1024));
+      jest.advanceTimersByTime(100);
+      expect(outputAckFrames(socket)).toEqual([]);
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
+  });
+
   test("opens a socket and sends the attach handshake", async () => {
     let attached = 0;
     const client = createPtySocketClient(clientOpts({ onAttach: () => { attached++; } }), dependencies());
@@ -150,7 +362,7 @@ describe("PTY socket client", () => {
 
     expect(FakeWebSocket.instances).toHaveLength(1);
     expect(new URL(FakeWebSocket.instances[0].url).href).toBe("ws://localhost:18790/ws/pty?session=alpha");
-    expect(FakeWebSocket.instances[0].jsonFrames()[0]).toEqual({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    expect(FakeWebSocket.instances[0].jsonFrames()[0]).toEqual({ type: "attach", cols: 80, rows: 24, prefillMode: "none", capabilities: ["output-ack"] });
     expect(attached).toBe(1);
 
     client.close();
@@ -179,7 +391,7 @@ describe("PTY socket client", () => {
       mounted = true;
       client.notifyTerminalReady();
       expect(fitted).toBe(true);
-      expect(socket.jsonFrames()[0]).toEqual({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+      expect(socket.jsonFrames()[0]).toEqual({ type: "attach", cols: 80, rows: 24, prefillMode: "none", capabilities: ["output-ack"] });
     } finally {
       client.close();
     }
@@ -765,7 +977,7 @@ describe("PTY socket client", () => {
       const replacement = action === "reconnect" ? FakeWebSocket.instances[1] : socket;
       if (action === "reconnect") replacement.open();
       while (paintCallbacks.length) paintCallbacks.shift()!(0);
-      expect(replacement.jsonFrames()).toEqual([{ type: "attach", cols: 80, rows: 24, prefillMode: "none" }]);
+      expect(replacement.jsonFrames()).toEqual([{ type: "attach", cols: 80, rows: 24, prefillMode: "none", capabilities: ["output-ack"] }]);
     } finally {
       client.close();
     }
