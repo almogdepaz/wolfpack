@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { PTY_ATTACH_CAPABILITY } from "../../src/pty-websocket-contract.ts";
+import { syncTerminalLayout } from "../../public/terminal-layout.ts";
 import { createPtySocketClient, type PtySocketClientDependencies, type PtySocketClientOpts } from "../../public/pty-socket-client.ts";
 
 const ORIGINAL_WEBSOCKET = globalThis.WebSocket;
@@ -185,6 +186,53 @@ describe("PTY socket client", () => {
     expect(reconnecting).toBe(1);
 
     client.close();
+  });
+
+  test.each([false, true])("returns to committed geometry when the real layout caller reverses a resize (in-flight: %s)", async (inFlight) => {
+    jest.useFakeTimers();
+    const term = { cols: 80, rows: 24, scrollToLine: () => {} };
+    let proposed = { cols: 80, rows: 24 };
+    const client = createPtySocketClient(clientOpts({
+      getTermDimensions: () => term,
+      getProposedDimensions: () => proposed,
+      onResizeAck: (cols, rows) => { Object.assign(term, { cols, rows }); },
+    }), dependencies());
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: [PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK] }));
+      acknowledge(socket, resizeFrames(socket)[0]);
+      const sync = () => syncTerminalLayout({
+        term,
+        fitAddon: { fit: () => {}, proposeDimensions: () => proposed },
+        ptyClient: {
+          supportsOrderedResize: true,
+          sendResize: async (cols, rows) => { await client.sendResize(cols, rows); },
+        },
+        forceSend: false,
+        repaint: true,
+      });
+      proposed = { cols: 90, rows: 24 };
+      const pending = sync();
+      jest.advanceTimersByTime(inFlight ? 120 : 20);
+      proposed = { cols: 80, rows: 24 };
+      const reversed = sync();
+      jest.advanceTimersByTime(120);
+      acknowledge(socket, resizeFrames(socket).at(-1)!);
+      if (inFlight) {
+        await flushPromises();
+        jest.advanceTimersByTime(120);
+        acknowledge(socket, resizeFrames(socket).at(-1)!);
+      }
+      await Promise.all([pending, reversed]);
+      expect(term.cols).toBe(proposed.cols);
+      expect(resizeFrames(socket)).toHaveLength(inFlight ? 3 : 1);
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
   });
 
   test("makes acknowledged resize progress while geometry keeps changing", async () => {

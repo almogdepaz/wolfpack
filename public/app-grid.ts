@@ -156,12 +156,25 @@ function cancelGridRelayoutTransition() {
   }
   for (const gs of _gridRelayoutHiddenSessions) gs._cellElement?.classList.remove("transitioning");
   _gridRelayoutHiddenSessions.clear();
+  settleGridRelayout(false);
+}
+
+function settleGridRelayout(acknowledged: boolean): void {
+  // Release ownership before notifying callers: callbacks can schedule another fit.
+  const callbacks = [..._gridRelayoutSettlementCallbacks];
+  _gridRelayoutSettlementCallbacks.clear();
+  for (const callback of callbacks) {
+    try { callback(acknowledged); }
+    catch (error: unknown) { console.warn("[grid] relayout settlement callback failed:", error); }
+  }
 }
 
 // ── Multi-terminal grid state ──
 let _gridRelayoutFitRaf: number | null = null;
 let _gridRelayoutRevealRaf: number | null = null;
 const _gridRelayoutHiddenSessions = new Set<GridSession>();
+// Replacement fits inherit waiting callers, not the superseded transition closure.
+const _gridRelayoutSettlementCallbacks = new Set<(acknowledged: boolean) => void>();
 const MAX_GRID_CELLS = 6;
 
 export function isGridActive() {
@@ -530,6 +543,15 @@ async function mountGridController(gs, cell, idx) {
     onHydrated: () => {
       gs._slowLoad?.stop();
       setTerminalLoadVisualState(cell, "live");
+      // Reconnect hydration restores terminal truth, but a cancelled grid fit
+      // still owns hidden siblings. Resume its ack/repaint gate, not an early reveal.
+      const sessions = sessionsForGridSession(gs);
+      if (gs.controller === controller && gs._cellElement === cell && cell.parentNode !== null &&
+          !gs._collapsed && sessions.includes(gs) && _gridRelayoutHiddenSessions.has(gs)) {
+        const visibleSessions = sessions.filter(session => !session._collapsed);
+        scheduleGridRelayoutFit(visibleSessions, true,
+          gs._delegation ? "delegation-grid-container" : "desktop-grid-container", visibleSessions);
+      }
     },
   });
   gs.controller = controller;
@@ -733,6 +755,7 @@ export function setDelegationGridMembers(members: readonly DelegationGridMember[
 }
 
 export function suspendDelegationGridTerminals(): void {
+  cancelGridRelayoutTransition();
   for (const session of state.delegationGridSessions) {
     clearGridCellTakeControlTimer(session);
     session._slowLoad?.stop();
@@ -1233,6 +1256,7 @@ function scheduleGridRelayoutFit(
   activeSessions: GridSession[] = state.gridSessions,
   onSettled?: (acknowledged: boolean) => void,
 ): void {
+  if (onSettled) _gridRelayoutSettlementCallbacks.add(onSettled);
   if (_gridRelayoutFitRaf != null) cancelAnimationFrame(_gridRelayoutFitRaf);
   if (_gridRelayoutRevealRaf != null) {
     cancelAnimationFrame(_gridRelayoutRevealRaf);
@@ -1249,12 +1273,12 @@ function scheduleGridRelayoutFit(
   _gridRelayoutFitRaf = requestAnimationFrame(() => {
     _gridRelayoutFitRaf = null;
     if (transitionId !== state.gridRelayoutTransitionId) return;
-    if (activeSessions.length < 1) { onSettled?.(true); return; }
+    if (activeSessions.length < 1) { settleGridRelayout(true); return; }
     const container = document.getElementById(containerId);
     if (container) void container.offsetWidth;
     const revealAfterRepaint = () => {
       if (transitionId !== state.gridRelayoutTransitionId) return;
-      if (_gridRelayoutHiddenSessions.size === 0) { onSettled?.(true); return; }
+      if (_gridRelayoutHiddenSessions.size === 0) { settleGridRelayout(true); return; }
       _gridRelayoutRevealRaf = requestAnimationFrame(() => {
         if (transitionId !== state.gridRelayoutTransitionId) return;
         for (const gs of _gridRelayoutHiddenSessions) {
@@ -1269,7 +1293,7 @@ function scheduleGridRelayoutFit(
             gs._cellElement?.classList.remove("transitioning");
           }
           _gridRelayoutHiddenSessions.clear();
-          onSettled?.(true);
+          settleGridRelayout(true);
         });
       });
     };
@@ -1300,7 +1324,7 @@ function scheduleGridRelayoutFit(
     void Promise.all(orderedSettlements).then((outcomes) => {
       if (transitionId !== state.gridRelayoutTransitionId) return;
       if (outcomes.some((outcome) => outcome === "cancelled")) {
-        onSettled?.(false);
+        settleGridRelayout(false);
         return;
       }
       revealAfterRepaint();
