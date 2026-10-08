@@ -178,7 +178,7 @@ const PERF_HARNESS_ENV_HELP = [
   "WOLFPACK_PERF_ENFORCE_BUDGETS: set to 1 to fail on cold/warm p95, heap, long-task, or console budgets",
 ] as const;
 
-function resolveBrokerBin(): string | null {
+export function resolveBrokerBin(): string | null {
   const fromEnv = process.env.WOLFPACK_BROKER_BIN;
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
   for (const candidate of [
@@ -198,7 +198,13 @@ async function getPerfBrowser(): Promise<Browser> {
   return sharedPerfBrowser;
 }
 
-async function waitForFile(path: string, timeoutMs: number): Promise<void> {
+export async function closePerfBrowser(): Promise<void> {
+  if (!sharedPerfBrowser) return;
+  await Promise.race([sharedPerfBrowser.close(), wait(5_000)]);
+  sharedPerfBrowser = null;
+}
+
+export async function waitForFile(path: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (existsSync(path)) return;
@@ -217,7 +223,7 @@ export function createPerfBrokerSocketLocation(): PerfBrokerSocketLocation {
   return { tempDir, socketPath: join(tempDir, "broker.sock") };
 }
 
-function startBroker(binary: string): {
+export function startBroker(binary: string): {
   socketPath: string;
   tempDir: string;
   proc: ChildProcess;
@@ -241,7 +247,7 @@ function startBroker(binary: string): {
   return { socketPath, tempDir, proc, stderr: () => stderr };
 }
 
-function existingBroker(): { socketPath: string; tempDir: null; proc: null; stderr: () => string } | null {
+export function existingBroker(): { socketPath: string; tempDir: null; proc: null; stderr: () => string } | null {
   if (process.env.WOLFPACK_PERF_USE_EXISTING_BROKER !== "1") return null;
   const socketPath = process.env.WOLFPACK_BROKER_SOCKET;
   if (!socketPath) {
@@ -253,7 +259,7 @@ function existingBroker(): { socketPath: string; tempDir: null; proc: null; stde
   return { socketPath, tempDir: null, proc: null, stderr: () => "" };
 }
 
-async function startServer(socketPath: string, devDir: string, opts?: { prefillDelayMs?: number }): Promise<{
+export async function startServer(socketPath: string, devDir: string, opts?: { prefillDelayMs?: number }): Promise<{
   baseUrl: string;
   proc: ChildProcess;
   timings: ServerTiming[];
@@ -316,7 +322,7 @@ async function startServer(socketPath: string, devDir: string, opts?: { prefillD
   return { baseUrl: `http://127.0.0.1:${port}`, proc, timings };
 }
 
-async function createSession(devDir: string, baseUrl: string, name: string, project: string): Promise<void> {
+export async function createSession(devDir: string, baseUrl: string, name: string, project: string): Promise<void> {
   mkdirSync(join(devDir, project), { recursive: true });
   const res = await fetch(`${baseUrl}/api/create`, {
     method: "POST",
@@ -360,7 +366,7 @@ export async function cleanupCreatedSessions(
   return results.filter((result): result is SessionCleanupFailure => result !== null);
 }
 
-async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageLoadSetup; close(): Promise<void> }> {
+export async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageLoadSetup; close(): Promise<void> }> {
   const browser = await getPerfBrowser();
   const deviceMode = parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE);
   const page = await browser.newPage(deviceMode === "mobile" ? {
