@@ -1,17 +1,12 @@
 import {
-  closeSync,
   existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
   readFileSync,
   realpathSync,
-  renameSync,
-  rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { createLogger, errMsg } from "../log.js";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, normalize, resolve } from "node:path";
 import {
@@ -37,6 +32,10 @@ export type {
   AgentStatusSourceKind,
   AgentStatusState,
 } from "../agent-status-contract.js";
+
+// Soft cache state: coalesce semantic changes for two seconds, without fsync.
+export const RUNTIME_STATE_PERSIST_DEBOUNCE_MS = 2_000;
+const log = createLogger("server");
 
 export interface AgentStatusSource {
   readonly state: AgentStatusState;
@@ -532,10 +531,11 @@ export function agentRuntimeStatePath(): string {
 }
 
 function sameRuntimeState(previous: AgentRuntimeState | undefined, next: AgentRuntimeState): boolean {
-  if (!previous || previous.observedAt !== next.observedAt) return false;
+  if (!previous) return false;
   const keys = Object.keys(next) as (keyof AgentRuntimeState)[];
   return keys.length === Object.keys(previous).length
-    && keys.every((key) => Object.hasOwn(previous, key) && Object.is(previous[key], next[key]));
+    && keys.every((key) => Object.hasOwn(previous, key)
+      && (key === "observedAt" || Object.is(previous[key], next[key])));
 }
 
 /** Freeze constructor-owned JSON, including any extension fields accepted on disk. */
@@ -554,6 +554,9 @@ function freezePersistedState(state: AgentRuntimeState): void {
 export class AgentRuntimeStateStore {
   private readonly file: AgentRuntimeStateFile;
   private dirty = true;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  private inFlight: Promise<boolean> | null = null;
+  private draining = false;
 
   constructor(readonly path = agentRuntimeStatePath()) {
     this.file = this.read();
@@ -613,15 +616,16 @@ export class AgentRuntimeStateStore {
 
   private set(sessionKey: string, next: AgentRuntimeState): AgentRuntimeState {
     const previous = this.file.sessions[sessionKey];
-    if (sameRuntimeState(previous, next)) return previous!;
+    const equivalent = sameRuntimeState(previous, next);
+    if (equivalent && previous!.observedAt === next.observedAt) return previous!;
     // Reducer values are flat; acknowledgement only shares already-frozen disk
     // extensions. Never mutate old results or freeze caller-owned input graphs.
     this.file.sessions[sessionKey] = Object.freeze(next);
-    this.dirty = true;
+    if (!equivalent) this.dirty = true;
     return next;
   }
 
-  /** Persist pending reductions once; unchanged flushes do no serialization/write. */
+  /** Schedule pending reductions; callers must not assume synchronous durability. */
   flush(): void {
     this.write();
   }
@@ -643,34 +647,70 @@ export class AgentRuntimeStateStore {
   }
 
   private write(): void {
-    // Preserve explicit flush/recreation after removal. This is not external
-    // writer/replacement detection: the existing load-once ownership model stays.
+    // A pending initial write owns creation; observation-only updates must not
+    // mistake its not-yet-renamed destination for an externally deleted file.
+    if (this.inFlight && !this.dirty) return;
+    // Preserve explicit recreation after removal under the load-once contract.
     if (!this.dirty && existsSync(this.path)) return;
-    this.dirty = true; // Recreation attempts must also remain retryable on failure.
-    const directory = dirname(this.path);
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    this.dirty = true;
+    if (this.persistTimer || this.inFlight || this.draining) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      this.startPersist();
+    }, RUNTIME_STATE_PERSIST_DEBOUNCE_MS);
+    this.persistTimer.unref();
+  }
+
+  private startPersist(): Promise<boolean> {
+    if (this.inFlight) return this.inFlight;
+    this.inFlight = this.persist().finally(() => {
+      this.inFlight = null;
+      if (this.dirty) this.write();
+    });
+    return this.inFlight;
+  }
+
+  private async persist(): Promise<boolean> {
     const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-    let fd: number | undefined;
-    try {
-      fd = openSync(tmp, "wx", 0o600);
-      writeFileSync(fd, `${JSON.stringify(this.file, null, 2)}\n`);
-      fsyncSync(fd);
-      closeSync(fd);
-      fd = undefined;
-      renameSync(tmp, this.path);
-      // Best-effort directory durability. APFS can reject directory fsync;
-      // the atomic rename is still complete in that case.
-      try {
-        const dirFd = openSync(directory, "r");
-        try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
-      } catch { /* platform does not support directory fsync */ }
-    } finally {
-      if (fd !== undefined) closeSync(fd);
-      rmSync(tmp, { force: true });
-    }
-    // Only a fully successful write/cleanup clears pending changes. An error
-    // retains the existing in-memory update and the next flush retries it.
+    // Capture before yielding; later semantic changes remain dirty for one
+    // follow-up window, rather than being cleared by this older write.
     this.dirty = false;
+    try {
+      const contents = `${JSON.stringify(this.file, null, 2)}\n`;
+      await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+      try {
+        await writeFile(tmp, contents, { flag: "wx", mode: 0o600 });
+        await rename(tmp, this.path);
+      } finally {
+        await rm(tmp, { force: true });
+      }
+      return true;
+    } catch (error: unknown) {
+      this.dirty = true;
+      log.warn("runtime state persistence failed", { path: this.path, error: errMsg(error) });
+      return false;
+    }
+  }
+
+  /** Existing server-close hook may bypass debounce and drain pending writes. */
+  async flushForShutdown(): Promise<void> {
+    this.draining = true;
+    this.cancelScheduledPersist();
+    try {
+      if (this.inFlight) await this.inFlight;
+      while (this.dirty) {
+        if (!await this.startPersist()) break;
+      }
+    } finally {
+      this.draining = false;
+      if (this.dirty) this.write();
+    }
+  }
+
+  /** Also used by test singleton resets to avoid writes from abandoned stores. */
+  cancelScheduledPersist(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer);
+    this.persistTimer = null;
   }
 }
 
@@ -681,6 +721,11 @@ export function getAgentRuntimeStateStore(): AgentRuntimeStateStore {
   return runtimeStateStore;
 }
 
+export async function flushAgentRuntimeStateForShutdown(): Promise<void> {
+  await runtimeStateStore?.flushForShutdown();
+}
+
 export function __resetAgentRuntimeStateStoreForTests(): void {
+  runtimeStateStore?.cancelScheduledPersist();
   runtimeStateStore = null;
 }

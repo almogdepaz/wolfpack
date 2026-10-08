@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach, spyOn } from "bun:test";
-import * as fs from "node:fs";
+import * as fs from "node:fs/promises";
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -110,7 +110,7 @@ const {
 } = await import("../../src/server/push.ts");
 const { activePtySessions } = await import("../../src/server/websocket.ts");
 const { AgentRuntimeStateStore, getAgentRuntimeStateStore, __resetAgentRuntimeStateStoreForTests } = await import("../../src/server/agent-status.ts");
-const { forgetSessionObservation } = await import("../../src/server/session-observation.ts");
+const { forgetSessionObservation, stopSessionNotificationObserver } = await import("../../src/server/session-observation.ts");
 
 const {
   __resetSessionObservationForTests,
@@ -171,6 +171,7 @@ beforeEach(() => {
 });
 
 afterAll(async () => {
+  __resetAgentRuntimeStateStoreForTests();
   (server as Server).close();
   await __resetTaskRelayGatewayForTests();
   if (PRIOR_WOLFPACK_TASK_RELAY_ROOT === undefined) delete process.env.WOLFPACK_TASK_RELAY_ROOT;
@@ -323,28 +324,33 @@ describe("GET /api/sessions", () => {
     mockBackend.setCapturePane(async (s: string) => `captured output for ${s}\n`);
   });
 
-  test("persists one real runtime-state write per changed dashboard batch, none for an identical batch", async () => {
+  test("schedules semantic dashboard persistence but never writes observation-only batches", async () => {
     mockBackend.setSessions(Array.from({ length: 100 }, (_, i) => `batch-${i}`));
     const clock = spyOn(Date, "now").mockReturnValue(Date.parse("2026-07-25T00:00:00.000Z"));
-    const rename = spyOn(fs, "renameSync");
+    const rename = spyOn(fs, "rename");
     const runtimePath = process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!;
     const writes = () => rename.mock.calls.filter(([, destination]) => destination === runtimePath).length;
     try {
       const first = await (await get("/api/sessions")).json();
       expect(first.sessions).toHaveLength(100);
+      expect(writes()).toBe(0);
+      await getAgentRuntimeStateStore().flushForShutdown();
       expect(writes()).toBe(1);
       expect(Object.keys(new AgentRuntimeStateStore(runtimePath).snapshot().sessions)).toHaveLength(100);
       const same = await (await get("/api/sessions")).json();
-      expect(same.sessions.map((s: any) => s.runtimeState)).toEqual(first.sessions.map((s: any) => s.runtimeState));
+      expect(same.sessions.map((s: { readonly runtimeState: unknown }) => s.runtimeState)).toEqual(first.sessions.map((s: { readonly runtimeState: unknown }) => s.runtimeState));
       expect(writes()).toBe(1);
       clock.mockReturnValue(Date.parse("2026-07-25T00:01:00.000Z"));
       await get("/api/sessions");
-      expect(writes()).toBe(2); // New observation timestamps must still persist.
+      await getAgentRuntimeStateStore().flushForShutdown();
+      expect(writes()).toBe(1); // Observation timestamps advance only in memory.
       mockBackend.setSessions([]);
       await get("/api/sessions");
-      expect(writes()).toBe(3); // Real removals persist.
+      await stopSessionNotificationObserver(); // Existing server-close hook drains removals.
+      expect(writes()).toBe(2);
       await get("/api/sessions");
-      expect(writes()).toBe(3); // Repeated empty observation does not rewrite.
+      await getAgentRuntimeStateStore().flushForShutdown();
+      expect(writes()).toBe(2);
     } finally {
       rename.mockRestore();
       clock.mockRestore();
@@ -371,6 +377,7 @@ describe("GET /api/sessions", () => {
       release();
       const observed = await (await pending).json();
       expect(observed.sessions[0].runtimeState).toMatchObject({ transitionSequence, acknowledgedSequence: transitionSequence, unseen: false });
+      await getAgentRuntimeStateStore().flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ acknowledgedSequence: transitionSequence, unseen: false });
     } finally {
       release();
@@ -1991,6 +1998,7 @@ describe("GET /api/sessions", () => {
       currentRun: { runId: sessionKey, runOrder: 0 },
     });
     expect(store.acknowledge(sessionKey, idle.transitionSequence, "2026-07-25T00:01:00.000Z")?.unseen).toBe(false);
+    await store.flushForShutdown();
     __resetAgentRuntimeStateStoreForTests();
 
     const data = await (await get("/api/sessions")).json();
@@ -2033,6 +2041,7 @@ describe("GET /api/sessions", () => {
       });
       expect(unavailable.sessions[0].activity).toMatchObject({ observedAt: expect.any(String) });
       expect(unavailable.sessions[0].activity).not.toHaveProperty("quietSince");
+      await getAgentRuntimeStateStore().flushForShutdown();
       const persisted = new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId);
       expect(persisted?.state).toBe("unknown");
       expect(persisted?.acknowledgedSequence).toBe(sequence);
@@ -2091,6 +2100,7 @@ describe("GET /api/sessions", () => {
     mockBackend.setSessions([]);
     const recovered = await (await get("/api/sessions")).json();
     expect(recovered.sessions).toHaveLength(0);
+    await getAgentRuntimeStateStore().flushForShutdown();
     expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionKey)).toBeUndefined();
   });
 
@@ -2104,12 +2114,14 @@ describe("GET /api/sessions", () => {
       fallback: { rawOutputChanged: false, observedAt: "2026-07-25T00:00:00.000Z" },
       currentRun: { runId: sessionKey, runOrder: 0 },
     });
+    await store.flushForShutdown();
     __resetAgentRuntimeStateStoreForTests();
     mockBackend.setSessions([]);
 
     const data = await (await get("/api/sessions")).json();
 
     expect(data.sessions).toHaveLength(0);
+    await getAgentRuntimeStateStore().flushForShutdown();
     expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionKey)).toBeUndefined();
   });
 
@@ -2147,6 +2159,7 @@ describe("GET /api/sessions", () => {
       currentRun: { runId: sessionId, runOrder: 0 },
     });
     expect(store.acknowledge(sessionId, idle.transitionSequence, "2026-07-25T00:01:00.000Z")?.unseen).toBe(false);
+    await store.flushForShutdown();
     __resetAgentRuntimeStateStoreForTests();
     try {
       const dead = await (await get("/api/sessions")).json();
@@ -2164,11 +2177,13 @@ describe("GET /api/sessions", () => {
           unseen: true,
         },
       });
+      await getAgentRuntimeStateStore().flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ state: "off" });
 
       factBackend.setFacts([]);
       const omitted = await (await get("/api/sessions")).json();
       expect(omitted.sessions).toHaveLength(0);
+      await getAgentRuntimeStateStore().flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toBeUndefined();
     } finally {
       __setTestBackend(mockBackend);
@@ -2203,6 +2218,7 @@ describe("GET /api/sessions", () => {
           unseen: true,
         },
       });
+      await getAgentRuntimeStateStore().flushForShutdown();
       expect(new AgentRuntimeStateStore(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!).get(sessionId)).toMatchObject({ state: "unknown" });
     } finally {
       __setTestBackend(mockBackend);
