@@ -37,7 +37,7 @@ import {
   TERMINAL_PREFILL_MODE,
 } from "../terminal-prefill.js";
 import type { TerminalPrefillMode } from "../terminal-prefill.js";
-import { PTY_ATTACH_CAPABILITY, PTY_LIVENESS_MESSAGE } from "../pty-websocket-contract.js";
+import { EXIT_DRAIN_TIMEOUT_MS, MAX_VIEWER_PENDING_BYTES, PTY_ATTACH_CAPABILITY, PTY_LIVENESS_MESSAGE, VIEWER_WINDOW_BYTES } from "../pty-websocket-contract.js";
 
 const log = createLogger("ws");
 const PTY_BINARY_BYTES_PER_SEC = PTY_BINARY_FRAME_MAX_BYTES * 60;
@@ -84,7 +84,29 @@ function testPrefillDelayMs(): number {
 
 // ── PTY session tracking ──
 
-interface PtyEntry {
+interface ViewerOutputFlow {
+  enabled: boolean;
+  sentBytes: number;
+  ackedBytes: number;
+  flushPending: (() => void) | null;
+}
+
+interface ViewerSendEntry {
+  viewer: WebSocket | null;
+  alive: boolean;
+  readonly outputFlow?: ViewerOutputFlow;
+}
+
+interface PtyAttachDimensions {
+  readonly cols: number;
+  readonly rows: number;
+  readonly prefillMode?: string;
+  readonly outputAck?: boolean;
+}
+
+interface PtyEntry extends ViewerSendEntry {
+  /** Transport stays alive for credit/draining after the PTY stops. */
+  exitDraining?: boolean;
   viewer: WebSocket | null;
   pendingViewer: WebSocket | null;
   proc: ReturnType<typeof Bun.spawn> | null;
@@ -133,8 +155,12 @@ const PING_INTERVAL_MS = 25_000;
 
 function startViewerHeartbeat(ws: WebSocket, session: string, kind: "pending" | "active"): () => void {
   let awaitingPong = false;
-  const onPong = () => { awaitingPong = false; };
-  ws.on("pong", onPong);
+  const onActivity = () => { awaitingPong = false; };
+  // A saturated output link can delay the ping/pong round trip while client
+  // acks/input still arrive. Any inbound frame proves transport liveness.
+  ws.on("pong", onActivity);
+  ws.on("ping", onActivity);
+  ws.on("message", onActivity);
   const timer = setInterval(() => {
     if (ws.readyState !== 1) {
       cleanup();
@@ -156,7 +182,9 @@ function startViewerHeartbeat(ws: WebSocket, session: string, kind: "pending" | 
   timer.unref?.();
   function cleanup(): void {
     clearInterval(timer);
-    ws.removeListener("pong", onPong);
+    ws.removeListener("pong", onActivity);
+    ws.removeListener("ping", onActivity);
+    ws.removeListener("message", onActivity);
   }
   return cleanup;
 }
@@ -255,11 +283,6 @@ const COALESCE_WINDOW_MS = 8;
 const COALESCE_IDLE_MS = 16;
 const COALESCE_SMALL_CHUNK_BYTES = 1024;
 const COALESCE_MAX_BYTES = 128 * 1024;
-// The browser can recover any dropped stream by reconnecting from the broker's
-// canonical snapshot. Keeping more than 1 MiB queued for one throttled viewer
-// therefore only risks process-wide memory pressure without improving fidelity.
-const MAX_VIEWER_BUFFERED_BYTES = 1024 * 1024;
-
 function bufferStartsWithPrefillSuffix(prefillTail: Buffer, attachPrefix: Buffer, overlap: number): boolean {
   const prefillStart = prefillTail.length - overlap;
   for (let i = 0; i < overlap; i++) {
@@ -301,10 +324,10 @@ function sendPtyReady(entry: { viewer: WebSocket | null; alive: boolean }, sessi
   return safeViewerSend(entry, session, JSON.stringify({ type: "pty_ready" }));
 }
 
-function sendAttachAck(entry: { viewer: WebSocket | null; alive: boolean }, session: string): boolean {
+function sendAttachAck(entry: ViewerSendEntry, session: string, outputAck = entry.outputFlow?.enabled ?? false): boolean {
   return safeViewerSend(entry, session, JSON.stringify({
     type: "attach_ack",
-    capabilities: [PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK],
+    capabilities: [PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK, ...(outputAck ? [PTY_ATTACH_CAPABILITY.OUTPUT_ACK] : [])],
   }));
 }
 
@@ -337,35 +360,29 @@ function tryWsClose(
   catch (e: unknown) { log.debug(logMsg, { session, error: errMsg(e) }); }
 }
 
-function viewerFrameBytes(data: Buffer | string): number {
-  return typeof data === "string" ? Buffer.byteLength(data) : data.length;
-}
-
-/**
- * The broker snapshot is authoritative, so a viewer that cannot drain output
- * is closed rather than accumulating an unbounded server-side websocket queue.
- */
+// Runtime bufferedAmount is not an output watermark on Bun's ws shim.
+// Binary output is bounded/accounted by the negotiated application window.
 function safeViewerSend(
-  entry: { viewer: WebSocket | null; alive: boolean },
+  entry: ViewerSendEntry,
   session: string,
   data: Buffer | string,
 ): boolean {
   const viewer = entry.viewer;
   if (!entry.alive || !viewer || viewer.readyState !== 1) return false;
-  if (viewer.bufferedAmount + viewerFrameBytes(data) > MAX_VIEWER_BUFFERED_BYTES) {
-    log.warn("slow terminal viewer exceeded output queue", {
-      session,
-      bufferedAmount: viewer.bufferedAmount,
-      frameBytes: viewerFrameBytes(data),
-      maxBufferedBytes: MAX_VIEWER_BUFFERED_BYTES,
-    });
-    tryWsClose(viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SLOW_VIEWER, "slow-viewer close failed", session);
+  const flow = entry.outputFlow;
+  const binaryBytes = Buffer.isBuffer(data) && flow?.enabled ? data.length : 0;
+  if (flow && binaryBytes > 0 && !Number.isSafeInteger(flow.sentBytes + binaryBytes)) {
+    tryWsClose(viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SLOW_VIEWER, "output counter overflow close failed", session);
     return false;
   }
+  // Reserve before send, so a synchronous transport callback cannot ack bytes
+  // that the ledger still considers unsent. Failed sends roll the reservation back.
+  if (flow) flow.sentBytes += binaryBytes;
   try {
     viewer.send(data);
     return true;
   } catch (e: unknown) {
+    if (flow) flow.sentBytes -= binaryBytes;
     log.debug("terminal viewer send failed", { session, error: errMsg(e) });
     return false;
   }
@@ -384,7 +401,7 @@ registerSubSessionOpenedNotifier((parentSession, session) => {
 /** Send prefill buffer in 32KB chunks with short delays to avoid stalling mobile connections.
  *  Sends `prefill_done` message at the end so the client exits buffering state. */
 async function sendPrefillChunked(
-  entry: { viewer: WebSocket | null; alive: boolean },
+  entry: ViewerSendEntry,
   prefill: Buffer,
   session: string,
   timing?: ServerTerminalLoadTiming | null,
@@ -473,7 +490,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
     const existing = maybeExisting; // const binding for closure narrowing
 
     // ── Fast path: immediate takeover ──
-    function performImmediateTakeover(dims: { cols: number; rows: number; prefillMode?: string } | null) {
+    function performImmediateTakeover(dims: PtyAttachDimensions | null) {
       const oldViewer = existing.viewer;
       existing.viewer = null;
       if (oldViewer) {
@@ -514,7 +531,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
     const stopHeartbeat = startViewerHeartbeat(ws, session, "pending");
     const pendingRateLimiter = createRateLimiter(RATE_LIMIT_PER_SEC);
 
-    let pendingAttachDims: { cols: number; rows: number; prefillMode?: string } | null = null;
+    let pendingAttachDims: PtyAttachDimensions | null = null;
 
     function cleanupPending() {
       stopHeartbeat();
@@ -540,14 +557,19 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
           return;
         }
         const str = String(raw);
-        const msg = JSON.parse(str);
-        if (msg?.type === PTY_LIVENESS_MESSAGE.PING) {
+        const parsed: unknown = JSON.parse(str);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+        const msg = parsed as Readonly<Record<string, unknown>>;
+        if (msg.type === PTY_LIVENESS_MESSAGE.PING) {
           safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: PTY_LIVENESS_MESSAGE.PONG }));
           return;
         }
         if (msg.type === "attach" && typeof msg.cols === "number" && typeof msg.rows === "number") {
           const pm = typeof msg.prefillMode === "string" ? msg.prefillMode : undefined;
-          pendingAttachDims = { cols: msg.cols, rows: msg.rows, prefillMode: pm };
+          pendingAttachDims = {
+            cols: msg.cols, rows: msg.rows, prefillMode: pm,
+            outputAck: Array.isArray(msg.capabilities) && msg.capabilities.includes(PTY_ATTACH_CAPABILITY.OUTPUT_ACK),
+          };
           const parsedPrefillMode = pm && isTerminalPrefillMode(pm) ? pm : TERMINAL_PREFILL_MODE.FULL;
           if (initialTiming) initialTiming.mode = terminalLoadModeFromPrefill(parsedPrefillMode);
           initialTiming?.mark("attach.parsed", {
@@ -560,7 +582,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
             performImmediateTakeover(pendingAttachDims);
             return;
           }
-          sendAttachAck({ viewer: ws, alive: true }, session);
+          sendAttachAck({ viewer: ws, alive: true }, session, pendingAttachDims.outputAck);
           return;
         }
         if (msg.type === "take_control") {
@@ -598,7 +620,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
 /** Returns true iff the helper should bail because the entry is no longer
  *  current. Convenience wrapper around {@link entryStillCurrent}. */
 function bail(ctx: PtyEntryContext): boolean {
-  return !entryStillCurrent(ctx.entry, ctx.session, ctx.ws);
+  return !!ctx.entry.exitDraining || !entryStillCurrent(ctx.entry, ctx.session, ctx.ws);
 }
 
 /** Resize failure invalidates the browser's proposed geometry. Close instead of
@@ -939,19 +961,43 @@ async function subscribeWithCoalescing(
   let _coalesceBuf: Buffer[] = [];
   let _coalesceBytes = 0;
   let _coalesceTimer: NodeJS.Timeout | null = null;
+  let _exitDrainTimer: NodeJS.Timeout | null = null;
   let _lastSendAt = Number.NEGATIVE_INFINITY;
   let _sawFirstOutputForward = false;
+  const flow = entry.outputFlow;
+  const availableBytes = (): number => flow?.enabled
+    ? VIEWER_WINDOW_BYTES - (flow.sentBytes - flow.ackedBytes)
+    : Number.POSITIVE_INFINITY;
+  // The browser can recover a dropped stream from the broker's canonical
+  // snapshot; retaining more pending bytes only risks process-wide pressure.
+  const bufferOutput = (buf: Buffer): boolean => {
+    if (_coalesceBytes + buf.length > MAX_VIEWER_PENDING_BYTES) {
+      log.warn("slow terminal viewer exceeded pending output", { session, pendingBytes: _coalesceBytes, nextBytes: buf.length });
+      if (entry.viewer) tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SLOW_VIEWER, "slow-viewer close failed", session);
+      teardownPty(session);
+      return false;
+    }
+    _coalesceBuf.push(buf);
+    _coalesceBytes += buf.length;
+    return true;
+  };
   const sendOutputBuffer = (buf: Buffer): void => {
-    if (!entry.viewer || entry.viewer.readyState !== 1) return;
-    if (!_sawFirstOutputForward) {
-      _sawFirstOutputForward = true;
-      ctx.timing?.mark("first_output.forward", { bytes: buf.length });
-    }
-    for (let offset = 0; offset < buf.length; offset += COALESCE_MAX_BYTES) {
-      const chunk = buf.subarray(offset, Math.min(offset + COALESCE_MAX_BYTES, buf.length));
+    if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return;
+    let offset = 0;
+    while (offset < buf.length) {
+      const credit = availableBytes();
+      if (credit === 0) break;
+      const end = Math.min(offset + COALESCE_MAX_BYTES, offset + credit, buf.length);
+      const chunk = buf.subarray(offset, end);
+      if (!_sawFirstOutputForward) {
+        _sawFirstOutputForward = true;
+        ctx.timing?.mark("first_output.forward", { bytes: chunk.length });
+      }
       if (!safeViewerSend(entry, session, chunk)) return;
+      offset = end;
+      _lastSendAt = Date.now();
     }
-    _lastSendAt = Date.now();
+    if (offset < buf.length) bufferOutput(buf.subarray(offset));
   };
   const flushCoalesce = (): void => {
     if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
@@ -960,10 +1006,12 @@ async function subscribeWithCoalescing(
     _coalesceBuf = [];
     _coalesceBytes = 0;
     sendOutputBuffer(merged);
+    if (entry.exitDraining && _coalesceBytes === 0) finishExit();
   };
+  if (flow) flow.flushPending = flushCoalesce;
   ctx.timing?.mark("subscribe.start", { sinceSeq: typeof prefillSeq === "bigint" ? prefillSeq.toString() : undefined });
   const handleOutput = (data: Uint8Array): void => {
-    if (!entry.alive) return;
+    if (!entry.alive || entry.exitDraining) return;
     if (!entry.viewer || entry.viewer.readyState !== 1) return;
     const next = Buffer.from(data);
     const decision = decideOutputCoalescing({
@@ -973,18 +1021,29 @@ async function subscribeWithCoalescing(
       maxBytes: COALESCE_MAX_BYTES,
       smallChunkBytes: COALESCE_SMALL_CHUNK_BYTES,
       idleMs: COALESCE_IDLE_MS,
+      availableBytes: flow?.enabled ? availableBytes() : undefined,
     });
     if (decision === "flush_then_buffer" || decision === "flush_then_send") {
       flushCoalesce();
-      if (!entry.alive) return;
+      if (!entry.alive || !entry.viewer || entry.viewer.readyState !== 1) return;
     }
     if (decision === "send_now" || decision === "flush_then_send") {
-      sendOutputBuffer(next);
+      // A partial flush exhausted credit: newer bytes must follow its suffix.
+      if (_coalesceBytes > 0) bufferOutput(next);
+      else sendOutputBuffer(next);
       return;
     }
-    _coalesceBuf.push(next);
-    _coalesceBytes += next.length;
-    if (!_coalesceTimer) _coalesceTimer = setTimeout(flushCoalesce, COALESCE_WINDOW_MS);
+    if (!bufferOutput(next)) return;
+    if (decision !== "buffer_until_ack" && !_coalesceTimer) {
+      _coalesceTimer = setTimeout(flushCoalesce, COALESCE_WINDOW_MS);
+    }
+  };
+  const cancelOutput = (): void => {
+    if (_exitDrainTimer) { clearTimeout(_exitDrainTimer); _exitDrainTimer = null; }
+    if (flow) flow.flushPending = null;
+    if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
+    _coalesceBuf = [];
+    _coalesceBytes = 0;
   };
   // When the broker `subscribe` RPC fails after onSessionData returns, the
   // backend unwinds locally but the WS would otherwise stay open with no data.
@@ -1000,6 +1059,7 @@ async function subscribeWithCoalescing(
     ? source.lease.activate(handleOutput, { onSubscribeError })
     : backend.onSessionData(session, handleOutput, { sinceSeq: prefillSeq, onSubscribeError });
   if (!unsub) {
+    cancelOutput();
     log.warn("onSessionData returned null — session vanished", { session });
     entry.alive = false;
     activePtySessions.delete(session);
@@ -1009,14 +1069,42 @@ async function subscribeWithCoalescing(
     }
     return false;
   }
-  // Wrap unsub so the coalesce timer + buffer don't leak past detach.
-  // Drop the buffer rather than flushing: viewer is gone, no point.
-  entry.unsubscribe = () => {
-    if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
-    _coalesceBuf = [];
-    _coalesceBytes = 0;
+  // Activation can synchronously replay enough output to close the viewer
+  // before the unsubscribe handle exists. Release that handle once returned.
+  if (!entryStillCurrent(entry, session, ctx.ws)) {
+    cancelOutput();
+    unsub();
+    return false;
+  }
+  let sourceStopped = false;
+  const stopOutputSource = (): void => {
+    if (sourceStopped) return;
+    sourceStopped = true;
     unsub();
   };
+  // Detach still discards output; PTY exit stops ONLY the producer first.
+  entry.unsubscribe = () => {
+    cancelOutput();
+    stopOutputSource();
+  };
+
+  function finishExit(): void {
+    if (!entry.alive) return;
+    entry.alive = false;
+    if (activePtySessions.get(session) === entry) activePtySessions.delete(session);
+    if (entry.unsubscribe) {
+      try { entry.unsubscribe(); } catch (e: unknown) { log.debug("lifecycle exit: data unsub failed", { session, error: errMsg(e) }); }
+      entry.unsubscribe = null;
+    }
+    if (entry.viewer) {
+      tryWsClose(entry.viewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "lifecycle exit: viewer close failed", session);
+      entry.viewer = null;
+    }
+    if (entry.pendingViewer) {
+      tryWsClose(entry.pendingViewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "lifecycle exit: pendingViewer close failed", session);
+      entry.pendingViewer = null;
+    }
+  }
 
   // Lifecycle: broker fires `session_exited` when the child reaps.
   // Close the viewer with 4001 so the client distinguishes a remote-side
@@ -1036,31 +1124,23 @@ async function subscribeWithCoalescing(
       teardownPty(session);
       return;
     }
-    if (event.kind !== "exited") return;
-    if (!entry.alive) return;
-    entry.alive = false;
-    if (activePtySessions.get(session) === entry) {
-      activePtySessions.delete(session);
-    }
-    if (entry.unsubscribe) {
-      try { entry.unsubscribe(); } catch (e: unknown) { log.debug(`lifecycle exit: data unsub failed`, { session, error: errMsg(e) }); }
-      entry.unsubscribe = null;
-    }
-    // Don't invoke our own unsub here — broker drops the lifecycle set on
-    // exit anyway, and we're inside the callback. Just null the ref.
+    if (event.kind !== "exited" || !entry.alive || entry.exitDraining) return;
+    entry.exitDraining = true;
+    try { stopOutputSource(); } catch (e: unknown) { log.debug("lifecycle exit: data unsub failed", { session, error: errMsg(e) }); }
+    // Broker drops the lifecycle set on exit; keep only transport/credit alive.
     entry.unsubscribeLifecycle = null;
-    if (entry.viewer) {
-      tryWsClose(entry.viewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "lifecycle exit: viewer close failed", session);
-      entry.viewer = null;
+    if (_coalesceBytes === 0) {
+      finishExit();
+      return;
     }
-    if (entry.pendingViewer) {
-      tryWsClose(entry.pendingViewer, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS.SESSION_UNAVAILABLE, "lifecycle exit: pendingViewer close failed", session);
-      entry.pendingViewer = null;
-    }
+    // Fixed deadline: acks never extend it. Normal close follows FIFO submission
+    // or, for an unresponsive peer, this bounded final-output loss tradeoff.
+    _exitDrainTimer = setTimeout(finishExit, EXIT_DRAIN_TIMEOUT_MS);
+    flushCoalesce();
   });
   if (lifecycleUnsub) entry.unsubscribeLifecycle = lifecycleUnsub;
   if (unsub.ready && !await unsub.ready) return false;
-  if (!entryStillCurrent(entry, session, ctx.ws)) return false;
+  if (entry.exitDraining || !entryStillCurrent(entry, session, ctx.ws)) return false;
   ctx.timing?.mark("subscribe.success");
   return true;
 }
@@ -1068,10 +1148,17 @@ async function subscribeWithCoalescing(
 function setupNewPtyEntry(
   ws: WebSocket,
   session: string,
-  initialDims?: { cols: number; rows: number; prefillMode?: string } | null,
+  initialDims?: PtyAttachDimensions | null,
   timing?: ServerTerminalLoadTiming | null,
 ): void {
+  const outputFlow: ViewerOutputFlow = {
+    enabled: initialDims?.outputAck ?? false,
+    sentBytes: 0,
+    ackedBytes: 0,
+    flushPending: null,
+  };
   const entry: PtyEntry = {
+    outputFlow,
     viewer: ws as WebSocket | null,
     pendingViewer: null,
     proc: null,
@@ -1279,7 +1366,7 @@ function setupNewPtyEntry(
 
   function flushPendingInput(): boolean {
     const backend = streamingBackend;
-    if (!backend || !entryStillCurrent(entry, session, ws)) {
+    if (!backend || entry.exitDraining || !entryStillCurrent(entry, session, ws)) {
       discardPendingInput();
       return false;
     }
@@ -1328,12 +1415,27 @@ function setupNewPtyEntry(
     if (!entry.alive) return;
     try {
       if (!isBinary) {
-        if (!rl.allow()) return;
         if (raw.length > MAX_WS_MESSAGE_BYTES) return; // reject oversized JSON frames
-        const msg = JSON.parse(String(raw));
+        const parsed: unknown = JSON.parse(String(raw));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+        const msg = parsed as Readonly<Record<string, unknown>>;
+        if (msg.type === "ack") {
+          const bytes = msg.bytes;
+          if (!outputFlow.enabled || typeof bytes !== "number" || !Number.isSafeInteger(bytes)
+            || bytes <= outputFlow.ackedBytes || bytes > outputFlow.sentBytes) return;
+          const wasBlocked = outputFlow.sentBytes - outputFlow.ackedBytes === VIEWER_WINDOW_BYTES;
+          outputFlow.ackedBytes = bytes;
+          // Only a reopened window bypasses the existing fixed coalesce timer.
+          if (wasBlocked) outputFlow.flushPending?.();
+          return;
+        }
+        // Credit is protocol progress, not resize/layout traffic. Admission
+        // requires a strictly increasing safe counter within bytes sent, so
+        // duplicates cannot amplify output or exhaust normal control tokens.
+        if (entry.exitDraining || !rl.allow()) return;
         // Application-level probe: keep normal frame/rate limits, but never
         // forward this control message into the PTY or change attach state.
-        if (msg?.type === PTY_LIVENESS_MESSAGE.PING) {
+        if (msg.type === PTY_LIVENESS_MESSAGE.PING) {
           safeViewerSend(entry, session, JSON.stringify({ type: PTY_LIVENESS_MESSAGE.PONG }));
           return;
         }
@@ -1344,6 +1446,10 @@ function setupNewPtyEntry(
         ) {
           requestedSize.current = { cols: clampCols(msg.cols), rows: clampRows(msg.rows) };
           const isAttached = !!entry.unsubscribe || attachFinalizing;
+          if (!isAttached && !spawning) {
+            outputFlow.enabled = Array.isArray(msg.capabilities)
+              && msg.capabilities.includes(PTY_ATTACH_CAPABILITY.OUTPUT_ACK);
+          }
           let prefillMode: PrefillMode = TERMINAL_PREFILL_MODE.FULL;
           if (typeof msg.prefillMode === "string" && isTerminalPrefillMode(msg.prefillMode)) {
             prefillMode = msg.prefillMode;
@@ -1396,14 +1502,14 @@ function setupNewPtyEntry(
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => {
               resizeTimer = null;
-              if (!entry.alive) return;
+              if (!entry.alive || entry.exitDraining) return;
               streamingBackend.resize(session, cols, rows).then(() => {
-                if (!entryStillCurrent(entry, session, ws)) return;
+                if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
                 if (resizeId !== undefined) {
                   safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", resizeId, cols, rows }));
                 }
               }).catch((e: unknown) => {
-                if (!entryStillCurrent(entry, session, ws)) return;
+                if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
                 log.warn("streaming backend resize failed — reconnecting viewer", { session, error: errMsg(e) });
                 tryWsClose(ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.RESIZE_FAILED, "resize failure viewer close failed", session);
               });
@@ -1411,6 +1517,7 @@ function setupNewPtyEntry(
           }
         }
       } else {
+        if (entry.exitDraining) return;
         // Binary data — write to terminal via the streaming backend.
         if (Buffer.isBuffer(raw) && raw.length > PTY_BINARY_FRAME_MAX_BYTES) return;
         if (inputGateActive && pendingInputBytes + raw.length > MAX_PENDING_INPUT_BYTES) {
@@ -1466,7 +1573,9 @@ function setupNewPtyEntry(
       });
     }
     inputGateActive = true;
-    startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
+    // Negotiation must precede activation: none-mode subscriptions can
+    // synchronously forward replay before startPtyAttach returns.
     sendAttachAck(entry, session);
+    startPtyAttach(requestedSize.current.cols, requestedSize.current.rows, { prefillMode });
   }
 }

@@ -14,7 +14,11 @@ import {
   type LayoutStablePrefillMode,
 } from "../src/terminal-layout-stable-debug";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
-import { PTY_ATTACH_CAPABILITY, PTY_LIVENESS_MESSAGE } from "../src/pty-websocket-contract";
+import {
+  ACK_EVERY_BYTES, ACK_MAX_DELAY_MS, ACK_RETRY_DELAY_MS, ACK_RETRY_MAX_ATTEMPTS,
+  PTY_ATTACH_CAPABILITY, PTY_LIVENESS_MESSAGE, VIEWER_WINDOW_BYTES,
+} from "../src/pty-websocket-contract";
+import type { PtyOutputAck } from "../src/pty-websocket-contract";
 import { MOBILE_FOREGROUND_PROBE_MS } from "../src/mobile-foreground";
 import { classifyDisconnect } from "../src/take-control-logic";
 import { splitTerminalInputBytes } from "../src/terminal-input";
@@ -180,6 +184,12 @@ export function createPtySocketClient(
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
   let _trace: TraceState | null = null;
   let _supportsOrderedResize = false;
+  let _supportsOutputAck = false;
+  let _receivedOutputBytes = 0;
+  let _lastAckBytes = 0;
+  let _outputAckTimer: ReturnType<typeof setTimeout> | null = null;
+  let _outputAckRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let _outputAckRetries = 0;
   let _hasAttached = false;
   let _attachUsesProposedDimensions = false;
   let _orderedResizeBarrier = false;
@@ -245,7 +255,10 @@ export function createPtySocketClient(
     _prefillChunks = [];
     _awaitingPrefillDone = prefillMode !== TERMINAL_PREFILL_MODE.NONE;
     _sawViewportPrefill = false;
-    const msg: { type: "attach"; cols: number; rows: number; prefillMode: string; takeControl?: true } = { type: "attach", cols: attachDims.cols, rows: attachDims.rows, prefillMode };
+    const msg: { type: "attach"; cols: number; rows: number; prefillMode: string; capabilities: string[]; takeControl?: true } = {
+      type: "attach", cols: attachDims.cols, rows: attachDims.rows, prefillMode,
+      capabilities: [PTY_ATTACH_CAPABILITY.OUTPUT_ACK],
+    };
     if (_takeControlOnAttach) { msg.takeControl = true; _takeControlOnAttach = false; }
     // Diag: start a fresh trace per attach so reconnects/take-controls show up
     // as separate sessions in the dump.
@@ -294,6 +307,7 @@ export function createPtySocketClient(
   }
 
   function resetAttachLifecycle(): void {
+    resetOutputAck();
     clearAttachRetryState();
     _awaitingAttachAck = false;
     _awaitingPrefillDone = false;
@@ -504,6 +518,8 @@ export function createPtySocketClient(
   }
 
   function handleAttachAck(message: SocketControlMessage): void {
+    _supportsOutputAck = Array.isArray(message.capabilities)
+      && message.capabilities.includes(PTY_ATTACH_CAPABILITY.OUTPUT_ACK);
     __wfTraceEvent(_trace, "attach_ack");
     _supportsOrderedResize = Array.isArray(message.capabilities)
       && message.capabilities.includes(PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK);
@@ -640,6 +656,58 @@ export function createPtySocketClient(
     }
   }
 
+  function resetOutputAck(): void {
+    if (_outputAckTimer) clearTimeout(_outputAckTimer);
+    _outputAckTimer = null;
+    if (_outputAckRetryTimer) clearTimeout(_outputAckRetryTimer);
+    _outputAckRetryTimer = null;
+    _outputAckRetries = 0;
+    _supportsOutputAck = false;
+    _receivedOutputBytes = 0;
+    _lastAckBytes = 0;
+  }
+
+  function sendOutputAck(retry = false): void {
+    if (retry) _outputAckRetryTimer = null;
+    if (_outputAckTimer) clearTimeout(_outputAckTimer);
+    _outputAckTimer = null;
+    if (!_supportsOutputAck || !ws || ws.readyState !== WebSocket.OPEN
+      || (!retry && _receivedOutputBytes === _lastAckBytes)) return;
+    const message: PtyOutputAck = { type: "ack", bytes: _receivedOutputBytes };
+    ws.send(JSON.stringify(message));
+    _lastAckBytes = message.bytes;
+    if (retry) _outputAckRetries++;
+    // There is no server-confirmed ack watermark. Receipt proves only that
+    // at least (received - window) bytes were credited, not that ws.send's
+    // last ack arrived. Conservatively retry a potentially full quiet window.
+    const minimumServerAcked = Math.max(0, _receivedOutputBytes - VIEWER_WINDOW_BYTES);
+    const possiblyUnacked = _receivedOutputBytes - minimumServerAcked;
+    if (possiblyUnacked >= VIEWER_WINDOW_BYTES - ACK_EVERY_BYTES
+      && _outputAckRetries < ACK_RETRY_MAX_ATTEMPTS && !_outputAckRetryTimer) {
+      _outputAckRetryTimer = setTimeout(() => sendOutputAck(true), ACK_RETRY_DELAY_MS);
+    }
+  }
+
+  function receiveOutputBytes(bytes: number): void {
+    if (!_supportsOutputAck || bytes === 0) return;
+    // New output cancels the quiet period's stale retry and starts a fresh
+    // bounded budget for the next cumulative ack, never a perpetual retry loop.
+    if (_outputAckRetryTimer) clearTimeout(_outputAckRetryTimer);
+    _outputAckRetryTimer = null;
+    _outputAckRetries = 0;
+    const received = _receivedOutputBytes + bytes;
+    if (!Number.isSafeInteger(received)) {
+      ws?.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SLOW_VIEWER);
+      return;
+    }
+    _receivedOutputBytes = received;
+    if (_receivedOutputBytes - _lastAckBytes >= ACK_EVERY_BYTES) {
+      sendOutputAck();
+    } else if (!_outputAckTimer) {
+      _outputAckTimer = setTimeout(sendOutputAck, ACK_MAX_DELAY_MS);
+    }
+  }
+
   function handleBinaryFrame(data: ArrayBuffer): void {
     if (_orderedResizeBarrier) {
       deferOrderedResizeFrame({ kind: "binary", data: data.slice(0), bytes: data.byteLength });
@@ -703,7 +771,11 @@ export function createPtySocketClient(
           handleTextFrame(event.data);
           return;
         }
-        handleBinaryFrame(event.data as ArrayBuffer);
+        // Account at receipt, before prefill/resize barriers. Barrier replay
+        // calls handleBinaryFrame again and must not acknowledge bytes twice.
+        const data = event.data as ArrayBuffer;
+        receiveOutputBytes(data.byteLength);
+        if (ws === sock && sock.readyState === WebSocket.OPEN) handleBinaryFrame(data);
       };
 
       sock.onclose = (ev) => {
