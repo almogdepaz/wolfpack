@@ -8,7 +8,7 @@
  */
 process.env.WOLFPACK_TEST = "1";
 
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, jest } from "bun:test";
 import type { WebSocket as WsWebSocket } from "ws";
 import {
   __setTestBackend,
@@ -283,6 +283,7 @@ afterEach(() => {
   teardownPty(SESSION);
   activePtySessions.clear();
   __resetBackend();
+  jest.useRealTimers();
 });
 
 function attachWs(ws: FakeWs, session = SESSION): void {
@@ -429,22 +430,110 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.binaryFrames().some((frame) => frame.equals(input))).toBe(true);
   });
 
-  test("subscribed broker output frames are forwarded to viewer", async () => {
+  async function attachWithClock(): Promise<FakeWs> {
+    jest.useFakeTimers({ now: 1000 });
     const ws = new FakeWs();
+    const ready = new Promise<void>((resolve) => {
+      ws.onSend = (data) => {
+        if (typeof data === "string" && JSON.parse(data).type === "pty_ready") resolve();
+      };
+    });
     attachWs(ws);
     ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
-    await wait(20);
-
-    // Drop pre-attach JSON frames so we can inspect post-attach binary cleanly.
+    await ready;
     ws.frames.length = 0;
+    jest.advanceTimersByTime(16);
+    return ws;
+  }
 
-    backend.emitData(SESSION, new Uint8Array([0x41, 0x42, 0x43]));
-    // Output is coalesced server-side (~16ms flush window) before forwarding,
-    // so wait briefly for the flush. See COALESCE_FLUSH_MS in websocket.ts.
-    await wait(25);
-    const bin = ws.binaryFrames();
-    expect(bin.length).toBe(1);
-    expect(Array.from(bin[0])).toEqual([0x41, 0x42, 0x43]);
+  test("isolated five-byte broker output reaches the viewer without a timer wait", async () => {
+    const ws = await attachWithClock();
+    const echo = Buffer.from("hello");
+    const timersBefore = jest.getTimerCount();
+    backend.emitData(SESSION, echo);
+    expect(ws.binaryFrames()).toEqual([echo]);
+    expect(jest.getTimerCount()).toBe(timersBefore);
+  });
+
+  test("continuous output merges per fixed eight-ms window without extending deadlines", async () => {
+    const ws = await attachWithClock();
+    const leading = Buffer.from("echo!");
+    backend.emitData(SESSION, leading);
+    const chunks = Array.from({ length: 10 }, (_, index) => Buffer.alloc(64, index));
+    const sentAt: number[] = [];
+    ws.onSend = (data) => { if (Buffer.isBuffer(data)) sentAt.push(Date.now()); };
+    const start = Date.now();
+
+    for (let index = 0; index < chunks.length; index++) {
+      jest.advanceTimersByTime(2);
+      backend.emitData(SESSION, chunks[index]);
+      if (index === 3) expect(ws.binaryFrames()).toEqual([leading]);
+      if (index === 4) {
+        expect(ws.binaryFrames()).toEqual([leading, Buffer.concat(chunks.slice(0, 4))]);
+        expect(sentAt).toEqual([start + 10]);
+      }
+    }
+    jest.advanceTimersByTime(6);
+
+    expect(sentAt).toEqual([start + 10, start + 18, start + 26]);
+    expect(ws.binaryFrames()).toEqual([
+      leading,
+      Buffer.concat(chunks.slice(0, 4)),
+      Buffer.concat(chunks.slice(4, 8)),
+      Buffer.concat(chunks.slice(8)),
+    ]);
+    expect(Buffer.concat(ws.binaryFrames())).toEqual(Buffer.concat([leading, ...chunks]));
+    jest.advanceTimersByTime(16);
+    backend.emitData(SESSION, Buffer.from("idle"));
+    expect(ws.binaryFrames().at(-1)).toEqual(Buffer.from("idle"));
+  });
+
+  test("large idle redraw buffers its siblings and sends small output only after idle", async () => {
+    const ws = await attachWithClock();
+    const redraw = Buffer.alloc(1025, 0x41);
+    const sibling = Buffer.from("cursor");
+    backend.emitData(SESSION, redraw);
+    jest.advanceTimersByTime(2);
+    backend.emitData(SESSION, sibling);
+    expect(ws.binaryFrames()).toEqual([]);
+    jest.advanceTimersByTime(6);
+    expect(ws.binaryFrames()).toEqual([Buffer.concat([redraw, sibling])]);
+
+    jest.advanceTimersByTime(15);
+    backend.emitData(SESSION, Buffer.from("echo"));
+    expect(ws.binaryFrames()).toHaveLength(1);
+    jest.advanceTimersByTime(8);
+    expect(ws.binaryFrames().at(-1)).toEqual(Buffer.from("echo"));
+  });
+
+  test("size flush preserves buffered bytes before oversized direct output", async () => {
+    const ws = await attachWithClock();
+    const queued = Buffer.alloc(127 * 1024, 0x41);
+    const next = Buffer.alloc(1024, 0x42);
+    const oversized = Buffer.alloc(128 * 1024 + 1, 0x43);
+    backend.emitData(SESSION, queued);
+    backend.emitData(SESSION, next);
+    expect(ws.binaryFrames()).toEqual([queued]);
+    backend.emitData(SESSION, oversized);
+    expect(ws.binaryFrames()).toEqual([
+      queued, next, oversized.subarray(0, 128 * 1024), oversized.subarray(128 * 1024),
+    ]);
+    backend.emitData(SESSION, Buffer.from("tail"));
+    expect(ws.binaryFrames()).toHaveLength(4);
+    jest.advanceTimersByTime(8);
+    expect(ws.binaryFrames().at(-1)).toEqual(Buffer.from("tail"));
+  });
+
+  test("teardown cancels the pending coalescer window and drops buffered output", async () => {
+    const ws = await attachWithClock();
+    const timersBefore = jest.getTimerCount();
+    backend.emitData(SESSION, Buffer.alloc(1025));
+    expect(jest.getTimerCount()).toBe(timersBefore + 1);
+    ws.close();
+    expect(jest.getTimerCount()).toBeLessThanOrEqual(timersBefore);
+    jest.advanceTimersByTime(16);
+    expect(ws.binaryFrames()).toEqual([]);
+    expect(backend.dataListeners.get(SESSION)?.size ?? 0).toBe(0);
   });
 
   test("binary stdin forwards to broker.writeToTerminal", () => {

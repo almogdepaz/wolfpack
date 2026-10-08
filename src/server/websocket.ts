@@ -25,7 +25,7 @@ import type { SessionAttachLease, SessionBackend, PtyBackendMethods } from "./ba
 import { createRateLimiter } from "./http.js";
 import { registerSubSessionOpenedNotifier } from "./session-notifications.js";
 import { createLogger, errMsg } from "../log.js";
-import { shouldFlushCoalescedOutput } from "../output-coalescing.js";
+import { decideOutputCoalescing } from "../output-coalescing.js";
 import {
   isTerminalLoadTimingEnabled,
   terminalLoadModeFromPrefill,
@@ -251,8 +251,9 @@ export function quiescenceDecision(args: {
 }
 // Adaptive coalescing of broker output frames before forwarding to viewer.
 // See call site for full reasoning.
-const COALESCE_FLUSH_MS = 16;
-const COALESCE_HARD_MS = 150;
+const COALESCE_WINDOW_MS = 8;
+const COALESCE_IDLE_MS = 16;
+const COALESCE_SMALL_CHUNK_BYTES = 1024;
 const COALESCE_MAX_BYTES = 128 * 1024;
 // The browser can recover any dropped stream by reconnecting from the broker's
 // canonical snapshot. Keeping more than 1 MiB queued for one throttled viewer
@@ -922,17 +923,19 @@ async function subscribeWithCoalescing(
   // macrotask, and one ghostty parse pass; ghostty may paint between frames so
   // the user sees mid-redraw fragments scrolling/painting incrementally.
   //
-  // Strategy: append to a buffer + arm a flush timer for COALESCE_FLUSH_MS
-  // (one rAF). Each new chunk resets the timer. Hard cap at
-  // COALESCE_HARD_MS so continuous streams don't stall. Result: ghostty
-  // sees one larger atomic write per logical TUI frame, never mid-redraw.
+  // Isolated small output sends immediately after COALESCE_IDLE_MS of idle,
+  // but never ahead of buffered bytes. Larger redraws and bursts share one
+  // COALESCE_WINDOW_MS deadline from the first buffered chunk; later chunks
+  // do not extend it. Flush queued bytes before reaching the size cap or
+  // sending an oversized chunk directly, preserving broker output order.
   //
-  // Latency cost: ~16ms on output (single keystroke echo: 25 → ~41ms).
-  // Imperceptible vs the visual mess of mid-redraw scrolldown.
+  // Added coalescing latency: 0ms for isolated small output, at most 8ms
+  // inside a burst (subject to event-loop scheduling). Redraw siblings within
+  // the window paint together; synchronized output protects longer redraws.
   let _coalesceBuf: Buffer[] = [];
   let _coalesceBytes = 0;
   let _coalesceTimer: NodeJS.Timeout | null = null;
-  let _coalesceFirstPushAt = 0;
+  let _lastSendAt = Number.NEGATIVE_INFINITY;
   let _sawFirstOutputForward = false;
   const sendOutputBuffer = (buf: Buffer): void => {
     if (!entry.viewer || entry.viewer.readyState !== 1) return;
@@ -944,6 +947,7 @@ async function subscribeWithCoalescing(
       const chunk = buf.subarray(offset, Math.min(offset + COALESCE_MAX_BYTES, buf.length));
       if (!safeViewerSend(entry, session, chunk)) return;
     }
+    _lastSendAt = Date.now();
   };
   const flushCoalesce = (): void => {
     if (_coalesceTimer) { clearTimeout(_coalesceTimer); _coalesceTimer = null; }
@@ -951,34 +955,32 @@ async function subscribeWithCoalescing(
     const merged = _coalesceBuf.length === 1 ? _coalesceBuf[0] : Buffer.concat(_coalesceBuf, _coalesceBytes);
     _coalesceBuf = [];
     _coalesceBytes = 0;
-    _coalesceFirstPushAt = 0;
     sendOutputBuffer(merged);
   };
   ctx.timing?.mark("subscribe.start", { sinceSeq: typeof prefillSeq === "bigint" ? prefillSeq.toString() : undefined });
   const handleOutput = (data: Uint8Array): void => {
     if (!entry.alive) return;
     if (!entry.viewer || entry.viewer.readyState !== 1) return;
-    const now = Date.now();
     const next = Buffer.from(data);
-    const heldFor = _coalesceFirstPushAt ? now - _coalesceFirstPushAt : 0;
-    if (_coalesceBuf.length > 0 && shouldFlushCoalescedOutput({
+    const decision = decideOutputCoalescing({
       queuedBytes: _coalesceBytes,
       nextBytes: next.length,
+      sinceLastSendMs: Date.now() - _lastSendAt,
       maxBytes: COALESCE_MAX_BYTES,
-      heldMs: heldFor,
-      hardMs: COALESCE_HARD_MS,
-    })) {
+      smallChunkBytes: COALESCE_SMALL_CHUNK_BYTES,
+      idleMs: COALESCE_IDLE_MS,
+    });
+    if (decision === "flush_then_buffer" || decision === "flush_then_send") {
       flushCoalesce();
+      if (!entry.alive) return;
     }
-    if (next.length >= COALESCE_MAX_BYTES) {
+    if (decision === "send_now" || decision === "flush_then_send") {
       sendOutputBuffer(next);
       return;
     }
-    if (_coalesceBuf.length === 0) _coalesceFirstPushAt = now;
     _coalesceBuf.push(next);
     _coalesceBytes += next.length;
-    if (_coalesceTimer) clearTimeout(_coalesceTimer);
-    _coalesceTimer = setTimeout(flushCoalesce, COALESCE_FLUSH_MS);
+    if (!_coalesceTimer) _coalesceTimer = setTimeout(flushCoalesce, COALESCE_WINDOW_MS);
   };
   // When the broker `subscribe` RPC fails after onSessionData returns, the
   // backend unwinds locally but the WS would otherwise stay open with no data.
