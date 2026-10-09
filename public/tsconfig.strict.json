@@ -17,6 +17,7 @@
     "terminal-hydration.ts",
     "terminal-layout.ts",
     "terminal-loading-ui.ts",
+    "terminal-pool.ts",
     "terminal-resize-lifecycle.ts",
     "types-globals.d.ts"
   ]

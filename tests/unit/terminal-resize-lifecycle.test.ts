@@ -168,4 +168,58 @@ describe("terminal resize lifecycle", () => {
       oldViewportY: 7,
     });
   });
+
+  test("a suspended (parked) terminal never reconnects from a pending resize-rehydrate; resume reschedules it", () => {
+    const scheduler = new FakeScheduler();
+    let reconnects = 0;
+    let syncs = 0;
+    const lifecycle = createTerminalResizeLifecycle({
+      prefillMode: TERMINAL_PREFILL_MODE.FULL,
+      getContainer: () => ({ clientWidth: 80, clientHeight: 24 }),
+      getTerm: () => ({ viewportY: 7, getScrollbackLength: () => 100 }),
+      getPtyClient: () => ({ isOpen: true, reconnect: () => { reconnects++; } }),
+      shouldSuppressContainerResize: () => false,
+      userRequestedScrollback: () => true,
+      syncLayout: () => { syncs++; },
+      scheduler,
+      createResizeObserver: () => ({ observe: () => {}, disconnect: () => {} }),
+    });
+
+    lifecycle.scheduleLayoutSync();
+    lifecycle.scheduleResizeRehydrate();
+    lifecycle.suspend();
+    scheduler.runFrames();
+    scheduler.runTimers();
+    expect(reconnects).toBe(0);
+    expect(syncs).toBe(0);
+
+    // Resize acks committed while parked are also deferred.
+    lifecycle.scheduleResizeRehydrate();
+    scheduler.runTimers();
+    expect(reconnects).toBe(0);
+
+    lifecycle.resume();
+    scheduler.runTimers();
+    expect(reconnects).toBe(1);
+  });
+
+  test("resume without a deferred rehydrate schedules nothing", () => {
+    const scheduler = new FakeScheduler();
+    let reconnects = 0;
+    const lifecycle = createTerminalResizeLifecycle({
+      prefillMode: TERMINAL_PREFILL_MODE.FULL,
+      getContainer: () => ({ clientWidth: 80, clientHeight: 24 }),
+      getTerm: () => ({ viewportY: 7, getScrollbackLength: () => 100 }),
+      getPtyClient: () => ({ isOpen: true, reconnect: () => { reconnects++; } }),
+      shouldSuppressContainerResize: () => false,
+      userRequestedScrollback: () => true,
+      syncLayout: () => {},
+      scheduler,
+      createResizeObserver: () => ({ observe: () => {}, disconnect: () => {} }),
+    });
+    lifecycle.suspend();
+    lifecycle.resume();
+    scheduler.runTimers();
+    expect(reconnects).toBe(0);
+  });
 });

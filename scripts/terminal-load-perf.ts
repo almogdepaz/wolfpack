@@ -14,6 +14,7 @@ import {
   GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY,
 } from "../src/ghostty-prewarm-debug";
 import { DEFAULT_GHOSTTY_PREWARM_POOL_SIZE } from "../src/ghostty-prewarm-policy";
+import { TERMINAL_POOL_DEBUG_SIZE_KEY } from "../src/terminal-pool-debug";
 import { LAYOUT_STABLE_DEBUG_MODE_KEY } from "../src/terminal-layout-stable-debug";
 import { CURSOR_BLINK_DEBUG_DISABLED_KEY } from "../src/terminal-cursor-blink-debug";
 import { AGENT_KIND } from "../src/agent-kind";
@@ -30,7 +31,7 @@ export type ServerTiming = {
   sinceStartMs: number;
   [field: string]: unknown;
 };
-type ScenarioMode = "single" | "grid";
+type ScenarioMode = "single" | "grid" | "switch";
 
 /** Canvas-hash samples the init script appends to a session's trace: one at
  *  `hydration.reveal`, one after a bounded window (see installRevealFlashProbe).
@@ -56,6 +57,20 @@ export type ScenarioSummary = {
   cells: number;
   sessions: CellSummary[];
   server: ServerTiming[];
+  switchBack?: SwitchBackSummary;
+};
+
+/** Open A, open B, open A again: the third open is measured from its
+ *  `openSession.start` to the reveal (`pool.reveal` on a pool hit,
+ *  `hydration.reveal` on a miss). */
+export type SwitchBackSummary = {
+  session: string;
+  switchBackToRevealMs: number | null;
+  switchBackAttached: boolean;
+  poolHit: boolean;
+  revealFlash: boolean | null;
+  /** Heap after the switch-back, with the pooled terminals mounted. */
+  jsHeapUsedBytes?: number | null;
 };
 
 type PageLoadSetup = {
@@ -171,6 +186,12 @@ type PerfRunsSummary = {
     readonly revealFlashes: HitStats;
     readonly revealFlashesWithReplay: HitStats;
   };
+  readonly switchBack: {
+    readonly switchBackToRevealMs: MetricStats;
+    readonly attaches: HitStats;
+    readonly poolHits: HitStats;
+    readonly jsHeapUsedBytes: MetricStats;
+  };
 };
 
 type ServerPhaseSummary = {
@@ -198,6 +219,7 @@ const PERF_HARNESS_ENV_HELP = [
   "WOLFPACK_PERF_RUNS: positive integer repeated-run count (default: 1)",
   "WOLFPACK_PERF_DEVICE: desktop or mobile browser profile (default: desktop)",
   "WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE: debug-only pool size override 0-2",
+  "WOLFPACK_PERF_TERMINAL_POOL_SIZE: debug-only single-terminal pool size override 1-6 (default: 3 desktop, 1 mobile)",
   "WOLFPACK_PERF_GRID_CELLS: comma-separated grid sizes 2-6 (default: 2,4,6)",
   "WOLFPACK_PERF_USE_EXISTING_BROKER: set to 1 to use WOLFPACK_BROKER_SOCKET instead of spawning a broker",
   "WOLFPACK_PERF_ONLY_PAGE_LOAD: set to 1 to skip single/grid terminal scenarios",
@@ -550,6 +572,7 @@ export async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad
     if (opts.layoutStableMode !== undefined) localStorage.setItem(opts.layoutStableModeKey, opts.layoutStableMode);
     if (opts.ghosttyPrewarmDelayMs !== undefined) localStorage.setItem(opts.ghosttyPrewarmDelayKey, opts.ghosttyPrewarmDelayMs);
     if (opts.ghosttyPrewarmPoolSize !== undefined) localStorage.setItem(opts.ghosttyPrewarmPoolSizeKey, opts.ghosttyPrewarmPoolSize);
+    if (opts.terminalPoolSize !== undefined) localStorage.setItem(opts.terminalPoolSizeKey, opts.terminalPoolSize);
   }, {
     minPendingKey: HYDRATION_DEBUG_MIN_PENDING_KEY,
     cursorBlinkDisabledKey: CURSOR_BLINK_DEBUG_DISABLED_KEY,
@@ -557,11 +580,13 @@ export async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad
     layoutStableModeKey: LAYOUT_STABLE_DEBUG_MODE_KEY,
     ghosttyPrewarmDelayKey: GHOSTTY_PREWARM_DEBUG_DELAY_KEY,
     ghosttyPrewarmPoolSizeKey: GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY,
+    terminalPoolSizeKey: TERMINAL_POOL_DEBUG_SIZE_KEY,
     minPendingMs: process.env.WOLFPACK_PERF_HYDRATION_MIN_PENDING_MS,
     silenceMs: process.env.WOLFPACK_PERF_HYDRATION_SILENCE_MS,
     layoutStableMode: process.env.WOLFPACK_PERF_LAYOUT_STABLE_MODE,
     ghosttyPrewarmDelayMs: process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_DELAY_MS,
     ghosttyPrewarmPoolSize: process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE,
+    terminalPoolSize: process.env.WOLFPACK_PERF_TERMINAL_POOL_SIZE,
   });
   await page.addInitScript(installRevealFlashProbe, {
     reveal: PERF_FLASH_EVENT.REVEAL,
@@ -586,6 +611,24 @@ export async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad
   };
 }
 
+type HeapUsage = {
+  readonly usedSize?: number;
+  readonly embedderHeapUsedSize?: number;
+  readonly backingStorageSize?: number;
+};
+
+async function readHeapUsage(page: Page): Promise<HeapUsage> {
+  try {
+    const cdp = await page.context().newCDPSession(page);
+    const heapUsage: HeapUsage = await cdp.send("Runtime.getHeapUsage");
+    await cdp.detach();
+    return heapUsage;
+  } catch {
+    // CDP is Chromium-only; heap fields stay null elsewhere.
+    return {};
+  }
+}
+
 async function readPageLoadSummary(page: Page, setup: PageLoadSetup, waitMs: number): Promise<PageLoadSummary> {
   if (waitMs > 0) await page.waitForTimeout(waitMs);
   const metrics = await page.evaluate(() => {
@@ -603,16 +646,7 @@ async function readPageLoadSummary(page: Page, setup: PageLoadSetup, waitMs: num
       prewarmEvents: target.__wfGhosttyPrewarm?.events || [],
     };
   });
-  let heapUsage: {
-    readonly usedSize?: number;
-    readonly embedderHeapUsedSize?: number;
-    readonly backingStorageSize?: number;
-  } = {};
-  try {
-    const cdp = await page.context().newCDPSession(page);
-    heapUsage = await cdp.send("Runtime.getHeapUsage");
-    await cdp.detach();
-  } catch {}
+  const heapUsage = await readHeapUsage(page);
   const readyEvents = metrics.prewarmEvents.filter((event) => event.kind === "prewarm.ready");
   const scheduled = metrics.prewarmEvents.find((event) => event.kind === "schedule");
   const ghosttyReadyDone = metrics.prewarmEvents.find((event) => event.kind === "ghostty_ready.done");
@@ -826,6 +860,18 @@ export function summarizeCell(trace: TraceState): CellSummary {
   };
 }
 
+export function summarizeSwitchBack(trace: TraceState): SwitchBackSummary {
+  const events = trace.events;
+  const poolHit = events.some((event) => event.kind === "pool.show");
+  return {
+    session: trace._meta.session,
+    switchBackToRevealMs: eventTime(events, "pool.reveal") ?? eventTime(events, "hydration.reveal"),
+    switchBackAttached: events.some((event) => event.kind === "attach.send"),
+    poolHit,
+    revealFlash: poolHit ? null : summarizeRevealFlash(events).revealFlash,
+  };
+}
+
 export function serverTimingsFor(timings: ServerTiming[], sessions: string[], startIndex = 0): ServerTiming[] {
   const set = new Set(sessions);
   return timings.slice(startIndex).filter((timing) => set.has(timing.session));
@@ -960,6 +1006,52 @@ async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: strin
   }
 }
 
+async function openFromSidebar(page: Page, session: string): Promise<number> {
+  const clickedAt = await page.evaluate(() => Date.now());
+  await page.getByRole("button", { name: `Open ${session}`, exact: true }).filter({ visible: true }).first().click();
+  return clickedAt;
+}
+
+async function waitForSessionReveal(page: Page, session: string, since: number): Promise<TraceState> {
+  const handle = await page.waitForFunction(({ target, since }) => {
+    const traces = (window as unknown as { __wfTrace?: Record<string, TraceState> }).__wfTrace || {};
+    const trace = Object.values(traces).find((item) => item._meta.session === target && item._meta.startWall >= since);
+    const revealed = trace?.events.some((event) => event.kind === "pool.reveal" || event.kind === "hydration.reveal");
+    return revealed ? trace : null;
+  }, { target: session, since }, { timeout: 20_000 });
+  return await handle.jsonValue() as TraceState;
+}
+
+async function runSwitch(baseUrl: string, timings: ServerTiming[], sessions: readonly [string, string]): Promise<ScenarioSummary> {
+  const { page, close } = await setupPage(baseUrl);
+  const timingStart = timings.length;
+  const [first, second] = sessions;
+  try {
+    await waitForSessionReveal(page, first, await openFromSidebar(page, first));
+    await waitForSessionReveal(page, second, await openFromSidebar(page, second));
+    const since = await openFromSidebar(page, first);
+    await waitForSessionReveal(page, first, since);
+    // A miss also needs its flash probe's stable sample.
+    await page.waitForTimeout(REVEAL_FLASH_WINDOW_MS + 250);
+    const trace = await page.evaluate(({ target, since }) => {
+      const traces = (window as unknown as { __wfTrace?: Record<string, TraceState> }).__wfTrace || {};
+      return Object.values(traces).find((item) => item._meta.session === target && item._meta.startWall >= since) ?? null;
+    }, { target: first, since });
+    if (!trace) throw new Error(`missing switch-back trace for ${first}`);
+    const heapUsage = await readHeapUsage(page);
+    return {
+      scenario: "switch:2",
+      mode: "switch",
+      cells: 2,
+      sessions: [],
+      server: serverTimingsFor(timings, [...sessions], timingStart),
+      switchBack: { ...summarizeSwitchBack(trace), jsHeapUsedBytes: heapUsage.usedSize ?? null },
+    };
+  } finally {
+    await close();
+  }
+}
+
 function gridCellCounts(): number[] {
   const raw = process.env.WOLFPACK_PERF_GRID_CELLS;
   if (!raw) return [...DEFAULT_GRID_CELL_COUNTS];
@@ -1039,6 +1131,10 @@ export function formatPerfRunsSummary(summary: PerfRunsSummary): string {
     `grid prewarm hits: ${summary.grid.prewarmHits.hits}/${summary.grid.prewarmHits.total}`,
     `grid reveal flashes: ${summary.grid.revealFlashes.hits}/${summary.grid.revealFlashes.total}`,
     `grid reveal flashes with replay: ${summary.grid.revealFlashesWithReplay.hits}/${summary.grid.revealFlashesWithReplay.total}`,
+    `switch-back reveal p50/p95: ${formatMetricPair(summary.switchBack.switchBackToRevealMs)}`,
+    `switch-back attaches: ${summary.switchBack.attaches.hits}/${summary.switchBack.attaches.total}`,
+    `switch-back pool hits: ${summary.switchBack.poolHits.hits}/${summary.switchBack.poolHits.total}`,
+    `switch-back JS heap p50/p95: ${formatByteMetricPair(summary.switchBack.jsHeapUsedBytes)}`,
   ].join("\n");
 }
 
@@ -1073,6 +1169,11 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
   const gridRevealFlashes = { hits: 0, total: 0 };
   const gridRevealFlashesWithReplay = { hits: 0, total: 0 };
 
+  const switchBackToRevealMs: number[] = [];
+  const switchBackAttaches = { hits: 0, total: 0 };
+  const switchBackPoolHits = { hits: 0, total: 0 };
+  const switchBackJsHeapUsedBytes: number[] = [];
+
   for (const run of runs) {
     for (const pageLoad of run.pageLoads) {
       addMetric(pageCardVisibleMs, pageLoad.cardVisibleMs);
@@ -1084,6 +1185,14 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
       pageConsoleErrorsTotal += pageLoad.consoleErrorCount;
     }
     for (const summary of run.summaries) {
+      if (summary.mode === "switch") {
+        if (!summary.switchBack) continue;
+        addMetric(switchBackToRevealMs, summary.switchBack.switchBackToRevealMs);
+        countHit(switchBackAttaches, summary.switchBack.switchBackAttached);
+        countHit(switchBackPoolHits, summary.switchBack.poolHit);
+        addMetric(switchBackJsHeapUsedBytes, summary.switchBack.jsHeapUsedBytes ?? null);
+        continue;
+      }
       const isGrid = summary.mode === "grid";
       for (const cell of summary.sessions) {
         countHit(isGrid ? gridRevealFlashes : singleRevealFlashes, cell.revealFlash);
@@ -1136,6 +1245,12 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
       revealFlashes: gridRevealFlashes,
       revealFlashesWithReplay: gridRevealFlashesWithReplay,
     },
+    switchBack: {
+      switchBackToRevealMs: metricStats(switchBackToRevealMs),
+      attaches: switchBackAttaches,
+      poolHits: switchBackPoolHits,
+      jsHeapUsedBytes: metricStats(switchBackJsHeapUsedBytes),
+    },
   };
 }
 
@@ -1178,6 +1293,10 @@ function printPageLoadSummary(summary: PageLoadSummary): void {
 
 function printSummary(summary: ScenarioSummary): void {
   console.log(`\n${summary.scenario}`);
+  if (summary.switchBack) {
+    console.table([summary.switchBack]);
+    return;
+  }
   console.table(summary.sessions.map((cell) => ({
     session: cell.session,
     setupToAttachMs: cell.setupToAttachMs,
@@ -1268,6 +1387,9 @@ async function runPerfMeasurement(
     const summaries: ScenarioSummary[] = [];
     summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[0])));
     if (parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE) === "desktop") {
+      // Desktop only: it switches through the sidebar, and mobile keeps a
+      // single terminal (covered by the session-switch e2e).
+      summaries.push(await runMeasured(runSwitch(server.baseUrl, server.timings, [sessions[0], sessions[1]])));
       for (const cells of gridCellCounts()) {
         summaries.push(await runMeasured(runGrid(server.baseUrl, server.timings, sessions.slice(0, cells))));
       }
@@ -1335,9 +1457,10 @@ async function main(): Promise<void> {
     const device = parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE);
     const prewarmPoolSize = process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE
       ?? String(DEFAULT_GHOSTTY_PREWARM_POOL_SIZE);
+    const terminalPoolSize = process.env.WOLFPACK_PERF_TERMINAL_POOL_SIZE ?? "default";
     const report = runCount === 1
-      ? { generatedAt: new Date().toISOString(), device, prewarmPoolSize, ...runs[0], summary }
-      : { generatedAt: new Date().toISOString(), device, prewarmPoolSize, runs, summary };
+      ? { generatedAt: new Date().toISOString(), device, prewarmPoolSize, terminalPoolSize, ...runs[0], summary }
+      : { generatedAt: new Date().toISOString(), device, prewarmPoolSize, terminalPoolSize, runs, summary };
     console.log(`\n${formatPerfRunsSummary(summary)}`);
     if (process.env.WOLFPACK_PERF_ENFORCE_BUDGETS === "1") {
       const failures = perfBudgetFailures(summary, device);

@@ -14,6 +14,7 @@ import {
   summarizeCell,
   summarizePerfRuns,
   summarizeServerPhases,
+  summarizeSwitchBack,
   type PerfRunReport,
   type ServerTiming,
   type TraceState,
@@ -450,5 +451,84 @@ describe("terminal-load perf summarization", () => {
         liveBytesDuringReveal: null,
       });
     });
+  });
+});
+
+function switchTrace(events: TraceState["events"]): TraceState {
+  return { _meta: { session: "perf-a", machine: "", startWall: 0, startPerf: 0 }, events };
+}
+
+function switchRunReport(switchBackToRevealMs: number | null, attached: boolean, poolHit: boolean, jsHeapUsedBytes: number | null = null): PerfRunReport {
+  return {
+    pageLoads: [],
+    summaries: [{
+      scenario: "switch:2",
+      mode: "switch",
+      cells: 2,
+      server: [],
+      sessions: [],
+      switchBack: { session: "perf-a", switchBackToRevealMs, switchBackAttached: attached, poolHit, revealFlash: null, jsHeapUsedBytes },
+    }],
+  };
+}
+
+describe("switch scenario", () => {
+  test("a pool hit reveals without attaching", () => {
+    expect(summarizeSwitchBack(switchTrace([
+      { t: 0, kind: "openSession.start" },
+      { t: 1.5, kind: "pool.show", connected: true },
+      { t: 9.25, kind: "pool.reveal" },
+    ]))).toEqual({
+      session: "perf-a",
+      switchBackToRevealMs: 9.25,
+      switchBackAttached: false,
+      poolHit: true,
+      revealFlash: null,
+    });
+  });
+
+  test("a pool miss reports the attach and its hydration reveal", () => {
+    expect(summarizeSwitchBack(switchTrace([
+      { t: 0, kind: "openSession.start" },
+      { t: 40, kind: "attach.send" },
+      { t: 150, kind: "hydration.reveal" },
+      { t: 150, kind: PERF_FLASH_EVENT.REVEAL, hash: "a" },
+      { t: 300, kind: PERF_FLASH_EVENT.STABLE, hash: "a" },
+    ]))).toEqual({
+      session: "perf-a",
+      switchBackToRevealMs: 150,
+      switchBackAttached: true,
+      poolHit: false,
+      revealFlash: false,
+    });
+  });
+
+  test("an unrevealed switch-back reports no reveal time", () => {
+    expect(summarizeSwitchBack(switchTrace([{ t: 0, kind: "openSession.start" }])).switchBackToRevealMs).toBeNull();
+  });
+
+  test("aggregates switch-back separately from single-terminal opens", () => {
+    const summary = summarizePerfRuns([
+      switchRunReport(8, false, true, 40 * 1024 * 1024),
+      switchRunReport(12, false, true, 42 * 1024 * 1024),
+      switchRunReport(170, true, false),
+    ]);
+    expect(summary.switchBack.switchBackToRevealMs).toMatchObject({ count: 3, p50: 12, p95: 170 });
+    expect(summary.switchBack.attaches).toEqual({ hits: 1, total: 3 });
+    expect(summary.switchBack.poolHits).toEqual({ hits: 2, total: 3 });
+    expect(summary.single.setupToRevealMs.count).toBe(0);
+    const formatted = formatPerfRunsSummary(summary);
+    expect(formatted).toContain("switch-back reveal p50/p95: 12/170ms (n=3)");
+    expect(formatted).toContain("switch-back attaches: 1/3");
+    expect(formatted).toContain("switch-back pool hits: 2/3");
+    // Page-load heap never sees pooled terminals; sample after the switch.
+    expect(summary.switchBack.jsHeapUsedBytes).toMatchObject({ count: 2, p50: 40 * 1024 * 1024 });
+    expect(formatted).toContain("switch-back JS heap p50/p95: 40.00/42.00MiB (n=2)");
+  });
+
+  test("documents the terminal pool size override", () => {
+    expect(describePerfHarnessEnv()).toContain(
+      "WOLFPACK_PERF_TERMINAL_POOL_SIZE: debug-only single-terminal pool size override 1-6 (default: 3 desktop, 1 mobile)",
+    );
   });
 });

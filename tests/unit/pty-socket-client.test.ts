@@ -710,6 +710,64 @@ describe("PTY socket client", () => {
     client.close();
   });
 
+  // Characterization: pins existing socket/layout behavior the terminal pool
+  // relies on; it passed before the pool existed.
+  test("a parked (detached) pooled terminal keeps acking output and re-syncs geometry only when its size changed", async () => {
+    jest.useFakeTimers();
+    const term = { cols: 80, rows: 24, scrollToLine: () => {} };
+    // Ghostty's FitAddon proposes nothing for a zero-size (detached) element.
+    let proposed: { cols: number; rows: number } | undefined = { cols: 80, rows: 24 };
+    const client = createPtySocketClient(clientOpts({
+      getTermDimensions: () => term,
+      getProposedDimensions: () => proposed ?? null,
+      onResizeAck: (cols, rows) => { Object.assign(term, { cols, rows }); },
+    }), dependencies());
+    const sync = () => syncTerminalLayout({
+      term,
+      fitAddon: { fit: () => {}, proposeDimensions: () => proposed },
+      ptyClient: {
+        supportsOrderedResize: true,
+        sendResize: async (cols, rows) => { await client.sendResize(cols, rows); },
+      },
+      forceSend: true,
+      repaint: true,
+    });
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({
+        type: "attach_ack",
+        capabilities: [PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK, "output-ack"],
+      }));
+      acknowledge(socket, resizeFrames(socket)[0]);
+      const sentResizes = resizeFrames(socket).length;
+
+      proposed = undefined; // parked
+      await sync();
+      socket.message(new ArrayBuffer(64 * 1024));
+      expect(outputAckFrames(socket)).toEqual([{ type: "ack", bytes: 64 * 1024 }]);
+      expect(resizeFrames(socket)).toHaveLength(sentResizes);
+
+      proposed = { cols: 80, rows: 24 }; // shown again at the same size
+      await sync();
+      jest.advanceTimersByTime(200);
+      expect(resizeFrames(socket)).toHaveLength(sentResizes);
+
+      proposed = { cols: 100, rows: 30 }; // shown into a resized container
+      const resynced = sync();
+      jest.advanceTimersByTime(200);
+      expect(resizeFrames(socket)).toHaveLength(sentResizes + 1);
+      acknowledge(socket, resizeFrames(socket).at(-1)!);
+      await resynced;
+      expect(term).toEqual(expect.objectContaining({ cols: 100, rows: 30 }));
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
+  });
+
   test.each([false, true])("returns to committed geometry when the real layout caller reverses a resize (in-flight: %s)", async (inFlight) => {
     jest.useFakeTimers();
     const term = { cols: 80, rows: 24, scrollToLine: () => {} };

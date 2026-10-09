@@ -179,6 +179,9 @@ export interface PtyTerminalController {
   sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): Promise<OrderedResizeSettlement>;
   forceRepaint(): void;
   syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): Promise<void>;
+  /** Parked in the terminal pool: no background layout sync or resize-rehydrate reconnect. */
+  suspendLayout(): void;
+  resumeLayout(): void;
   send(data: PtySocketSendData): boolean;
   resetRetry(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
@@ -805,6 +808,8 @@ export function createPtyTerminalController(
       : Promise.resolve("cancelled" as const),
     forceRepaint,
     syncLayout,
+    suspendLayout: () => resizeLifecycle.suspend(),
+    resumeLayout: () => resizeLifecycle.resume(),
     send: (data) => {
       if (!_ptyClient || !_ptyClient.isOpen) return false;
       const accepted = _ptyClient.send(data);
