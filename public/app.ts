@@ -45,6 +45,7 @@ import {
   createPtyTerminalController as createStrictPtyTerminalController,
   INITIAL_HYDRATION_SETTLE_MS,
   INITIAL_HYDRATION_SILENCE_MS,
+  INITIAL_HYDRATION_MIN_PENDING_MS,
   type PtyTerminalController,
   type PtyTerminalControllerOpts,
   type TerminalInstance,
@@ -56,7 +57,7 @@ import {
 } from "./ghostty-prewarm-pool";
 
 import {
-  __wfTraceStart, __wfTraceEvent, wfTraceEnabled,
+  __wfTraceStart, __wfTraceEvent, wfTraceEnabled, wfCursorBlinkDisabled,
 } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
@@ -633,7 +634,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
     console.error("[wf] createIsolatedGhostty is not available — falling back to shared singleton (grid mode will be disabled). This usually means the ghostty-web bundle is out of date.");
   }
   const term = new Terminal({
-    cursorBlink,
+    cursorBlink: cursorBlink && !wfCursorBlinkDisabled,
     disableStdin,
     macOptionClickForcesSelection: true,
     fontSize: fontSize != null ? fontSize : tp.fontSize,
@@ -3421,7 +3422,7 @@ function createTerminalBootstrapController(
     machine,
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
     prefillMode,
-    hydrationMinPendingMs: 80,
+    hydrationMinPendingMs: INITIAL_HYDRATION_MIN_PENDING_MS,
     hydrationSettleMs: INITIAL_HYDRATION_SETTLE_MS,
     hydrationSilenceMs: INITIAL_HYDRATION_SILENCE_MS,
     disableStdin: isMobile,
