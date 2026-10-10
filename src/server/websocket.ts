@@ -888,7 +888,10 @@ async function sendSnapshotPrefill(
 ): Promise<SessionAttachLease> {
   const scrollbackLines = prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT ? GRID_PREFILL_SCROLLBACK_LINES : undefined;
   ctx.timing?.mark("snapshot_fetch.start", { cols: appliedSize.cols, rows: appliedSize.rows, scrollbackLines });
-  const lease = await ctx.backend.beginSessionAttach(ctx.session, appliedSize.cols, { scrollbackLines });
+  const lease = await ctx.backend.beginSessionAttach(ctx.session, appliedSize.cols, {
+    scrollbackLines,
+    maxBytes: DESKTOP_PREFILL_MAX_BYTES,
+  });
   const { prefill } = lease;
   ctx.timing?.mark("snapshot_fetch.end", { bytes: prefill.data.length, scrollbackLines });
   ctx.timing?.mark("prefill_send.start", { bytes: prefill.data.length, prefillMode });
@@ -899,16 +902,8 @@ async function sendSnapshotPrefill(
     ctx.timing?.mark("prefill_delay.end", { delayMs });
   }
   if (prefill.data.length > 0 && ctx.entry.viewer && ctx.entry.viewer.readyState === 1) {
-    let sendBuf: Buffer;
-    if (prefill.data.length > DESKTOP_PREFILL_MAX_BYTES) {
-      let start = prefill.data.length - DESKTOP_PREFILL_MAX_BYTES;
-      while (start < prefill.data.length && prefill.data[start] !== 0x0a) start++;
-      if (start < prefill.data.length) start++;
-      sendBuf = prefill.data.subarray(start);
-    } else {
-      sendBuf = prefill.data;
-    }
-
+    // The backend applied DESKTOP_PREFILL_MAX_BYTES (`maxBytes`) already.
+    const sendBuf = prefill.data;
     if (prefillMode === TERMINAL_PREFILL_MODE.VIEWPORT) {
       if (!safeViewerSend(ctx.entry, ctx.session, sendBuf)) return lease;
       ctx.timing?.mark("prefill_chunk.send", { chunkIndex: 0, bytes: sendBuf.length });

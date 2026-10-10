@@ -227,6 +227,21 @@ pub enum ResponsePayload {
     /// serde's `rc` support retains the exact Snapshot JSON shape.
     Snapshot { snapshot: Arc<Snapshot> },
     SnapshotSubscribe { snapshot: Arc<Snapshot>, current_seq: u64, replay_truncated: bool },
+    /// Atomic attach cut with the snapshot already rendered to ANSI prefill
+    /// bytes (base64, standard alphabet, padded) instead of per-cell JSON.
+    SnapshotSubscribeAnsi {
+        seq: u64,
+        current_seq: u64,
+        replay_truncated: bool,
+        cols: u16,
+        rows: u16,
+        cursor: CursorState,
+        modes: TerminalModes,
+        title: Option<String>,
+        ansi_base64: String,
+        /// Oldest scrollback lines dropped to fit `max_bytes`.
+        trimmed_lines: u64,
+    },
     Resize { ok: bool },
     Subscribe { ok: bool, current_seq: u64, replay_truncated: bool },
     Unsubscribe { ok: bool },
@@ -250,6 +265,9 @@ pub enum ErrorCode {
     ResizeFailed,
     InternalError,
     Unsupported,
+    /// `snapshot_subscribe_ansi` only: the visible screen alone renders past
+    /// `MAX_ANSI_PREFILL_BYTES`. Clients fall back to `snapshot_subscribe`.
+    PrefillTooLarge,
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +281,7 @@ pub mod methods {
     pub const SESSION_INFO: &str = "session_info";
     pub const SNAPSHOT: &str = "snapshot";
     pub const SNAPSHOT_SUBSCRIBE: &str = "snapshot_subscribe";
+    pub const SNAPSHOT_SUBSCRIBE_ANSI: &str = "snapshot_subscribe_ansi";
     pub const RESIZE: &str = "resize";
     pub const SUBSCRIBE: &str = "subscribe";
     pub const UNSUBSCRIBE: &str = "unsubscribe";
@@ -304,6 +323,21 @@ pub struct SnapshotParams {
     /// Omitting the field skips reflow (back-compat: old callers get raw rows).
     #[serde(default)]
     pub target_cols: Option<u16>,
+}
+
+/// Upper bound for `SnapshotAnsiParams::max_bytes` and for any rendered ANSI
+/// prefill: base64 inflates it to ~5.6 MB, which leaves room in one 16 MiB
+/// frame for the response's title (≤ 1 MiB of text, ≤ 6 MiB JSON-escaped);
+/// `terminal_state.rs` asserts the arithmetic at compile time.
+pub const MAX_ANSI_PREFILL_BYTES: u32 = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SnapshotAnsiParams {
+    #[serde(flatten)]
+    pub snapshot: SnapshotParams,
+    /// Byte budget for the rendered prefill. Oldest scrollback lines are
+    /// dropped until it fits; the visible screen is never cut.
+    pub max_bytes: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -477,6 +511,49 @@ mod tests {
         let v = json!({ "session_id": Uuid::nil(), "scrollback_lines": 200 });
         let p: SnapshotParams = serde_json::from_value(v).unwrap();
         assert!(p.target_cols.is_none());
+    }
+
+    #[test]
+    fn snapshot_ansi_params_flatten_snapshot_params_and_require_max_bytes() {
+        let v = json!({ "session_id": Uuid::nil(), "scrollback_lines": 500, "target_cols": 120, "max_bytes": 262144 });
+        let p: SnapshotAnsiParams = serde_json::from_value(v).unwrap();
+        assert_eq!(p.snapshot.scrollback_lines, Some(500));
+        assert_eq!(p.snapshot.target_cols, Some(120));
+        assert_eq!(p.max_bytes, 262_144);
+        let missing = json!({ "session_id": Uuid::nil() });
+        assert!(serde_json::from_value::<SnapshotAnsiParams>(missing).is_err());
+    }
+
+    #[test]
+    fn prefill_too_large_error_code_wire_name() {
+        assert_eq!(serde_json::to_value(ErrorCode::PrefillTooLarge).unwrap(), json!("prefill_too_large"));
+    }
+
+    #[test]
+    fn snapshot_subscribe_ansi_payload_wire_shape() {
+        let resp = ControlResponse::ok(
+            3,
+            ResponsePayload::SnapshotSubscribeAnsi {
+                seq: 9,
+                current_seq: 9,
+                replay_truncated: false,
+                cols: 80,
+                rows: 24,
+                cursor: CursorState::default(),
+                modes: TerminalModes::default(),
+                title: Some("t".into()),
+                ansi_base64: "Zm9v".into(),
+                trimmed_lines: 2,
+            },
+        );
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["payload"]["kind"], "snapshot_subscribe_ansi");
+        assert_eq!(v["payload"]["ansi_base64"], "Zm9v");
+        assert_eq!(v["payload"]["trimmed_lines"], 2);
+        assert_eq!(v["payload"]["seq"], 9);
+        assert_eq!(v["payload"]["modes"]["mouse_mode"], "off");
+        let back: ControlResponse = serde_json::from_value(v).unwrap();
+        assert_eq!(back, resp);
     }
 
     #[test]

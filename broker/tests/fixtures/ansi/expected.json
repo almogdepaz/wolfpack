@@ -1,0 +1,11 @@
+{
+  "scrollback_over_budget": {
+    "trimmed_lines": 53
+  },
+  "visible_over_budget": {
+    "trimmed_lines": 7
+  },
+  "budget_fits": {
+    "trimmed_lines": 0
+  }
+}

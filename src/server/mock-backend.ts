@@ -9,6 +9,7 @@ import type {
   SessionBackend,
   SessionLaunchOptions,
   SessionListFact,
+  SessionPrefillOptions,
 } from "./backend.js";
 import { DuplicateSessionError } from "./backend.js";
 import { SESSION_PROMPT_OUTCOME } from "../session-prompt-contract.js";
@@ -17,6 +18,7 @@ import type {
   SessionPromptWaitResult,
 } from "../session-prompt-contract.js";
 import { stripAnsi } from "./strip-ansi.js";
+import { trimRenderedPrefill } from "../broker/snapshot-render.js";
 import { inferAgentKind } from "./session-identity.js";
 import { CUSTOM_AGENT_KIND } from "../agent-kind.js";
 import type {
@@ -366,9 +368,10 @@ export class MockBackend implements SessionBackend {
     return true;
   }
 
-  async getSessionPrefill(name: string, _cols?: number, _options?: { scrollbackLines?: number }): Promise<{ data: Buffer; seq?: bigint }> {
+  async getSessionPrefill(name: string, _cols?: number, options?: SessionPrefillOptions): Promise<{ data: Buffer; seq?: bigint }> {
     const seq = this._nextOutputSeq - 1n;
-    const data = Buffer.from(this._sessions.has(name) ? stripAnsi(await this._capturePane(name)) : "");
+    const captured = Buffer.from(this._sessions.has(name) ? stripAnsi(await this._capturePane(name)) : "");
+    const data = options?.maxBytes === undefined ? captured : trimRenderedPrefill(captured, options.maxBytes);
     this._onAfterPrefill?.(name, seq);
     return { data, seq };
   }
@@ -376,7 +379,7 @@ export class MockBackend implements SessionBackend {
   async beginSessionAttach(
     name: string,
     cols?: number,
-    options?: { readonly scrollbackLines?: number },
+    options?: SessionPrefillOptions,
   ): Promise<SessionAttachLease> {
     const prefill = await this.getSessionPrefill(name, cols, options);
     let pending = true;

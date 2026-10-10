@@ -1,0 +1,59 @@
+[
+  {
+    "name": "plain_empty_scrollback"
+  },
+  {
+    "name": "dense_colors"
+  },
+  {
+    "name": "sgr_attrs"
+  },
+  {
+    "name": "wide_glyphs"
+  },
+  {
+    "name": "wrapped_raw"
+  },
+  {
+    "name": "wrapped_reflow"
+  },
+  {
+    "name": "modes_title_cursor"
+  },
+  {
+    "name": "mouse_x10"
+  },
+  {
+    "name": "mouse_vt200"
+  },
+  {
+    "name": "mouse_button_event"
+  },
+  {
+    "name": "mouse_any_event"
+  },
+  {
+    "name": "origin_mode"
+  },
+  {
+    "name": "alt_screen_tui"
+  },
+  {
+    "name": "trailing_blanks"
+  },
+  {
+    "name": "scrollback_over_budget",
+    "max_bytes": 4096
+  },
+  {
+    "name": "visible_over_budget",
+    "max_bytes": 64
+  },
+  {
+    "name": "budget_fits",
+    "max_bytes": 1048576
+  },
+  {
+    "name": "synthetic_edges"
+  }
+]

@@ -100,6 +100,7 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   lifecycleListeners = new Map<string, Set<(event: SessionLifecycleEvent) => void>>();
   resizeCalls: Array<{ name: string; cols: number; rows: number }> = [];
   prefillCalls: Array<{ name: string; cols?: number; scrollbackLines?: number }> = [];
+  attachMaxBytes: Array<number | undefined> = [];
   writeCalls: Array<{ name: string; data: Uint8Array }> = [];
   resizeDelayMs = 0;
   resizePaused = false;
@@ -171,8 +172,9 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
     const data = this.prefill.get(name) ?? Buffer.alloc(0);
     return { data, seq: this.prefillSeq };
   }
-  async beginSessionAttach(name: string, cols?: number, options?: { scrollbackLines?: number }) {
+  async beginSessionAttach(name: string, cols?: number, options?: { scrollbackLines?: number; maxBytes?: number }) {
     this.attachLeaseBeginCount += 1;
+    this.attachMaxBytes.push(options?.maxBytes);
     const prefill = await this.getSessionPrefill(name, cols, options);
     let state: "pending" | "active" | "cancelled" = "pending";
     return {
@@ -1143,6 +1145,38 @@ describe("broker WS attach: snapshot + subscribe path", () => {
       { name: SESSION, cols: 80, scrollbackLines: BOUNDED_GRID_SCROLLBACK_ROWS },
     ]);
     expect(ws.hasJsonType("pty_ready")).toBe(true);
+  });
+
+  test("viewport attach sends the desktop prefill budget with its 200-line cap", async () => {
+    backend.prefill.set(SESSION, Buffer.from("viewport bytes"));
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "viewport" });
+    await wait(260);
+
+    expect(backend.prefillCalls).toEqual([
+      { name: SESSION, cols: 80, scrollbackLines: BOUNDED_GRID_SCROLLBACK_ROWS },
+    ]);
+    expect(backend.attachMaxBytes).toEqual([256 * 1024]);
+    expect(Buffer.concat(ws.binaryFrames()).toString()).toBe("viewport bytes");
+  });
+
+  test("full attach delegates the byte budget and forwards the backend prefill verbatim", async () => {
+    // A broker-rendered prefill is only over budget when the visible screen
+    // alone is; the relay must not re-slice it (that would cut the screen).
+    const prefill = Buffer.alloc(300 * 1024, "x");
+    prefill.write("\x1b[2J\x1b[3J\x1b[H\x1b[0m");
+    backend.prefill.set(SESSION, prefill);
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "full" });
+    await wait(600);
+
+    expect(backend.attachMaxBytes).toEqual([256 * 1024]);
+    expect(ws.hasJsonType("prefill_done")).toBe(true);
+    expect(Buffer.compare(Buffer.concat(ws.binaryFrames()), prefill)).toBe(0);
   });
 
   test("full attach overlaps resize apply with initial settle wait", async () => {

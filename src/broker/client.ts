@@ -42,9 +42,38 @@ import {
 export type OutputSubscriber = (frame: OutputBinaryFrame) => void;
 export type EventSubscriber = (event: EventBody) => void;
 
+const UNKNOWN_METHOD = "unknown_method";
+
+/**
+ * Atomic snapshot subscribes for one session that overlap in flight. One
+ * connection answers them in issue order, so the last call to settle is the
+ * latest issued; the pre-group state is what a failed group restores.
+ */
+interface SnapshotSubscribeGroup {
+  readonly priorOwner: symbol | undefined;
+  readonly wasActive: boolean;
+  readonly hadSeq: boolean;
+  readonly owners: Set<symbol>;
+  inFlight: number;
+  lastSucceededOwner: symbol | undefined;
+  /** A succeeded call's lease was cancelled while a later call owned the session. */
+  releasedSuccess: boolean;
+}
+
 export interface BrokerSnapshotSubscription {
   readonly response: ControlResponse;
   cancel(): Promise<void>;
+}
+
+function snapshotRpcParams(
+  sessionId: string,
+  params: { scrollbackLines?: number; targetCols?: number },
+): Record<string, unknown> {
+  return {
+    session_id: sessionId,
+    ...(params.scrollbackLines !== undefined && { scrollback_lines: params.scrollbackLines }),
+    ...(params.targetCols !== undefined && { target_cols: params.targetCols }),
+  };
 }
 const PENDING_OUTPUT_MAX_BYTES_PER_SESSION = 1024 * 1024;
 
@@ -192,6 +221,12 @@ export class BrokerClient {
   private readonly pendingUnsubscribes = new Map<string, Promise<void>>();
   /** Explicit failed-subscription teardowns, superseded by a replacement subscribe. */
   private readonly pendingSubscriptionCancellations = new Map<string, symbol>();
+  /** Bumped on every successful connect; scopes per-connection broker facts. */
+  private connectionGeneration = 0;
+  /** Connection generation whose broker answered `unknown_method` to `snapshot_subscribe_ansi`. */
+  private snapshotAnsiUnsupportedGeneration: number | null = null;
+  /** Overlapping atomic snapshot subscribes per session, settled in issue order. */
+  private readonly snapshotSubscribeGroups = new Map<string, SnapshotSubscribeGroup>();
   /** Identity of the latest provisional atomic snapshot owner per session. */
   private readonly snapshotSubscriptionOwners = new Map<string, symbol>();
   /** Last observed output seq per active session (used for reconnect replay). */
@@ -239,6 +274,7 @@ export class BrokerClient {
     this.pendingSubscriptions.clear();
     this.pendingUnsubscribes.clear();
     this.pendingSubscriptionCancellations.clear();
+    this.snapshotSubscribeGroups.clear();
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.destroy();
@@ -376,44 +412,151 @@ export class BrokerClient {
     sessionId: string,
     params: { scrollbackLines?: number; targetCols?: number; timeoutMs?: number } = {},
   ): Promise<BrokerSnapshotSubscription> {
+    return this.atomicSnapshotSubscribe(
+      sessionId,
+      "snapshot_subscribe",
+      snapshotRpcParams(sessionId, params),
+      params.timeoutMs,
+      payload => (payload.snapshot as Record<string, unknown> | undefined)?.seq,
+    );
+  }
+
+  /**
+   * `snapshotSubscribe` with the snapshot rendered to budgeted ANSI prefill by
+   * the broker. Brokers that predate it reject with `unknown_method`; that
+   * answer is remembered for the rest of this connection (a broker upgrade
+   * restarts the broker, so the next connection asks again).
+   */
+  async snapshotSubscribeAnsi(
+    sessionId: string,
+    params: { scrollbackLines?: number; targetCols?: number; maxBytes: number; timeoutMs?: number },
+  ): Promise<BrokerSnapshotSubscription> {
+    if (this.state === "connected" && this.snapshotAnsiUnsupportedGeneration === this.connectionGeneration) {
+      throw new BrokerSubscribeError(UNKNOWN_METHOD, "snapshot_subscribe_ansi unsupported on this broker connection");
+    }
+    const generation = this.connectionGeneration;
+    try {
+      return await this.atomicSnapshotSubscribe(
+        sessionId,
+        "snapshot_subscribe_ansi",
+        { ...snapshotRpcParams(sessionId, params), max_bytes: params.maxBytes },
+        params.timeoutMs,
+        payload => payload.seq,
+      );
+    } catch (error: unknown) {
+      if (error instanceof BrokerSubscribeError && error.code === UNKNOWN_METHOD && generation === this.connectionGeneration) {
+        this.snapshotAnsiUnsupportedGeneration = generation;
+      }
+      throw error;
+    }
+  }
+
+  private async atomicSnapshotSubscribe(
+    sessionId: string,
+    method: string,
+    rpcParams: Record<string, unknown>,
+    timeoutMs: number | undefined,
+    snapshotSeqOf: (payload: Record<string, unknown>) => unknown,
+  ): Promise<BrokerSnapshotSubscription> {
     if (this.state !== "connected") throw new BrokerNotConnectedError();
     const owner = Symbol("snapshot subscription owner");
+    let group = this.snapshotSubscribeGroups.get(sessionId);
+    if (!group) {
+      group = {
+        priorOwner: this.snapshotSubscriptionOwners.get(sessionId),
+        wasActive: this.activeSubscriptions.has(sessionId),
+        hadSeq: this.activeSubscriptionSeq.has(sessionId),
+        owners: new Set(),
+        inFlight: 0,
+        lastSucceededOwner: undefined,
+        releasedSuccess: false,
+      };
+      this.snapshotSubscribeGroups.set(sessionId, group);
+    }
+    group.owners.add(owner);
+    group.inFlight++;
     this.pendingUnsubscribes.delete(sessionId);
     this.pendingSubscriptionCancellations.delete(sessionId);
     this.snapshotSubscriptionOwners.set(sessionId, owner);
     this.activeSubscriptions.add(sessionId);
     if (!this.activeSubscriptionSeq.has(sessionId)) this.activeSubscriptionSeq.set(sessionId, undefined);
+    let response: ControlResponse;
     try {
-      const response = await this.request("snapshot_subscribe", {
-        session_id: sessionId,
-        ...(params.scrollbackLines !== undefined && { scrollback_lines: params.scrollbackLines }),
-        ...(params.targetCols !== undefined && { target_cols: params.targetCols }),
-      }, { timeoutMs: params.timeoutMs });
-      if (response.status !== "ok") {
-        const code = response.error?.code ?? "internal_error";
-        throw new BrokerSubscribeError(code, response.error?.message ?? "snapshot subscribe failed");
-      }
-      const snapshot = (response.payload as Record<string, unknown> | undefined)?.snapshot as Record<string, unknown> | undefined;
-      const seq = snapshot?.seq;
-      if (typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0) {
-        const snapshotSeq = BigInt(seq);
-        const observed = this.activeSubscriptionSeq.get(sessionId);
-        this.activeSubscriptionSeq.set(sessionId, observed !== undefined && observed > snapshotSeq ? observed : snapshotSeq);
-      }
-      return {
-        response,
-        cancel: async () => {
-          if (this.snapshotSubscriptionOwners.get(sessionId) !== owner) return;
-          this.snapshotSubscriptionOwners.delete(sessionId);
-          await this.cancelSubscription(sessionId);
-        },
-      };
+      response = await this.request(method, rpcParams, { timeoutMs });
     } catch (error: unknown) {
+      this.settleSnapshotSubscribe(sessionId, group);
+      // Transport failure: the broker may or may not have installed the cut.
       if (this.snapshotSubscriptionOwners.get(sessionId) === owner) {
         this.clearSubscriptionState(sessionId);
       }
       throw error;
     }
+    if (response.status !== "ok") {
+      if (this.settleSnapshotSubscribe(sessionId, group)) this.rollbackSnapshotSubscribes(sessionId, group);
+      const code = response.error?.code ?? "internal_error";
+      throw new BrokerSubscribeError(code, response.error?.message ?? `${method} failed`);
+    }
+    group.lastSucceededOwner = owner;
+    this.settleSnapshotSubscribe(sessionId, group);
+    const seq = snapshotSeqOf((response.payload ?? {}) as Record<string, unknown>);
+    if (typeof seq === "number" && Number.isSafeInteger(seq) && seq >= 0) {
+      const snapshotSeq = BigInt(seq);
+      const observed = this.activeSubscriptionSeq.get(sessionId);
+      this.activeSubscriptionSeq.set(sessionId, observed !== undefined && observed > snapshotSeq ? observed : snapshotSeq);
+    }
+    return {
+      response,
+      cancel: async () => {
+        if (this.snapshotSubscriptionOwners.get(sessionId) !== owner) {
+          // A later call in this group owns the session for now. If it fails,
+          // the broker cut is this one's again, so record the release for the
+          // rollback to honor instead of handing ownership back.
+          if (this.snapshotSubscribeGroups.get(sessionId) === group && group.lastSucceededOwner === owner) {
+            group.lastSucceededOwner = undefined;
+            group.releasedSuccess = true;
+          }
+          return;
+        }
+        this.snapshotSubscriptionOwners.delete(sessionId);
+        await this.cancelSubscription(sessionId);
+      },
+    };
+  }
+
+  /** Settle one call of `group`; true when it was the group's last in-flight call. */
+  private settleSnapshotSubscribe(sessionId: string, group: SnapshotSubscribeGroup): boolean {
+    group.inFlight--;
+    if (group.inFlight > 0) return false;
+    if (this.snapshotSubscribeGroups.get(sessionId) === group) this.snapshotSubscribeGroups.delete(sessionId);
+    return true;
+  }
+
+  /**
+   * The group's last in-flight call got an error response. An error response
+   * installs or replaces nothing on the broker, so undo only the group's
+   * provisional bookkeeping: hand ownership back to the latest call that
+   * succeeded, or else restore the state from before the group's first call.
+   * A stream another viewer already shares keeps its active entry, seq floor
+   * and buffered output. Skipped when something outside the group (a plain
+   * subscribe, a cancellation) has since taken over the session.
+   */
+  private rollbackSnapshotSubscribes(sessionId: string, group: SnapshotSubscribeGroup): void {
+    const currentOwner = this.snapshotSubscriptionOwners.get(sessionId);
+    if (currentOwner === undefined || !group.owners.has(currentOwner)) return;
+    if (group.lastSucceededOwner !== undefined) {
+      this.snapshotSubscriptionOwners.set(sessionId, group.lastSucceededOwner);
+      return;
+    }
+    if (group.releasedSuccess) {
+      // The broker still holds the released success's cut; finish its cancel.
+      this.snapshotSubscriptionOwners.delete(sessionId);
+      this.cancelSubscription(sessionId).catch((error: unknown) => this.reportProtocolError(toError(error)));
+      return;
+    }
+    if (group.priorOwner === undefined) this.snapshotSubscriptionOwners.delete(sessionId);
+    else this.snapshotSubscriptionOwners.set(sessionId, group.priorOwner);
+    if (!group.wasActive) this.activeSubscriptions.delete(sessionId);
+    if (!group.hadSeq) this.activeSubscriptionSeq.delete(sessionId);
   }
 
   /**
@@ -442,6 +585,10 @@ export class BrokerClient {
     this.pendingUnsubscribes.delete(sessionId);
     this.pendingSubscriptionCancellations.delete(sessionId);
     this.snapshotSubscriptionOwners.delete(sessionId);
+    // The plain subscription now owns the session: later snapshot calls start
+    // a fresh group whose prior state includes it. Late settles of the old
+    // group no-op through the group identity / owner checks.
+    this.snapshotSubscribeGroups.delete(sessionId);
     this.activeSubscriptions.add(sessionId);
     if (opts.sinceSeq !== undefined) {
       // Take max(prev, sinceSeq): never lower the floor below what we've
@@ -588,6 +735,7 @@ export class BrokerClient {
   private handleConnect(): void {
     if (this.state !== "connecting") return;
     this.state = "connected";
+    this.connectionGeneration++;
     this.currentReconnectDelay = 0;
     // Fresh connection starts with a clean breaker counter — stale timeouts
     // from the previous (now dead) socket must not bias this one.
