@@ -45,6 +45,7 @@ import {
   createPtyTerminalController as createStrictPtyTerminalController,
   INITIAL_HYDRATION_SETTLE_MS,
   INITIAL_HYDRATION_SILENCE_MS,
+  INITIAL_HYDRATION_MIN_PENDING_MS,
   type PtyTerminalController,
   type PtyTerminalControllerOpts,
   type TerminalInstance,
@@ -56,13 +57,29 @@ import {
 } from "./ghostty-prewarm-pool";
 
 import {
-  __wfTraceStart, __wfTraceEvent, wfTraceEnabled,
+  __wfTraceStart, __wfTraceEvent, __wfTraceGet, wfTraceEnabled, wfCursorBlinkDisabled,
 } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
   revealTerminalConflict,
   setTerminalLoadVisualState,
+  type TerminalLoadVisualState,
 } from "./terminal-loading-ui";
+import {
+  canParkTerminal,
+  createParkedTerminalExpiry,
+  createTerminalPool,
+  createTerminalShellSlot,
+  HIDDEN_PARKED_EVICT_MS,
+  MOBILE_TERMINAL_POOL_SIZE,
+  PARKED_TERMINAL_TTL_MS,
+  shouldEvictParkedTerminal,
+  showAfterReleasingStaleVisible,
+  TERMINAL_POOL_SIZE,
+  type ParkedTerminalEvent,
+  type TerminalPoolKey,
+} from "./terminal-pool";
+import { resolveParkedTerminalDebugTtlMs, resolveTerminalPoolDebugSize } from "../src/terminal-pool-debug";
 import { createTerminalLiveGate, mountAndConnectTerminal } from "./terminal-bootstrap";
 import type { TerminalLiveGate } from "./terminal-bootstrap";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
@@ -633,7 +650,7 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
     console.error("[wf] createIsolatedGhostty is not available — falling back to shared singleton (grid mode will be disabled). This usually means the ghostty-web bundle is out of date.");
   }
   const term = new Terminal({
-    cursorBlink,
+    cursorBlink: cursorBlink && !wfCursorBlinkDisabled,
     disableStdin,
     macOptionClickForcesSelection: true,
     fontSize: fontSize != null ? fontSize : tp.fontSize,
@@ -1006,6 +1023,7 @@ function retireReplacedPeerIdentity(replacement: TailnetPeerIdentityReplacement)
   const { [oldIdentity]: _retiredPeerHealth, ...peerHealth } = state.peerHealth;
 
   retirePreservedGridSessionsForMachine(oldIdentity);
+  singleTerminalPool.evictMachine(oldIdentity);
   if (activeDelegationAffected) {
     if (state.terminalController) destroyTerminal();
     teardownDelegationWorkspace();
@@ -1271,6 +1289,8 @@ function teardownTerminalForViewChange(previousView: string, nextView: string): 
   // Prevents background WS from auto-reconnecting and stealing control from other instances.
   if (previousView !== "terminal" || nextView === "terminal") return;
   closeTerminalTranscript();
+  // The pool serves terminal-to-terminal switches only.
+  evictParkedSingleTerminals();
   if (state.activeDelegationRoot) {
     destroyTerminal(nextView === "settings");
     // Preserve the existing Settings return priority for a suspended manual grid.
@@ -1980,6 +2000,7 @@ function openDelegationGrid(rootSession: string, machineUrl = ""): void {
   const context = prepareDelegationWorkspace(rootSession, machineUrl);
   if (!context) return;
   destroyTerminal();
+  evictParkedSingleTerminals();
   collapseAutoExpandedSidebarImmediately();
   setState({
     termTarget: gridInspectionTarget(state.delegationGridSessions[0]),
@@ -2002,6 +2023,7 @@ function focusDelegationSession(sessionName: string, machineUrl = ""): void {
   if (!focusedMember) return;
   const sessionId = sessionIdentityId(focusedMember.session);
   if (state.terminalController) destroyTerminal();
+  evictParkedSingleTerminals();
   state.termTarget = sessionId
     ? { session: focusedMember.session.name, sessionId, machine: machineUrl }
     : null;
@@ -2274,6 +2296,7 @@ function collapseAutoExpandedSidebarImmediately(): void {
 async function openSession(name, machineUrl) {
   const targetMachine = machineUrl || "";
   if (targetMachine && !resolveReadyMachineOrigin(targetMachine)) {
+    singleTerminalPool.evictMachine(targetMachine);
     await showMachineUnavailable();
     return;
   }
@@ -2316,7 +2339,8 @@ async function openSession(name, machineUrl) {
   }
   // On desktop, if already in terminal view, do a session switch
   if (isDesktop() && state.currentView === "terminal" && state.currentSession) {
-    if (name !== state.currentSession || (machineUrl || "") !== state.currentMachine) {
+    const switching = name !== state.currentSession || (machineUrl || "") !== state.currentMachine;
+    if (switching && !singleTerminalPool.has(singleTerminalKey(name, targetMachine))) {
       hideTerminalCanvasForTeardown();
     }
     // If sidebar is auto-expanded (hover), instantly collapse it before
@@ -3167,8 +3191,116 @@ function connectDesktopWs() {
   state.terminalController.connect();
 }
 
-// Take-control state for single-terminal mode — mirrors grid's gs._displaced / gs._autoTakeControl
-var _tcState = { displaced: false, autoTakeControl: false };
+// ── Single-terminal pool ──
+// Recently used single-view terminals stay mounted and subscribed so
+// switching back is show/hide (no attach, prefill or hydration). The visible
+// entry's element occupies #desktop-terminal-container; parked elements are
+// detached from the document. Parked entries keep acking output: the server
+// closes a viewer that stops acking ("slow viewer") once its window and
+// pending buffer fill, which would turn a busy hidden session into a
+// disconnect. They do not reconnect while parked (no geometry while
+// detached); showing one reconnects it if its socket closed.
+
+type TerminalTakeControlState = { displaced: boolean; autoTakeControl: boolean };
+
+interface SingleTerminalEntry {
+  readonly key: TerminalPoolKey;
+  readonly element: HTMLElement;
+  readonly slowLoad: TerminalSlowLoadIndicator;
+  readonly liveGate: TerminalLiveGate;
+  controller: PtyTerminalController | null;
+  // Take-control state per entry — mirrors grid's gs._displaced / gs._autoTakeControl.
+  tcState: TerminalTakeControlState;
+  loadState: TerminalLoadVisualState;
+}
+
+const SINGLE_TERMINAL_SHELL_ID = "desktop-terminal-container";
+const singleTerminalShell = createTerminalShellSlot(document, SINGLE_TERMINAL_SHELL_ID);
+
+function singleTerminalPoolCapacity(): number {
+  return resolveTerminalPoolDebugSize({
+    debugEnabled: wfTraceEnabled,
+    storage: safeLocalStorage(),
+    defaultSize: isDesktop() ? TERMINAL_POOL_SIZE : MOBILE_TERMINAL_POOL_SIZE,
+  });
+}
+
+// A parked viewer holds its session against every other device; bound that
+// to recent, active use (see PARKED_TERMINAL_TTL_MS).
+const parkedTerminalExpiry = createParkedTerminalExpiry<SingleTerminalEntry>({
+  ttlMs: () => resolveParkedTerminalDebugTtlMs({
+    debugEnabled: wfTraceEnabled,
+    storage: safeLocalStorage(),
+    defaultTtlMs: PARKED_TERMINAL_TTL_MS,
+  }),
+  hiddenEvictMs: HIDDEN_PARKED_EVICT_MS,
+  evictParked: (entry) => {
+    if (!isVisibleSingleTerminal(entry)) singleTerminalPool.evictEntry(entry);
+  },
+  evictAllParked: () => evictParkedSingleTerminals(),
+});
+
+const singleTerminalPool = createTerminalPool<SingleTerminalEntry>({
+  capacity: singleTerminalPoolCapacity,
+  attach: (entry) => {
+    parkedTerminalExpiry.shown(entry);
+    entry.controller?.resumeLayout();
+    singleTerminalShell.show(entry.element);
+  },
+  detach: (entry) => {
+    entry.controller?.suspendLayout();
+    singleTerminalShell.park(entry.element);
+    parkedTerminalExpiry.parked(entry);
+  },
+  // A visible entry's element stays in place; destroyTerminal resets it.
+  dispose: (entry) => {
+    parkedTerminalExpiry.disposed(entry);
+    entry.controller?.dispose();
+  },
+});
+
+function singleTerminalKey(session: string, machine: string): TerminalPoolKey {
+  return { session, machine: machine || "" };
+}
+
+function isVisibleSingleTerminal(entry: SingleTerminalEntry): boolean {
+  return singleTerminalPool.isVisible(entry);
+}
+
+function visibleTakeControlState(): TerminalTakeControlState {
+  return singleTerminalPool.visible?.tcState ?? { displaced: false, autoTakeControl: false };
+}
+
+function setVisibleTakeControlState(next: TerminalTakeControlState): void {
+  const entry = singleTerminalPool.visible;
+  if (entry) entry.tcState = next;
+}
+
+function setSingleTerminalLoadState(entry: SingleTerminalEntry, loadState: TerminalLoadVisualState): void {
+  entry.loadState = loadState;
+  setTerminalLoadVisualState(entry.element, loadState);
+}
+
+/** Evict a parked entry after its terminal outcome; deferred so the socket
+ * callback that reported it is not disposed underneath itself. */
+function handleParkedTerminalEvent(entry: SingleTerminalEntry, event: ParkedTerminalEvent): void {
+  if (!shouldEvictParkedTerminal(event)) return;
+  queueMicrotask(() => {
+    if (!isVisibleSingleTerminal(entry)) singleTerminalPool.evictEntry(entry);
+  });
+}
+
+/** Grid cells and delegation views attach their own viewers; a parked viewer
+ * of the same session would be displaced, and the WASM memory adds up. */
+function evictParkedSingleTerminals(): void {
+  singleTerminalPool.evictHidden();
+}
+
+function evictParkedSingleTerminal(session: string, machine: string): void {
+  const entry = singleTerminalPool.get(singleTerminalKey(session, machine));
+  if (entry && !isVisibleSingleTerminal(entry)) singleTerminalPool.evictEntry(entry);
+}
+
 let _desktopTakeControlTimer: number | null = null;
 
 function clearDesktopTakeControlTimer(): void {
@@ -3184,7 +3316,7 @@ function startDesktopTakeControlFallback(): void {
     isPending: () => !!document.getElementById("desktop-conflict-overlay"),
     prepareRetry: () => {
       _desktopTakeControlTimer = null;
-      _tcState = prepareAutoTakeControl(_tcState);
+      setVisibleTakeControlState(prepareAutoTakeControl(visibleTakeControlState()));
     },
   });
 }
@@ -3201,7 +3333,7 @@ function showDesktopConflictOverlay(inspectionTarget: SessionInspectorTarget | n
       state.terminalController.sendTakeControl();
       startDesktopTakeControlFallback();
     } else {
-      _tcState = prepareAutoTakeControl(_tcState);
+      setVisibleTakeControlState(prepareAutoTakeControl(visibleTakeControlState()));
       state.terminalController.reconnect({ takeControl: true });
     }
     // Don't remove overlay here — wait for control_granted to confirm
@@ -3243,16 +3375,22 @@ function terminalMayTakeFocus(container: HTMLElement): boolean {
 type TerminalSlowLoadIndicator = ReturnType<typeof createTerminalSlowPathIndicator>;
 
 interface TerminalControllerBootstrapOptions {
-  readonly container: HTMLElement;
+  readonly entry: SingleTerminalEntry;
   readonly inspectionTarget: SessionInspectorTarget | null;
   readonly isMobile: boolean;
   readonly prefillMode: TerminalPrefillMode;
-  readonly slowLoad: TerminalSlowLoadIndicator;
-  readonly liveGate: TerminalLiveGate;
+}
+
+function hideTerminalBootstrapChrome(): void {
+  document.getElementById("terminal-view")?.classList.remove("terminal-swipe-peek");
+  document.getElementById("kb-accessory").classList.remove("visible");
+  state.kbAccessoryOpen = false;
+  document.getElementById("input-bar").style.display = "none";
+  document.getElementById("cmd-palette").classList.remove("visible");
+  document.getElementById("msg-preview").style.display = "none";
 }
 
 function prepareTerminalBootstrapView(container: HTMLElement): TerminalSlowLoadIndicator {
-  document.getElementById("terminal-view")?.classList.remove("terminal-swipe-peek");
   container.style.display = "block";
   container.innerHTML = "";
   container.classList.add("hydrating");
@@ -3260,35 +3398,28 @@ function prepareTerminalBootstrapView(container: HTMLElement): TerminalSlowLoadI
   setTerminalLoadVisualState(container, "prefill-loading");
   const slowLoad = createTerminalSlowPathIndicator(container);
   slowLoad.start("waiting for terminal snapshot");
-  document.getElementById("kb-accessory").classList.remove("visible");
-  state.kbAccessoryOpen = false;
-  document.getElementById("input-bar").style.display = "none";
-  document.getElementById("cmd-palette").classList.remove("visible");
-  document.getElementById("msg-preview").style.display = "none";
+  hideTerminalBootstrapChrome();
   return slowLoad;
 }
 
-function handleTerminalOpened(
-  container: HTMLElement,
-  slowLoad: TerminalSlowLoadIndicator,
-  wasReconnect: boolean,
-): void {
-  if (wasReconnect) wpMetrics.reconnectCount++;
+function handleTerminalOpened(entry: SingleTerminalEntry, wasReconnect: boolean): void {
+  const visible = isVisibleSingleTerminal(entry);
+  if (visible && wasReconnect) wpMetrics.reconnectCount++;
   // Successful WS open clears stale conflict overlay. If the server
   // sees a conflict, onViewerConflict fires after onOpen and re-shows it.
-  _tcState = handleControlGranted(_tcState);
-  removeDesktopConflictOverlay();
-  setTerminalLoadVisualState(container, "prefill-loading");
-  slowLoad.start("waiting for terminal prefill");
-  setConnState("live");
+  entry.tcState = handleControlGranted(entry.tcState);
+  if (visible) removeDesktopConflictOverlay();
+  setSingleTerminalLoadState(entry, "prefill-loading");
+  entry.slowLoad.start("waiting for terminal prefill");
+  if (visible) setConnState("live");
 }
 
-function handleTerminalPtyReady(): void {
+function handleTerminalPtyReady(entry: SingleTerminalEntry): void {
   // Force a full canvas repaint after prefill completes. FitAddon.fit() and
   // Terminal.resize() both no-op when dimensions haven't changed, so sendFitResize
   // does nothing if the terminal is the same size as before the session switch.
   // renderer.render(forceAll=true) bypasses both guards and repaints every cell.
-  state.terminalController?.forceRepaint();
+  entry.controller?.forceRepaint();
 }
 
 function handleTerminalOutput(): void {
@@ -3309,142 +3440,144 @@ function handleTerminalSubSessionOpened(parentSession: string, session: string):
 }
 
 function handleTerminalViewerConflict(
-  container: HTMLElement,
-  slowLoad: TerminalSlowLoadIndicator,
+  entry: SingleTerminalEntry,
   inspectionTarget: SessionInspectorTarget | null,
 ): void {
-  const result = handleViewerConflict(_tcState);
-  _tcState = result.newState;
-  slowLoad.stop();
-  setTerminalLoadVisualState(container, _tcState.displaced ? "displaced" : "viewer-conflict");
+  if (!isVisibleSingleTerminal(entry)) {
+    handleParkedTerminalEvent(entry, "viewer-conflict");
+    return;
+  }
+  const result = handleViewerConflict(entry.tcState);
+  entry.tcState = result.newState;
+  entry.slowLoad.stop();
+  setSingleTerminalLoadState(entry, entry.tcState.displaced ? "displaced" : "viewer-conflict");
   if (result.action === "auto-take-control") {
-    state.terminalController.sendTakeControl();
+    entry.controller?.sendTakeControl();
   } else {
     showDesktopConflictOverlay(inspectionTarget);
   }
 }
 
-function handleTerminalControlGranted(
-  container: HTMLElement,
-  slowLoad: TerminalSlowLoadIndicator,
-  isMobile: boolean,
-): void {
-  _tcState = handleControlGranted(_tcState);
-  removeDesktopConflictOverlay();
-  setTerminalLoadVisualState(container, "hydrating");
-  slowLoad.start("restoring terminal control");
+function handleTerminalControlGranted(entry: SingleTerminalEntry, isMobile: boolean): void {
+  const visible = isVisibleSingleTerminal(entry);
+  entry.tcState = handleControlGranted(entry.tcState);
+  if (visible) removeDesktopConflictOverlay();
+  setSingleTerminalLoadState(entry, "hydrating");
+  entry.slowLoad.start("restoring terminal control");
+  if (!visible) return;
   if (isMobile) setMobileGhosttyKeyboardOpen(state.kbAccessoryOpen);
-  else if (terminalMayTakeFocus(container)) state.terminalController?.focus();
+  else if (terminalMayTakeFocus(entry.element)) entry.controller?.focus();
 }
 
 function handleTerminalDisconnected(
-  container: HTMLElement,
-  slowLoad: TerminalSlowLoadIndicator,
+  entry: SingleTerminalEntry,
   inspectionTarget: SessionInspectorTarget | null,
   code: number,
   reason: string,
 ): void {
-  removeDesktopConflictOverlay();
   const action = classifyDisconnect(code, reason || "");
+  if (!isVisibleSingleTerminal(entry)) {
+    // Parked entries reconnect when shown, never in the background.
+    handleParkedTerminalEvent(entry, action);
+    return;
+  }
+  removeDesktopConflictOverlay();
   if (action === "displaced") {
-    _tcState = handleDisplaced(_tcState);
-    slowLoad.stop();
-    setTerminalLoadVisualState(container, "displaced");
+    entry.tcState = handleDisplaced(entry.tcState);
+    entry.slowLoad.stop();
+    setSingleTerminalLoadState(entry, "displaced");
     showDesktopConflictOverlay(inspectionTarget);
     return;
   }
   if (action === "session-ended") {
-    slowLoad.stop();
-    setTerminalLoadVisualState(container, "failed");
+    entry.slowLoad.stop();
+    setSingleTerminalLoadState(entry, "failed");
     setConnState("session-ended");
     const statusEl = document.getElementById("conn-status");
-    if (statusEl) statusEl.textContent = "session unavailable \u2014 use \u2190 to go back";
+    if (statusEl) statusEl.textContent = "session unavailable — use ← to go back";
     return;
   }
   if (action === "pty-exited") {
-    slowLoad.stop();
-    setTerminalLoadVisualState(container, "failed");
+    entry.slowLoad.stop();
+    setSingleTerminalLoadState(entry, "failed");
     setConnState("session-ended");
     return;
   }
-  state.terminalController.scheduleReconnect();
+  entry.controller?.scheduleReconnect();
 }
 
-function handleTerminalReconnecting(
-  container: HTMLElement,
-  slowLoad: TerminalSlowLoadIndicator,
-): void {
-  setTerminalLoadVisualState(container, "reconnecting");
-  slowLoad.start("reconnecting terminal");
-  setConnState("reconnecting");
+function handleTerminalReconnecting(entry: SingleTerminalEntry): void {
+  setSingleTerminalLoadState(entry, "reconnecting");
+  entry.slowLoad.start("reconnecting terminal");
+  if (isVisibleSingleTerminal(entry)) setConnState("reconnecting");
 }
 
-function handleTerminalReconnectExhausted(
-  container: HTMLElement,
-  slowLoad: TerminalSlowLoadIndicator,
-): void {
-  slowLoad.stop();
-  setTerminalLoadVisualState(container, "failed");
+function handleTerminalReconnectExhausted(entry: SingleTerminalEntry): void {
+  if (!isVisibleSingleTerminal(entry)) {
+    handleParkedTerminalEvent(entry, "reconnect-exhausted");
+    return;
+  }
+  entry.slowLoad.stop();
+  setSingleTerminalLoadState(entry, "failed");
   setConnState("offline");
 }
 
-function handleTerminalRouteUnavailable(
-  container: HTMLElement,
-  slowLoad: TerminalSlowLoadIndicator,
-): void {
-  slowLoad.stop();
-  setTerminalLoadVisualState(container, "failed");
+function handleTerminalRouteUnavailable(entry: SingleTerminalEntry): void {
+  if (!isVisibleSingleTerminal(entry)) {
+    handleParkedTerminalEvent(entry, "route-unavailable");
+    return;
+  }
+  entry.slowLoad.stop();
+  setSingleTerminalLoadState(entry, "failed");
   setConnState("machine-unavailable");
 }
 
-function handleTerminalHydrationStart(
-  container: HTMLElement,
-  slowLoad: TerminalSlowLoadIndicator,
-  liveGate: TerminalLiveGate,
-): void {
+function handleTerminalHydrationStart(entry: SingleTerminalEntry): void {
   // A controller survives reconnects, but each hydration cycle needs its
   // own final live transition after the mobile post-mount gate is ready.
-  liveGate.onHydrationStart();
-  setTerminalLoadVisualState(container, "hydrating");
-  slowLoad.start("hydrating terminal");
+  entry.liveGate.onHydrationStart();
+  setSingleTerminalLoadState(entry, "hydrating");
+  entry.slowLoad.start("hydrating terminal");
 }
 
 function createTerminalBootstrapController(
   options: TerminalControllerBootstrapOptions,
 ): PtyTerminalController {
-  const { container, inspectionTarget, isMobile, liveGate, prefillMode, slowLoad } = options;
-  const session = state.currentSession;
-  const machine = state.currentMachine || "";
+  const { entry, inspectionTarget, isMobile, prefillMode } = options;
+  const { session, machine } = entry.key;
+  const container = entry.element;
   let acknowledgementAttempted = false;
   return createPtyTerminalController({
     session,
     machine,
     scrollback: DESKTOP_TERMINAL_SCROLLBACK,
     prefillMode,
-    hydrationMinPendingMs: 80,
+    hydrationMinPendingMs: INITIAL_HYDRATION_MIN_PENDING_MS,
     hydrationSettleMs: INITIAL_HYDRATION_SETTLE_MS,
     hydrationSilenceMs: INITIAL_HYDRATION_SILENCE_MS,
     disableStdin: isMobile,
-    getHydrationElement: () => document.getElementById("desktop-terminal-container"),
-    shouldFocus: () => !isMobile && terminalMayTakeFocus(container),
-    shouldReconnect: () => !!state.terminalController?.term,
+    getHydrationElement: () => container,
+    shouldFocus: () => !isMobile && isVisibleSingleTerminal(entry) && terminalMayTakeFocus(container),
+    shouldReconnect: () => isVisibleSingleTerminal(entry) && !!entry.controller?.term,
     onOpen: (wasReconnect) => {
-      handleTerminalOpened(container, slowLoad, wasReconnect);
+      handleTerminalOpened(entry, wasReconnect);
       if (acknowledgementAttempted) return;
       acknowledgementAttempted = true;
       void acknowledgeTerminalRuntimeState(session, machine);
     },
-    onPtyReady: handleTerminalPtyReady,
-    onOutput: handleTerminalOutput,
-    onSubSessionOpened: handleTerminalSubSessionOpened,
-    onViewerConflict: () => handleTerminalViewerConflict(container, slowLoad, inspectionTarget),
-    onControlGranted: () => handleTerminalControlGranted(container, slowLoad, isMobile),
-    onDisconnected: (code, reason) => handleTerminalDisconnected(container, slowLoad, inspectionTarget, code, reason),
-    onReconnecting: () => handleTerminalReconnecting(container, slowLoad),
-    onReconnectExhausted: () => handleTerminalReconnectExhausted(container, slowLoad),
-    onRouteUnavailable: () => handleTerminalRouteUnavailable(container, slowLoad),
-    onHydrationStart: () => handleTerminalHydrationStart(container, slowLoad, liveGate),
-    onHydrated: liveGate.onHydrated,
+    onPtyReady: () => handleTerminalPtyReady(entry),
+    onOutput: () => { if (isVisibleSingleTerminal(entry)) handleTerminalOutput(); },
+    onSubSessionOpened: (parentSession, childSession) => {
+      if (isVisibleSingleTerminal(entry)) handleTerminalSubSessionOpened(parentSession, childSession);
+    },
+    onViewerConflict: () => handleTerminalViewerConflict(entry, inspectionTarget),
+    onControlGranted: () => handleTerminalControlGranted(entry, isMobile),
+    onDisconnected: (code, reason) => handleTerminalDisconnected(entry, inspectionTarget, code, reason),
+    onReconnecting: () => handleTerminalReconnecting(entry),
+    onReconnectExhausted: () => handleTerminalReconnectExhausted(entry),
+    onRouteUnavailable: () => handleTerminalRouteUnavailable(entry),
+    onHydrationStart: () => handleTerminalHydrationStart(entry),
+    onHydrated: entry.liveGate.onHydrated,
   });
 }
 
@@ -3502,40 +3635,93 @@ function setupMobileTerminalViewport(): void {
   vvHandler();
 }
 
+/** Pool hit: show the parked terminal as it was left — no attach, prefill or
+ * hydration. Re-attaching its element fires the ResizeObserver; the existing
+ * layout sync sends a resize only if the fitted geometry changed. */
+function showPooledTerminal(key: TerminalPoolKey): boolean {
+  const entry = showAfterReleasingStaleVisible(singleTerminalPool, key);
+  const controller = entry?.controller;
+  if (!entry || !controller) return false;
+  const trace = __wfTraceGet(key.session, key.machine);
+  __wfTraceEvent(trace, "pool.show", { connected: controller.isConnected });
+  const container = entry.element;
+  state.terminalController = controller;
+  container.style.display = "block";
+  // Restore the entry's own state over the switch-away loading style.
+  const hydrating = !!controller.hydration?.pending;
+  container.classList.toggle("hydrating", hydrating);
+  container.classList.toggle("hydrated", !hydrating);
+  // A sidebar transition's reveal clears `transitioning` from whichever
+  // element is current, so one parked mid-transition keeps it.
+  container.classList.toggle("transitioning", state.sidebarLayoutTransitioning);
+  setTerminalLoadVisualState(container, entry.loadState);
+  hideTerminalBootstrapChrome();
+  setConnState(controller.isConnected ? "live" : "reconnecting");
+  controller.forceRepaint();
+  if (!controller.isConnected) controller.connect();
+  if (!isDesktop()) {
+    setupMobileTerminalInput(container, controller);
+    setupMobileTerminalViewport();
+  } else if (terminalMayTakeFocus(container)) {
+    controller.focus();
+  }
+  requestAnimationFrame(() => __wfTraceEvent(trace, "pool.reveal"));
+  return true;
+}
+
 async function initTerminal(
   prefillModeOverride?: TerminalPrefillMode,
   inspectionTargetOverride?: SessionInspectorTarget | null,
 ): Promise<void> {
   if (state.terminalController) return;
   if (inspectionTargetOverride !== undefined) state.termTarget = inspectionTargetOverride;
+  const key = singleTerminalKey(state.currentSession, state.currentMachine);
+  // Also releases a stale visible entry (grid paths clear
+  // state.terminalController without the pool) before the hit lookup.
+  if (showPooledTerminal(key)) return;
   const isMobile = !isDesktop();
-  const container = document.getElementById("desktop-terminal-container");
+  const container = document.getElementById(SINGLE_TERMINAL_SHELL_ID);
   const slowLoad = prepareTerminalBootstrapView(container);
   const terminalPrefillMode = prefillModeOverride ?? TERMINAL_PREFILL_MODE.FULL;
-  const liveGate = createTerminalLiveGate({
-    waitForPostMount: isMobile,
-    onLive: () => {
-      slowLoad.stop();
-      setTerminalLoadVisualState(container, "live");
-      scheduleGhosttyPrewarm();
-    },
-  });
+  const inspectionTarget = state.termTarget;
 
-  _tcState = { displaced: false, autoTakeControl: false };
-  state.terminalController = createTerminalBootstrapController({
-    container,
-    inspectionTarget: state.termTarget,
-    isMobile,
-    prefillMode: terminalPrefillMode,
-    slowLoad,
-    liveGate,
+  const { entry } = singleTerminalPool.open(key, () => {
+    const created: SingleTerminalEntry = {
+      key,
+      element: container,
+      slowLoad,
+      liveGate: createTerminalLiveGate({
+        waitForPostMount: isMobile,
+        onLive: () => {
+          slowLoad.stop();
+          setSingleTerminalLoadState(created, "live");
+          scheduleGhosttyPrewarm();
+        },
+      }),
+      controller: null,
+      tcState: { displaced: false, autoTakeControl: false },
+      loadState: "prefill-loading",
+    };
+    created.controller = createTerminalBootstrapController({
+      entry: created,
+      inspectionTarget,
+      isMobile,
+      prefillMode: terminalPrefillMode,
+    });
+    return created;
   });
+  const controller = entry.controller;
+  state.terminalController = controller;
 
-  const controller = state.terminalController;
-  await mountAndConnectTerminal(controller, container);
+  try {
+    await mountAndConnectTerminal(controller, container);
+  } catch (error: unknown) {
+    singleTerminalPool.evictEntry(entry);
+    throw error;
+  }
   if (state.terminalController !== controller) return; // disposed/replaced while mounting
   if (!controller.term) {
-    controller.dispose();
+    singleTerminalPool.evictEntry(entry);
     showTerminalMountFailure(container, slowLoad);
     return;
   }
@@ -3546,7 +3732,7 @@ async function initTerminal(
   }
   // Hydration can complete while mount awaits Ghostty. Do not expose a live
   // terminal on mobile until its post-mount handlers are ready.
-  liveGate.onPostMountReady();
+  entry.liveGate.onPostMountReady();
 }
 
 function waitForAnimationFrame(): Promise<void> {
@@ -3570,12 +3756,38 @@ function hideTerminalCanvasForTeardown(): void {
   void container.offsetHeight;
 }
 
+function canParkSingleTerminal(entry: SingleTerminalEntry): boolean {
+  return canParkTerminal({
+    hasTerminal: !!entry.controller?.term,
+    displaced: entry.tcState.displaced,
+    loadState: entry.loadState,
+  });
+}
+
+function releaseVisibleSingleTerminal(park: boolean): void {
+  const visible = singleTerminalPool.visible;
+  if (visible && park && canParkSingleTerminal(visible)) singleTerminalPool.park();
+  else if (visible) singleTerminalPool.evictEntry(visible);
+  else if (state.terminalController) state.terminalController.dispose();
+  state.terminalController = null;
+}
+
 function destroyTerminal(preserveTarget = false) {
+  releaseSingleTerminalView(preserveTarget, false);
+}
+
+/** Session switch: keep the current terminal mounted in the pool when it is
+ * healthy; otherwise tear it down exactly like destroyTerminal. */
+function parkTerminalForSwitch(): void {
+  releaseSingleTerminalView(false, true);
+}
+
+function releaseSingleTerminalView(preserveTarget: boolean, park: boolean): void {
   if (!preserveTarget) state.termTarget = null;
   hideTerminalCanvasForTeardown();
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
   if (!isDesktop()) setMobileGhosttyKeyboardOpen(false);
-  if (state.terminalController) { state.terminalController.dispose(); state.terminalController = null; }
+  releaseVisibleSingleTerminal(park);
   // Clean up visualViewport handler
   if (state.visualViewportHandler && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
@@ -3587,6 +3799,7 @@ function destroyTerminal(preserveTarget = false) {
   if (termView) { termView.style.bottom = ""; termView.style.transform = ""; }
   setMobileKeyboardInset(0);
   if (state.kbResizeTimer) { clearTimeout(state.kbResizeTimer); state.kbResizeTimer = null; }
+  // A parked element left the document; this resets the shell now in its place.
   const container = document.getElementById("desktop-terminal-container");
   container.removeAttribute("inputmode");
   container.style.display = "none";
@@ -3738,6 +3951,7 @@ async function killSession(name, e, machineUrl) {
     });
     return;
   }
+  evictParkedSingleTerminal(name, machineUrl || "");
   const gridIndex = isGridActive()
     ? state.gridSessions.findIndex(session => session.session === name && (session.machine || "") === (machineUrl || ""))
     : -1;
@@ -4029,6 +4243,7 @@ async function switchSession(val) {
     name = val;
   }
   if (machineUrl && !resolveReadyMachineOrigin(machineUrl)) {
+    singleTerminalPool.evictMachine(machineUrl);
     await showMachineUnavailable();
     return;
   }
@@ -4047,13 +4262,17 @@ async function switchSession(val) {
     return;
   }
   const inspectionTarget = pinnedSessionInspectionTarget(name, machineUrl);
-  hideTerminalCanvasForTeardown();
-  await waitForTerminalSwitchPaint();
+  // A pooled target is shown in this task: nothing is torn down or mounted,
+  // so there is no blocking work to paint a loading frame ahead of.
+  if (isGridActive() || !singleTerminalPool.has(singleTerminalKey(name, machineUrl))) {
+    hideTerminalCanvasForTeardown();
+    await waitForTerminalSwitchPaint();
+  }
   closeDrawer(true);
   // Exit grid mode if active
   if (isGridActive()) exitGridMode();
-  // Suspend the current terminal before mounting the selected session.
-  destroyTerminal();
+  // Park (or tear down) the current terminal before showing the selected session.
+  parkTerminalForSwitch();
   state.termTarget = inspectionTarget;
   setState({ currentSession: name, currentMachine: machineUrl });
   document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
@@ -4145,6 +4364,8 @@ const mobileForegroundEnvironment = {
 
 document.addEventListener("visibilitychange", () => {
   terminalVisibilityEpoch++;
+  if (document.visibilityState === "visible") parkedTerminalExpiry.pageVisible();
+  else parkedTerminalExpiry.pageHidden();
   if (document.visibilityState === "visible") {
     const hiddenDuration = _hiddenAt ? Date.now() - _hiddenAt : 0;
     _hiddenAt = 0;
@@ -4181,6 +4402,8 @@ document.addEventListener("visibilitychange", () => {
           state.terminalController.resetRetry();
           state.terminalController.reconnect();
         }
+        // Parked sockets may be zombies too; a later switch is a plain miss.
+        evictParkedSingleTerminals();
       } else {
         // Short background (<60s): no reconnect needed, but canvas backing store
         // may have been invalidated by browser compositor (App Nap, power saving).
@@ -4248,7 +4471,9 @@ setInterval(() => {
 }, 30_000);
 
 // Dismiss preview when tapping terminal area
-document.getElementById("desktop-terminal-container").addEventListener("click", () => {
+// Delegated: pooled terminals swap their own element into the shell slot.
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element) || !event.target.closest("#desktop-terminal-container")) return;
   document.getElementById("msg-preview").style.display = "none";
 });
 
@@ -5554,7 +5779,12 @@ function bindHtmlEventListeners(): void {
 bindHtmlEventListeners();
 
 initGridDeps({
-  showView, openSession, destroyTerminal, initTerminal,
+  showView, openSession, initTerminal,
+  // Entering grid mode: cells attach their own viewers.
+  destroyTerminal: () => {
+    destroyTerminal();
+    evictParkedSingleTerminals();
+  },
   backToSessions, renderSidebar,
   createPtyTerminalController, createConflictOverlay,
   sessionIdFor: (session, machine) => pinnedSessionInspectionTarget(session, machine)?.sessionId ?? null,
