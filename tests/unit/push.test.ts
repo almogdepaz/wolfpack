@@ -149,10 +149,15 @@ describe("push: crypto round-trip", () => {
     expect(sigBuf.length).toBe(64); // raw r||s
 
     // Convert raw r||s back to DER for verification
-    const r = sigBuf.subarray(0, 32);
-    const s = sigBuf.subarray(32, 64);
-    const rDer = r[0] & 0x80 ? Buffer.concat([Buffer.from([0x00]), r]) : r;
-    const sDer = s[0] & 0x80 ? Buffer.concat([Buffer.from([0x00]), s]) : s;
+    // DER INTEGERs are minimal: drop leading zero bytes, then re-add one if the high bit is set.
+    const derInteger = (raw: Buffer): Buffer => {
+      let start = 0;
+      while (start < raw.length - 1 && raw[start] === 0) start++;
+      const trimmed = raw.subarray(start);
+      return trimmed[0]! & 0x80 ? Buffer.concat([Buffer.from([0x00]), trimmed]) : trimmed;
+    };
+    const rDer = derInteger(sigBuf.subarray(0, 32));
+    const sDer = derInteger(sigBuf.subarray(32, 64));
     const derInner = Buffer.concat([
       Buffer.from([0x02, rDer.length]), rDer,
       Buffer.from([0x02, sDer.length]), sDer,
