@@ -56,6 +56,12 @@ const RENDER_ASSET_SPECS = [
     extension: ".mp4",
     compatibilityFileName: undefined,
   },
+  {
+    directory: "assets",
+    stem: "wolfpack-mobile-demo",
+    extension: ".mp4",
+    compatibilityFileName: undefined,
+  },
 ] as const;
 interface ElementAttributes {
   readonly [name: string]: string;
@@ -123,6 +129,7 @@ function firstPartyRenderUrls(): URL[] {
     ...attributesFor('link[rel="stylesheet"]').map(({ href }) => href),
     ...attributesFor("script[src]").map(({ src }) => src),
     ...attributesFor("source[src]").map(({ src }) => src),
+    ...attributesFor("video[poster]").map(({ poster }) => poster),
     ...attributesFor("img[src]").map(({ src }) => src),
     ...attributesFor('meta[property="og:image"]').map(({ content }) => content),
     ...attributesFor('meta[name="twitter:image"]').map(({ content }) => content),
