@@ -34,6 +34,8 @@ import {
 } from "./push.js";
 import { loadSettings } from "./project-settings-routes.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
+import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
+import { eventSubscriberCount, publishEvent } from "./event-bus.js";
 
 const log = createLogger("session-observation");
 const SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS = 5_000;
@@ -76,6 +78,20 @@ const activityContinuityTokens = new Map<string, object>();
 const dashboardFingerprints = new Map<string, ActivityFingerprint>();
 const notificationFingerprints = new Map<string, ActivityFingerprint>();
 const renderedFingerprintFlights = new Map<string, RenderedFingerprintFlight>();
+/**
+ * Last rendered screen folded into the shared runtime-state store, per
+ * session. Observer fingerprints are consumer-local (each observer's triage),
+ * but the store is shared: comparing against this canonical screen keeps a
+ * lagging observer from re-reporting output another observer already consumed.
+ * Consumers of the capture flight that reported a change agree with it until
+ * an unchanged observation is folded in.
+ */
+interface RuntimeRenderedFingerprint {
+  readonly rendered: string;
+  readonly flight?: RenderedFingerprintFlight;
+  readonly changed: boolean;
+}
+const runtimeRenderedFingerprints = new Map<string, RuntimeRenderedFingerprint>();
 let sessionNotificationObservationTimer: ReturnType<typeof setInterval> | null = null;
 let sessionNotificationObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
 let dashboardObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
@@ -297,6 +313,28 @@ function ownsObservationAuthority(authority: ObservationAuthority): boolean {
     && authority.id === latestAuthoritativeObservation;
 }
 
+/**
+ * Publish a runtime-state transition to event subscribers. The store is shared
+ * by every observer, so each transition advances the sequence once. The first
+ * observation of a session is a baseline, not a transition.
+ */
+function publishRuntimeTransition(
+  name: string,
+  sessionId: string | undefined,
+  previousTransitionSequence: number | undefined,
+  runtimeState: AgentRuntimeState,
+): void {
+  if (previousTransitionSequence === undefined || runtimeState.transitionSequence === previousTransitionSequence) return;
+  publishEvent({
+    kind: WOLFPACK_EVENT_KIND.SESSION_STATE,
+    session: name,
+    ...(sessionId !== undefined && { sessionId }),
+    state: runtimeState.state,
+    label: runtimeState.label,
+    transitionSequence: runtimeState.transitionSequence,
+  });
+}
+
 function observeUnavailableSessions(policyEpoch: number, observationOwnership: number): SessionObservation {
   const authority = claimObservationAuthority(observationOwnership, policyEpoch);
   if (authority === undefined) {
@@ -308,6 +346,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
   dashboardFingerprints.clear();
   notificationFingerprints.clear();
   renderedFingerprintFlights.clear();
+  runtimeRenderedFingerprints.clear();
   clearQuietAlertRecipientSnapshots(policyEpoch);
   const observedAt = new Date().toISOString();
   const store = getAgentRuntimeStateStore();
@@ -330,6 +369,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
         runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
       },
     }, { persist: false });
+    publishRuntimeTransition(name, identity?.wolfpackSessionId, previous?.transitionSequence, runtimeState);
     return {
       name,
       lastLine,
@@ -407,10 +447,18 @@ async function observeSessionFact(
     && currentRendered !== undefined
     && previousFingerprint?.rendered !== undefined
     && currentRendered !== previousFingerprint.rendered;
+  const previousRuntime = runtimeRenderedFingerprints.get(sessionKey);
+  const runtimeOutputChanged = shouldSampleRenderedState
+    && currentRendered !== undefined
+    && previousRuntime !== undefined
+    && (sample?.flight === previousRuntime.flight
+      ? previousRuntime.changed
+      : currentRendered !== previousRuntime.rendered);
   if (brokerState !== "alive" || (shouldSampleRenderedState && currentRendered === undefined)) {
     // A liveness or capture gap breaks the observed continuity. The next
     // successful rendered sample is a baseline, not a fabricated transition.
     fingerprints.delete(sessionKey);
+    runtimeRenderedFingerprints.delete(sessionKey);
     if (brokerState !== "alive") {
       activityContinuityTokens.delete(sessionKey);
       renderedFingerprintFlights.delete(sessionKey);
@@ -420,6 +468,13 @@ async function observeSessionFact(
     if (shouldSampleRenderedState && currentRendered === undefined) unreliableSessionKeys.add(sessionKey);
   } else {
     fingerprints.set(sessionKey, { ...(outputSequence !== undefined && { outputSequence }), rendered: currentRendered });
+    if (currentRendered !== undefined) {
+      runtimeRenderedFingerprints.set(sessionKey, {
+        rendered: currentRendered,
+        flight: sample?.flight ?? previousRuntime?.flight,
+        changed: runtimeOutputChanged,
+      });
+    }
   }
   const reduction = sample
     ? reduceRenderedActivitySample(sessionKey, identity?.wolfpackSessionId, sample, authority)
@@ -442,20 +497,22 @@ async function observeSessionFact(
   const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
   const renderedPreview = lastTerminalPreviewLine(currentRendered);
   const lastLine = renderedPreview || knownSessionSummaries.get(name)?.lastLine || "";
+  const previousTransitionSequence = store.get(sessionKey)?.transitionSequence;
   const runtimeState = store.reduce({
     sessionKey,
     broker: { state: brokerState, observedAt },
     sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
-      state: rawOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
+      state: runtimeOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
       stale: false,
       observedAt,
     }) : [],
-    fallback: { rawOutputChanged, observedAt, preview: lastLine },
+    fallback: { rawOutputChanged: runtimeOutputChanged, observedAt, preview: lastLine },
     currentRun: {
       runId: identity?.wolfpackSessionId,
       runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
     },
   }, { persist: false });
+  publishRuntimeTransition(name, identity?.wolfpackSessionId, previousTransitionSequence, runtimeState);
   const summary = {
     name,
     lastLine,
@@ -492,6 +549,9 @@ function pruneSessionObservationState(
   }
   for (const key of renderedFingerprintFlights.keys()) {
     if (!activeSessionKeys.has(key)) renderedFingerprintFlights.delete(key);
+  }
+  for (const key of runtimeRenderedFingerprints.keys()) {
+    if (!activeSessionKeys.has(key)) runtimeRenderedFingerprints.delete(key);
   }
   for (const key of knownSessionSummaries.keys()) {
     if (!activeNames.has(key)) knownSessionSummaries.delete(key);
@@ -562,7 +622,7 @@ export async function observeDashboardSessions(): Promise<readonly ObservedSessi
 }
 
 async function runSessionNotificationObservation(): Promise<readonly ObservedSessionSummary[]> {
-  if (getSubscriptionCount() === 0) return [];
+  if (getSubscriptionCount() === 0 && eventSubscriberCount() === 0) return [];
   if (sessionNotificationObservationPromise) return sessionNotificationObservationPromise;
   sessionNotificationObservationPromise = (async () => {
     const policyEpoch = quietAlertPolicyEpoch();
@@ -629,6 +689,8 @@ export function forgetSessionObservation(sessionId: string, sessionName: string)
   notificationFingerprints.delete(sessionName);
   renderedFingerprintFlights.delete(sessionId);
   renderedFingerprintFlights.delete(sessionName);
+  runtimeRenderedFingerprints.delete(sessionId);
+  runtimeRenderedFingerprints.delete(sessionName);
   forgetQuietAlertRecipientSnapshots([sessionId, sessionName]);
 }
 
@@ -646,6 +708,7 @@ export function __resetSessionObservationForTests(): void {
   dashboardObservationPromise = null;
   dashboardObservationCache = null;
   renderedFingerprintFlights.clear();
+  runtimeRenderedFingerprints.clear();
   knownSessionSummaries.clear();
   nextObservationOwnership = 0;
   latestAuthoritativeObservation = 0;

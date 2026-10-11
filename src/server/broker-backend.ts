@@ -58,6 +58,8 @@ import type {
 } from "../broker/client.js";
 import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/codec.js";
 import type { SessionInspectionResult } from "../session-status-contract.js";
+import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND } from "../events-contract.js";
+import { publishEvent } from "./event-bus.js";
 import {
   AGENT_KIND,
   detectAgentKindFromCommandArgs,
@@ -300,6 +302,19 @@ function commandAgent(command: string[] | undefined): string | undefined {
   return detectAgentKindFromCommandArgs(command);
 }
 
+interface PendingSessionExit {
+  readonly name: string | undefined;
+  readonly exitCode: number | undefined;
+  readonly signal: number | undefined;
+}
+
+interface KillRequestState {
+  name: string | undefined;
+  inFlight: number;
+  succeeded: boolean;
+  exit?: PendingSessionExit;
+}
+
 export class BrokerBackend implements SessionBackend, PtyBackendMethods, SessionPromptBackendMethods {
   private readonly client: BrokerClientApi;
   private readonly nameToId = new Map<string, string>();
@@ -308,6 +323,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   private readonly subscriberRefs = new Map<string, SubscriberRef>();
   /** Lifecycle subscribers keyed by session UUID. */
   private readonly lifecycleSubs = new Map<string, Set<LifecycleSubscriber>>();
+  /**
+   * Kill requests per session UUID. `killSessionById` drops the name cache
+   * before the broker's `session_exited` arrives, and that event can also
+   * overtake the RPC reply, so the exit's reason is decided only once no kill
+   * is in flight: `killed` if any request succeeded, otherwise `exit`.
+   */
+  private readonly killRequests = new Map<string, KillRequestState>();
 
   constructor(client: BrokerClientApi) {
     this.client = client;
@@ -547,7 +569,18 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     // SIGHUP (1) - interactive bash ignores SIGTERM, but SIGHUP propagates to
     // the foreground process group via the controlling PTY and reliably tears
     // down nested shells (e.g. `bash -lic /bin/zsh`).
-    const resp = await this.client.request("kill_session", { session_id: id, signal: 1 });
+    const kill = this.killRequests.get(id) ?? { name: undefined, inFlight: 0, succeeded: false };
+    kill.name ??= this.idToInfo.get(id)?.name;
+    kill.inFlight++;
+    this.killRequests.set(id, kill);
+    let resp: ControlResponse;
+    try {
+      resp = await this.client.request("kill_session", { session_id: id, signal: 1 });
+      if (resp.status === "ok") kill.succeeded = true;
+    } finally {
+      kill.inFlight--;
+      this.settleKillRequest(id, kill);
+    }
     if (resp.status === "error") {
       const code = resp.error?.code;
       if (code !== "unknown_session" && code !== "session_not_alive") {
@@ -940,6 +973,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
    */
   ingestEvent(event: EventBody): void {
     switch (event.event) {
+      case "session_started": {
+        // Read the broker payload directly: this event can arrive before
+        // createSession has populated the local caches.
+        const session = event.session;
+        if (typeof session !== "object" || session === null) return;
+        const { id, name, cwd } = session as Record<string, unknown>;
+        if (typeof id !== "string" || typeof name !== "string" || typeof cwd !== "string") return;
+        publishEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_CREATED, sessionId: id, session: name, cwd });
+        return;
+      }
       case "session_exited": {
         const id = typeof event.session_id === "string" ? event.session_id : undefined;
         if (!id) return;
@@ -947,6 +990,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         if (info) info.alive = false;
         const exitCode = typeof event.exit_code === "number" ? event.exit_code : undefined;
         const signal = typeof event.signal === "number" ? event.signal : undefined;
+        this.publishSessionExited(id, info?.name, exitCode, signal);
         const subs = this.lifecycleSubs.get(id);
         if (subs) {
           // Snapshot so a callback that detaches itself doesn't mutate the
@@ -970,6 +1014,41 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       case "snapshot_invalidated":
         return;
     }
+  }
+
+  private publishSessionExited(id: string, cachedName: string | undefined, exitCode: number | undefined, signal: number | undefined): void {
+    const exit: PendingSessionExit = { name: cachedName, exitCode, signal };
+    const kill = this.killRequests.get(id);
+    if (kill && kill.inFlight > 0) {
+      // A kill reply is still outstanding; its outcome decides the reason.
+      kill.exit = exit;
+      return;
+    }
+    this.killRequests.delete(id);
+    this.emitSessionExited(id, exit, kill?.succeeded ?? false, kill?.name);
+  }
+
+  private settleKillRequest(id: string, kill: KillRequestState): void {
+    if (kill.inFlight > 0 || this.killRequests.get(id) !== kill) return;
+    if (kill.exit) {
+      this.killRequests.delete(id);
+      this.emitSessionExited(id, kill.exit, kill.succeeded, kill.name);
+    } else if (!kill.succeeded) {
+      // Nothing was killed; a later exit is natural.
+      this.killRequests.delete(id);
+    }
+  }
+
+  private emitSessionExited(id: string, exit: PendingSessionExit, killed: boolean, killName: string | undefined): void {
+    const name = exit.name ?? killName;
+    publishEvent({
+      kind: WOLFPACK_EVENT_KIND.SESSION_EXITED,
+      sessionId: id,
+      ...(name !== undefined && { session: name }),
+      reason: killed ? SESSION_EXIT_REASON.KILLED : SESSION_EXIT_REASON.EXIT,
+      ...(exit.exitCode !== undefined && { exitCode: exit.exitCode }),
+      ...(exit.signal !== undefined && { signal: exit.signal }),
+    });
   }
 
   /**

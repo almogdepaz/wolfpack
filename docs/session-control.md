@@ -8,7 +8,7 @@ Wolfpack exposes a scriptable session surface for agents and operators. The serv
 wolfpack --machine <short-name-or-fqdn> <control-command> ...
 ```
 
-The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `session status`, `session read`, `session send`, `session wait`, `session prompt`, and `kill`. Other commands reject it.
+The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `session status`, `session read`, `session send`, `session wait`, `session prompt`, `kill`, and `events`. Other commands reject it.
 
 A short name is expanded using the exact Tailnet suffix from configured `tailscaleHostname`. A full name must be a canonical HTTPS Tailnet hostname in that suffix; URLs, ports, paths, foreign suffixes, malformed or duplicate selectors, and missing configuration fail closed without a localhost fallback. Before any control request, the CLI sends an exact, bounded `GET /api/machine` probe with redirects disabled, a bounded timeout, and the normal Wolfpack JWT `Authorization` header when configured. The structured handshake must report the selected canonical origin and session-control capability.
 
@@ -202,6 +202,23 @@ The broker assigns `WOLFPACK_SESSION_ID` **before** starting each PTY child, ove
 This requires a **new session launched by the updated broker** and a reachable local server. Missing, stale, mismatched or unavailable identity fails with nonzero status; JSON failures have `ok: false`. There is no old-session migration, name/list/process-ancestry fallback or `--machine` self-discovery. A same-name replacement is never substituted. Verification checks live identity consistency; environment variables are not an authentication boundary against their owner.
 
 The Agent Context skill can use verified self-identity when asked to update “this session,” without asking the user to copy or confirm a UUID. Explicitly targeting another session still requires its exact UUID. Activating a broker upgrade terminates its existing terminals; schedule that upgrade and then launch fresh sessions.
+
+## Follow live events
+
+```bash
+wolfpack events [--kinds <kind,...>] [--session <name-or-id>] [--json]
+```
+
+Streams `GET /api/events` (server-sent events, ordinary API auth). Kinds:
+
+- `session.created` — `sessionId`, `session`, `cwd`
+- `session.exited` — `sessionId`, `session` (when known), `reason` (`exit` or `killed`), `exitCode?`, `signal?`
+- `session.state` — `session`, `sessionId?`, `state`, `label`, `transitionSequence`; published when an agent's runtime state transitions. Observed every ~5s, so expect up to that much latency.
+- `task.updated` — `taskId`, `eventId`, `eventType` (canonical task event, e.g. `task.completed`), `sequence`; emitted by the machine holding the task's sender ledger.
+
+Every event also carries a per-server-process monotonic `id` and an ISO `at`. `--session` matches a name or stable id and excludes task events. `--json` prints one event object per line; otherwise one human line per event.
+
+The stream is live-only: there is no replay, so events published while disconnected are lost. The command exits `1` when the server is unreachable or closes the stream (scripts own reconnection), `2` for an invalid filter (checked before connecting; the server also rejects it with `400`), and `5` on auth failure. At most 32 concurrent streams per server (`429`).
 
 ## Exit codes
 

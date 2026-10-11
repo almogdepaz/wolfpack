@@ -16,6 +16,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { canonicalJson } from "../canonical-json.ts";
+import { publishEvent } from "../server/event-bus.ts";
+import { WOLFPACK_EVENT_KIND } from "../events-contract.ts";
 import {
   TASK_API_ERROR,
   TASK_EVENT_TYPE,
@@ -561,7 +563,7 @@ export class TaskStore {
     projection: TaskCompletionProjection | undefined = undefined,
   ): Promise<SenderEventAcceptance> {
     await this.initialize();
-    return lock(this.#taskLocks, keyString(key), async () => {
+    const accepted = await lock(this.#taskLocks, keyString(key), async () => {
       const ledger = this.#ledgers.get(keyString(key));
       if (!ledger) throw new TaskStoreError("sender task ledger does not exist", undefined);
       const accepted = acceptSenderEvent(ledger.state, input, principal, projection);
@@ -571,6 +573,14 @@ export class TaskStore {
       }
       return accepted;
     });
+    // Every canonical event is committed here, once. Publishing at commit (not
+    // after fallible replica/inbox propagation) means recovery never has to
+    // replay it and a propagation failure cannot hide it.
+    if (accepted.kind === "accepted" || accepted.kind === "late-terminal") {
+      const event = accepted.event;
+      publishEvent({ kind: WOLFPACK_EVENT_KIND.TASK_UPDATED, taskId: event.taskId, eventId: event.id, eventType: event.type, sequence: event.sequence });
+    }
+    return accepted;
   }
 
   async appendInboxRecord(

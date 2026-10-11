@@ -45,6 +45,7 @@ import { getTaskGateway } from "../tasks/gateway.ts";
 import { projectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, sessionControlRoutes } from "./session-control-routes.js";
 import { pushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
+import { eventRoutes } from "./event-routes.js";
 
 const log = createLogger("routes");
 const RESIZE_BODY_KEYS = new Set(["session", "cols", "rows"]);
@@ -273,4 +274,5 @@ export const routes: Record<
   ...volatileRelayRoutes,
 
   ...pushNotifyRoutes,
+  ...eventRoutes,
 };

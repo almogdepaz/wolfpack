@@ -31,6 +31,7 @@ import { attachCommand } from "./attach.js";
 import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { applyServiceAuthFile } from "./service-auth.js";
 import { logsCommand } from "./logs.js";
+import { EVENTS_USAGE, eventsCommand } from "./events.js";
 import { issueJwt } from "./api.js";
 import { extensionsCommand } from "./extensions.ts";
 import { extensionDataCommand, extensionDataUsage } from "./extension-data.ts";
@@ -95,6 +96,7 @@ Commands:
   wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack logs [--follow|--json]  Read or follow service logs
+  wolfpack events [--kinds ..] [--json] Follow live session and task events
   wolfpack extensions <action>     Install and manage local extension packages
   wolfpack extension-data <action> Read or publish installed extension documents
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
@@ -253,7 +255,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
   const command = argv.slice(0, -1);
   if (command.length === 0) return true;
   const [family, action] = command;
-  if (["list", "ls", "kill"].includes(family ?? "")) return command.length === 1;
+  if (["list", "ls", "kill", "events"].includes(family ?? "")) return command.length === 1;
   if (family === "session") {
     return command.length === 1 || (command.length === 2 && [
       "create", "open", "status", "read", "send", "wait", "prompt",
@@ -266,7 +268,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
 
 function isMachineCommandSupported(argv: readonly string[]): boolean {
   const [family, action] = argv;
-  if (["list", "ls", "kill"].includes(family ?? "")) return true;
+  if (["list", "ls", "kill", "events"].includes(family ?? "")) return true;
   if (family === "session") {
     return ["create", "open", "status", "read", "send", "wait", "prompt"].includes(action ?? "");
   }
@@ -412,6 +414,11 @@ async function dispatchCommand(
   if (cmd === "logs") {
     if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print("Usage: wolfpack logs [--follow] [--json] [--broker]");
     else process.exit(await logsCommand(argv.slice(1)));
+    return;
+  }
+  if (cmd === "events") {
+    if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print(EVENTS_USAGE);
+    else process.exit(await eventsCommand(argv.slice(1), target));
     return;
   }
   if (cmd === "attach") {
