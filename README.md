@@ -24,6 +24,7 @@ Sessions live in a Rust PTY broker, not the web server, so closing the browser o
 ### mobile views
 
 <p align="center">
+  <img src="docs/assets/wolfpack-mobile-demo.gif" width="220" alt="Wolfpack phone demo opening sessions from the dashboard and switching between live terminals on two machines" />
   <img src="docs/mobile-sessions.png" width="220" alt="Wolfpack mobile sessions dashboard showing real broker-backed sessions" />
   <img src="docs/mobile-ghostty.png" width="220" alt="Wolfpack mobile Ghostty terminal showing colorized coding-agent output and touch controls" />
 </p>
