@@ -56,6 +56,10 @@ export interface TerminalResizeLifecycle {
   scheduleResizeRehydrate(): void;
   takePendingScrollRestore(): ResizeScrollRestore | null;
   readonly hasPendingScrollRestore: boolean;
+  /** Parked (hidden) terminal: cancel pending layout work so it never
+   * reconnects in the background; a deferred rehydrate runs on resume. */
+  suspend(): void;
+  resume(): void;
   dispose(): void;
 }
 
@@ -69,8 +73,18 @@ export function createTerminalResizeLifecycle(
     disconnect(): void;
   } | null = null;
   let pendingScrollRestore: ResizeScrollRestore | null = null;
+  let suspended = false;
+  let rehydrateDeferred = false;
+
+  const cancelPending = (): void => {
+    if (layoutSyncFrame !== null) options.scheduler.cancelFrame(layoutSyncFrame);
+    if (resizeRehydrateTimer !== null) options.scheduler.clearTimeout(resizeRehydrateTimer);
+    layoutSyncFrame = null;
+    resizeRehydrateTimer = null;
+  };
 
   const scheduleLayoutSync = (): void => {
+    if (suspended) return;
     if (layoutSyncFrame !== null) options.scheduler.cancelFrame(layoutSyncFrame);
     layoutSyncFrame = options.scheduler.requestFrame(() => {
       layoutSyncFrame = null;
@@ -81,6 +95,10 @@ export function createTerminalResizeLifecycle(
 
   const scheduleResizeRehydrate = (): void => {
     if (options.prefillMode === TERMINAL_PREFILL_MODE.NONE) return;
+    if (suspended) {
+      rehydrateDeferred = true;
+      return;
+    }
     const client = options.getPtyClient();
     if (!client?.isOpen || options.shouldSuppressContainerResize()) return;
 
@@ -123,11 +141,23 @@ export function createTerminalResizeLifecycle(
     get hasPendingScrollRestore(): boolean {
       return pendingScrollRestore !== null;
     },
+    suspend(): void {
+      if (suspended) return;
+      suspended = true;
+      if (resizeRehydrateTimer !== null) rehydrateDeferred = true;
+      cancelPending();
+    },
+    resume(): void {
+      if (!suspended) return;
+      suspended = false;
+      if (!rehydrateDeferred) return;
+      rehydrateDeferred = false;
+      scheduleResizeRehydrate();
+    },
     dispose(): void {
-      if (layoutSyncFrame !== null) options.scheduler.cancelFrame(layoutSyncFrame);
-      if (resizeRehydrateTimer !== null) options.scheduler.clearTimeout(resizeRehydrateTimer);
-      layoutSyncFrame = null;
-      resizeRehydrateTimer = null;
+      cancelPending();
+      suspended = false;
+      rehydrateDeferred = false;
       pendingScrollRestore = null;
       resizeObserver?.disconnect();
       resizeObserver = null;

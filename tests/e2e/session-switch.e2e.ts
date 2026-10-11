@@ -1380,3 +1380,173 @@ test("desktop legacy saved fast prefill key is ignored", async ({ page }, testIn
   await expectSoloAttachPrefillMode(page, "full");
 });
 
+
+type PooledSocketRecord = {
+  readonly session: string;
+  closed: boolean;
+  readonly inputs: string[];
+};
+
+function mockPooledSessionWebSockets(records: PooledSocketRecord[]): (ws: WebSocketRoute) => void {
+  return (ws) => {
+    const session = new URL(ws.url()).searchParams.get("session") ?? "";
+    const record: PooledSocketRecord = { session, closed: false, inputs: [] };
+    records.push(record);
+    ws.onClose(() => { record.closed = true; });
+    ws.onMessage((message) => {
+      if (typeof message !== "string") {
+        record.inputs.push(Buffer.from(message).toString("utf8"));
+        return;
+      }
+      let parsed: { type?: string };
+      try { parsed = JSON.parse(message); } catch { return; }
+      if (parsed.type !== "attach") return;
+      ws.send(JSON.stringify({ type: "attach_ack" }));
+      ws.send(Buffer.from(`POOL-${session.toUpperCase()}-READY\r\n`));
+      setTimeout(() => ws.send(JSON.stringify({ type: "prefill_done" })), 20);
+      setTimeout(() => ws.send(JSON.stringify({ type: "pty_ready" })), 30);
+    });
+  };
+}
+
+async function openPoolTestPage(page: Page, records: PooledSocketRecord[]): Promise<void> {
+  await page.routeWebSocket(/\/ws\/pty/, mockPooledSessionWebSockets(records));
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.evaluate(() => {
+    localStorage.setItem("wolfpackDebug", "1");
+  });
+  await page.reload();
+  await page.waitForSelector(".card", { timeout: 5000 });
+}
+
+async function openLiveSession(page: Page, session: string): Promise<void> {
+  await openSessionFromUi(page, session, "");
+  const container = page.locator("#desktop-terminal-container");
+  await expect(container).toHaveAttribute("data-terminal-load-state", "live", { timeout: 5000 });
+  await expect.poll(() => terminalTail(container, 5), { timeout: 5000 }).toContain(`POOL-${session.toUpperCase()}-READY`);
+}
+
+function traceKinds(page: Page, session: string): Promise<string[]> {
+  return page.evaluate((target) => {
+    const traces = (window as unknown as {
+      readonly __wfTrace?: Record<string, { readonly _meta: { readonly session: string }; readonly events: ReadonlyArray<{ readonly kind: string }> }>;
+    }).__wfTrace || {};
+    const trace = Object.values(traces).find((candidate) => candidate._meta.session === target);
+    return trace ? trace.events.map((event) => event.kind) : [];
+  }, session);
+}
+
+test("switching back to a recent session does not re-attach", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop keeps recent terminals mounted");
+  const records: PooledSocketRecord[] = [];
+  await openPoolTestPage(page, records);
+
+  await openLiveSession(page, "test-project");
+  await openLiveSession(page, "another-project");
+  await openLiveSession(page, "test-project");
+
+  expect(records.map((record) => record.session)).toEqual(["test-project", "another-project"]);
+  expect(records.every((record) => !record.closed)).toBe(true);
+  const container = page.locator("#desktop-terminal-container");
+  await expect(container).toHaveCount(1);
+  await expect(container.locator("canvas")).toHaveCount(1);
+  await expect(container).toHaveClass(/hydrated/);
+  expect(await terminalTail(container, 5)).toContain("POOL-TEST-PROJECT-READY");
+  const kinds = await traceKinds(page, "test-project");
+  expect(kinds).toContain("pool.show");
+  expect(kinds).not.toContain("attach.send");
+  expect(kinds).not.toContain("hydration.start");
+
+  await container.click();
+  await page.keyboard.type("pooled");
+  await expect.poll(() => records[0].inputs.join("")).toContain("pooled");
+  expect(records[1].inputs.join("")).not.toContain("pooled");
+});
+
+test("opening a fourth session evicts the least recently used terminal", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop keeps recent terminals mounted");
+  const records: PooledSocketRecord[] = [];
+  await openPoolTestPage(page, records);
+
+  await openLiveSession(page, "test-project");
+  await openLiveSession(page, "another-project");
+  await openLiveSession(page, "prompt-project");
+  await openLiveSession(page, "error-project");
+
+  expect(records.map((record) => record.session)).toEqual([
+    "test-project", "another-project", "prompt-project", "error-project",
+  ]);
+  await expect.poll(() => records.map((record) => record.closed)).toEqual([true, false, false, false]);
+
+  // The evicted session is a miss again; the others stay hits.
+  await openLiveSession(page, "another-project");
+  expect(records).toHaveLength(4);
+  await openLiveSession(page, "test-project");
+  expect(records.map((record) => record.session).at(-1)).toBe("test-project");
+  expect(records).toHaveLength(5);
+});
+
+test("a parked terminal releases its session after the parked TTL", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop keeps recent terminals mounted");
+  const records: PooledSocketRecord[] = [];
+  await page.addInitScript(() => {
+    localStorage.setItem("wolfpackParkedTerminalTtlMs", "400");
+  });
+  await openPoolTestPage(page, records);
+
+  await openLiveSession(page, "test-project");
+  await openLiveSession(page, "another-project");
+  await expect.poll(() => records.map((record) => record.closed), { timeout: 5000 }).toEqual([true, false]);
+
+  // Released, so switching back is a fresh attach.
+  await openLiveSession(page, "test-project");
+  expect(records.map((record) => record.session)).toEqual(["test-project", "another-project", "test-project"]);
+});
+
+test("a terminal parked during a sidebar transition is visible when shown again", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop keeps recent terminals mounted");
+  const records: PooledSocketRecord[] = [];
+  await openPoolTestPage(page, records);
+  await openLiveSession(page, "test-project");
+  await openLiveSession(page, "another-project");
+
+  // Toggle the pin and switch away in the same task: another-project is parked
+  // while its element still carries the transition's `transitioning` class.
+  const parkedWhileTransitioning = await page.evaluate(() => {
+    const parked = document.getElementById("desktop-terminal-container");
+    document.getElementById("sidebar-collapse-btn")?.click();
+    document.querySelector<HTMLElement>('[data-action="open-session"][data-session="test-project"]')?.click();
+    return !!parked && !parked.isConnected && parked.classList.contains("transitioning");
+  });
+  expect(parkedWhileTransitioning).toBe(true);
+  const container = page.locator("#desktop-terminal-container");
+  expect(await terminalTail(container, 5)).toContain("POOL-TEST-PROJECT-READY");
+  // Let the transition settle (200ms fallback + resize ack): its reveal must
+  // run against test-project, not the parked element. Nothing observable
+  // changes on that path, so wait past it.
+  await page.waitForTimeout(800);
+
+  await page.evaluate(() => {
+    document.querySelector<HTMLElement>('[data-action="open-session"][data-session="another-project"]')?.click();
+  });
+  await expect.poll(() => terminalTail(container, 5)).toContain("POOL-ANOTHER-PROJECT-READY");
+  await expect(container).not.toHaveClass(/transitioning/);
+  await expect(container.locator("canvas")).toHaveCSS("opacity", "1");
+  expect(records).toHaveLength(2);
+});
+
+// Characterization: mobile pool size 1 keeps the pre-pool teardown-on-switch behavior.
+test("mobile keeps a single terminal: switching back re-attaches", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "mobile pool size is 1");
+  const records: PooledSocketRecord[] = [];
+  await openPoolTestPage(page, records);
+
+  await openLiveSession(page, "test-project");
+  await openLiveSession(page, "another-project");
+  await expect.poll(() => records[0]?.closed).toBe(true);
+  await openLiveSession(page, "test-project");
+
+  expect(records.map((record) => record.session)).toEqual(["test-project", "another-project", "test-project"]);
+  await expect.poll(() => records.map((record) => record.closed)).toEqual([true, true, false]);
+});

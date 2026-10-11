@@ -13,12 +13,17 @@
 // Read with `window.__wf_dumpTrace()` or `window.__wf_dumpTrace("sess")`
 // after enabling: `localStorage.wolfpackDebug = "1"; location.reload()`.
 
+import { isCursorBlinkDebugDisabled } from "../src/terminal-cursor-blink-debug";
+
 declare global {
   interface Window {
     __wfTrace?: Record<string, TraceState>;
     __wf_dumpTrace?: (sessionFilter?: string) => Record<string, TraceState> | undefined;
     __wf_clearTrace?: () => void;
     __wf_lastCrash?: CrashCapture;
+    /** Optional synchronous tap for harnesses (perf flash probe); only
+     *  reached when tracing is enabled. */
+    __wfTraceObserver?: (trace: TraceState, event: TraceEvent) => void;
   }
 }
 
@@ -65,6 +70,11 @@ const __wfTraceMaxEvents = 5000;
 let __wfTraceSeq = 0;
 
 export const wfTraceEnabled: boolean = __wfTraceEnabled;
+
+export const wfCursorBlinkDisabled: boolean = (() => {
+  try { return isCursorBlinkDebugDisabled(localStorage, __wfTraceEnabled); }
+  catch { return false; }
+})();
 
 if (__wfTraceEnabled) window.__wfTrace = window.__wfTrace || {};
 
@@ -119,11 +129,14 @@ export function __wfTraceEvent(
     performance.mark(markName);
     performance.measure(markName, trace._meta.markPrefix + ":start", markName);
   } catch {}
-  trace.events.push({
+  const event: TraceEvent = {
     t: +(performance.now() - trace._meta.startPerf).toFixed(3),
     kind,
     ...(fields || {}),
-  });
+  };
+  trace.events.push(event);
+  // A harness tap must never break the traced code path.
+  try { window.__wfTraceObserver?.(trace, event); } catch {}
 }
 
 export function __wfTraceRafStart(trace: TraceState | null): void {

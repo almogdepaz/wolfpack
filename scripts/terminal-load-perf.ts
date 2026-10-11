@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { chromium } from "@playwright/test";
+import { chromium, errors } from "@playwright/test";
 import type { Browser, Page } from "@playwright/test";
 import {
   HYDRATION_DEBUG_MIN_PENDING_KEY,
@@ -14,7 +14,9 @@ import {
   GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY,
 } from "../src/ghostty-prewarm-debug";
 import { DEFAULT_GHOSTTY_PREWARM_POOL_SIZE } from "../src/ghostty-prewarm-policy";
+import { TERMINAL_POOL_DEBUG_SIZE_KEY } from "../src/terminal-pool-debug";
 import { LAYOUT_STABLE_DEBUG_MODE_KEY } from "../src/terminal-layout-stable-debug";
+import { CURSOR_BLINK_DEBUG_DISABLED_KEY } from "../src/terminal-cursor-blink-debug";
 import { AGENT_KIND } from "../src/agent-kind";
 
 export type TraceEvent = { t: number; kind: string; [field: string]: unknown };
@@ -29,7 +31,24 @@ export type ServerTiming = {
   sinceStartMs: number;
   [field: string]: unknown;
 };
-type ScenarioMode = "single" | "grid";
+type ScenarioMode = "single" | "grid" | "switch";
+
+/** Canvas-hash samples the init script appends to a session's trace: one at
+ *  `hydration.reveal`, one after a bounded window (see installRevealFlashProbe).
+ *  A changed canvas is classified by the bytes that arrived between them:
+ *  - none (prefill aside): `revealFlash`, the reveal showed an unfinished paint
+ *  - only non-prefill bytes before the client's `pty_ready`: `revealFlashWithReplay`.
+ *    The server sends those after prefill_done and before pty_ready: replay of
+ *    output that arrived during settle and attach-finalization resize redraws,
+ *    i.e. the burst class the hydration floor exists to hide.
+ *  - any byte after `pty_ready` (live PTY output): neither flag; the change is
+ *    still visible through `revealCanvasChanged` and `liveBytesDuringReveal`.
+ *  Two-point sampling misses a transient flash whose end state equals the
+ *  reveal state (e.g. clear + identical repaint). */
+export const PERF_FLASH_EVENT = {
+  REVEAL: "perf.flash.reveal",
+  STABLE: "perf.flash.stable",
+} as const;
 export type PerfDeviceMode = "desktop" | "mobile";
 
 export type ScenarioSummary = {
@@ -38,6 +57,20 @@ export type ScenarioSummary = {
   cells: number;
   sessions: CellSummary[];
   server: ServerTiming[];
+  switchBack?: SwitchBackSummary;
+};
+
+/** Open A, open B, open A again: the third open is measured from its
+ *  `openSession.start` to the reveal (`pool.reveal` on a pool hit,
+ *  `hydration.reveal` on a miss). */
+export type SwitchBackSummary = {
+  session: string;
+  switchBackToRevealMs: number | null;
+  switchBackAttached: boolean;
+  poolHit: boolean;
+  revealFlash: boolean | null;
+  /** Heap after the switch-back, with the pooled terminals mounted. */
+  jsHeapUsedBytes?: number | null;
 };
 
 type PageLoadSetup = {
@@ -100,6 +133,12 @@ export type CellSummary = {
   afterPaintContainerWidth: number | null;
   containerWidthDelta: number | null;
   prefillBytes: number;
+  revealCanvasChanged: boolean | null;
+  revealFlash: boolean | null;
+  revealFlashWithReplay: boolean | null;
+  revealToStableMs: number | null;
+  replayBytesDuringReveal: number | null;
+  liveBytesDuringReveal: number | null;
 };
 
 export type PerfRunReport = {
@@ -135,6 +174,8 @@ type PerfRunsSummary = {
     readonly setupToRevealMs: MetricStats;
     readonly ghosttyCreationMs: MetricStats;
     readonly prewarmHits: HitStats;
+    readonly revealFlashes: HitStats;
+    readonly revealFlashesWithReplay: HitStats;
   };
   readonly grid: {
     readonly setupToRevealMs: MetricStats;
@@ -142,6 +183,14 @@ type PerfRunsSummary = {
     readonly wsServerMs: MetricStats;
     readonly prefillDoneToRevealMs: MetricStats;
     readonly prewarmHits: HitStats;
+    readonly revealFlashes: HitStats;
+    readonly revealFlashesWithReplay: HitStats;
+  };
+  readonly switchBack: {
+    readonly switchBackToRevealMs: MetricStats;
+    readonly attaches: HitStats;
+    readonly poolHits: HitStats;
+    readonly jsHeapUsedBytes: MetricStats;
   };
 };
 
@@ -170,6 +219,7 @@ const PERF_HARNESS_ENV_HELP = [
   "WOLFPACK_PERF_RUNS: positive integer repeated-run count (default: 1)",
   "WOLFPACK_PERF_DEVICE: desktop or mobile browser profile (default: desktop)",
   "WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE: debug-only pool size override 0-2",
+  "WOLFPACK_PERF_TERMINAL_POOL_SIZE: debug-only single-terminal pool size override 1-6 (default: 3 desktop, 1 mobile)",
   "WOLFPACK_PERF_GRID_CELLS: comma-separated grid sizes 2-6 (default: 2,4,6)",
   "WOLFPACK_PERF_USE_EXISTING_BROKER: set to 1 to use WOLFPACK_BROKER_SOCKET instead of spawning a broker",
   "WOLFPACK_PERF_ONLY_PAGE_LOAD: set to 1 to skip single/grid terminal scenarios",
@@ -366,6 +416,114 @@ export async function cleanupCreatedSessions(
   return results.filter((result): result is SessionCleanupFailure => result !== null);
 }
 
+/** Bounded post-reveal window. A burst the floor exists to hide lands within
+ *  one server settle/finalize cycle after reveal; 150ms covers the 80ms floor
+ *  plus a resize-redraw burst (~150ms observed historically) starting at
+ *  reveal. Longer windows mostly add live-output noise. */
+export const REVEAL_FLASH_WINDOW_MS = 150;
+
+/** Runs in the page (serialized by Playwright, so it must stay
+ *  self-contained). Hashes the session's canvases at `hydration.reveal`, and
+ *  again two frames (ghostty paints in its rAF loop) after the LATER of:
+ *  reveal + windowMs, and the attach being complete on the client (prefill_done
+ *  seen, every hydration write callback drained, `pty_ready` seen). The server's
+ *  quiescence wait is not traced client-side; `pty_ready` is sent after it and
+ *  after the replay subscription, so it is the nearest client-visible bound. */
+function installRevealFlashProbe(kinds: { readonly reveal: string; readonly stable: string; readonly windowMs: number }): void {
+  type ProbeEvent = { readonly t: number; readonly kind: string; readonly [field: string]: unknown };
+  type ProbeTrace = { readonly _meta: { readonly session: string; readonly startPerf: number }; readonly events: ProbeEvent[] };
+  type ProbeState = {
+    inFlight: number;
+    prefillDone: boolean;
+    ptyReady: boolean;
+    revealed: boolean;
+    windowElapsed: boolean;
+    sampling: boolean;
+    done: boolean;
+    container: Element | null;
+  };
+  const states = new WeakMap<ProbeTrace, ProbeState>();
+
+  function hashCanvas(canvas: HTMLCanvasElement): string {
+    // FNV-1a over 32-bit pixels; dimensions are part of the identity.
+    let hash = 0x811c9dc5;
+    const context = canvas.width && canvas.height ? canvas.getContext("2d") : null;
+    if (context) {
+      const pixels = new Uint32Array(context.getImageData(0, 0, canvas.width, canvas.height).data.buffer);
+      for (let idx = 0; idx < pixels.length; idx++) hash = Math.imul(hash ^ pixels[idx], 0x01000193);
+    } else {
+      const url = canvas.toDataURL();
+      for (let idx = 0; idx < url.length; idx++) hash = Math.imul(hash ^ url.charCodeAt(idx), 0x01000193);
+    }
+    return `${canvas.width}x${canvas.height}:${(hash >>> 0).toString(16)}`;
+  }
+
+  function hashContainer(container: Element | null): string | null {
+    if (!container) return null;
+    const canvases = Array.from(container.querySelectorAll("canvas"));
+    return canvases.length ? canvases.map(hashCanvas).join("|") : null;
+  }
+
+  function findContainer(session: string): Element | null {
+    return document.querySelector(`.grid-cell[data-session="${CSS.escape(session)}"]`)
+      ?? document.getElementById("desktop-terminal-container");
+  }
+
+  function record(trace: ProbeTrace, kind: string, hash: string | null): void {
+    trace.events.push({ t: +(performance.now() - trace._meta.startPerf).toFixed(3), kind, hash });
+  }
+
+  function ready(state: ProbeState): boolean {
+    return state.revealed && state.windowElapsed && state.prefillDone && state.ptyReady && state.inFlight === 0 && !state.done;
+  }
+
+  function maybeSampleStable(trace: ProbeTrace, state: ProbeState): void {
+    if (state.sampling || !ready(state)) return;
+    state.sampling = true;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      state.sampling = false;
+      // prefill_done is traced before its buffered chunks are written, so
+      // the gate is re-checked once those writes have had a chance to queue.
+      if (states.get(trace) !== state || !ready(state)) return;
+      state.done = true;
+      record(trace, kinds.stable, hashContainer(state.container));
+    }));
+  }
+
+  const target = window as unknown as { __wfTraceObserver?: (trace: ProbeTrace, event: ProbeEvent) => void };
+  target.__wfTraceObserver = (trace, event) => {
+    if (event.kind === "attach.send") {
+      states.set(trace, {
+        inFlight: 0,
+        prefillDone: false,
+        ptyReady: false,
+        revealed: false,
+        windowElapsed: false,
+        sampling: false,
+        done: false,
+        container: null,
+      });
+      return;
+    }
+    const state = states.get(trace);
+    if (!state || state.done) return;
+    if (event.kind === "_writeTermData" && event.hydrating === true) state.inFlight++;
+    else if (event.kind === "term.writeDone" && typeof event.inFlight === "number") state.inFlight = event.inFlight;
+    else if (event.kind === "prefill_done") state.prefillDone = true;
+    else if (event.kind === "pty_ready") state.ptyReady = true;
+    else if (event.kind === "hydration.reveal" && !state.revealed) {
+      state.revealed = true;
+      state.container = findContainer(trace._meta.session);
+      record(trace, kinds.reveal, hashContainer(state.container));
+      setTimeout(() => {
+        state.windowElapsed = true;
+        maybeSampleStable(trace, state);
+      }, kinds.windowMs);
+    } else return;
+    maybeSampleStable(trace, state);
+  };
+}
+
 export async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad: PageLoadSetup; close(): Promise<void> }> {
   const browser = await getPerfBrowser();
   const deviceMode = parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE);
@@ -406,22 +564,34 @@ export async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad
     } catch {}
 
     localStorage.setItem("wolfpackDebug", "1");
+    // The flash probe hashes canvases; a blink toggle between samples would
+    // read as a flash.
+    localStorage.setItem(opts.cursorBlinkDisabledKey, "1");
     if (opts.minPendingMs !== undefined) localStorage.setItem(opts.minPendingKey, opts.minPendingMs);
     if (opts.silenceMs !== undefined) localStorage.setItem(opts.silenceKey, opts.silenceMs);
     if (opts.layoutStableMode !== undefined) localStorage.setItem(opts.layoutStableModeKey, opts.layoutStableMode);
     if (opts.ghosttyPrewarmDelayMs !== undefined) localStorage.setItem(opts.ghosttyPrewarmDelayKey, opts.ghosttyPrewarmDelayMs);
     if (opts.ghosttyPrewarmPoolSize !== undefined) localStorage.setItem(opts.ghosttyPrewarmPoolSizeKey, opts.ghosttyPrewarmPoolSize);
+    if (opts.terminalPoolSize !== undefined) localStorage.setItem(opts.terminalPoolSizeKey, opts.terminalPoolSize);
   }, {
     minPendingKey: HYDRATION_DEBUG_MIN_PENDING_KEY,
+    cursorBlinkDisabledKey: CURSOR_BLINK_DEBUG_DISABLED_KEY,
     silenceKey: HYDRATION_DEBUG_SILENCE_KEY,
     layoutStableModeKey: LAYOUT_STABLE_DEBUG_MODE_KEY,
     ghosttyPrewarmDelayKey: GHOSTTY_PREWARM_DEBUG_DELAY_KEY,
     ghosttyPrewarmPoolSizeKey: GHOSTTY_PREWARM_DEBUG_POOL_SIZE_KEY,
+    terminalPoolSizeKey: TERMINAL_POOL_DEBUG_SIZE_KEY,
     minPendingMs: process.env.WOLFPACK_PERF_HYDRATION_MIN_PENDING_MS,
     silenceMs: process.env.WOLFPACK_PERF_HYDRATION_SILENCE_MS,
     layoutStableMode: process.env.WOLFPACK_PERF_LAYOUT_STABLE_MODE,
     ghosttyPrewarmDelayMs: process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_DELAY_MS,
     ghosttyPrewarmPoolSize: process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE,
+    terminalPoolSize: process.env.WOLFPACK_PERF_TERMINAL_POOL_SIZE,
+  });
+  await page.addInitScript(installRevealFlashProbe, {
+    reveal: PERF_FLASH_EVENT.REVEAL,
+    stable: PERF_FLASH_EVENT.STABLE,
+    windowMs: REVEAL_FLASH_WINDOW_MS,
   });
   const startedAt = performance.now();
   await page.goto(baseUrl);
@@ -441,6 +611,24 @@ export async function setupPage(baseUrl: string): Promise<{ page: Page; pageLoad
   };
 }
 
+type HeapUsage = {
+  readonly usedSize?: number;
+  readonly embedderHeapUsedSize?: number;
+  readonly backingStorageSize?: number;
+};
+
+async function readHeapUsage(page: Page): Promise<HeapUsage> {
+  try {
+    const cdp = await page.context().newCDPSession(page);
+    const heapUsage: HeapUsage = await cdp.send("Runtime.getHeapUsage");
+    await cdp.detach();
+    return heapUsage;
+  } catch {
+    // CDP is Chromium-only; heap fields stay null elsewhere.
+    return {};
+  }
+}
+
 async function readPageLoadSummary(page: Page, setup: PageLoadSetup, waitMs: number): Promise<PageLoadSummary> {
   if (waitMs > 0) await page.waitForTimeout(waitMs);
   const metrics = await page.evaluate(() => {
@@ -458,16 +646,7 @@ async function readPageLoadSummary(page: Page, setup: PageLoadSetup, waitMs: num
       prewarmEvents: target.__wfGhosttyPrewarm?.events || [],
     };
   });
-  let heapUsage: {
-    readonly usedSize?: number;
-    readonly embedderHeapUsedSize?: number;
-    readonly backingStorageSize?: number;
-  } = {};
-  try {
-    const cdp = await page.context().newCDPSession(page);
-    heapUsage = await cdp.send("Runtime.getHeapUsage");
-    await cdp.detach();
-  } catch {}
+  const heapUsage = await readHeapUsage(page);
   const readyEvents = metrics.prewarmEvents.filter((event) => event.kind === "prewarm.ready");
   const scheduled = metrics.prewarmEvents.find((event) => event.kind === "schedule");
   const ghosttyReadyDone = metrics.prewarmEvents.find((event) => event.kind === "ghostty_ready.done");
@@ -500,6 +679,17 @@ async function readTraces(page: Page, expected: number): Promise<Record<string, 
       trace.events.some((event) => event.kind === "hydration.reveal" || event.kind === "hydration.finish"));
     return hydrated.length >= count;
   }, expected, { timeout: 20_000 });
+  try {
+    await page.waitForFunction(({ count, stableKind }) => {
+      const traces = (window as unknown as { __wfTrace?: Record<string, TraceState> }).__wfTrace || {};
+      const sampled = Object.values(traces).filter((trace) => trace.events.some((event) => event.kind === stableKind));
+      return sampled.length >= count;
+    }, { count: expected, stableKind: PERF_FLASH_EVENT.STABLE }, { timeout: 5_000 });
+  } catch (error) {
+    // A cell whose attach never completed has no stable sample; it reports
+    // revealFlash: null rather than failing the whole scenario.
+    if (!(error instanceof errors.TimeoutError)) throw error;
+  }
   await page.waitForTimeout(250);
   return await page.evaluate(() => {
     return (window as unknown as { __wfTrace?: Record<string, TraceState> }).__wfTrace || {};
@@ -577,6 +767,51 @@ function eventsForLatestAttach(events: TraceEvent[]): TraceEvent[] {
   return events.slice(startIndex);
 }
 
+function eventHash(event: TraceEvent | undefined): string | null {
+  return typeof event?.hash === "string" ? event.hash : null;
+}
+
+type RevealFlashSummary = Pick<
+  CellSummary,
+  "revealCanvasChanged" | "revealFlash" | "revealFlashWithReplay" | "revealToStableMs" | "replayBytesDuringReveal" | "liveBytesDuringReveal"
+>;
+
+function binaryBytes(events: TraceEvent[], predicate: (event: TraceEvent) => boolean): number {
+  return events
+    .filter((event) => event.kind === "ws.binary" && event.bucket !== "prefill" && predicate(event))
+    .reduce((sum, event) => sum + (typeof event.size === "number" ? event.size : 0), 0);
+}
+
+function summarizeRevealFlash(events: TraceEvent[]): RevealFlashSummary {
+  const reveal = eventByKind(events, PERF_FLASH_EVENT.REVEAL);
+  const stable = eventByKind(events, PERF_FLASH_EVENT.STABLE);
+  const revealHash = eventHash(reveal);
+  const stableHash = eventHash(stable);
+  if (!reveal || !stable || revealHash === null || stableHash === null) {
+    return {
+      revealCanvasChanged: null,
+      revealFlash: null,
+      revealFlashWithReplay: null,
+      revealToStableMs: null,
+      replayBytesDuringReveal: null,
+      liveBytesDuringReveal: null,
+    };
+  }
+  const ptyReadyAt = eventTime(events, "pty_ready") ?? Number.POSITIVE_INFINITY;
+  const inWindow = (event: TraceEvent): boolean => event.t >= reveal.t && event.t <= stable.t;
+  const replayBytesDuringReveal = binaryBytes(events, (event) => inWindow(event) && event.t < ptyReadyAt);
+  const liveBytesDuringReveal = binaryBytes(events, (event) => inWindow(event) && event.t >= ptyReadyAt);
+  const revealCanvasChanged = revealHash !== stableHash;
+  return {
+    revealCanvasChanged,
+    revealFlash: revealCanvasChanged && replayBytesDuringReveal === 0 && liveBytesDuringReveal === 0,
+    revealFlashWithReplay: revealCanvasChanged && replayBytesDuringReveal > 0 && liveBytesDuringReveal === 0,
+    revealToStableMs: delta(reveal.t, stable.t),
+    replayBytesDuringReveal,
+    liveBytesDuringReveal,
+  };
+}
+
 export function summarizeCell(trace: TraceState): CellSummary {
   const events = eventsForLatestAttach(trace.events);
   const setupStart = events[0]?.t ?? null;
@@ -621,6 +856,19 @@ export function summarizeCell(trace: TraceState): CellSummary {
     afterPaintContainerWidth,
     containerWidthDelta: deltaNumber(attachContainerWidth, afterPaintContainerWidth),
     prefillBytes,
+    ...summarizeRevealFlash(events),
+  };
+}
+
+export function summarizeSwitchBack(trace: TraceState): SwitchBackSummary {
+  const events = trace.events;
+  const poolHit = events.some((event) => event.kind === "pool.show");
+  return {
+    session: trace._meta.session,
+    switchBackToRevealMs: eventTime(events, "pool.reveal") ?? eventTime(events, "hydration.reveal"),
+    switchBackAttached: events.some((event) => event.kind === "attach.send"),
+    poolHit,
+    revealFlash: poolHit ? null : summarizeRevealFlash(events).revealFlash,
   };
 }
 
@@ -758,6 +1006,52 @@ async function runGrid(baseUrl: string, timings: ServerTiming[], sessions: strin
   }
 }
 
+async function openFromSidebar(page: Page, session: string): Promise<number> {
+  const clickedAt = await page.evaluate(() => Date.now());
+  await page.getByRole("button", { name: `Open ${session}`, exact: true }).filter({ visible: true }).first().click();
+  return clickedAt;
+}
+
+async function waitForSessionReveal(page: Page, session: string, since: number): Promise<TraceState> {
+  const handle = await page.waitForFunction(({ target, since }) => {
+    const traces = (window as unknown as { __wfTrace?: Record<string, TraceState> }).__wfTrace || {};
+    const trace = Object.values(traces).find((item) => item._meta.session === target && item._meta.startWall >= since);
+    const revealed = trace?.events.some((event) => event.kind === "pool.reveal" || event.kind === "hydration.reveal");
+    return revealed ? trace : null;
+  }, { target: session, since }, { timeout: 20_000 });
+  return await handle.jsonValue() as TraceState;
+}
+
+async function runSwitch(baseUrl: string, timings: ServerTiming[], sessions: readonly [string, string]): Promise<ScenarioSummary> {
+  const { page, close } = await setupPage(baseUrl);
+  const timingStart = timings.length;
+  const [first, second] = sessions;
+  try {
+    await waitForSessionReveal(page, first, await openFromSidebar(page, first));
+    await waitForSessionReveal(page, second, await openFromSidebar(page, second));
+    const since = await openFromSidebar(page, first);
+    await waitForSessionReveal(page, first, since);
+    // A miss also needs its flash probe's stable sample.
+    await page.waitForTimeout(REVEAL_FLASH_WINDOW_MS + 250);
+    const trace = await page.evaluate(({ target, since }) => {
+      const traces = (window as unknown as { __wfTrace?: Record<string, TraceState> }).__wfTrace || {};
+      return Object.values(traces).find((item) => item._meta.session === target && item._meta.startWall >= since) ?? null;
+    }, { target: first, since });
+    if (!trace) throw new Error(`missing switch-back trace for ${first}`);
+    const heapUsage = await readHeapUsage(page);
+    return {
+      scenario: "switch:2",
+      mode: "switch",
+      cells: 2,
+      sessions: [],
+      server: serverTimingsFor(timings, [...sessions], timingStart),
+      switchBack: { ...summarizeSwitchBack(trace), jsHeapUsedBytes: heapUsage.usedSize ?? null },
+    };
+  } finally {
+    await close();
+  }
+}
+
 function gridCellCounts(): number[] {
   const raw = process.env.WOLFPACK_PERF_GRID_CELLS;
   if (!raw) return [...DEFAULT_GRID_CELL_COUNTS];
@@ -828,12 +1122,26 @@ export function formatPerfRunsSummary(summary: PerfRunsSummary): string {
     `single reveal p50/p95: ${formatMetricPair(summary.single.setupToRevealMs)}`,
     `single ghostty create p50/p95: ${formatMetricPair(summary.single.ghosttyCreationMs)}`,
     `single prewarm hits: ${summary.single.prewarmHits.hits}/${summary.single.prewarmHits.total}`,
+    `single reveal flashes: ${summary.single.revealFlashes.hits}/${summary.single.revealFlashes.total}`,
+    `single reveal flashes with replay: ${summary.single.revealFlashesWithReplay.hits}/${summary.single.revealFlashesWithReplay.total}`,
     `grid reveal p50/p95: ${formatMetricPair(summary.grid.setupToRevealMs)}`,
     `grid ghostty create p50/p95: ${formatMetricPair(summary.grid.ghosttyCreationMs)}`,
     `grid ws server p50/p95: ${formatMetricPair(summary.grid.wsServerMs)}`,
     `grid prefill_done→reveal p50/p95: ${formatMetricPair(summary.grid.prefillDoneToRevealMs)}`,
     `grid prewarm hits: ${summary.grid.prewarmHits.hits}/${summary.grid.prewarmHits.total}`,
+    `grid reveal flashes: ${summary.grid.revealFlashes.hits}/${summary.grid.revealFlashes.total}`,
+    `grid reveal flashes with replay: ${summary.grid.revealFlashesWithReplay.hits}/${summary.grid.revealFlashesWithReplay.total}`,
+    `switch-back reveal p50/p95: ${formatMetricPair(summary.switchBack.switchBackToRevealMs)}`,
+    `switch-back attaches: ${summary.switchBack.attaches.hits}/${summary.switchBack.attaches.total}`,
+    `switch-back pool hits: ${summary.switchBack.poolHits.hits}/${summary.switchBack.poolHits.total}`,
+    `switch-back JS heap p50/p95: ${formatByteMetricPair(summary.switchBack.jsHeapUsedBytes)}`,
   ].join("\n");
+}
+
+function countHit(target: { hits: number; total: number }, value: boolean | null): void {
+  if (value === null) return;
+  target.total++;
+  if (value) target.hits++;
 }
 
 export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSummary {
@@ -849,6 +1157,8 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
   const singleGhosttyCreationMs: number[] = [];
   let singlePrewarmHits = 0;
   let singlePrewarmTotal = 0;
+  const singleRevealFlashes = { hits: 0, total: 0 };
+  const singleRevealFlashesWithReplay = { hits: 0, total: 0 };
 
   const gridSetupToRevealMs: number[] = [];
   const gridGhosttyCreationMs: number[] = [];
@@ -856,6 +1166,13 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
   const gridPrefillDoneToRevealMs: number[] = [];
   let gridPrewarmHits = 0;
   let gridPrewarmTotal = 0;
+  const gridRevealFlashes = { hits: 0, total: 0 };
+  const gridRevealFlashesWithReplay = { hits: 0, total: 0 };
+
+  const switchBackToRevealMs: number[] = [];
+  const switchBackAttaches = { hits: 0, total: 0 };
+  const switchBackPoolHits = { hits: 0, total: 0 };
+  const switchBackJsHeapUsedBytes: number[] = [];
 
   for (const run of runs) {
     for (const pageLoad of run.pageLoads) {
@@ -868,8 +1185,18 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
       pageConsoleErrorsTotal += pageLoad.consoleErrorCount;
     }
     for (const summary of run.summaries) {
+      if (summary.mode === "switch") {
+        if (!summary.switchBack) continue;
+        addMetric(switchBackToRevealMs, summary.switchBack.switchBackToRevealMs);
+        countHit(switchBackAttaches, summary.switchBack.switchBackAttached);
+        countHit(switchBackPoolHits, summary.switchBack.poolHit);
+        addMetric(switchBackJsHeapUsedBytes, summary.switchBack.jsHeapUsedBytes ?? null);
+        continue;
+      }
       const isGrid = summary.mode === "grid";
       for (const cell of summary.sessions) {
+        countHit(isGrid ? gridRevealFlashes : singleRevealFlashes, cell.revealFlash);
+        countHit(isGrid ? gridRevealFlashesWithReplay : singleRevealFlashesWithReplay, cell.revealFlashWithReplay);
         if (isGrid) {
           addMetric(gridSetupToRevealMs, cell.setupToRevealMs);
           addMetric(gridGhosttyCreationMs, cell.ghosttyCreationMs);
@@ -906,6 +1233,8 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
       setupToRevealMs: metricStats(singleSetupToRevealMs),
       ghosttyCreationMs: metricStats(singleGhosttyCreationMs),
       prewarmHits: { hits: singlePrewarmHits, total: singlePrewarmTotal },
+      revealFlashes: singleRevealFlashes,
+      revealFlashesWithReplay: singleRevealFlashesWithReplay,
     },
     grid: {
       setupToRevealMs: metricStats(gridSetupToRevealMs),
@@ -913,6 +1242,14 @@ export function summarizePerfRuns(runs: readonly PerfRunReport[]): PerfRunsSumma
       wsServerMs: metricStats(gridWsServerMs),
       prefillDoneToRevealMs: metricStats(gridPrefillDoneToRevealMs),
       prewarmHits: { hits: gridPrewarmHits, total: gridPrewarmTotal },
+      revealFlashes: gridRevealFlashes,
+      revealFlashesWithReplay: gridRevealFlashesWithReplay,
+    },
+    switchBack: {
+      switchBackToRevealMs: metricStats(switchBackToRevealMs),
+      attaches: switchBackAttaches,
+      poolHits: switchBackPoolHits,
+      jsHeapUsedBytes: metricStats(switchBackJsHeapUsedBytes),
     },
   };
 }
@@ -956,6 +1293,10 @@ function printPageLoadSummary(summary: PageLoadSummary): void {
 
 function printSummary(summary: ScenarioSummary): void {
   console.log(`\n${summary.scenario}`);
+  if (summary.switchBack) {
+    console.table([summary.switchBack]);
+    return;
+  }
   console.table(summary.sessions.map((cell) => ({
     session: cell.session,
     setupToAttachMs: cell.setupToAttachMs,
@@ -982,6 +1323,12 @@ function printSummary(summary: ScenarioSummary): void {
     afterPaintContainerWidth: cell.afterPaintContainerWidth,
     containerWidthDelta: cell.containerWidthDelta,
     prefillBytes: cell.prefillBytes,
+    revealCanvasChanged: cell.revealCanvasChanged,
+    revealFlash: cell.revealFlash,
+    revealFlashWithReplay: cell.revealFlashWithReplay,
+    revealToStableMs: cell.revealToStableMs,
+    replayBytesDuringReveal: cell.replayBytesDuringReveal,
+    liveBytesDuringReveal: cell.liveBytesDuringReveal,
   })));
   const serverPhases = summarizeServerPhases(
     summary.server,
@@ -1040,6 +1387,9 @@ async function runPerfMeasurement(
     const summaries: ScenarioSummary[] = [];
     summaries.push(await runMeasured(runSingle(server.baseUrl, server.timings, sessions[0])));
     if (parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE) === "desktop") {
+      // Desktop only: it switches through the sidebar, and mobile keeps a
+      // single terminal (covered by the session-switch e2e).
+      summaries.push(await runMeasured(runSwitch(server.baseUrl, server.timings, [sessions[0], sessions[1]])));
       for (const cells of gridCellCounts()) {
         summaries.push(await runMeasured(runGrid(server.baseUrl, server.timings, sessions.slice(0, cells))));
       }
@@ -1107,9 +1457,10 @@ async function main(): Promise<void> {
     const device = parsePerfDeviceMode(process.env.WOLFPACK_PERF_DEVICE);
     const prewarmPoolSize = process.env.WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE
       ?? String(DEFAULT_GHOSTTY_PREWARM_POOL_SIZE);
+    const terminalPoolSize = process.env.WOLFPACK_PERF_TERMINAL_POOL_SIZE ?? "default";
     const report = runCount === 1
-      ? { generatedAt: new Date().toISOString(), device, prewarmPoolSize, ...runs[0], summary }
-      : { generatedAt: new Date().toISOString(), device, prewarmPoolSize, runs, summary };
+      ? { generatedAt: new Date().toISOString(), device, prewarmPoolSize, terminalPoolSize, ...runs[0], summary }
+      : { generatedAt: new Date().toISOString(), device, prewarmPoolSize, terminalPoolSize, runs, summary };
     console.log(`\n${formatPerfRunsSummary(summary)}`);
     if (process.env.WOLFPACK_PERF_ENFORCE_BUDGETS === "1") {
       const failures = perfBudgetFailures(summary, device);

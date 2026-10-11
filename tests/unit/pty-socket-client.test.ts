@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { PTY_ATTACH_CAPABILITY } from "../../src/pty-websocket-contract.ts";
 import { syncTerminalLayout } from "../../public/terminal-layout.ts";
-import { createPtySocketClient, type PtySocketClientDependencies, type PtySocketClientOpts } from "../../public/pty-socket-client.ts";
+import {
+  createLayoutStableMemory,
+  createPtySocketClient,
+  type PtySocketClientDependencies,
+  type PtySocketClientOpts,
+} from "../../public/pty-socket-client.ts";
 
 import { mountAndConnectTerminal } from "../../public/terminal-bootstrap.ts";
 import { resumeMobileTerminal } from "../../src/mobile-foreground.ts";
@@ -132,6 +137,7 @@ function dependencies(overrides: Partial<PtySocketClientDependencies> = {}): Pty
     requestWebSocketTicket: async () => "ticket-1",
     getBrowserAuthToken: () => null,
     getDebugStorage: () => null,
+    layoutStableMemory: createLayoutStableMemory(),
     ...overrides,
   };
 }
@@ -368,6 +374,120 @@ describe("PTY socket client", () => {
     client.close();
   });
 
+  describe("layout_stable on attach", () => {
+    interface FakeLayout {
+      cols: number;
+      rows: number;
+      containerWidth: number;
+      transient: boolean;
+    }
+
+    function layoutStableFrames(socket: FakeWebSocket): unknown[] {
+      return socket.jsonFrames().filter((frame) =>
+        typeof frame === "object" && frame !== null && "type" in frame && frame.type === "layout_stable");
+    }
+
+    /** A terminal whose fit copies the container's current geometry into the term. */
+    function layoutOpts(layout: FakeLayout, session: string): PtySocketClientOpts {
+      let term = { cols: 0, rows: 0 };
+      return clientOpts({
+        session,
+        prefillMode: "full",
+        fitTerminal: () => { term = { cols: layout.cols, rows: layout.rows }; },
+        getTermDimensions: () => term,
+        getProposedDimensions: () => ({ cols: layout.cols, rows: layout.rows }),
+        getLayoutMetrics: () => ({ containerWidth: layout.containerWidth, containerClientWidth: layout.containerWidth, viewportWidth: 1280 }),
+        isLayoutTransient: () => layout.transient,
+      });
+    }
+
+    async function attachAndSettle(memory: ReturnType<typeof createLayoutStableMemory>, layout: FakeLayout): Promise<void> {
+      const client = createPtySocketClient(layoutOpts(layout, "previous"), dependencies({ layoutStableMemory: memory }));
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances.at(-1)!;
+      socket.open();
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: [] }));
+      expect(layoutStableFrames(socket)).toEqual([{ type: "layout_stable", cols: layout.cols, rows: layout.rows, reason: "after-paint" }]);
+      client.close();
+    }
+
+    async function openNext(memory: ReturnType<typeof createLayoutStableMemory>, layout: FakeLayout): Promise<FakeWebSocket> {
+      const client = createPtySocketClient(layoutOpts(layout, "alpha"), dependencies({ layoutStableMemory: memory }));
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances.at(-1)!;
+      socket.open();
+      return socket;
+    }
+
+    test("a same-geometry switch sends layout_stable right after attach, before attach_ack", async () => {
+      const memory = createLayoutStableMemory();
+      const layout = { cols: 80, rows: 24, containerWidth: 900, transient: false };
+      await attachAndSettle(memory, layout);
+
+      const socket = await openNext(memory, layout);
+
+      expect(socket.jsonFrames()).toEqual([
+        { type: "attach", cols: 80, rows: 24, prefillMode: "full", capabilities: ["output-ack"] },
+        { type: "layout_stable", cols: 80, rows: 24, reason: "same-geometry" },
+      ]);
+    });
+
+    test("changed geometry waits for attach_ack and the after-paint frames", async () => {
+      const memory = createLayoutStableMemory();
+      const layout = { cols: 100, rows: 30, containerWidth: 1100, transient: false };
+      await attachAndSettle(memory, layout);
+      const paintCallbacks: FrameRequestCallback[] = [];
+      Object.defineProperty(globalThis, "requestAnimationFrame", {
+        configurable: true,
+        value: (callback: FrameRequestCallback): number => paintCallbacks.push(callback),
+      });
+      Object.assign(layout, { cols: 80, rows: 24, containerWidth: 900 });
+
+      const socket = await openNext(memory, layout);
+      expect(layoutStableFrames(socket)).toEqual([]);
+
+      socket.message(JSON.stringify({ type: "attach_ack", capabilities: [] }));
+      expect(layoutStableFrames(socket)).toEqual([]);
+      while (paintCallbacks.length) paintCallbacks.shift()!(0);
+      expect(layoutStableFrames(socket)).toEqual([{ type: "layout_stable", cols: 80, rows: 24, reason: "after-paint" }]);
+    });
+
+    test("a container mid-resize that fits to the remembered dims keeps the after-paint path", async () => {
+      const memory = createLayoutStableMemory();
+      const layout = { cols: 80, rows: 24, containerWidth: 900, transient: false };
+      await attachAndSettle(memory, layout);
+      layout.containerWidth = 904;
+
+      const socket = await openNext(memory, layout);
+
+      expect(layoutStableFrames(socket)).toEqual([]);
+    });
+
+    test("a height-only change (same width, fewer rows) keeps the after-paint path", async () => {
+      const memory = createLayoutStableMemory();
+      const layout = { cols: 80, rows: 24, containerWidth: 900, transient: false };
+      await attachAndSettle(memory, layout);
+      layout.rows = 20;
+
+      const socket = await openNext(memory, layout);
+
+      expect(layoutStableFrames(socket)).toEqual([]);
+    });
+
+    test("a known layout transition keeps the after-paint path", async () => {
+      const memory = createLayoutStableMemory();
+      const layout = { cols: 80, rows: 24, containerWidth: 900, transient: false };
+      await attachAndSettle(memory, layout);
+      layout.transient = true;
+
+      const socket = await openNext(memory, layout);
+
+      expect(layoutStableFrames(socket)).toEqual([]);
+    });
+  });
+
   test("opens ticket and socket before mount, but attaches only after the fitted terminal is ready", async () => {
     let mounted = false;
     let fitted = false;
@@ -588,6 +708,64 @@ describe("PTY socket client", () => {
     expect(reconnecting).toBe(1);
 
     client.close();
+  });
+
+  // Characterization: pins existing socket/layout behavior the terminal pool
+  // relies on; it passed before the pool existed.
+  test("a parked (detached) pooled terminal keeps acking output and re-syncs geometry only when its size changed", async () => {
+    jest.useFakeTimers();
+    const term = { cols: 80, rows: 24, scrollToLine: () => {} };
+    // Ghostty's FitAddon proposes nothing for a zero-size (detached) element.
+    let proposed: { cols: number; rows: number } | undefined = { cols: 80, rows: 24 };
+    const client = createPtySocketClient(clientOpts({
+      getTermDimensions: () => term,
+      getProposedDimensions: () => proposed ?? null,
+      onResizeAck: (cols, rows) => { Object.assign(term, { cols, rows }); },
+    }), dependencies());
+    const sync = () => syncTerminalLayout({
+      term,
+      fitAddon: { fit: () => {}, proposeDimensions: () => proposed },
+      ptyClient: {
+        supportsOrderedResize: true,
+        sendResize: async (cols, rows) => { await client.sendResize(cols, rows); },
+      },
+      forceSend: true,
+      repaint: true,
+    });
+    try {
+      client.connect();
+      await flushPromises();
+      const socket = FakeWebSocket.instances[0];
+      socket.open();
+      socket.message(JSON.stringify({
+        type: "attach_ack",
+        capabilities: [PTY_ATTACH_CAPABILITY.ORDERED_RESIZE_ACK, "output-ack"],
+      }));
+      acknowledge(socket, resizeFrames(socket)[0]);
+      const sentResizes = resizeFrames(socket).length;
+
+      proposed = undefined; // parked
+      await sync();
+      socket.message(new ArrayBuffer(64 * 1024));
+      expect(outputAckFrames(socket)).toEqual([{ type: "ack", bytes: 64 * 1024 }]);
+      expect(resizeFrames(socket)).toHaveLength(sentResizes);
+
+      proposed = { cols: 80, rows: 24 }; // shown again at the same size
+      await sync();
+      jest.advanceTimersByTime(200);
+      expect(resizeFrames(socket)).toHaveLength(sentResizes);
+
+      proposed = { cols: 100, rows: 30 }; // shown into a resized container
+      const resynced = sync();
+      jest.advanceTimersByTime(200);
+      expect(resizeFrames(socket)).toHaveLength(sentResizes + 1);
+      acknowledge(socket, resizeFrames(socket).at(-1)!);
+      await resynced;
+      expect(term).toEqual(expect.objectContaining({ cols: 100, rows: 30 }));
+    } finally {
+      client.close();
+      jest.useRealTimers();
+    }
   });
 
   test.each([false, true])("returns to committed geometry when the real layout caller reverses a resize (in-flight: %s)", async (inFlight) => {

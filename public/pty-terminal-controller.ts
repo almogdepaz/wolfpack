@@ -25,6 +25,9 @@ import { type LayoutStablePrefillMode } from "../src/terminal-layout-stable-debu
 
 export const INITIAL_HYDRATION_SETTLE_MS = 16;
 export const INITIAL_HYDRATION_SILENCE_MS = 32;
+// Reveal floor measured from hydration start; rationale at the hydration
+// controller construction below.
+export const INITIAL_HYDRATION_MIN_PENDING_MS = 80;
 
 export interface TerminalInstanceOptions {
   readonly fontSize?: number;
@@ -176,6 +179,9 @@ export interface PtyTerminalController {
   sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): Promise<OrderedResizeSettlement>;
   forceRepaint(): void;
   syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): Promise<void>;
+  /** Parked in the terminal pool: no background layout sync or resize-rehydrate reconnect. */
+  suspendLayout(): void;
+  resumeLayout(): void;
   send(data: PtySocketSendData): boolean;
   resetRetry(): void;
   reconnect(reconnectOpts?: { readonly takeControl?: boolean }): void;
@@ -531,40 +537,32 @@ export function createPtyTerminalController(
 
     // Create hydration controller (started in connect())
     //
-    // ─── WHY minPendingMs=200 ────────────────────────────────────────────────
-    // Background: when opening a session, the user could briefly see
-    // scrollback streaming upward through the viewport before the cursor
-    // settled. The flash was from the post-attach resize-redraw burst:
+    // ─── WHY minPendingMs=80 ─────────────────────────────────────────────────
+    // History: opening a session used to flash scrollback streaming through
+    // the viewport. The server snapshotted at the attach dims, CSS layout then
+    // settled to different dims, and the broker's reflow emitted a streaming
+    // resize-redraw burst (1000+ chunks over ~150ms) that ghostty painted
+    // frame by frame. src/server/websocket.ts now holds the snapshot until
+    // client resizes settle (layout_stable / settle window / quiescence), so
+    // the post-attach refit is normally a no-op.
     //
-    //   - WS opens → attach handshake at initial dims
-    //   - server snapshotted broker state immediately at those dims
-    //   - attach_ack → client schedules force-resize next rAF
-    //   - by then CSS layout had settled to different dims (sidebar
-    //     transition 200ms, view transform 280ms)
-    //   - broker reflowed scrollback at new dims → emitted streaming
-    //     redraw burst (1000+ chunks over ~150ms)
-    //   - each chunk = separate WS macrotask → ghostty rAF rendered
-    //     intermediate states between them = visible flash
-    //
-    // PROPER FIX (now in place): src/server/websocket.ts holds the snapshot
-    // until client resizes settle (PRE_SNAPSHOT_RESIZE_SETTLE_MS=100ms quiet
-    // window, 400ms hard cap). Snapshot now happens at the FINAL dims so the
-    // post-attach refit becomes a no-op and the redraw burst doesn't fire.
-    //
-    // Why minPendingMs is still non-zero: server settle isn't perfect.
-    // Scenarios that can still produce a small post-prefill burst:
-    //   - mobile keyboard slide-in causes a late layout shift > settle window
-    //   - subscription replay (sinceSeq) catches output that arrived during
-    //     the settle wait — typically tiny but can paint as a tail of writes
-    //   - rAF jitter between writes
-    // 200ms is a small cushion to absorb these without revealing mid-burst.
-    // Total cost on desktop: ~200ms reveal time (down from 800ms).
+    // The floor still absorbs bursts the server settle cannot see coming:
+    //   - a resize-redraw that starts AFTER a gap: a late layout shift (mobile
+    //     keyboard slide-in, 200ms sidebar / 280ms view transitions) arriving
+    //     after the settle window
+    //   - subscription replay of output that arrived during the settle wait
+    // silenceMs/settleMs only hold a reveal while writes keep arriving; once
+    // the reveal has happened they cannot take it back, so a burst that starts
+    // after a quiet gap needs this floor. The perf harness flash metric
+    // (`revealFlash` / `revealFlashWithReplay`) has not yet exercised a
+    // same-geometry switch where prefill completes inside 80ms; lower this
+    // only with that evidence.
     // ─────────────────────────────────────────────────────────────────────────
     const hydrationTiming = resolveHydrationDebugTiming({
       debugEnabled: wfTraceEnabled,
       storage: dependencies.getDebugStorage(),
       defaults: {
-        minPendingMs: opts.hydrationMinPendingMs ?? 80,
+        minPendingMs: opts.hydrationMinPendingMs ?? INITIAL_HYDRATION_MIN_PENDING_MS,
         silenceMs: opts.hydrationSilenceMs ?? INITIAL_HYDRATION_SILENCE_MS,
       },
     });
@@ -647,6 +645,7 @@ export function createPtyTerminalController(
           viewportWidth: window.innerWidth,
         };
       },
+      isLayoutTransient: dependencies.shouldSuppressContainerResize,
       fitTerminal: fitTerminalPreserveScroll,
       shouldReconnect: opts.shouldReconnect,
       onAttach: () => {
@@ -809,6 +808,8 @@ export function createPtyTerminalController(
       : Promise.resolve("cancelled" as const),
     forceRepaint,
     syncLayout,
+    suspendLayout: () => resizeLifecycle.suspend(),
+    resumeLayout: () => resizeLifecycle.resume(),
     send: (data) => {
       if (!_ptyClient || !_ptyClient.isOpen) return false;
       const accepted = _ptyClient.send(data);

@@ -186,6 +186,10 @@ export function applySetting(key, val) {
   }
 }
 
+// Updates the visible terminal and grid cells only. Parked single-terminal pool
+// entries are not updated: font controls live in Settings, and leaving the
+// terminal view evicts the pool. A font control inside the terminal view would
+// need to update (or evict) parked entries too.
 export function applyTermToXterm() {
   const p = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
   const fontFamily = getTerminalFontFamily();

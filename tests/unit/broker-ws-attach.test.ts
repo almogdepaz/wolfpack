@@ -1127,6 +1127,48 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.hasJsonType("pty_ready")).toBe(true);
   });
 
+  async function flushMicrotasks(): Promise<void> {
+    for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+  }
+
+  async function advanceClock(ms: number): Promise<void> {
+    for (let elapsed = 0; elapsed < ms; elapsed++) {
+      jest.advanceTimersByTime(1);
+      await flushMicrotasks();
+    }
+  }
+
+  test("viewport attach honors layout_stable sent right after attach, before the 60ms dimension wait", async () => {
+    jest.useFakeTimers({ now: 1000 });
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "viewport" });
+    expect(ws.hasJsonType("attach_ack")).toBe(true);
+    ws.pushJson({ type: "layout_stable", cols: 80, rows: 24, reason: "same-geometry" });
+    // One settle poll (16ms) is enough; the dimension wait alone is 60ms.
+    await advanceClock(16);
+
+    expect(backend.resizeCalls).toEqual([
+      { name: SESSION, cols: 80, rows: 24 },
+    ]);
+  });
+
+  test("viewport attach without layout_stable waits out the full 60ms dimension settle", async () => {
+    jest.useFakeTimers({ now: 1000 });
+    const ws = new FakeWs();
+    attachWs(ws);
+
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "viewport" });
+    await advanceClock(59);
+    expect(backend.resizeCalls).toEqual([]);
+
+    await advanceClock(17);
+    expect(backend.resizeCalls).toEqual([
+      { name: SESSION, cols: 80, rows: 24 },
+    ]);
+  });
+
   test("viewport attach requests bounded grid scrollback after the resize redraw", async () => {
     backend.resizeOutput = new Uint8Array(2 * 1024);
     const ws = new FakeWs();

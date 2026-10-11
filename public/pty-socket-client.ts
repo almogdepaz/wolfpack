@@ -48,11 +48,41 @@ export interface PtySocketClientDependencies {
   readonly requestWebSocketTicket: (machine?: string) => Promise<string>;
   readonly getBrowserAuthToken: (origin: string) => string | null;
   readonly getDebugStorage: () => Pick<Storage, "getItem"> | null;
+  /** Geometry most recently declared stable after paint. Defaults to one
+   *  page-wide record so a session switch can reuse its predecessor's. */
+  readonly layoutStableMemory?: LayoutStableMemory;
 }
 
 export interface TermDimensions {
   readonly cols: number;
   readonly rows: number;
+}
+
+/** Dimensions plus the container box they were fitted from when the last
+ *  after-paint `layout_stable` was sent. */
+export interface StableLayout {
+  readonly dimensions: TermDimensions;
+  readonly metrics: TerminalLayoutMetrics;
+}
+
+export interface LayoutStableMemory {
+  last: StableLayout | null;
+}
+
+export function createLayoutStableMemory(): LayoutStableMemory {
+  return { last: null };
+}
+
+const sharedLayoutStableMemory = createLayoutStableMemory();
+
+function sameDimensions(a: TermDimensions, b: TermDimensions): boolean {
+  return a.cols === b.cols && a.rows === b.rows;
+}
+
+function sameLayoutMetrics(a: TerminalLayoutMetrics, b: TerminalLayoutMetrics): boolean {
+  return a.containerWidth === b.containerWidth
+    && a.containerClientWidth === b.containerClientWidth
+    && a.viewportWidth === b.viewportWidth;
 }
 
 export interface TerminalLayoutMetrics {
@@ -72,6 +102,8 @@ export interface PtySocketClientOpts {
   readonly getTermDimensions: () => TermDimensions | null;
   readonly getProposedDimensions?: () => TermDimensions | null;
   readonly getLayoutMetrics?: () => TerminalLayoutMetrics | null;
+  /** True while a known layout transition (e.g. sidebar animation) is in flight. */
+  readonly isLayoutTransient?: () => boolean;
   readonly fitTerminal: () => void;
   readonly isTerminalReady?: () => boolean;
   readonly onBinaryData?: (data: Uint8Array<ArrayBuffer>) => void;
@@ -180,6 +212,7 @@ export function createPtySocketClient(
   let _prefillDoneTimeout: ReturnType<typeof setTimeout> | null = null;
   const _attachDimensionRetry = createAttachDimensionRetryState();
   const _layoutStableDebugMode = resolveLayoutStableDebugMode(dependencies.getDebugStorage(), wfTraceEnabled);
+  const _layoutStableMemory = dependencies.layoutStableMemory ?? sharedLayoutStableMemory;
   // Diagnostic tracer (scrolldown investigation). Created per attach in
   // sendAttachHandshake. Read via window.__wf_dumpTrace().
   let _trace: TraceState | null = null;
@@ -287,6 +320,13 @@ export function createPtySocketClient(
     ws.send(JSON.stringify(msg));
     if (shouldSendImmediateLayoutStable(_layoutStableDebugMode, prefillMode)) {
       sendLayoutStable("immediate");
+    } else if (isKnownStableGeometry(attachDims)) {
+      // The previous attach declared these dims stable after paint, the
+      // container box is unchanged since, and no layout transition is in
+      // flight: let the server stop its settle wait now. The after-paint send
+      // below still runs (ordered peers need its resize acknowledgement) and
+      // corrects any late change.
+      sendLayoutStable("same-geometry");
     }
     if (_attachAckTimer) clearTimeout(_attachAckTimer);
     // Compatibility fallback: older servers don't implement attach_ack.
@@ -322,8 +362,17 @@ export function createPtySocketClient(
     return _supportsOrderedResize || (_attachUsesProposedDimensions && _awaitingAttachAck);
   }
 
+  function isKnownStableGeometry(attachDims: TermDimensions): boolean {
+    const last = _layoutStableMemory.last;
+    const metrics = opts.getLayoutMetrics?.() ?? null;
+    return !!last && !!metrics
+      && sameDimensions(last.dimensions, attachDims)
+      && sameLayoutMetrics(last.metrics, metrics)
+      && !opts.isLayoutTransient?.();
+  }
+
   function sendLayoutStable(
-    reason: "after-paint" | "immediate" = "after-paint",
+    reason: "after-paint" | "immediate" | "same-geometry" = "after-paint",
     forceOrderedResize = false,
   ): void {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -341,6 +390,11 @@ export function createPtySocketClient(
     }
     ws.send(JSON.stringify({ type: "layout_stable", cols: dims.cols, rows: dims.rows, reason }));
     const layoutMetrics = opts.getLayoutMetrics?.() ?? null;
+    if (reason === "after-paint") {
+      _layoutStableMemory.last = layoutMetrics
+        ? { dimensions: { cols: dims.cols, rows: dims.rows }, metrics: layoutMetrics }
+        : null;
+    }
     __wfTraceEvent(_trace, "layout_stable.send", {
       ...(layoutMetrics ?? {}),
       cols: dims.cols,

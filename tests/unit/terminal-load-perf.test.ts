@@ -9,16 +9,23 @@ import {
   formatPerfRunsSummary,
   parsePerfDeviceMode,
   parsePerfRunCount,
+  PERF_FLASH_EVENT,
   serverTimingsFor,
   summarizeCell,
   summarizePerfRuns,
   summarizeServerPhases,
+  summarizeSwitchBack,
   type PerfRunReport,
   type ServerTiming,
   type TraceState,
 } from "../../scripts/terminal-load-perf.ts";
 
-function perfRunReport(gridRevealMs: readonly number[], gridPrewarmHits: readonly boolean[]): PerfRunReport {
+function perfRunReport(
+  gridRevealMs: readonly number[],
+  gridPrewarmHits: readonly boolean[],
+  gridRevealFlashes: readonly (boolean | null)[] = [],
+  gridRevealFlashesWithReplay: readonly (boolean | null)[] = [],
+): PerfRunReport {
   return {
     pageLoads: [{
       cardVisibleMs: 100,
@@ -69,6 +76,12 @@ function perfRunReport(gridRevealMs: readonly number[], gridPrewarmHits: readonl
         afterPaintContainerWidth: 509,
         containerWidthDelta: 0,
         prefillBytes: 100,
+        revealCanvasChanged: false,
+        revealFlash: index < gridRevealFlashes.length ? gridRevealFlashes[index] : false,
+        revealFlashWithReplay: index < gridRevealFlashesWithReplay.length ? gridRevealFlashesWithReplay[index] : false,
+        revealToStableMs: 20,
+        replayBytesDuringReveal: 0,
+        liveBytesDuringReveal: 0,
       })),
     }],
   };
@@ -111,6 +124,28 @@ describe("terminal-load perf run options", () => {
     expect(formatPerfRunsSummary(summary)).toContain("runs: 2");
     expect(formatPerfRunsSummary(summary)).toContain("grid reveal p50/p95: 200/230ms (n=4)");
     expect(formatPerfRunsSummary(summary)).toContain("grid prewarm hits: 3/4");
+  });
+
+  test("counts reveal flashes over measured cells only", () => {
+    const summary = summarizePerfRuns([
+      perfRunReport([200, 210], [true, true], [true, false]),
+      perfRunReport([190, 230], [true, false], [null, false]),
+    ]);
+
+    expect(summary.grid.revealFlashes).toEqual({ hits: 1, total: 3 });
+    expect(formatPerfRunsSummary(summary)).toContain("grid reveal flashes: 1/3");
+    expect(formatPerfRunsSummary(summary)).toContain("single reveal flashes: 0/0");
+  });
+
+  test("counts replay-driven reveal flashes separately", () => {
+    const summary = summarizePerfRuns([
+      perfRunReport([200, 210], [true, true], [false, false], [true, false]),
+      perfRunReport([190, 230], [true, false], [false, null], [true, null]),
+    ]);
+
+    expect(summary.grid.revealFlashesWithReplay).toEqual({ hits: 2, total: 3 });
+    expect(formatPerfRunsSummary(summary)).toContain("grid reveal flashes with replay: 2/3");
+    expect(formatPerfRunsSummary(summary)).toContain("single reveal flashes with replay: 0/0");
   });
 
   test("documents perf harness environment knobs in one helper", () => {
@@ -238,6 +273,12 @@ describe("terminal-load perf summarization", () => {
       afterPaintContainerWidth: 924,
       containerWidthDelta: -76,
       prefillBytes: 7,
+      revealCanvasChanged: null,
+      revealFlash: null,
+      revealFlashWithReplay: null,
+      revealToStableMs: null,
+      replayBytesDuringReveal: null,
+      liveBytesDuringReveal: null,
     });
   });
 
@@ -328,5 +369,166 @@ describe("terminal-load perf summarization", () => {
       containerWidthDelta: null,
       prefillBytes: 9,
     });
+  });
+
+  describe("reveal flash", () => {
+    function flashTrace(afterReveal: TraceState["events"], ptyReadyAt = 40): TraceState {
+      const events: TraceState["events"] = [
+        { kind: "attach.send", t: 1 },
+        { kind: "ws.binary", bucket: "prefill", size: 50, t: 2 },
+        { kind: "prefill_done", t: 3 },
+        { kind: "hydration.reveal", t: 10 },
+        { kind: PERF_FLASH_EVENT.REVEAL, t: 10.5, hash: "aaa" },
+        { kind: "pty_ready", t: ptyReadyAt },
+        ...afterReveal,
+      ];
+      return {
+        _meta: { session: "perf-a", machine: "", startWall: 0, startPerf: 0 },
+        events: events.sort((a, b) => a.t - b.t),
+      };
+    }
+
+    test("an unchanged canvas between reveal and stable is not a flash", () => {
+      expect(summarizeCell(flashTrace([
+        { kind: PERF_FLASH_EVENT.STABLE, t: 160.5, hash: "aaa" },
+      ]))).toMatchObject({
+        revealCanvasChanged: false,
+        revealFlash: false,
+        revealFlashWithReplay: false,
+        revealToStableMs: 150,
+        replayBytesDuringReveal: 0,
+        liveBytesDuringReveal: 0,
+      });
+    });
+
+    test("a canvas change with no bytes after reveal is a render-lag flash", () => {
+      expect(summarizeCell(flashTrace([
+        { kind: PERF_FLASH_EVENT.STABLE, t: 160.5, hash: "bbb" },
+      ]))).toMatchObject({
+        revealCanvasChanged: true,
+        revealFlash: true,
+        revealFlashWithReplay: false,
+        replayBytesDuringReveal: 0,
+        liveBytesDuringReveal: 0,
+      });
+    });
+
+    test("a canvas change with only pre-pty_ready replay bytes is a replay flash", () => {
+      expect(summarizeCell(flashTrace([
+        { kind: "ws.binary", bucket: "replay", size: 12, t: 20 },
+        { kind: PERF_FLASH_EVENT.STABLE, t: 160.5, hash: "bbb" },
+        { kind: "ws.binary", bucket: "replay", size: 99, t: 170 },
+      ]))).toMatchObject({
+        revealCanvasChanged: true,
+        revealFlash: false,
+        revealFlashWithReplay: true,
+        replayBytesDuringReveal: 12,
+        liveBytesDuringReveal: 0,
+      });
+    });
+
+    test("a canvas change with post-pty_ready output is reported but not flagged", () => {
+      expect(summarizeCell(flashTrace([
+        { kind: "ws.binary", bucket: "replay", size: 12, t: 20 },
+        { kind: "ws.binary", bucket: "replay", size: 7, t: 50 },
+        { kind: PERF_FLASH_EVENT.STABLE, t: 160.5, hash: "bbb" },
+      ]))).toMatchObject({
+        revealCanvasChanged: true,
+        revealFlash: false,
+        revealFlashWithReplay: false,
+        replayBytesDuringReveal: 12,
+        liveBytesDuringReveal: 7,
+      });
+    });
+
+    test("a missing stable sample leaves the flash unmeasured", () => {
+      expect(summarizeCell(flashTrace([]))).toMatchObject({
+        revealCanvasChanged: null,
+        revealFlash: null,
+        revealFlashWithReplay: null,
+        revealToStableMs: null,
+        replayBytesDuringReveal: null,
+        liveBytesDuringReveal: null,
+      });
+    });
+  });
+});
+
+function switchTrace(events: TraceState["events"]): TraceState {
+  return { _meta: { session: "perf-a", machine: "", startWall: 0, startPerf: 0 }, events };
+}
+
+function switchRunReport(switchBackToRevealMs: number | null, attached: boolean, poolHit: boolean, jsHeapUsedBytes: number | null = null): PerfRunReport {
+  return {
+    pageLoads: [],
+    summaries: [{
+      scenario: "switch:2",
+      mode: "switch",
+      cells: 2,
+      server: [],
+      sessions: [],
+      switchBack: { session: "perf-a", switchBackToRevealMs, switchBackAttached: attached, poolHit, revealFlash: null, jsHeapUsedBytes },
+    }],
+  };
+}
+
+describe("switch scenario", () => {
+  test("a pool hit reveals without attaching", () => {
+    expect(summarizeSwitchBack(switchTrace([
+      { t: 0, kind: "openSession.start" },
+      { t: 1.5, kind: "pool.show", connected: true },
+      { t: 9.25, kind: "pool.reveal" },
+    ]))).toEqual({
+      session: "perf-a",
+      switchBackToRevealMs: 9.25,
+      switchBackAttached: false,
+      poolHit: true,
+      revealFlash: null,
+    });
+  });
+
+  test("a pool miss reports the attach and its hydration reveal", () => {
+    expect(summarizeSwitchBack(switchTrace([
+      { t: 0, kind: "openSession.start" },
+      { t: 40, kind: "attach.send" },
+      { t: 150, kind: "hydration.reveal" },
+      { t: 150, kind: PERF_FLASH_EVENT.REVEAL, hash: "a" },
+      { t: 300, kind: PERF_FLASH_EVENT.STABLE, hash: "a" },
+    ]))).toEqual({
+      session: "perf-a",
+      switchBackToRevealMs: 150,
+      switchBackAttached: true,
+      poolHit: false,
+      revealFlash: false,
+    });
+  });
+
+  test("an unrevealed switch-back reports no reveal time", () => {
+    expect(summarizeSwitchBack(switchTrace([{ t: 0, kind: "openSession.start" }])).switchBackToRevealMs).toBeNull();
+  });
+
+  test("aggregates switch-back separately from single-terminal opens", () => {
+    const summary = summarizePerfRuns([
+      switchRunReport(8, false, true, 40 * 1024 * 1024),
+      switchRunReport(12, false, true, 42 * 1024 * 1024),
+      switchRunReport(170, true, false),
+    ]);
+    expect(summary.switchBack.switchBackToRevealMs).toMatchObject({ count: 3, p50: 12, p95: 170 });
+    expect(summary.switchBack.attaches).toEqual({ hits: 1, total: 3 });
+    expect(summary.switchBack.poolHits).toEqual({ hits: 2, total: 3 });
+    expect(summary.single.setupToRevealMs.count).toBe(0);
+    const formatted = formatPerfRunsSummary(summary);
+    expect(formatted).toContain("switch-back reveal p50/p95: 12/170ms (n=3)");
+    expect(formatted).toContain("switch-back attaches: 1/3");
+    expect(formatted).toContain("switch-back pool hits: 2/3");
+    // Page-load heap never sees pooled terminals; sample after the switch.
+    expect(summary.switchBack.jsHeapUsedBytes).toMatchObject({ count: 2, p50: 40 * 1024 * 1024 });
+    expect(formatted).toContain("switch-back JS heap p50/p95: 40.00/42.00MiB (n=2)");
+  });
+
+  test("documents the terminal pool size override", () => {
+    expect(describePerfHarnessEnv()).toContain(
+      "WOLFPACK_PERF_TERMINAL_POOL_SIZE: debug-only single-terminal pool size override 1-6 (default: 3 desktop, 1 mobile)",
+    );
   });
 });

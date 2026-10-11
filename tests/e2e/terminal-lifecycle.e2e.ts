@@ -247,8 +247,10 @@ test("disposing repeated terminal mounts releases document pointer listeners", a
   await openTerminalSession(page, "test-project");
   await openTerminalSession(page, "another-project");
 
-  expect(await documentListenerCount(cdp, "mousedown")).toBe(mountedMouseDown);
-  expect(await documentListenerCount(cdp, "mouseup")).toBe(mountedMouseUp);
+  // Both sessions stay mounted in the desktop terminal pool: one listener set
+  // per pooled terminal, never one per switch.
+  expect(await documentListenerCount(cdp, "mousedown")).toBe(baselineMouseDown + 2 * (mountedMouseDown - baselineMouseDown));
+  expect(await documentListenerCount(cdp, "mouseup")).toBe(baselineMouseUp + 2 * (mountedMouseUp - baselineMouseUp));
 
   await openSettingsFromUi(page);
   await expect(page.locator("#desktop-terminal-container canvas")).toHaveCount(0);

@@ -7,7 +7,7 @@ import {
   TERM_PRESETS, isDesktop,
 } from "./app-state";
 import { gridTerminalScrollbackBudget } from "../src/grid-scrollback-policy";
-import { __wfTraceEvent, __wfTraceGet, __wfTraceStart } from "./app-debug";
+import { __wfTraceEvent, __wfTraceGet, __wfTraceStart, wfCursorBlinkDisabled } from "./app-debug";
 import {
   createTerminalSlowPathIndicator,
   revealTerminalConflict,
@@ -953,7 +953,7 @@ function applyGridFocus(
     if (!gs.controller?.term) return;
     const focused = index === idx;
     gs.controller.term.options.disableStdin = !focused;
-    gs.controller.term.options.cursorBlink = focused;
+    gs.controller.term.options.cursorBlink = focused && !wfCursorBlinkDisabled;
   });
   document.querySelectorAll(`${containerSelector} .grid-cell`).forEach((cell, index) => {
     cell.classList.toggle("grid-focused", index === idx);
