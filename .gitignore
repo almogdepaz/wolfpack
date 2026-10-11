@@ -13,14 +13,15 @@ CLAUDE.md
 *.log
 *.gif
 !docs/*.gif
+!docs/assets/*.gif
 *.png
 !docs/*.png
 !public/icon-192.png
 !public/icon-512.png
 !public/icon-maskable-192.png
 !public/icon-maskable-512.png
-!site/assets/desktop-sessions.8bb9afabae8d50f7.png
-!site/assets/desktop-terminal.61fd0df23ac16e34.png
+!site/assets/desktop-sessions.4739400ea3b42a16.png
+!site/assets/desktop-terminal.bbd27a2160e51636.png
 *.jpeg
 *.jpg
 *.svg
