@@ -29,5 +29,5 @@ jobs:
         with:
           path: site
       - id: deployment
-        # v4.0.5
+        # v5.0.1
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346
