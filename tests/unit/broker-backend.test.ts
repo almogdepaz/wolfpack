@@ -4,7 +4,7 @@
  * Drives BrokerBackend against a fake broker client that records RPC calls
  * and produces canned ControlResponse values. No real socket, no real broker.
  */
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +24,8 @@ import { sessionIdentityStorePath } from "../../src/server/session-identity";
 import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
 import { SHELL } from "../../src/server/shell";
 import { renderSnapshotToAnsi } from "../../src/broker/snapshot-render";
+import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event-bus";
+import type { WolfpackEvent } from "../../src/events-contract";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -2005,5 +2007,115 @@ describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
     client.setHandler("snapshot", () => okResp(snap));
     const prefill = await backend.getSessionPrefill("live");
     expect(prefill.seq).toBeUndefined();
+  });
+});
+
+async function waitForReplies(replies: readonly unknown[], count: number): Promise<void> {
+  for (let attempt = 0; attempt < 100 && replies.length < count; attempt++) await new Promise((resolve) => setTimeout(resolve, 1));
+  expect(replies).toHaveLength(count);
+}
+
+describe("BrokerBackend lifecycle → event bus", () => {
+  let seen: WolfpackEvent[];
+  let unsubscribe: () => void;
+
+  beforeEach(() => {
+    __resetEventBusForTests();
+    seen = [];
+    unsubscribe = subscribeEvents({}, (event) => seen.push(event));
+  });
+
+  afterEach(() => unsubscribe());
+
+  test("session_started publishes session.created from the broker payload", () => {
+    backend.ingestEvent({ event: "session_started", session: sessionInfo({ name: "fresh", id: SESSION_UUID_2, cwd: "/tmp/fresh" }) });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ kind: "session.created", sessionId: SESSION_UUID_2, session: "fresh", cwd: "/tmp/fresh" });
+  });
+
+  test("session_started with a malformed payload publishes nothing", () => {
+    backend.ingestEvent({ event: "session_started", session: { id: 7 } });
+    backend.ingestEvent({ event: "session_started" });
+    expect(seen).toEqual([]);
+  });
+
+  test("natural exit publishes session.exited with reason exit and the cached name", async () => {
+    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1 })] }));
+    await backend.list();
+    backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ kind: "session.exited", sessionId: SESSION_UUID_1, session: "live", reason: "exit", exitCode: 0 });
+  });
+
+  test("an exit after killSession is tagged killed with the pre-kill name and consumes the kill marker", async () => {
+    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "doomed", id: SESSION_UUID_1 })] }));
+    await backend.list();
+    client.setHandler("kill_session", () => okResp({ killed: true }));
+    await backend.killSession("doomed");
+    backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, signal: 1 });
+    backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, signal: 1 });
+    const exits = seen.filter((event) => event.kind === "session.exited");
+    expect(exits).toHaveLength(2);
+    expect(exits[0]).toMatchObject({ sessionId: SESSION_UUID_1, session: "doomed", reason: "killed", signal: 1 });
+    // The kill marker is consumed by the first exit.
+    expect(exits[1]).toMatchObject({ sessionId: SESSION_UUID_1, reason: "exit" });
+  });
+
+  test("an exit that overtakes the kill response is still tagged killed", async () => {
+    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "racy", id: SESSION_UUID_1 })] }));
+    await backend.list();
+    client.setHandler("kill_session", () => {
+      backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, signal: 1 });
+      return okResp({ killed: true });
+    });
+    await backend.killSession("racy");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ kind: "session.exited", session: "racy", reason: "killed" });
+  });
+
+  test("a rejected kill does not tag a later natural exit as killed", async () => {
+    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "survivor", id: SESSION_UUID_1 })] }));
+    await backend.list();
+    client.setHandler("kill_session", () => errResp("internal_error", "kill rejected"));
+    await expect(backend.killSession("survivor")).rejects.toThrow("kill rejected");
+    backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+    expect(seen[0]).toMatchObject({ kind: "session.exited", session: "survivor", reason: "exit" });
+  });
+
+  test("a natural exit while a kill is pending is not tagged killed when the kill is then rejected", async () => {
+    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "finisher", id: SESSION_UUID_1 })] }));
+    await backend.list();
+    client.setHandler("kill_session", () => {
+      backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+      return errResp("session_not_alive", "already exited");
+    });
+    await backend.killSession("finisher");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ kind: "session.exited", session: "finisher", reason: "exit", exitCode: 0 });
+  });
+
+  test("a rejected overlapping kill does not erase a successful kill's reason or name", async () => {
+    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "double", id: SESSION_UUID_1 })] }));
+    await backend.list();
+    const replies: Array<(response: ControlResponse) => void> = [];
+    client.setHandler("kill_session", () => new Promise<ControlResponse>((resolve) => replies.push(resolve)));
+    const first = backend.killSessionById(SESSION_UUID_1);
+    const second = backend.killSessionById(SESSION_UUID_1);
+    await waitForReplies(replies, 2);
+    replies[0]!(okResp({ killed: true }));
+    await first;
+    replies[1]!(errResp("session_not_alive", "already dying"));
+    await second;
+    backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, signal: 1 });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ kind: "session.exited", session: "double", reason: "killed", signal: 1 });
+  });
+
+  test("an exit for a session unknown to this backend still carries its stable id", () => {
+    backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_2, exit_code: 3 });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ kind: "session.exited", sessionId: SESSION_UUID_2, reason: "exit", exitCode: 3 });
+    expect(seen[0]).not.toHaveProperty("session");
   });
 });

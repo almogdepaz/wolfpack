@@ -19,6 +19,8 @@ import * as path from "node:path";
 
 import { BrokerClient } from "../../src/broker/client";
 import { BrokerBackend } from "../../src/server/broker-backend";
+import { subscribeEvents } from "../../src/server/event-bus";
+import type { WolfpackEvent } from "../../src/events-contract";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..", "..");
 
@@ -100,6 +102,8 @@ D("BrokerBackend ↔ real broker", () => {
       socketPath,
       requestTimeoutMs: 5000,
       onConnect: () => resolveConnect(),
+      // Production wiring (BackendRouter): broker events feed the backend.
+      onEvent: (event) => backend?.ingestEvent(event),
     });
     client.start();
     await Promise.race([connected, wait(2000)]);
@@ -238,6 +242,23 @@ D("BrokerBackend ↔ real broker", () => {
     const snap = await backend!.capturePane(SESSION);
     // Marker from the previous test's echo should still be in scrollback.
     expect(typeof snap).toBe("string");
+  }, 15_000);
+
+  test("real broker lifecycle events publish session.created and a killed session.exited", async () => {
+    const EVENTS_SESSION = "agent-it-events";
+    const seen: WolfpackEvent[] = [];
+    const unsubscribe = subscribeEvents({ session: EVENTS_SESSION }, (event) => seen.push(event));
+    try {
+      await backend!.createSession(EVENTS_SESSION, tmpdir, "shell", () => ({ agentCmd: "shell" }));
+      await backend!.killSession(EVENTS_SESSION);
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && !seen.some((event) => event.kind === "session.exited")) await wait(50);
+      expect(seen.map((event) => event.kind)).toEqual(["session.created", "session.exited"]);
+      expect(seen[0]).toMatchObject({ session: EVENTS_SESSION, cwd: tmpdir });
+      expect(seen[1]).toMatchObject({ session: EVENTS_SESSION, reason: "killed", sessionId: (seen[0] as { sessionId: string }).sessionId });
+    } finally {
+      unsubscribe();
+    }
   }, 15_000);
 
   test("killSession terminates the PTY and drops it from list/sessionDir", async () => {

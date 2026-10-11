@@ -390,6 +390,16 @@ describe("cli help dispatch", () => {
     expect(child.stderr).toBe("");
   });
 
+  test("events is listed in top-level help and has its own usage", () => {
+    expect(runCli(["--help"]).stdout).toContain("wolfpack events");
+    const help = runCli(["events", "--help"]);
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain("Usage: wolfpack events [--kinds <kind,...>] [--session <name-or-id>] [--json]");
+    const invalid = runCli(["events", "--bogus"]);
+    expect(invalid.exitCode).toBe(2);
+    expect(invalid.stderr).toContain("Usage: wolfpack events");
+  });
+
   test("invalid service usage writes its diagnostic to stderr", () => {
     const child = runCli(["service"]);
 

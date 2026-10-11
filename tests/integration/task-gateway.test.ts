@@ -2295,3 +2295,110 @@ describe("local task gateway", () => {
     expect(peer.status).toBe(400);
   });
 });
+
+describe("task gateway → event bus", () => {
+  test("publishes task.updated for each canonical event appended", async () => {
+    const { __resetEventBusForTests, subscribeEvents } = await import("../../src/server/event-bus.ts");
+    __resetEventBusForTests();
+    const seen: Array<{ readonly kind: string; readonly taskId?: string; readonly eventType?: string }> = [];
+    const unsubscribe = subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => seen.push(event as never));
+    const taskRoot = join(tmpdir(), `wolfpack-task-events-${process.pid}-${Date.now()}`);
+    try {
+      const gateway = new TaskGateway({ root: taskRoot });
+      const sent = await gateway.send({ callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "emit events", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: undefined, rawBody: undefined });
+      if (!sent.ok) throw new Error("expected task send");
+      const completed = await gateway.complete({ callerSession: "receiver", taskId: sent.taskId, status: "completed", result: { summary: "done", result: undefined, error: undefined, artifacts: undefined }, rawBody: undefined });
+      expect(completed.ok).toBe(true);
+      const types = seen.filter((event) => event.taskId === sent.taskId).map((event) => event.eventType);
+      expect(types[0]).toBe(TASK_EVENT_TYPE.CREATED);
+      expect(types).toContain(TASK_EVENT_TYPE.COMPLETED);
+      expect(seen.every((event) => event.kind === "task.updated")).toBe(true);
+    } finally {
+      unsubscribe();
+      rmSync(taskRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("publishes each committed canonical event exactly once when replica propagation fails", async () => {
+    const { __resetEventBusForTests, subscribeEvents } = await import("../../src/server/event-bus.ts");
+    __resetEventBusForTests();
+    const published: string[] = [];
+    const unsubscribe = subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => {
+      if (event.kind === "task.updated") published.push(event.eventId);
+    });
+    const taskRoot = join(tmpdir(), `wolfpack-task-events-fault-${process.pid}-${Date.now()}`);
+    try {
+      let failNextReplica = false;
+      const store = new TaskStore({
+        root: taskRoot,
+        testHooks: {
+          beforeFsync: (step, path) => {
+            if (failNextReplica && step === "ledger-file" && path.includes("/ledgers/receiver/")) {
+              failNextReplica = false;
+              throw new Error("simulated replica crash");
+            }
+          },
+          afterFsync: undefined,
+        },
+      });
+      const gateway = new TaskGateway({ root: taskRoot, store });
+      const sent = await gateway.send({ callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "fault events", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: undefined, rawBody: undefined });
+      if (!sent.ok) throw new Error("expected task send");
+      failNextReplica = true;
+      await expect(gateway.complete({ callerSession: "receiver", taskId: sent.taskId, status: "completed", result: { summary: "done", result: undefined, error: undefined, artifacts: undefined }, rawBody: undefined })).rejects.toThrow("could not append task ledger record");
+
+      const canonical = await store.getLedger({ role: TASK_LEDGER_ROLE.SENDER, sourceMachine: gateway.machineId, taskId: sent.taskId });
+      const canonicalIds = canonical?.state.events.map((event) => event.id) ?? [];
+      expect(canonical?.state.events.some((event) => event.type === TASK_EVENT_TYPE.COMPLETED)).toBe(true);
+      expect(published).toEqual(canonicalIds);
+
+      // Restart recovery repairs projections without replaying committed events.
+      const restarted = new TaskGateway({ root: taskRoot });
+      await restarted.initialize();
+      expect(published).toEqual(canonicalIds);
+    } finally {
+      unsubscribe();
+      rmSync(taskRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("publishes a receipt confirmation committed during restart reconciliation", async () => {
+    const { __resetEventBusForTests, subscribeEvents } = await import("../../src/server/event-bus.ts");
+    __resetEventBusForTests();
+    const published: string[] = [];
+    const unsubscribe = subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => {
+      if (event.kind === "task.updated") published.push(event.eventId);
+    });
+    const taskRoot = join(tmpdir(), `wolfpack-task-events-receipt-${process.pid}-${Date.now()}`);
+    try {
+      let receiverLedgerWrites = 0;
+      const crashing = new TaskGateway({
+        root: taskRoot,
+        store: new TaskStore({
+          root: taskRoot,
+          testHooks: {
+            beforeFsync: (step, path) => {
+              if (step === "ledger-file" && path.includes("/ledgers/receiver/") && ++receiverLedgerWrites === 3) throw new Error("simulated received replica crash");
+            },
+            afterFsync: undefined,
+          },
+        }),
+      });
+      const body = { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "receipt events", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: "receipt-events", rawBody: undefined };
+      await expect(crashing.send(body)).rejects.toThrow("could not append task ledger record");
+
+      const restarted = new TaskGateway({ root: taskRoot });
+      const receipt = await restarted.send(body);
+      if (!receipt.ok) throw new Error("expected recovered receipt");
+      const status = await restarted.status("parent", receipt.taskId);
+      if (!status.ok) throw new Error("expected status");
+      const confirmation = status.events.find((event) => event.type === TASK_EVENT_TYPE.RECEIPT_CONFIRMED);
+      expect(confirmation).toBeDefined();
+      expect(published.filter((id) => id === confirmation!.id)).toHaveLength(1);
+      expect(published).toEqual(status.events.map((event) => event.id));
+    } finally {
+      unsubscribe();
+      rmSync(taskRoot, { recursive: true, force: true });
+    }
+  });
+});
