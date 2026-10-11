@@ -15,9 +15,13 @@ use crate::codec::{
     read_frame_async, write_frame_async, CodecError, Frame, InputFrame, OutputFrame,
     MAX_INPUT_BINARY_PAYLOAD,
 };
+use crate::ansi_render::render_snapshot_ansi_budgeted;
+use crate::base64;
+use crate::output_bus::Subscription;
 use crate::protocol::{
     methods, ControlRequest, ControlResponse, ErrorCode, Event, ProtocolError, ResponsePayload,
-    SnapshotParams, SubscribeParams, UnsubscribeParams,
+    Snapshot, SnapshotAnsiParams, SnapshotParams, SubscribeParams, UnsubscribeParams,
+    MAX_ANSI_PREFILL_BYTES,
 };
 use crate::registry::{Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::ring_buffer::OutputChunk;
@@ -588,6 +592,10 @@ async fn handle_control_requests(
             methods::SNAPSHOT_SUBSCRIBE => {
                 handle_snapshot_subscribe(req, &registry, &writer_tx, &output_tx, &mut subs.0).await
             }
+            methods::SNAPSHOT_SUBSCRIBE_ANSI => {
+                handle_snapshot_subscribe_ansi(req, &registry, &writer_tx, &output_tx, &mut subs.0)
+                    .await
+            }
             methods::SUBSCRIBE => {
                 handle_subscribe(req, &registry, &writer_tx, &output_tx, &mut subs.0).await
             }
@@ -614,6 +622,10 @@ async fn handle_control_requests(
     }
 }
 
+fn invalid_request(id: u64, message: String) -> ControlResponse {
+    ControlResponse::err(id, ProtocolError { code: ErrorCode::InvalidRequest, message })
+}
+
 /// Atomically snapshot terminal state and establish the connection-local
 /// replay/live subscription before releasing the terminal ordering lock.
 async fn handle_snapshot_subscribe(
@@ -623,35 +635,115 @@ async fn handle_snapshot_subscribe(
     output_tx: &mpsc::Sender<Frame>,
     subs: &mut HashMap<Uuid, JoinHandle<()>>,
 ) -> bool {
-    let id = req.id;
     let params: SnapshotParams = match req.parse_params() {
         Ok(params) => params,
         Err(error) => {
-            return send_response(
-                writer_tx,
-                ControlResponse::err(
-                    id,
-                    ProtocolError {
-                        code: ErrorCode::InvalidRequest,
-                        message: format!("snapshot_subscribe params: {error}"),
-                    },
-                ),
-            )
-            .await;
+            let message = format!("snapshot_subscribe params: {error}");
+            return send_response(writer_tx, invalid_request(req.id, message)).await;
         }
     };
+    let cut = AttachCutRequest { id: req.id, method: methods::SNAPSHOT_SUBSCRIBE, params };
+    establish_attach_cut(cut, registry, writer_tx, output_tx, subs, |snapshot, sub| {
+        Ok(ResponsePayload::SnapshotSubscribe {
+            snapshot,
+            current_seq: sub.current_seq,
+            replay_truncated: sub.replay_truncated,
+        })
+    })
+    .await
+}
+
+/// `snapshot_subscribe` with the snapshot rendered to budgeted ANSI prefill
+/// bytes on the broker, so the relay neither parses per-cell JSON nor renders.
+async fn handle_snapshot_subscribe_ansi(
+    req: ControlRequest,
+    registry: &Arc<Registry>,
+    writer_tx: &mpsc::Sender<QueuedControl>,
+    output_tx: &mpsc::Sender<Frame>,
+    subs: &mut HashMap<Uuid, JoinHandle<()>>,
+) -> bool {
+    let params: SnapshotAnsiParams = match req.parse_params() {
+        Ok(params) => params,
+        Err(error) => {
+            let message = format!("snapshot_subscribe_ansi params: {error}");
+            return send_response(writer_tx, invalid_request(req.id, message)).await;
+        }
+    };
+    if params.max_bytes > MAX_ANSI_PREFILL_BYTES {
+        let message = format!(
+            "snapshot_subscribe_ansi params: max_bytes {} exceeds {MAX_ANSI_PREFILL_BYTES}",
+            params.max_bytes
+        );
+        return send_response(writer_tx, invalid_request(req.id, message)).await;
+    }
+    let max_bytes = params.max_bytes as usize;
+    let cut = AttachCutRequest {
+        id: req.id,
+        method: methods::SNAPSHOT_SUBSCRIBE_ANSI,
+        params: params.snapshot,
+    };
+    establish_attach_cut(cut, registry, writer_tx, output_tx, subs, move |snapshot, sub| {
+        let rendered = render_snapshot_ansi_budgeted(&snapshot, max_bytes);
+        check_ansi_prefill_size(rendered.bytes.len())?;
+        Ok(ResponsePayload::SnapshotSubscribeAnsi {
+            seq: snapshot.seq,
+            current_seq: sub.current_seq,
+            replay_truncated: sub.replay_truncated,
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            cursor: snapshot.cursor.clone(),
+            modes: snapshot.modes.clone(),
+            title: snapshot.title.clone(),
+            ansi_base64: base64::encode(&rendered.bytes),
+            trimmed_lines: rendered.trimmed_lines as u64,
+        })
+    })
+    .await
+}
+
+/// Only an oversized visible screen can exceed the budget. Refuse it with a
+/// distinct code (clients fall back to the JSON cut) rather than emit a
+/// response frame the writer cannot encode.
+fn check_ansi_prefill_size(len: usize) -> Result<(), ProtocolError> {
+    if len <= MAX_ANSI_PREFILL_BYTES as usize {
+        return Ok(());
+    }
+    Err(ProtocolError {
+        code: ErrorCode::PrefillTooLarge,
+        message: format!(
+            "rendered visible screen ({len} bytes) exceeds the {MAX_ANSI_PREFILL_BYTES}-byte prefill limit"
+        ),
+    })
+}
+
+fn internal_error(message: String) -> ProtocolError {
+    ProtocolError { code: ErrorCode::InternalError, message }
+}
+
+struct AttachCutRequest {
+    id: u64,
+    method: &'static str,
+    params: SnapshotParams,
+}
+
+/// Shared atomic cut for the snapshot-subscribe methods: capture the snapshot
+/// and the replay/live subscription under the terminal lock, build the
+/// response off the async runtime, then start forwarding only after that
+/// response is written. A `build` failure drops the provisional subscription
+/// and leaves any previous one on this connection untouched.
+async fn establish_attach_cut(
+    cut: AttachCutRequest,
+    registry: &Arc<Registry>,
+    writer_tx: &mpsc::Sender<QueuedControl>,
+    output_tx: &mpsc::Sender<Frame>,
+    subs: &mut HashMap<Uuid, JoinHandle<()>>,
+    build: impl FnOnce(Arc<Snapshot>, &Subscription) -> Result<ResponsePayload, ProtocolError>
+        + Send
+        + 'static,
+) -> bool {
+    let AttachCutRequest { id, method, params } = cut;
     if let Err(message) = validate_snapshot_target_cols(params.target_cols) {
-        return send_response(
-            writer_tx,
-            ControlResponse::err(
-                id,
-                ProtocolError {
-                    code: ErrorCode::InvalidRequest,
-                    message: format!("snapshot_subscribe params: {message}"),
-                },
-            ),
-        )
-        .await;
+        return send_response(writer_tx, invalid_request(id, format!("{method} params: {message}"))).await;
     }
     if !subs.contains_key(&params.session_id) && subs.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
         return send_response(
@@ -678,45 +770,25 @@ async fn handle_snapshot_subscribe(
         // awaiting task must not release this permit while work is still running.
         let _permit = registry
             .try_acquire_snapshot()
-            .ok_or_else(|| SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.to_string())?;
-        session
+            .ok_or_else(|| internal_error(SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE.to_string()))?;
+        let (snapshot, sub) = session
             .snapshot_and_subscribe(params.scrollback_lines, params.target_cols)
-            .map_err(|error| format!("terminal snapshot failed: {error}"))
+            .map_err(|error| internal_error(format!("terminal snapshot failed: {error}")))?;
+        let payload = build(snapshot, &sub)?;
+        Ok::<_, ProtocolError>((payload, sub))
     })
     .await
-    .map_err(|error| format!("terminal snapshot task failed: {error}"))
+    .map_err(|error| internal_error(format!("terminal snapshot task failed: {error}")))
     .and_then(|result| result);
-    let (snapshot, sub) = match result {
+    let (payload, sub) = match result {
         Ok(result) => result,
-        Err(message) => {
-            return send_response(
-                writer_tx,
-                ControlResponse::err(
-                    id,
-                    ProtocolError {
-                        code: ErrorCode::InternalError,
-                        message,
-                    },
-                ),
-            )
-            .await;
-        }
+        Err(error) => return send_response(writer_tx, ControlResponse::err(id, error)).await,
     };
     if let Some(previous) = subs.remove(&params.session_id) {
         previous.abort();
     }
-    let Some(response_written) = send_response_with_barrier(
-        writer_tx,
-        ControlResponse::ok(
-            id,
-            ResponsePayload::SnapshotSubscribe {
-                snapshot,
-                current_seq: sub.current_seq,
-                replay_truncated: sub.replay_truncated,
-            },
-        ),
-    )
-    .await
+    let Some(response_written) =
+        send_response_with_barrier(writer_tx, ControlResponse::ok(id, payload)).await
     else {
         return false;
     };
@@ -1089,6 +1161,14 @@ mod tests {
         drop(subs);
         assert!(tokio::time::timeout(std::time::Duration::from_secs(5), cancelled)
             .await.expect("forwarder leaked on owner cancellation").is_err());
+    }
+
+    #[test]
+    fn oversized_ansi_prefill_maps_to_prefill_too_large() {
+        assert!(check_ansi_prefill_size(MAX_ANSI_PREFILL_BYTES as usize).is_ok());
+        let error = check_ansi_prefill_size(MAX_ANSI_PREFILL_BYTES as usize + 1).expect_err("over the limit");
+        assert_eq!(error.code, ErrorCode::PrefillTooLarge);
+        assert!(error.message.contains(&(MAX_ANSI_PREFILL_BYTES as usize + 1).to_string()), "{}", error.message);
     }
 
     #[tokio::test]

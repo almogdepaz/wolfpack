@@ -1,3 +1,5 @@
+pub mod ansi_render;
+pub mod base64;
 pub mod codec;
 pub mod output_bus;
 pub mod protocol;

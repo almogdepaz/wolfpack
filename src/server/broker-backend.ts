@@ -72,6 +72,7 @@ import {
   plainLine,
   renderSnapshotToAnsi,
   renderSnapshotToPlainText,
+  trimRenderedPrefill,
   type SnapshotForRender,
 } from "../broker/snapshot-render.js";
 import {
@@ -112,6 +113,10 @@ export interface BrokerClientApi {
   snapshotSubscribe(
     sessionId: string,
     params?: { scrollbackLines?: number; targetCols?: number; timeoutMs?: number },
+  ): Promise<BrokerSnapshotSubscription>;
+  snapshotSubscribeAnsi(
+    sessionId: string,
+    params: { scrollbackLines?: number; targetCols?: number; maxBytes: number; timeoutMs?: number },
   ): Promise<BrokerSnapshotSubscription>;
   writeInput(sessionId: string, data: Uint8Array): void;
   /** Register a per-session output callback; returns an unsubscribe fn. */
@@ -187,7 +192,7 @@ interface SnapshotPayload extends SnapshotForRender {
   seq?: number;
 }
 
-type AttachCut =
+type SnapshotCut =
   | {
       readonly kind: "atomic";
       readonly snapshot: SnapshotPayload;
@@ -197,6 +202,19 @@ type AttachCut =
   | {
       readonly kind: "legacy";
       readonly snapshot: SnapshotPayload;
+    };
+
+/** A snapshot cut whose prefill bytes are already rendered and budgeted. */
+type AttachCut =
+  | {
+      readonly kind: "atomic";
+      readonly prefill: SessionPrefill;
+      readonly outputBoundarySeq: bigint | undefined;
+      readonly cancel: () => Promise<void>;
+    }
+  | {
+      readonly kind: "legacy";
+      readonly prefill: SessionPrefill;
     };
 
 type SubscriptionStart =
@@ -251,6 +269,13 @@ function unwrap(resp: ControlResponse): Record<string, unknown> {
   const code = resp.error?.code ?? "internal_error";
   const msg = resp.error?.message ?? "broker request failed";
   throw new BrokerRpcError(code, msg);
+}
+
+/** `snapshot_subscribe_ansi` errors that fall back to the JSON atomic cut. */
+const ANSI_FALLBACK_CODES: ReadonlySet<string> = new Set(["unknown_method", "prefill_too_large"]);
+
+function nonNegativeSafeSeq(value: unknown): bigint | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? BigInt(value) : undefined;
 }
 
 function renderSnapshot(snap: SnapshotPayload): string {
@@ -827,7 +852,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       options?.scrollbackLines,
     );
     const seq = typeof snapshot.seq === "number" ? BigInt(snapshot.seq) : undefined;
-    return { data: renderSnapshotToAnsi(snapshot), seq };
+    const data = renderSnapshotToAnsi(snapshot);
+    return { data: options?.maxBytes === undefined ? data : trimRenderedPrefill(data, options.maxBytes), seq };
   }
 
   async beginSessionAttach(
@@ -837,24 +863,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   ): Promise<SessionAttachLease> {
     const id = await this.resolveId(name);
     if (!id) throw new BrokerRpcError("unknown_session", `session not found: ${name}`);
-    const cut = await this.fetchSnapshotAndSubscribe(id, name, cols, options?.scrollbackLines);
-    const seq = typeof cut.snapshot.seq === "number" ? BigInt(cut.snapshot.seq) : undefined;
-    let data: Buffer;
-    try {
-      data = renderSnapshotToAnsi(cut.snapshot);
-    } catch (error: unknown) {
-      if (cut.kind === "atomic") {
-        await cut.cancel().catch((cleanupError: unknown) => {
-          log.debug("failed atomic prefill render cleanup failed", {
-            name,
-            id,
-            error: errMsg(cleanupError),
-          });
-        });
-      }
-      throw error;
-    }
-    const prefill = { data, seq };
+    const cut = await this.fetchAttachCut(id, name, cols, options);
+    const { prefill } = cut;
+    const seq = prefill.seq;
     let state: "pending" | "active" | "cancelled" = "pending";
 
     return {
@@ -1119,12 +1130,92 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     ref.subscribers.clear();
   }
 
+  /**
+   * Prefer the broker-rendered ANSI cut when the caller has a byte budget;
+   * otherwise (or for brokers without it) render the JSON snapshot here.
+   */
+  private async fetchAttachCut(
+    id: string,
+    name: string,
+    targetCols: number | undefined,
+    options: SessionPrefillOptions | undefined,
+  ): Promise<AttachCut> {
+    const scrollbackLines = options?.scrollbackLines ?? SNAPSHOT_SCROLLBACK_LINES;
+    const maxBytes = options?.maxBytes;
+    if (maxBytes !== undefined) {
+      const ansiCut = await this.fetchAnsiAttachCut(id, name, targetCols, scrollbackLines, maxBytes);
+      if (ansiCut) return ansiCut;
+    }
+    const cut = await this.fetchSnapshotAndSubscribe(id, name, targetCols, scrollbackLines);
+    const seq = typeof cut.snapshot.seq === "number" ? BigInt(cut.snapshot.seq) : undefined;
+    let data: Buffer;
+    try {
+      data = renderSnapshotToAnsi(cut.snapshot);
+    } catch (error: unknown) {
+      if (cut.kind === "atomic") {
+        await cut.cancel().catch((cleanupError: unknown) => {
+          log.debug("failed atomic prefill render cleanup failed", {
+            name,
+            id,
+            error: errMsg(cleanupError),
+          });
+        });
+      }
+      throw error;
+    }
+    if (maxBytes !== undefined) data = trimRenderedPrefill(data, maxBytes);
+    const prefill = { data, seq };
+    return cut.kind === "atomic"
+      ? { kind: "atomic", prefill, outputBoundarySeq: cut.outputBoundarySeq, cancel: cut.cancel }
+      : { kind: "legacy", prefill };
+  }
+
+  /** Atomic cut with broker-rendered prefill; undefined when the broker predates it. */
+  private async fetchAnsiAttachCut(
+    id: string,
+    name: string,
+    targetCols: number | undefined,
+    scrollbackLines: number,
+    maxBytes: number,
+  ): Promise<AttachCut | undefined> {
+    let subscription: BrokerSnapshotSubscription;
+    try {
+      subscription = await this.client.snapshotSubscribeAnsi(id, { scrollbackLines, targetCols, maxBytes });
+    } catch (error: unknown) {
+      if (error instanceof BrokerSubscribeError && ANSI_FALLBACK_CODES.has(error.code)) {
+        // `unknown_method`: broker predates the method. `prefill_too_large`:
+        // the visible screen alone exceeds the broker's prefill limit; the
+        // JSON cut plus the relay's tail budget still attaches.
+        log.debug("beginSessionAttach: no broker-rendered prefill; rendering JSON snapshot", { name, code: error.code });
+        return undefined;
+      }
+      log.warn("beginSessionAttach: ANSI snapshot subscribe failed", { name, error: errMsg(error) });
+      throw error;
+    }
+    const payload = unwrap(subscription.response);
+    if (typeof payload.ansi_base64 !== "string") {
+      await subscription.cancel().catch((error: unknown) => {
+        log.debug("invalid ANSI snapshot cleanup failed", { name, id, error: errMsg(error) });
+      });
+      throw new BrokerRpcError("invalid_snapshot", "broker returned no ANSI prefill payload");
+    }
+    return {
+      kind: "atomic",
+      prefill: {
+        data: Buffer.from(payload.ansi_base64, "base64"),
+        seq: nonNegativeSafeSeq(payload.seq),
+      },
+      outputBoundarySeq: nonNegativeSafeSeq(payload.current_seq),
+      cancel: subscription.cancel,
+    };
+  }
+
   private async fetchSnapshotAndSubscribe(
     id: string,
     name: string,
     targetCols?: number,
     scrollbackLines: number = SNAPSHOT_SCROLLBACK_LINES,
-  ): Promise<AttachCut> {
+  ): Promise<SnapshotCut> {
     let subscription: BrokerSnapshotSubscription;
     try {
       subscription = await this.client.snapshotSubscribe(id, { scrollbackLines, targetCols });
@@ -1155,15 +1246,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       });
       throw new BrokerRpcError("invalid_snapshot", "broker returned no atomic snapshot payload");
     }
-    const currentSeq = payload.current_seq;
     return {
       kind: "atomic",
       snapshot: snapshot as SnapshotPayload,
-      outputBoundarySeq: typeof currentSeq === "number"
-        && Number.isSafeInteger(currentSeq)
-        && currentSeq >= 0
-        ? BigInt(currentSeq)
-        : undefined,
+      outputBoundarySeq: nonNegativeSafeSeq(payload.current_seq),
       cancel: subscription.cancel,
     };
   }

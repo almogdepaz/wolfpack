@@ -111,6 +111,7 @@ and close the connection.
 | `resize_failed`         | TIOCSWINSZ failed |
 | `internal_error`        | broker bug; correlate by id and inspect broker log |
 | `unsupported`           | feature not yet implemented in this protocol version |
+| `prefill_too_large`     | `snapshot_subscribe_ansi`: the visible screen alone renders past the 4 MiB prefill limit |
 
 ### Method reference
 
@@ -194,6 +195,64 @@ any replay/output frames.
 - ok payload: `{ "kind": "snapshot_subscribe", "snapshot": Snapshot, "current_seq": 12345, "replay_truncated": false }`
 - All following `output_binary` frames have `seq > snapshot.seq`; no output can
   be duplicated or lost between two separate RPCs.
+
+#### `snapshot_subscribe_ansi`
+
+`snapshot_subscribe` with the snapshot rendered to attach-prefill ANSI bytes
+by the broker, so the client neither parses per-cell JSON nor renders. Same
+atomic cut and ordering guarantees: the response is queued before any
+replay/output frame, and every following `output_binary` frame has
+`seq` greater than the response's `seq`.
+
+- params: the `snapshot` params plus a required byte budget:
+  ```jsonc
+  {
+    "session_id":       "<uuid>",
+    "scrollback_lines": 500,      // optional, as for `snapshot`
+    "target_cols":      120,      // optional, as for `snapshot`
+    "max_bytes":        262144    // required u32, at most 4194304
+  }
+  ```
+- ok payload:
+  ```jsonc
+  {
+    "kind":             "snapshot_subscribe_ansi",
+    "seq":              12345,          // snapshot seq (the cut)
+    "current_seq":      12345,
+    "replay_truncated": false,
+    "cols": 120, "rows": 40,
+    "cursor":           CursorState,
+    "modes":            TerminalModes,
+    "title":            "vim" | null,
+    "ansi_base64":      "G1sySh…",      // RFC 4648 base64, `=` padded
+    "trimmed_lines":    37              // oldest scrollback lines dropped
+  }
+  ```
+- `ansi_base64` decodes to exactly the bytes the relay's
+  `renderSnapshotToAnsi` (`src/broker/snapshot-render.ts`) produces for the
+  same snapshot with its oldest `trimmed_lines` scrollback lines removed:
+  clear + home, scrollback, `CSI ?1049h` when on the alt screen, the visible
+  screen, SGR reset, DEC mode preamble, cursor position and visibility.
+- `max_bytes` is a scrollback budget. The broker drops whole scrollback lines,
+  oldest first, choosing the smallest trim whose render fits; it never cuts
+  the visible screen. When the visible screen alone exceeds `max_bytes`, all
+  scrollback is dropped and the payload is larger than `max_bytes`.
+- The bytes ride base64 inside the JSON control response (≈ 4/3 inflation; a
+  256 KiB budget is ≈ 350 KB of JSON) so the control plane stays JSON-only and
+  no new frame kind is needed.
+- Errors: `invalid_request` for malformed params, a missing `max_bytes`,
+  `max_bytes > 4194304`, or an out-of-range `target_cols`; `unknown_session`;
+  `prefill_too_large` when the visible screen alone renders past 4194304
+  bytes; `internal_error` for snapshot failures, the snapshot concurrency
+  limit, or the per-connection subscription cap.
+- On any error response the broker installs and replaces nothing: an existing
+  subscription for that session on this connection keeps streaming, so a
+  client must not discard its own state for it.
+- Brokers that predate this method answer `unknown_method` (not
+  `unsupported`). Clients fall back to `snapshot_subscribe` and render the
+  JSON snapshot themselves, on `unknown_method` (remembered for the rest of
+  the connection; a broker upgrade restarts the broker and reconnects) and on
+  `prefill_too_large`.
 
 #### `resize`
 

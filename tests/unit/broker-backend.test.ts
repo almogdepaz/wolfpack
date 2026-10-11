@@ -23,6 +23,7 @@ import {
 import { sessionIdentityStorePath } from "../../src/server/session-identity";
 import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
 import { SHELL } from "../../src/server/shell";
+import { renderSnapshotToAnsi } from "../../src/broker/snapshot-render";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -93,19 +94,52 @@ class FakeBrokerClient implements BrokerClientApi {
     sessionId: string,
     params: { scrollbackLines?: number; targetCols?: number } = {},
   ): Promise<BrokerSnapshotSubscription> {
-    const owner = Symbol("snapshot subscription owner");
-    this.snapshotSubscriptionOwners.set(sessionId, owner);
-    this.activeSubscriptions.add(sessionId);
     const rpcParams = {
       session_id: sessionId,
       scrollback_lines: params.scrollbackLines,
       ...(params.targetCols !== undefined && { target_cols: params.targetCols }),
     };
-    this.requests.push({ method: "snapshot_subscribe", params: rpcParams });
+    return this.atomicSubscribe(sessionId, "snapshot_subscribe", rpcParams, async () => {
+      const handler = this.handlers.get("snapshot_subscribe") ?? this.handlers.get("snapshot");
+      return handler ? await handler(rpcParams) : okResp({ kind: "snapshot_subscribe" });
+    });
+  }
+
+  /** Without a handler this models a broker that predates the method. */
+  async snapshotSubscribeAnsi(
+    sessionId: string,
+    params: { scrollbackLines?: number; targetCols?: number; maxBytes: number },
+  ): Promise<BrokerSnapshotSubscription> {
+    const rpcParams = {
+      session_id: sessionId,
+      scrollback_lines: params.scrollbackLines,
+      ...(params.targetCols !== undefined && { target_cols: params.targetCols }),
+      max_bytes: params.maxBytes,
+    };
+    return this.atomicSubscribe(sessionId, "snapshot_subscribe_ansi", rpcParams, async () => {
+      const handler = this.handlers.get("snapshot_subscribe_ansi");
+      const response = handler ? await handler(rpcParams) : errResp("unknown_method", "unknown method: snapshot_subscribe_ansi");
+      // Mirrors BrokerClient: a non-ok atomic response rejects.
+      if (response.status !== "ok") {
+        throw new BrokerSubscribeError(response.error?.code ?? "internal_error", response.error?.message ?? "failed");
+      }
+      return response;
+    });
+  }
+
+  private async atomicSubscribe(
+    sessionId: string,
+    method: string,
+    rpcParams: Record<string, unknown>,
+    respond: () => Promise<ControlResponse>,
+  ): Promise<BrokerSnapshotSubscription> {
+    const owner = Symbol("snapshot subscription owner");
+    this.snapshotSubscriptionOwners.set(sessionId, owner);
+    this.activeSubscriptions.add(sessionId);
+    this.requests.push({ method, params: rpcParams });
     try {
       if (this.requestError) throw this.requestError;
-      const handler = this.handlers.get("snapshot_subscribe") ?? this.handlers.get("snapshot");
-      const response = handler ? await handler(rpcParams) : okResp({ kind: "snapshot_subscribe" });
+      const response = await respond();
       return {
         response,
         cancel: async () => {
@@ -254,7 +288,7 @@ function styledSnapshot(lines: string[], scrollback: string[] = []) {
       scrollback: scrollback.map((l) => ({
         cells: l.split("").map((ch) => ({ ch, attrs: {} })),
       })),
-      cursor: { row: 0, col: 0, visible: true, shape: "block" },
+      cursor: { row: 0, col: 0, visible: true, shape: "block" as const },
       modes: {},
       scroll_region: { top: 0, bottom: 39 },
       title: null,
@@ -1654,6 +1688,179 @@ describe("BrokerBackend.ingestEvent + onSessionLifecycle", () => {
   });
 });
 
+describe("BrokerBackend.beginSessionAttach (broker-rendered ANSI prefill)", () => {
+  const BUDGET = 256 * 1024;
+  const ANSI = Buffer.from("\x1b[2J\x1b[3J\x1b[H\x1b[0mbroker-rendered\x1b[0;1mbold\x1b[0m\x1b[1;1H\x1b[?25h");
+
+  function ansiResp(overrides: Record<string, unknown> = {}): ControlResponse {
+    return okResp({
+      kind: "snapshot_subscribe_ansi",
+      seq: 42,
+      current_seq: 43,
+      replay_truncated: false,
+      cols: 120,
+      rows: 40,
+      cursor: { row: 0, col: 0, visible: true, shape: "block" },
+      modes: {},
+      title: null,
+      ansi_base64: ANSI.toString("base64"),
+      trimmed_lines: 3,
+      ...overrides,
+    });
+  }
+
+  beforeEach(async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1 })],
+    }));
+    await backend.list();
+  });
+
+  test("requests the ANSI cut with the byte budget and delivers the broker's bytes unchanged", async () => {
+    client.setHandler("snapshot_subscribe_ansi", () => ansiResp());
+
+    const lease = await backend.beginSessionAttach("live", 120, { scrollbackLines: 200, maxBytes: BUDGET });
+
+    expect(client.requests.map(request => request.method)).toEqual(["list_sessions", "snapshot_subscribe_ansi"]);
+    expect(client.requests[1]?.params).toEqual({
+      session_id: SESSION_UUID_1,
+      scrollback_lines: 200,
+      target_cols: 120,
+      max_bytes: BUDGET,
+    });
+    expect(Buffer.compare(lease.prefill.data, ANSI)).toBe(0);
+    expect(lease.prefill.seq).toBe(42n);
+    await lease.cancel();
+  });
+
+  test("activation adopts the ANSI cut's stream without another subscribe RPC", async () => {
+    client.setHandler("snapshot_subscribe_ansi", () => ansiResp({ seq: 12, current_seq: 12 }));
+    const lease = await backend.beginSessionAttach("live", 120, { maxBytes: BUDGET });
+    const seen: number[] = [];
+
+    const unsubscribe = lease.activate(data => seen.push(data[0]), { onSubscribeError: () => {} });
+    expect(await unsubscribe?.ready).toBe(true);
+    client.emit(SESSION_UUID_1, new Uint8Array([13]), 13n);
+
+    expect(client.subscribeCallCount).toBe(0);
+    expect(client.cancelSubscriptionCallCount).toBe(0);
+    expect(seen).toEqual([13]);
+    unsubscribe?.();
+    await unsubscribe?.closed;
+  });
+
+  test("cancelling an unactivated ANSI lease releases its provisional subscription", async () => {
+    client.setHandler("snapshot_subscribe_ansi", () => ansiResp());
+    const lease = await backend.beginSessionAttach("live", 120, { maxBytes: BUDGET });
+
+    await lease.cancel();
+    await lease.cancel();
+
+    expect(client.cancelSubscriptionCallCount).toBe(1);
+    expect(client.isSubscribed(SESSION_UUID_1)).toBe(false);
+  });
+
+  test("falls back to the JSON atomic cut when the broker lacks snapshot_subscribe_ansi", async () => {
+    const snap = styledSnapshot(["json"], ["older"]);
+    snap.snapshot.seq = 7;
+    client.setHandler("snapshot_subscribe", () => okResp({ ...snap, current_seq: 7 }));
+
+    const lease = await backend.beginSessionAttach("live", 120, { maxBytes: BUDGET });
+
+    expect(client.requests.map(request => request.method)).toEqual([
+      "list_sessions",
+      "snapshot_subscribe_ansi",
+      "snapshot_subscribe",
+    ]);
+    expect(Buffer.compare(lease.prefill.data, renderSnapshotToAnsi(snap.snapshot))).toBe(0);
+    expect(lease.prefill.seq).toBe(7n);
+    const unsubscribe = lease.activate(() => {}, { onSubscribeError: () => {} });
+    expect(await unsubscribe?.ready).toBe(true);
+    expect(client.subscribeCallCount).toBe(0);
+    unsubscribe?.();
+    await unsubscribe?.closed;
+  });
+
+  test("falls back to the JSON atomic cut when the visible screen exceeds the broker's prefill limit", async () => {
+    client.setHandler("snapshot_subscribe_ansi", () => errResp("prefill_too_large", "rendered visible screen exceeds the prefill limit"));
+    const snap = styledSnapshot(["huge screen"]);
+    snap.snapshot.seq = 9;
+    client.setHandler("snapshot_subscribe", () => okResp({ ...snap, current_seq: 9 }));
+
+    const lease = await backend.beginSessionAttach("live", 120, { maxBytes: BUDGET });
+
+    expect(client.requests.map(request => request.method)).toEqual([
+      "list_sessions",
+      "snapshot_subscribe_ansi",
+      "snapshot_subscribe",
+    ]);
+    expect(Buffer.compare(lease.prefill.data, renderSnapshotToAnsi(snap.snapshot))).toBe(0);
+    expect(lease.prefill.seq).toBe(9n);
+    await lease.cancel();
+  });
+
+  test("falls back through to the legacy snapshot for a broker without either atomic method", async () => {
+    client.setHandler("snapshot_subscribe", () => {
+      throw new BrokerSubscribeError("unknown_method", "unknown method: snapshot_subscribe");
+    });
+    const snap = styledSnapshot(["legacy"]);
+    snap.snapshot.seq = 42;
+    client.setHandler("snapshot", () => okResp(snap));
+
+    const lease = await backend.beginSessionAttach("live", 120, { maxBytes: BUDGET });
+
+    expect(client.requests.map(request => request.method)).toEqual([
+      "list_sessions",
+      "snapshot_subscribe_ansi",
+      "snapshot_subscribe",
+      "snapshot",
+    ]);
+    expect(lease.prefill.seq).toBe(42n);
+    expect(client.isSubscribed(SESSION_UUID_1)).toBe(false);
+  });
+
+  test("fallback rendering keeps the legacy line-aligned tail budget", async () => {
+    const history = Array.from({ length: 40 }, (_, index) => `history-${String(index).padStart(2, "0")}`);
+    const snap = styledSnapshot(["screen"], history);
+    client.setHandler("snapshot_subscribe", () => okResp({ ...snap, current_seq: 0 }));
+
+    const lease = await backend.beginSessionAttach("live", 120, { maxBytes: 100 });
+
+    const text = lease.prefill.data.toString("utf8");
+    expect(lease.prefill.data.length).toBeLessThanOrEqual(100);
+    expect(text.startsWith("history-")).toBe(true);
+    expect(text).toContain("history-39\r\nscreen");
+    await lease.cancel();
+  });
+
+  test("without a byte budget the attach keeps the JSON snapshot path", async () => {
+    client.setHandler("snapshot_subscribe", () => okResp(styledSnapshot(["json-only"])));
+
+    const lease = await backend.beginSessionAttach("live", 120);
+
+    expect(client.requests.map(request => request.method)).toEqual(["list_sessions", "snapshot_subscribe"]);
+    await lease.cancel();
+  });
+
+  test("other ANSI errors reject without falling back", async () => {
+    client.setHandler("snapshot_subscribe_ansi", () => errResp("internal_error", "snapshot concurrency limit reached; retry"));
+
+    await expect(backend.beginSessionAttach("live", 120, { maxBytes: BUDGET })).rejects.toThrow("internal_error");
+
+    expect(client.requests.map(request => request.method)).toEqual(["list_sessions", "snapshot_subscribe_ansi"]);
+    expect(client.isSubscribed(SESSION_UUID_1)).toBe(false);
+  });
+
+  test("a malformed ANSI payload releases the provisional subscription", async () => {
+    client.setHandler("snapshot_subscribe_ansi", () => ansiResp({ ansi_base64: undefined }));
+
+    await expect(backend.beginSessionAttach("live", 120, { maxBytes: BUDGET })).rejects.toThrow("invalid_snapshot");
+
+    expect(client.cancelSubscriptionCallCount).toBe(1);
+    expect(client.isSubscribed(SESSION_UUID_1)).toBe(false);
+  });
+});
+
 describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
   beforeEach(async () => {
     client.setHandler("list_sessions", () => okResp({
@@ -1670,6 +1877,20 @@ describe("BrokerBackend.getSessionPrefill (snapshot → ANSI bytes)", () => {
   test("rejects prefill when the broker rejects the snapshot RPC", async () => {
     client.setHandler("snapshot", () => errResp("internal_error"));
     await expect(backend.getSessionPrefill("live")).rejects.toThrow("internal_error");
+  });
+
+  test("applies the line-aligned tail budget when maxBytes is passed", async () => {
+    const history = Array.from({ length: 40 }, (_, index) => `history-${String(index).padStart(2, "0")}`);
+    const snap = styledSnapshot(["screen"], history);
+    client.setHandler("snapshot", () => okResp(snap));
+
+    const budgeted = await backend.getSessionPrefill("live", 120, { maxBytes: 100 });
+    const unbudgeted = await backend.getSessionPrefill("live", 120);
+
+    expect(budgeted.data.length).toBeLessThanOrEqual(100);
+    expect(budgeted.data.toString("utf8").startsWith("history-")).toBe(true);
+    expect(budgeted.data.toString("utf8")).toContain("history-39\r\nscreen");
+    expect(Buffer.compare(unbudgeted.data, renderSnapshotToAnsi(snap.snapshot))).toBe(0);
   });
 
   test("snapshot-only prefill does not create a broker subscription", async () => {

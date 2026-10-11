@@ -11,10 +11,10 @@ use std::ptr::NonNull;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::codec::MAX_FRAME_PAYLOAD;
+use crate::codec::{MAX_CONTROL_RESPONSE_PAYLOAD, MAX_FRAME_PAYLOAD};
 use crate::protocol::{
     CellAttrs, CursorShape, CursorState, MouseMode, ScrollRegion, Snapshot, StyledCell, StyledLine,
-    TerminalModes,
+    TerminalModes, MAX_ANSI_PREFILL_BYTES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -46,6 +46,14 @@ const MAX_TITLE_BYTES: usize = 1024 * 1024;
 
 const _: () = assert!(MAX_EXTRACT_TEXT_BYTES < MAX_FRAME_PAYLOAD as usize);
 const _: () = assert!(MAX_TITLE_BYTES < MAX_FRAME_PAYLOAD as usize);
+/// Headroom for the non-title, non-prefill fields of a `snapshot_subscribe_ansi` response.
+const ANSI_RESPONSE_METADATA_BYTES: usize = 64 * 1024;
+// One `snapshot_subscribe_ansi` response must fit a frame: base64 prefill at
+// the cap plus a maximal title escaped at 6 bytes per byte (`\u00XX`).
+const _: () = assert!(
+    (MAX_ANSI_PREFILL_BYTES as usize).div_ceil(3) * 4 + 6 * MAX_TITLE_BYTES + ANSI_RESPONSE_METADATA_BYTES
+        <= MAX_CONTROL_RESPONSE_PAYLOAD as usize
+);
 
 #[repr(C)]
 struct WpGhosttyTerminal(c_void);

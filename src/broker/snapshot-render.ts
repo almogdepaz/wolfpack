@@ -283,6 +283,21 @@ export function renderSnapshotToAnsi(snap: SnapshotForRender): Buffer {
 }
 
 /**
+ * Legacy post-hoc prefill budget for snapshots rendered here: keep the last
+ * `maxBytes`, starting after a newline. The cut can drop the clear/home
+ * preamble and the SGR state in effect; brokers with
+ * `snapshot_subscribe_ansi` instead trim whole scrollback lines before
+ * rendering.
+ */
+export function trimRenderedPrefill(data: Buffer, maxBytes: number): Buffer {
+  if (data.length <= maxBytes) return data;
+  let start = data.length - maxBytes;
+  while (start < data.length && data[start] !== 0x0a) start++;
+  if (start < data.length) start++;
+  return data.subarray(start);
+}
+
+/**
  * Render a broker snapshot to plain text — scrollback + visible screen with
  * trailing whitespace trimmed and no ANSI/SGR. Drops trailing blank rows so
  * a copied transcript ends at the last meaningful line.

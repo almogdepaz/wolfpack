@@ -92,7 +92,10 @@ impl SessionRouter {
                 Ok(p) => self.resize(id, p),
                 Err(e) => invalid_request(id, format!("resize params: {e}")),
             },
-            methods::SNAPSHOT_SUBSCRIBE | methods::SUBSCRIBE | methods::UNSUBSCRIBE => ControlResponse::err(
+            methods::SNAPSHOT_SUBSCRIBE
+            | methods::SNAPSHOT_SUBSCRIBE_ANSI
+            | methods::SUBSCRIBE
+            | methods::UNSUBSCRIBE => ControlResponse::err(
                 id,
                 ProtocolError {
                     code: ErrorCode::InternalError,
@@ -393,7 +396,12 @@ mod tests {
         // the response surfaces a clear internal_error instead of silently
         // pretending to attach a stream.
         let (router, _reg) = router();
-        for method in [methods::SUBSCRIBE, methods::UNSUBSCRIBE] {
+        for method in [
+            methods::SUBSCRIBE,
+            methods::UNSUBSCRIBE,
+            methods::SNAPSHOT_SUBSCRIBE,
+            methods::SNAPSHOT_SUBSCRIBE_ANSI,
+        ] {
             let resp = router.handle(req(1, method, json!({ "session_id": Uuid::nil() })));
             assert_eq!(resp.status, Status::Error, "{method}");
             assert_eq!(

@@ -627,6 +627,325 @@ describe("BrokerClient: subscribe/unsubscribe RPC", () => {
     expect(methods).toEqual(["snapshot_subscribe", "snapshot_subscribe", "unsubscribe"]);
   });
 
+  test("ANSI snapshot subscription sends the budget and seeds the replay floor from the top-level seq", async () => {
+    const { server, client } = await bootClientToServer();
+    const requests: Array<{ method: string; params: unknown }> = [];
+    server.onRequest = (req, sock) => {
+      requests.push({ method: req.method, params: req.params });
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: {
+          id: req.id,
+          status: "ok",
+          payload: { kind: "snapshot_subscribe_ansi", seq: 5, current_seq: 5, replay_truncated: false, ansi_base64: "" },
+        },
+      });
+    };
+
+    const subscription = await client.snapshotSubscribeAnsi(SAMPLE_UUID, { scrollbackLines: 200, targetCols: 90, maxBytes: 4096 });
+
+    expect(requests).toEqual([{
+      method: "snapshot_subscribe_ansi",
+      params: { session_id: SAMPLE_UUID, scrollback_lines: 200, target_cols: 90, max_bytes: 4096 },
+    }]);
+    expect(subscription.response.status).toBe("ok");
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(client.outputSequence(SAMPLE_UUID)).toBe(5n);
+  });
+
+  test("unknown snapshot_subscribe_ansi leaves no active state for the JSON fallback", async () => {
+    const { server, client } = await bootClientToServer();
+    server.onRequest = (req, sock) => {
+      server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: {
+          id: req.id,
+          status: "error",
+          error: { code: "unknown_method", message: "unknown method: snapshot_subscribe_ansi" },
+        },
+      });
+    };
+
+    await expect(client.snapshotSubscribeAnsi(SAMPLE_UUID, { maxBytes: 4096 })).rejects.toThrow("unknown_method");
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+  });
+
+  test("a broker without snapshot_subscribe_ansi is asked once per connection", async () => {
+    const socketPath = makeSocketPath();
+    const server1 = await startMockServer(socketPath);
+    activeServer = server1;
+    let connects = 0;
+    const client = new BrokerClient({ socketPath, reconnectInitialDelayMs: 20, reconnectMaxDelayMs: 100, onConnect: () => { connects++; } });
+    activeClient = client;
+    client.start();
+    await waitFor(() => connects === 1);
+    const oldBrokerMethods: string[] = [];
+    server1.onRequest = (req, sock) => {
+      oldBrokerMethods.push(req.method);
+      server1.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: { id: req.id, status: "error", error: { code: "unknown_method", message: `unknown method: ${req.method}` } },
+      });
+    };
+
+    await expect(client.snapshotSubscribeAnsi(SAMPLE_UUID, { maxBytes: 4096 })).rejects.toThrow("unknown_method");
+    await expect(client.snapshotSubscribeAnsi(SAMPLE_UUID, { maxBytes: 4096 })).rejects.toThrow("unknown_method");
+    expect(oldBrokerMethods).toEqual(["snapshot_subscribe_ansi"]);
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+
+    // A broker upgrade restarts the broker, so the next connection asks again.
+    await server1.close();
+    const server2 = await startMockServer(socketPath);
+    activeServer = server2;
+    await waitFor(() => connects === 2, 3000);
+    const newBrokerMethods: string[] = [];
+    server2.onRequest = (req, sock) => {
+      newBrokerMethods.push(req.method);
+      server2.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE,
+        value: { id: req.id, status: "ok", payload: { kind: req.method, seq: 3, current_seq: 3, replay_truncated: false, ansi_base64: "" } },
+      });
+    };
+    await client.snapshotSubscribeAnsi(SAMPLE_UUID, { maxBytes: 4096 });
+    expect(newBrokerMethods).toEqual(["snapshot_subscribe_ansi"]);
+  });
+
+  for (const [method, code] of [
+    ["snapshot_subscribe_ansi", "unknown_method"],
+    ["snapshot_subscribe_ansi", "prefill_too_large"],
+    ["snapshot_subscribe", "internal_error"],
+  ] as const) {
+    test(`a rejected ${method} (${code}) leaves another viewer's shared stream state intact`, async () => {
+      const { server, client } = await bootClientToServer();
+      server.onRequest = (req, sock) => {
+        if (req.method === "subscribe") {
+          server.send(sock, {
+            kind: FRAME_KIND_CONTROL_RESPONSE,
+            value: { id: req.id, status: "ok", payload: { kind: "subscribe", ok: true, current_seq: 6, replay_truncated: false } },
+          });
+          server.send(sock, { kind: FRAME_KIND_OUTPUT_BINARY, value: { sessionId: SAMPLE_UUID, seq: 7n, data: new Uint8Array([7]) } });
+          return;
+        }
+        // Live output for the shared stream keeps flowing during the failed RPC.
+        server.send(sock, { kind: FRAME_KIND_OUTPUT_BINARY, value: { sessionId: SAMPLE_UUID, seq: 8n, data: new Uint8Array([8]) } });
+        server.send(sock, {
+          kind: FRAME_KIND_CONTROL_RESPONSE,
+          value: { id: req.id, status: "error", error: { code, message: "rejected" } },
+        });
+      };
+      const received: bigint[] = [];
+      client.subscribeOutput(SAMPLE_UUID, frame => received.push(frame.seq));
+      await client.subscribe(SAMPLE_UUID);
+      await waitFor(() => received.length === 1);
+
+      const attempt = method === "snapshot_subscribe_ansi"
+        ? client.snapshotSubscribeAnsi(SAMPLE_UUID, { maxBytes: 4096 })
+        : client.snapshotSubscribe(SAMPLE_UUID);
+      await expect(attempt).rejects.toThrow(code);
+
+      expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+      expect(client.outputSequence(SAMPLE_UUID)).toBe(8n);
+      expect(received).toEqual([7n, 8n]);
+    });
+  }
+
+  /**
+   * Holds `snapshot_subscribe` requests until `count` are in flight, then
+   * answers them in issue order with `outcomes` ("ok" or an error code).
+   * Every other request is answered ok immediately.
+   */
+  function answerOverlappingSnapshots(server: MockServer, outcomes: readonly string[], beforeEachAnswer?: (sock: net.Socket) => void): { methods: string[] } {
+    const methods: string[] = [];
+    const held: Array<{ id: number; sock: net.Socket }> = [];
+    server.onRequest = (req, sock) => {
+      methods.push(req.method);
+      if (req.method !== "snapshot_subscribe") {
+        server.send(sock, {
+          kind: FRAME_KIND_CONTROL_RESPONSE,
+          value: { id: req.id, status: "ok", payload: { kind: req.method, ok: true, current_seq: 6, replay_truncated: false } },
+        });
+        if (req.method === "subscribe") {
+          server.send(sock, { kind: FRAME_KIND_OUTPUT_BINARY, value: { sessionId: SAMPLE_UUID, seq: 7n, data: new Uint8Array([7]) } });
+        }
+        return;
+      }
+      held.push({ id: req.id, sock });
+      if (held.length < outcomes.length) return;
+      held.forEach(({ id, sock: heldSock }, index) => {
+        beforeEachAnswer?.(heldSock);
+        const outcome = outcomes[index];
+        server.send(heldSock, {
+          kind: FRAME_KIND_CONTROL_RESPONSE,
+          value: outcome === "ok"
+            ? { id, status: "ok", payload: { kind: "snapshot_subscribe", snapshot: { seq: 5 }, current_seq: 5, replay_truncated: false } }
+            : { id, status: "error", error: { code: outcome, message: "rejected" } },
+        });
+      });
+    };
+    return { methods };
+  }
+
+  test("overlapping failed snapshot subscribes leave no active state and deliver session_exited", async () => {
+    const events: string[] = [];
+    const { server, client } = await bootClientToServer({ onEvent: event => events.push(String(event.event)) });
+    answerOverlappingSnapshots(server, ["internal_error", "internal_error"]);
+
+    const results = await Promise.allSettled([client.snapshotSubscribe(SAMPLE_UUID), client.snapshotSubscribe(SAMPLE_UUID)]);
+    expect(results.map(result => result.status)).toEqual(["rejected", "rejected"]);
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+    expect(client.outputSequence(SAMPLE_UUID)).toBeUndefined();
+    server.broadcast({ kind: FRAME_KIND_EVENT, value: { event: "session_exited", session_id: SAMPLE_UUID, final_seq: "5", exit_code: 0 } });
+    await waitFor(() => events.includes("session_exited"));
+  });
+
+  test("overlapping failed snapshot subscribes leave another viewer's shared stream intact", async () => {
+    const { server, client } = await bootClientToServer();
+    // Shared-stream output keeps advancing between the failed responses.
+    let nextSeq = 8n;
+    answerOverlappingSnapshots(server, ["invalid_request", "internal_error"], sock => {
+      server.send(sock, { kind: FRAME_KIND_OUTPUT_BINARY, value: { sessionId: SAMPLE_UUID, seq: nextSeq, data: new Uint8Array([Number(nextSeq)]) } });
+      nextSeq += 1n;
+    });
+    const received: bigint[] = [];
+    client.subscribeOutput(SAMPLE_UUID, frame => received.push(frame.seq));
+    await client.subscribe(SAMPLE_UUID);
+    await waitFor(() => received.length === 1);
+
+    const results = await Promise.allSettled([client.snapshotSubscribe(SAMPLE_UUID), client.snapshotSubscribe(SAMPLE_UUID)]);
+    expect(results.map(result => result.status)).toEqual(["rejected", "rejected"]);
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(client.outputSequence(SAMPLE_UUID)).toBe(9n);
+    expect(received).toEqual([7n, 8n, 9n]);
+  });
+
+  test("an earlier failed snapshot subscribe does not undo a later successful one", async () => {
+    const { server, client } = await bootClientToServer();
+    const { methods } = answerOverlappingSnapshots(server, ["internal_error", "ok"]);
+
+    const [first, second] = await Promise.allSettled([client.snapshotSubscribe(SAMPLE_UUID), client.snapshotSubscribe(SAMPLE_UUID)]);
+    expect(first.status).toBe("rejected");
+    if (second.status !== "fulfilled") throw new Error("second snapshot subscribe should succeed");
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(client.outputSequence(SAMPLE_UUID)).toBe(5n);
+    await second.value.cancel();
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+    expect(methods).toEqual(["snapshot_subscribe", "snapshot_subscribe", "unsubscribe"]);
+  });
+
+  test("a later failed snapshot subscribe returns ownership to the earlier successful one", async () => {
+    const { server, client } = await bootClientToServer();
+    const { methods } = answerOverlappingSnapshots(server, ["ok", "internal_error"]);
+
+    const [first, second] = await Promise.allSettled([client.snapshotSubscribe(SAMPLE_UUID), client.snapshotSubscribe(SAMPLE_UUID)]);
+    if (first.status !== "fulfilled") throw new Error("first snapshot subscribe should succeed");
+    expect(second.status).toBe("rejected");
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(client.outputSequence(SAMPLE_UUID)).toBe(5n);
+    await first.value.cancel();
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+    expect(methods).toEqual(["snapshot_subscribe", "snapshot_subscribe", "unsubscribe"]);
+  });
+
+  /**
+   * Holds `snapshot_subscribe` / `subscribe` requests for the test to answer
+   * explicitly (tests answer in issue order, as a real broker does);
+   * `unsubscribe` is answered ok immediately and counted.
+   */
+  function manualAnswers(server: MockServer): {
+    held: Array<{ method: string; answer: (outcome: "ok" | string) => void }>;
+    unsubscribes: () => number;
+  } {
+    const held: Array<{ method: string; answer: (outcome: "ok" | string) => void }> = [];
+    let unsubscribes = 0;
+    server.onRequest = (req, sock) => {
+      if (req.method === "unsubscribe") {
+        unsubscribes++;
+        server.send(sock, { kind: FRAME_KIND_CONTROL_RESPONSE, value: { id: req.id, status: "ok", payload: { kind: "unsubscribe", ok: true } } });
+        return;
+      }
+      held.push({
+        method: req.method,
+        answer: outcome => {
+          const payload = req.method === "subscribe"
+            ? { kind: "subscribe", ok: true, current_seq: 4, replay_truncated: false }
+            : { kind: req.method, snapshot: { seq: 5 }, current_seq: 5, replay_truncated: false };
+          server.send(sock, {
+            kind: FRAME_KIND_CONTROL_RESPONSE,
+            value: outcome === "ok"
+              ? { id: req.id, status: "ok", payload }
+              : { id: req.id, status: "error", error: { code: outcome, message: "rejected" } },
+          });
+        },
+      });
+    };
+    return { held, unsubscribes: () => unsubscribes };
+  }
+
+  test("a failed snapshot subscribe does not undo a plain subscribe that took over meanwhile", async () => {
+    const { server, client } = await bootClientToServer();
+    const { held } = manualAnswers(server);
+
+    const snapshot = client.snapshotSubscribe(SAMPLE_UUID);
+    await waitFor(() => held.length === 1);
+    const subscribed = client.subscribe(SAMPLE_UUID);
+    await waitFor(() => held.length === 2);
+    // In issue order: the earlier snapshot fails, then the plain subscribe succeeds.
+    held[0]!.answer("internal_error");
+    held[1]!.answer("ok");
+    await expect(snapshot).rejects.toThrow("internal_error");
+    await subscribed;
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+  });
+
+  test("a plain subscribe mid-group is not undone by a later failed joiner", async () => {
+    const { server, client } = await bootClientToServer();
+    const { held } = manualAnswers(server);
+    const received: bigint[] = [];
+    client.subscribeOutput(SAMPLE_UUID, frame => received.push(frame.seq));
+
+    const first = client.snapshotSubscribe(SAMPLE_UUID);
+    await waitFor(() => held.length === 1);
+    const subscribed = client.subscribe(SAMPLE_UUID);
+    await waitFor(() => held.length === 2);
+    const second = client.snapshotSubscribe(SAMPLE_UUID);
+    await waitFor(() => held.length === 3);
+    held[0]!.answer("internal_error");
+    held[1]!.answer("ok");
+    server.broadcast({ kind: FRAME_KIND_OUTPUT_BINARY, value: { sessionId: SAMPLE_UUID, seq: 7n, data: new Uint8Array([7]) } });
+    held[2]!.answer("internal_error");
+    const results = await Promise.allSettled([first, subscribed, second]);
+    expect(results.map(result => result.status)).toEqual(["rejected", "fulfilled", "rejected"]);
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(true);
+    expect(client.outputSequence(SAMPLE_UUID)).toBe(7n);
+    expect(received).toEqual([7n]);
+  });
+
+  test("cancelling a succeeded snapshot lease while a later one is in flight is honored when that one fails", async () => {
+    const { server, client } = await bootClientToServer();
+    const { held, unsubscribes } = manualAnswers(server);
+
+    const first = client.snapshotSubscribe(SAMPLE_UUID);
+    await waitFor(() => held.length === 1);
+    const second = client.snapshotSubscribe(SAMPLE_UUID);
+    await waitFor(() => held.length === 2);
+    held[0]!.answer("ok");
+    const lease = await first;
+    await lease.cancel();
+    held[1]!.answer("internal_error");
+    await expect(second).rejects.toThrow("internal_error");
+
+    expect(client.isSubscribed(SAMPLE_UUID)).toBe(false);
+    await waitFor(() => unsubscribes() === 1);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(unsubscribes()).toBe(1);
+  });
+
   test("unknown snapshot_subscribe leaves no active state for legacy fallback", async () => {
     const { server, client } = await bootClientToServer();
     server.onRequest = (req, sock) => {

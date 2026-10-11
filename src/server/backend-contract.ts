@@ -114,6 +114,15 @@ export interface SessionPrefill {
 export interface SessionPrefillOptions {
   /** Limit broker scrollback rows before rendering; omit for backend default. */
   readonly scrollbackLines?: number;
+  /**
+   * Byte budget for the rendered prefill; omit for no budget. A broker
+   * `beginSessionAttach` served by `snapshot_subscribe_ansi` drops whole
+   * scrollback lines oldest-first and never cuts the visible screen (so the
+   * prefill can exceed the budget when the screen alone does). Every other
+   * path (`getSessionPrefill`, the JSON attach fallbacks, the mock backend)
+   * keeps the last `maxBytes` from a line boundary.
+   */
+  readonly maxBytes?: number;
 }
 
 export type SessionDataUnsubscribe = (() => void) & {

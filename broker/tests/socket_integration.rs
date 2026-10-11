@@ -667,6 +667,196 @@ async fn snapshot_subscribe_establishes_atomic_live_cut() {
     h.shutdown().await;
 }
 
+fn decode_base64(encoded: &str) -> Vec<u8> {
+    let value = |byte: u8| -> u32 {
+        match byte {
+            b'A'..=b'Z' => u32::from(byte - b'A'),
+            b'a'..=b'z' => u32::from(byte - b'a') + 26,
+            b'0'..=b'9' => u32::from(byte - b'0') + 52,
+            b'+' => 62,
+            b'/' => 63,
+            other => panic!("invalid base64 byte {other}"),
+        }
+    };
+    let mut out = Vec::new();
+    for quad in encoded.as_bytes().chunks(4) {
+        assert_eq!(quad.len(), 4, "unpadded base64");
+        let padding = quad.iter().filter(|&&byte| byte == b'=').count();
+        let mut triple = 0u32;
+        for &byte in &quad[..4 - padding] {
+            triple = (triple << 6) | value(byte);
+        }
+        triple <<= 6 * padding as u32;
+        let bytes = [(triple >> 16) as u8, (triple >> 8) as u8, triple as u8];
+        out.extend_from_slice(&bytes[..3 - padding]);
+    }
+    out
+}
+
+/// Plain text of rendered prefill: CSI / ESC= sequences removed, CRLF → LF.
+fn ansi_plain_text(bytes: &[u8]) -> String {
+    let text = String::from_utf8(bytes.to_vec()).expect("prefill utf8");
+    let mut out = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\x1b' {
+            if ch != '\r' {
+                out.push(ch);
+            }
+            continue;
+        }
+        if chars.next_if_eq(&'[').is_some() {
+            for next in chars.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            chars.next();
+        }
+    }
+    out
+}
+
+struct AnsiCut {
+    seq: u64,
+    current_seq: u64,
+    cursor_col: u16,
+    trimmed_lines: u64,
+    ansi: Vec<u8>,
+}
+
+fn expect_ansi_cut(resp: ControlResponse) -> AnsiCut {
+    assert_eq!(resp.status, Status::Ok, "{:?}", resp.error);
+    match resp.payload.expect("payload") {
+        ResponsePayload::SnapshotSubscribeAnsi {
+            seq, current_seq, replay_truncated, cursor, trimmed_lines, ansi_base64, ..
+        } => {
+            assert!(!replay_truncated);
+            AnsiCut { seq, current_seq, cursor_col: cursor.col, trimmed_lines, ansi: decode_base64(&ansi_base64) }
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn snapshot_subscribe_ansi_cut_loses_and_duplicates_no_output() {
+    const LINES: usize = 1000;
+    let h = Harness::boot().await;
+    let mut stream = connect(&h.socket_path).await;
+    let script = format!(
+        "i=0; while [ $i -lt {LINES} ]; do printf 'N%05d\\n' $i; i=$((i+1)); sleep 0.002; done; sleep 30"
+    );
+    let created = match round_trip(&mut stream, create_request(1, Some("ansi-cut"), &["sh", "-c", &script]))
+        .await
+        .payload
+        .expect("payload")
+    {
+        ResponsePayload::CreateSession { session } => session,
+        other => panic!("unexpected: {other:?}"),
+    };
+    // Cut while the counter is still streaming.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let cut = expect_ansi_cut(round_trip(&mut stream, ControlRequest {
+        id: 2,
+        method: methods::SNAPSHOT_SUBSCRIBE_ANSI.into(),
+        params: json!({ "session_id": created.id, "scrollback_lines": 5000, "max_bytes": 1024 * 1024 }),
+    }).await);
+    assert_eq!(cut.seq, cut.current_seq);
+    assert_eq!(cut.trimmed_lines, 0);
+
+    let last = format!("N{:05}", LINES - 1);
+    let mut live = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !live.windows(last.len()).any(|window| window == last.as_bytes()) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match timeout(remaining, read_frame_async(&mut stream)).await.expect("live timeout").expect("frame") {
+            Frame::OutputBinary(output) if output.session_id == created.id => {
+                assert!(output.seq > cut.seq, "live frame {} at or before the cut {}", output.seq, cut.seq);
+                live.extend_from_slice(&output.data);
+            }
+            Frame::Event(_) => continue,
+            other => panic!("unexpected frame after atomic subscribe: {other:?}"),
+        }
+    }
+
+    let prefill = ansi_plain_text(&cut.ansi);
+    let mut transcript = prefill.trim_end_matches('\n').to_string();
+    if cut.cursor_col == 0 {
+        transcript.push('\n');
+    }
+    transcript.push_str(&String::from_utf8_lossy(&live).replace('\r', ""));
+    let numbers: Vec<usize> = transcript
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            line.strip_prefix('N')
+                .and_then(|digits| digits.parse().ok())
+                .unwrap_or_else(|| panic!("unexpected transcript line {line:?}"))
+        })
+        .collect();
+    let prefill_numbers = prefill.lines().filter(|line| line.starts_with('N')).count();
+    assert!(prefill_numbers > 0 && prefill_numbers < LINES, "cut was not mid-stream: {prefill_numbers}");
+    assert_eq!(numbers, (0..LINES).collect::<Vec<_>>(), "prefill + live must be gapless and duplicate-free");
+
+    drop(stream);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn snapshot_subscribe_ansi_budget_trims_history_and_validates_max_bytes() {
+    let h = Harness::boot().await;
+    let mut stream = connect(&h.socket_path).await;
+    let created = match round_trip(&mut stream, create_request(
+        1,
+        Some("ansi-budget"),
+        &["sh", "-c", "i=0; while [ $i -lt 300 ]; do printf 'history line %03d\\n' $i; i=$((i+1)); done; echo DONE; sleep 30"],
+    )).await.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session,
+        other => panic!("unexpected: {other:?}"),
+    };
+    let mut seen = Vec::new();
+    round_trip(&mut stream, ControlRequest {
+        id: 2, method: methods::SUBSCRIBE.into(), params: json!({ "session_id": created.id, "since_seq": 0 }),
+    }).await;
+    let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
+    while !seen.windows(4).any(|window| window == b"DONE") {
+        for frame in collect_output_until(&mut stream, created.id, 1, deadline).await {
+            seen.extend_from_slice(&frame.data);
+        }
+        assert!(tokio::time::Instant::now() < deadline, "history never completed");
+    }
+
+    let cut = expect_ansi_cut(round_trip(&mut stream, ControlRequest {
+        id: 3,
+        method: methods::SNAPSHOT_SUBSCRIBE_ANSI.into(),
+        params: json!({ "session_id": created.id, "scrollback_lines": 500, "max_bytes": 2048 }),
+    }).await);
+    assert!(cut.ansi.len() <= 2048, "{} bytes", cut.ansi.len());
+    assert!(cut.trimmed_lines > 0);
+    let text = ansi_plain_text(&cut.ansi);
+    assert!(text.contains("history line 299\nDONE"), "{text:?}");
+    assert!(!text.contains("history line 000"));
+
+    for (id, max_bytes) in [(4, json!(4 * 1024 * 1024 + 1)), (5, json!(-1)), (6, json!(null))] {
+        let invalid = round_trip(&mut stream, ControlRequest {
+            id,
+            method: methods::SNAPSHOT_SUBSCRIBE_ANSI.into(),
+            params: json!({ "session_id": created.id, "max_bytes": max_bytes }),
+        }).await;
+        assert_eq!(invalid.error.expect("error").code, ErrorCode::InvalidRequest, "max_bytes={max_bytes}");
+    }
+    let unknown = round_trip(&mut stream, ControlRequest {
+        id: 7,
+        method: methods::SNAPSHOT_SUBSCRIBE_ANSI.into(),
+        params: json!({ "session_id": Uuid::new_v4(), "max_bytes": 1024 }),
+    }).await;
+    assert_eq!(unknown.error.expect("error").code, ErrorCode::UnknownSession);
+
+    drop(stream);
+    h.shutdown().await;
+}
+
 #[tokio::test]
 async fn snapshot_subscribe_uses_snapshot_reflow_width_bounds() {
     let h = Harness::boot().await;
