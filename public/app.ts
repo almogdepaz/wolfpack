@@ -26,6 +26,7 @@ import { createWorkspaceShell, loadWorkspaceShellPreferences } from "./workspace
 import { WidgetLayout, SESSIONS_PANEL, TERMINALS_PANEL } from "./widget-layout";
 import { createWorkspaceDocking } from "./workspace-docking";
 import { ExtensionHost } from "./extension-host";
+import { createExtensionAccessPrompt } from "./extension-access-prompt";
 import { WidgetVisibility, WIDGET_VISIBILITY_PREFIX } from "./widget-visibility";
 import { createWidgetManager } from "./widget-manager";
 import { resolveWorkspaceExtensionScope } from "./extension-scope";
@@ -1085,6 +1086,7 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
     if (!isCurrentGeneration()) return "stale";
     const candidates = candidateEnumerationCandidates(response);
     tailnetPeers.reconcileCandidates(candidates);
+    void extensionHost?.refresh();
     await probeTailnetCandidates(candidates, fetch, {
       onSettled: (probe) => {
         if (!isCurrentGeneration()) return;
@@ -1092,6 +1094,7 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
           || tailnetPeers.entries().some((entry) => entry.tailnetNodeId === probe.candidate.tailnetNodeId && entry.status === "ready");
         const applied = tailnetPeers.applyProbe(probe);
         if (applied.kind === "identity-replaced") retireReplacedPeerIdentity(applied.replacement);
+        if (affectedReadyPeer) void extensionHost?.refresh();
         if (affectedReadyPeer) scheduleTailnetPeerSessionRefresh(generation);
       },
     });
@@ -1102,6 +1105,7 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
     if (!isCurrentGeneration()) return "stale";
     const retainedEntries = tailnetPeers.entries().length > 0;
     tailnetPeers.markCandidateEnumerationUnavailable();
+    void extensionHost?.refresh();
     if (retainedEntries) {
       renderMachinesList();
       scheduleTailnetPeerSessionRefresh(generation);
@@ -5891,6 +5895,13 @@ const extensionHostContainer = document.getElementById("workspace-context-contai
 extensionHost = extensionHostContainer ? new ExtensionHost({
   container: extensionHostContainer,
   scope: selectedExtensionScope,
+  accessPrompt: createExtensionAccessPrompt(document.getElementById("workspace-extension-access"), scheduleGridStabilizedFit),
+  resolvePeer: machine => {
+    const peer = tailnetPeers.entries().find(entry => entry.identity === machine);
+    return peer?.status === "ready" && peer.origin
+      ? { identity: machine, status: "ready", origin: peer.origin, displayName: peer.displayName }
+      : undefined;
+  },
   safeMode: () => wpSettings.extensionSafeMode,
   widgetVisible: item => widgetVisibility.isVisible(item),
   widgetLayout,

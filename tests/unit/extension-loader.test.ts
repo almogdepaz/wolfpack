@@ -63,6 +63,28 @@ async function guarded<T>(pending: Promise<T>, cleanup: () => void | Promise<voi
 }
 
 describe("extension loader authority and response cleanup", () => {
+  test("rechecks current scope after verified acquisition before creating an import URL", async () => {
+    let current = true;
+    const bytes = new TextEncoder().encode("export const value = 'owned fixture';");
+    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const error = await failure({ safeMode: false, allowImport: () => current, fetchImpl: async () => {
+      current = false; return new Response(bytes, { headers: { "content-type": "text/javascript" } });
+    } }, asset, digest);
+    expect(error.code).toBe("SCOPE_UNAVAILABLE");
+  });
+
+  test("selected scope cancellation aborts acquisition before the loader deadline", async () => {
+    const controller = new AbortController();
+    let signal: AbortSignal | null | undefined;
+    let deliver!: (response: Response) => void;
+    const pending = failure({ safeMode: false, signal: controller.signal, timeoutMs: 50, fetchImpl: async (_input, init) => {
+      signal = init?.signal; return new Promise(resolve => { deliver = resolve; });
+    } });
+    controller.abort();
+    try { expect(signal?.aborted).toBe(true); }
+    finally { deliver(new Response("", { headers: { "content-type": "text/javascript" } })); await pending; }
+  });
+
   test("safe mode precedes all validation and network activity", async () => {
     let calls = 0;
     const error = await failure({ safeMode: true, fetchImpl: async () => { calls++; throw new Error("unexpected fetch"); } }, "http://[", "invalid");

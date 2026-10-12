@@ -16,6 +16,12 @@ import { join } from "node:path";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export interface BrokerTestOwnership {
+  readonly socketPath: string;
+  childrenExited(): boolean;
+  teardown(): Promise<void>;
+}
+
 export interface BrokerTestServer {
   port: number;
   baseUrl: string;
@@ -87,6 +93,14 @@ async function waitForFile(p: string, timeoutMs: number): Promise<void> {
 export async function start(opts?: {
   /** Extra env vars merged into the wolfpack server process env (not the broker). */
   envOverrides?: Record<string, string>;
+  /** Optional owned fixture server entry; default broker harness remains unchanged. */
+  serverEntry?: string;
+  /** Isolate the broker daemon AND its PTY children from operator HOME/config. */
+  brokerEnvOverrides?: Record<string, string>;
+  /** Opt-in ownership registration BEFORE the first readiness await. */
+  onOwnership?: (owner: BrokerTestOwnership) => void;
+  /** Owned failure probes may reduce, never enlarge, the server-ready deadline. */
+  readyTimeoutMs?: number;
 }): Promise<BrokerTestServer> {
   if (!BROKER_BIN) {
     throw new Error(skipIfNoBroker.reason);
@@ -100,6 +114,7 @@ export async function start(opts?: {
   const brokerProc: ChildProcess = spawn(BROKER_BIN, [], {
     env: {
       ...process.env,
+      ...(opts?.brokerEnvOverrides ?? {}),
       WOLFPACK_BROKER_SOCKET: socketPath,
       WOLFPACK_BROKER_LOG: process.env.WOLFPACK_BROKER_LOG ?? "warn",
     },
@@ -110,13 +125,24 @@ export async function start(opts?: {
     if (brokerStderr.length > 64 * 1024) brokerStderr = brokerStderr.slice(-64 * 1024);
   });
 
+  let serverProc: ChildProcess | undefined;
+  opts?.onOwnership?.({
+    socketPath,
+    childrenExited: () => (brokerProc.exitCode !== null || brokerProc.signalCode !== null)
+      && (!serverProc || serverProc.exitCode !== null || serverProc.signalCode !== null),
+    teardown: async () => {
+      await teardown();
+      if (existsSync(socketDir)) throw new Error(`owned broker socket directory cleanup failed: ${socketDir}`);
+    },
+  });
+
   // 2. Wait for the socket file to appear (broker is ready to accept connections)
   await waitForFile(socketPath, 5000);
 
   // 3. Spawn wolfpack server wired to the broker
-  const serverProc: ChildProcess = spawn(
+  serverProc = spawn(
     "bun",
-    [join(ROOT, "tests", "e2e", "test-server-broker.ts")],
+    [opts?.serverEntry ?? join(ROOT, "tests", "e2e", "test-server-broker.ts")],
     {
       cwd: ROOT,
       stdio: ["pipe", "pipe", "pipe"],
@@ -130,15 +156,17 @@ export async function start(opts?: {
     },
   );
 
+  // Pin the spawned child for readiness callbacks; startup ownership may precede it.
+  const readyServer = serverProc;
   // 4. Wait for READY:<port>
   const port = await new Promise<number>((resolve, reject) => {
     const timeout = setTimeout(() => {
-      serverProc.kill();
-      reject(new Error("broker test server did not start within 15s"));
-    }, 15_000);
+      serverProc?.kill();
+      reject(new Error(opts?.readyTimeoutMs === undefined ? "broker test server did not start within 15s" : "owned broker test server readiness deadline exceeded"));
+    }, Math.min(opts?.readyTimeoutMs ?? 15_000, 15_000));
 
     let stdout = "";
-    serverProc.stdout?.on("data", (chunk: Buffer) => {
+    readyServer.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
       const match = stdout.match(/READY:(\d+)/);
       if (match) {
@@ -147,17 +175,17 @@ export async function start(opts?: {
       }
     });
 
-    serverProc.stderr?.on("data", (chunk: Buffer) => {
+    readyServer.stderr?.on("data", (chunk: Buffer) => {
       const msg = chunk.toString().trim();
       if (msg) process.stderr.write(`[test-server-broker] ${msg}\n`);
     });
 
-    serverProc.on("error", (err) => {
+    readyServer.on("error", (err) => {
       clearTimeout(timeout);
       reject(err);
     });
 
-    serverProc.on("exit", (code) => {
+    readyServer.on("exit", (code) => {
       if (!stdout.includes("READY:")) {
         clearTimeout(timeout);
         reject(new Error(`test-server-broker exited (code ${code}) before printing READY`));
@@ -179,7 +207,7 @@ export async function start(opts?: {
     if (proc.exitCode === null && proc.signalCode === null) throw new Error("test child did not terminate");
   }
   async function teardown(): Promise<void> {
-    await terminate(serverProc);
+    if (serverProc) await terminate(serverProc);
     await terminate(brokerProc);
     try { rmSync(socketDir, { recursive: true, force: true }); } catch { /* swallow */ }
     if (process.env.WOLFPACK_BROKER_DEBUG && brokerStderr) {
