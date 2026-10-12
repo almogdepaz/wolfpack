@@ -3,6 +3,8 @@ import type { ContextViewContribution, ContextViewController, ExtensionViewConte
 export interface ContextViewScope {
   readonly installationId: string;
   readonly sessionId: string;
+  /** Internal routing identity, never a credential or arbitrary origin. */
+  readonly machine?: string;
 }
 
 export interface ContextViewRegistryOptions {
@@ -72,7 +74,7 @@ export class ContextViewRegistry {
   }
 
   setScope(scope: ContextViewScope | null): void {
-    if (this.scopeValue?.installationId === scope?.installationId && this.scopeValue?.sessionId === scope?.sessionId) {
+    if (this.scopeValue?.installationId === scope?.installationId && this.scopeValue?.sessionId === scope?.sessionId && this.scopeValue?.machine === scope?.machine) {
       // The initial unavailable/error path has no previous scope to replace but
       // still needs host-owned chrome instead of a silent empty region.
       if (!scope && !this.diagnosticValue) {
@@ -151,7 +153,7 @@ export class ContextViewRegistry {
       this.options.container.append(element);
       const fallbackContext = Object.freeze({
         signal: abort.signal,
-        scope: Object.freeze({ ...scope }),
+        scope: Object.freeze({ installationId: scope.installationId, sessionId: scope.sessionId }),
         selection: Object.freeze({ selectedSessionId: scope.sessionId }),
         theme: Object.freeze({}),
         storage: Object.freeze({ get: () => null, set: () => {}, remove: () => {} }),

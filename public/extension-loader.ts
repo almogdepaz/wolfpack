@@ -6,6 +6,7 @@ export const EXTENSION_BUNDLE_PATH_PREFIX = "/api/extensions/";
 
 export type ExtensionBundleLoadErrorCode =
   | "SAFE_MODE"
+  | "SCOPE_UNAVAILABLE"
   | "INVALID_URL"
   | "FETCH_FAILED"
   | "RESPONSE_INVALID"
@@ -22,6 +23,9 @@ export class ExtensionBundleLoadError extends Error {
 
 export interface ExtensionBundleLoadOptions {
   readonly safeMode: boolean;
+  readonly signal?: AbortSignal;
+  /** Host-owned fence checked again after digest verification, immediately before import. */
+  readonly allowImport?: () => boolean;
   /** Test/host overrides may lower these hard bounds, never raise them. */
   readonly timeoutMs?: number;
   readonly maxBytes?: number;
@@ -104,13 +108,16 @@ async function verifiedBytes(target: URL, expectedSha256: string, options: Exten
   const controller = new AbortController();
   let rejectDeadline!: (reason: ExtensionBundleLoadError) => void;
   const expired = new Promise<never>((_resolve, reject) => { rejectDeadline = reject; });
-  const onAbort = () => rejectDeadline(new ExtensionBundleLoadError("FETCH_FAILED", "extension bundle acquisition timed out"));
+  const onAbort = () => rejectDeadline(new ExtensionBundleLoadError("FETCH_FAILED", "extension bundle acquisition cancelled or timed out"));
+  const onScopeAbort = (): void => controller.abort();
+  options.signal?.addEventListener("abort", onScopeAbort, { once: true });
   controller.signal.addEventListener("abort", onAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const beforeDeadline: BeforeDeadline = (operation) => Promise.race([operation, expired]);
   let response: Response | undefined;
 
   try {
+    if (options.signal?.aborted) throw new ExtensionBundleLoadError("SCOPE_UNAVAILABLE", "extension scope is no longer active");
     const fetched = (options.fetchImpl ?? browserAuthFetch)(target, {
       cache: "no-store",
       redirect: "error",
@@ -142,6 +149,7 @@ async function verifiedBytes(target: URL, expectedSha256: string, options: Exten
   } finally {
     clearTimeout(timer);
     controller.signal.removeEventListener("abort", onAbort);
+    options.signal?.removeEventListener("abort", onScopeAbort);
     controller.abort();
     cancelBody(response);
   }
@@ -158,11 +166,13 @@ export async function loadAuthenticatedExtensionBundle<T>(
   options: ExtensionBundleLoadOptions,
 ): Promise<T> {
   if (options.safeMode !== false) throw new ExtensionBundleLoadError("SAFE_MODE", "safe mode prevents extension fetch and import before load");
+  if (options.signal?.aborted || options.allowImport?.() === false) throw new ExtensionBundleLoadError("SCOPE_UNAVAILABLE", "extension scope is no longer active");
   const target = authority(url);
   if (typeof expectedSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(expectedSha256)) {
     throw new ExtensionBundleLoadError("INTEGRITY_MISMATCH", "extension bundle digest is invalid");
   }
   const source = await verifiedBytes(target, expectedSha256, options);
+  if (options.signal?.aborted || options.allowImport?.() === false) throw new ExtensionBundleLoadError("SCOPE_UNAVAILABLE", "extension scope is no longer active");
   const blobUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
   try {
     return await import(/* @vite-ignore */ blobUrl) as T;
