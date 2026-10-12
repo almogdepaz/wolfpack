@@ -1824,13 +1824,13 @@ function machineHeaderHtml(
   const machineUrl = multiMachine ? group.machine.url || "" : "";
   const compactCreateButton = group.online && group.sessions.length === 0 && !collapsed && surface !== "sidebar"
     ? ""
-    : machineAddButtonHtml(machineUrl, group.machine.name, multiMachine && !group.online);
-  const retryButton = multiMachine && !group.online && !group.pending
+    : machineAddButtonHtml(machineUrl, group.machine.name, !group.online);
+  const retryButton = !group.online && !group.pending
     ? `<button type="button" class="machine-retry-btn" data-action="retry-machine" aria-label="Retry ${escAttr(group.machine.name)}">Retry</button>`
     : "";
   const status = group.pending
     ? '<span class="machine-header-status">Connecting…</span>'
-    : !group.online && multiMachine
+    : !group.online
       ? `<span class="machine-header-status">${esc(machineFailureLabel(group.failure || "unknown"))}</span>`
       : "";
   const action = collapsed ? "Expand" : "Collapse";
@@ -1868,13 +1868,13 @@ function zeroSessionOnboardingHtml(machineUrl: string): string {
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, index: number) {
   const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
-  const statusDot = !multiMachine ? "green" : g.online ? "green" : (g.pending ? "gray" : "red");
-  const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
+  const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
+  const statusTitle = g.online ? "online" : (g.pending ? "connecting" : "offline");
   const outdated = g.online && Boolean(g.machine.version) && state.lastSessionGroups.some(group =>
     group.online && group.machine.version
     && group.machine.version.localeCompare(g.machine.version, undefined, { numeric: true }) > 0);
   const versionWarning = multiMachine && outdated ? `<span class="version-warning" title="Running v${escAttr(g.machine.version || "?")} — newer version available on another machine">⚠ UPDATE</span>` : "";
-  const offlineClass = multiMachine && !g.online && !g.pending ? " offline" : "";
+  const offlineClass = !g.online && !g.pending ? " offline" : "";
   const failureAttribute = g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
   const machineKey = multiMachine ? g.machine.url || "" : "";
   const bodyId = machineGroupBodyId(surface, index);
@@ -1914,7 +1914,7 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
     } else {
       bodyHtml += zeroSessionOnboardingHtml(multiMachine ? g.machine.url || "" : "");
     }
-  } else if (multiMachine) {
+  } else {
     const failure = machineFailureLabel(g.failure || "unknown");
     bodyHtml += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect.</div>`;
   }
@@ -5242,6 +5242,9 @@ function _renderSidebarNow() {
     if (g) {
       const bodyId = machineGroupBodyId("sidebar", 0);
       const collapsed = machineGroupIsCollapsed(g, "sidebar");
+      const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
+      const statusTitle = g.online ? "online" : (g.pending ? "connecting" : "offline");
+      const offlineClass = !g.online && !g.pending ? " offline" : "";
       let bodyHtml = '<div class="sidebar-no-sessions">No active sessions</div>';
       if (g.online) {
         const presentation = sessionCardGroupPresentation(g.sessions, "");
@@ -5250,8 +5253,12 @@ function _renderSidebarNow() {
           : presentation.empty === "idle"
             ? idleSessionEmptyHtml()
             : '<div class="sidebar-no-sessions">No active sessions</div>';
+      } else if (g.pending) {
+        bodyHtml = '<div class="sidebar-conn-status">Connecting...</div>';
+      } else {
+        bodyHtml = `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))}</div>`;
       }
-      html += `<div class="machine-group" data-machine="" data-machine-surface="sidebar">${machineHeaderHtml(g, "sidebar", bodyId, false, collapsed, "green", "online", "")}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
+      html += `<div class="machine-group${offlineClass}" data-machine="" data-machine-surface="sidebar">${machineHeaderHtml(g, "sidebar", bodyId, false, collapsed, statusDot, statusTitle, "")}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
     }
   } else {
     for (const [index, g] of groups.entries()) {
