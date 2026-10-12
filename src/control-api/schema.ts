@@ -1327,11 +1327,12 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       response: object({
         brokerAvailable: boolean(),
+        brokerReady: boolean(),
         counts: object({
           broker: integer(),
         }, ["broker"]),
-      }, ["brokerAvailable", "counts"]),
-      errors: [],
+      }, ["brokerAvailable", "brokerReady", "counts"]),
+      errors: ["503 ErrorEnvelope"],
     },
     "POST /api/kill": {
       operationId: "killSession",

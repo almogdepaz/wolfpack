@@ -20,7 +20,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { BrokerClient } from "../../src/broker/client";
-import { BrokerBackend } from "../../src/server/broker-backend";
+import { BROKER_UNAVAILABLE_GRACE_MS, BrokerBackend } from "../../src/server/broker-backend";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "..", "..");
 
@@ -59,13 +59,17 @@ async function waitForFile(p: string, timeoutMs: number): Promise<void> {
   throw new Error(`timeout waiting for ${p} to appear`);
 }
 
-async function buildClient(socketPath: string): Promise<BrokerClient> {
+async function buildClient(
+  socketPath: string,
+  hooks: { onConnect?: () => void; onDisconnect?: () => void } = {},
+): Promise<BrokerClient> {
   let resolveConnect!: () => void;
   const connected = new Promise<void>((r) => { resolveConnect = r; });
   const client = new BrokerClient({
     socketPath,
     requestTimeoutMs: 5000,
-    onConnect: () => resolveConnect(),
+    onConnect: () => { resolveConnect(); hooks.onConnect?.(); },
+    onDisconnect: hooks.onDisconnect,
   });
   client.start();
   await Promise.race([connected, wait(2000)]);
@@ -215,6 +219,43 @@ D("Broker restart/crash recovery", () => {
         expect(threw).toBe(true);
       }
 
+      client.close();
+    } finally {
+      if (subProc.exitCode === null) {
+        try { subProc.kill("SIGKILL"); } catch { /* swallow */ }
+      }
+      try { fs.rmSync(sub, { recursive: true, force: true }); } catch { /* swallow */ }
+    }
+  }, 20_000);
+
+  test("broker death outlasting the grace window notifies lifecycle subscribers", async () => {
+    const sub = fs.mkdtempSync(path.join(os.tmpdir(), "wp-brk-grace-"));
+    const subSocket = path.join(sub, "b.sock");
+    const subProc = spawn(BROKER_BIN!, [], {
+      env: { ...process.env, WOLFPACK_BROKER_SOCKET: subSocket, WOLFPACK_BROKER_LOG: "warn" },
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    try {
+      await waitForFile(subSocket, 5000);
+      let backend: BrokerBackend | null = null;
+      const client = await buildClient(subSocket, {
+        onConnect: () => backend?.handleBrokerConnected(),
+        onDisconnect: () => backend?.handleBrokerDisconnected(),
+      });
+      backend = new BrokerBackend(client);
+      await backend.createSession("grace-shell", sub, "shell", () => ({ agentCmd: "shell" }));
+      const events: Array<{ kind: string; at: number }> = [];
+      backend.onSessionLifecycle("grace-shell", (event) => events.push({ kind: event.kind, at: Date.now() }));
+
+      const killedAt = Date.now();
+      subProc.kill("SIGKILL");
+      await new Promise<void>((r) => subProc.once("exit", () => r()));
+      const deadline = Date.now() + BROKER_UNAVAILABLE_GRACE_MS + 3000;
+      while (!events.some((event) => event.kind === "broker_unavailable") && Date.now() < deadline) await wait(50);
+
+      const unavailable = events.find((event) => event.kind === "broker_unavailable");
+      expect(unavailable).toBeDefined();
+      expect(unavailable!.at - killedAt).toBeGreaterThanOrEqual(BROKER_UNAVAILABLE_GRACE_MS - 50);
       client.close();
     } finally {
       if (subProc.exitCode === null) {

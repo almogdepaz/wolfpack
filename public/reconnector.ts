@@ -4,7 +4,8 @@ export const RECONNECT_MAX_DELAY_MS = 5000;
 
 export interface ReconnectorOpts {
   shouldReconnect?: () => boolean;
-  onReconnecting?: () => void;
+  /** `attempt` is 1-based within the current budget; `delayMs` until it fires. */
+  onReconnecting?: (attempt: number, delayMs: number) => void;
   onExhausted?: () => void;
 }
 
@@ -40,6 +41,7 @@ export function createReconnector(
   let timer: unknown = null;
   let delay = RECONNECT_BASE_DELAY_MS;
   let startedAt = 0;
+  let attempt = 0;
   let blocked = false;
 
   function schedule(connectFn: () => void): void {
@@ -52,9 +54,9 @@ export function createReconnector(
       opts.onExhausted?.();
       return;
     }
-    opts.onReconnecting?.();
     const jitterMs = Math.floor(runtime.random() * 200);
     const delayMs = Math.min(delay + jitterMs, RECONNECT_MAX_DELAY_MS, remaining);
+    opts.onReconnecting?.(++attempt, delayMs);
     timer = runtime.setTimer(() => {
       timer = null;
       if (opts.shouldReconnect && !opts.shouldReconnect()) return;
@@ -73,6 +75,7 @@ export function createReconnector(
   function reset(): void {
     blocked = false;
     startedAt = 0;
+    attempt = 0;
     delay = RECONNECT_BASE_DELAY_MS;
   }
 

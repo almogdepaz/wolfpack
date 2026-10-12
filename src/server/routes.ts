@@ -124,9 +124,19 @@ export const routes: Record<
 
   "GET /api/backend": async (_req, res) => {
     const router = getRouter();
-    const counts = await router.getSessionCounts();
+    // brokerReady tracks the live connection; brokerAvailable only flips on a
+    // failed handshake. Reconnecting clients probe this to detect broker-down.
+    let counts: Awaited<ReturnType<typeof router.getSessionCounts>>;
+    try {
+      counts = await router.getSessionCounts();
+    } catch (e: unknown) {
+      log.debug("backend status: session count failed", { error: errMsg(e) });
+      json(res, { error: "broker unavailable", brokerAvailable: router.isBrokerAvailable(), brokerReady: false }, 503);
+      return;
+    }
     json(res, {
       brokerAvailable: router.isBrokerAvailable(),
+      brokerReady: router.isBrokerReady(),
       counts,
     });
   },

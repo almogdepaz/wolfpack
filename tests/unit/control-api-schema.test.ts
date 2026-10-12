@@ -73,8 +73,8 @@ describe("control api schema generation", () => {
   test("backend status matches the broker-only runtime response", () => {
     const response = httpResponse("getBackendStatus");
 
-    expect(validate(response, { brokerAvailable: true, counts: { broker: 2 } }, artifact)).toEqual([]);
-    expect(validate(response, { brokerAvailable: true, counts: { broker: 2, tmux: 0 } }, artifact)).not.toEqual([]);
+    expect(validate(response, { brokerAvailable: true, brokerReady: true, counts: { broker: 2 } }, artifact)).toEqual([]);
+    expect(validate(response, { brokerAvailable: true, brokerReady: true, counts: { broker: 2, tmux: 0 } }, artifact)).not.toEqual([]);
   });
 });
 

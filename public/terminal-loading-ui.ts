@@ -53,16 +53,20 @@ export function setTerminalLoadVisualState(el: HTMLElement | null, state: Termin
   }
   el.classList.add(STATE_CLASS_PREFIX + state);
   el.dataset.terminalLoadState = state;
-  const label = terminalLoadLabelFor(state);
+  setTerminalLoadLabel(el, terminalLoadLabelFor(state));
+  if (state === "live" || state === "ended" || state === "failed" || state === "viewer-conflict" || state === "displaced") {
+    clearTerminalSlowPath(el);
+  }
+}
+
+/** Replace the visible label (e.g. a reconnect countdown) without changing the load state. */
+export function setTerminalLoadLabel(el: HTMLElement, label: string): void {
   el.dataset.terminalLoadLabel = label;
   if (typeof el.setAttribute === "function") {
     el.setAttribute("aria-label", label);
   }
   const inlineStatus = el.querySelector<HTMLElement>(".grid-cell-loading");
   if (inlineStatus) inlineStatus.dataset.terminalLoadLabel = label;
-  if (state === "live" || state === "ended" || state === "failed" || state === "viewer-conflict" || state === "displaced") {
-    clearTerminalSlowPath(el);
-  }
 }
 
 export function createTerminalSlowPathIndicator(

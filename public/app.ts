@@ -36,8 +36,10 @@ import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { createSessionInspector } from "./session-inspector";
 import { rankProjectNames } from "./project-picker";
-import { authenticatedFetchWithTimeout, getBrowserAuthToken } from "./browser-auth";
+import { authenticatedFetchWithTimeout, browserAuthFetch, getBrowserAuthToken } from "./browser-auth";
 import { RequestTimeoutError } from "./fetch-timeout";
+import { probeBackendStatus } from "./backend-probe";
+import { createReconnectBanner } from "./reconnect-banner";
 import { keyboardOcclusionHeight } from "./viewport-geometry";
 import type { OrderedResizeSettlement } from "./ordered-resize";
 import { RESIZE_SEND_DEBOUNCE_MS } from "./pty-socket-client";
@@ -188,6 +190,11 @@ import {
   handleViewerConflict,
   prepareAutoTakeControl,
 } from "../src/take-control-logic";
+import {
+  BACKEND_PROBE_TIMEOUT_MS,
+  type BackendProbeResult,
+  type ReconnectStatus,
+} from "../src/connection-status";
 
 // ── WASM capability guard ──
 
@@ -805,6 +812,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       },
       getBrowserAuthToken,
       getDebugStorage: safeLocalStorage,
+      probeBackend: probeTerminalBackend,
     },
   });
 }
@@ -970,6 +978,19 @@ function resolveReadyMachineOrigin(machineIdentity: string | undefined): string 
   return isStableMachineIdentity(machineIdentity)
     ? tailnetPeers.resolveReadyOrigin(machineIdentity)
     : undefined;
+}
+
+/** Display name for a terminal's machine; undefined for the local server. */
+function terminalMachineLabel(machineIdentity: string | undefined): string | undefined {
+  if (!machineIdentity || machineIdentity === LOCAL_MACHINE_IDENTITY) return undefined;
+  return getMachines().find((machine) => machine.url === machineIdentity)?.name || "remote machine";
+}
+
+/** Reconnect cause probe: never prompts for credentials; any HTTP answer means reachable. */
+function probeTerminalBackend(machineIdentity: string | undefined): Promise<BackendProbeResult> {
+  const origin = resolveReadyMachineOrigin(machineIdentity);
+  const url = origin ? new URL("/api/backend", origin).href : "/api/backend";
+  return probeBackendStatus(url, browserAuthFetch, BACKEND_PROBE_TIMEOUT_MS);
 }
 
 async function showMachineUnavailable(): Promise<void> {
@@ -3512,6 +3533,11 @@ function handleTerminalReconnecting(entry: SingleTerminalEntry): void {
   if (isVisibleSingleTerminal(entry)) setConnState("reconnecting");
 }
 
+function handleTerminalReconnectStatus(entry: SingleTerminalEntry, status: ReconnectStatus): void {
+  if (!isVisibleSingleTerminal(entry)) return;
+  connStatusBanner.show(entry, status, terminalMachineLabel(entry.key.machine));
+}
+
 function handleTerminalReconnectExhausted(entry: SingleTerminalEntry): void {
   if (!isVisibleSingleTerminal(entry)) {
     handleParkedTerminalEvent(entry, "reconnect-exhausted");
@@ -3574,6 +3600,7 @@ function createTerminalBootstrapController(
     onControlGranted: () => handleTerminalControlGranted(entry, isMobile),
     onDisconnected: (code, reason) => handleTerminalDisconnected(entry, inspectionTarget, code, reason),
     onReconnecting: () => handleTerminalReconnecting(entry),
+    onReconnectStatus: (status) => handleTerminalReconnectStatus(entry, status),
     onReconnectExhausted: () => handleTerminalReconnectExhausted(entry),
     onRouteUnavailable: () => handleTerminalRouteUnavailable(entry),
     onHydrationStart: () => handleTerminalHydrationStart(entry),
@@ -3788,6 +3815,7 @@ function releaseSingleTerminalView(preserveTarget: boolean, park: boolean): void
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
   if (!isDesktop()) setMobileGhosttyKeyboardOpen(false);
   releaseVisibleSingleTerminal(park);
+  connStatusBanner.stop();
   // Clean up visualViewport handler
   if (state.visualViewportHandler && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
@@ -3811,9 +3839,24 @@ function releaseSingleTerminalView(preserveTarget: boolean, park: boolean): void
 
 // ── Terminal ──
 
+// Cause + countdown for the visible terminal's reconnect; stops when it is released.
+const connStatusBanner = createReconnectBanner<SingleTerminalEntry>({
+  getElement: () => document.getElementById("conn-status"),
+  isCurrentOwner: (entry) => isVisibleSingleTerminal(entry),
+  createIcon: () => {
+    const icon = document.createElement("img");
+    icon.src = "/wolfpack-icon.svg";
+    icon.className = "conn-icon";
+    return icon;
+  },
+  createCountdown: () => document.createElement("span"),
+});
+
 function setConnState(connState: string): void {
   const statusEl = document.getElementById("conn-status");
   if (!statusEl) return;
+  statusEl.dataset.connState = connState;
+  if (connState !== "reconnecting") connStatusBanner.stop();
   const active = !!state.terminalController?.term;
   if (state.currentView !== "terminal" || !active || connState === "live") {
     statusEl.style.display = "none";
@@ -3823,7 +3866,8 @@ function setConnState(connState: string): void {
   if (connState === "reconnecting") {
     statusEl.style.display = "block";
     statusEl.style.background = "#8a5a00";
-    statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">reconnecting\u2026';
+    // Keep a live cause label (the socket refreshes it per attempt); else generic.
+    if (!statusEl.dataset.reconnectLead) statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">reconnecting\u2026';
     return;
   }
   if (connState === "offline") {
@@ -5803,6 +5847,7 @@ initGridDeps({
   ensureGridIsolation,
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
+  terminalMachineLabel,
 });
 
 const workspaceTerminalLayouts = new TerminalLayoutRegistry();
