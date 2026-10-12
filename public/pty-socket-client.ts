@@ -21,6 +21,15 @@ import {
 import type { PtyOutputAck } from "../src/pty-websocket-contract";
 import { MOBILE_FOREGROUND_PROBE_MS } from "../src/mobile-foreground";
 import { classifyDisconnect } from "../src/take-control-logic";
+import {
+  RECONNECT_CAUSE,
+  nextReconnectCause,
+  reconnectCauseFromClose,
+  reconnectCauseFromProbe,
+  type BackendProbeResult,
+  type ReconnectCause,
+  type ReconnectStatus,
+} from "../src/connection-status";
 import { splitTerminalInputBytes } from "../src/terminal-input";
 import {
   CLOSE_CODE_PREFILL_TIMEOUT,
@@ -48,6 +57,8 @@ export interface PtySocketClientDependencies {
   readonly requestWebSocketTicket: (machine?: string) => Promise<string>;
   readonly getBrowserAuthToken: (origin: string) => string | null;
   readonly getDebugStorage: () => Pick<Storage, "getItem"> | null;
+  /** Probe the terminal's server after an unexplained disconnect. */
+  readonly probeBackend?: (machine?: string) => Promise<BackendProbeResult>;
   /** Geometry most recently declared stable after paint. Defaults to one
    *  page-wide record so a session switch can reuse its predecessor's. */
   readonly layoutStableMemory?: LayoutStableMemory;
@@ -118,6 +129,8 @@ export interface PtySocketClientOpts {
   readonly onReplacePrefill?: () => void;
   readonly onDisconnected?: (code: number, reason: string) => void;
   readonly onReconnecting?: () => void;
+  /** Fires per scheduled retry and again when a probe refines its cause. */
+  readonly onReconnectStatus?: (status: ReconnectStatus) => void;
   readonly onReconnectExhausted?: () => void;
   readonly onRouteUnavailable?: () => void;
   readonly shouldReconnect?: () => boolean;
@@ -162,11 +175,46 @@ export function createPtySocketClient(
   dependencies: PtySocketClientDependencies,
 ): PtySocketClient {
   let ws: WebSocket | null = null;
+  // Why the terminal is reconnecting; cleared at protocol readiness.
+  let _reconnectCause: ReconnectCause = RECONNECT_CAUSE.UNKNOWN;
+  let _reconnectStatus: ReconnectStatus | null = null;
+  let _probeGeneration = 0;
   const _rc = createReconnector({
     shouldReconnect: opts.shouldReconnect,
-    onReconnecting: opts.onReconnecting,
-    onExhausted: opts.onReconnectExhausted,
+    onReconnecting: (attempt, delayMs) => {
+      opts.onReconnecting?.();
+      _reconnectStatus = { cause: _reconnectCause, attempt, retryAt: Date.now() + delayMs };
+      opts.onReconnectStatus?.(_reconnectStatus);
+    },
+    onExhausted: () => {
+      clearReconnectCause();
+      opts.onReconnectExhausted?.();
+    },
   });
+
+  function noteReconnectCause(evidence: ReconnectCause): void {
+    _reconnectCause = nextReconnectCause(_reconnectCause, evidence);
+    if (!_reconnectStatus || _reconnectStatus.cause === _reconnectCause) return;
+    _reconnectStatus = { ..._reconnectStatus, cause: _reconnectCause };
+    opts.onReconnectStatus?.(_reconnectStatus);
+  }
+
+  function probeDisconnectCause(): void {
+    const probeBackend = dependencies.probeBackend;
+    if (!probeBackend) return;
+    const generation = ++_probeGeneration;
+    void probeBackend(opts.machine).then((result) => {
+      if (generation === _probeGeneration) noteReconnectCause(reconnectCauseFromProbe(result));
+    }, (error: unknown) => {
+      console.warn("[pty-ws] backend probe failed:", error);
+    });
+  }
+
+  function clearReconnectCause(): void {
+    _probeGeneration++;
+    _reconnectCause = RECONNECT_CAUSE.UNKNOWN;
+    _reconnectStatus = null;
+  }
   let hasConnected = false;
   let connectGeneration = 0;
   let connectPending = false;
@@ -609,6 +657,7 @@ export function createPtySocketClient(
   function handlePtyReady(): void {
     __wfTraceEvent(_trace, "pty_ready");
     _rc.connected();
+    clearReconnectCause();
     if (opts.onPtyReady) opts.onPtyReady();
   }
 
@@ -839,7 +888,17 @@ export function createPtySocketClient(
         ws = null;
         finishProbe?.(false);
         resetAttachLifecycle();
-        if (classifyDisconnect(ev.code, ev.reason) !== "reconnect") _rc.block();
+        // Any newer close outranks an older probe still in flight.
+        _probeGeneration++;
+        if (classifyDisconnect(ev.code, ev.reason) !== "reconnect") {
+          _rc.block();
+        } else {
+          // The attempt this socket belonged to is over; the next schedule reports anew.
+          _reconnectStatus = null;
+          const cause = reconnectCauseFromClose(ev.code);
+          if (cause) noteReconnectCause(cause);
+          else probeDisconnectCause();
+        }
         if (opts.onDisconnected) opts.onDisconnected(ev.code, ev.reason);
       };
 
@@ -848,6 +907,8 @@ export function createPtySocketClient(
       if (generation === connectGeneration) {
         connectFailed = true;
         console.warn("[pty-ws] ticket request failed:", error);
+        _reconnectStatus = null;
+        probeDisconnectCause();
       }
     }).finally(() => {
       if (generation !== connectGeneration) return;
@@ -911,6 +972,7 @@ export function createPtySocketClient(
 
   function close() {
     connectGeneration++;
+    clearReconnectCause();
     _rc.cancel();
     _rc.block();
     resetAttachLifecycle();
@@ -926,6 +988,8 @@ export function createPtySocketClient(
   // against this and bails. reconnect() bypasses that guard. See PR #89 review / df4180c.
   function reconnect(reconnectOpts?: { takeControl?: boolean }) {
     connectGeneration++;
+    // The retired attempt's probe must not relabel the fresh one; the cause stays.
+    _probeGeneration++;
     _rc.cancel();
     // Explicit retry/takeover may leave a terminal-blocked state; mount's
     // automatic reconciliation must not, but this fresh attempt may retry.

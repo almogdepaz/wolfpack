@@ -66,6 +66,8 @@ interface BrokerBackendLike extends SessionBackend, PtyBackendMethods, SessionPr
   inspectSession(selector: string): Promise<SessionInspectionResult>;
   ingestEvent(event: EventBody): void;
   handleReplayTruncated(sessionId: string): void;
+  handleBrokerConnected(): void;
+  handleBrokerDisconnected(): void;
   handleResubscribeError(sessionId: string, error: Error): void;
 }
 
@@ -105,8 +107,13 @@ export class BackendRouter implements SessionBackend {
   private startBrokerClient(): void {
     const { BrokerClient } = require("../broker/client.js");
     const { createBrokerBackend } = require("./broker-backend.js");
+    // Bound to this client's backend, not `this.broker`: a watchdog teardown
+    // nulls `this.broker` before the old socket's disconnect callback fires.
+    let backend: BrokerBackendLike | null = null;
     const client = new BrokerClient({
       socketPath: this.brokerSocketPath,
+      onConnect: () => backend?.handleBrokerConnected(),
+      onDisconnect: () => backend?.handleBrokerDisconnected(),
       onEvent: (event: EventBody) => {
         this.broker?.ingestEvent(event);
       },
@@ -131,9 +138,10 @@ export class BackendRouter implements SessionBackend {
         });
       },
     });
+    backend = createBrokerBackend(client);
     client.start();
     this.brokerClient = client;
-    this.broker = createBrokerBackend(client);
+    this.broker = backend;
   }
 
   /**

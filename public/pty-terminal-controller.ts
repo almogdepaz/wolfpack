@@ -22,6 +22,7 @@ import {
   TERMINAL_REHYDRATION_ACTION,
 } from "../src/terminal-connection-lifecycle";
 import { type LayoutStablePrefillMode } from "../src/terminal-layout-stable-debug";
+import type { ReconnectStatus } from "../src/connection-status";
 
 export const INITIAL_HYDRATION_SETTLE_MS = 16;
 export const INITIAL_HYDRATION_SILENCE_MS = 32;
@@ -161,6 +162,7 @@ export interface PtyTerminalControllerOpts {
   readonly onSubSessionOpened?: (parentSession: string, session: string) => void;
   readonly onDisconnected?: (code: number, reason: string) => void;
   readonly onReconnecting?: () => void;
+  readonly onReconnectStatus?: (status: ReconnectStatus) => void;
   readonly onReconnectExhausted?: () => void;
   readonly onRouteUnavailable?: () => void;
   readonly onHydrationStart?: () => void;
@@ -737,6 +739,7 @@ export function createPtyTerminalController(
       },
       onDisconnected: (code, reason) => { if (isCurrent() && opts.onDisconnected) opts.onDisconnected(code, reason); },
       onReconnecting: () => { if (isCurrent() && opts.onReconnecting) opts.onReconnecting(); },
+      onReconnectStatus: (status) => { if (isCurrent() && opts.onReconnectStatus) opts.onReconnectStatus(status); },
       onReconnectExhausted: () => { if (isCurrent() && opts.onReconnectExhausted) opts.onReconnectExhausted(); },
       onRouteUnavailable: () => { if (isCurrent() && opts.onRouteUnavailable) opts.onRouteUnavailable(); },
     }, dependencies.socket);

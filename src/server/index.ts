@@ -37,6 +37,7 @@ import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
 import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
 import { getExtensionRouteService } from "./extension-routes.ts";
+import { installShutdownSignalHandlers } from "./shutdown.js";
 
 const log = createLogger("server");
 
@@ -333,6 +334,8 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
     log.error("server error", { error: err.message });
     process.exit(1);
   });
+
+  installShutdownSignalHandlers(wss);
 
   server.listen(port, host, () => {
     log.info("server started", { url: `http://localhost:${port}/` });

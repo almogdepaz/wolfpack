@@ -11,10 +11,12 @@ import { __wfTraceEvent, __wfTraceGet, __wfTraceStart, wfCursorBlinkDisabled } f
 import {
   createTerminalSlowPathIndicator,
   revealTerminalConflict,
+  setTerminalLoadLabel,
   setTerminalLoadVisualState,
 } from "./terminal-loading-ui";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { TERMINAL_PREFILL_MODE } from "../src/terminal-prefill";
+import { createReconnectStatusTicker, type ReconnectStatus } from "../src/connection-status";
 import type { TerminalPrefillMode } from "../src/terminal-prefill";
 import {
   addToGridState,
@@ -108,6 +110,7 @@ interface GridDeps {
   ensureGridIsolation?: () => Promise<boolean>;
   focusDelegationSession?: (session: string, machine: string) => void;
   leaveDelegationWorkspace?: () => void;
+  terminalMachineLabel?: (machine: string | undefined) => string | undefined;
 }
 
 let deps: GridDeps;
@@ -442,6 +445,14 @@ async function mountGridController(gs, cell, idx) {
     return;
   }
   const tp = TERM_PRESETS[wpSettings.termFontSize] || TERM_PRESETS.medium;
+  // Self-stopping: quits once the cell leaves the reconnecting state or the DOM.
+  const reconnectTicker = createReconnectStatusTicker((view) => {
+    if (!cell.isConnected || cell.dataset.terminalLoadState !== "reconnecting") {
+      reconnectTicker.stop();
+      return;
+    }
+    setTerminalLoadLabel(cell, view.label);
+  });
   const controller = deps.createPtyTerminalController({
     session: gs.session,
     machine: gs.machine || "",
@@ -526,6 +537,9 @@ async function mountGridController(gs, cell, idx) {
     onReconnecting: () => {
       setTerminalLoadVisualState(cell, "reconnecting");
       gs._slowLoad?.start("reconnecting grid cell");
+    },
+    onReconnectStatus: (status: ReconnectStatus) => {
+      reconnectTicker.update(status, deps.terminalMachineLabel?.(gs.machine));
     },
     onReconnectExhausted: () => {
       gs._slowLoad?.stop();
