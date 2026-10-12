@@ -10,8 +10,12 @@ let server: ReturnType<typeof createServer>;
 let base: string;
 
 beforeAll(async () => {
-  server = createServer((_req: IncomingMessage, res: ServerResponse) => {
-    serveHtml(res, TEST_HTML);
+  server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    if (req.url === "/index.html") {
+      serveFile(res, "index.html", req);
+    } else {
+      serveHtml(res, TEST_HTML);
+    }
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const addr = server.address() as AddressInfo;
@@ -32,6 +36,75 @@ describe("CSP header on HTML responses", () => {
     expect(scriptSrc).toBeTruthy();
     expect(scriptSrc).toContain("'nonce-");
     expect(scriptSrc).not.toContain("'unsafe-inline'");
+    expect(scriptSrc).not.toContain("'unsafe-eval'");
+    expect(scriptSrc).toContain("'wasm-unsafe-eval'");
+    expect(scriptSrc).toContain("blob:");
+  });
+
+  test("serveFile applies CSP and nonces to the charset-bearing index asset", async () => {
+    const res = await fetch(base + "/index.html");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    const csp = res.headers.get("content-security-policy");
+    expect(csp).toBeTruthy();
+    expect(res.headers.get("cache-control")).toBe("no-cache");
+    const scriptSrc = csp!.split(";").find(d => d.trim().startsWith("script-src"));
+    expect(scriptSrc).toContain("'nonce-");
+    expect(scriptSrc).toContain("'wasm-unsafe-eval'");
+    expect(scriptSrc).toContain("blob:");
+    expect(scriptSrc).not.toContain("'unsafe-eval'");
+    expect(scriptSrc).not.toContain("'unsafe-inline'");
+    const nonce = csp!.match(/'nonce-([A-Za-z0-9+/]+=*)'/)?.[1];
+    expect(nonce).toBeTruthy();
+    const html = await res.text();
+    const scriptTags = html.match(/<script\b[^>]*>/gi) || [];
+    expect(scriptTags.length).toBeGreaterThan(0);
+    for (const tag of scriptTags) {
+      expect(tag).toContain(`nonce="${nonce}"`);
+    }
+  });
+
+  test("connect-src permits the Ghostty embedded WASM loader", async () => {
+    const res = await fetch(base + "/index.html");
+    const csp = res.headers.get("content-security-policy")!;
+    const connectSrc = csp.split(";").find(d => d.trim().startsWith("connect-src"));
+    // Ghostty's loader fetches its embedded WASM from a data: URL.
+    expect(connectSrc).toContain("data:");
+  });
+
+  for (const encoding of ["br", "gzip"]) {
+    test(`compresses nonce-bearing HTML with ${encoding} without caching a nonce`, async () => {
+      const nonces = new Set<string>();
+      for (let i = 0; i < 2; i++) {
+        const res = await fetch(base + "/index.html", {
+          headers: { "Accept-Encoding": encoding },
+        });
+        expect(res.headers.get("content-encoding")).toBe(encoding);
+        expect(res.headers.get("vary")).toContain("Accept-Encoding");
+        expect(res.headers.get("content-type")).toBe("text/html; charset=utf-8");
+        expect(res.headers.get("cache-control")).toBe("no-cache");
+        expect(res.headers.get("etag")).toBeNull();
+        const csp = res.headers.get("content-security-policy")!;
+        const nonce = csp.match(/'nonce-([A-Za-z0-9+/]+=*)'/)?.[1];
+        expect(nonce).toBeTruthy();
+        nonces.add(nonce!);
+        const html = await res.text();
+        const scriptTags = html.match(/<script\b[^>]*>/gi) || [];
+        expect(scriptTags.length).toBeGreaterThan(0);
+        for (const tag of scriptTags) {
+          expect(tag).toContain(`nonce="${nonce}"`);
+        }
+      }
+      expect(nonces.size).toBe(2);
+    });
+  }
+
+  test("does not compress HTML with disabled encodings", async () => {
+    const res = await fetch(base + "/index.html", {
+      headers: { "Accept-Encoding": "br;q=0, gzip;q=0" },
+    });
+    expect(res.headers.get("content-encoding")).toBeNull();
+    expect(await res.text()).toContain("<script nonce=");
   });
 
   test("nonce in CSP matches nonce in HTML script tags", async () => {
