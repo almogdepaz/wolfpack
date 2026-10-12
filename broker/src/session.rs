@@ -40,8 +40,18 @@ use crate::terminal_state::{FeedOutcome, RawSnapshot, TerminalState, TerminalSta
 /// `session_exited`, `session_resized`, `snapshot_invalidated`) is published
 /// here so per-connection forwarders can fan events out to clients.
 pub type EventSender = broadcast::Sender<Event>;
-type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+/// Bytes of OSC 7501 query replies held while a client write owns the PTY
+/// writer. A reply is 10–11 bytes; anything beyond this means the program is
+/// flooding queries without reading stdin, and extra replies are dropped.
+const MAX_PENDING_REPLY_BYTES: usize = 1024;
 const EXIT_DRAIN_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
+/// Minimum spacing of one session's `program_status_changed` events. Real
+/// emitters change state on human time scales (claude: idle → working → done
+/// over seconds), so 200ms (≤ 5 events/s per session) costs no visible latency,
+/// while a program reporting on every write can no longer fill the shared
+/// 256-slot event bus that also carries lifecycle events. The server batches
+/// its own refresh across sessions on top of this.
+const PROGRAM_STATUS_EVENT_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone)]
 pub struct SpawnOptions {
@@ -106,6 +116,8 @@ pub enum SpawnError {
     ReaderClone(String),
     #[error("writer acquisition failed: {0}")]
     WriterTake(String),
+    #[error("PTY master fd duplication failed: {0}")]
+    MasterDup(String),
     #[error("thread spawn failed: {0}")]
     ThreadSpawn(String),
     #[error("terminal state failed: {0}")]
@@ -206,8 +218,8 @@ pub struct Session {
     /// into `writer` so stdin writes don't serialise against resize ioctls.
     master: Mutex<Box<dyn MasterPty + Send>>,
     /// Write half of the PTY master, taken once at spawn via `take_writer()`.
-    /// Shared with the drainer, which writes OSC 7501 query replies.
-    writer: SharedWriter,
+    /// Shared with the drainer, which sends OSC 7501 query replies.
+    input: Arc<PtyInput>,
     /// Canonical terminal-state emulator. The drainer thread feeds every PTY
     /// byte chunk through this before forwarding to subscribers; readers
     /// (`snapshot_terminal`) lock it only to capture raw snapshot buffers.
@@ -227,6 +239,8 @@ pub struct Session {
     /// Resize changes terminal truth without advancing the output seq. Prevent
     /// an in-flight off-lock conversion from repopulating an invalidated cache.
     snapshot_generation: AtomicU64,
+    /// Latest root program status record and its paced change events.
+    program_status: Arc<ProgramStatusPublisher>,
 }
 
 impl std::fmt::Debug for Session {
@@ -297,10 +311,12 @@ impl Session {
         // block (see `NonBlockingReply` and `PtyWriter`); each owns a dup of
         // the master so the fd it sets flags on cannot be closed and reused
         // underneath it.
+        #[cfg(test)]
+        fail_forced_setup_step(ForcedSetupFailure::MasterDup)?;
         let reply_fd = dup_master_fd(pair.master.as_ref())
-            .map_err(|e| SpawnError::WriterTake(e.to_string()))?;
+            .map_err(|e| SpawnError::MasterDup(e.to_string()))?;
         let writer_fd = dup_master_fd(pair.master.as_ref())
-            .map_err(|e| SpawnError::WriterTake(e.to_string()))?;
+            .map_err(|e| SpawnError::MasterDup(e.to_string()))?;
         let writer: Box<dyn Write + Send> = Box::new(PtyWriter {
             inner: Some(writer),
             fd: writer_fd,
@@ -337,12 +353,15 @@ impl Session {
         let drain_bus = Arc::clone(&bus);
         let drain_inner = Arc::clone(&inner);
         let drain_events = events.clone();
-        let writer: SharedWriter = Arc::new(Mutex::new(writer));
+        let input = Arc::new(PtyInput::new(id, writer, reply_fd));
+        let program_status = Arc::new(ProgramStatusPublisher::new(
+            id,
+            events.clone(),
+            PROGRAM_STATUS_EVENT_INTERVAL,
+        ));
         let drain_effects = DrainEffects {
-            session_id: drain_id,
-            writer: Arc::clone(&writer),
-            reply_fd,
-            events: events.clone(),
+            input: Arc::clone(&input),
+            program_status: Arc::clone(&program_status),
         };
         let mut drain_child_killer = child.clone_killer();
         if let Err(e) = spawn_named_thread(format!("broker-pty-read-{drain_id}"), move || {
@@ -371,6 +390,7 @@ impl Session {
         let reaper_seq = Arc::clone(&seq);
         let reap_id = id;
         let reaper_events = events.clone();
+        let reaper_program_status = Arc::clone(&program_status);
         spawn_named_thread(format!("broker-pty-wait-{reap_id}"), move || {
             reap(
                 child.into_child(),
@@ -380,6 +400,7 @@ impl Session {
                 reaper_seq,
                 reap_id,
                 reaper_events,
+                &reaper_program_status,
             )
         })
         .map_err(|e| SpawnError::ThreadSpawn(e.to_string()))?;
@@ -387,12 +408,13 @@ impl Session {
         Ok(Session {
             inner,
             master: Mutex::new(pair.master),
-            writer,
+            input,
             terminal,
             seq,
             bus,
             snapshot_cache: Mutex::new(None),
             snapshot_generation: AtomicU64::new(0),
+            program_status,
         })
     }
 
@@ -410,9 +432,11 @@ impl Session {
             .clone()
     }
 
+    /// Never takes the terminal lock: `list_sessions` calls this per session
+    /// and must not queue behind a feed or snapshot capture.
     pub fn info(&self) -> SessionInfo {
-        let program_status = self.terminal.lock().expect("terminal poisoned").program_status_root();
-        self.snapshot().to_info(self.seq.load(Ordering::Acquire), program_status)
+        self.snapshot()
+            .to_info(self.seq.load(Ordering::Acquire), self.program_status.root())
     }
 
     /// Every OSC 7501 program status record (root and children), sorted by id.
@@ -506,7 +530,7 @@ impl Session {
 
     /// Write raw bytes to the PTY master's stdin (e.g. keyboard input from a client).
     pub fn write_stdin(&self, data: &[u8]) -> io::Result<()> {
-        self.writer.lock().expect("writer poisoned").write_all(data)
+        self.input.write_input(data)
     }
 
     /// Materialise a `protocol::Snapshot` from the session's emulator state.
@@ -706,59 +730,254 @@ impl TerminalFeed for TerminalState {
 }
 
 /// Where the drainer delivers feed side effects: OSC 7501 query replies go
-/// straight to the PTY and record changes become one event per chunk.
+/// to the PTY input and record changes go to the paced publisher.
 struct DrainEffects {
+    input: Arc<PtyInput>,
+    program_status: Arc<ProgramStatusPublisher>,
+}
+
+/// The session's PTY stdin, shared by client input and the drainer's OSC 7501
+/// query replies.
+///
+/// Client writes block (that is their backpressure). Replies must never wait
+/// for one: a program that stopped reading stdin can leave a client write
+/// blocked indefinitely while still producing output. So a reply is queued and
+/// written by whichever thread holds the writer next: the drainer itself when
+/// the writer is free (`try_lock`), otherwise the client writer right after its
+/// write. That writer re-checks the queue after unlocking, so a reply queued
+/// while it held the lock is never stranded.
+///
+/// Only the drainer writes replies non-blocking (`NonBlockingReply`, dropped
+/// when the input queue is full): the flag lives on the open file description
+/// the drainer reads from, so no other thread may set it while the drainer
+/// could be inside `read()`. A client thread flushes replies with an ordinary
+/// blocking write, which is its own backpressure anyway.
+struct PtyInput {
     session_id: Uuid,
-    writer: SharedWriter,
+    writer: Mutex<Box<dyn Write + Send>>,
+    pending_replies: Mutex<Vec<u8>>,
     /// Dup of the PTY master (shares the writer's open file description);
     /// `None` only for test writers that cannot block.
     reply_fd: Option<OwnedFd>,
-    events: EventSender,
 }
 
-impl DrainEffects {
-    fn deliver(&self, reply: &[u8], program_status: Option<Option<ProgramStatusRecord>>) {
-        if !reply.is_empty() {
-            let mut writer = self.writer.lock().expect("writer poisoned");
-            let written = match &self.reply_fd {
-                Some(fd) => NonBlockingReply::enter(fd.as_fd())
-                    .and_then(|_restore| writer.write_all(reply)),
-                None => writer.write_all(reply),
-            };
-            // Best effort, like the probe itself: a dropped or failed reply
-            // only means the program sees the protocol as unsupported.
-            match written {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    tracing::debug!(
-                        session_id = %self.session_id,
-                        "PTY input full; dropped program status query reply"
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(session_id = %self.session_id, %error, "failed to answer program status query");
-                }
-            }
+impl PtyInput {
+    fn new(session_id: Uuid, writer: Box<dyn Write + Send>, reply_fd: Option<OwnedFd>) -> Self {
+        Self {
+            session_id,
+            writer: Mutex::new(writer),
+            pending_replies: Mutex::new(Vec::new()),
+            reply_fd,
         }
-        if let Some(root) = program_status {
-            let _ = self.events.send(Event::ProgramStatusChanged {
-                session_id: self.session_id,
-                program_status: root,
-            });
+    }
+
+    /// Client input: blocks while the program's input queue is full.
+    fn write_input(&self, data: &[u8]) -> io::Result<()> {
+        let written = {
+            let mut writer = self.writer.lock().expect("writer poisoned");
+            let written = writer.write_all(data);
+            self.flush_replies(&mut writer, ReplyWrite::Blocking);
+            written
+        };
+        self.flush_replies_if_idle(ReplyWrite::Blocking);
+        written
+    }
+
+    fn send_reply(&self, reply: &[u8]) {
+        if reply.is_empty() {
+            return;
+        }
+        {
+            let mut pending = self.pending_replies.lock().expect("pending replies poisoned");
+            if pending.len() + reply.len() > MAX_PENDING_REPLY_BYTES {
+                tracing::debug!(session_id = %self.session_id, "too many pending program status query replies; dropped one");
+                return;
+            }
+            pending.extend_from_slice(reply);
+        }
+        self.flush_replies_if_idle(ReplyWrite::NonBlocking);
+    }
+
+    fn flush_replies_if_idle(&self, mode: ReplyWrite) {
+        if self.pending_replies.lock().expect("pending replies poisoned").is_empty() {
+            return;
+        }
+        // Busy: the current holder flushes after its write and re-checks
+        // after unlocking.
+        if let Ok(mut writer) = self.writer.try_lock() {
+            self.flush_replies(&mut writer, mode);
+        }
+    }
+
+    /// Caller holds the writer.
+    fn flush_replies(&self, writer: &mut Box<dyn Write + Send>, mode: ReplyWrite) {
+        let replies = std::mem::take(&mut *self.pending_replies.lock().expect("pending replies poisoned"));
+        if replies.is_empty() {
+            return;
+        }
+        let written = match (mode, &self.reply_fd) {
+            (ReplyWrite::NonBlocking, Some(fd)) => {
+                NonBlockingReply::enter(fd.as_fd()).and_then(|_restore| writer.write_all(&replies))
+            }
+            _ => writer.write_all(&replies),
+        };
+        // Best effort, like the probe itself: a dropped or failed reply only
+        // means the program sees the protocol as unsupported.
+        match written {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                tracing::debug!(
+                    session_id = %self.session_id,
+                    "PTY input full; dropped program status query reply"
+                );
+            }
+            Err(error) => {
+                tracing::warn!(session_id = %self.session_id, %error, "failed to answer program status query");
+            }
         }
     }
 }
 
+/// Holds a session's latest root program status record for `info()` and
+/// publishes `program_status_changed` at most once per `interval`: the first
+/// change goes out at once, later ones within the interval collapse into one
+/// trailing event that carries the latest root, so the newest state is always
+/// delivered. A pacing thread starts on the first change (most sessions never
+/// report). `close` flushes a pending change and joins the thread.
+struct ProgramStatusPublisher {
+    session_id: Uuid,
+    events: EventSender,
+    interval: Duration,
+    shared: Arc<(Mutex<PublisherState>, Condvar)>,
+}
+
+#[derive(Default)]
+struct PublisherState {
+    root: Option<ProgramStatusRecord>,
+    dirty: bool,
+    closed: bool,
+    pacer: Option<thread::JoinHandle<()>>,
+}
+
+impl ProgramStatusPublisher {
+    fn new(session_id: Uuid, events: EventSender, interval: Duration) -> Self {
+        Self {
+            session_id,
+            events,
+            interval,
+            shared: Arc::new((Mutex::new(PublisherState::default()), Condvar::new())),
+        }
+    }
+
+    fn root(&self) -> Option<ProgramStatusRecord> {
+        self.shared.0.lock().expect("program status poisoned").root.clone()
+    }
+
+    /// Record a changed root and schedule its event.
+    fn update(&self, root: Option<ProgramStatusRecord>) {
+        let (lock, wake) = &*self.shared;
+        let mut state = lock.lock().expect("program status poisoned");
+        state.root = root;
+        if state.closed {
+            // After close nobody paces: publish directly.
+            self.send(state.root.clone());
+            return;
+        }
+        state.dirty = true;
+        if state.pacer.is_none() {
+            match self.spawn_pacer() {
+                Ok(handle) => state.pacer = Some(handle),
+                Err(error) => {
+                    tracing::warn!(session_id = %self.session_id, %error, "program status pacer unavailable; publishing unpaced");
+                    state.dirty = false;
+                    self.send(state.root.clone());
+                    return;
+                }
+            }
+        }
+        wake.notify_all();
+    }
+
+    /// Flush any pending change and stop pacing; later updates publish
+    /// directly.
+    fn close(&self) {
+        let pacer = {
+            let mut state = self.shared.0.lock().expect("program status poisoned");
+            state.closed = true;
+            self.shared.1.notify_all();
+            state.pacer.take()
+        };
+        if let Some(pacer) = pacer {
+            let _ = pacer.join();
+        }
+    }
+
+    fn send(&self, root: Option<ProgramStatusRecord>) {
+        let _ = self.events.send(Event::ProgramStatusChanged {
+            session_id: self.session_id,
+            program_status: root,
+        });
+    }
+
+    fn spawn_pacer(&self) -> io::Result<thread::JoinHandle<()>> {
+        let shared = Arc::clone(&self.shared);
+        let events = self.events.clone();
+        let session_id = self.session_id;
+        let interval = self.interval;
+        thread::Builder::new()
+            .name(format!("broker-pty-status-{session_id}"))
+            .spawn(move || {
+                let (lock, wake) = &*shared;
+                loop {
+                    let root = {
+                        let mut state = lock.lock().expect("program status poisoned");
+                        while !state.dirty && !state.closed {
+                            state = wake.wait(state).expect("program status poisoned");
+                        }
+                        if !state.dirty {
+                            return;
+                        }
+                        state.dirty = false;
+                        state.root.clone()
+                    };
+                    let _ = events.send(Event::ProgramStatusChanged { session_id, program_status: root });
+                    // Hold later changes for the interval; closing cuts the
+                    // wait short so a pending change flushes promptly.
+                    let state = lock.lock().expect("program status poisoned");
+                    let _ = wake
+                        .wait_timeout_while(state, interval, |state| !state.closed)
+                        .expect("program status poisoned");
+                }
+            })
+    }
+}
+
+impl Drop for ProgramStatusPublisher {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+/// How a thread holding the PTY writer flushes queued replies.
+#[derive(Clone, Copy)]
+enum ReplyWrite {
+    /// Drainer thread only (see `PtyInput`).
+    NonBlocking,
+    /// Client input threads.
+    Blocking,
+}
+
 /// Holds the PTY master's open file description in `O_NONBLOCK` for one
-/// query reply and restores its flags on drop.
+/// query reply and restores its flags on drop. Drainer thread only.
 ///
 /// A blocking reply write would stall the drainer whenever the program does
 /// not read stdin (a raw-mode program flooding `OSC 7501 ; ?` wedges its
 /// whole session: no output drain, so the program blocks on stdout too). With
-/// the writer mutex held, nothing else can observe the flag: stdin writes take
-/// the same mutex, the reader shares the description but is this drainer
-/// thread, and resize is an ioctl on the master. A full input queue drops the
-/// reply (possibly after a partial write the program is not reading anyway).
+/// the writer mutex held on the drainer thread, nothing else can observe the
+/// flag: stdin writes take the same mutex, the reader shares the description
+/// but is this drainer thread, and resize is an ioctl on the master. A full
+/// input queue drops the reply (possibly after a partial write the program is
+/// not reading anyway).
 struct NonBlockingReply<'a> {
     fd: BorrowedFd<'a>,
     flags: libc::c_int,
@@ -865,7 +1084,7 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                 // reflects only N-1 chunks (or vice versa). The new seq
                 // (post-bump) is the chunk's own seq — i.e. snapshot.seq
                 // and OutputChunk.seq use the same monotonic numbering.
-                let (reply, program_status) = {
+                let reply = {
                     let mut term = terminal.lock().expect("terminal poisoned");
                     // A reaper timeout closes the bus while holding this same
                     // lock. Once forced closed, no later PTY bytes may advance
@@ -877,22 +1096,24 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                         Ok(outcome) => (seq.fetch_add(1, Ordering::SeqCst) + 1, outcome),
                         Err(error) => break Err(io::Error::other(error)),
                     };
-                    let program_status = outcome
-                        .program_status_changed
-                        .then(|| term.program_status_root());
+                    // Under the terminal lock, so the reaper's exit update
+                    // (same lock) can never be overwritten by a stale root.
+                    if outcome.program_status_changed {
+                        effects.program_status.update(term.program_status_root());
+                    }
                     // Publish before releasing the terminal lock. Atomic
                     // snapshot+subscribe takes the same terminal→bus order,
                     // so a chunk cannot be included in both snapshot and live.
                     // OSC 7501 bytes stay in the published chunk (replay and
                     // snapshot fidelity; viewers ignore the unknown OSC).
                     bus.publish(OutputChunk { seq: new_seq, data });
-                    (outcome.pty_reply, program_status)
+                    outcome.pty_reply
                 };
-                // Outside the terminal lock: a PTY write may block, and
-                // snapshots must not wait on it. The reply still precedes any
+                // Outside the terminal lock, and never waiting on a client
+                // write (see `PtyInput`). The reply still precedes any
                 // viewer's DA reply, which needs a full broker→browser→broker
                 // round trip of the chunk just published.
-                effects.deliver(&reply, program_status);
+                effects.input.send_reply(&reply);
             }
             Err(error) => break Err(error),
         }
@@ -960,6 +1181,7 @@ where
 enum ForcedSetupFailure {
     ReaderClone,
     WriterTake,
+    MasterDup,
     ReaderThread,
     ReaperThread,
 }
@@ -986,6 +1208,7 @@ fn fail_forced_setup_step(step: ForcedSetupFailure) -> Result<(), SpawnError> {
         Err(match step {
             ForcedSetupFailure::ReaderClone => SpawnError::ReaderClone("forced failure".into()),
             ForcedSetupFailure::WriterTake => SpawnError::WriterTake("forced failure".into()),
+            ForcedSetupFailure::MasterDup => SpawnError::MasterDup("forced failure".into()),
             ForcedSetupFailure::ReaderThread | ForcedSetupFailure::ReaperThread => {
                 SpawnError::ThreadSpawn("forced failure".into())
             }
@@ -1010,6 +1233,7 @@ fn reap(
     seq: Arc<AtomicU64>,
     session_id: Uuid,
     events: EventSender,
+    program_status: &ProgramStatusPublisher,
 ) {
     let exit = child.wait();
     let final_seq = if output_bus.wait_closed(EXIT_DRAIN_BARRIER_TIMEOUT) {
@@ -1027,13 +1251,14 @@ fn reap(
     };
     // The program is gone: its working/blocked/idle records no longer
     // describe anything; done/error records survive for the user to see.
-    let program_status = {
+    {
         let mut term = terminal.lock().expect("terminal poisoned");
-        term.drop_transient_program_status().then(|| term.program_status_root())
-    };
-    if let Some(root) = program_status {
-        let _ = events.send(Event::ProgramStatusChanged { session_id, program_status: root });
+        if term.drop_transient_program_status() {
+            program_status.update(term.program_status_root());
+        }
     }
+    // Flush the final change ahead of `session_exited`.
+    program_status.close();
     let (exit_code, transitioned) = {
         let mut st = inner.state.lock().expect("session state poisoned");
         let transitioned = st.alive;
@@ -1132,12 +1357,62 @@ mod tests {
         let writes = CapturedWrites::default();
         let (events, receiver) = broadcast::channel(16);
         let effects = DrainEffects {
-            session_id: Uuid::nil(),
-            writer: Arc::new(Mutex::new(Box::new(writes.clone()))),
-            reply_fd: None,
-            events,
+            input: Arc::new(PtyInput::new(Uuid::nil(), Box::new(writes.clone()), None)),
+            program_status: Arc::new(ProgramStatusPublisher::new(Uuid::nil(), events, Duration::from_secs(1))),
         };
         (effects, writes, receiver)
+    }
+
+    /// Writer double whose writes wait until the test opens the gate.
+    struct GatedWrites {
+        captured: CapturedWrites,
+        entered: std::sync::mpsc::Sender<()>,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    impl Write for GatedWrites {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let _ = self.entered.send(());
+            let (open, opened) = &*self.gate;
+            let mut open = open.lock().expect("gate");
+            while !*open {
+                open = opened.wait(open).expect("gate");
+            }
+            self.captured.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn reply_sent_during_a_client_write_follows_it_without_waiting() {
+        let captured = CapturedWrites::default();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let input = Arc::new(PtyInput::new(
+            Uuid::nil(),
+            Box::new(GatedWrites { captured: captured.clone(), entered: entered_tx, gate: Arc::clone(&gate) }),
+            None,
+        ));
+        let client = Arc::clone(&input);
+        let typing = thread::spawn(move || client.write_input(b"typed").expect("client write"));
+        entered_rx.recv_timeout(Duration::from_secs(2)).expect("client write in flight");
+
+        let started = std::time::Instant::now();
+        input.send_reply(b"\x1b]7501;?\x07");
+        assert!(started.elapsed() < Duration::from_millis(100), "reply waited for the client write");
+        assert!(captured.bytes().is_empty());
+
+        *gate.0.lock().expect("gate") = true;
+        gate.1.notify_all();
+        typing.join().expect("client thread");
+        assert_eq!(captured.bytes(), b"typed\x1b]7501;?\x07", "queued reply follows the client write");
+
+        // With the writer free, a reply is written immediately.
+        input.send_reply(b"\x1b]7501;?\x1b\\");
+        assert_eq!(captured.bytes(), b"typed\x1b]7501;?\x07\x1b]7501;?\x1b\\");
     }
 
     struct ChunkReader {
@@ -1190,21 +1465,20 @@ mod tests {
         .expect("drain");
 
         assert!(writes.bytes().is_empty(), "broker must not answer: {:?}", writes.bytes());
+        effects.program_status.close();
         assert!(events.try_recv().is_err(), "no program status event without a report");
     }
 
     #[test]
-    fn drainer_emits_one_program_status_event_per_changed_chunk() {
+    fn drainer_publishes_record_changes_ending_on_the_latest_root() {
         let terminal = Arc::new(Mutex::new(TerminalState::try_new(80, 24).expect("terminal init")));
         let (effects, writes, mut events) = test_drain_effects();
         drain_reader_with_terminal(
             ChunkReader {
                 chunks: [
-                    // Two reports in one chunk: one event.
                     &b"\x1b]7501;state=working\x07\x1b]7501;state=blocked:kind=question\x07"[..],
-                    // Unchanged report: no event.
+                    // Unchanged report: not a change.
                     b"\x1b]7501;state=blocked:kind=question\x07",
-                    // Clear: event without a root record.
                     b"\x1b]7501;state=clear\x07",
                 ]
                 .into(),
@@ -1215,20 +1489,77 @@ mod tests {
             &effects,
         )
         .expect("drain");
+        assert_eq!(effects.program_status.root(), None, "the cached root follows every chunk");
+        effects.program_status.close();
 
-        match events.try_recv() {
-            Ok(Event::ProgramStatusChanged { program_status: Some(root), .. }) => {
-                assert_eq!(root.state, crate::protocol::ProgramStatusState::Blocked);
-                assert_eq!(root.kind, Some(crate::protocol::ProgramStatusKind::Question));
+        let mut roots = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            match event {
+                Event::ProgramStatusChanged { program_status, .. } => roots.push(program_status),
+                other => panic!("unexpected {other:?}"),
             }
-            other => panic!("expected blocked root event, got {other:?}"),
         }
-        assert!(matches!(
-            events.try_recv(),
-            Ok(Event::ProgramStatusChanged { program_status: None, .. })
-        ));
-        assert!(events.try_recv().is_err(), "unchanged report must not emit");
+        // Paced: the leading event saw whichever root was current when the
+        // pacer ran; the clear is always the final event.
+        assert!(matches!(roots.as_slice(), [None] | [Some(_), None]), "{roots:?}");
+        if let [Some(root), None] = roots.as_slice() {
+            assert_eq!(root.state, crate::protocol::ProgramStatusState::Blocked);
+            assert_eq!(root.kind, Some(crate::protocol::ProgramStatusKind::Question));
+        }
         assert!(writes.bytes().is_empty(), "reports are never echoed");
+    }
+
+    fn record(state: crate::protocol::ProgramStatusState) -> Option<ProgramStatusRecord> {
+        Some(ProgramStatusRecord {
+            id: String::new(),
+            state,
+            kind: None,
+            progress: None,
+            app: None,
+            title: None,
+            message: None,
+            updated_at_ms: 0,
+        })
+    }
+
+    fn next_root(events: &mut broadcast::Receiver<Event>, within: Duration) -> Option<Option<crate::protocol::ProgramStatusState>> {
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            match events.try_recv() {
+                Ok(Event::ProgramStatusChanged { program_status, .. }) => {
+                    return Some(program_status.map(|record| record.state))
+                }
+                Ok(other) => panic!("unexpected {other:?}"),
+                Err(_) if std::time::Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
+                Err(_) => return None,
+            }
+        }
+    }
+
+    #[test]
+    fn publisher_sends_the_first_change_at_once_and_coalesces_the_rest_to_the_latest() {
+        use crate::protocol::ProgramStatusState::{Blocked, Done, Working};
+        let (events, mut rx) = broadcast::channel(16);
+        let publisher = ProgramStatusPublisher::new(Uuid::nil(), events, Duration::from_millis(400));
+
+        publisher.update(record(Working));
+        assert_eq!(next_root(&mut rx, Duration::from_millis(150)), Some(Some(Working)), "leading edge");
+        publisher.update(record(Blocked));
+        publisher.update(record(Done));
+        assert_eq!(publisher.root().map(|record| record.state), Some(Done));
+        assert_eq!(next_root(&mut rx, Duration::from_millis(150)), None, "held for the interval");
+        assert_eq!(next_root(&mut rx, Duration::from_secs(1)), Some(Some(Done)), "trailing edge carries the latest");
+        assert_eq!(next_root(&mut rx, Duration::from_millis(500)), None, "one trailing event");
+
+        // A change held by the interval flushes promptly on close; afterwards
+        // updates go out at once.
+        publisher.update(record(Working));
+        assert_eq!(next_root(&mut rx, Duration::from_millis(150)), Some(Some(Working)));
+        publisher.update(record(Blocked));
+        publisher.close();
+        assert_eq!(next_root(&mut rx, Duration::from_millis(50)), Some(Some(Blocked)), "flushed on close");
+        publisher.update(None);
+        assert_eq!(next_root(&mut rx, Duration::from_millis(50)), Some(None));
     }
 
     #[derive(Default)]
@@ -1474,6 +1805,7 @@ mod tests {
         for failure in [
             ForcedSetupFailure::ReaderClone,
             ForcedSetupFailure::WriterTake,
+            ForcedSetupFailure::MasterDup,
             ForcedSetupFailure::ReaderThread,
             ForcedSetupFailure::ReaperThread,
         ] {
@@ -1485,10 +1817,15 @@ mod tests {
                     err,
                     SpawnError::ReaderClone(_)
                         | SpawnError::WriterTake(_)
+                        | SpawnError::MasterDup(_)
                         | SpawnError::ThreadSpawn(_)
                 ),
                 "{failure:?}: {err:?}"
             );
+            if failure == ForcedSetupFailure::MasterDup {
+                assert!(matches!(err, SpawnError::MasterDup(_)), "{err:?}");
+                assert!(err.to_string().starts_with("PTY master fd duplication failed"), "{err}");
+            }
             let (spawned_pid, reaped_pid) = take_cleanup_observation_for_test();
             assert_eq!(reaped_pid, spawned_pid, "{failure:?} must reap its child");
             let pid = spawned_pid.expect("spawned child pid");
@@ -2180,6 +2517,111 @@ mod tests {
             dropped_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
             "session drop blocked on the PTY"
         );
+    }
+
+    #[test]
+    fn query_reply_does_not_wait_behind_a_blocked_stdin_write() {
+        // The program stops reading stdin, a client write fills the input
+        // queue and blocks holding the writer, then the program queries. The
+        // drainer must keep draining output instead of waiting for the writer.
+        let sess = Arc::new(
+            spawn_session(opts(vec![
+                "sh",
+                "-c",
+                "stty raw -echo; sleep 1; printf '\\033]7501;?\\007'; sleep 0.5; echo AFTER-QUERY; sleep 5",
+            ]))
+            .expect("spawn"),
+        );
+        // Raw mode first: canonical mode discards overflow instead of blocking.
+        thread::sleep(Duration::from_millis(400));
+        let writer = Arc::clone(&sess);
+        let blocked_write = thread::spawn(move || {
+            let _ = writer.write_stdin(&vec![b'x'; 1 << 20]);
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let drained = loop {
+            let snap = sess.snapshot_terminal(None, None).expect("snapshot");
+            if screen_contains(&snap, "AFTER-QUERY") {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        assert!(!blocked_write.is_finished(), "stdin write was expected to block");
+        let _ = sess.kill(libc::SIGKILL);
+        assert!(drained, "drainer stalled behind the blocked stdin write");
+        let _ = sess.wait_for_exit(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn info_does_not_wait_for_the_terminal_lock() {
+        let sess = Arc::new(
+            Session::spawn(
+                opts(vec!["sh", "-c", "printf '\\033]7501;state=working\\007'; sleep 5"]),
+                test_events(),
+            )
+            .expect("spawn"),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while sess.info().program_status.is_none() {
+            assert!(std::time::Instant::now() < deadline, "root record never reported");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // list_sessions builds one info() per session: it must not queue
+        // behind a long terminal feed or snapshot capture.
+        let held = sess.terminal.lock().expect("terminal");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = Arc::clone(&sess);
+        thread::spawn(move || {
+            let _ = tx.send(reader.info().program_status.map(|record| record.state));
+        });
+        let state = rx.recv_timeout(Duration::from_secs(2));
+        drop(held);
+        assert_eq!(
+            state.expect("info() blocked on the terminal lock"),
+            Some(crate::protocol::ProgramStatusState::Working)
+        );
+        let _ = sess.kill(libc::SIGKILL);
+        let _ = sess.wait_for_exit(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn program_status_flood_is_paced_and_ends_on_the_latest_state() {
+        let events = test_events();
+        let mut rx = events.subscribe();
+        let started = std::time::Instant::now();
+        let sess = Session::spawn(
+            opts(vec![
+                "sh",
+                "-c",
+                "i=0; while [ $i -lt 3000 ]; do \
+                 printf '\\033]7501;state=working:progress=%d\\007' $((i % 100)); i=$((i+1)); done; \
+                 printf '\\033]7501;state=blocked:kind=question\\007'; sleep 1",
+            ]),
+            events,
+        )
+        .expect("spawn");
+        assert!(sess.wait_for_exit(Duration::from_secs(20)));
+        let elapsed = started.elapsed();
+        let mut changes = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let Event::ProgramStatusChanged { program_status, .. } = event {
+                changes.push(program_status);
+            }
+        }
+        // At most one event per pacing interval (plus the leading edge and
+        // the exit flush), however fast the program reports.
+        let bound = (elapsed.as_millis() / PROGRAM_STATUS_EVENT_INTERVAL.as_millis()) as usize + 3;
+        assert!(changes.len() <= bound, "{} events in {elapsed:?} (bound {bound})", changes.len());
+        // The latest state is always delivered: blocked, then exit drops it.
+        let blocked = changes
+            .iter()
+            .rposition(|change| matches!(change, Some(record) if record.state == crate::protocol::ProgramStatusState::Blocked))
+            .expect("final blocked report was delivered");
+        assert_eq!(changes.len(), blocked + 2, "only the exit change follows: {changes:?}");
+        assert_eq!(changes.last(), Some(&None));
     }
 
     #[test]

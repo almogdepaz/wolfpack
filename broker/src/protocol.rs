@@ -434,9 +434,10 @@ pub enum Event {
     },
     SessionResized { session_id: Uuid, cols: u16, rows: u16 },
     SnapshotInvalidated { session_id: Uuid },
-    /// The session's program status records changed (at most one event per
-    /// drained PTY chunk). Carries the current root record; absent when the
-    /// root was cleared or never reported. Children: `session_info`.
+    /// The session's program status records changed (paced: at most one event
+    /// per 200ms per session, trailing event carries the latest root). Carries
+    /// the current root record; absent when the root was cleared or never
+    /// reported. Children: `session_info`.
     ProgramStatusChanged {
         session_id: Uuid,
         #[serde(default, skip_serializing_if = "Option::is_none")]

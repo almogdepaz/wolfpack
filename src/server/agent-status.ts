@@ -517,6 +517,19 @@ function structuredSignalAdvanced(previous: AgentRuntimeState | undefined, next:
     && next.signalSequence > previous.signalSequence;
 }
 
+/**
+ * A blocked program asking for something new (another kind or another
+ * question) is a new request even though the state is still needs-input, so
+ * the attention layer sees it. Only program status carries this detail, and
+ * only blocked requests count: working/done messages narrate progress and
+ * would otherwise mint a transition per report.
+ */
+function programRequestChanged(previous: AgentRuntimeState, next: AgentStatusSource): boolean {
+  return next.authority === AGENT_STATUS_AUTHORITY.PROGRAM
+    && next.state === AGENT_STATUS_STATE.NEEDS_INPUT
+    && (previous.inputKind !== next.inputKind || previous.message !== next.message);
+}
+
 function runtimeStateChanged(previous: AgentRuntimeState | undefined, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): boolean {
   if (!previous) return true;
   return previous.state !== next.state
@@ -524,7 +537,8 @@ function runtimeStateChanged(previous: AgentRuntimeState | undefined, next: Agen
     || previous.source !== next.source
     || previous.freshness !== next.freshness
     || previous.runId !== runtimeRunId(next, run)
-    || previous.runOrder !== runtimeRunOrder(next, run);
+    || previous.runOrder !== runtimeRunOrder(next, run)
+    || programRequestChanged(previous, next);
 }
 
 export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRuntimeState {

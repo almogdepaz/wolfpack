@@ -213,7 +213,7 @@ Streams `GET /api/events` (server-sent events, ordinary API auth). Kinds:
 
 - `session.created` — `sessionId`, `session`, `cwd`
 - `session.exited` — `sessionId`, `session` (when known), `reason` (`exit` or `killed`), `exitCode?`, `signal?`
-- `session.state` — `session`, `sessionId?`, `state`, `label`, `transitionSequence`, plus `inputKind?` and `message?` when the state comes from the program's own OSC 7501 status report; published when an agent's runtime state transitions. Observed every ~5s, so expect up to that much latency.
+- `session.state` — `session`, `sessionId?`, `state`, `label`, `transitionSequence`, plus `inputKind?` and `message?` when the state comes from the program's own OSC 7501 status report; published when an agent's runtime state transitions, including a blocked program switching to a different request (new `inputKind` or `message`) while staying `needs-input`. Observed every ~5s, so expect up to that much latency.
 - `task.updated` — `taskId`, `eventId`, `eventType` (canonical task event, e.g. `task.completed`), `sequence`; emitted by the machine holding the task's sender ledger.
 
 Every event also carries a per-server-process monotonic `id` and an ISO `at`. `--session` matches a name or stable id and excludes task events. `--json` prints one event object per line; otherwise one human line per event.

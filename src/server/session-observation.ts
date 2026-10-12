@@ -37,6 +37,7 @@ import { loadSettings } from "./project-settings-routes.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import { eventSubscriberCount, publishEvent } from "./event-bus.js";
+import { onProgramStatusChanged } from "./program-status-signal.js";
 
 const log = createLogger("session-observation");
 const SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS = 5_000;
@@ -671,6 +672,35 @@ function scheduleSessionNotificationObservation(): void {
   });
 }
 
+/**
+ * A broker program status change starts an observation pass after this delay
+ * instead of waiting up to the 5s poll. Signals inside the window (a burst, or
+ * several sessions at once) share one pass; the broker already rate-limits
+ * each session's events, so this window only batches across sessions.
+ */
+const PROGRAM_STATUS_REFRESH_DELAY_MS = 50;
+let programStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function requestProgramStatusRefresh(): void {
+  dashboardObservationCache = null;
+  if (programStatusRefreshTimer) return;
+  programStatusRefreshTimer = setTimeout(() => {
+    programStatusRefreshTimer = null;
+    // A pass already in flight may have listed sessions before the change;
+    // run a fresh one after it rather than joining it.
+    void Promise.resolve(sessionNotificationObservationPromise)
+      .catch(() => undefined)
+      .then(scheduleSessionNotificationObservation);
+  }, PROGRAM_STATUS_REFRESH_DELAY_MS);
+}
+
+onProgramStatusChanged(requestProgramStatusRefresh);
+
+function cancelProgramStatusRefresh(): void {
+  if (programStatusRefreshTimer) clearTimeout(programStatusRefreshTimer);
+  programStatusRefreshTimer = null;
+}
+
 export function startSessionNotificationObserver(): void {
   if (sessionNotificationObservationTimer) return;
   scheduleSessionNotificationObservation();
@@ -681,6 +711,7 @@ export function startSessionNotificationObserver(): void {
 }
 
 export async function stopSessionNotificationObserver(): Promise<void> {
+  cancelProgramStatusRefresh();
   if (sessionNotificationObservationTimer) {
     clearInterval(sessionNotificationObservationTimer);
     sessionNotificationObservationTimer = null;
@@ -715,6 +746,7 @@ export function resetNotificationObservation(): void {
 
 export function __resetSessionObservationForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetSessionObservationForTests is test-only");
+  cancelProgramStatusRefresh();
   activityHistory.clear();
   quietAlertHistory.clear();
   activityContinuityTokens.clear();

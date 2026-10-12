@@ -41,6 +41,7 @@ const {
   __runSessionNotificationObservationForTests,
   observeDashboardSessions,
 } = await import("../../src/server/session-observation.ts");
+const { notifyProgramStatusChanged } = await import("../../src/server/program-status-signal.ts");
 type WolfpackEvent = import("../../src/events-contract.ts").WolfpackEvent;
 
 const { server } = createServerInstance();
@@ -286,8 +287,51 @@ describe("session.state events", () => {
         inputKind: "question",
         message: "Which branch?",
       });
+
+      // A different request in the same state is published too.
+      mockBackend.setProgramStatus("agent-4", {
+        id: "",
+        state: "blocked",
+        kind: "permission",
+        message: "Allow push?",
+        updatedAtMs: 2,
+      });
+      await __runSessionNotificationObservationForTests();
+      const [permission] = await stream.next(1);
+      expect(permission).toMatchObject({
+        session: "agent-4",
+        state: "needs-input",
+        inputKind: "permission",
+        message: "Allow push?",
+        transitionSequence: blocked!.kind === "session.state" ? blocked.transitionSequence + 1 : -1,
+      });
     } finally {
       mockBackend.setProgramStatus("agent-4", undefined);
+      stream.close();
+    }
+  });
+
+  test("a broker program status change is published without waiting for the poll interval", async () => {
+    mockBackend.setSessions(["agent-5"]);
+    mockBackend.setCapturePane(async () => "steady\n");
+    mockBackend.setOutputSequence("agent-5", "1");
+
+    const stream = await openStream("?kinds=session.state");
+    try {
+      await waitFor(() => eventSubscriberCount() === 1);
+      await __runSessionNotificationObservationForTests();
+
+      mockBackend.setProgramStatus("agent-5", { id: "", state: "working", updatedAtMs: 1 });
+      // Only the broker signal; no manual observation pass. stream.next waits
+      // at most 2s, well under the 5s notification poll.
+      const started = Date.now();
+      notifyProgramStatusChanged("agent-5-id");
+      notifyProgramStatusChanged("agent-5-id");
+      const [working] = await stream.next(1);
+      expect(working).toMatchObject({ session: "agent-5", state: "working" });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      mockBackend.setProgramStatus("agent-5", undefined);
       stream.close();
     }
   });

@@ -419,8 +419,10 @@ per session, through libghostty-vt:
   the only query the broker answers: every other reply libghostty produces
   (DA, DSR, XTVERSION, mode and color queries, ...) is dropped, because the
   viewer terminal already answers those through `input_binary`. The reply
-  write never blocks the drainer: when the program has left its input queue
-  full (it is not reading stdin), the reply is dropped, as the protocol allows.
+  never blocks the drainer: while an `input_binary` write is in progress the
+  reply is queued and written right after it, and when the program has left
+  its input queue full (it is not reading stdin) the reply is dropped, as the
+  protocol allows.
 - **Records.** Validated reports update a per-session record set: a report
   replaces the record for its id; `state=clear` removes the id and its
   descendants (`a` clears `a/b`; an empty id clears all, as does RIS);
@@ -449,9 +451,13 @@ per session, through libghostty-vt:
 }
 ```
 
-A `program_status_changed` event is emitted at most once per drained PTY chunk
-and only when the record set actually changed (an identical re-report is not a
-change), plus once on exit when that drops records.
+A `program_status_changed` event is emitted only when the record set actually
+changed (an identical re-report is not a change), and at most once per 200ms
+per session: the first change goes out at once, later changes inside the
+window collapse into one trailing event carrying the then-current root, so the
+latest state is always delivered. A pending change is flushed on exit (with the
+exit's own drop of live records) before `session_exited`. `session_info` and
+`list_sessions` always report the current root, independent of pacing.
 
 ---
 

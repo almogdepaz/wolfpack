@@ -26,6 +26,7 @@ import { SHELL } from "../../src/server/shell";
 import { renderSnapshotToAnsi } from "../../src/broker/snapshot-render";
 import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event-bus";
 import type { WolfpackEvent } from "../../src/events-contract";
+import { onProgramStatusChanged } from "../../src/server/program-status-signal";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -1627,6 +1628,21 @@ describe("BrokerBackend.ingestEvent + onSessionLifecycle", () => {
     backend.onSessionLifecycle("live", (e) => seen.push(e));
     backend.ingestEvent({ event: "session_resized", session_id: SESSION_UUID_1, cols: 200, rows: 60 });
     expect(seen).toEqual([]);
+    expect(backend.isSessionAlive("live")).toBe(true);
+  });
+
+  test("program_status_changed signals a status refresh for that session only", () => {
+    const signalled: string[] = [];
+    const stop = onProgramStatusChanged((sessionId) => signalled.push(sessionId));
+    try {
+      backend.ingestEvent({ event: "program_status_changed", session_id: SESSION_UUID_1, program_status: { id: "", state: "working", updated_at_ms: 1 } });
+      backend.ingestEvent({ event: "program_status_changed", session_id: SESSION_UUID_1 });
+      backend.ingestEvent({ event: "program_status_changed", session_id: 7 });
+      backend.ingestEvent({ event: "program_status_changed" });
+    } finally {
+      stop();
+    }
+    expect(signalled).toEqual([SESSION_UUID_1, SESSION_UUID_1]);
     expect(backend.isSessionAlive("live")).toBe(true);
   });
 

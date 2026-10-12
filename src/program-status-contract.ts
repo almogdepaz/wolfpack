@@ -59,6 +59,9 @@ const PROGRAM_STATUS_AGENT_STATE: Record<ProgramStatusState, AgentStatusState> =
   [PROGRAM_STATUS_STATE.ERROR]: AGENT_STATUS_STATE.FAILED,
 };
 
+/** Every agent status a program status report can produce. */
+export const PROGRAM_STATUS_AGENT_STATE_SET: ReadonlySet<AgentStatusState> = new Set(Object.values(PROGRAM_STATUS_AGENT_STATE));
+
 const PROGRAM_STATUS_STATE_SET: ReadonlySet<string> = new Set(Object.values(PROGRAM_STATUS_STATE));
 const PROGRAM_STATUS_KIND_SET: ReadonlySet<string> = new Set(PROGRAM_STATUS_KINDS);
 const utf8 = new TextEncoder();

@@ -12,6 +12,7 @@ import type {
   AgentStatusSourceKind,
   AgentStatusState,
 } from "./agent-status-contract.js";
+import { PROGRAM_STATUS_AGENT_STATE_SET } from "./program-status-contract.js";
 import type { TriageStatus } from "./triage.js";
 
 export interface SessionRuntimeUiInput {
@@ -58,6 +59,12 @@ export function sessionRuntimeState(input: SessionRuntimeUiInput): AgentStatusSt
       && runtime.authority === AGENT_STATUS_AUTHORITY.MANIFEST
       && fresh
       && AGENT_SEMANTIC_STATUS_STATE_SET.has(state)
+    ) return state;
+    if (
+      runtime.source === AGENT_STATUS_SOURCE.PROGRAM_STATUS
+      && runtime.authority === AGENT_STATUS_AUTHORITY.PROGRAM
+      && fresh
+      && PROGRAM_STATUS_AGENT_STATE_SET.has(state)
     ) return state;
     if (
       runtime.source === AGENT_STATUS_SOURCE.SCREEN_FALLBACK

@@ -479,6 +479,38 @@ describe("agent runtime state ui", () => {
     }).label).toBe("quiet");
   });
 
+  test("shows every program status (OSC 7501) state with its own label", () => {
+    const program = (state: string) => sessionRuntimeUi({
+      runtimeState: {
+        state,
+        authority: AGENT_STATUS_AUTHORITY.PROGRAM,
+        freshness: AGENT_STATUS_FRESHNESS.FRESH,
+        source: AGENT_STATUS_SOURCE.PROGRAM_STATUS,
+        stale: false,
+      },
+      triage: "running",
+    });
+    expect(program(AGENT_STATUS_STATE.NEEDS_INPUT)).toMatchObject({ label: "needs input", dot: "yellow", badge: "needs-input" });
+    expect(program(AGENT_STATUS_STATE.WORKING).label).toBe("working");
+    expect(program(AGENT_STATUS_STATE.DONE).label).toBe("done");
+    expect(program(AGENT_STATUS_STATE.FAILED).label).toBe("failed");
+    expect(program(AGENT_STATUS_STATE.IDLE).label).toBe("quiet");
+    // States a program report can never map to stay rejected.
+    expect(program(AGENT_STATUS_STATE.OFF).label).toBe("output");
+    expect(program(AGENT_STATUS_STATE.AUDIT).label).toBe("output");
+    // Provenance mismatch: program authority with another source.
+    expect(sessionRuntimeUi({
+      runtimeState: {
+        state: AGENT_STATUS_STATE.NEEDS_INPUT,
+        authority: AGENT_STATUS_AUTHORITY.PROGRAM,
+        freshness: AGENT_STATUS_FRESHNESS.FRESH,
+        source: AGENT_STATUS_SOURCE.LOCAL_MANIFEST,
+        stale: false,
+      },
+      triage: "idle",
+    }).label).toBe("quiet");
+  });
+
   test("uses broker-backed availability labels", () => {
     expect(sessionRuntimeUi({
       runtimeState: {
@@ -579,24 +611,41 @@ describe("program status (OSC 7501) authority", () => {
     expect(state.authority).toBe(AGENT_STATUS_AUTHORITY.MANIFEST);
   });
 
-  test("a new message for the same state updates the record without a new transition", () => {
-    const first = deriveAgentRuntimeState({
+  function deriveAfter(previous: ReturnType<typeof deriveAgentRuntimeState> | undefined, sources: AgentStatusSource[]) {
+    return deriveAgentRuntimeState({
       sessionKey: "s1",
       broker: { state: "alive", observedAt: OBSERVED_AT },
-      sources: [programSource()],
+      sources,
       fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
       currentRun: { runId: "run-1", runOrder: 1 },
+      ...(previous ? { previous } : {}),
     });
-    const second = deriveAgentRuntimeState({
-      sessionKey: "s1",
-      broker: { state: "alive", observedAt: OBSERVED_AT },
-      sources: [programSource({ ...blockedRoot, message: "Run tests?", kind: "question" })],
-      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
-      currentRun: { runId: "run-1", runOrder: 1 },
-      previous: first,
-    });
+  }
 
-    expect(second.transitionSequence).toBe(first.transitionSequence);
-    expect(second).toMatchObject({ message: "Run tests?", inputKind: "question" });
+  test("a new blocked request in the same state is a transition", () => {
+    const permission = deriveAfter(undefined, [programSource()]);
+    const question = deriveAfter(permission, [programSource({ ...blockedRoot, message: "Run tests?", kind: "question" })]);
+    expect(question.transitionSequence).toBe(permission.transitionSequence + 1);
+    expect(question).toMatchObject({ state: "needs-input", message: "Run tests?", inputKind: "question", unseen: true });
+
+    // Same kind, new question text: still a new request.
+    const reworded = deriveAfter(question, [programSource({ ...blockedRoot, message: "Run lint?", kind: "question" })]);
+    expect(reworded.transitionSequence).toBe(question.transitionSequence + 1);
+
+    // An identical re-report is not.
+    const repeated = deriveAfter(reworded, [programSource({ ...blockedRoot, message: "Run lint?", kind: "question" })]);
+    expect(repeated.transitionSequence).toBe(reworded.transitionSequence);
+  });
+
+  test("detail churn outside a blocked request does not mint transitions", () => {
+    const working = deriveAfter(undefined, [programSource({ id: "", state: "working", message: "Reading files", updatedAtMs: 1 })]);
+    const stillWorking = deriveAfter(working, [programSource({ id: "", state: "working", message: "Editing", progress: 40, updatedAtMs: 2 })]);
+    expect(stillWorking.transitionSequence).toBe(working.transitionSequence);
+    expect(stillWorking).toMatchObject({ message: "Editing", progress: 40 });
+
+    // Non-program authorities never carry program detail; their messages are diagnostics.
+    const manifest = deriveAfter(undefined, [source({ message: "first" })]);
+    const manifestAgain = deriveAfter(manifest, [source({ message: "second" })]);
+    expect(manifestAgain.transitionSequence).toBe(manifest.transitionSequence);
   });
 });

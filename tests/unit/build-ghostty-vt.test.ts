@@ -9,6 +9,7 @@ import {
   copyGhosttyHeaders,
   createBundleManifest,
   ghosttyArchiveDefinedLibcAllocators,
+  ghosttyArchiveSymbolsReadable,
   ghosttyArchiveHasHostMemsetOverride,
   ghosttyBuildArgs,
   ghosttyPatchArgs,
@@ -200,6 +201,16 @@ describe("libghostty-vt bundle manifest provenance", () => {
     expect(ghosttyArchiveDefinedLibcAllocators(nm)).toEqual(["calloc", "free"]);
     expect(ghosttyArchiveDefinedLibcAllocators("00000000000000b4 T _malloc\n")).toEqual(["malloc"]);
     expect(ghosttyArchiveDefinedLibcAllocators("                 U calloc\n                 w free\n")).toEqual([]);
+  });
+
+  test("symbol policies only trust nm output that actually lists the archive's symbols", () => {
+    // GNU nm exits 0 with no symbols for Mach-O members ("file format not
+    // recognized"), which would make every symbol policy pass vacuously.
+    expect(ghosttyArchiveSymbolsReadable("")).toBe(false);
+    expect(ghosttyArchiveSymbolsReadable("\nlibghostty-vt-static_zcu.o:\n")).toBe(false);
+    expect(ghosttyArchiveSymbolsReadable("0000000000001000 T ghostty_terminal_new\n")).toBe(true);
+    expect(ghosttyArchiveSymbolsReadable("0000000000001000 T _ghostty_terminal_new\n")).toBe(true);
+    expect(ghosttyArchiveSymbolsReadable("                 U ghostty_terminal_new\n")).toBe(false);
   });
 
   test("rejects a stale symbol-policy manifest", () => {

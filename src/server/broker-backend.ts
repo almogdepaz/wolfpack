@@ -60,6 +60,7 @@ import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/co
 import type { SessionInspectionResult } from "../session-status-contract.js";
 import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import { publishEvent } from "./event-bus.js";
+import { notifyProgramStatusChanged } from "./program-status-signal.js";
 import {
   AGENT_KIND,
   detectAgentKindFromCommandArgs,
@@ -1019,8 +1020,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       case "snapshot_invalidated":
         return;
       case "program_status_changed":
-        // The root record also rides on list_sessions, which the session
-        // observer polls; event-driven refresh is a follow-up.
+        // Refresh runtime state now; the root record also rides on
+        // list_sessions, so the observer's poll remains the fallback.
+        if (typeof event.session_id === "string") notifyProgramStatusChanged(event.session_id);
         return;
     }
   }
