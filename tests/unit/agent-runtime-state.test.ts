@@ -12,7 +12,9 @@ import {
 import {
   AgentRuntimeStateStore,
   deriveAgentRuntimeState,
+  programStatusSource,
 } from "../../src/server/agent-status.ts";
+import type { ProgramStatusRecord } from "../../src/program-status-contract.ts";
 import { sessionRuntimeUi } from "../../src/agent-runtime-ui.ts";
 import type { AgentStatusSource } from "../../src/server/agent-status.ts";
 
@@ -488,5 +490,113 @@ describe("agent runtime state ui", () => {
       },
       triage: "idle",
     }).label).toBe("unavailable");
+  });
+});
+
+describe("program status (OSC 7501) authority", () => {
+  const blockedRoot: ProgramStatusRecord = {
+    id: "",
+    state: "blocked",
+    kind: "permission",
+    progress: 40,
+    app: "claude",
+    title: "Plan",
+    message: "Apply these changes?",
+    updatedAtMs: 1_700_000_000_000,
+  };
+
+  function programSource(record: ProgramStatusRecord = blockedRoot): AgentStatusSource {
+    const selected = programStatusSource(record, { runId: "run-1", observedAt: OBSERVED_AT });
+    if (!selected) throw new Error("expected a program status source");
+    return selected;
+  }
+
+  test("a blocked root record becomes needs-input with its typed kind and message", () => {
+    const state = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [programSource()],
+      fallback: { rawOutputChanged: true, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+
+    expect(state).toMatchObject({
+      state: AGENT_STATUS_STATE.NEEDS_INPUT,
+      authority: AGENT_STATUS_AUTHORITY.PROGRAM,
+      source: AGENT_STATUS_SOURCE.PROGRAM_STATUS,
+      freshness: AGENT_STATUS_FRESHNESS.FRESH,
+      inputKind: "permission",
+      progress: 40,
+      app: "claude",
+      title: "Plan",
+      message: "Apply these changes?",
+      runId: "run-1",
+    });
+  });
+
+  test("program status outranks a fresh manifest and the screen fallback", () => {
+    const state = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [
+        source({ state: AGENT_STATUS_STATE.DONE, signalSequence: 99 }),
+        programSource({ id: "", state: "working", updatedAtMs: 1 }),
+      ],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+
+    expect(state.state).toBe(AGENT_STATUS_STATE.WORKING);
+    expect(state.authority).toBe(AGENT_STATUS_AUTHORITY.PROGRAM);
+    expect(state).not.toHaveProperty("inputKind");
+  });
+
+  test("broker liveness still outranks program status", () => {
+    const state = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "dead", observedAt: OBSERVED_AT },
+      sources: [programSource()],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+
+    expect(state.state).toBe(AGENT_STATUS_STATE.OFF);
+    expect(state.authority).toBe(AGENT_STATUS_AUTHORITY.BROKER);
+    expect(state).not.toHaveProperty("inputKind");
+  });
+
+  test("no root record falls through to the existing authorities", () => {
+    expect(programStatusSource(undefined, { runId: "run-1", observedAt: OBSERVED_AT })).toBeUndefined();
+    const state = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [source({ state: AGENT_STATUS_STATE.DONE })],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+
+    expect(state.state).toBe(AGENT_STATUS_STATE.DONE);
+    expect(state.authority).toBe(AGENT_STATUS_AUTHORITY.MANIFEST);
+  });
+
+  test("a new message for the same state updates the record without a new transition", () => {
+    const first = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [programSource()],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+    const second = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [programSource({ ...blockedRoot, message: "Run tests?", kind: "question" })],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+      previous: first,
+    });
+
+    expect(second.transitionSequence).toBe(first.transitionSequence);
+    expect(second).toMatchObject({ message: "Run tests?", inputKind: "question" });
   });
 });

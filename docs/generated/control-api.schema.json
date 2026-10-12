@@ -4609,6 +4609,7 @@
       "enum": [
         "liveness",
         "lifecycle",
+        "program",
         "manifest",
         "fallback",
         "identity"
@@ -4626,6 +4627,7 @@
     "AgentStatusSource": {
       "enum": [
         "broker-liveness",
+        "program-status",
         "local-manifest",
         "screen-fallback",
         "session-identity"
@@ -4862,6 +4864,24 @@
           "type": "number"
         },
         "message": {
+          "type": "string"
+        },
+        "inputKind": {
+          "enum": [
+            "permission",
+            "question",
+            "auth"
+          ]
+        },
+        "progress": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "app": {
+          "type": "string"
+        },
+        "title": {
           "type": "string"
         }
       },

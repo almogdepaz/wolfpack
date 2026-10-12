@@ -195,6 +195,28 @@ export function assertNoHostMemsetOverride(archive: string): void {
   }
 }
 
+const LIBC_ALLOCATORS = new Set(["malloc", "calloc", "realloc", "free", "posix_memalign", "aligned_alloc", "memalign", "valloc"]);
+
+/**
+ * Libc allocator names the archive *defines* (nm lines with an address).
+ * Any such definition is linked into the broker ahead of the host libc's.
+ */
+export function ghosttyArchiveDefinedLibcAllocators(nmOutput: string): string[] {
+  const defined: string[] = [];
+  for (const line of nmOutput.split("\n")) {
+    const match = /^[0-9a-fA-F]+\s+[A-Za-z]\s+_?(\S+)$/.exec(line.trim());
+    if (match && LIBC_ALLOCATORS.has(match[1])) defined.push(match[1]);
+  }
+  return defined;
+}
+
+export function assertNoLibcAllocatorOverride(archive: string): void {
+  const defined = ghosttyArchiveDefinedLibcAllocators(run("nm", ["-a", archive]));
+  if (defined.length > 0) {
+    throw new Error(`Ghostty archive defines libc allocator symbols (${defined.join(", ")}): ${archive}`);
+  }
+}
+
 export function createBundleManifest(target: string, bundleDir: string, lock = readGhosttyLock()): GhosttyBundleManifest {
   const archive = join(bundleDir, "lib", "libghostty-vt.a");
   return {
@@ -251,6 +273,7 @@ function buildTarget(cargoTriple: string, sourceDir: string, lock: GhosttyLock) 
   copyFileSync(join(prefix, "lib", "libghostty-vt.a"), join(targetOut, "lib", "libghostty-vt.a"));
   copyGhosttyHeaders(prefix, targetOut);
   assertNoHostMemsetOverride(join(targetOut, "lib", "libghostty-vt.a"));
+  assertNoLibcAllocatorOverride(join(targetOut, "lib", "libghostty-vt.a"));
   const manifest = createBundleManifest(cargoTriple, targetOut, lock);
   writeFileSync(join(targetOut, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   verifyBundleManifest(cargoTriple, targetOut, lock);

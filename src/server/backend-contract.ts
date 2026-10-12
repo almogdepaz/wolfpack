@@ -1,4 +1,5 @@
 import type { SessionInspectionResult } from "../session-status-contract.js";
+import type { ProgramStatusRecord } from "../program-status-contract.js";
 import type { TaskWorkerLaunch } from "./task-worker-readiness.js";
 import type {
   AgentKind,
@@ -45,6 +46,8 @@ export interface SessionListFact {
   /** Decimal broker PTY output watermark; absent when connected to an older broker. */
   readonly outputSequence?: string;
   readonly identity?: PublicSessionIdentity;
+  /** Root OSC 7501 program status record held by the broker; absent when none was reported. */
+  readonly programStatus?: ProgramStatusRecord;
 }
 
 export interface CapturePaneOptions {

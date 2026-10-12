@@ -365,6 +365,32 @@ describe("BrokerBackend.list", () => {
     expect(client.requests.map(request => request.method)).toEqual(["list_sessions"]);
   });
 
+  test("projects the broker's root program status record and drops malformed ones", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [
+        {
+          ...sessionInfo({ name: "blocked", id: SESSION_UUID_1 }),
+          program_status: { id: "", state: "blocked", kind: "permission", message: "Apply?", updated_at_ms: 5 },
+        },
+        {
+          ...sessionInfo({ name: "garbled", id: SESSION_UUID_2 }),
+          program_status: { id: "", state: "needs-input", updated_at_ms: 5 },
+        },
+      ],
+    }));
+
+    const facts = await backend.listSessionFacts();
+
+    expect(facts.find((fact) => fact.name === "blocked")?.programStatus).toEqual({
+      id: "",
+      state: "blocked",
+      kind: "permission",
+      message: "Apply?",
+      updatedAtMs: 5,
+    });
+    expect(facts.find((fact) => fact.name === "garbled")).not.toHaveProperty("programStatus");
+  });
+
   test("prunes stale entries when broker drops a session", async () => {
     client.setHandler("list_sessions", () => okResp({
       sessions: [sessionInfo({ name: "alpha", id: SESSION_UUID_1 })],

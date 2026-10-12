@@ -8,6 +8,7 @@ import {
   GHOSTTY_PATCHES,
   copyGhosttyHeaders,
   createBundleManifest,
+  ghosttyArchiveDefinedLibcAllocators,
   ghosttyArchiveHasHostMemsetOverride,
   ghosttyBuildArgs,
   ghosttyPatchArgs,
@@ -84,6 +85,7 @@ describe("libghostty-vt prebuild arguments", () => {
     expect(GHOSTTY_PATCHES.map(path => path.split("/").at(-1))).toEqual([
       "ghostty-vt-scroll-region.patch",
       "ghostty-vt-no-static-host-memset.patch",
+      "ghostty-vt-no-libc-allocator-stubs.patch",
     ]);
     expect(ghosttyPatchArgs("/tmp/ghostty.patch")).toEqual(["-p1", "--fuzz=0", "-i", "/tmp/ghostty.patch"]);
   });
@@ -121,17 +123,21 @@ describe("libghostty-vt prebuild arguments", () => {
 
   test("Ghostty lock is the single source of build pins and patch hashes", () => {
     const lock = readGhosttyLock();
-    expect(lock.revision).toBe("7aa9591746ffa4d2eee458960c76554352832595");
-    expect(lock.sourceSha256).toBe("468a0564bdd481e291f6150b94300f9ff37c1a7524f6ae76e99c4ec15535cf66");
+    expect(lock.revision).toBe("a4aacd918ba9e79929ff608034c60a4341773ef0");
+    expect(lock.sourceSha256).toBe("afac1d2dda1bea17f2aae0e1b8ce5dca78e7c3d008a947a15e8ce54f4bf4744c");
     expect(lock.zigVersion).toBe("0.16.0");
     expect(lock.patches).toEqual([
       {
         path: "patches/ghostty-vt-scroll-region.patch",
-        sha256: "742062e34969dced67badc6ad984d8b5f0745fc9ead02bf3fab7d76e197f8381",
+        sha256: "28afd678eb0fd5ecee1b8588eac9a6dc958cf8b944b9c5cd0564fb731febe3d9",
       },
       {
         path: "patches/ghostty-vt-no-static-host-memset.patch",
-        sha256: "795e3d9e0344e9a3770550f27c533394443f21eec808333fe266a6e4835de292",
+        sha256: "f2416747cc0be7539c989fd8839fdeab6155b7ab06a9852aa7d3080ddb8d79db",
+      },
+      {
+        path: "patches/ghostty-vt-no-libc-allocator-stubs.patch",
+        sha256: "acd9a24377e1af171ddb96469924cc0a45e91f8a156fb28eda338738180b1e82",
       },
     ]);
   });
@@ -177,6 +183,23 @@ describe("libghostty-vt bundle manifest provenance", () => {
   test("detects Ghostty's static host memset override symbol", () => {
     expect(ghosttyArchiveHasHostMemsetOverride("00000000000fa0d0 t quirks_memset.memset\n")).toBe(true);
     expect(ghosttyArchiveHasHostMemsetOverride("                 U _memset\n00000000000000b4 T ___memset\n")).toBe(false);
+  });
+
+  test("detects libc allocator definitions that would shadow the host libc", () => {
+    // Real new-pin regression: wuffs exported weak calloc/free stubs from the
+    // static archive, and calloc returning NULL aborted every broker test.
+    const nm = [
+      "libghostty-vt-static_zcu.o:",
+      "00000000000f7680 W calloc",
+      "00000000000f7690 W free",
+      "                 U malloc",
+      "                 U _realloc",
+      "0000000000001000 T ghostty_terminal_new",
+      "0000000000001010 t free_list_push",
+    ].join("\n");
+    expect(ghosttyArchiveDefinedLibcAllocators(nm)).toEqual(["calloc", "free"]);
+    expect(ghosttyArchiveDefinedLibcAllocators("00000000000000b4 T _malloc\n")).toEqual(["malloc"]);
+    expect(ghosttyArchiveDefinedLibcAllocators("                 U calloc\n                 w free\n")).toEqual([]);
   });
 
   test("rejects a stale symbol-policy manifest", () => {

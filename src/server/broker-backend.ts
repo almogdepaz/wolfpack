@@ -70,6 +70,7 @@ import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-cont
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
+import { parseBrokerProgramStatusRecord } from "../program-status-contract.js";
 import {
   plainLine,
   renderSnapshotToAnsi,
@@ -170,6 +171,8 @@ interface BrokerSessionInfo {
   alive: boolean;
   /** Decimal u64 emitted by protocol-v2 brokers that support activity facts. */
   output_seq?: string;
+  /** Root OSC 7501 record; omitted by brokers without program status support. */
+  program_status?: unknown;
   command?: string[];
   env?: Array<[string, string]>;
 }
@@ -372,11 +375,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     for (const s of sessions) {
       const identity = identitiesById.get(s.id);
       const outputSequence = brokerOutputSequence(s.output_seq);
+      const programStatus = parseBrokerProgramStatusRecord(s.program_status);
       facts.push({
         name: s.name,
         alive: s.alive,
         ...(outputSequence !== undefined && { outputSequence }),
         ...(identity && { identity }),
+        ...(programStatus && { programStatus }),
       });
       if (!s.alive) continue;
       this.nameToId.set(s.name, s.id);
@@ -1012,6 +1017,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         return;
       }
       case "snapshot_invalidated":
+        return;
+      case "program_status_changed":
+        // The root record also rides on list_sessions, which the session
+        // observer polls; event-driven refresh is a follow-up.
         return;
     }
   }

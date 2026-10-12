@@ -212,6 +212,10 @@ describe("session.state events", () => {
         label: runtimeState.label,
         transitionSequence: runtimeState.transitionSequence,
       });
+      // Only program status (OSC 7501) reports put a message on the event;
+      // other authorities' messages are diagnostics, not program text.
+      expect(runtimeState.message).toBeDefined();
+      expect(event).not.toHaveProperty("message");
 
       // Output stopping is itself a transition (back to idle). After that, an
       // unchanged screen must not republish: the stream is transitions, not a heartbeat.
@@ -253,6 +257,37 @@ describe("session.state events", () => {
       const [next] = await stream.next(1);
       expect(next).toMatchObject({ session: "sentinel" });
     } finally {
+      stream.close();
+    }
+  });
+
+  test("an OSC 7501 blocked report publishes needs-input with its typed kind and message", async () => {
+    mockBackend.setSessions(["agent-4"]);
+    mockBackend.setCapturePane(async () => "steady\n");
+    mockBackend.setOutputSequence("agent-4", "1");
+
+    const stream = await openStream("?kinds=session.state");
+    try {
+      await waitFor(() => eventSubscriberCount() === 1);
+      await __runSessionNotificationObservationForTests();
+
+      mockBackend.setProgramStatus("agent-4", {
+        id: "",
+        state: "blocked",
+        kind: "question",
+        message: "Which branch?",
+        updatedAtMs: 1,
+      });
+      await __runSessionNotificationObservationForTests();
+      const [blocked] = await stream.next(1);
+      expect(blocked).toMatchObject({
+        session: "agent-4",
+        state: "needs-input",
+        inputKind: "question",
+        message: "Which branch?",
+      });
+    } finally {
+      mockBackend.setProgramStatus("agent-4", undefined);
       stream.close();
     }
   });

@@ -216,6 +216,7 @@ impl SessionRouter {
                 id,
                 ResponsePayload::SessionInfo {
                     session: s.info(),
+                    program_status_records: s.program_status_records(),
                 },
             ),
             None => unknown_session(id, p.session_id),
@@ -589,7 +590,7 @@ mod tests {
             json!({ "session_id": session.id }),
         ));
         match info.payload.expect("payload") {
-            ResponsePayload::SessionInfo { session: s } => {
+            ResponsePayload::SessionInfo { session: s, .. } => {
                 assert_eq!((s.cols, s.rows), (132, 50));
             }
             other => panic!("unexpected: {other:?}"),
@@ -613,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn authoritative_oversized_grapheme_snapshot_router_returns_internal_error_without_panic() {
+    fn authoritative_oversized_grapheme_snapshot_router_returns_bounded_cell_without_panic() {
         let (router, reg) = router();
         let create = router.handle(req(
             1,
@@ -648,17 +649,21 @@ mod tests {
             methods::SNAPSHOT,
             json!({ "session_id": session.id }),
         ));
-        assert_eq!(snapshot.status, Status::Error);
-        let error = snapshot.error.expect("snapshot error");
-        assert_eq!(error.code, ErrorCode::InternalError);
-        assert!(
-            error.message.contains("terminal snapshot failed"),
-            "unexpected error message: {}",
-            error.message
-        );
+        // libghostty-vt keeps at most 64 suffix codepoints per cell
+        // (`grapheme_max_len`), so the shim's per-cell limit is not reached
+        // from real input and the snapshot succeeds with a bounded cell.
+        assert_eq!(snapshot.status, Status::Ok);
+        match snapshot.payload.expect("payload") {
+            ResponsePayload::Snapshot { snapshot } => {
+                let first = &snapshot.visible_screen[0].cells[0].ch;
+                assert!(first.starts_with('a'));
+                assert_eq!(first.chars().count(), 1 + 64);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
 
         let list = router.handle(req(3, methods::LIST_SESSIONS, json!({})));
-        assert_eq!(list.status, Status::Ok, "router remains usable after error");
+        assert_eq!(list.status, Status::Ok, "router remains usable");
         cleanup(&reg);
     }
 

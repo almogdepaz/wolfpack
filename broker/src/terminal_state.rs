@@ -7,14 +7,20 @@
 use std::borrow::Cow;
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::codec::{MAX_CONTROL_RESPONSE_PAYLOAD, MAX_FRAME_PAYLOAD};
+use crate::codec::{MAX_CONTROL_RESPONSE_PAYLOAD, MAX_EVENT_PAYLOAD, MAX_FRAME_PAYLOAD};
+use crate::program_status::{
+    ProgramStatusAction, ProgramStatusRecords, ProgramStatusReport, MAX_PROGRAM_STATUS_RECORDS,
+    MAX_PROGRAM_STATUS_RECORD_TEXT_BYTES,
+};
 use crate::protocol::{
-    CellAttrs, CursorShape, CursorState, MouseMode, ScrollRegion, Snapshot, StyledCell, StyledLine,
-    TerminalModes, MAX_ANSI_PREFILL_BYTES,
+    CellAttrs, CursorShape, CursorState, MouseMode, ProgramStatusKind, ProgramStatusRecord,
+    ProgramStatusState, ScrollRegion, Snapshot, StyledCell, StyledLine, TerminalModes,
+    MAX_ANSI_PREFILL_BYTES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -55,8 +61,54 @@ const _: () = assert!(
         <= MAX_CONTROL_RESPONSE_PAYLOAD as usize
 );
 
+// Program status JSON is bounded by its text: serde escapes at most 6 bytes
+// per input byte (`\u00XX`), plus fixed field overhead per record. One root
+// record must fit an event frame; every record must fit a `session_info`
+// response next to the SessionInfo metadata.
+const PROGRAM_STATUS_RECORD_JSON_BYTES: usize = 6 * MAX_PROGRAM_STATUS_RECORD_TEXT_BYTES + 1024;
+const _: () = assert!(PROGRAM_STATUS_RECORD_JSON_BYTES + 1024 <= MAX_EVENT_PAYLOAD as usize);
+const _: () = assert!(
+    MAX_PROGRAM_STATUS_RECORDS * PROGRAM_STATUS_RECORD_JSON_BYTES + 4 * 1024 * 1024
+        <= MAX_CONTROL_RESPONSE_PAYLOAD as usize
+);
+
 #[repr(C)]
 struct WpGhosttyTerminal(c_void);
+
+/// Mirrors `WpProgramStatusReport` in `ghostty_vt_shim.h`.
+#[repr(C)]
+struct WpProgramStatusReport {
+    state: u8,
+    kind: u8,
+    progress: i8,
+    id: *const u8,
+    id_len: usize,
+    app: *const u8,
+    app_len: usize,
+    title: *const u8,
+    title_len: usize,
+    message: *const u8,
+    message_len: usize,
+}
+
+/// Mirrors `WpFeedSink` in `ghostty_vt_shim.h`.
+#[repr(C)]
+struct WpFeedSink {
+    ctx: *mut c_void,
+    pty_write: Option<unsafe extern "C" fn(ctx: *mut c_void, data: *const u8, len: usize)>,
+    program_status: Option<unsafe extern "C" fn(ctx: *mut c_void, report: *const WpProgramStatusReport)>,
+    prompt_start: Option<unsafe extern "C" fn(ctx: *mut c_void)>,
+}
+
+const WP_PROGRAM_STATUS_IDLE: u8 = 0;
+const WP_PROGRAM_STATUS_WORKING: u8 = 1;
+const WP_PROGRAM_STATUS_DONE: u8 = 2;
+const WP_PROGRAM_STATUS_BLOCKED: u8 = 3;
+const WP_PROGRAM_STATUS_ERROR: u8 = 4;
+const WP_PROGRAM_STATUS_CLEAR: u8 = 5;
+const WP_PROGRAM_STATUS_KIND_PERMISSION: u8 = 1;
+const WP_PROGRAM_STATUS_KIND_QUESTION: u8 = 2;
+const WP_PROGRAM_STATUS_KIND_AUTH: u8 = 3;
 
 #[repr(C)]
 #[derive(Default, Clone, Copy)]
@@ -126,6 +178,7 @@ extern "C" {
         terminal: *mut WpGhosttyTerminal,
         data: *const u8,
         len: usize,
+        sink: *const WpFeedSink,
     ) -> i32;
     fn wp_ghostty_terminal_resize(terminal: *mut WpGhosttyTerminal, cols: u16, rows: u16) -> i32;
     fn wp_ghostty_terminal_snapshot_meta(
@@ -165,10 +218,20 @@ impl GhosttyTerminal {
         })
     }
 
-    fn feed(&mut self, bytes: &[u8]) -> Result<(), TerminalStateError> {
-        // SAFETY: `self.raw` is an owned live terminal and `bytes` is valid for this call.
-        let rc =
-            unsafe { wp_ghostty_terminal_feed(self.raw.as_ptr(), bytes.as_ptr(), bytes.len()) };
+    fn feed(&mut self, bytes: &[u8], effects: &mut FeedCollector<'_>) -> Result<(), TerminalStateError> {
+        let sink = WpFeedSink {
+            ctx: (effects as *mut FeedCollector<'_>).cast(),
+            pty_write: Some(collect_pty_write),
+            program_status: Some(collect_program_status),
+            prompt_start: Some(collect_prompt_start),
+        };
+        // SAFETY: `self.raw` is an owned live terminal and `bytes` is valid for
+        // this call. `sink` and the collector it points to outlive the call; the
+        // shim invokes the callbacks only synchronously inside it and clears its
+        // sink pointer before returning.
+        let rc = unsafe {
+            wp_ghostty_terminal_feed(self.raw.as_ptr(), bytes.as_ptr(), bytes.len(), &sink)
+        };
         status("feed", rc)
     }
 
@@ -374,19 +437,160 @@ impl RawSnapshot {
     }
 }
 
+/// Side effects of one feed beyond terminal state.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct FeedOutcome {
+    /// Bytes the broker must write to the PTY: only OSC 7501 query replies.
+    pub pty_reply: Vec<u8>,
+    /// The program status record set changed during this feed.
+    pub program_status_changed: bool,
+}
+
+/// libghostty's write_pty is an untyped byte channel shared by every query
+/// reply (DA1/DA2, DSR, DECRQM, XTVERSION, OSC color queries, ...) with no
+/// structured hook to tell them apart, and the program status query does not
+/// pass through the program status callback. The browser terminal already
+/// answers the other queries through `/ws/pty` input, so forwarding them here
+/// too would double replies in the program's stdin. The OSC 7501 reply is a
+/// fixed constant by spec (upstream `stream_terminal.zig`: "The reply is
+/// always the same fixed bytes. The specification never allows sending report
+/// contents back to the program"), echoing only the query's terminator, and
+/// libghostty emits it as one write. Exact equality against the two complete
+/// replies therefore matches it and nothing else.
+fn is_program_status_query_reply(bytes: &[u8]) -> bool {
+    bytes == b"\x1b]7501;?\x1b\\" || bytes == b"\x1b]7501;?\x07"
+}
+
+struct FeedCollector<'a> {
+    records: &'a mut ProgramStatusRecords,
+    outcome: FeedOutcome,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// # Safety
+/// `ctx` is the `FeedCollector` passed to `wp_ghostty_terminal_feed`, and
+/// `data` is valid for `len` bytes for the duration of the call.
+unsafe extern "C" fn collect_pty_write(ctx: *mut c_void, data: *const u8, len: usize) {
+    if ctx.is_null() {
+        return;
+    }
+    let collector = &mut *ctx.cast::<FeedCollector<'_>>();
+    let bytes = borrowed_bytes(data, len);
+    if is_program_status_query_reply(bytes) {
+        collector.outcome.pty_reply.extend_from_slice(bytes);
+    }
+}
+
+/// # Safety
+/// A non-null `ptr` must be valid for `len` bytes for the returned lifetime.
+unsafe fn borrowed_bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+    if ptr.is_null() || len == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(ptr, len)
+    }
+}
+
+fn report_action(state: u8) -> Option<ProgramStatusAction> {
+    Some(match state {
+        WP_PROGRAM_STATUS_IDLE => ProgramStatusAction::Set(ProgramStatusState::Idle),
+        WP_PROGRAM_STATUS_WORKING => ProgramStatusAction::Set(ProgramStatusState::Working),
+        WP_PROGRAM_STATUS_DONE => ProgramStatusAction::Set(ProgramStatusState::Done),
+        WP_PROGRAM_STATUS_BLOCKED => ProgramStatusAction::Set(ProgramStatusState::Blocked),
+        WP_PROGRAM_STATUS_ERROR => ProgramStatusAction::Set(ProgramStatusState::Error),
+        WP_PROGRAM_STATUS_CLEAR => ProgramStatusAction::Clear,
+        _ => return None,
+    })
+}
+
+fn report_kind(kind: u8) -> Option<ProgramStatusKind> {
+    match kind {
+        WP_PROGRAM_STATUS_KIND_PERMISSION => Some(ProgramStatusKind::Permission),
+        WP_PROGRAM_STATUS_KIND_QUESTION => Some(ProgramStatusKind::Question),
+        WP_PROGRAM_STATUS_KIND_AUTH => Some(ProgramStatusKind::Auth),
+        _ => None,
+    }
+}
+
+/// # Safety
+/// `ctx` is the `FeedCollector` passed to `wp_ghostty_terminal_feed`; `report`
+/// and its strings are valid for the duration of the call.
+unsafe extern "C" fn collect_program_status(ctx: *mut c_void, report: *const WpProgramStatusReport) {
+    if ctx.is_null() || report.is_null() {
+        return;
+    }
+    let collector = &mut *ctx.cast::<FeedCollector<'_>>();
+    let report = &*report;
+    let Some(action) = report_action(report.state) else {
+        return;
+    };
+    let parsed = ProgramStatusReport {
+        action,
+        kind: report_kind(report.kind),
+        progress: u8::try_from(report.progress).ok(),
+        id: borrowed_bytes(report.id, report.id_len),
+        app: borrowed_bytes(report.app, report.app_len),
+        title: borrowed_bytes(report.title, report.title_len),
+        message: borrowed_bytes(report.message, report.message_len),
+    };
+    if collector.records.apply(&parsed, now_ms()) {
+        collector.outcome.program_status_changed = true;
+    }
+}
+
+/// # Safety
+/// `ctx` is the `FeedCollector` passed to `wp_ghostty_terminal_feed`.
+unsafe extern "C" fn collect_prompt_start(ctx: *mut c_void) {
+    if ctx.is_null() {
+        return;
+    }
+    let collector = &mut *ctx.cast::<FeedCollector<'_>>();
+    if collector.records.drop_transient() {
+        collector.outcome.program_status_changed = true;
+    }
+}
+
 pub struct TerminalState {
     ghostty: GhosttyTerminal,
+    program_status: ProgramStatusRecords,
 }
 
 impl TerminalState {
     pub fn try_new(cols: u16, rows: u16) -> Result<Self, TerminalStateError> {
         Ok(Self {
             ghostty: GhosttyTerminal::try_new(cols, rows)?,
+            program_status: ProgramStatusRecords::default(),
         })
     }
 
-    pub fn try_feed(&mut self, bytes: &[u8]) -> Result<(), TerminalStateError> {
-        self.ghostty.feed(bytes)
+    pub fn try_feed(&mut self, bytes: &[u8]) -> Result<FeedOutcome, TerminalStateError> {
+        let mut collector = FeedCollector {
+            records: &mut self.program_status,
+            outcome: FeedOutcome::default(),
+        };
+        self.ghostty.feed(bytes, &mut collector)?;
+        Ok(collector.outcome)
+    }
+
+    /// The root (empty id) program status record, if reported.
+    pub fn program_status_root(&self) -> Option<ProgramStatusRecord> {
+        self.program_status.root().cloned()
+    }
+
+    /// Every program status record, sorted by id.
+    pub fn program_status_records(&self) -> Vec<ProgramStatusRecord> {
+        self.program_status.records()
+    }
+
+    /// The program exited: drop working/blocked/idle records. True on change.
+    pub fn drop_transient_program_status(&mut self) -> bool {
+        self.program_status.drop_transient()
     }
 
     pub fn try_resize(&mut self, cols: u16, rows: u16) -> Result<(), TerminalStateError> {
@@ -658,6 +862,107 @@ mod tests {
 
     fn line_text(line: &StyledLine) -> String {
         line.cells.iter().map(|cell| cell.ch.as_ref()).collect()
+    }
+
+    const OSC_7501_QUERY_ST: &[u8] = b"\x1b]7501;?\x1b\\";
+    const OSC_7501_QUERY_BEL: &[u8] = b"\x1b]7501;?\x07";
+
+    #[test]
+    fn program_status_query_is_answered_with_exactly_the_fixed_reply() {
+        let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
+        let outcome = terminal.try_feed(OSC_7501_QUERY_ST).expect("feed");
+        assert_eq!(outcome.pty_reply, OSC_7501_QUERY_ST);
+        assert!(!outcome.program_status_changed);
+        let outcome = terminal.try_feed(OSC_7501_QUERY_BEL).expect("feed");
+        assert_eq!(outcome.pty_reply, OSC_7501_QUERY_BEL);
+    }
+
+    #[test]
+    fn other_query_replies_are_never_forwarded_by_the_broker() {
+        // The browser terminal answers these through /ws/pty input; a broker
+        // reply too would double them in the program's stdin.
+        let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
+        for query in [
+            &b"\x1b[c"[..],      // DA1
+            b"\x1b[0c",          // DA1
+            b"\x1b[>c",          // DA2
+            b"\x1b[5n",          // DSR status
+            b"\x1b[6n",          // DSR cursor position
+            b"\x1b[>q",          // XTVERSION
+            b"\x1b[?2026$p",     // DECRQM
+            b"\x1b]10;?\x1b\\", // OSC 10 color query
+            b"\x05",             // ENQ
+        ] {
+            let outcome = terminal.try_feed(query).expect("feed");
+            assert!(outcome.pty_reply.is_empty(), "unexpected reply to {query:?}: {:?}", outcome.pty_reply);
+        }
+        // The emitter's probe pair: only the 7501 reply crosses the broker.
+        let mut probe = OSC_7501_QUERY_ST.to_vec();
+        probe.extend_from_slice(b"\x1b[c");
+        let outcome = terminal.try_feed(&probe).expect("feed");
+        assert_eq!(outcome.pty_reply, OSC_7501_QUERY_ST);
+    }
+
+    #[test]
+    fn program_status_reports_update_records_and_report_changes() {
+        let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
+        // "Apply?" in base64; id-less = root record.
+        let outcome = terminal
+            .try_feed(b"\x1b]7501;state=blocked:kind=permission:app=terraform:msg=QXBwbHk/\x1b\\")
+            .expect("feed");
+        assert!(outcome.program_status_changed);
+        assert!(outcome.pty_reply.is_empty(), "reports are never echoed");
+        let root = terminal.program_status_root().expect("root record");
+        assert_eq!(root.state, crate::protocol::ProgramStatusState::Blocked);
+        assert_eq!(root.kind, Some(crate::protocol::ProgramStatusKind::Permission));
+        assert_eq!(root.app.as_deref(), Some("terraform"));
+        assert_eq!(root.message.as_deref(), Some("Apply?"));
+
+        // A report split across chunks lands once complete.
+        let outcome = terminal.try_feed(b"\x1b]7501;state=working:id=sync:msg=U3lu").expect("feed");
+        assert!(!outcome.program_status_changed);
+        let outcome = terminal.try_feed(b"Y2luZw==\x07").expect("feed");
+        assert!(outcome.program_status_changed);
+        assert_eq!(terminal.program_status_records().len(), 2);
+
+        // Identical report: no change.
+        let outcome = terminal.try_feed(b"\x1b]7501;state=working:id=sync:msg=U3luY2luZw==\x07").expect("feed");
+        assert!(!outcome.program_status_changed);
+
+        // RIS clears every record.
+        let outcome = terminal.try_feed(b"\x1bc").expect("feed");
+        assert!(outcome.program_status_changed);
+        assert!(terminal.program_status_records().is_empty());
+    }
+
+    #[test]
+    fn primary_shell_prompt_drops_live_program_records() {
+        let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
+        terminal.try_feed(b"\x1b]7501;state=working\x07\x1b]7501;state=done:id=build\x07").expect("feed");
+        let outcome = terminal.try_feed(b"\x1b]133;A\x07$ ").expect("feed");
+        assert!(outcome.program_status_changed);
+        let ids: Vec<String> = terminal.program_status_records().into_iter().map(|record| record.id).collect();
+        assert_eq!(ids, vec!["build"]);
+    }
+
+    #[test]
+    fn exit_drop_keeps_done_and_error_records() {
+        let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
+        terminal.try_feed(b"\x1b]7501;state=blocked\x07\x1b]7501;state=error:id=x\x07").expect("feed");
+        assert!(terminal.drop_transient_program_status());
+        assert!(terminal.program_status_root().is_none());
+        assert_eq!(terminal.program_status_records().len(), 1);
+        assert!(!terminal.drop_transient_program_status());
+    }
+
+    #[test]
+    fn program_status_reply_matcher_accepts_only_the_two_fixed_replies() {
+        assert!(is_program_status_query_reply(OSC_7501_QUERY_ST));
+        assert!(is_program_status_query_reply(OSC_7501_QUERY_BEL));
+        assert!(!is_program_status_query_reply(b"\x1b]7501;?"));
+        assert!(!is_program_status_query_reply(b"\x1b]7501;state=idle\x07"));
+        assert!(!is_program_status_query_reply(b"\x1b[?62;22c"));
+        assert!(!is_program_status_query_reply(b"\x1b]7501;?\x1b\\\x1b[?62;22c"));
     }
 
     #[test]

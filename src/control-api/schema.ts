@@ -42,6 +42,7 @@ import {
   AGENT_STATUS_STATES,
 } from "../agent-status-contract.ts";
 import { PTY_ATTACH_CAPABILITIES } from "../pty-websocket-contract.ts";
+import { PROGRAM_STATUS_KINDS, PROGRAM_STATUS_LIMITS } from "../program-status-contract.ts";
 import {
   MACHINE_CAPABILITIES,
   MACHINE_MAX_CAPABILITIES,
@@ -612,6 +613,10 @@ export const controlApiSource: ControlApiSource = {
       runOrder: number(),
       signalSequence: number(),
       message: string(),
+      inputKind: { enum: [...PROGRAM_STATUS_KINDS] },
+      progress: { type: "integer", minimum: 0, maximum: PROGRAM_STATUS_LIMITS.PROGRESS_MAX },
+      app: string(),
+      title: string(),
     }, Object.values(AGENT_RUNTIME_STATE_REQUIRED)),
     ProviderReadiness: {
       anyOf: [

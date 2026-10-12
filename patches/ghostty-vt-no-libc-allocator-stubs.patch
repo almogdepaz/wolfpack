@@ -1,0 +1,19 @@
+--- a/pkg/wuffs/src/main.zig
++++ b/pkg/wuffs/src/main.zig
+@@ -24,8 +24,15 @@
+ // they survive, so export stubs to satisfy the link. Weak so that any real
+ // definition wins. Hidden keeps them out of the export table where the
+ // format honors it (e.g. wasm).
++//
++// Wolfpack: only export the stubs where no host libc can exist. A native
++// static archive built without link_libc is still linked into libc programs
++// (the broker); there a weak `calloc` returning NULL binds ahead of glibc's
++// and breaks every zeroed allocation in the host process.
+ comptime {
+-    if (!builtin.link_libc) {
++    if (!builtin.link_libc and
++        (builtin.target.cpu.arch.isWasm() or builtin.target.os.tag == .freestanding))
++    {
+         @export(&callocStub, .{
+             .name = "calloc",
+             .linkage = .weak,

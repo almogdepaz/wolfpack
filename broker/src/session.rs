@@ -20,6 +20,7 @@
 //! instead of bubbling up as a generic syscall error.
 
 use std::io::{self, Read, Write};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -31,14 +32,15 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::output_bus::{OutputBus, Subscription};
-use crate::protocol::{Event, SessionInfo, Snapshot};
+use crate::protocol::{Event, ProgramStatusRecord, SessionInfo, Snapshot};
 use crate::ring_buffer::OutputChunk;
-use crate::terminal_state::{RawSnapshot, TerminalState, TerminalStateError};
+use crate::terminal_state::{FeedOutcome, RawSnapshot, TerminalState, TerminalStateError};
 
 /// Shared async-event sink. Every lifecycle transition (`session_started`,
 /// `session_exited`, `session_resized`, `snapshot_invalidated`) is published
 /// here so per-connection forwarders can fan events out to clients.
 pub type EventSender = broadcast::Sender<Event>;
+type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 const EXIT_DRAIN_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
@@ -73,7 +75,7 @@ pub struct SessionState {
 }
 
 impl SessionState {
-    pub fn to_info(&self, output_seq: u64) -> SessionInfo {
+    pub fn to_info(&self, output_seq: u64, program_status: Option<ProgramStatusRecord>) -> SessionInfo {
         SessionInfo {
             id: self.id,
             name: self.name.clone(),
@@ -87,6 +89,7 @@ impl SessionState {
             alive: self.alive,
             exit_code: self.exit_code,
             output_seq: Some(output_seq.to_string()),
+            program_status,
         }
     }
 }
@@ -203,7 +206,8 @@ pub struct Session {
     /// into `writer` so stdin writes don't serialise against resize ioctls.
     master: Mutex<Box<dyn MasterPty + Send>>,
     /// Write half of the PTY master, taken once at spawn via `take_writer()`.
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// Shared with the drainer, which writes OSC 7501 query replies.
+    writer: SharedWriter,
     /// Canonical terminal-state emulator. The drainer thread feeds every PTY
     /// byte chunk through this before forwarding to subscribers; readers
     /// (`snapshot_terminal`) lock it only to capture raw snapshot buffers.
@@ -289,6 +293,19 @@ impl Session {
             .take_writer()
             .map_err(|e| SpawnError::WriterTake(e.to_string()))?;
 
+        // Neither the drainer's query replies nor the writer's final drop may
+        // block (see `NonBlockingReply` and `PtyWriter`); each owns a dup of
+        // the master so the fd it sets flags on cannot be closed and reused
+        // underneath it.
+        let reply_fd = dup_master_fd(pair.master.as_ref())
+            .map_err(|e| SpawnError::WriterTake(e.to_string()))?;
+        let writer_fd = dup_master_fd(pair.master.as_ref())
+            .map_err(|e| SpawnError::WriterTake(e.to_string()))?;
+        let writer: Box<dyn Write + Send> = Box::new(PtyWriter {
+            inner: Some(writer),
+            fd: writer_fd,
+        });
+
         let pid = child.process_id();
         let state = SessionState {
             id,
@@ -320,9 +337,16 @@ impl Session {
         let drain_bus = Arc::clone(&bus);
         let drain_inner = Arc::clone(&inner);
         let drain_events = events.clone();
+        let writer: SharedWriter = Arc::new(Mutex::new(writer));
+        let drain_effects = DrainEffects {
+            session_id: drain_id,
+            writer: Arc::clone(&writer),
+            reply_fd,
+            events: events.clone(),
+        };
         let mut drain_child_killer = child.clone_killer();
         if let Err(e) = spawn_named_thread(format!("broker-pty-read-{drain_id}"), move || {
-            if let Err(error) = drain_reader(reader, drain_terminal, Arc::clone(&drain_seq), drain_bus) {
+            if let Err(error) = drain_reader(reader, drain_terminal, Arc::clone(&drain_seq), drain_bus, drain_effects) {
                 tracing::error!(
                     session_id = %drain_id,
                     error = %error,
@@ -363,7 +387,7 @@ impl Session {
         Ok(Session {
             inner,
             master: Mutex::new(pair.master),
-            writer: Mutex::new(writer),
+            writer,
             terminal,
             seq,
             bus,
@@ -387,7 +411,13 @@ impl Session {
     }
 
     pub fn info(&self) -> SessionInfo {
-        self.snapshot().to_info(self.seq.load(Ordering::Acquire))
+        let program_status = self.terminal.lock().expect("terminal poisoned").program_status_root();
+        self.snapshot().to_info(self.seq.load(Ordering::Acquire), program_status)
+    }
+
+    /// Every OSC 7501 program status record (root and children), sorted by id.
+    pub fn program_status_records(&self) -> Vec<ProgramStatusRecord> {
+        self.terminal.lock().expect("terminal poisoned").program_status_records()
     }
 
     pub fn id(&self) -> Uuid {
@@ -658,13 +688,153 @@ where
 }
 
 trait TerminalFeed {
-    fn try_feed_chunk(&mut self, data: &[u8]) -> Result<(), TerminalStateError>;
+    fn try_feed_chunk(&mut self, data: &[u8]) -> Result<FeedOutcome, TerminalStateError>;
+
+    fn program_status_root(&self) -> Option<ProgramStatusRecord> {
+        None
+    }
 }
 
 impl TerminalFeed for TerminalState {
-    fn try_feed_chunk(&mut self, data: &[u8]) -> Result<(), TerminalStateError> {
+    fn try_feed_chunk(&mut self, data: &[u8]) -> Result<FeedOutcome, TerminalStateError> {
         self.try_feed(data)
     }
+
+    fn program_status_root(&self) -> Option<ProgramStatusRecord> {
+        TerminalState::program_status_root(self)
+    }
+}
+
+/// Where the drainer delivers feed side effects: OSC 7501 query replies go
+/// straight to the PTY and record changes become one event per chunk.
+struct DrainEffects {
+    session_id: Uuid,
+    writer: SharedWriter,
+    /// Dup of the PTY master (shares the writer's open file description);
+    /// `None` only for test writers that cannot block.
+    reply_fd: Option<OwnedFd>,
+    events: EventSender,
+}
+
+impl DrainEffects {
+    fn deliver(&self, reply: &[u8], program_status: Option<Option<ProgramStatusRecord>>) {
+        if !reply.is_empty() {
+            let mut writer = self.writer.lock().expect("writer poisoned");
+            let written = match &self.reply_fd {
+                Some(fd) => NonBlockingReply::enter(fd.as_fd())
+                    .and_then(|_restore| writer.write_all(reply)),
+                None => writer.write_all(reply),
+            };
+            // Best effort, like the probe itself: a dropped or failed reply
+            // only means the program sees the protocol as unsupported.
+            match written {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    tracing::debug!(
+                        session_id = %self.session_id,
+                        "PTY input full; dropped program status query reply"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(session_id = %self.session_id, %error, "failed to answer program status query");
+                }
+            }
+        }
+        if let Some(root) = program_status {
+            let _ = self.events.send(Event::ProgramStatusChanged {
+                session_id: self.session_id,
+                program_status: root,
+            });
+        }
+    }
+}
+
+/// Holds the PTY master's open file description in `O_NONBLOCK` for one
+/// query reply and restores its flags on drop.
+///
+/// A blocking reply write would stall the drainer whenever the program does
+/// not read stdin (a raw-mode program flooding `OSC 7501 ; ?` wedges its
+/// whole session: no output drain, so the program blocks on stdout too). With
+/// the writer mutex held, nothing else can observe the flag: stdin writes take
+/// the same mutex, the reader shares the description but is this drainer
+/// thread, and resize is an ioctl on the master. A full input queue drops the
+/// reply (possibly after a partial write the program is not reading anyway).
+struct NonBlockingReply<'a> {
+    fd: BorrowedFd<'a>,
+    flags: libc::c_int,
+}
+
+impl<'a> NonBlockingReply<'a> {
+    fn enter(fd: BorrowedFd<'a>) -> io::Result<Self> {
+        let flags = fd_status_flags(fd)?;
+        set_fd_status_flags(fd, flags | libc::O_NONBLOCK)?;
+        Ok(Self { fd, flags })
+    }
+}
+
+impl Drop for NonBlockingReply<'_> {
+    fn drop(&mut self) {
+        let _ = set_fd_status_flags(self.fd, self.flags);
+    }
+}
+
+/// The session's PTY stdin writer. portable-pty's writer writes `\n` + VEOF
+/// to the master when dropped; once the program has exited leaving its input
+/// queue full (e.g. unread query replies), nothing will ever read that queue
+/// and the blocking write would hang the dropping thread forever. The last
+/// owner drops it only after the drainer has stopped reading and stdin writes
+/// have ended, so switching the description to non-blocking here is
+/// unobservable.
+struct PtyWriter {
+    inner: Option<Box<dyn Write + Send>>,
+    /// Dup of the PTY master; `None` when the PTY exposes no fd.
+    fd: Option<OwnedFd>,
+}
+
+impl Write for PtyWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.as_mut().expect("writer present until drop").write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.as_mut().expect("writer present until drop").flush()
+    }
+}
+
+impl Drop for PtyWriter {
+    fn drop(&mut self) {
+        if let Some(fd) = &self.fd {
+            if let Ok(flags) = fd_status_flags(fd.as_fd()) {
+                let _ = set_fd_status_flags(fd.as_fd(), flags | libc::O_NONBLOCK);
+            }
+        }
+        drop(self.inner.take());
+    }
+}
+
+fn dup_master_fd(master: &dyn MasterPty) -> io::Result<Option<OwnedFd>> {
+    master
+        .as_raw_fd()
+        // SAFETY: the master fd is open for the duration of this borrow.
+        .map(|fd| unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned())
+        .transpose()
+}
+
+fn fd_status_flags(fd: BorrowedFd<'_>) -> io::Result<libc::c_int> {
+    // SAFETY: `fd` is a live descriptor; F_GETFL only reads status flags.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(flags)
+}
+
+fn set_fd_status_flags(fd: BorrowedFd<'_>, flags: libc::c_int) -> io::Result<()> {
+    // SAFETY: `fd` is a live descriptor; F_SETFL only sets status flags.
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, flags) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn drain_reader<R: Read>(
@@ -672,8 +842,9 @@ fn drain_reader<R: Read>(
     terminal: Arc<Mutex<TerminalState>>,
     seq: Arc<AtomicU64>,
     bus: Arc<OutputBus>,
+    effects: DrainEffects,
 ) -> io::Result<()> {
-    drain_reader_with_terminal(r, terminal, seq, bus)
+    drain_reader_with_terminal(r, terminal, seq, bus, &effects)
 }
 
 fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
@@ -681,6 +852,7 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
     terminal: Arc<Mutex<T>>,
     seq: Arc<AtomicU64>,
     bus: Arc<OutputBus>,
+    effects: &DrainEffects,
 ) -> io::Result<()> {
     let mut buf = [0u8; 8192];
     let outcome = loop {
@@ -693,7 +865,7 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                 // reflects only N-1 chunks (or vice versa). The new seq
                 // (post-bump) is the chunk's own seq — i.e. snapshot.seq
                 // and OutputChunk.seq use the same monotonic numbering.
-                {
+                let (reply, program_status) = {
                     let mut term = terminal.lock().expect("terminal poisoned");
                     // A reaper timeout closes the bus while holding this same
                     // lock. Once forced closed, no later PTY bytes may advance
@@ -701,15 +873,26 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                     if bus.is_closed() {
                         break Ok(());
                     }
-                    let new_seq = match term.try_feed_chunk(&data) {
-                        Ok(()) => seq.fetch_add(1, Ordering::SeqCst) + 1,
+                    let (new_seq, outcome) = match term.try_feed_chunk(&data) {
+                        Ok(outcome) => (seq.fetch_add(1, Ordering::SeqCst) + 1, outcome),
                         Err(error) => break Err(io::Error::other(error)),
                     };
+                    let program_status = outcome
+                        .program_status_changed
+                        .then(|| term.program_status_root());
                     // Publish before releasing the terminal lock. Atomic
                     // snapshot+subscribe takes the same terminal→bus order,
                     // so a chunk cannot be included in both snapshot and live.
+                    // OSC 7501 bytes stay in the published chunk (replay and
+                    // snapshot fidelity; viewers ignore the unknown OSC).
                     bus.publish(OutputChunk { seq: new_seq, data });
-                }
+                    (outcome.pty_reply, program_status)
+                };
+                // Outside the terminal lock: a PTY write may block, and
+                // snapshots must not wait on it. The reply still precedes any
+                // viewer's DA reply, which needs a full broker→browser→broker
+                // round trip of the chunk just published.
+                effects.deliver(&reply, program_status);
             }
             Err(error) => break Err(error),
         }
@@ -842,6 +1025,15 @@ fn reap(
         output_bus.close();
         seq.load(Ordering::SeqCst)
     };
+    // The program is gone: its working/blocked/idle records no longer
+    // describe anything; done/error records survive for the user to see.
+    let program_status = {
+        let mut term = terminal.lock().expect("terminal poisoned");
+        term.drop_transient_program_status().then(|| term.program_status_root())
+    };
+    if let Some(root) = program_status {
+        let _ = events.send(Event::ProgramStatusChanged { session_id, program_status: root });
+    }
     let (exit_code, transitioned) = {
         let mut st = inner.state.lock().expect("session state poisoned");
         let transitioned = st.alive;
@@ -910,9 +1102,133 @@ mod tests {
     struct TerminalFeedFailure;
 
     impl TerminalFeed for TerminalFeedFailure {
-        fn try_feed_chunk(&mut self, _data: &[u8]) -> Result<(), TerminalStateError> {
+        fn try_feed_chunk(&mut self, _data: &[u8]) -> Result<FeedOutcome, TerminalStateError> {
             Err(TerminalStateError::GhosttyLimit { operation: "feed" })
         }
+    }
+
+    /// PTY writer double that records what the drainer writes back.
+    #[derive(Clone, Default)]
+    struct CapturedWrites(Arc<Mutex<Vec<u8>>>);
+
+    impl CapturedWrites {
+        fn bytes(&self) -> Vec<u8> {
+            self.0.lock().expect("captured writes").clone()
+        }
+    }
+
+    impl Write for CapturedWrites {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("captured writes").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_drain_effects() -> (DrainEffects, CapturedWrites, broadcast::Receiver<Event>) {
+        let writes = CapturedWrites::default();
+        let (events, receiver) = broadcast::channel(16);
+        let effects = DrainEffects {
+            session_id: Uuid::nil(),
+            writer: Arc::new(Mutex::new(Box::new(writes.clone()))),
+            reply_fd: None,
+            events,
+        };
+        (effects, writes, receiver)
+    }
+
+    struct ChunkReader {
+        chunks: std::collections::VecDeque<&'static [u8]>,
+    }
+
+    impl Read for ChunkReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let Some(chunk) = self.chunks.pop_front() else {
+                return Ok(0);
+            };
+            buf[..chunk.len()].copy_from_slice(chunk);
+            Ok(chunk.len())
+        }
+    }
+
+    #[test]
+    fn drainer_writes_only_the_program_status_reply_back_to_the_pty() {
+        let terminal = Arc::new(Mutex::new(TerminalState::try_new(80, 24).expect("terminal init")));
+        let bus = OutputBus::with_defaults();
+        let (effects, writes, _events) = test_drain_effects();
+        // The emitters' probe: 7501 query then DA1; plus DSR and XTVERSION.
+        let probe: &'static [u8] = b"\x1b]7501;?\x1b\\\x1b[c\x1b[6n\x1b[>q";
+        drain_reader_with_terminal(
+            ChunkReader { chunks: [probe].into() },
+            terminal,
+            Arc::new(AtomicU64::new(0)),
+            Arc::clone(&bus),
+            &effects,
+        )
+        .expect("drain");
+
+        assert_eq!(writes.bytes(), b"\x1b]7501;?\x1b\\");
+        // Byte fidelity: the query stays in the published output stream.
+        let replay = bus.subscribe(Some(0)).replay;
+        assert_eq!(replay.iter().flat_map(|chunk| chunk.data.iter().copied()).collect::<Vec<_>>(), probe);
+    }
+
+    #[test]
+    fn drainer_writes_nothing_for_device_attribute_and_status_queries() {
+        let terminal = Arc::new(Mutex::new(TerminalState::try_new(80, 24).expect("terminal init")));
+        let (effects, writes, mut events) = test_drain_effects();
+        drain_reader_with_terminal(
+            ChunkReader { chunks: [&b"\x1b[c\x1b[>c\x1b[5n\x1b[6n\x1b[>q\x1b[?1$p"[..]].into() },
+            terminal,
+            Arc::new(AtomicU64::new(0)),
+            OutputBus::with_defaults(),
+            &effects,
+        )
+        .expect("drain");
+
+        assert!(writes.bytes().is_empty(), "broker must not answer: {:?}", writes.bytes());
+        assert!(events.try_recv().is_err(), "no program status event without a report");
+    }
+
+    #[test]
+    fn drainer_emits_one_program_status_event_per_changed_chunk() {
+        let terminal = Arc::new(Mutex::new(TerminalState::try_new(80, 24).expect("terminal init")));
+        let (effects, writes, mut events) = test_drain_effects();
+        drain_reader_with_terminal(
+            ChunkReader {
+                chunks: [
+                    // Two reports in one chunk: one event.
+                    &b"\x1b]7501;state=working\x07\x1b]7501;state=blocked:kind=question\x07"[..],
+                    // Unchanged report: no event.
+                    b"\x1b]7501;state=blocked:kind=question\x07",
+                    // Clear: event without a root record.
+                    b"\x1b]7501;state=clear\x07",
+                ]
+                .into(),
+            },
+            terminal,
+            Arc::new(AtomicU64::new(0)),
+            OutputBus::with_defaults(),
+            &effects,
+        )
+        .expect("drain");
+
+        match events.try_recv() {
+            Ok(Event::ProgramStatusChanged { program_status: Some(root), .. }) => {
+                assert_eq!(root.state, crate::protocol::ProgramStatusState::Blocked);
+                assert_eq!(root.kind, Some(crate::protocol::ProgramStatusKind::Question));
+            }
+            other => panic!("expected blocked root event, got {other:?}"),
+        }
+        assert!(matches!(
+            events.try_recv(),
+            Ok(Event::ProgramStatusChanged { program_status: None, .. })
+        ));
+        assert!(events.try_recv().is_err(), "unchanged report must not emit");
+        assert!(writes.bytes().is_empty(), "reports are never echoed");
     }
 
     #[derive(Default)]
@@ -921,9 +1237,9 @@ mod tests {
     }
 
     impl TerminalFeed for CountingTerminal {
-        fn try_feed_chunk(&mut self, _data: &[u8]) -> Result<(), TerminalStateError> {
+        fn try_feed_chunk(&mut self, _data: &[u8]) -> Result<FeedOutcome, TerminalStateError> {
             self.feed_count += 1;
-            Ok(())
+            Ok(FeedOutcome::default())
         }
     }
 
@@ -947,6 +1263,7 @@ mod tests {
         let waiter_bus = Arc::clone(&bus);
         let waiter = thread::spawn(move || waiter_bus.wait_closed(Duration::from_millis(200)));
 
+        let (effects, _writes, _events) = test_drain_effects();
         let error = drain_reader_with_terminal(
             OneChunkReader {
                 chunk: Some(b"failed chunk"),
@@ -954,6 +1271,7 @@ mod tests {
             terminal,
             Arc::clone(&seq),
             Arc::clone(&bus),
+            &effects,
         )
         .expect_err("terminal feed failure must be returned");
 
@@ -986,6 +1304,7 @@ mod tests {
         });
         bus.close();
 
+        let (effects, _writes, _events) = test_drain_effects();
         drain_reader_with_terminal(
             OneChunkReader {
                 chunk: Some(b"late chunk"),
@@ -993,6 +1312,7 @@ mod tests {
             Arc::clone(&terminal),
             Arc::clone(&seq),
             Arc::clone(&bus),
+            &effects,
         )
         .expect("forced close should terminate the drainer cleanly");
 
@@ -1017,7 +1337,8 @@ mod tests {
         let seq = Arc::new(AtomicU64::new(0));
         let bus = OutputBus::with_defaults();
 
-        let error = drain_reader(FailingReader, terminal, seq, Arc::clone(&bus))
+        let (effects, _writes, _events) = test_drain_effects();
+        let error = drain_reader(FailingReader, terminal, seq, Arc::clone(&bus), effects)
             .expect_err("PTY read failure must not be treated as EOF");
 
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
@@ -1241,6 +1562,10 @@ mod tests {
         for subscribe in [false, true] {
             let sess = spawn_session(opts(vec!["printf", "styled"])).expect("spawn");
             assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
+            // The reaper briefly locks the terminal after the bus closes to
+            // drop transient program status records; wait it out so the probe
+            // only sees snapshot-path locking.
+            assert!(sess.wait_for_exit(Duration::from_secs(5)));
             let terminal = Arc::clone(&sess.terminal);
             let observed = Arc::new(AtomicU64::new(0));
             let probe_observed = Arc::clone(&observed);
@@ -1788,6 +2113,111 @@ mod tests {
 
         let _ = sess.kill(libc::SIGKILL);
         let _ = sess.wait_for_exit(Duration::from_secs(5));
+    }
+
+    /// Runs `probe` in a raw-mode PTY, then prints whatever stdin delivered
+    /// within one second as hex: `reply=[<hex>]`.
+    fn pty_reply_to(probe: &str) -> String {
+        let script = format!(
+            "stty raw -echo min 0 time 10; printf '{probe}'; \
+             r=$(dd bs=64 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); \
+             stty sane; printf 'reply=[%s]\\n' \"$r\""
+        );
+        let sess = spawn_session(opts(vec!["sh", "-c", &script])).expect("spawn");
+        assert!(sess.output_bus().wait_closed(Duration::from_secs(10)));
+        assert!(sess.wait_for_exit(Duration::from_secs(5)));
+        let snap = sess.snapshot_terminal(None, None).expect("snapshot");
+        snap.visible_screen
+            .iter()
+            .map(line_text)
+            .find(|line| line.contains("reply=["))
+            .unwrap_or_else(|| panic!("no reply line: {:?}", snap.visible_screen.iter().map(line_text).collect::<Vec<_>>()))
+            .trim()
+            .to_string()
+    }
+
+    #[test]
+    fn broker_answers_the_program_status_query_on_a_real_pty() {
+        // ESC ] 7501 ; ? ESC \ written back by the broker, with no viewer.
+        assert_eq!(pty_reply_to("\\033]7501;?\\033\\\\"), "reply=[1b5d373530313b3f1b5c]");
+        assert_eq!(pty_reply_to("\\033]7501;?\\007"), "reply=[1b5d373530313b3f07]");
+    }
+
+    #[test]
+    fn broker_does_not_answer_device_attributes_on_a_real_pty() {
+        assert_eq!(pty_reply_to("\\033[c\\033[6n"), "reply=[]");
+    }
+
+    #[test]
+    fn query_flood_without_reading_stdin_does_not_wedge_the_session() {
+        // Replies fill the PTY input queue the raw-mode program never reads;
+        // a blocking reply write would stall the drainer and, with stdout
+        // undrained, the program itself.
+        let sess = spawn_session(opts(vec![
+            "sh",
+            "-c",
+            "stty raw -echo; i=0; while [ $i -lt 20000 ]; do printf '\\033]7501;?\\007'; i=$((i+1)); done; \
+             stty sane; echo FLOOD-DONE",
+        ]))
+        .expect("spawn");
+        let exited = sess.wait_for_exit(Duration::from_secs(20));
+        if !exited {
+            let _ = sess.kill(libc::SIGKILL);
+        }
+        assert!(exited, "query flood wedged the session");
+        assert!(sess.output_bus().wait_closed(Duration::from_secs(5)));
+        let snap = sess.snapshot_terminal(None, None).expect("snapshot");
+        assert!(screen_contains(&snap, "FLOOD-DONE"));
+
+        // The unread replies are still queued; dropping the session (its
+        // writer sends `\n` + VEOF) must not block on them.
+        let (dropped_tx, dropped_rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            drop(sess);
+            let _ = dropped_tx.send(());
+        });
+        assert!(
+            dropped_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "session drop blocked on the PTY"
+        );
+    }
+
+    #[test]
+    fn session_info_carries_the_root_record_and_exit_drops_live_records() {
+        let events = test_events();
+        let mut rx = events.subscribe();
+        let sess = Session::spawn(
+            opts(vec![
+                "sh",
+                "-c",
+                "printf '\\033]7501;state=done:id=build\\007\\033]7501;state=blocked:kind=permission\\007'; sleep 1",
+            ]),
+            events,
+        )
+        .expect("spawn");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let root = loop {
+            if let Some(root) = sess.info().program_status {
+                break root;
+            }
+            assert!(std::time::Instant::now() < deadline, "root record never reported");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(root.state, crate::protocol::ProgramStatusState::Blocked);
+        assert_eq!(sess.program_status_records().len(), 2);
+
+        assert!(sess.wait_for_exit(Duration::from_secs(5)));
+        assert!(sess.info().program_status.is_none(), "exit drops the blocked root");
+        let remaining: Vec<String> = sess.program_status_records().into_iter().map(|record| record.id).collect();
+        assert_eq!(remaining, vec!["build"], "done records survive exit");
+
+        let mut changes = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let Event::ProgramStatusChanged { program_status, .. } = event {
+                changes.push(program_status.map(|record| record.state));
+            }
+        }
+        assert_eq!(changes.last(), Some(&None), "exit publishes the cleared root: {changes:?}");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
+import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { createLogger, errMsg } from "../log.js";
 import { reduceActivityObservation } from "../session-activity.js";
@@ -20,6 +20,7 @@ import {
   collectAgentStatusSources,
   flushAgentRuntimeStateForShutdown,
   getAgentRuntimeStateStore,
+  programStatusSource,
 } from "./agent-status.js";
 import type { AgentRuntimeState, AgentRuntimeStateStore } from "./agent-status.js";
 import { getBackend, getRouter } from "./backend.js";
@@ -332,6 +333,11 @@ function publishRuntimeTransition(
     state: runtimeState.state,
     label: runtimeState.label,
     transitionSequence: runtimeState.transitionSequence,
+    ...(runtimeState.inputKind && { inputKind: runtimeState.inputKind }),
+    // Only the program's own OSC 7501 text; other authorities' messages are
+    // status diagnostics, not something the program said.
+    ...(runtimeState.authority === AGENT_STATUS_AUTHORITY.PROGRAM && runtimeState.message
+      && { message: runtimeState.message }),
   });
 }
 
@@ -498,14 +504,23 @@ async function observeSessionFact(
   const renderedPreview = lastTerminalPreviewLine(currentRendered);
   const lastLine = renderedPreview || knownSessionSummaries.get(name)?.lastLine || "";
   const previousTransitionSequence = store.get(sessionKey)?.transitionSequence;
+  // The broker reports the root OSC 7501 record for this exact session, so it
+  // is not gated on a project directory like the manifest/fallback sources.
+  const programStatus = programStatusSource(fact.programStatus, {
+    runId: identity?.wolfpackSessionId,
+    observedAt,
+  });
   const runtimeState = store.reduce({
     sessionKey,
     broker: { state: brokerState, observedAt },
-    sources: identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
-      state: runtimeOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
-      stale: false,
-      observedAt,
-    }) : [],
+    sources: [
+      ...(programStatus ? [programStatus] : []),
+      ...(identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
+        state: runtimeOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
+        stale: false,
+        observedAt,
+      }) : []),
+    ],
     fallback: { rawOutputChanged: runtimeOutputChanged, observedAt, preview: lastLine },
     currentRun: {
       runId: identity?.wolfpackSessionId,

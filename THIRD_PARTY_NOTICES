@@ -5,18 +5,18 @@ This distribution includes wolfpack-broker binaries that statically link pinned 
 Pinned component identities:
 
 Ghostty lib-vt
-Ghostty revision: 7aa9591746ffa4d2eee458960c76554352832595
-Ghostty source URL: https://tip.files.ghostty.org/7aa9591746ffa4d2eee458960c76554352832595/libghostty-vt-source.tar.gz
-Ghostty source SHA-256: 468a0564bdd481e291f6150b94300f9ff37c1a7524f6ae76e99c4ec15535cf66
+Ghostty revision: a4aacd918ba9e79929ff608034c60a4341773ef0
+Ghostty source URL: https://tip.files.ghostty.org/a4aacd918ba9e79929ff608034c60a4341773ef0/libghostty-vt-source.tar.gz
+Ghostty source SHA-256: afac1d2dda1bea17f2aae0e1b8ce5dca78e7c3d008a947a15e8ce54f4bf4744c
 Ghostty build input simd: false
-Ghostty local patches: patches/ghostty-vt-scroll-region.patch, patches/ghostty-vt-no-static-host-memset.patch
+Ghostty local patches: patches/ghostty-vt-scroll-region.patch, patches/ghostty-vt-no-static-host-memset.patch, patches/ghostty-vt-no-libc-allocator-stubs.patch
 
 uucode
-uucode package: uucode-0.2.0-ZZjBPlK5VADj7fdoq7G8LIHzD5o6FSkcBXXrRWr4jnrA
-uucode source URL: https://deps.files.ghostty.org/uucode-2826a37a4562284fdacd8fa029d49509cc9bffcd.tar.gz
-uucode archive SHA-256: 7e76fc7fab1e7ac728c52b35bbb3e5b8c639841abfc7fe1a4bcb13050594bc9e
-uucode Zig package hash: sha256-R5RXW5tWIaDq5JOF2+oWd5YOYOyns6WH7f687WE+b20=
-uucode referenced notices: Unicode License v3 and Bjoern Hoehrmann UTF-8 DFA license, copied from the immutable uucode source archive above.
+uucode package: uucode-0.2.0-ZZjBPuuFVgC8YZ8eld4fOKsZANLIhTFMzULQxhkLi1C7
+uucode source URL: https://github.com/jacobsandlund/uucode/archive/9d55524551411b493cca41ca06363625d90aff1e.tar.gz
+uucode archive SHA-256: 68d23543cb2c6c5dfdbdf38b38375e0c6d412a5c5fb72ce06bd139f7a4d25132
+uucode Zig package hash: sha256-KZbp/0dlJc5BdxM19ZOXH74WEjEilTvzie/BjT1aYvw=
+uucode referenced notices: Unicode License v3 and Bjoern Hoehrmann UTF-8 DFA license, copied from the uucode source archive above (its files match the pinned Zig package).
 
 ----- BEGIN GHOSTTY MIT LICENSE -----
 MIT License

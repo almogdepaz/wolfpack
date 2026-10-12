@@ -168,7 +168,11 @@ return `unknown_session`.
 Returns the metadata for a single session.
 
 - params: `{ "session_id": "<uuid>" }`
-- ok payload: `{ "kind": "session_info", "session": SessionInfo }`
+- ok payload: `{ "kind": "session_info", "session": SessionInfo, "program_status_records": [ProgramStatusRecord, ...] }`
+  - `program_status_records` lists every OSC 7501 record (root and children)
+    sorted by id; omitted when empty. `list_sessions` carries only the root
+    record per session (`SessionInfo.program_status`) so its size stays
+    bounded per session.
 
 #### `snapshot`
 
@@ -364,6 +368,7 @@ are not tied to any request `id`.
 | `session_exited`      | `session_id, exit_code?, signal?, final_seq?`    |
 | `session_resized`     | `session_id, cols, rows`                         |
 | `snapshot_invalidated`| `session_id` — clients SHOULD re-`snapshot`      |
+| `program_status_changed` | `session_id, program_status?: ProgramStatusRecord` — the record set changed; carries the current root record (absent when cleared or never reported). Children: `session_info` |
 | `subscription_dropped`| `session_id, lagged` — re-subscribe from the last delivered `seq` |
 
 Lifecycle events are best-effort and global: a connection may receive them
@@ -390,11 +395,63 @@ last delivered `seq` safe.
   "started_at_ms": 1700000000000,                            // unix epoch ms
   "alive":         true,
   "exit_code":     null,                                     // i32 once exited
-  "output_seq":    "12345"                                  // decimal u64 PTY output watermark
+  "output_seq":    "12345",                                 // decimal u64 PTY output watermark
+  "program_status": ProgramStatusRecord                      // optional root OSC 7501 record
 }
 ```
 
 `output_seq` is the latest PTY chunk incorporated into broker terminal state and uses the same ordering domain as `Snapshot.seq` and `output_binary.seq`. It is encoded as a decimal string so JSON clients retain the full u64 value. Brokers predating this additive field omit it; clients must treat omission as unavailable rather than requesting a snapshot or inferring activity from terminal prose.
+
+`program_status` is the root (empty id) record of the Program Status Protocol, described below. It is omitted when the program has not reported one, and by brokers without program status support.
+
+---
+
+## Program status (OSC 7501)
+
+The broker implements the terminal side of the
+[Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status)
+per session, through libghostty-vt:
+
+- **Support query.** A program sends `ESC ] 7501 ; ? ST`; the broker writes the
+  fixed reply `ESC ] 7501 ; ? ST` (same terminator) straight to the PTY from
+  its output drainer, with or without an attached viewer and before the chunk's
+  viewers could answer the `CSI c` that emitters send after the query. This is
+  the only query the broker answers: every other reply libghostty produces
+  (DA, DSR, XTVERSION, mode and color queries, ...) is dropped, because the
+  viewer terminal already answers those through `input_binary`. The reply
+  write never blocks the drainer: when the program has left its input queue
+  full (it is not reading stdin), the reply is dropped, as the protocol allows.
+- **Records.** Validated reports update a per-session record set: a report
+  replaces the record for its id; `state=clear` removes the id and its
+  descendants (`a` clears `a/b`; an empty id clears all, as does RIS);
+  process exit and an OSC 133 primary prompt start drop `working`, `blocked`
+  and `idle` records while `done` and `error` survive; at most 256 records,
+  evicting the least recently updated.
+- **Byte fidelity.** OSC 7501 bytes are not stripped from `output_binary`,
+  replay, or snapshots.
+- **Untrusted text.** `app`, `title` and `message` come from the program.
+  The broker drops control and invisible formatting characters (bidi
+  overrides/isolates, zero-width, BOM, tags) and bounds lengths before
+  exposing them; consumers must still treat them as plain text.
+
+### ProgramStatusRecord
+
+```jsonc
+{
+  "id":            "",              // "" = the program itself; "a/b" is a child of "a"; ≤ 128 bytes
+  "state":         "blocked",       // idle | working | done | blocked | error
+  "kind":          "permission",    // blocked only, optional: permission | question | auth
+  "progress":      40,              // working/blocked only, optional: 0..=100
+  "app":           "claude",        // optional, ≤ 32 bytes
+  "title":         "Plan",          // optional, ≤ 192 bytes
+  "message":       "Apply?",        // optional, ≤ 2048 bytes, decoded text
+  "updated_at_ms": 1700000000000    // broker clock when the content last changed
+}
+```
+
+A `program_status_changed` event is emitted at most once per drained PTY chunk
+and only when the record set actually changed (an identical re-report is not a
+change), plus once on exit when that drops records.
 
 ---
 

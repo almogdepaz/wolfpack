@@ -2,6 +2,7 @@ pub mod ansi_render;
 pub mod base64;
 pub mod codec;
 pub mod output_bus;
+pub mod program_status;
 pub mod protocol;
 pub mod registry;
 pub mod ring_buffer;

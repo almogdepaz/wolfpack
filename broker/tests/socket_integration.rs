@@ -125,7 +125,7 @@ async fn poll_session_alive(stream: &mut UnixStream, session_id: Uuid) -> bool {
     )
     .await;
     match resp.payload.expect("payload") {
-        ResponsePayload::SessionInfo { session } => session.alive,
+        ResponsePayload::SessionInfo { session, .. } => session.alive,
         other => panic!("unexpected payload: {other:?}"),
     }
 }
@@ -239,7 +239,7 @@ async fn session_info_returns_session_for_known_id_and_unknown_session_for_missi
     )
     .await;
     match resp.payload.expect("payload") {
-        ResponsePayload::SessionInfo { session } => {
+        ResponsePayload::SessionInfo { session, .. } => {
             assert_eq!(session.id, created.id);
             assert_eq!(session.name, "info-target");
         }
@@ -444,7 +444,7 @@ async fn resize_round_trip_updates_session_info_and_snapshot_dimensions() {
     )
     .await;
     match resp.payload.expect("payload") {
-        ResponsePayload::SessionInfo { session } => {
+        ResponsePayload::SessionInfo { session, .. } => {
             assert_eq!((session.cols, session.rows), (132, 50));
         }
         other => panic!("unexpected: {other:?}"),
