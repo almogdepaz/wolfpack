@@ -10,7 +10,14 @@ import {
 
 import { mountAndConnectTerminal } from "../../public/terminal-bootstrap.ts";
 import { resumeMobileTerminal } from "../../src/mobile-foreground.ts";
-import { CLOSE_CODE_DISPLACED, CLOSE_CODE_SESSION_UNAVAILABLE, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
+import {
+  CLOSE_CODE_BROKER_UNAVAILABLE,
+  CLOSE_CODE_DISPLACED,
+  CLOSE_CODE_SERVICE_RESTART,
+  CLOSE_CODE_SESSION_UNAVAILABLE,
+  WS_CLOSE_REASONS,
+} from "../../src/ws-constants.ts";
+import { RECONNECT_CAUSE, type BackendProbeResult, type ReconnectStatus } from "../../src/connection-status.ts";
 
 const ORIGINAL_WEBSOCKET = globalThis.WebSocket;
 const ORIGINAL_LOCATION = globalThis.location;
@@ -1328,4 +1335,226 @@ describe("PTY socket client", () => {
 
     client.close();
   });
+
+describe("PTY socket client reconnect status", () => {
+  function harness(probe: (machine?: string) => Promise<BackendProbeResult>, overrides: Partial<PtySocketClientDependencies> = {}) {
+    const statuses: ReconnectStatus[] = [];
+    const probes: Array<string | undefined> = [];
+    let client!: ReturnType<typeof createPtySocketClient>;
+    client = createPtySocketClient(clientOpts({
+      onDisconnected: () => client.scheduleReconnect(),
+      onReconnectStatus: (status) => statuses.push(status),
+    }), dependencies({
+      probeBackend: (machine) => { probes.push(machine); return probe(machine); },
+      ...overrides,
+    }));
+    return { client, statuses, probes };
+  }
+
+  async function openSocket(index: number): Promise<FakeWebSocket> {
+    await flushPromises();
+    const socket = FakeWebSocket.instances[index];
+    socket.open();
+    return socket;
+  }
+
+  test("1012 is reported as server-restarting without probing", async () => {
+    const { client, statuses, probes } = harness(async () => ({ kind: "unreachable" }));
+    try {
+      client.connect();
+      (await openSocket(0)).close(CLOSE_CODE_SERVICE_RESTART, WS_CLOSE_REASONS.SERVICE_RESTART);
+      await flushPromises();
+      expect(statuses.map(({ cause, attempt }) => ({ cause, attempt }))).toEqual([{ cause: RECONNECT_CAUSE.SERVER_RESTARTING, attempt: 1 }]);
+      expect(probes).toEqual([]);
+    } finally { client.close(); }
+  });
+
+  test("4004 is reported as broker-down without probing", async () => {
+    const { client, statuses, probes } = harness(async () => ({ kind: "responded", brokerReady: true }));
+    try {
+      client.connect();
+      (await openSocket(0)).close(CLOSE_CODE_BROKER_UNAVAILABLE, WS_CLOSE_REASONS.BROKER_UNAVAILABLE);
+      await flushPromises();
+      expect(statuses.map(({ cause }) => cause)).toEqual([RECONNECT_CAUSE.BROKER_DOWN]);
+      expect(probes).toEqual([]);
+    } finally { client.close(); }
+  });
+
+  test("an unexplained drop probes the backend and refines the pending status", async () => {
+    let answer!: (result: BackendProbeResult) => void;
+    const { client, statuses, probes } = harness(() => new Promise((resolve) => { answer = resolve; }));
+    try {
+      client.connect();
+      (await openSocket(0)).close(1006, "");
+      await flushPromises();
+      expect(statuses.map(({ cause }) => cause)).toEqual([RECONNECT_CAUSE.UNKNOWN]);
+      expect(probes).toHaveLength(1);
+      answer({ kind: "responded", brokerReady: false });
+      await flushPromises();
+      expect(statuses.map(({ cause }) => cause)).toEqual([RECONNECT_CAUSE.UNKNOWN, RECONNECT_CAUSE.BROKER_DOWN]);
+      expect(statuses[1].attempt).toBe(statuses[0].attempt);
+      expect(statuses[1].retryAt).toBe(statuses[0].retryAt);
+    } finally { client.close(); }
+  });
+
+  test("the probe targets the terminal's machine", async () => {
+    const statuses: ReconnectStatus[] = [];
+    const seen: Array<string | undefined> = [];
+    let remote!: ReturnType<typeof createPtySocketClient>;
+    remote = createPtySocketClient(clientOpts({
+      machine: "phone",
+      onDisconnected: () => remote.scheduleReconnect(),
+      onReconnectStatus: (status) => statuses.push(status),
+    }), dependencies({ probeBackend: async (machine) => { seen.push(machine); return { kind: "unreachable" }; } }));
+    try {
+      remote.connect();
+      (await openSocket(0)).close(1006, "");
+      await flushPromises();
+      expect(seen).toEqual(["phone"]);
+      expect(statuses.at(-1)?.cause).toBe(RECONNECT_CAUSE.UNREACHABLE);
+    } finally { remote.close(); }
+  });
+
+  test("a failed ticket request probes before the retry", async () => {
+    const { client, statuses } = harness(async () => ({ kind: "unreachable" }), {
+      getBrowserAuthToken: () => "token",
+      requestWebSocketTicket: async () => { throw new Error("network down"); },
+    });
+    try {
+      client.connect();
+      for (let i = 0; i < 3; i++) await flushPromises();
+      expect(statuses.at(-1)?.cause).toBe(RECONNECT_CAUSE.UNREACHABLE);
+    } finally { client.close(); }
+  });
+
+  test("a restarting server stays labeled restarting while the next attempt finds it down", async () => {
+    jest.useFakeTimers();
+    const { client, statuses } = harness(async () => ({ kind: "unreachable" }));
+    try {
+      client.connect();
+      (await openSocket(0)).close(CLOSE_CODE_SERVICE_RESTART, WS_CLOSE_REASONS.SERVICE_RESTART);
+      await flushPromises();
+      jest.advanceTimersByTime(5_000);
+      await flushPromises();
+      FakeWebSocket.instances[1].close(1006, "");
+      await flushPromises();
+      expect(statuses.map(({ cause, attempt }) => ({ cause, attempt }))).toEqual([
+        { cause: RECONNECT_CAUSE.SERVER_RESTARTING, attempt: 1 },
+        { cause: RECONNECT_CAUSE.SERVER_RESTARTING, attempt: 2 },
+      ]);
+    } finally { client.close(); jest.useRealTimers(); }
+  });
+
+  test("a close does not re-emit the previous attempt's status", async () => {
+    jest.useFakeTimers();
+    const { client, statuses } = harness(() => new Promise(() => {}));
+    try {
+      client.connect();
+      (await openSocket(0)).close(1006, "");
+      await flushPromises();
+      jest.advanceTimersByTime(5_000);
+      await flushPromises();
+      FakeWebSocket.instances[1].close(CLOSE_CODE_BROKER_UNAVAILABLE, WS_CLOSE_REASONS.BROKER_UNAVAILABLE);
+      await flushPromises();
+      expect(statuses.map(({ cause, attempt }) => ({ cause, attempt }))).toEqual([
+        { cause: RECONNECT_CAUSE.UNKNOWN, attempt: 1 },
+        { cause: RECONNECT_CAUSE.BROKER_DOWN, attempt: 2 },
+      ]);
+    } finally { client.close(); jest.useRealTimers(); }
+  });
+
+  test("a probe answer after the retry budget is exhausted is dropped", async () => {
+    let answer!: (result: BackendProbeResult) => void;
+    let exhausted = 0;
+    const statuses: ReconnectStatus[] = [];
+    let client!: ReturnType<typeof createPtySocketClient>;
+    client = createPtySocketClient(clientOpts({
+      onDisconnected: () => client.scheduleReconnect(),
+      onReconnectStatus: (status) => statuses.push(status),
+      onReconnectExhausted: () => { exhausted++; },
+    }), dependencies({ probeBackend: () => new Promise((resolve) => { answer = resolve; }) }));
+    jest.useFakeTimers();
+    try {
+      client.connect();
+      (await openSocket(0)).close(1006, "");
+      await flushPromises();
+      const pendingProbe = answer;
+      jest.advanceTimersByTime(3 * 60 * 1000);
+      await flushPromises();
+      FakeWebSocket.instances.at(-1)!.close(1006, "");
+      await flushPromises();
+      expect(exhausted).toBe(1);
+      const count = statuses.length;
+      pendingProbe({ kind: "unreachable" });
+      answer({ kind: "unreachable" });
+      await flushPromises();
+      expect(statuses).toHaveLength(count);
+    } finally { client.close(); jest.useRealTimers(); }
+  });
+
+  for (const [code, reason, expected, stale] of [
+    [CLOSE_CODE_BROKER_UNAVAILABLE, WS_CLOSE_REASONS.BROKER_UNAVAILABLE, RECONNECT_CAUSE.BROKER_DOWN, { kind: "responded", brokerReady: true }],
+    [CLOSE_CODE_SERVICE_RESTART, WS_CLOSE_REASONS.SERVICE_RESTART, RECONNECT_CAUSE.SERVER_RESTARTING, { kind: "responded", brokerReady: false }],
+  ] as const) {
+    test(`a probe older than a ${code} close cannot relabel the retry`, async () => {
+      jest.useFakeTimers();
+      const answers: Array<(result: BackendProbeResult) => void> = [];
+      const { client, statuses } = harness(() => new Promise((resolve) => { answers.push(resolve); }));
+      try {
+        client.connect();
+        (await openSocket(0)).close(1006, "");
+        await flushPromises();
+        jest.advanceTimersByTime(5_000);
+        await flushPromises();
+        FakeWebSocket.instances[1].close(code, reason);
+        await flushPromises();
+        answers[0](stale);
+        await flushPromises();
+        expect(statuses.at(-1)).toMatchObject({ cause: expected, attempt: 2 });
+      } finally { client.close(); jest.useRealTimers(); }
+    });
+  }
+
+  test("an explicit reconnect retires the outstanding probe", async () => {
+    const answers: Array<(result: BackendProbeResult) => void> = [];
+    const { client, statuses } = harness(() => new Promise((resolve) => { answers.push(resolve); }));
+    try {
+      client.connect();
+      (await openSocket(0)).close(1006, "");
+      await flushPromises();
+      client.reconnect();
+      (await openSocket(1)).close(CLOSE_CODE_SERVICE_RESTART, WS_CLOSE_REASONS.SERVICE_RESTART);
+      await flushPromises();
+      answers[0]({ kind: "responded", brokerReady: false });
+      await flushPromises();
+      expect(statuses.at(-1)?.cause).toBe(RECONNECT_CAUSE.SERVER_RESTARTING);
+    } finally { client.close(); }
+  });
+
+  test("readiness clears the cause and drops a late probe answer", async () => {
+    let answer!: (result: BackendProbeResult) => void;
+    const { client, statuses } = harness(() => new Promise((resolve) => { answer = resolve; }));
+    jest.useFakeTimers();
+    try {
+      client.connect();
+      (await openSocket(0)).close(CLOSE_CODE_SERVICE_RESTART, WS_CLOSE_REASONS.SERVICE_RESTART);
+      await flushPromises();
+      jest.advanceTimersByTime(5_000);
+      const second = await openSocket(1);
+      second.message(JSON.stringify({ type: "pty_ready" }));
+      second.close(1006, "");
+      await flushPromises();
+      const pendingProbe = answer;
+      jest.advanceTimersByTime(5_000);
+      const third = await openSocket(2);
+      third.message(JSON.stringify({ type: "pty_ready" }));
+      pendingProbe({ kind: "unreachable" });
+      await flushPromises();
+      expect(statuses.map(({ cause, attempt }) => ({ cause, attempt }))).toEqual([
+        { cause: RECONNECT_CAUSE.SERVER_RESTARTING, attempt: 1 },
+        { cause: RECONNECT_CAUSE.UNKNOWN, attempt: 1 },
+      ]);
+    } finally { client.close(); jest.useRealTimers(); }
+  });
+});
 });

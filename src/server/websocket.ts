@@ -16,6 +16,7 @@ import {
   CLOSE_CODE_POLICY_VIOLATION,
   CLOSE_CODE_SERVER_ERROR,
   CLOSE_CODE_SESSION_UNAVAILABLE,
+  CLOSE_CODE_BROKER_UNAVAILABLE,
   CLOSE_CODE_DISPLACED,
   PTY_BINARY_FRAME_MAX_BYTES,
   WS_CLOSE_REASONS,
@@ -1115,6 +1116,23 @@ async function subscribeWithCoalescing(
       log.warn("replay_truncated — forcing client reconnect for fresh snapshot", { session });
       if (entry.viewer && entry.viewer.readyState === 1) {
         tryWsClose(entry.viewer, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.SUBSCRIBE_FAILED, "replay_truncated: viewer close failed", session);
+      }
+      teardownPty(session);
+      return;
+    }
+    if (event.kind === "broker_unavailable") {
+      // The broker stayed down past the server's grace window. Close with
+      // 4004 so the client shows broker-down instead of a frozen terminal.
+      if (!entry.alive) return;
+      log.warn("broker unavailable — closing viewer", { session });
+      // Snapshot both: closing the owner can promote the pending viewer, which
+      // must also reconnect rather than see teardown's "pty teardown".
+      const viewers = [entry.viewer, entry.pendingViewer];
+      entry.pendingViewer = null;
+      for (const viewer of viewers) {
+        if (viewer && viewer.readyState === 1) {
+          tryWsClose(viewer, CLOSE_CODE_BROKER_UNAVAILABLE, WS_CLOSE_REASONS.BROKER_UNAVAILABLE, "broker_unavailable: viewer close failed", session);
+        }
       }
       teardownPty(session);
       return;

@@ -1888,6 +1888,9 @@
           "brokerAvailable": {
             "type": "boolean"
           },
+          "brokerReady": {
+            "type": "boolean"
+          },
           "counts": {
             "type": "object",
             "properties": {
@@ -1903,11 +1906,14 @@
         },
         "required": [
           "brokerAvailable",
+          "brokerReady",
           "counts"
         ],
         "additionalProperties": false
       },
-      "errors": []
+      "errors": [
+        "503 ErrorEnvelope"
+      ]
     },
     "killSession": {
       "route": "POST /api/kill",
