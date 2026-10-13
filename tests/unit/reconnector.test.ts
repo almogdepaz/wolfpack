@@ -56,4 +56,25 @@ describe("terminal reconnect backoff", () => {
     expect(reconnector.pending).toBe(false);
     expect(reconnector.isBlocked).toBe(true);
   });
+
+  test("reports the attempt number and delay of each scheduled retry", () => {
+    const runtime = new FakeRuntime();
+    const seen: Array<[number, number]> = [];
+    const reconnector = createReconnector({ onReconnecting: (attempt, delayMs) => seen.push([attempt, delayMs]) }, runtime);
+
+    reconnector.schedule(() => {});
+    runtime.fire();
+    reconnector.schedule(() => {});
+    runtime.fire();
+    expect(seen).toEqual([[1, RECONNECT_BASE_DELAY_MS], [2, 900]]);
+
+    reconnector.connected();
+    reconnector.schedule(() => {});
+    expect(seen.at(-1)).toEqual([1, RECONNECT_BASE_DELAY_MS]);
+
+    reconnector.reset();
+    reconnector.cancel();
+    reconnector.schedule(() => {});
+    expect(seen.at(-1)).toEqual([1, RECONNECT_BASE_DELAY_MS]);
+  });
 });

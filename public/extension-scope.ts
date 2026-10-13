@@ -1,4 +1,5 @@
 import type { SelectedExtensionScope } from "./extension-host.ts";
+import { isStableMachineIdentity } from "../src/tailnet-peer-registry.ts";
 
 const EXACT_BROKER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -15,14 +16,16 @@ export interface WorkspaceExtensionScopeInput {
   readonly singleTerminal?: SelectedTerminalIdentity | null;
 }
 
-/** Same-origin extension data may only follow the exact selected local terminal UUID. */
+/** Preserve exact selected machine authority; the host separately verifies ready peer routing. */
 export function resolveSelectedExtensionScope(
   target: SelectedTerminalIdentity | null | undefined,
   localMachineIdentity: string,
 ): SelectedExtensionScope | null {
   if (!target?.sessionId || !EXACT_BROKER_UUID.test(target.sessionId)) return null;
   if (target.machine && target.machine !== localMachineIdentity) {
-    return { sessionId: null, unavailable: "Extension context is unavailable for a terminal served by another machine." };
+    return isStableMachineIdentity(target.machine)
+      ? { sessionId: target.sessionId, machine: target.machine }
+      : { sessionId: null, unavailable: "Selected extension machine identity is unavailable." };
   }
   return { sessionId: target.sessionId };
 }

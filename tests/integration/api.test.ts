@@ -4231,8 +4231,23 @@ describe("GET /api/backend", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(typeof data.brokerAvailable).toBe("boolean");
+    expect(data.brokerReady).toBe(true);
     expect(typeof data.counts).toBe("object");
     expect(typeof data.counts.broker).toBe("number");
+  });
+
+  test("answers 503 with brokerReady false when the broker cannot be reached", async () => {
+    class UnreachableBackend extends MockBackend {
+      override async list(): Promise<string[]> { throw new Error("broker not connected"); }
+    }
+    __setTestBackend(new UnreachableBackend());
+    try {
+      const res = await get("/api/backend");
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ error: "broker unavailable", brokerReady: false });
+    } finally {
+      __setTestBackend(mockBackend);
+    }
   });
 });
 

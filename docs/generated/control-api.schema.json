@@ -276,6 +276,245 @@
         "503 ExtensionApiErrorEnvelope"
       ]
     },
+    "listSelectedPeerExtensions": {
+      "route": "GET /api/extensions/peer/{machine}/catalog",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:listSelectedPeerExtensions:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listSelectedPeerExtensions request",
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/SelectedExtensionMachine"
+          }
+        },
+        "required": [
+          "machine"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:listSelectedPeerExtensions:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listSelectedPeerExtensions response",
+        "type": "object",
+        "properties": {
+          "safeMode": {
+            "type": "boolean"
+          },
+          "installations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ExtensionCatalogInstallation"
+            }
+          }
+        },
+        "required": [
+          "safeMode",
+          "installations"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ExtensionPeerErrorEnvelope",
+        "401 ErrorEnvelope|ExtensionPeerErrorEnvelope",
+        "403 ExtensionPeerErrorEnvelope",
+        "404 ExtensionPeerErrorEnvelope",
+        "409 ExtensionPeerErrorEnvelope",
+        "503 ExtensionPeerErrorEnvelope"
+      ]
+    },
+    "readSelectedPeerExtensionAsset": {
+      "route": "GET /api/extensions/peer/{machine}/assets/{extensionId}/{packageDigest}/{assetPath}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionAsset:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionAsset request",
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/SelectedExtensionMachine"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "packageDigest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "assetPath": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "machine",
+          "extensionId",
+          "packageDigest",
+          "assetPath"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionAsset:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionAsset response",
+        "type": "string",
+        "contentMediaType": "text/javascript"
+      },
+      "errors": [
+        "400 ExtensionPeerErrorEnvelope",
+        "401 ErrorEnvelope|ExtensionPeerErrorEnvelope",
+        "403 ExtensionPeerErrorEnvelope",
+        "404 ExtensionPeerErrorEnvelope",
+        "409 ExtensionPeerErrorEnvelope",
+        "503 ExtensionPeerErrorEnvelope"
+      ]
+    },
+    "readSelectedPeerExtensionDocument": {
+      "route": "GET /api/extensions/peer/{machine}/documents/{extensionId}/{documentId}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionDocument:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionDocument request",
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/SelectedExtensionMachine"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "documentId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "session": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "machine",
+          "extensionId",
+          "documentId",
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionDocument:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionDocument response",
+        "type": "object",
+        "properties": {
+          "installationId": {
+            "$ref": "#/$defs/ExtensionInstallationId"
+          },
+          "scopeSessionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "documentId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "document": {}
+        },
+        "required": [
+          "installationId",
+          "scopeSessionId",
+          "extensionId",
+          "documentId",
+          "revision",
+          "document"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ExtensionPeerErrorEnvelope",
+        "401 ErrorEnvelope|ExtensionPeerErrorEnvelope",
+        "403 ExtensionPeerErrorEnvelope",
+        "404 ExtensionPeerErrorEnvelope",
+        "409 ExtensionPeerErrorEnvelope",
+        "503 ExtensionPeerErrorEnvelope"
+      ]
+    },
+    "readSelectedPeerExtensionProject": {
+      "route": "GET /api/extensions/peer/{machine}/project/git-status/{extensionId}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionProject:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionProject request",
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/SelectedExtensionMachine"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "session": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "machine",
+          "extensionId",
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionProject:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionProject response",
+        "type": "object",
+        "properties": {
+          "installationId": {
+            "$ref": "#/$defs/ExtensionInstallationId"
+          },
+          "scopeSessionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "status": {
+            "$ref": "#/$defs/ProjectGitStatus"
+          }
+        },
+        "required": [
+          "installationId",
+          "scopeSessionId",
+          "extensionId",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ExtensionPeerErrorEnvelope",
+        "401 ErrorEnvelope|ExtensionPeerErrorEnvelope",
+        "403 ExtensionPeerErrorEnvelope",
+        "404 ExtensionPeerErrorEnvelope",
+        "409 ExtensionPeerErrorEnvelope",
+        "503 ExtensionPeerErrorEnvelope"
+      ]
+    },
     "publishExtensionDocument": {
       "route": "POST /api/extensions/documents/{extensionId}/{documentId}",
       "stable": true,
@@ -1888,6 +2127,9 @@
           "brokerAvailable": {
             "type": "boolean"
           },
+          "brokerReady": {
+            "type": "boolean"
+          },
           "counts": {
             "type": "object",
             "properties": {
@@ -1903,11 +2145,14 @@
         },
         "required": [
           "brokerAvailable",
+          "brokerReady",
           "counts"
         ],
         "additionalProperties": false
       },
-      "errors": []
+      "errors": [
+        "503 ErrorEnvelope"
+      ]
     },
     "killSession": {
       "route": "POST /api/kill",
@@ -4010,6 +4255,45 @@
     "ExtensionInstallationId": {
       "type": "string",
       "format": "uuid"
+    },
+    "SelectedExtensionMachine": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_:-]{1,256}:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "Canonical server-verified Tailnet node ID and host installation UUID, not an origin. Selected-peer bearer uses X-Wolfpack-Extension-Peer-Authorization; local owner auth remains independent."
+    },
+    "ExtensionPeerErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "enum": [
+                "PEER_AUTH_REQUIRED",
+                "PEER_FORBIDDEN",
+                "PEER_UNAVAILABLE",
+                "PEER_INCOMPATIBLE",
+                "PEER_RESPONSE_INVALID",
+                "PEER_BUSY",
+                "PEER_TIMEOUT",
+                "INVALID_REQUEST"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "error"
+      ],
+      "additionalProperties": false
     },
     "ExtensionDocumentCatalog": {
       "type": "object",

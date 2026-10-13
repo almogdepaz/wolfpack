@@ -17,6 +17,10 @@ export const CLOSE_CODE_SESSION_UNAVAILABLE = 4001;
 export const CLOSE_CODE_DISPLACED = 4002;
 /** Client-side prefill deadline. The default disconnect path reconnects. */
 export const CLOSE_CODE_PREFILL_TIMEOUT = 4003;
+/** RFC 6455 1012 — "service restart". Sent to every viewer on server shutdown. */
+export const CLOSE_CODE_SERVICE_RESTART = 1012;
+/** The broker stayed disconnected past the server's reconnect grace window. */
+export const CLOSE_CODE_BROKER_UNAVAILABLE = 4004;
 
 // ── Binary frame limits ──
 
@@ -42,4 +46,6 @@ export const WS_CLOSE_REASONS = {
   SLOW_VIEWER: "slow viewer",
   INVALID_MESSAGE: "invalid message",
   ATTACH_FAILED: "attach failed",
+  SERVICE_RESTART: "service restart",
+  BROKER_UNAVAILABLE: "broker unavailable",
 } as const;

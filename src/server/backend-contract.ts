@@ -103,10 +103,14 @@ export interface SessionBackend {
  *    Subscribers should force a re-snapshot — in practice the WS layer
  *    closes the viewer with 1011 so the client reconnects and re-prefills
  *    instead of sitting on out-of-sync output.
+ *  - `broker_unavailable`: the broker connection has been down longer than
+ *    the reconnect grace window. The WS layer closes the viewer with 4004 so
+ *    the client can show a broker-down state instead of a frozen terminal.
  */
 export type SessionLifecycleEvent =
   | { kind: "exited"; exitCode?: number; signal?: number }
-  | { kind: "replay_truncated" };
+  | { kind: "replay_truncated" }
+  | { kind: "broker_unavailable" };
 
 export interface SessionPrefill {
   data: Buffer;

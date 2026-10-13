@@ -73,14 +73,32 @@ describe("control api schema generation", () => {
   test("backend status matches the broker-only runtime response", () => {
     const response = httpResponse("getBackendStatus");
 
-    expect(validate(response, { brokerAvailable: true, counts: { broker: 2 } }, artifact)).toEqual([]);
-    expect(validate(response, { brokerAvailable: true, counts: { broker: 2, tmux: 0 } }, artifact)).not.toEqual([]);
+    expect(validate(response, { brokerAvailable: true, brokerReady: true, counts: { broker: 2 } }, artifact)).toEqual([]);
+    expect(validate(response, { brokerAvailable: true, brokerReady: true, counts: { broker: 2, tmux: 0 } }, artifact)).not.toEqual([]);
   });
 });
 
 describe("control api schema", () => {
   test("publishes the runtime asset route with extension ID and immutable package digest", () => {
     expect(httpOperation("getInstalledExtensionAsset").route).toBe("GET /api/extensions/assets/{extensionId}/{packageDigest}/{assetPath}");
+  });
+
+  test("publishes only narrow authenticated selected-peer extension read capabilities", () => {
+    const current = JSON.parse(generateControlApiSchemaText()) as JsonObject;
+    const http = current.http as JsonObject;
+    const routes = {
+      listSelectedPeerExtensions: "GET /api/extensions/peer/{machine}/catalog",
+      readSelectedPeerExtensionAsset: "GET /api/extensions/peer/{machine}/assets/{extensionId}/{packageDigest}/{assetPath}",
+      readSelectedPeerExtensionDocument: "GET /api/extensions/peer/{machine}/documents/{extensionId}/{documentId}",
+      readSelectedPeerExtensionProject: "GET /api/extensions/peer/{machine}/project/git-status/{extensionId}",
+    };
+    for (const [id, route] of Object.entries(routes)) {
+      expect(http[id]).toMatchObject({ route, auth: "jwt-when-configured" });
+      const request = (http[id] as JsonObject).request as JsonObject;
+      expect((request.required as string[]).includes("machine")).toBe(true);
+      expect(JSON.stringify(request)).not.toContain('"origin"');
+    }
+    expect(Object.values(http).filter(value => isObject(value) && String(value.route).includes('/api/extensions/peer/') && !String(value.route).startsWith('GET '))).toHaveLength(0);
   });
 
   test("publishes the opaque relay adapter contract", () => {

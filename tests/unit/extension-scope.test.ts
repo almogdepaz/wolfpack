@@ -4,13 +4,22 @@ import { resolveSelectedExtensionScope, resolveWorkspaceExtensionScope } from ".
 const sessionId = "22222222-2222-4222-8222-222222222222";
 
 describe("selected extension scope", () => {
+  test.each(["single", "manual-grid", "delegation-grid"] as const)("preserves selected remote machine authority on %s", activeSurface => {
+    const remote = { sessionId, machine: "node-a:11111111-1111-4111-8111-111111111111" };
+    expect(resolveWorkspaceExtensionScope({
+      activeSurface,
+      singleTerminal: remote,
+      selectedGridPane: remote,
+    }, "local-machine")).toEqual({ sessionId, machine: remote.machine });
+  });
+
   test("uses only the selected terminal exact UUID and rejects remote transport", () => {
     expect(resolveSelectedExtensionScope({ sessionId, machine: "" }, "local-machine"))
       .toEqual({ sessionId });
     expect(resolveSelectedExtensionScope({ sessionId, machine: "local-machine" }, "local-machine"))
       .toEqual({ sessionId });
     expect(resolveSelectedExtensionScope({ sessionId, machine: "remote-machine" }, "local-machine"))
-      .toEqual({ sessionId: null, unavailable: "Extension context is unavailable for a terminal served by another machine." });
+      .toEqual({ sessionId: null, unavailable: "Selected extension machine identity is unavailable." });
   });
 
   test("does not turn a name/project-like fallback into an extension scope", () => {
@@ -41,7 +50,7 @@ describe("selected extension scope", () => {
     expect(selected("delegation-grid", { sessionId: second, machine: "" })).toEqual({ sessionId: second });
     expect(selected("manual-grid", undefined)).toBeNull();
     expect(selected("delegation-grid", { sessionId: "missing", machine: "" })).toBeNull();
-    expect(selected("single", undefined, { sessionId, machine: "remote-machine" })).toEqual({ sessionId: null, unavailable: "Extension context is unavailable for a terminal served by another machine." });
+    expect(selected("single", undefined, { sessionId, machine: "remote-machine" })).toEqual({ sessionId: null, unavailable: "Selected extension machine identity is unavailable." });
   });
 
   test("active grid authority never falls back to the prior single-terminal UUID", () => {

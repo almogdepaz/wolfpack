@@ -103,6 +103,11 @@ const log = createLogger("broker-backend");
  *  500 lines keeps frames comfortably small while still giving useful context;
  *  the codec cap was also bumped to 64MB for defense-in-depth. */
 const SNAPSHOT_SCROLLBACK_LINES = 500;
+/**
+ * How long a broker disconnect may last before attached viewers are told.
+ * Shorter drops stay invisible: the client resubscribes on reconnect.
+ */
+export const BROKER_UNAVAILABLE_GRACE_MS = 3_000;
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
@@ -334,6 +339,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
    * is in flight: `killed` if any request succeeded, otherwise `exit`.
    */
   private readonly killRequests = new Map<string, KillRequestState>();
+  private brokerUnavailableTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(client: BrokerClientApi) {
     this.client = client;
@@ -1077,6 +1083,35 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         cb({ kind: "replay_truncated" });
       } catch (e: unknown) {
         log.debug("lifecycle replay_truncated callback threw", { id, error: errMsg(e) });
+      }
+    }
+  }
+
+  /** Wired to the broker client's onDisconnect; starts the grace window. */
+  handleBrokerDisconnected(): void {
+    if (this.brokerUnavailableTimer) return;
+    this.brokerUnavailableTimer = setTimeout(() => {
+      this.brokerUnavailableTimer = null;
+      this.notifyBrokerUnavailable();
+    }, BROKER_UNAVAILABLE_GRACE_MS);
+    this.brokerUnavailableTimer.unref?.();
+  }
+
+  /** Wired to the broker client's onConnect; a reconnect inside the grace window stays invisible. */
+  handleBrokerConnected(): void {
+    if (!this.brokerUnavailableTimer) return;
+    clearTimeout(this.brokerUnavailableTimer);
+    this.brokerUnavailableTimer = null;
+  }
+
+  private notifyBrokerUnavailable(): void {
+    for (const [id, subs] of Array.from(this.lifecycleSubs)) {
+      for (const cb of Array.from(subs)) {
+        try {
+          cb({ kind: "broker_unavailable" });
+        } catch (e: unknown) {
+          log.debug("lifecycle broker_unavailable callback threw", { id, error: errMsg(e) });
+        }
       }
     }
   }

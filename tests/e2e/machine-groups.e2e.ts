@@ -689,3 +689,31 @@ test("machine names expose drag-only reordering and Escape cancels a pending dra
     groups.map(group => (group as HTMLElement).dataset.machine ?? ""),
   )).toEqual(["", peerIdentity]);
 });
+
+test("single-machine session fetch failure shows an unreachable status with retry", async ({ page }) => {
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({
+    contentType: "application/json",
+    body: JSON.stringify({ candidates: [] }),
+  }));
+  let reachable = false;
+  await page.route("**/api/sessions", route => reachable
+    ? route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions: [{ name: "local-session", triage: "idle" }] }) })
+    : route.abort("connectionrefused"));
+  await page.goto(server.baseUrl);
+
+  await collapseInitialSessionMenu(page);
+  const group = page.locator('.machine-group[data-machine=""]').filter({ visible: true });
+  await expect(group).toHaveCount(1);
+  await expect(group).toHaveClass(/offline/);
+  await expect(group.locator(".machine-header-status")).toHaveText("Unreachable");
+  await expect(group.locator(".machine-group-body")).toContainText("Unreachable");
+  await expect(group.locator(".machine-group-body")).not.toContainText("No active sessions");
+  await expect(group.locator('[data-action="new-session"]')).toBeDisabled();
+
+  reachable = true;
+  await group.locator('[data-action="retry-machine"]').click();
+  await expect(group.locator(".card")).toHaveCount(1);
+  await expect(group).not.toHaveClass(/offline/);
+  await expect(group.locator(".machine-header-status")).toHaveCount(0);
+  await expect(group.locator('[data-action="retry-machine"]')).toHaveCount(0);
+});

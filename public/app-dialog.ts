@@ -12,11 +12,16 @@ export interface AppDialogOptions {
   readonly confirmLabel: string;
   readonly cancelLabel?: string | null;
   readonly destructive?: boolean;
+  /** Host scope cancellation: never retain a credential/trust modal after selection changes. */
+  readonly signal?: AbortSignal;
 }
 
 export type AppDialogResult = Readonly<Record<string, string>> | null;
 
+let activeDialog: { readonly element: HTMLDialogElement; readonly closed: Promise<void> } | null = null;
+
 export function showAppDialog(options: AppDialogOptions): Promise<AppDialogResult> {
+  if (options.signal?.aborted) return Promise.resolve(null);
   const dialog = document.getElementById("app-dialog");
   const form = document.getElementById("app-dialog-form");
   const title = document.getElementById("app-dialog-title");
@@ -35,6 +40,13 @@ export function showAppDialog(options: AppDialogOptions): Promise<AppDialogResul
   ) {
     throw new Error("missing required app dialog elements");
   }
+  if (activeDialog) {
+    // Native close events are queued. Do not let an old event settle a newly
+    // opened modal or remove its handlers; wait only while the owner is closing.
+    if (!activeDialog.element.open) return activeDialog.closed.then(() => showAppDialog(options));
+    return Promise.reject(new Error("app dialog is busy"));
+  }
+  if (dialog.open) return Promise.reject(new Error("app dialog is busy"));
   const focusReturn = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
   title.textContent = options.title;
@@ -63,6 +75,9 @@ export function showAppDialog(options: AppDialogOptions): Promise<AppDialogResul
   confirm.textContent = options.confirmLabel;
   confirm.classList.toggle("destructive", options.destructive === true);
 
+  let releaseOwner!: () => void;
+  const owner = { element: dialog, closed: new Promise<void>(resolve => { releaseOwner = resolve; }) };
+  activeDialog = owner;
   return new Promise((resolve) => {
     let submittedValues: Readonly<Record<string, string>> | null = null;
 
@@ -70,6 +85,7 @@ export function showAppDialog(options: AppDialogOptions): Promise<AppDialogResul
       form.removeEventListener("submit", onSubmit);
       cancel.removeEventListener("click", onCancel);
       dialog.removeEventListener("close", onClose);
+      options.signal?.removeEventListener("abort", onAbort);
     };
     const onSubmit = (event: SubmitEvent): void => {
       event.preventDefault();
@@ -90,16 +106,27 @@ export function showAppDialog(options: AppDialogOptions): Promise<AppDialogResul
       dialog.close("confirm");
     };
     const onCancel = (): void => dialog.close("cancel");
+    const onAbort = (): void => dialog.close("cancel");
     const onClose = (): void => {
       cleanup();
-      resolve(dialog.returnValue === "confirm" ? submittedValues : null);
-      focusReturn?.focus({ preventScroll: true });
+      if (activeDialog === owner) activeDialog = null;
+      releaseOwner();
+      resolve(!options.signal?.aborted && dialog.returnValue === "confirm" ? submittedValues : null);
+      if (!options.signal?.aborted) focusReturn?.focus({ preventScroll: true });
     };
 
     form.addEventListener("submit", onSubmit);
     cancel.addEventListener("click", onCancel);
     dialog.addEventListener("close", onClose);
-    dialog.showModal();
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    try { dialog.showModal(); }
+    catch (error) {
+      cleanup();
+      if (activeDialog === owner) activeDialog = null;
+      releaseOwner();
+      throw error;
+    }
+    if (options.signal?.aborted) { onAbort(); return; }
     const firstInput = fields.querySelector<HTMLInputElement>("input");
     (firstInput || confirm).focus({ preventScroll: true });
   });

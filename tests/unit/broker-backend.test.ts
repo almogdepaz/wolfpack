@@ -4,11 +4,11 @@
  * Drives BrokerBackend against a fake broker client that records RPC calls
  * and produces canned ControlResponse values. No real socket, no real broker.
  */
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BrokerBackend, type BrokerClientApi } from "../../src/server/broker-backend";
+import { BROKER_UNAVAILABLE_GRACE_MS, BrokerBackend, type BrokerClientApi } from "../../src/server/broker-backend";
 import type { ControlResponse, OutputBinaryFrame, EventBody } from "../../src/broker/codec";
 import {
   BrokerNotConnectedError,
@@ -2159,5 +2159,55 @@ describe("BrokerBackend lifecycle → event bus", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ kind: "session.exited", sessionId: SESSION_UUID_2, reason: "exit", exitCode: 3 });
     expect(seen[0]).not.toHaveProperty("session");
+  });
+});
+
+describe("BrokerBackend broker-unavailable grace", () => {
+  let events: Array<{ session: string; kind: string }>;
+
+  beforeEach(async () => {
+    jest.useFakeTimers();
+    events = [];
+    client.setHandler("list_sessions", () => okResp({ sessions: [
+      sessionInfo({ name: "one", id: SESSION_UUID_1 }),
+      sessionInfo({ name: "two", id: SESSION_UUID_2 }),
+    ] }));
+    await backend.list();
+    for (const name of ["one", "two"]) {
+      backend.onSessionLifecycle(name, (event) => events.push({ session: name, kind: event.kind }));
+    }
+  });
+
+  afterEach(() => jest.useRealTimers());
+
+  test("a reconnect inside the grace window stays invisible to viewers", () => {
+    backend.handleBrokerDisconnected();
+    jest.advanceTimersByTime(BROKER_UNAVAILABLE_GRACE_MS - 1);
+    backend.handleBrokerConnected();
+    jest.advanceTimersByTime(BROKER_UNAVAILABLE_GRACE_MS * 2);
+    expect(events).toEqual([]);
+  });
+
+  test("an outage outlasting the grace window notifies every lifecycle subscriber once", () => {
+    backend.handleBrokerDisconnected();
+    backend.handleBrokerDisconnected();
+    jest.advanceTimersByTime(BROKER_UNAVAILABLE_GRACE_MS);
+    expect(events).toEqual([
+      { session: "one", kind: "broker_unavailable" },
+      { session: "two", kind: "broker_unavailable" },
+    ]);
+    jest.advanceTimersByTime(BROKER_UNAVAILABLE_GRACE_MS * 2);
+    expect(events).toHaveLength(2);
+  });
+
+  test("each new outage gets a fresh grace window", () => {
+    backend.handleBrokerDisconnected();
+    jest.advanceTimersByTime(BROKER_UNAVAILABLE_GRACE_MS - 1);
+    backend.handleBrokerConnected();
+    backend.handleBrokerDisconnected();
+    jest.advanceTimersByTime(BROKER_UNAVAILABLE_GRACE_MS - 1);
+    expect(events).toEqual([]);
+    jest.advanceTimersByTime(1);
+    expect(events).toHaveLength(2);
   });
 });

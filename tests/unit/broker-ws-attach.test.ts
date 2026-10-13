@@ -19,6 +19,7 @@ import {
 } from "../../src/server/backend";
 import { __getTestState } from "../../src/test-hooks";
 import { handlePtyWs, teardownPty } from "../../src/server/websocket";
+import { classifyDisconnect } from "../../src/take-control-logic";
 
 const BOUNDED_GRID_SCROLLBACK_ROWS = 200;
 
@@ -256,6 +257,11 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
     const set = this.dataListeners.get(name);
     if (!set) return;
     for (const cb of [...set]) cb(data);
+  }
+  emitLifecycle(name: string, event: SessionLifecycleEvent): void {
+    const set = this.lifecycleListeners.get(name);
+    if (!set) return;
+    for (const cb of [...set]) cb(event);
   }
   emitExit(name: string, exitCode?: number, signal?: number): void {
     this.alive.delete(name);
@@ -567,6 +573,25 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.closeReason).toBe("session unavailable");
     expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
     expect(activePtySessions.has(SESSION)).toBe(false);
+  });
+
+  test("broker_unavailable closes the viewer with 4004 and tears down the pty", async () => {
+    const ws = await attachWithClock();
+    backend.emitLifecycle(SESSION, { kind: "broker_unavailable" });
+    expect(ws.closeCode).toBe(4004);
+    expect(ws.closeReason).toBe("broker unavailable");
+    expect(activePtySessions.has(SESSION)).toBe(false);
+  });
+
+  test("broker_unavailable also closes a pending conflict viewer with reconnectable 4004", async () => {
+    const owner = await attachWithClock();
+    const pending = new FakeWs();
+    attachWs(pending);
+    backend.emitLifecycle(SESSION, { kind: "broker_unavailable" });
+    for (const ws of [owner, pending]) {
+      expect({ code: ws.closeCode, reason: ws.closeReason }).toEqual({ code: 4004, reason: "broker unavailable" });
+      expect(classifyDisconnect(ws.closeCode!, ws.closeReason!)).toBe("reconnect");
+    }
   });
 
   test("disconnect during exit draining cancels its deadline and discards the detached FIFO", async () => {

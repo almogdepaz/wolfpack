@@ -52,9 +52,9 @@ function setupWsProxy(page: import("@playwright/test").Page) {
   return {
     ready,
     /** Close the page-facing WS to simulate a server disconnect */
-    disconnect: () => {
+    disconnect: (code = 1006, reason = "simulated disconnect") => {
       if (!activeRoute) throw new Error("no active WS route to disconnect");
-      activeRoute.close({ code: 1006, reason: "simulated disconnect" });
+      activeRoute.close({ code, reason });
     },
     get connectionCount() {
       return connectionCount;
@@ -126,9 +126,10 @@ test("WS disconnect shows reconnecting banner then recovers", async ({
   // ── Simulate server-side disconnect ──
   proxy.disconnect();
 
-  // ── Verify reconnecting banner appears (orange, "reconnecting…") ──
+  // ── Verify reconnecting banner appears with its attempt countdown ──
+  // The server answers the cause probe, so the drop stays a generic reconnect.
   await expect(connStatus).toBeVisible({ timeout: 3000 });
-  await expect(connStatus).toContainText(/reconnecting/i, { timeout: 3000 });
+  await expect(connStatus).toContainText(/^reconnecting \(attempt \d+, (retry in \d+s|connecting…)\)$/, { timeout: 3000 });
 
   // ── Verify auto-recovery: banner disappears once reconnected ──
   // Client backoff starts at 500ms, so first retry hits within ~1s.
@@ -164,12 +165,39 @@ test("WS disconnect keeps reconnecting banner visible during a network outage", 
 
   try {
     await expect(connStatus).toBeVisible({ timeout: 3000 });
-    await expect(connStatus).toContainText(/reconnecting/i, { timeout: 3000 });
+    // The cause probe cannot reach the server while offline.
+    await expect(connStatus).toContainText(/server unreachable \(attempt \d+/, { timeout: 5000 });
   } finally {
     await context.setOffline(false);
   }
 
   await expect(connStatus).toBeHidden({ timeout: 15000 });
+});
+
+test("a 1012 close shows server restarting then recovers", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name === "desktop",
+    "mobile-only viewport tests",
+  );
+
+  const proxy = setupWsProxy(page);
+  await proxy.ready;
+
+  await page.goto(srv.baseUrl);
+  await page.waitForSelector(".card", { timeout: 5000 });
+  await page.locator(".card", { hasText: "test-project" }).first().click();
+  await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible({ timeout: 5000 });
+
+  const connStatus = page.locator("#conn-status");
+  await expect(connStatus).toBeHidden();
+
+  proxy.disconnect(1012, "service restart");
+
+  await expect(connStatus).toBeVisible({ timeout: 3000 });
+  await expect(connStatus).toContainText(/server restarting — reconnecting \(attempt 1/, { timeout: 3000 });
+  await expect(connStatus).toBeHidden({ timeout: 10000 });
 });
 
 test("WS disconnect during active session preserves terminal content", async () => {

@@ -6,11 +6,12 @@ import { gzipSync } from "node:zlib";
 const root = join(import.meta.dirname, "..");
 const limits: ReadonlyArray<readonly [string, number, number]> = [
   // Phase-2 extension host: approved base 349590/85735; reviewed 385409/94531.
-  // Explicit A2 allowance; CSS, Ghostty and timing caps are unchanged.
-  ["public/app.bundle.js", 386_000, 95_000],
+  // Selected-machine extensions + current main: approved gzip cap 97000; measured 96008.
+  ["public/app.bundle.js", 386_000, 97_000],
   ["public/ghostty-web.bundle.js", 700_000, 210_000],
   // Phase-1 shell controls/full-view recovery: base 96978/17005; measured 100603/17595.
-  ["public/styles.css", 102_000, 20_000],
+  // Selected-machine extensions + current main: approved raw cap 103000; measured 102177.
+  ["public/styles.css", 103_000, 20_000],
 ];
 let failed = false;
 for (const [file, rawLimit, gzipLimit] of limits) {

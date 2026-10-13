@@ -1,4 +1,5 @@
 import { CREATABLE_HARNESSES } from "../agent-kind.ts";
+import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
 import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
@@ -69,6 +70,7 @@ import { volatileRelayDefinitions } from "./volatile-relay-schema.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
+const SELECTED_EXTENSION_ERRORS = ["400 ExtensionPeerErrorEnvelope", "401 ErrorEnvelope|ExtensionPeerErrorEnvelope", "403 ExtensionPeerErrorEnvelope", "404 ExtensionPeerErrorEnvelope", "409 ExtensionPeerErrorEnvelope", "503 ExtensionPeerErrorEnvelope"] as const;
 
 type JsonSchema = {
   readonly [key: string]: unknown;
@@ -427,6 +429,8 @@ export const controlApiSource: ControlApiSource = {
     ] },
     ExtensionId: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
     ExtensionInstallationId: { type: "string", format: "uuid" },
+    SelectedExtensionMachine: { type: "string", pattern: `${TAILNET_NODE_ID_PATTERN.slice(0, -1)}:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, description: "Canonical server-verified Tailnet node ID and host installation UUID, not an origin. Selected-peer bearer uses X-Wolfpack-Extension-Peer-Authorization; local owner auth remains independent." },
+    ExtensionPeerErrorEnvelope: object({ error: object({ code: { enum: [...Object.values(EXTENSION_PEER_ERROR), "INVALID_REQUEST"] }, message: string() }, ["code", "message"]) }, ["error"]),
     ExtensionDocumentCatalog: object({ id: ref("ExtensionId"), schemaVersion: { type: "integer", minimum: 1 } }, ["id", "schemaVersion"]),
     ExtensionCatalogInstallation: object({
       installationId: ref("ExtensionInstallationId"), extensionId: ref("ExtensionId"),
@@ -972,6 +976,30 @@ export const controlApiSource: ControlApiSource = {
       request: object({ extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["extensionId", "documentId", "session"]),
       response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), revision: { type: "integer", minimum: 0 }, document: {} }, ["installationId", "scopeSessionId", "extensionId", "documentId", "revision", "document"]), errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
     },
+    "GET /api/extensions/peer/{machine}/catalog": {
+      operationId: "listSelectedPeerExtensions", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine") }, ["machine"]),
+      response: object({ safeMode: boolean(), installations: arrayOf(ref("ExtensionCatalogInstallation")) }, ["safeMode", "installations"]),
+      errors: SELECTED_EXTENSION_ERRORS,
+    },
+    "GET /api/extensions/peer/{machine}/assets/{extensionId}/{packageDigest}/{assetPath}": {
+      operationId: "readSelectedPeerExtensionAsset", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, assetPath: string() }, ["machine", "extensionId", "packageDigest", "assetPath"]),
+      response: { type: "string", contentMediaType: "text/javascript" },
+      errors: SELECTED_EXTENSION_ERRORS,
+    },
+    "GET /api/extensions/peer/{machine}/documents/{extensionId}/{documentId}": {
+      operationId: "readSelectedPeerExtensionDocument", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["machine", "extensionId", "documentId", "session"]),
+      response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), revision: { type: "integer", minimum: 0 }, document: {} }, ["installationId", "scopeSessionId", "extensionId", "documentId", "revision", "document"]),
+      errors: SELECTED_EXTENSION_ERRORS,
+    },
+    "GET /api/extensions/peer/{machine}/project/git-status/{extensionId}": {
+      operationId: "readSelectedPeerExtensionProject", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["machine", "extensionId", "session"]),
+      response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), status: ref("ProjectGitStatus") }, ["installationId", "scopeSessionId", "extensionId", "status"]),
+      errors: SELECTED_EXTENSION_ERRORS,
+    },
     "POST /api/extensions/documents/{extensionId}/{documentId}": {
       operationId: "publishExtensionDocument", stable: true, auth: "jwt-when-configured", requestContentType: "application/json",
       request: object({ sessionId: { type: "string", format: "uuid" }, document: {}, ifRevision: { type: "integer", minimum: 0 }, requestId: { type: "string", format: "uuid" }, schemaVersion: { type: "integer", minimum: 1 } }, ["sessionId", "document", "ifRevision", "requestId", "schemaVersion"]), response: object({ receipt: ref("ExtensionDocumentReceipt") }, ["receipt"]), errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "413 ExtensionApiErrorEnvelope", "422 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
@@ -1332,11 +1360,12 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       response: object({
         brokerAvailable: boolean(),
+        brokerReady: boolean(),
         counts: object({
           broker: integer(),
         }, ["broker"]),
-      }, ["brokerAvailable", "counts"]),
-      errors: [],
+      }, ["brokerAvailable", "brokerReady", "counts"]),
+      errors: ["503 ErrorEnvelope"],
     },
     "POST /api/kill": {
       operationId: "killSession",

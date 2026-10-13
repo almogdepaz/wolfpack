@@ -26,6 +26,7 @@ import { createWorkspaceShell, loadWorkspaceShellPreferences } from "./workspace
 import { WidgetLayout, SESSIONS_PANEL, TERMINALS_PANEL } from "./widget-layout";
 import { createWorkspaceDocking } from "./workspace-docking";
 import { ExtensionHost } from "./extension-host";
+import { createExtensionAccessPrompt } from "./extension-access-prompt";
 import { WidgetVisibility, WIDGET_VISIBILITY_PREFIX } from "./widget-visibility";
 import { createWidgetManager } from "./widget-manager";
 import { resolveWorkspaceExtensionScope } from "./extension-scope";
@@ -36,8 +37,10 @@ import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
 import { createSessionInspector } from "./session-inspector";
 import { rankProjectNames } from "./project-picker";
-import { authenticatedFetchWithTimeout, getBrowserAuthToken } from "./browser-auth";
+import { authenticatedFetchWithTimeout, browserAuthFetch, getBrowserAuthToken } from "./browser-auth";
 import { RequestTimeoutError } from "./fetch-timeout";
+import { probeBackendStatus } from "./backend-probe";
+import { createReconnectBanner } from "./reconnect-banner";
 import { keyboardOcclusionHeight } from "./viewport-geometry";
 import type { OrderedResizeSettlement } from "./ordered-resize";
 import { RESIZE_SEND_DEBOUNCE_MS } from "./pty-socket-client";
@@ -188,6 +191,11 @@ import {
   handleViewerConflict,
   prepareAutoTakeControl,
 } from "../src/take-control-logic";
+import {
+  BACKEND_PROBE_TIMEOUT_MS,
+  type BackendProbeResult,
+  type ReconnectStatus,
+} from "../src/connection-status";
 
 // ── WASM capability guard ──
 
@@ -805,6 +813,7 @@ function createPtyTerminalController(opts: PtyTerminalControllerOpts): PtyTermin
       },
       getBrowserAuthToken,
       getDebugStorage: safeLocalStorage,
+      probeBackend: probeTerminalBackend,
     },
   });
 }
@@ -972,6 +981,19 @@ function resolveReadyMachineOrigin(machineIdentity: string | undefined): string 
     : undefined;
 }
 
+/** Display name for a terminal's machine; undefined for the local server. */
+function terminalMachineLabel(machineIdentity: string | undefined): string | undefined {
+  if (!machineIdentity || machineIdentity === LOCAL_MACHINE_IDENTITY) return undefined;
+  return getMachines().find((machine) => machine.url === machineIdentity)?.name || "remote machine";
+}
+
+/** Reconnect cause probe: never prompts for credentials; any HTTP answer means reachable. */
+function probeTerminalBackend(machineIdentity: string | undefined): Promise<BackendProbeResult> {
+  const origin = resolveReadyMachineOrigin(machineIdentity);
+  const url = origin ? new URL("/api/backend", origin).href : "/api/backend";
+  return probeBackendStatus(url, browserAuthFetch, BACKEND_PROBE_TIMEOUT_MS);
+}
+
 async function showMachineUnavailable(): Promise<void> {
   // This best-effort refresh may fail; the dialog reports unavailable state.
   void tailnetDiscoveryAutoRefresh.requestRefresh().catch(() => undefined);
@@ -1064,6 +1086,7 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
     if (!isCurrentGeneration()) return "stale";
     const candidates = candidateEnumerationCandidates(response);
     tailnetPeers.reconcileCandidates(candidates);
+    void extensionHost?.refresh();
     await probeTailnetCandidates(candidates, fetch, {
       onSettled: (probe) => {
         if (!isCurrentGeneration()) return;
@@ -1071,6 +1094,7 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
           || tailnetPeers.entries().some((entry) => entry.tailnetNodeId === probe.candidate.tailnetNodeId && entry.status === "ready");
         const applied = tailnetPeers.applyProbe(probe);
         if (applied.kind === "identity-replaced") retireReplacedPeerIdentity(applied.replacement);
+        if (affectedReadyPeer) void extensionHost?.refresh();
         if (affectedReadyPeer) scheduleTailnetPeerSessionRefresh(generation);
       },
     });
@@ -1081,6 +1105,7 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
     if (!isCurrentGeneration()) return "stale";
     const retainedEntries = tailnetPeers.entries().length > 0;
     tailnetPeers.markCandidateEnumerationUnavailable();
+    void extensionHost?.refresh();
     if (retainedEntries) {
       renderMachinesList();
       scheduleTailnetPeerSessionRefresh(generation);
@@ -1803,13 +1828,13 @@ function machineHeaderHtml(
   const machineUrl = multiMachine ? group.machine.url || "" : "";
   const compactCreateButton = group.online && group.sessions.length === 0 && !collapsed && surface !== "sidebar"
     ? ""
-    : machineAddButtonHtml(machineUrl, group.machine.name, multiMachine && !group.online);
-  const retryButton = multiMachine && !group.online && !group.pending
+    : machineAddButtonHtml(machineUrl, group.machine.name, !group.online);
+  const retryButton = !group.online && !group.pending
     ? `<button type="button" class="machine-retry-btn" data-action="retry-machine" aria-label="Retry ${escAttr(group.machine.name)}">Retry</button>`
     : "";
   const status = group.pending
     ? '<span class="machine-header-status">Connecting…</span>'
-    : !group.online && multiMachine
+    : !group.online
       ? `<span class="machine-header-status">${esc(machineFailureLabel(group.failure || "unknown"))}</span>`
       : "";
   const action = collapsed ? "Expand" : "Collapse";
@@ -1847,13 +1872,13 @@ function zeroSessionOnboardingHtml(machineUrl: string): string {
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, index: number) {
   const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
-  const statusDot = !multiMachine ? "green" : g.online ? "green" : (g.pending ? "gray" : "red");
-  const statusTitle = !multiMachine ? "online" : g.online ? "online" : (g.pending ? "connecting" : "offline");
+  const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
+  const statusTitle = g.online ? "online" : (g.pending ? "connecting" : "offline");
   const outdated = g.online && Boolean(g.machine.version) && state.lastSessionGroups.some(group =>
     group.online && group.machine.version
     && group.machine.version.localeCompare(g.machine.version, undefined, { numeric: true }) > 0);
   const versionWarning = multiMachine && outdated ? `<span class="version-warning" title="Running v${escAttr(g.machine.version || "?")} — newer version available on another machine">⚠ UPDATE</span>` : "";
-  const offlineClass = multiMachine && !g.online && !g.pending ? " offline" : "";
+  const offlineClass = !g.online && !g.pending ? " offline" : "";
   const failureAttribute = g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
   const machineKey = multiMachine ? g.machine.url || "" : "";
   const bodyId = machineGroupBodyId(surface, index);
@@ -1893,7 +1918,7 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
     } else {
       bodyHtml += zeroSessionOnboardingHtml(multiMachine ? g.machine.url || "" : "");
     }
-  } else if (multiMachine) {
+  } else {
     const failure = machineFailureLabel(g.failure || "unknown");
     bodyHtml += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect.</div>`;
   }
@@ -3512,6 +3537,11 @@ function handleTerminalReconnecting(entry: SingleTerminalEntry): void {
   if (isVisibleSingleTerminal(entry)) setConnState("reconnecting");
 }
 
+function handleTerminalReconnectStatus(entry: SingleTerminalEntry, status: ReconnectStatus): void {
+  if (!isVisibleSingleTerminal(entry)) return;
+  connStatusBanner.show(entry, status, terminalMachineLabel(entry.key.machine));
+}
+
 function handleTerminalReconnectExhausted(entry: SingleTerminalEntry): void {
   if (!isVisibleSingleTerminal(entry)) {
     handleParkedTerminalEvent(entry, "reconnect-exhausted");
@@ -3574,6 +3604,7 @@ function createTerminalBootstrapController(
     onControlGranted: () => handleTerminalControlGranted(entry, isMobile),
     onDisconnected: (code, reason) => handleTerminalDisconnected(entry, inspectionTarget, code, reason),
     onReconnecting: () => handleTerminalReconnecting(entry),
+    onReconnectStatus: (status) => handleTerminalReconnectStatus(entry, status),
     onReconnectExhausted: () => handleTerminalReconnectExhausted(entry),
     onRouteUnavailable: () => handleTerminalRouteUnavailable(entry),
     onHydrationStart: () => handleTerminalHydrationStart(entry),
@@ -3788,6 +3819,7 @@ function releaseSingleTerminalView(preserveTarget: boolean, park: boolean): void
   if (state._touchCleanup) { state._touchCleanup(); state._touchCleanup = null; }
   if (!isDesktop()) setMobileGhosttyKeyboardOpen(false);
   releaseVisibleSingleTerminal(park);
+  connStatusBanner.stop();
   // Clean up visualViewport handler
   if (state.visualViewportHandler && window.visualViewport) {
     window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
@@ -3811,9 +3843,24 @@ function releaseSingleTerminalView(preserveTarget: boolean, park: boolean): void
 
 // ── Terminal ──
 
+// Cause + countdown for the visible terminal's reconnect; stops when it is released.
+const connStatusBanner = createReconnectBanner<SingleTerminalEntry>({
+  getElement: () => document.getElementById("conn-status"),
+  isCurrentOwner: (entry) => isVisibleSingleTerminal(entry),
+  createIcon: () => {
+    const icon = document.createElement("img");
+    icon.src = "/wolfpack-icon.svg";
+    icon.className = "conn-icon";
+    return icon;
+  },
+  createCountdown: () => document.createElement("span"),
+});
+
 function setConnState(connState: string): void {
   const statusEl = document.getElementById("conn-status");
   if (!statusEl) return;
+  statusEl.dataset.connState = connState;
+  if (connState !== "reconnecting") connStatusBanner.stop();
   const active = !!state.terminalController?.term;
   if (state.currentView !== "terminal" || !active || connState === "live") {
     statusEl.style.display = "none";
@@ -3823,7 +3870,8 @@ function setConnState(connState: string): void {
   if (connState === "reconnecting") {
     statusEl.style.display = "block";
     statusEl.style.background = "#8a5a00";
-    statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">reconnecting\u2026';
+    // Keep a live cause label (the socket refreshes it per attempt); else generic.
+    if (!statusEl.dataset.reconnectLead) statusEl.innerHTML = '<img src="/wolfpack-icon.svg" class="conn-icon">reconnecting\u2026';
     return;
   }
   if (connState === "offline") {
@@ -5198,6 +5246,9 @@ function _renderSidebarNow() {
     if (g) {
       const bodyId = machineGroupBodyId("sidebar", 0);
       const collapsed = machineGroupIsCollapsed(g, "sidebar");
+      const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
+      const statusTitle = g.online ? "online" : (g.pending ? "connecting" : "offline");
+      const offlineClass = !g.online && !g.pending ? " offline" : "";
       let bodyHtml = '<div class="sidebar-no-sessions">No active sessions</div>';
       if (g.online) {
         const presentation = sessionCardGroupPresentation(g.sessions, "");
@@ -5206,8 +5257,12 @@ function _renderSidebarNow() {
           : presentation.empty === "idle"
             ? idleSessionEmptyHtml()
             : '<div class="sidebar-no-sessions">No active sessions</div>';
+      } else if (g.pending) {
+        bodyHtml = '<div class="sidebar-conn-status">Connecting...</div>';
+      } else {
+        bodyHtml = `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))}</div>`;
       }
-      html += `<div class="machine-group" data-machine="" data-machine-surface="sidebar">${machineHeaderHtml(g, "sidebar", bodyId, false, collapsed, "green", "online", "")}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
+      html += `<div class="machine-group${offlineClass}" data-machine="" data-machine-surface="sidebar">${machineHeaderHtml(g, "sidebar", bodyId, false, collapsed, statusDot, statusTitle, "")}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
     }
   } else {
     for (const [index, g] of groups.entries()) {
@@ -5796,6 +5851,7 @@ initGridDeps({
   ensureGridIsolation,
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
+  terminalMachineLabel,
 });
 
 const workspaceTerminalLayouts = new TerminalLayoutRegistry();
@@ -5839,6 +5895,13 @@ const extensionHostContainer = document.getElementById("workspace-context-contai
 extensionHost = extensionHostContainer ? new ExtensionHost({
   container: extensionHostContainer,
   scope: selectedExtensionScope,
+  accessPrompt: createExtensionAccessPrompt(document.getElementById("workspace-extension-access"), scheduleGridStabilizedFit),
+  resolvePeer: machine => {
+    const peer = tailnetPeers.entries().find(entry => entry.identity === machine);
+    return peer?.status === "ready" && peer.origin
+      ? { identity: machine, status: "ready", origin: peer.origin, displayName: peer.displayName }
+      : undefined;
+  },
   safeMode: () => wpSettings.extensionSafeMode,
   widgetVisible: item => widgetVisibility.isVisible(item),
   widgetLayout,

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { WidgetPanels } from "../../public/widget-panels.ts";
 import type { ContextViewRegistry } from "../../public/context-view-registry.ts";
-import { ExtensionHost } from "../../public/extension-host.ts";
+import { ExtensionHost, type ExtensionHostOptions } from "../../public/extension-host.ts";
 import { TerminalLayoutRegistry } from "../../public/terminal-layout-registry.ts";
 import { equalGridLayout } from "../../src/extensions/layout-contract.ts";
 import { WidgetLayout } from "../../public/widget-layout.ts";
@@ -50,7 +50,308 @@ afterEach(() => {
   (document as unknown as { visibilityState: string }).visibilityState = "visible";
 });
 
+// Real self-contained package code exercises the host's loader/registration boundary.
+const consentBundle = `export default host => { host.registerContextView({ id: "view", title: "Consent view", mount() { return { dispose() {} }; } }); };`;
+function consentCatalog() {
+  return { safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true,
+    package: { name: "notes", version: "1", digest: "a".repeat(64) },
+    ui: { path: "ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/ui.js`,
+      digest: new Bun.CryptoHasher("sha256").update(consentBundle).digest("hex"), mime: "text/javascript" }, documents: [] }] };
+}
+function withLoaderLocation() {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "location");
+  Object.defineProperty(globalThis, "location", { configurable: true, writable: true, value: { href: "http://localhost/", origin: "http://localhost" } });
+  return () => { if (descriptor) Object.defineProperty(globalThis, "location", descriptor); else Reflect.deleteProperty(globalThis, "location"); };
+}
+
 describe("ExtensionHost", () => {
+  test("same-scope refresh retains pending remote consent until a positive decision", async () => {
+    const restore = withLoaderLocation();
+    const root = document.createElement("div");
+    let requests = 0, prompts = 0, assets = 0;
+    let decide!: (value: boolean) => void;
+    let began!: () => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    const signals: AbortSignal[] = [];
+    const host = new ExtensionHost({ container: root,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222", machine: `node-a:${installationId}` }),
+      selectedHostFetch: async (_scope, path) => {
+        if (path === "/api/extensions") { requests++; return Response.json(consentCatalog()); }
+        assets++; return new Response(consentBundle, { headers: { "Content-Type": "text/javascript" } });
+      },
+      consentRemoteCode: (_scope, _catalog, signal) => {
+        prompts++; signals.push(signal); began(); return new Promise(resolve => { decide = resolve; });
+      },
+    });
+    try {
+      const first = host.refresh(); await started;
+      const duplicate = host.refresh();
+      expect(signals[0]!.aborted).toBe(false);
+      expect(requests).toBe(1); expect(prompts).toBe(1);
+      expect(assets).toBe(0); expect(host.availablePanels).toHaveLength(0);
+      decide(true); await Promise.all([first, duplicate]);
+      expect(requests).toBe(1); expect(prompts).toBe(1); expect(assets).toBe(1);
+      expect(host.availablePanels.map(panel => panel.id)).toEqual(["notes/view"]);
+    } finally { decide?.(false); host.dispose(); restore(); root.remove(); }
+  });
+
+  test.each(["scope", "unavailable", "safe-mode", "dispose"])("pending remote consent cancels and fences a stale positive decision on %s", async transition => {
+    const root = document.createElement("div");
+    let scope: { sessionId: string; machine: string; unavailable?: string } = { sessionId: "22222222-2222-4222-8222-222222222222", machine: `node-a:${installationId}` };
+    let safeMode = false, requests = 0, assets = 0, prompts = 0;
+    let signal: AbortSignal | undefined;
+    let decide!: (value: boolean) => void;
+    let began!: () => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    const host = new ExtensionHost({ container: root, scope: () => scope, safeMode: () => safeMode,
+      selectedHostFetch: async (_scope, path) => {
+        if (path !== "/api/extensions") { assets++; return new Response("unexpected asset"); }
+        return Response.json(++requests === 1 ? consentCatalog() : { safeMode: false, installations: [] });
+      },
+      consentRemoteCode: (_scope, _catalog, active) => { prompts++; signal = active; began(); return new Promise(resolve => { decide = resolve; }); },
+    });
+    try {
+      const first = host.refresh(); await started;
+      if (transition === "scope") scope = { ...scope, machine: `node-b:${installationId}` };
+      if (transition === "unavailable") scope = { ...scope, unavailable: "Peer unavailable" };
+      if (transition === "safe-mode") safeMode = true;
+      if (transition === "dispose") host.dispose(); else await host.refresh();
+      expect(signal?.aborted).toBe(true);
+      decide(true); await first;
+      expect(assets).toBe(0); expect(prompts).toBe(1); expect(host.availablePanels).toHaveLength(0);
+      expect(requests).toBe(transition === "scope" ? 2 : 1);
+    } finally { decide?.(false); host.dispose(); root.remove(); }
+  });
+
+  test("declined remote consent releases the pending operation so refresh can prompt again", async () => {
+    const root = document.createElement("div");
+    let requests = 0, prompts = 0, assets = 0;
+    const host = new ExtensionHost({ container: root,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222", machine: `node-a:${installationId}` }),
+      selectedHostFetch: async (_scope, path) => { if (path === "/api/extensions") { requests++; return Response.json(consentCatalog()); } assets++; return new Response("unexpected asset"); },
+      consentRemoteCode: async () => { prompts++; return false; },
+    });
+    try {
+      await host.refresh(); await host.refresh();
+      expect(requests).toBe(2); expect(prompts).toBe(2); expect(assets).toBe(0); expect(host.availablePanels).toHaveLength(0);
+    } finally { host.dispose(); root.remove(); }
+  });
+  test("refresh after positive consent revalidates catalog rather than coalescing package loading", async () => {
+    const restore = withLoaderLocation();
+    const root = document.createElement("div");
+    let requests = 0, prompts = 0;
+    let assetSignal: AbortSignal | null | undefined;
+    let began!: () => void, release!: (response: Response) => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    const host = new ExtensionHost({ container: root,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222", machine: `node-a:${installationId}` }),
+      consentRemoteCode: async () => { prompts++; return true; },
+      selectedHostFetch: async (_scope, path, init) => {
+        if (path === "/api/extensions") return Response.json(++requests === 1 ? consentCatalog() : { safeMode: false, installations: [] });
+        assetSignal = init.signal; began(); return new Promise(resolve => { release = resolve; });
+      },
+    });
+    try {
+      const first = host.refresh(); await started;
+      const second = host.refresh();
+      expect(assetSignal?.aborted).toBe(true); expect(requests).toBe(2);
+      await Promise.all([first, second]);
+      expect(prompts).toBe(1); expect(host.availablePanels).toHaveLength(0);
+    } finally { release?.(new Response(consentBundle)); host.dispose(); restore(); root.remove(); }
+  });
+
+  test.each(["scope", "unavailable", "safe-mode", "dispose"])("obsolete loader rejection cannot repaint the current host on %s", async transition => {
+    const restore = withLoaderLocation();
+    const root = document.createElement("div");
+    let scope: { sessionId: string; unavailable?: string } = { sessionId: "22222222-2222-4222-8222-222222222222" };
+    let safeMode = false, requests = 0, paints = 0;
+    let assetSignal: AbortSignal | null | undefined;
+    let began!: () => void, releaseAsset!: (response: Response) => void, releaseCatalog!: (response: Response) => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    const host = new ExtensionHost({ container: root, scope: () => scope, safeMode: () => safeMode,
+      onChange: () => { paints++; },
+      authFetch: async (input, init) => {
+        if (String(input) === "/api/extensions") {
+          if (++requests === 1) return Response.json(consentCatalog());
+          return new Promise(resolve => { releaseCatalog = resolve; });
+        }
+        assetSignal = init?.signal; began(); return new Promise(resolve => { releaseAsset = resolve; });
+      },
+    });
+    try {
+      const first = host.refresh(); await started;
+      if (transition === "scope") scope = { sessionId: "33333333-3333-4333-8333-333333333333" };
+      if (transition === "unavailable") scope = { ...scope, unavailable: "Peer unavailable" };
+      if (transition === "safe-mode") safeMode = true;
+      const second = transition === "dispose" ? (host.dispose(), Promise.resolve()) : host.refresh();
+      expect(assetSignal?.aborted).toBe(true);
+      const currentPaints = paints;
+      const currentChildren = root.children.length;
+      await first; // The real loader rejects the ignored/cancelled network boundary.
+      expect(paints).toBe(currentPaints);
+      expect(root.children.length).toBe(currentChildren);
+      expect(host.availablePanels).toHaveLength(0);
+      releaseCatalog?.(Response.json({ safeMode: false, installations: [] })); await second;
+    } finally {
+      releaseAsset?.(new Response(consentBundle)); releaseCatalog?.(Response.json({ safeMode: false, installations: [] }));
+      host.dispose(); restore(); root.remove();
+    }
+  });
+
+  test.each(["registration", "load"])("current-scope genuine %s failure still displays an error and cleans owned contributions", async failure => {
+    const restore = withLoaderLocation();
+    const root = document.createElement("div");
+    const messages: string[] = [];
+    let layoutCleanups = 0;
+    const brokenBundle = `export default host => { host.registerTerminalLayout({ id: "layout", title: "Broken layout", arrange() { return {}; } }); throw new Error("registration failed"); };`;
+    const catalog = consentCatalog();
+    catalog.installations.push({ ...catalog.installations[0]!, extensionId: "broken",
+      ui: { ...catalog.installations[0]!.ui, url: `/api/extensions/assets/broken/${"a".repeat(64)}/ui.js`,
+        digest: new Bun.CryptoHasher("sha256").update(brokenBundle).digest("hex") } });
+    const host = new ExtensionHost({ container: root,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
+      registerLayout: () => () => { layoutCleanups++; },
+      onChange: () => { const message = root.querySelector("[data-extension-status]")?.textContent; if (message) messages.push(message); },
+      authFetch: async input => {
+        if (String(input) === "/api/extensions") return Response.json(catalog);
+        const broken = String(input).includes("/broken/");
+        return new Response(broken ? brokenBundle : consentBundle, { headers: { "Content-Type": broken && failure === "load" ? "text/plain" : "text/javascript" } });
+      },
+    });
+    try {
+      await host.refresh();
+      expect(messages).toContain("Extension broken could not be registered.");
+      expect(host.availablePanels.map(panel => panel.id)).toEqual(["notes/view"]);
+      expect(layoutCleanups).toBe(failure === "registration" ? 1 : 0);
+    } finally { host.dispose(); restore(); root.remove(); }
+  });
+
+  test("a different machine with the same session UUID aborts the old catalog body and reacquires", async () => {
+    container = new FakeElement();
+    let selected = { sessionId: "22222222-2222-4222-8222-222222222222", machine: "node-a:11111111-1111-4111-8111-111111111111" };
+    let requests = 0;
+    let oldSignal: AbortSignal | undefined;
+    let finish!: (value: unknown) => void;
+    let bodyStarted!: () => void;
+    const started = new Promise<void>(resolve => { bodyStarted = resolve; });
+    const fetchCatalog: NonNullable<ExtensionHostOptions["authFetch"]> = async (_input, options) => {
+        requests++;
+        if (requests > 1) return Response.json({ safeMode: false, installations: [] });
+        oldSignal = options?.signal as AbortSignal;
+        return { ok: true, json: () => { bodyStarted(); return new Promise(resolve => { finish = resolve; }); } } as Response;
+    };
+    const host = new ExtensionHost({ container: container as unknown as HTMLElement, scope: () => selected,
+      authFetch: fetchCatalog,
+      selectedHostFetch: (_scope, input, options) => fetchCatalog(input, options),
+    });
+    try {
+      const first = host.refresh();
+      await started;
+      selected = { ...selected, machine: "node-b:33333333-3333-4333-8333-333333333333" };
+      const second = host.refresh();
+      // A switch must invalidate synchronously, before the old body cooperates.
+      expect(oldSignal?.aborted).toBe(true);
+      expect(requests).toBe(2);
+      finish({ safeMode: false, installations: [] });
+      await Promise.all([first, second]);
+    } finally { finish?.({ safeMode: false, installations: [] }); host.dispose(); }
+  });
+
+  test("ready remote catalog uses only the current-host proxy and the selected peer credential channel", async () => {
+    container = new FakeElement();
+    const machine = `node-a:${installationId}`;
+    const previousGlobals = new Map<string, PropertyDescriptor | undefined>();
+    for (const [key, value] of Object.entries({ location: { href: "http://localhost/", origin: "http://localhost" }, sessionStorage: { getItem: () => JSON.stringify({ "https://peer.example.ts.net": "peer-token", "http://localhost": "local-token" }) }, localStorage: { getItem: () => null } })) {
+      previousGlobals.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    }
+    const requests: Array<{ path: string; headers: Headers }> = [];
+    const host = new ExtensionHost({ container: container as unknown as HTMLElement, scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222", machine }),
+      resolvePeer: () => ({ identity: machine, status: "ready", origin: "https://peer.example.ts.net", displayName: "Peer" }),
+      authFetch: async (input, options) => { requests.push({ path: String(input), headers: new Headers(options?.headers) }); return Response.json({ safeMode: false, installations: [] }); },
+    });
+    try {
+      await host.refresh();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.path).toBe(`/api/extensions/peer/${encodeURIComponent(machine)}/catalog`);
+      expect(requests[0]!.headers.get("X-Wolfpack-Extension-Peer-Authorization")).toBe("Bearer peer-token");
+      expect(requests[0]!.headers.get("Authorization")).toBeNull();
+    } finally {
+      host.dispose();
+      for (const [key, descriptor] of previousGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+      }
+    }
+  });
+
+  test("remote code requires local consent before import", async () => {
+    container = new FakeElement(); let imports = 0, prompts = 0;
+    const host = new ExtensionHost({ container: container as unknown as HTMLElement,
+      scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222", machine: `node-a:${installationId}` }),
+      selectedHostFetch: async () => Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true,
+        package: { name: "notes", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] }),
+      consentRemoteCode: async () => { prompts++; return false; },
+      bundleLoader: (async () => { imports++; return { default() {} }; }) as never,
+    });
+    try { await host.refresh(); expect(prompts).toBe(1); expect(imports).toBe(0); expect(host.availablePanels).toHaveLength(0); }
+    finally { host.dispose(); }
+  });
+
+  test("captures machine SDK reads and storage, disposes registrations and reuses only verified code on return", async () => {
+    container = new FakeElement();
+    const values = new Map<string, string>();
+    const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, writable: true, value: { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) } });
+    let selected: { sessionId: string; machine: string; unavailable?: string } = { sessionId: "22222222-2222-4222-8222-222222222222", machine: `node-a:${installationId}` };
+    let context!: ExtensionViewContext, imports = 0, registrations = 0, disposals = 0, layoutDisposals = 0;
+    const readMachines: string[] = [];
+    const host = new ExtensionHost({ container: container as unknown as HTMLElement, scope: () => selected,
+      consentRemoteCode: async () => true,
+      registerLayout: () => () => { layoutDisposals++; },
+      selectedHostFetch: async (scope, path) => {
+        if (path === "/api/extensions") return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true,
+          package: { name: "notes", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [{ id: "context", schemaVersion: 1 }] }] });
+        readMachines.push(scope.machine!);
+        if (path.includes("git-status")) return Response.json({ installationId, scopeSessionId: selected.sessionId, extensionId: "notes", status: { state: "not-repository" } });
+        return Response.json({ installationId, scopeSessionId: selected.sessionId, extensionId: "notes", documentId: "context", revision: 1, document: scope.machine });
+      },
+      bundleLoader: (async () => { imports++; return { default: (register: ExtensionRegistrationHost) => {
+        registrations++;
+        register.registerTerminalLayout({ id: "layout", title: "Selected machine layout", arrange: equalGridLayout });
+        register.registerContextView({ id: "notes", title: "Notes", mount(_root, value) { context = value; return { dispose() { disposals++; } }; } });
+      } }; }) as never,
+    });
+    try {
+      await host.refresh(); host.select();
+      expect(context.scope).toEqual({ installationId, sessionId: selected.sessionId });
+      const old = context; old.storage.set("draft", "a");
+      expect(await old.documents.read("context")).toBe(selected.machine);
+      await old.project.gitStatus();
+      selected = { ...selected, machine: `node-b:${installationId}` };
+      await host.refresh(); host.select();
+      expect(old.signal.aborted).toBe(true); expect(disposals).toBe(1);
+      expect(context.storage.get("draft")).toBeNull();
+      await expect(old.documents.read("context")).rejects.toThrow();
+      expect(() => old.documents.subscribe("context", () => {})).toThrow("stale");
+      expect(await context.documents.read("context")).toBe(selected.machine);
+      await context.project.gitStatus();
+      selected = { ...selected, machine: `node-a:${installationId}` };
+      await host.refresh(); host.select();
+      expect(context.storage.get("draft")).toBe("a");
+      expect(imports).toBe(2); expect(registrations).toBe(3);
+      expect(readMachines).toEqual([`node-a:${installationId}`, `node-a:${installationId}`, `node-b:${installationId}`, `node-b:${installationId}`]);
+      const retained = context;
+      selected = { ...selected, unavailable: "Verified peer is offline" };
+      await host.refresh();
+      expect(retained.signal.aborted).toBe(true); expect(layoutDisposals).toBe(3);
+      expect(host.availablePanels).toHaveLength(0);
+      selected = { sessionId: selected.sessionId, machine: `node-a:${installationId}` };
+      await host.refresh(); host.select();
+      expect(imports).toBe(3); expect(registrations).toBe(4);
+    } finally { host.dispose(); if (previousStorage) Object.defineProperty(globalThis, "localStorage", previousStorage); else Reflect.deleteProperty(globalThis, "localStorage"); }
+  });
+
   test("derives area membership once per render, including native repair and collapsed peek", () => {
     container = new FakeElement();
     const layout = new WidgetLayout({ getItem: () => null, setItem() {} });
@@ -603,6 +904,7 @@ describe("ExtensionHost", () => {
   test("drops a late bundle import after disable without disturbing another package", async () => {
     container = new FakeElement();
     let notesEnabled = true; let resolveNotes!: (value: { default: ExtensionRegistration }) => void; let notesStarted!: () => void;
+    let notesSignal: AbortSignal | undefined;
     const lateNotes = new Promise<{ default: ExtensionRegistration }>(resolve => { resolveNotes = resolve; });
     const loadingNotes = new Promise<void>(resolve => { notesStarted = resolve; });
     const events: string[] = [];
@@ -611,12 +913,13 @@ describe("ExtensionHost", () => {
       container: container as unknown as HTMLElement,
       scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222" }),
       authFetch: async () => Response.json({ safeMode: false, installations: [installation("notes", notesEnabled, "a".repeat(64)), installation("tasks", true, "c".repeat(64))] }),
-      bundleLoader: (async (url: string) => { if (url.includes("/notes/")) { notesStarted(); return lateNotes; } return { default: (registration: ExtensionRegistrationHost) => registration.registerContextView({ id: "tab", title: "Tasks", mount: () => ({ dispose: () => events.push("dispose:tasks") }) }) }; }) as never,
+      bundleLoader: (async (url: string, _digest: string, options: { signal?: AbortSignal }) => { if (url.includes("/notes/")) { notesSignal = options.signal; notesStarted(); return lateNotes; } return { default: (registration: ExtensionRegistrationHost) => registration.registerContextView({ id: "tab", title: "Tasks", mount: () => ({ dispose: () => events.push("dispose:tasks") }) }) }; }) as never,
     });
     const first = host.refresh();
     await loadingNotes;
     notesEnabled = false;
     await host.refresh();
+    expect(notesSignal?.aborted).toBe(true);
     resolveNotes({ default: registration => registration.registerContextView({ id: "late", title: "Late", mount: () => ({ dispose: () => events.push("dispose:notes") }) }) });
     await first;
     host.select("notes/late");
