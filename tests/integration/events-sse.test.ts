@@ -40,7 +40,10 @@ const {
   __resetSessionObservationForTests,
   __runSessionNotificationObservationForTests,
   observeDashboardSessions,
+  startSessionNotificationObserver,
+  stopSessionNotificationObserver,
 } = await import("../../src/server/session-observation.ts");
+const { notifyProgramStatusChanged } = await import("../../src/server/program-status-signal.ts");
 type WolfpackEvent = import("../../src/events-contract.ts").WolfpackEvent;
 
 const { server } = createServerInstance();
@@ -212,6 +215,10 @@ describe("session.state events", () => {
         label: runtimeState.label,
         transitionSequence: runtimeState.transitionSequence,
       });
+      // Only program status (OSC 7501) reports put a message on the event;
+      // other authorities' messages are diagnostics, not program text.
+      expect(runtimeState.message).toBeDefined();
+      expect(event).not.toHaveProperty("message");
 
       // Output stopping is itself a transition (back to idle). After that, an
       // unchanged screen must not republish: the stream is transitions, not a heartbeat.
@@ -253,6 +260,216 @@ describe("session.state events", () => {
       const [next] = await stream.next(1);
       expect(next).toMatchObject({ session: "sentinel" });
     } finally {
+      stream.close();
+    }
+  });
+
+  test("an OSC 7501 blocked report publishes needs-input with its typed kind and message", async () => {
+    mockBackend.setSessions(["agent-4"]);
+    mockBackend.setCapturePane(async () => "steady\n");
+    mockBackend.setOutputSequence("agent-4", "1");
+
+    const stream = await openStream("?kinds=session.state");
+    try {
+      await waitFor(() => eventSubscriberCount() === 1);
+      await __runSessionNotificationObservationForTests();
+
+      mockBackend.setProgramStatus("agent-4", {
+        id: "",
+        state: "blocked",
+        kind: "question",
+        message: "Which branch?",
+        updatedAtMs: 1,
+      });
+      await __runSessionNotificationObservationForTests();
+      const [blocked] = await stream.next(1);
+      expect(blocked).toMatchObject({
+        session: "agent-4",
+        state: "needs-input",
+        inputKind: "question",
+        message: "Which branch?",
+      });
+
+      // A different request in the same state is published too.
+      mockBackend.setProgramStatus("agent-4", {
+        id: "",
+        state: "blocked",
+        kind: "permission",
+        message: "Allow push?",
+        updatedAtMs: 2,
+      });
+      await __runSessionNotificationObservationForTests();
+      const [permission] = await stream.next(1);
+      expect(permission).toMatchObject({
+        session: "agent-4",
+        state: "needs-input",
+        inputKind: "permission",
+        message: "Allow push?",
+        transitionSequence: blocked!.kind === "session.state" ? blocked.transitionSequence + 1 : -1,
+      });
+    } finally {
+      mockBackend.setProgramStatus("agent-4", undefined);
+      stream.close();
+    }
+  });
+
+  test("a broker program status change is published without waiting for the poll interval", async () => {
+    mockBackend.setSessions(["agent-5"]);
+    mockBackend.setCapturePane(async () => "steady\n");
+    mockBackend.setOutputSequence("agent-5", "1");
+
+    const stream = await openStream("?kinds=session.state");
+    try {
+      await waitFor(() => eventSubscriberCount() === 1);
+      startSessionNotificationObserver();
+      await __runSessionNotificationObservationForTests();
+
+      mockBackend.setProgramStatus("agent-5", { id: "", state: "working", updatedAtMs: 1 });
+      // Only the broker signal; no manual observation pass. stream.next waits
+      // at most 2s, well under the 5s notification poll.
+      const started = Date.now();
+      notifyProgramStatusChanged("agent-5-id");
+      notifyProgramStatusChanged("agent-5-id");
+      const [working] = await stream.next(1);
+      expect(working).toMatchObject({ session: "agent-5", state: "working" });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally {
+      await stopSessionNotificationObserver();
+      mockBackend.setProgramStatus("agent-5", undefined);
+      stream.close();
+    }
+  });
+
+  test("program status events from one session do not change another session's output/idle transitions", async () => {
+    // A control run with no program status events, then the same rendered
+    // output changes next to a session reporting every ~50ms. The event
+    // refresh must not re-sample screens: output/idle is measured only on
+    // the regular cadence (driven here by the manual passes).
+    const sentinel = (session: string) => publishEvent({
+      kind: WOLFPACK_EVENT_KIND.SESSION_STATE, session, state: "idle", label: "sentinel", transitionSequence: -1,
+    });
+    async function untilSentinel(stream: OpenStream): Promise<Array<{ state: string; transitionSequence: number }>> {
+      const seen: Array<{ state: string; transitionSequence: number }> = [];
+      for (;;) {
+        const [event] = await stream.next(1);
+        if (event!.kind !== "session.state") continue;
+        if (event.label === "sentinel") return seen;
+        seen.push({ state: event.state, transitionSequence: event.transitionSequence });
+      }
+    }
+    async function observeOutput(prefix: string, withEvents: boolean): Promise<Array<{ state: string; transitionSequence: number }>> {
+      const noisy = `${prefix}-noisy`;
+      const watched = `${prefix}-watched`;
+      let screen = 1;
+      let report = 0;
+      mockBackend.setSessions([noisy, watched]);
+      mockBackend.setCapturePane(async (name) => (name === watched ? `screen ${screen}\n` : "steady\n"));
+      mockBackend.setOutputSequence(noisy, "1");
+      mockBackend.setOutputSequence(watched, String(screen));
+      const watchedStream = await openStream(`?kinds=session.state&session=${watched}`);
+      const noisyStream = await openStream(`?kinds=session.state&session=${noisy}`);
+      try {
+        await waitFor(() => eventSubscriberCount() === 2);
+        startSessionNotificationObserver();
+        await __runSessionNotificationObservationForTests();
+        const burst = async () => {
+          if (!withEvents) return;
+          for (let i = 0; i < 3; i += 1) {
+            report += 1;
+            mockBackend.setProgramStatus(noisy, report % 2
+              ? { id: "", state: "working", updatedAtMs: report }
+              : { id: "", state: "blocked", kind: "question", message: "?", updatedAtMs: report });
+            notifyProgramStatusChanged(`${noisy}-id`);
+            // Each report is a transition of its own session: wait for it so
+            // every signal becomes its own event-triggered refresh.
+            await noisyStream.next(1);
+          }
+        };
+        // Two cadence ticks with new output, then two with the screen settled.
+        for (const change of [true, true, false, false]) {
+          if (change) {
+            screen += 1;
+            mockBackend.setOutputSequence(watched, String(screen));
+          }
+          await burst();
+          await __runSessionNotificationObservationForTests();
+        }
+        sentinel(watched);
+        return await untilSentinel(watchedStream);
+      } finally {
+        await stopSessionNotificationObserver();
+        mockBackend.setProgramStatus(noisy, undefined);
+        noisyStream.close();
+        watchedStream.close();
+        await waitFor(() => eventSubscriberCount() === 0);
+      }
+    }
+
+    const control = await observeOutput("quiet", false);
+    expect(control.map((event) => event.state)).toEqual(["output", "idle"]);
+    const beside = await observeOutput("busy", true);
+    expect(beside).toEqual(control);
+  });
+
+  test("a program status change after the observer stops does not start a pass", async () => {
+    mockBackend.setSessions(["agent-6"]);
+    mockBackend.setCapturePane(async () => "steady\n");
+    mockBackend.setOutputSequence("agent-6", "1");
+
+    const stream = await openStream("?kinds=session.state");
+    try {
+      await waitFor(() => eventSubscriberCount() === 1);
+      startSessionNotificationObserver();
+      await __runSessionNotificationObservationForTests();
+      await stopSessionNotificationObserver();
+
+      mockBackend.setProgramStatus("agent-6", { id: "", state: "working", updatedAtMs: 1 });
+      notifyProgramStatusChanged("agent-6-id");
+      // Well past the refresh delay: a live listener would have published.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      publishEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_STATE, session: "sentinel", state: "idle", label: "sentinel", transitionSequence: 0 });
+      const [first] = await stream.next(1);
+      expect(first).toMatchObject({ session: "sentinel" });
+    } finally {
+      mockBackend.setProgramStatus("agent-6", undefined);
+      stream.close();
+    }
+  });
+
+  test("stopping the observer cancels a refresh queued behind an in-flight pass", async () => {
+    mockBackend.setSessions(["agent-7"]);
+    mockBackend.setCapturePane(async () => "steady\n");
+    mockBackend.setOutputSequence("agent-7", "1");
+
+    const stream = await openStream("?kinds=session.state");
+    try {
+      await waitFor(() => eventSubscriberCount() === 1);
+      startSessionNotificationObserver();
+      await __runSessionNotificationObservationForTests();
+
+      // The next pass samples a new screen and blocks in the capture; it has
+      // listed the sessions by then, so the report below is not its to publish.
+      let release: ((screen: string) => void) | undefined;
+      mockBackend.setCapturePane(() => new Promise<string>((resolve) => { release = resolve; }));
+      mockBackend.setOutputSequence("agent-7", "2");
+      const inflight = __runSessionNotificationObservationForTests();
+      await waitFor(() => release !== undefined);
+      mockBackend.setProgramStatus("agent-7", { id: "", state: "working", updatedAtMs: 1 });
+      notifyProgramStatusChanged("agent-7-id");
+      // The refresh delay elapses while the pass is in flight: the refresh
+      // is now queued behind it.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const stopping = stopSessionNotificationObserver();
+      release!("steady\n");
+      await inflight;
+      await stopping;
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      publishEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_STATE, session: "sentinel", state: "idle", label: "sentinel", transitionSequence: 0 });
+      const [first] = await stream.next(1);
+      expect(first).toMatchObject({ session: "sentinel" });
+    } finally {
+      mockBackend.setProgramStatus("agent-7", undefined);
       stream.close();
     }
   });

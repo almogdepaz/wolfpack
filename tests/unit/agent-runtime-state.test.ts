@@ -12,7 +12,9 @@ import {
 import {
   AgentRuntimeStateStore,
   deriveAgentRuntimeState,
+  programStatusSource,
 } from "../../src/server/agent-status.ts";
+import type { ProgramStatusRecord } from "../../src/program-status-contract.ts";
 import { sessionRuntimeUi } from "../../src/agent-runtime-ui.ts";
 import type { AgentStatusSource } from "../../src/server/agent-status.ts";
 
@@ -477,6 +479,38 @@ describe("agent runtime state ui", () => {
     }).label).toBe("quiet");
   });
 
+  test("shows every program status (OSC 7501) state with its own label", () => {
+    const program = (state: string) => sessionRuntimeUi({
+      runtimeState: {
+        state,
+        authority: AGENT_STATUS_AUTHORITY.PROGRAM,
+        freshness: AGENT_STATUS_FRESHNESS.FRESH,
+        source: AGENT_STATUS_SOURCE.PROGRAM_STATUS,
+        stale: false,
+      },
+      triage: "running",
+    });
+    expect(program(AGENT_STATUS_STATE.NEEDS_INPUT)).toMatchObject({ label: "needs input", dot: "yellow", badge: "needs-input" });
+    expect(program(AGENT_STATUS_STATE.WORKING).label).toBe("working");
+    expect(program(AGENT_STATUS_STATE.DONE).label).toBe("done");
+    expect(program(AGENT_STATUS_STATE.FAILED).label).toBe("failed");
+    expect(program(AGENT_STATUS_STATE.IDLE).label).toBe("quiet");
+    // States a program report can never map to stay rejected.
+    expect(program(AGENT_STATUS_STATE.OFF).label).toBe("output");
+    expect(program(AGENT_STATUS_STATE.AUDIT).label).toBe("output");
+    // Provenance mismatch: program authority with another source.
+    expect(sessionRuntimeUi({
+      runtimeState: {
+        state: AGENT_STATUS_STATE.NEEDS_INPUT,
+        authority: AGENT_STATUS_AUTHORITY.PROGRAM,
+        freshness: AGENT_STATUS_FRESHNESS.FRESH,
+        source: AGENT_STATUS_SOURCE.LOCAL_MANIFEST,
+        stale: false,
+      },
+      triage: "idle",
+    }).label).toBe("quiet");
+  });
+
   test("uses broker-backed availability labels", () => {
     expect(sessionRuntimeUi({
       runtimeState: {
@@ -488,5 +522,130 @@ describe("agent runtime state ui", () => {
       },
       triage: "idle",
     }).label).toBe("unavailable");
+  });
+});
+
+describe("program status (OSC 7501) authority", () => {
+  const blockedRoot: ProgramStatusRecord = {
+    id: "",
+    state: "blocked",
+    kind: "permission",
+    progress: 40,
+    app: "claude",
+    title: "Plan",
+    message: "Apply these changes?",
+    updatedAtMs: 1_700_000_000_000,
+  };
+
+  function programSource(record: ProgramStatusRecord = blockedRoot): AgentStatusSource {
+    const selected = programStatusSource(record, { runId: "run-1", observedAt: OBSERVED_AT });
+    if (!selected) throw new Error("expected a program status source");
+    return selected;
+  }
+
+  test("a blocked root record becomes needs-input with its typed kind and message", () => {
+    const state = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [programSource()],
+      fallback: { rawOutputChanged: true, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+
+    expect(state).toMatchObject({
+      state: AGENT_STATUS_STATE.NEEDS_INPUT,
+      authority: AGENT_STATUS_AUTHORITY.PROGRAM,
+      source: AGENT_STATUS_SOURCE.PROGRAM_STATUS,
+      freshness: AGENT_STATUS_FRESHNESS.FRESH,
+      inputKind: "permission",
+      progress: 40,
+      app: "claude",
+      title: "Plan",
+      message: "Apply these changes?",
+      runId: "run-1",
+    });
+  });
+
+  test("program status outranks a fresh manifest and the screen fallback", () => {
+    const state = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [
+        source({ state: AGENT_STATUS_STATE.DONE, signalSequence: 99 }),
+        programSource({ id: "", state: "working", updatedAtMs: 1 }),
+      ],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+
+    expect(state.state).toBe(AGENT_STATUS_STATE.WORKING);
+    expect(state.authority).toBe(AGENT_STATUS_AUTHORITY.PROGRAM);
+    expect(state).not.toHaveProperty("inputKind");
+  });
+
+  test("broker liveness still outranks program status", () => {
+    const state = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "dead", observedAt: OBSERVED_AT },
+      sources: [programSource()],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+
+    expect(state.state).toBe(AGENT_STATUS_STATE.OFF);
+    expect(state.authority).toBe(AGENT_STATUS_AUTHORITY.BROKER);
+    expect(state).not.toHaveProperty("inputKind");
+  });
+
+  test("no root record falls through to the existing authorities", () => {
+    expect(programStatusSource(undefined, { runId: "run-1", observedAt: OBSERVED_AT })).toBeUndefined();
+    const state = deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources: [source({ state: AGENT_STATUS_STATE.DONE })],
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+    });
+
+    expect(state.state).toBe(AGENT_STATUS_STATE.DONE);
+    expect(state.authority).toBe(AGENT_STATUS_AUTHORITY.MANIFEST);
+  });
+
+  function deriveAfter(previous: ReturnType<typeof deriveAgentRuntimeState> | undefined, sources: AgentStatusSource[]) {
+    return deriveAgentRuntimeState({
+      sessionKey: "s1",
+      broker: { state: "alive", observedAt: OBSERVED_AT },
+      sources,
+      fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT },
+      currentRun: { runId: "run-1", runOrder: 1 },
+      ...(previous ? { previous } : {}),
+    });
+  }
+
+  test("a new blocked request in the same state is a transition", () => {
+    const permission = deriveAfter(undefined, [programSource()]);
+    const question = deriveAfter(permission, [programSource({ ...blockedRoot, message: "Run tests?", kind: "question" })]);
+    expect(question.transitionSequence).toBe(permission.transitionSequence + 1);
+    expect(question).toMatchObject({ state: "needs-input", message: "Run tests?", inputKind: "question", unseen: true });
+
+    // Same kind, new question text: still a new request.
+    const reworded = deriveAfter(question, [programSource({ ...blockedRoot, message: "Run lint?", kind: "question" })]);
+    expect(reworded.transitionSequence).toBe(question.transitionSequence + 1);
+
+    // An identical re-report is not.
+    const repeated = deriveAfter(reworded, [programSource({ ...blockedRoot, message: "Run lint?", kind: "question" })]);
+    expect(repeated.transitionSequence).toBe(reworded.transitionSequence);
+  });
+
+  test("detail churn outside a blocked request does not mint transitions", () => {
+    const working = deriveAfter(undefined, [programSource({ id: "", state: "working", message: "Reading files", updatedAtMs: 1 })]);
+    const stillWorking = deriveAfter(working, [programSource({ id: "", state: "working", message: "Editing", progress: 40, updatedAtMs: 2 })]);
+    expect(stillWorking.transitionSequence).toBe(working.transitionSequence);
+    expect(stillWorking).toMatchObject({ message: "Editing", progress: 40 });
+
+    // Non-program authorities never carry program detail; their messages are diagnostics.
+    const manifest = deriveAfter(undefined, [source({ message: "first" })]);
+    const manifestAgain = deriveAfter(manifest, [source({ message: "second" })]);
+    expect(manifestAgain.transitionSequence).toBe(manifest.transitionSequence);
   });
 });

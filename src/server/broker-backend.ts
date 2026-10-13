@@ -60,6 +60,7 @@ import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/co
 import type { SessionInspectionResult } from "../session-status-contract.js";
 import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import { publishEvent } from "./event-bus.js";
+import { notifyProgramStatusChanged } from "./program-status-signal.js";
 import {
   AGENT_KIND,
   detectAgentKindFromCommandArgs,
@@ -70,6 +71,7 @@ import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-cont
 import { CMD_REGEX } from "../validation.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
+import { parseBrokerProgramStatusRecord } from "../program-status-contract.js";
 import {
   plainLine,
   renderSnapshotToAnsi,
@@ -175,6 +177,8 @@ interface BrokerSessionInfo {
   alive: boolean;
   /** Decimal u64 emitted by protocol-v2 brokers that support activity facts. */
   output_seq?: string;
+  /** Root OSC 7501 record; omitted by brokers without program status support. */
+  program_status?: unknown;
   command?: string[];
   env?: Array<[string, string]>;
 }
@@ -378,11 +382,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     for (const s of sessions) {
       const identity = identitiesById.get(s.id);
       const outputSequence = brokerOutputSequence(s.output_seq);
+      const programStatus = parseBrokerProgramStatusRecord(s.program_status);
       facts.push({
         name: s.name,
         alive: s.alive,
         ...(outputSequence !== undefined && { outputSequence }),
         ...(identity && { identity }),
+        ...(programStatus && { programStatus }),
       });
       if (!s.alive) continue;
       this.nameToId.set(s.name, s.id);
@@ -1018,6 +1024,11 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         return;
       }
       case "snapshot_invalidated":
+        return;
+      case "program_status_changed":
+        // Refresh runtime state now; the root record also rides on
+        // list_sessions, so the observer's poll remains the fallback.
+        if (typeof event.session_id === "string") notifyProgramStatusChanged(event.session_id);
         return;
     }
   }

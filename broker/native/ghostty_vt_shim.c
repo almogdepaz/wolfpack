@@ -10,7 +10,90 @@
 struct WpGhosttyTerminal {
   GhosttyTerminal terminal;
   GhosttyRenderState render;
+  // Set only for the duration of one wp_ghostty_terminal_feed call.
+  const WpFeedSink* sink;
 };
+
+static void on_write_pty(GhosttyTerminal terminal, void* userdata, const uint8_t* data, size_t len) {
+  (void)terminal;
+  WpGhosttyTerminal* wrapper = (WpGhosttyTerminal*)userdata;
+  if (wrapper == NULL || wrapper->sink == NULL || wrapper->sink->pty_write == NULL) return;
+  wrapper->sink->pty_write(wrapper->sink->ctx, data, len);
+}
+
+static int map_program_status_state(GhosttyProgramStatusState state, uint8_t* out) {
+  switch (state) {
+    case GHOSTTY_PROGRAM_STATUS_STATE_IDLE: *out = WP_PROGRAM_STATUS_IDLE; return WP_OK;
+    case GHOSTTY_PROGRAM_STATUS_STATE_WORKING: *out = WP_PROGRAM_STATUS_WORKING; return WP_OK;
+    case GHOSTTY_PROGRAM_STATUS_STATE_DONE: *out = WP_PROGRAM_STATUS_DONE; return WP_OK;
+    case GHOSTTY_PROGRAM_STATUS_STATE_BLOCKED: *out = WP_PROGRAM_STATUS_BLOCKED; return WP_OK;
+    case GHOSTTY_PROGRAM_STATUS_STATE_ERROR: *out = WP_PROGRAM_STATUS_ERROR; return WP_OK;
+    case GHOSTTY_PROGRAM_STATUS_STATE_CLEAR: *out = WP_PROGRAM_STATUS_CLEAR; return WP_OK;
+    default: return WP_ERR_INVALID;
+  }
+}
+
+static uint8_t map_program_status_kind(GhosttyProgramStatusKind kind) {
+  switch (kind) {
+    case GHOSTTY_PROGRAM_STATUS_KIND_PERMISSION: return WP_PROGRAM_STATUS_KIND_PERMISSION;
+    case GHOSTTY_PROGRAM_STATUS_KIND_QUESTION: return WP_PROGRAM_STATUS_KIND_QUESTION;
+    case GHOSTTY_PROGRAM_STATUS_KIND_AUTH: return WP_PROGRAM_STATUS_KIND_AUTH;
+    default: return WP_PROGRAM_STATUS_KIND_NONE;
+  }
+}
+
+static void on_program_status(
+    GhosttyTerminal terminal,
+    void* userdata,
+    const GhosttyTerminalProgramStatus* report) {
+  (void)terminal;
+  WpGhosttyTerminal* wrapper = (WpGhosttyTerminal*)userdata;
+  if (wrapper == NULL || wrapper->sink == NULL || wrapper->sink->program_status == NULL) return;
+  // Sized struct: every field read below exists since the struct was introduced.
+  if (report == NULL || report->size < sizeof(GhosttyTerminalProgramStatus)) return;
+  WpProgramStatusReport out;
+  memset(&out, 0, sizeof(out));
+  if (map_program_status_state(report->state, &out.state) != WP_OK) return;
+  out.kind = map_program_status_kind(report->kind);
+  out.progress = report->progress;
+  out.id = (const uint8_t*)report->id.ptr;
+  out.id_len = report->id.len;
+  out.app = (const uint8_t*)report->app.ptr;
+  out.app_len = report->app.len;
+  out.title = (const uint8_t*)report->title.ptr;
+  out.title_len = report->title.len;
+  out.message = (const uint8_t*)report->message.ptr;
+  out.message_len = report->message.len;
+  wrapper->sink->program_status(wrapper->sink->ctx, &out);
+}
+
+static void on_semantic_prompt(
+    GhosttyTerminal terminal,
+    void* userdata,
+    const GhosttyTerminalSemanticPrompt* event) {
+  (void)terminal;
+  WpGhosttyTerminal* wrapper = (WpGhosttyTerminal*)userdata;
+  if (wrapper == NULL || wrapper->sink == NULL || wrapper->sink->prompt_start == NULL) return;
+  if (event == NULL || event->size < sizeof(GhosttyTerminalSemanticPrompt)) return;
+  if (event->kind != GHOSTTY_SEMANTIC_PROMPT_PROMPT_START) return;
+  if (event->prompt_kind != GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY) return;
+  wrapper->sink->prompt_start(wrapper->sink->ctx);
+}
+
+// Registering the program status callback is what makes libghostty answer the
+// `OSC 7501 ; ?` support query (through write_pty). write_pty then also carries
+// every other query reply (DA, DSR, XTVERSION, ...); the Rust side forwards only
+// the program status reply because the browser terminal answers the rest.
+static GhosttyResult install_wolfpack_effects(WpGhosttyTerminal* wrapper) {
+  GhosttyTerminal terminal = wrapper->terminal;
+  GhosttyResult result = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_USERDATA, wrapper);
+  if (result != GHOSTTY_SUCCESS) return result;
+  result = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void*)on_write_pty);
+  if (result != GHOSTTY_SUCCESS) return result;
+  result = ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, (const void*)on_semantic_prompt);
+  if (result != GHOSTTY_SUCCESS) return result;
+  return ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_PROGRAM_STATUS, (const void*)on_program_status);
+}
 
 static uint32_t rgb_u32(GhosttyColorRgb rgb) {
   return ((uint32_t)rgb.r << 16) | ((uint32_t)rgb.g << 8) | (uint32_t)rgb.b;
@@ -104,10 +187,10 @@ static int encode_utf8(uint32_t cp, uint8_t out[4], size_t* out_len) {
 }
 
 static int terminal_bool_mode(GhosttyTerminal terminal, GhosttyMode mode, uint8_t* out) {
-  bool value = false;
-  GhosttyResult result = ghostty_terminal_mode_get(terminal, mode, &value);
+  GhosttyTerminalModeConfig config = {.mode = mode, .value = false};
+  GhosttyResult result = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &config);
   if (result != GHOSTTY_SUCCESS) return WP_ERR_GHOSTTY;
-  *out = value ? 1 : 0;
+  *out = config.value ? 1 : 0;
   return WP_OK;
 }
 
@@ -115,12 +198,13 @@ WpGhosttyTerminal* wp_ghostty_terminal_new(uint16_t cols, uint16_t rows, size_t 
   if (cols == 0 || rows == 0) return NULL;
 
   GhosttyTerminal terminal = NULL;
-  GhosttyTerminalOptions options = {
-      .cols = cols,
-      .rows = rows,
-      .max_scrollback = scrollback_limit,
-  };
-  if (ghostty_terminal_new(NULL, &terminal, options) != GHOSTTY_SUCCESS) return NULL;
+  if (ghostty_terminal_new(NULL, &terminal, cols, rows) != GHOSTTY_SUCCESS) return NULL;
+  // The pre-a4aacd91 `max_scrollback` constructor field was a byte budget
+  // (PageList max_size); keep the same budget through the explicit option.
+  if (ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &scrollback_limit) != GHOSTTY_SUCCESS) {
+    ghostty_terminal_free(terminal);
+    return NULL;
+  }
   if (apply_wolfpack_ansi_palette(terminal) != GHOSTTY_SUCCESS) {
     ghostty_terminal_free(terminal);
     return NULL;
@@ -146,6 +230,11 @@ WpGhosttyTerminal* wp_ghostty_terminal_new(uint16_t cols, uint16_t rows, size_t 
   }
   out->terminal = terminal;
   out->render = render;
+  out->sink = NULL;
+  if (install_wolfpack_effects(out) != GHOSTTY_SUCCESS) {
+    wp_ghostty_terminal_free(out);
+    return NULL;
+  }
   return out;
 }
 
@@ -156,11 +245,14 @@ void wp_ghostty_terminal_free(WpGhosttyTerminal* terminal) {
   free(terminal);
 }
 
-int wp_ghostty_terminal_feed(WpGhosttyTerminal* terminal, const uint8_t* data, size_t len) {
+int wp_ghostty_terminal_feed(
+    WpGhosttyTerminal* terminal, const uint8_t* data, size_t len, const WpFeedSink* sink) {
   if (terminal == NULL || (data == NULL && len != 0)) return WP_ERR_INVALID;
+  terminal->sink = sink;
   // Void API: VT processing errors are exposed via GHOSTTY_TERMINAL_DATA_VT_PROCESSING_ERROR
   // and rejected during snapshot/materialization.
   ghostty_terminal_vt_write(terminal->terminal, data, len);
+  terminal->sink = NULL;
   return WP_OK;
 }
 

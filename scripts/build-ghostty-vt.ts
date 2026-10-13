@@ -188,10 +188,49 @@ export function ghosttyArchiveHasHostMemsetOverride(nmOutput: string): boolean {
   return nmOutput.split("\n").some((line) => line.includes("quirks_memset"));
 }
 
-export function assertNoHostMemsetOverride(archive: string): void {
+/**
+ * True when nm output lists lib-vt's own entry point as defined. GNU nm exits
+ * 0 but lists nothing for archive members it cannot parse (Mach-O on a Linux
+ * host), which would let every symbol policy below pass vacuously.
+ */
+export function ghosttyArchiveSymbolsReadable(nmOutput: string): boolean {
+  return nmOutput.split("\n").some((line) => /^[0-9a-fA-F]+\s+T\s+_?ghostty_terminal_new$/.test(line.trim()));
+}
+
+function archiveSymbols(archive: string): string {
   const symbols = run("nm", ["-a", archive]);
+  if (!ghosttyArchiveSymbolsReadable(symbols)) {
+    throw new Error(`nm could not read Ghostty archive symbols (build or verify this target with its platform's nm): ${archive}`);
+  }
+  return symbols;
+}
+
+export function assertNoHostMemsetOverride(archive: string): void {
+  const symbols = archiveSymbols(archive);
   if (ghosttyArchiveHasHostMemsetOverride(symbols)) {
     throw new Error(`Ghostty archive exports/injects quirks_memset host override: ${archive}`);
+  }
+}
+
+const LIBC_ALLOCATORS = new Set(["malloc", "calloc", "realloc", "free", "posix_memalign", "aligned_alloc", "memalign", "valloc"]);
+
+/**
+ * Libc allocator names the archive *defines* (nm lines with an address).
+ * Any such definition is linked into the broker ahead of the host libc's.
+ */
+export function ghosttyArchiveDefinedLibcAllocators(nmOutput: string): string[] {
+  const defined: string[] = [];
+  for (const line of nmOutput.split("\n")) {
+    const match = /^[0-9a-fA-F]+\s+[A-Za-z]\s+_?(\S+)$/.exec(line.trim());
+    if (match && LIBC_ALLOCATORS.has(match[1])) defined.push(match[1]);
+  }
+  return defined;
+}
+
+export function assertNoLibcAllocatorOverride(archive: string): void {
+  const defined = ghosttyArchiveDefinedLibcAllocators(archiveSymbols(archive));
+  if (defined.length > 0) {
+    throw new Error(`Ghostty archive defines libc allocator symbols (${defined.join(", ")}): ${archive}`);
   }
 }
 
@@ -251,6 +290,7 @@ function buildTarget(cargoTriple: string, sourceDir: string, lock: GhosttyLock) 
   copyFileSync(join(prefix, "lib", "libghostty-vt.a"), join(targetOut, "lib", "libghostty-vt.a"));
   copyGhosttyHeaders(prefix, targetOut);
   assertNoHostMemsetOverride(join(targetOut, "lib", "libghostty-vt.a"));
+  assertNoLibcAllocatorOverride(join(targetOut, "lib", "libghostty-vt.a"));
   const manifest = createBundleManifest(cargoTriple, targetOut, lock);
   writeFileSync(join(targetOut, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   verifyBundleManifest(cargoTriple, targetOut, lock);

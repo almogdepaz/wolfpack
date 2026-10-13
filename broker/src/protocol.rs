@@ -36,6 +36,56 @@ pub struct SessionInfo {
     /// Decimal u64 PTY output watermark. Optional only for older-broker compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_seq: Option<String>,
+    /// Root OSC 7501 program status record (empty id), if the program
+    /// reported one. Child records ride only on the single-session
+    /// `session_info` payload so `list_sessions` stays bounded per session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_status: Option<ProgramStatusRecord>,
+}
+
+// ---------------------------------------------------------------------------
+// Program status (OSC 7501) records
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramStatusState {
+    Idle,
+    Working,
+    Done,
+    Blocked,
+    Error,
+}
+
+/// What a blocked program needs from the user.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgramStatusKind {
+    Permission,
+    Question,
+    Auth,
+}
+
+/// One program status record, keyed by `id` (empty = the program itself).
+/// Text fields are untrusted program output: the broker has already removed
+/// control and invisible formatting characters and bounded their lengths.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProgramStatusRecord {
+    pub id: String,
+    pub state: ProgramStatusState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ProgramStatusKind>,
+    /// 0..=100, only for working/blocked reports that sent one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Broker wall clock (unix ms) when this record's content last changed.
+    pub updated_at_ms: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +271,12 @@ pub enum ResponsePayload {
     ListSessions { sessions: Vec<SessionInfo> },
     CreateSession { session: SessionInfo },
     KillSession { killed: bool },
-    SessionInfo { session: SessionInfo },
+    SessionInfo {
+        session: SessionInfo,
+        /// Every program status record (root and children), sorted by id.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        program_status_records: Vec<ProgramStatusRecord>,
+    },
     /// Snapshots are immutable and potentially history-sized. `Arc` avoids
     /// copying the cell graph from the per-session cache into a response;
     /// serde's `rc` support retains the exact Snapshot JSON shape.
@@ -379,6 +434,15 @@ pub enum Event {
     },
     SessionResized { session_id: Uuid, cols: u16, rows: u16 },
     SnapshotInvalidated { session_id: Uuid },
+    /// The session's program status records changed (paced: at most one event
+    /// per 200ms per session, trailing event carries the latest root). Carries
+    /// the current root record; absent when the root was cleared or never
+    /// reported. Children: `session_info`.
+    ProgramStatusChanged {
+        session_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        program_status: Option<ProgramStatusRecord>,
+    },
     /// Emitted directly to the connection that had its subscription dropped
     /// due to broadcast lag. The client should re-subscribe from its last
     /// delivered seq. This event is NOT broadcast to all clients: it is queued
@@ -410,6 +474,20 @@ mod tests {
             alive: true,
             exit_code: None,
             output_seq: Some("42".into()),
+            program_status: None,
+        }
+    }
+
+    fn sample_program_status() -> ProgramStatusRecord {
+        ProgramStatusRecord {
+            id: String::new(),
+            state: ProgramStatusState::Blocked,
+            kind: Some(ProgramStatusKind::Permission),
+            progress: Some(40),
+            app: Some("claude".into()),
+            title: None,
+            message: Some("Apply?".into()),
+            updated_at_ms: 1_700_000_000_000,
         }
     }
 
@@ -560,11 +638,13 @@ mod tests {
     fn response_ok_payload_kind_tag() {
         let resp = ControlResponse::ok(
             7,
-            ResponsePayload::SessionInfo { session: sample_session() },
+            ResponsePayload::SessionInfo { session: sample_session(), program_status_records: vec![] },
         );
         let v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["payload"]["kind"], "session_info");
+        assert!(v["payload"].get("program_status_records").is_none());
+        assert!(v["payload"]["session"].get("program_status").is_none());
         assert!(v.get("error").is_none() || v["error"].is_null());
         let back: ControlResponse = serde_json::from_value(v).unwrap();
         assert_eq!(resp, back);
@@ -679,6 +759,53 @@ mod tests {
         assert_eq!(v["event"], "session_resized");
         let back: Event = serde_json::from_value(v).unwrap();
         assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn program_status_record_wire_shape_is_snake_case_and_compact() {
+        let record = sample_program_status();
+        let v = serde_json::to_value(&record).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "id": "",
+                "state": "blocked",
+                "kind": "permission",
+                "progress": 40,
+                "app": "claude",
+                "message": "Apply?",
+                "updated_at_ms": 1_700_000_000_000u64
+            })
+        );
+        assert_eq!(serde_json::from_value::<ProgramStatusRecord>(v).unwrap(), record);
+    }
+
+    #[test]
+    fn session_info_carries_root_program_status_and_payload_carries_all_records() {
+        let mut session = sample_session();
+        session.program_status = Some(sample_program_status());
+        let child = ProgramStatusRecord { id: "build".into(), state: ProgramStatusState::Working, kind: None, progress: None, app: None, title: None, message: None, updated_at_ms: 1 };
+        let resp = ControlResponse::ok(
+            1,
+            ResponsePayload::SessionInfo { session, program_status_records: vec![sample_program_status(), child] },
+        );
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["payload"]["session"]["program_status"]["state"], "blocked");
+        assert_eq!(v["payload"]["program_status_records"][1]["id"], "build");
+        assert_eq!(serde_json::from_value::<ControlResponse>(v).unwrap(), resp);
+    }
+
+    #[test]
+    fn event_program_status_changed_roundtrip() {
+        let ev = Event::ProgramStatusChanged { session_id: nil(), program_status: Some(sample_program_status()) };
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(v["event"], "program_status_changed");
+        assert_eq!(v["program_status"]["kind"], "permission");
+        assert_eq!(serde_json::from_value::<Event>(v).unwrap(), ev);
+        let cleared = Event::ProgramStatusChanged { session_id: nil(), program_status: None };
+        let v = serde_json::to_value(&cleared).unwrap();
+        assert!(v.get("program_status").is_none());
+        assert_eq!(serde_json::from_value::<Event>(v).unwrap(), cleared);
     }
 
     #[test]

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "revision": "7aa9591746ffa4d2eee458960c76554352832595",
-  "sourceUrl": "https://tip.files.ghostty.org/7aa9591746ffa4d2eee458960c76554352832595/libghostty-vt-source.tar.gz",
-  "sourceSha256": "468a0564bdd481e291f6150b94300f9ff37c1a7524f6ae76e99c4ec15535cf66",
+  "revision": "a4aacd918ba9e79929ff608034c60a4341773ef0",
+  "sourceUrl": "https://tip.files.ghostty.org/a4aacd918ba9e79929ff608034c60a4341773ef0/libghostty-vt-source.tar.gz",
+  "sourceSha256": "afac1d2dda1bea17f2aae0e1b8ce5dca78e7c3d008a947a15e8ce54f4bf4744c",
   "zigVersion": "0.16.0",
   "buildInputs": {
     "emitLibVt": true,
@@ -13,11 +13,15 @@
   "patches": [
     {
       "path": "patches/ghostty-vt-scroll-region.patch",
-      "sha256": "742062e34969dced67badc6ad984d8b5f0745fc9ead02bf3fab7d76e197f8381"
+      "sha256": "28afd678eb0fd5ecee1b8588eac9a6dc958cf8b944b9c5cd0564fb731febe3d9"
     },
     {
       "path": "patches/ghostty-vt-no-static-host-memset.patch",
-      "sha256": "795e3d9e0344e9a3770550f27c533394443f21eec808333fe266a6e4835de292"
+      "sha256": "f2416747cc0be7539c989fd8839fdeab6155b7ab06a9852aa7d3080ddb8d79db"
+    },
+    {
+      "path": "patches/ghostty-vt-no-libc-allocator-stubs.patch",
+      "sha256": "acd9a24377e1af171ddb96469924cc0a45e91f8a156fb28eda338738180b1e82"
     }
   ],
   "targets": {

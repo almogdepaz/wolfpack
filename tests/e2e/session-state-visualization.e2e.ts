@@ -55,6 +55,24 @@ const sessions = [
     activity: { freshness: "fresh", observedAt, lastRenderedActivityAt: observedAt, display: "active 2m" },
   },
   {
+    name: "program-blocked",
+    lastLine: "Allow edit?",
+    triage: "running",
+    identity: { wolfpackSessionId: "id-program" },
+    runtimeState: {
+      state: "needs-input",
+      authority: "program",
+      freshness: "fresh",
+      source: "program-status",
+      stale: false,
+      inputKind: "permission",
+      message: "Allow edit?",
+      unseen: false,
+      transitionSequence: 2,
+    },
+    activity: { freshness: "fresh", observedAt, display: "" },
+  },
+  {
     name: "unobserved",
     lastLine: "no activity observation",
     triage: "idle",
@@ -381,6 +399,7 @@ test("shows semantic labels only for source-backed runtime state", async ({ page
   await expect(cardBadge("unproven")).toHaveText("quiet");
   await expect(cardBadge("structured")).toHaveText("needs input");
   await expect(cardBadge("active-output")).toHaveText("output");
+  await expect(cardBadge("program-blocked")).toHaveText("needs input");
 });
 
 test("shows only review changes in session activity lines", async ({ page }) => {
