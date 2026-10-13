@@ -51,6 +51,33 @@ afterEach(() => {
 });
 
 describe("ExtensionHost", () => {
+  test("blob integrity/staleness, compose bounds/mismatch and allowlisted theme snapshot", async () => {
+    container = new FakeElement(); const id = "22222222-2222-4222-8222-222222222222";
+    let selected = { sessionId: id }, context!: ExtensionViewContext, mismatch = false, composed = "", corrupt = false;
+    let release: ((response: Response) => void) | undefined, pending = false, oversize = false, failed = false, cancelled = false;
+    const bytes = new Uint8Array([0, 255, 4]); const digest = require("node:crypto").createHash("sha256").update(bytes).digest("hex");
+    const previous = globalThis.getComputedStyle;
+    globalThis.getComputedStyle = (() => ({ getPropertyValue: (key: string) => key === "--accent" ? "  green  " : key === "--secret" ? "secret" : "" })) as never;
+    const host = new ExtensionHost({ container: container as unknown as HTMLElement, scope: () => selected,
+      composeTerminalInput: (session, text) => { expect(session).toBe(id); if (mismatch) return false; composed = text; return true; },
+      authFetch: async (input, options) => {
+        if (String(input) === "/api/extensions") return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "stage", enabled: true, blobs: { maxBlobBytes: 64 }, package: { name: "stage", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/stage/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
+        expect(options?.cache).toBe("no-store"); expect(String(input)).toBe(`/api/extensions/blobs/stage/${digest}`);
+        if (failed) return new Response(new ReadableStream({ cancel() { cancelled = true; } }), { status: 503 });
+        return pending ? new Promise(resolve => { release = resolve; }) : new Response(oversize ? new Uint8Array(65) : corrupt ? new Uint8Array([1]) : bytes);
+      }, bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => register.registerContextView({ id: "view", title: "Stage", mount(_root, value) { context = value; return { dispose() {} }; } }) })) as never,
+    });
+    try {
+      await host.refresh(); host.select(); expect(context.theme).toEqual({ "--accent": "green" }); expect(Object.isFrozen(context.theme)).toBe(true);
+      expect(await context.blobs!.read(digest)).toEqual(bytes); corrupt = true; await expect(context.blobs!.read(digest)).rejects.toThrow("digest"); corrupt = false; oversize = true; await expect(context.blobs!.read(digest)).rejects.toThrow("limit"); oversize = false;
+      failed = true; await expect(context.blobs!.read(digest)).rejects.toThrow("unavailable"); expect(cancelled).toBe(true); failed = false;
+      context.terminal!.compose("replace me"); expect(composed).toBe("replace me");
+      expect(() => context.terminal!.compose("é".repeat(2049))).toThrow(); expect(() => context.terminal!.compose(7 as never)).toThrow();
+      mismatch = true; expect(() => context.terminal!.compose("no")).toThrow(); mismatch = false;
+      pending = true; const read = context.blobs!.read(digest); selected = { sessionId: "33333333-3333-4333-8333-333333333333" }; await host.refresh(); release!(new Response(bytes)); await expect(read).rejects.toThrow("stale");
+    } finally { host.dispose(); globalThis.getComputedStyle = previous; }
+    expect(() => context.terminal!.compose("after dispose")).toThrow("stale");
+  });
   test("derives area membership once per render, including native repair and collapsed peek", () => {
     container = new FakeElement();
     const layout = new WidgetLayout({ getItem: () => null, setItem() {} });
@@ -142,6 +169,7 @@ describe("ExtensionHost", () => {
     });
     try {
       await host.refresh(); host.select();
+      expect(context.blobs).toBeUndefined(); expect(context.terminal).toBeUndefined();
       expect(await context.project.gitStatus()).toEqual({ state: "not-repository" });
       mismatch = true; await expect(context.project.gitStatus()).rejects.toThrow("identity"); mismatch = false;
       const abort = new AbortController(); const pending = context.project.gitStatus(abort.signal); abort.abort();

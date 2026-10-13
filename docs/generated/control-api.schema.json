@@ -31,6 +31,7 @@
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
+    "extension blob binary HTTP bodies use string/contentMediaType schema descriptions, not JSON encoding; runtime enforces declared byte ceilings, SHA-256 identity, installation+extension quotas and exact live-local session write authority",
     "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
     "volatile-v1 is the only task relay; all relay HTTP routes require loopback or trusted Tailnet access and inherit optional configured global auth; all visible online Tailnet peers are assumed honest, with canonical TLS routing and current epochs but no signatures, user/tag filtering, or key discovery (up to 1s local topology cache)",
     "relay profile metadata identifies the current RAM lifetime, not broker/worker readiness; restart loses active task state and never replays Pi session history"
@@ -204,6 +205,147 @@
         "400 ExtensionApiErrorEnvelope",
         "404 ExtensionApiErrorEnvelope",
         "409 ExtensionApiErrorEnvelope",
+        "503 ExtensionApiErrorEnvelope"
+      ]
+    },
+    "readExtensionBlob": {
+      "route": "GET /api/extensions/blobs/{extensionId}/{digest}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readExtensionBlob:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readExtensionBlob request",
+        "type": "object",
+        "properties": {
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "digest": {
+            "$ref": "#/$defs/ExtensionBlobDigest"
+          }
+        },
+        "required": [
+          "extensionId",
+          "digest"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readExtensionBlob:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readExtensionBlob response",
+        "type": "string",
+        "contentMediaType": "application/octet-stream",
+        "description": "Raw blob bytes; Content-Type: application/octet-stream, Cache-Control: no-store, X-Wolfpack-Blob-Digest equals requested digest. No session/query parameters. Missing blob: 404 ASSET_NOT_FOUND; missing installation: 404 NOT_INSTALLED; disabled/safe mode: 409 DISABLED."
+      },
+      "errors": [
+        "400 ExtensionApiErrorEnvelope",
+        "404 ExtensionApiErrorEnvelope",
+        "409 ExtensionApiErrorEnvelope",
+        "413 ExtensionApiErrorEnvelope",
+        "503 ExtensionApiErrorEnvelope"
+      ]
+    },
+    "putExtensionBlob": {
+      "route": "PUT /api/extensions/blobs/{extensionId}/{digest}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/octet-stream",
+      "request": {
+        "$id": "wolfpack:control-api:http:putExtensionBlob:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "putExtensionBlob request",
+        "type": "object",
+        "properties": {
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "digest": {
+            "$ref": "#/$defs/ExtensionBlobDigest"
+          },
+          "session": {
+            "$ref": "#/$defs/ExtensionBlobSessionId"
+          },
+          "body": {
+            "$ref": "#/$defs/ExtensionBlobBytes"
+          }
+        },
+        "required": [
+          "extensionId",
+          "digest",
+          "session",
+          "body"
+        ],
+        "additionalProperties": false,
+        "description": "extensionId/digest are URL path fields, session is the sole query field, body is the raw octet-stream. New digest returns 201 created:true; existing digest returns 200 created:false. Mismatch/missing declaration: 400 INVALID_REQUEST; limit/quota: 413 QUOTA_EXCEEDED; disabled/safe mode: 409 DISABLED; dead session: 409 SCOPE_NOT_WRITABLE."
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:putExtensionBlob:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "putExtensionBlob response",
+        "$ref": "#/$defs/ExtensionBlobReceipt"
+      },
+      "errors": [
+        "400 ExtensionApiErrorEnvelope",
+        "404 ExtensionApiErrorEnvelope",
+        "409 ExtensionApiErrorEnvelope",
+        "413 ExtensionApiErrorEnvelope",
+        "503 ExtensionApiErrorEnvelope"
+      ]
+    },
+    "deleteExtensionBlob": {
+      "route": "DELETE /api/extensions/blobs/{extensionId}/{digest}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:deleteExtensionBlob:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "deleteExtensionBlob request",
+        "type": "object",
+        "properties": {
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "digest": {
+            "$ref": "#/$defs/ExtensionBlobDigest"
+          },
+          "session": {
+            "$ref": "#/$defs/ExtensionBlobSessionId"
+          }
+        },
+        "required": [
+          "extensionId",
+          "digest",
+          "session"
+        ],
+        "additionalProperties": false,
+        "description": "Same declaration/enabled/live-session authority as PUT; idempotent, 200 deleted:false when absent."
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:deleteExtensionBlob:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "deleteExtensionBlob response",
+        "type": "object",
+        "properties": {
+          "digest": {
+            "$ref": "#/$defs/ExtensionBlobDigest"
+          },
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "digest",
+          "deleted"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ExtensionApiErrorEnvelope",
+        "404 ExtensionApiErrorEnvelope",
+        "409 ExtensionApiErrorEnvelope",
+        "413 ExtensionApiErrorEnvelope",
         "503 ExtensionApiErrorEnvelope"
       ]
     },
@@ -4017,6 +4159,64 @@
       "type": "string",
       "format": "uuid"
     },
+    "ExtensionBlobDigest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "ExtensionBlobDeclaration": {
+      "type": "object",
+      "properties": {
+        "maxBlobBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        }
+      },
+      "required": [
+        "maxBlobBytes"
+      ],
+      "additionalProperties": false
+    },
+    "ExtensionBlobSessionId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "description": "Exactly one session query parameter: a live local broker UUID authorizes writes/deletes; blobs themselves are installation+extension scoped."
+    },
+    "ExtensionBlobBytes": {
+      "type": "string",
+      "contentMediaType": "application/octet-stream",
+      "description": "Raw unencoded bytes, not JSON or base64. Runtime bounds bytes to the installed maxBlobBytes declaration (hard ceiling 1048576); recomputes SHA-256 on PUT. Quota per installation+extension: 64 blobs / 16777216 bytes, no eviction."
+    },
+    "ExtensionBlobReceipt": {
+      "type": "object",
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/ExtensionBlobDigest"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "installationId": {
+          "$ref": "#/$defs/ExtensionInstallationId"
+        },
+        "extensionId": {
+          "$ref": "#/$defs/ExtensionId"
+        },
+        "created": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "digest",
+        "bytes",
+        "installationId",
+        "extensionId",
+        "created"
+      ],
+      "additionalProperties": false
+    },
     "ExtensionDocumentCatalog": {
       "type": "object",
       "properties": {
@@ -4097,6 +4297,16 @@
           "items": {
             "$ref": "#/$defs/ExtensionDocumentCatalog"
           }
+        },
+        "blobs": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExtensionBlobDeclaration"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [

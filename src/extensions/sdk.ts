@@ -12,7 +12,12 @@ export interface ExtensionViewContext {
   readonly signal: AbortSignal;
   readonly scope: Readonly<{ installationId: string; sessionId: string }>;
   readonly selection: Readonly<{ selectedSessionId: string | null }>;
+  /** Allowlisted CSS custom properties (including -- prefix), snapshotted at mount. */
   readonly theme: Readonly<Record<string, string>>;
+  /** Present only for packages declaring a blob channel; reads verify content, never cache. */
+  readonly blobs?: Readonly<{ read(digest: string, signal?: AbortSignal): Promise<Uint8Array> }>;
+  /** Replaces the selected terminal draft, never sends; throws on stale/mismatched scope. */
+  readonly terminal?: Readonly<{ compose(text: string): void }>;
   readonly storage: Readonly<{
     get(key: string): string | null;
     set(key: string, value: string): void;
