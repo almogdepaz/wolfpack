@@ -168,7 +168,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
   const cards = page.locator("#session-list .card");
   await expect(cards).toHaveCount(5);
   await expect.poll(() => cards.locator(".card-name").evaluateAll((names) =>
-    names.map((name) => name.firstChild?.textContent),
+    names.map((name) => name.querySelector(".card-name-text")?.textContent),
   )).toEqual([
     "wolfpack",
     "wolfpack-sub-agent",
@@ -176,6 +176,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
     "unrelated",
     "orphan-child",
   ]);
+  await expect(cards.locator(".harness-icon[data-harness=\"pi\"][aria-label=\"pi\"]")).toHaveCount(5);
   await expect(cards.nth(0)).toContainText("2 children");
   await expect(cards.nth(0)).toHaveClass(/delegation-parent-card/);
   await expect(cards.nth(1)).toHaveClass(/sub-session-card/);

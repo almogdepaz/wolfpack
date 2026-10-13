@@ -108,6 +108,7 @@ import {
   projectDelegationSessions,
   sessionIdentityId,
 } from "./delegation-sessions";
+import { harnessIconHtml } from "./harness-icon";
 import type {
   DelegationSessionLike,
   DelegationSessionRow,
@@ -1906,7 +1907,7 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
           <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
           <div class="dot ${ui.dot}" title="${ui.title}"></div>
           <div class="card-info">
-            <div class="card-name"><span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
+            <div class="card-name">${harnessIconHtml(s.identity?.agentKind)}<span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
             ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
             ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>

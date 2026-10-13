@@ -591,6 +591,28 @@ body.no-animations, body.no-animations * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.harness-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.harness-icon[data-harness="pi"]::before { content: "\03C0"; }
+.harness-icon[data-harness="claude"]::before { content: "\2731"; }
+.harness-icon[data-harness="codex"]::before { content: "\25C8"; }
+.harness-icon[data-harness="gemini"]::before { content: "\2726"; }
+.harness-icon[data-harness="cursor"]::before { content: "\25B8"; }
+.harness-icon[data-harness="shell"]::before { content: "\0024"; }
 .card-preview {
   font-family: var(--font-mono);
   font-size: 12px;
