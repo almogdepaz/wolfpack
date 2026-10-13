@@ -752,10 +752,15 @@ struct DrainEffects {
 /// the drainer reads from, so no other thread may set it while the drainer
 /// could be inside `read()`. A client thread flushes replies with an ordinary
 /// blocking write, which is its own backpressure anyway.
+///
+/// A full queue can also cut a reply mid-way. The program's parser is then
+/// inside an OSC, so the unwritten tail of that reply is re-queued first and
+/// goes out before any further client input; whole replies that did not fit
+/// are dropped.
 struct PtyInput {
     session_id: Uuid,
     writer: Mutex<Box<dyn Write + Send>>,
-    pending_replies: Mutex<Vec<u8>>,
+    pending_replies: Mutex<PendingReplies>,
     /// Dup of the PTY master (shares the writer's open file description);
     /// `None` only for test writers that cannot block.
     reply_fd: Option<OwnedFd>,
@@ -766,7 +771,7 @@ impl PtyInput {
         Self {
             session_id,
             writer: Mutex::new(writer),
-            pending_replies: Mutex::new(Vec::new()),
+            pending_replies: Mutex::new(PendingReplies::default()),
             reply_fd,
         }
     }
@@ -775,6 +780,9 @@ impl PtyInput {
     fn write_input(&self, data: &[u8]) -> io::Result<()> {
         let written = {
             let mut writer = self.writer.lock().expect("writer poisoned");
+            // A reply the drainer could only write part of must be completed
+            // before this input, or the program parses the input as OSC text.
+            self.flush_replies(&mut writer, ReplyWrite::Blocking);
             let written = writer.write_all(data);
             self.flush_replies(&mut writer, ReplyWrite::Blocking);
             written
@@ -789,11 +797,11 @@ impl PtyInput {
         }
         {
             let mut pending = self.pending_replies.lock().expect("pending replies poisoned");
-            if pending.len() + reply.len() > MAX_PENDING_REPLY_BYTES {
+            if pending.bytes() + reply.len() > MAX_PENDING_REPLY_BYTES {
                 tracing::debug!(session_id = %self.session_id, "too many pending program status query replies; dropped one");
                 return;
             }
-            pending.extend_from_slice(reply);
+            pending.whole.push(reply.to_vec());
         }
         self.flush_replies_if_idle(ReplyWrite::NonBlocking);
     }
@@ -815,27 +823,106 @@ impl PtyInput {
         if replies.is_empty() {
             return;
         }
+        let batch = replies.batch();
         let written = match (mode, &self.reply_fd) {
-            (ReplyWrite::NonBlocking, Some(fd)) => {
-                NonBlockingReply::enter(fd.as_fd()).and_then(|_restore| writer.write_all(&replies))
-            }
-            _ => writer.write_all(&replies),
+            (ReplyWrite::NonBlocking, Some(fd)) => match NonBlockingReply::enter(fd.as_fd()) {
+                Ok(_restore) => write_counting(writer, &batch),
+                Err(error) => Err((0, error)),
+            },
+            _ => write_counting(writer, &batch),
         };
         // Best effort, like the probe itself: a dropped or failed reply only
         // means the program sees the protocol as unsupported.
         match written {
             Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err((count, error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                self.requeue_cut_reply(&replies, count);
                 tracing::debug!(
                     session_id = %self.session_id,
                     "PTY input full; dropped program status query reply"
                 );
             }
-            Err(error) => {
+            Err((_, error)) => {
                 tracing::warn!(session_id = %self.session_id, %error, "failed to answer program status query");
             }
         }
     }
+
+    /// The first `count` bytes of `replies` reached the PTY. Whatever is left
+    /// of a reply the program has started reading (a previous tail, or a whole
+    /// reply cut mid-way) is queued to go out first, so the next flush
+    /// terminates the OSC the program is parsing. Whole unwritten replies are
+    /// dropped, and so are the newest whole pending replies if the tail would
+    /// otherwise exceed the bound: never part of one.
+    fn requeue_cut_reply(&self, replies: &PendingReplies, count: usize) {
+        let Some(tail) = replies.cut_tail(count) else {
+            return;
+        };
+        let mut pending = self.pending_replies.lock().expect("pending replies poisoned");
+        while !pending.whole.is_empty() && pending.bytes() + tail.len() > MAX_PENDING_REPLY_BYTES {
+            pending.whole.pop();
+            tracing::debug!(session_id = %self.session_id, "too many pending program status query replies; dropped one");
+        }
+        pending.tail = tail;
+    }
+}
+
+/// Query replies waiting for the PTY writer (see `PtyInput`).
+#[derive(Default)]
+struct PendingReplies {
+    /// Unwritten rest of a reply the PTY took only part of; goes out first.
+    tail: Vec<u8>,
+    /// Whole replies, oldest first.
+    whole: Vec<Vec<u8>>,
+}
+
+impl PendingReplies {
+    fn is_empty(&self) -> bool {
+        self.tail.is_empty() && self.whole.is_empty()
+    }
+
+    fn bytes(&self) -> usize {
+        self.tail.len() + self.whole.iter().map(Vec::len).sum::<usize>()
+    }
+
+    /// Everything in write order.
+    fn batch(&self) -> Vec<u8> {
+        let mut batch = self.tail.clone();
+        for reply in &self.whole {
+            batch.extend_from_slice(reply);
+        }
+        batch
+    }
+
+    /// What remains of the reply the program has started reading after
+    /// `count` bytes of `batch()` went out: the rest of a previous tail, or of
+    /// a whole reply cut mid-way. `None` when the cut falls on a boundary.
+    fn cut_tail(&self, count: usize) -> Option<Vec<u8>> {
+        let mut start = 0;
+        for (index, piece) in std::iter::once(&self.tail).chain(&self.whole).enumerate() {
+            let end = start + piece.len();
+            let started = (index == 0 && !piece.is_empty()) || count > start;
+            if started && count < end {
+                return Some(piece[count - start..].to_vec());
+            }
+            start = end;
+        }
+        None
+    }
+}
+
+/// `write_all` that reports how many bytes went out before an error.
+fn write_counting(writer: &mut dyn Write, data: &[u8]) -> Result<(), (usize, io::Error)> {
+    let mut count = 0;
+    while count < data.len() {
+        match writer.write(&data[count..]) {
+            Ok(0) => return Err((count, io::ErrorKind::WriteZero.into())),
+            Ok(n) => count += n,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err((count, error)),
+        }
+    }
+    Ok(())
 }
 
 /// Holds a session's latest root program status record for `info()` and
@@ -1368,6 +1455,17 @@ mod tests {
         captured: CapturedWrites,
         entered: std::sync::mpsc::Sender<()>,
         gate: Arc<(Mutex<bool>, Condvar)>,
+        /// Bytes the program's input queue still accepts; `None` is unlimited.
+        /// At zero a write fails with `WouldBlock`, like a full PTY queue.
+        budget: Arc<Mutex<Option<usize>>>,
+        /// Runs with the bytes of every write that passed the gate.
+        on_write: Option<Box<dyn FnMut(&[u8]) + Send>>,
+    }
+
+    impl GatedWrites {
+        fn new(captured: CapturedWrites, entered: std::sync::mpsc::Sender<()>, gate: Arc<(Mutex<bool>, Condvar)>) -> Self {
+            Self { captured, entered, gate, budget: Arc::new(Mutex::new(None)), on_write: None }
+        }
     }
 
     impl Write for GatedWrites {
@@ -1378,13 +1476,33 @@ mod tests {
             while !*open {
                 open = opened.wait(open).expect("gate");
             }
-            self.captured.write(buf)
+            drop(open);
+            let accepted = match *self.budget.lock().expect("budget") {
+                Some(0) => return Err(io::ErrorKind::WouldBlock.into()),
+                Some(ref mut budget) => {
+                    let accepted = buf.len().min(*budget);
+                    *budget -= accepted;
+                    accepted
+                }
+                None => buf.len(),
+            };
+            if let Some(on_write) = self.on_write.as_mut() {
+                on_write(&buf[..accepted]);
+            }
+            self.captured.write(&buf[..accepted])
         }
 
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
     }
+
+    fn open_gate(gate: &(Mutex<bool>, Condvar)) {
+        *gate.0.lock().expect("gate") = true;
+        gate.1.notify_all();
+    }
+
+    const QUERY_REPLY_BEL: &[u8] = b"\x1b]7501;?\x07";
 
     #[test]
     fn reply_sent_during_a_client_write_follows_it_without_waiting() {
@@ -1393,7 +1511,7 @@ mod tests {
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let input = Arc::new(PtyInput::new(
             Uuid::nil(),
-            Box::new(GatedWrites { captured: captured.clone(), entered: entered_tx, gate: Arc::clone(&gate) }),
+            Box::new(GatedWrites::new(captured.clone(), entered_tx, Arc::clone(&gate))),
             None,
         ));
         let client = Arc::clone(&input);
@@ -1405,14 +1523,145 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(100), "reply waited for the client write");
         assert!(captured.bytes().is_empty());
 
-        *gate.0.lock().expect("gate") = true;
-        gate.1.notify_all();
+        open_gate(&gate);
         typing.join().expect("client thread");
         assert_eq!(captured.bytes(), b"typed\x1b]7501;?\x07", "queued reply follows the client write");
 
         // With the writer free, a reply is written immediately.
         input.send_reply(b"\x1b]7501;?\x1b\\");
         assert_eq!(captured.bytes(), b"typed\x1b]7501;?\x07\x1b]7501;?\x1b\\");
+    }
+
+    #[test]
+    fn replies_beyond_the_pending_bound_are_dropped_whole() {
+        let captured = CapturedWrites::default();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let input = Arc::new(PtyInput::new(
+            Uuid::nil(),
+            Box::new(GatedWrites::new(captured.clone(), entered_tx, Arc::clone(&gate))),
+            None,
+        ));
+        let client = Arc::clone(&input);
+        let typing = thread::spawn(move || client.write_input(b"typed").expect("client write"));
+        entered_rx.recv_timeout(Duration::from_secs(2)).expect("client write in flight");
+
+        // The program floods queries while the client write holds the writer.
+        let fits = MAX_PENDING_REPLY_BYTES / QUERY_REPLY_BEL.len();
+        for _ in 0..fits + 5 {
+            input.send_reply(QUERY_REPLY_BEL);
+        }
+        open_gate(&gate);
+        typing.join().expect("client thread");
+
+        let mut expected = b"typed".to_vec();
+        for _ in 0..fits {
+            expected.extend_from_slice(QUERY_REPLY_BEL);
+        }
+        assert!(fits * QUERY_REPLY_BEL.len() <= MAX_PENDING_REPLY_BYTES);
+        assert_eq!(captured.bytes(), expected, "exactly the replies within the bound, each whole");
+        assert!(input.pending_replies.lock().expect("pending").is_empty(), "nothing left queued");
+    }
+
+    #[test]
+    fn partially_written_reply_is_completed_before_the_next_client_input() {
+        let captured = CapturedWrites::default();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let writes = GatedWrites::new(captured.clone(), entered_tx, Arc::clone(&gate));
+        let budget = Arc::clone(&writes.budget);
+        let input = Arc::new(PtyInput::new(Uuid::nil(), Box::new(writes), None));
+        let client = Arc::clone(&input);
+        let typing = thread::spawn(move || client.write_input(b"typed").expect("client write"));
+        entered_rx.recv_timeout(Duration::from_secs(2)).expect("client write in flight");
+
+        // Two replies queue behind the client write. The program's input queue
+        // then takes the client's 5 bytes and only 5 bytes of the reply batch.
+        input.send_reply(QUERY_REPLY_BEL);
+        input.send_reply(b"\x1b]7501;?\x1b\\");
+        *budget.lock().expect("budget") = Some(b"typed".len() + 5);
+        open_gate(&gate);
+        typing.join().expect("client thread");
+        assert_eq!(captured.bytes(), b"typed\x1b]750", "the queue accepted a partial first reply");
+
+        // The program reads again. Its parser is inside an OSC, so the cut
+        // reply's tail must land before any further client input; the whole
+        // second reply did not fit and is dropped, as the protocol allows.
+        *budget.lock().expect("budget") = None;
+        input.write_input(b"more").expect("client write");
+        assert_eq!(captured.bytes(), b"typed\x1b]7501;?\x07more");
+        assert!(input.pending_replies.lock().expect("pending").is_empty());
+    }
+
+    #[test]
+    fn requeued_tail_evicts_whole_replies_to_keep_the_bound() {
+        let captured = CapturedWrites::default();
+        let input = PtyInput::new(Uuid::nil(), Box::new(captured.clone()), None);
+        // Hold the writer like an in-flight client write so replies queue.
+        let writer = input.writer.lock().expect("writer");
+        let fits = MAX_PENDING_REPLY_BYTES / QUERY_REPLY_BEL.len();
+        for _ in 0..fits {
+            input.send_reply(QUERY_REPLY_BEL);
+        }
+        assert_eq!(input.pending_replies.lock().expect("pending").whole.len(), fits);
+
+        // A batch holding one reply was cut after its ESC: the 8-byte tail
+        // does not fit beside the queue, so one whole reply makes room.
+        let mut cut = PendingReplies::default();
+        cut.whole.push(QUERY_REPLY_BEL.to_vec());
+        input.requeue_cut_reply(&cut, 1);
+        {
+            let pending = input.pending_replies.lock().expect("pending");
+            assert_eq!(pending.tail, QUERY_REPLY_BEL[1..].to_vec());
+            assert_eq!(pending.whole.len(), fits - 1, "one whole reply dropped, never half");
+            assert!(pending.bytes() <= MAX_PENDING_REPLY_BYTES);
+        }
+
+        drop(writer);
+        input.write_input(b"more").expect("client write");
+        let mut expected = QUERY_REPLY_BEL[1..].to_vec();
+        for _ in 0..fits - 1 {
+            expected.extend_from_slice(QUERY_REPLY_BEL);
+        }
+        expected.extend_from_slice(b"more");
+        assert_eq!(captured.bytes(), expected, "tail first, then whole replies, then the client input");
+    }
+
+    #[test]
+    fn reply_queued_after_the_in_lock_flush_is_written_right_after_unlock() {
+        let captured = CapturedWrites::default();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let mut writes = GatedWrites::new(captured.clone(), entered_tx, Arc::clone(&gate));
+        // Reached once the client's in-lock flush writes the first reply: the
+        // pending queue has been taken but the client still holds the writer.
+        // A reply arriving now can only be flushed by the post-unlock re-check.
+        let late_sender: Arc<Mutex<Option<std::sync::Weak<PtyInput>>>> = Arc::new(Mutex::new(None));
+        let hook_sender = Arc::clone(&late_sender);
+        writes.on_write = Some(Box::new(move |buf: &[u8]| {
+            if !buf.starts_with(b"\x1b") {
+                return;
+            }
+            if let Some(input) = hook_sender.lock().expect("late sender").take().and_then(|weak| weak.upgrade()) {
+                input.send_reply(b"\x1b]7501;?\x1b\\");
+            }
+        }));
+        let input = Arc::new(PtyInput::new(Uuid::nil(), Box::new(writes), None));
+        *late_sender.lock().expect("late sender") = Some(Arc::downgrade(&input));
+
+        let client = Arc::clone(&input);
+        let typing = thread::spawn(move || client.write_input(b"typed").expect("client write"));
+        entered_rx.recv_timeout(Duration::from_secs(2)).expect("client write in flight");
+        input.send_reply(QUERY_REPLY_BEL);
+        open_gate(&gate);
+        typing.join().expect("client thread");
+
+        assert_eq!(
+            captured.bytes(),
+            b"typed\x1b]7501;?\x07\x1b]7501;?\x1b\\",
+            "reply queued between the in-lock flush and unlock was stranded"
+        );
+        assert!(input.pending_replies.lock().expect("pending").is_empty());
     }
 
     struct ChunkReader {
@@ -2524,19 +2773,24 @@ mod tests {
         // The program stops reading stdin, a client write fills the input
         // queue and blocks holding the writer, then the program queries. The
         // drainer must keep draining output instead of waiting for the writer.
-        let sess = Arc::new(
-            spawn_session(opts(vec![
-                "sh",
-                "-c",
-                "stty raw -echo; sleep 1; printf '\\033]7501;?\\007'; sleep 0.5; echo AFTER-QUERY; sleep 5",
-            ]))
-            .expect("spawn"),
+        // Once told to (the go file), the program reads again: it consumes
+        // the client's bytes and the queued reply, and prints the reply with
+        // its ESC and BEL replaced so the check cannot match the query itself.
+        const CLIENT_BYTES: usize = 1 << 20;
+        let go = std::env::temp_dir().join(format!("wolfpack-blocked-stdin-{}", Uuid::new_v4()));
+        let program = format!(
+            "stty raw -echo; sleep 1; printf '\\033]7501;?\\007'; sleep 0.5; echo AFTER-QUERY; \
+             while [ ! -e '{}' ]; do sleep 0.05; done; \
+             head -c {} | tr -d x | tr '\\033\\007' 'E~'; echo; echo REPLY-DONE; sleep 5",
+            go.display(),
+            CLIENT_BYTES + QUERY_REPLY_BEL.len()
         );
+        let sess = Arc::new(spawn_session(opts(vec!["sh", "-c", &program])).expect("spawn"));
         // Raw mode first: canonical mode discards overflow instead of blocking.
         thread::sleep(Duration::from_millis(400));
         let writer = Arc::clone(&sess);
         let blocked_write = thread::spawn(move || {
-            let _ = writer.write_stdin(&vec![b'x'; 1 << 20]);
+            let _ = writer.write_stdin(&vec![b'x'; CLIENT_BYTES]);
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let drained = loop {
@@ -2550,8 +2804,26 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         };
         assert!(!blocked_write.is_finished(), "stdin write was expected to block");
-        let _ = sess.kill(libc::SIGKILL);
         assert!(drained, "drainer stalled behind the blocked stdin write");
+
+        // The program drains stdin: the client write completes and the reply
+        // it held back follows it into the PTY.
+        std::fs::write(&go, b"").expect("go file");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let replied = loop {
+            let snap = sess.snapshot_terminal(None, None).expect("snapshot");
+            if screen_contains(&snap, "REPLY-DONE") {
+                break screen_contains(&snap, "E]7501;?~");
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            thread::sleep(Duration::from_millis(50));
+        };
+        let _ = sess.kill(libc::SIGKILL);
+        let _ = std::fs::remove_file(&go);
+        blocked_write.join().expect("client write thread");
+        assert!(replied, "queued query reply never reached the program");
         let _ = sess.wait_for_exit(Duration::from_secs(5));
     }
 

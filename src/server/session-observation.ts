@@ -94,8 +94,16 @@ interface RuntimeRenderedFingerprint {
   readonly changed: boolean;
 }
 const runtimeRenderedFingerprints = new Map<string, RuntimeRenderedFingerprint>();
+/**
+ * A full pass samples rendered output: the fallback output/idle state is
+ * "changed since the previous full pass", so only the regular cadence may run
+ * one. A program-status pass re-reads lifecycle and OSC 7501 state and reuses
+ * every rendered/activity fingerprint untouched.
+ */
+type ObservationPass = "full" | "program-status";
 let sessionNotificationObservationTimer: ReturnType<typeof setInterval> | null = null;
 let sessionNotificationObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
+let sessionNotificationObservationPass: ObservationPass = "full";
 let dashboardObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
 let dashboardObservationCache: {
   readonly expiresAt: number;
@@ -424,6 +432,7 @@ async function observeSessionFact(
   activeSessionKeys: Set<string>,
   unreliableSessionKeys: Set<string>,
   authority: ObservationAuthority,
+  pass: ObservationPass,
 ): Promise<ObservedSessionSummary | undefined> {
   if (!ownsObservationAuthority(authority)) return undefined;
   const name = fact.name;
@@ -440,7 +449,7 @@ async function observeSessionFact(
   const observedAtMs = Date.now();
   const observedAt = new Date(observedAtMs).toISOString();
   const previousFingerprint = fingerprints.get(sessionKey);
-  const shouldSampleRenderedState = brokerState === "alive" && (
+  const shouldSampleRenderedState = pass === "full" && brokerState === "alive" && (
     previousFingerprint === undefined
     || outputSequence === undefined
     || previousFingerprint.outputSequence !== outputSequence
@@ -455,13 +464,19 @@ async function observeSessionFact(
     && previousFingerprint?.rendered !== undefined
     && currentRendered !== previousFingerprint.rendered;
   const previousRuntime = runtimeRenderedFingerprints.get(sessionKey);
-  const runtimeOutputChanged = shouldSampleRenderedState
-    && currentRendered !== undefined
-    && previousRuntime !== undefined
-    && (sample?.flight === previousRuntime.flight
-      ? previousRuntime.changed
-      : currentRendered !== previousRuntime.rendered);
-  if (brokerState !== "alive" || (shouldSampleRenderedState && currentRendered === undefined)) {
+  // A program-status pass carries the last full pass's output verdict: it is
+  // not a new measurement, so the session's state cannot move by it.
+  const runtimeOutputChanged = pass !== "full"
+    ? previousRuntime?.changed === true
+    : shouldSampleRenderedState
+      && currentRendered !== undefined
+      && previousRuntime !== undefined
+      && (sample?.flight === previousRuntime.flight
+        ? previousRuntime.changed
+        : currentRendered !== previousRuntime.rendered);
+  if (pass !== "full") {
+    // Fingerprints belong to the cadence; leave them to the next full pass.
+  } else if (brokerState !== "alive" || (shouldSampleRenderedState && currentRendered === undefined)) {
     // A liveness or capture gap breaks the observed continuity. The next
     // successful rendered sample is a baseline, not a fabricated transition.
     fingerprints.delete(sessionKey);
@@ -581,6 +596,7 @@ async function collectSessionObservation(
   fingerprints: Map<string, ActivityFingerprint>,
   policyEpoch = quietAlertPolicyEpoch(),
   observationOwnership = beginObservationOwnership(),
+  pass: ObservationPass = "full",
 ): Promise<SessionObservation> {
   const backend = getBackend();
   const sessionFacts = await listAvailableSessionFacts(backend);
@@ -601,12 +617,13 @@ async function collectSessionObservation(
     activeSessionKeys,
     unreliableSessionKeys,
     authority,
+    pass,
   )));
   if (!ownsObservationAuthority(authority)) return staleSessionProjection(sessionFacts);
 
   const sessions = observedSessions.filter((session): session is ObservedSessionSummary => session !== undefined);
   sessions.sort((a, b) => a.name.localeCompare(b.name));
-  pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store, authority);
+  if (pass === "full") pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store, authority);
   return { sessions, unreliableSessionKeys, authoritative: ownsObservationAuthority(authority) };
 }
 
@@ -637,14 +654,22 @@ export async function observeDashboardSessions(): Promise<readonly ObservedSessi
   return dashboardObservationPromise;
 }
 
-async function runSessionNotificationObservation(): Promise<readonly ObservedSessionSummary[]> {
+async function runSessionNotificationObservation(pass: ObservationPass = "full"): Promise<readonly ObservedSessionSummary[]> {
   if (getSubscriptionCount() === 0 && eventSubscriberCount() === 0) return [];
-  if (sessionNotificationObservationPromise) return sessionNotificationObservationPromise;
+  if (sessionNotificationObservationPromise) {
+    if (pass !== "full" || sessionNotificationObservationPass === "full") return sessionNotificationObservationPromise;
+    // A program-status pass does not measure output: a full pass asked for
+    // while one is in flight runs after it instead of adopting its result.
+    return sessionNotificationObservationPromise
+      .catch(() => undefined)
+      .then(() => runSessionNotificationObservation(pass));
+  }
+  sessionNotificationObservationPass = pass;
   sessionNotificationObservationPromise = (async () => {
     const policyEpoch = quietAlertPolicyEpoch();
     const observationOwnership = beginObservationOwnership();
     const authority = { policyEpoch, id: observationOwnership } as const;
-    const observation = await collectSessionObservation(notificationFingerprints, policyEpoch, observationOwnership);
+    const observation = await collectSessionObservation(notificationFingerprints, policyEpoch, observationOwnership, pass);
     if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
     if (!observation.authoritative || !ownsObservationAuthority(authority)) {
       return staleSessionProjection(observation.sessions).sessions;
@@ -673,24 +698,32 @@ function scheduleSessionNotificationObservation(): void {
 }
 
 /**
- * A broker program status change starts an observation pass after this delay
- * instead of waiting up to the 5s poll. Signals inside the window (a burst, or
- * several sessions at once) share one pass; the broker already rate-limits
- * each session's events, so this window only batches across sessions.
+ * A broker program status change starts a program-status pass after this
+ * delay instead of waiting up to the 5s poll. Signals inside the window (a
+ * burst, or several sessions at once) share one pass; the broker already
+ * rate-limits each session's events, so this window only batches across
+ * sessions. The refresh lives with the observer: nothing is scheduled while it
+ * is stopped, and a refresh queued behind an in-flight pass is dropped when
+ * the observer stops before that pass ends.
  */
 const PROGRAM_STATUS_REFRESH_DELAY_MS = 50;
 let programStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function requestProgramStatusRefresh(): void {
   dashboardObservationCache = null;
-  if (programStatusRefreshTimer) return;
+  if (sessionNotificationObservationTimer === null || programStatusRefreshTimer) return;
   programStatusRefreshTimer = setTimeout(() => {
     programStatusRefreshTimer = null;
     // A pass already in flight may have listed sessions before the change;
     // run a fresh one after it rather than joining it.
     void Promise.resolve(sessionNotificationObservationPromise)
       .catch(() => undefined)
-      .then(scheduleSessionNotificationObservation);
+      .then(() => {
+        if (sessionNotificationObservationTimer === null) return;
+        runSessionNotificationObservation("program-status").catch((error: unknown) => {
+          log.warn("program status observation failed", { error: errMsg(error) });
+        });
+      });
   }, PROGRAM_STATUS_REFRESH_DELAY_MS);
 }
 

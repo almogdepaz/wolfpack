@@ -10,7 +10,8 @@
 //! * process exit and a new shell prompt drop `working`, `blocked` and
 //!   `idle`; `done` and `error` survive until a later report/clear;
 //! * at most [`MAX_PROGRAM_STATUS_RECORDS`]; a new record over the cap evicts
-//!   the record updated longest ago.
+//!   the record updated longest ago, except the root (`""`): it is the state
+//!   consumers show, and a program's own children must not clear it.
 //!
 //! Text is untrusted program output. libghostty already rejects control
 //! characters; records additionally drop invisible formatting characters
@@ -146,6 +147,7 @@ impl ProgramStatusRecords {
         let oldest = self
             .entries
             .iter()
+            .filter(|(key, _)| !key.is_empty())
             .min_by_key(|(_, entry)| entry.touched)
             .map(|(key, _)| key.clone());
         if let Some(key) = oldest {
@@ -329,6 +331,21 @@ mod tests {
         assert!(kept.contains(&"r0".to_string()));
         assert!(!kept.contains(&"r1".to_string()));
         assert!(kept.contains(&"new".to_string()));
+    }
+
+    #[test]
+    fn cap_never_evicts_the_root_through_its_own_children() {
+        let mut records = ProgramStatusRecords::default();
+        assert!(records.apply(&set("", ProgramStatusState::Working), 1));
+        // Children only touch their own ids; the root stays the oldest update.
+        for n in 0..300 {
+            records.apply(&set(&format!("test/{n}"), ProgramStatusState::Working), 2);
+        }
+        assert_eq!(records.len(), MAX_PROGRAM_STATUS_RECORDS);
+        assert_eq!(records.root().map(|root| root.state), Some(ProgramStatusState::Working));
+        let kept = ids(&records);
+        assert!(!kept.contains(&"test/0".to_string()), "oldest child was not evicted");
+        assert!(kept.contains(&"test/299".to_string()));
     }
 
     #[test]

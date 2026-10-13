@@ -422,13 +422,16 @@ per session, through libghostty-vt:
   never blocks the drainer: while an `input_binary` write is in progress the
   reply is queued and written right after it, and when the program has left
   its input queue full (it is not reading stdin) the reply is dropped, as the
-  protocol allows.
+  protocol allows. Replies are dropped whole: the unwritten rest of a reply
+  cut by a full queue is kept and written before any further input, so the
+  program never reads half an OSC.
 - **Records.** Validated reports update a per-session record set: a report
   replaces the record for its id; `state=clear` removes the id and its
   descendants (`a` clears `a/b`; an empty id clears all, as does RIS);
   process exit and an OSC 133 primary prompt start drop `working`, `blocked`
   and `idle` records while `done` and `error` survive; at most 256 records,
-  evicting the least recently updated.
+  evicting the least recently updated child (the root record is never
+  evicted).
 - **Byte fidelity.** OSC 7501 bytes are not stripped from `output_binary`,
   replay, or snapshots.
 - **Untrusted text.** `app`, `title` and `message` come from the program.
