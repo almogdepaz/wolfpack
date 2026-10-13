@@ -516,6 +516,50 @@
         "503 ExtensionPeerErrorEnvelope"
       ]
     },
+    "readSelectedPeerExtensionBlob": {
+      "route": "GET /api/extensions/peer/{machine}/blobs/{extensionId}/{digest}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionBlob:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionBlob request",
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/SelectedExtensionMachine"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "digest": {
+            "$ref": "#/$defs/ExtensionBlobDigest"
+          }
+        },
+        "required": [
+          "machine",
+          "extensionId",
+          "digest"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionBlob:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionBlob response",
+        "type": "string",
+        "contentMediaType": "application/octet-stream",
+        "description": "Raw blob bytes re-verified against the requested digest; Content-Type: application/octet-stream, Cache-Control: no-store, X-Wolfpack-Blob-Digest. Bounded by the peer's declared maxBlobBytes. Undeclared channel: 403; missing blob: 404."
+      },
+      "errors": [
+        "400 ExtensionPeerErrorEnvelope",
+        "401 ErrorEnvelope|ExtensionPeerErrorEnvelope",
+        "403 ExtensionPeerErrorEnvelope",
+        "404 ExtensionPeerErrorEnvelope",
+        "409 ExtensionPeerErrorEnvelope",
+        "503 ExtensionPeerErrorEnvelope"
+      ]
+    },
     "readSelectedPeerExtensionDocument": {
       "route": "GET /api/extensions/peer/{machine}/documents/{extensionId}/{documentId}",
       "stable": true,

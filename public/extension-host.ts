@@ -399,8 +399,7 @@ export class ExtensionHost {
       return parseProjectGitStatus(value.status);
     } });
     const current = (active = signal) => this.scopeIsCurrent(scope, active) && this.owners.get(viewId)?.extension === owner;
-    // The selected-machine proxy forwards catalog/asset/document/project reads only, so blob reads stay a local-host capability.
-    const blobs = owner?.blobs && !scope.machine ? Object.freeze({ read: async (digest: string, requestSignal?: AbortSignal): Promise<Uint8Array> => {
+    const blobs = owner?.blobs ? Object.freeze({ read: async (digest: string, requestSignal?: AbortSignal): Promise<Uint8Array> => {
       if (typeof digest !== "string" || !SHA256.test(digest)) throw new Error("invalid blob digest");
       const active = requestSignal ? AbortSignal.any([signal, requestSignal]) : signal;
       if (!current(active)) throw new Error("stale extension scope");

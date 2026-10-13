@@ -63,6 +63,14 @@ describe("selected host extension transport", () => {
     const oversized = new SelectedHostExtensionTransport({ resolvePeer: () => readyPeer, authFetch: async () => new Response(new ReadableStream({ start(stream) { stream.enqueue(new Uint8Array(256 * 1024 + 1)); stream.close(); } }), { headers: { "Content-Type": "application/json" } }) });
     await expect(oversized.request({ sessionId: session, machine }, "/api/extensions", {})).rejects.toThrow();
   });
+  test("bounds blob bodies by the blob limit rather than the catalog limit", async () => {
+    browserGlobals();
+    const blob = `/api/extensions/blobs/notes/${"a".repeat(64)}`;
+    const serve = (size: number) => new SelectedHostExtensionTransport({ resolvePeer: () => readyPeer, authFetch: async () => new Response(new ReadableStream({ start(stream) { stream.enqueue(new Uint8Array(size)); stream.close(); } }), { headers: { "Content-Type": "application/octet-stream" } }) });
+    const accepted = await serve(1024 * 1024).request({ sessionId: session, machine }, blob, {});
+    expect(accepted.status).toBe(200);
+    await expect(serve(1024 * 1024 + 1).request({ sessionId: session, machine }, blob, {})).rejects.toThrow("exceeds limit");
+  });
   test("bounds typed peer-auth error bodies and their complete acquisition deadline", async () => {
     browserGlobals();
     let stream!: ReadableStreamDefaultController<Uint8Array>, cancellations = 0;
@@ -82,6 +90,8 @@ describe("selected host extension transport", () => {
     expect(extensionProxySuffix("/api/extensions")).toBe("catalog");
     expect(extensionProxySuffix(asset)).toBe(asset.slice("/api/extensions/".length));
     expect(extensionProxySuffix(`/api/extensions/documents/notes/context?session=${session}`)).toBe(`documents/notes/context?session=${session}`);
+    expect(extensionProxySuffix(`/api/extensions/blobs/notes/${"a".repeat(64)}`)).toBe(`blobs/notes/${"a".repeat(64)}`);
+    for (const path of [`/api/extensions/blobs/notes/${"a".repeat(64)}?session=${session}`, `/api/extensions/blobs/notes/${"A".repeat(64)}`, `/api/extensions/blobs/notes/${"a".repeat(63)}`, `/api/extensions/blobs/notes/${"a".repeat(64)}/`, `/api/extensions/blobs/${"a".repeat(64)}`]) expect(() => extensionProxySuffix(path)).toThrow();
     for (const path of [asset.replace("dist/ui", "dist//ui"), asset.replace("dist/ui", "dist/../ui"), asset.replace("dist/ui", "dist/%2e%2e/ui"), asset + "?token=secret", "https://evil.test/api/extensions", "/api/extensions/", "/api/extensions/documents/notes/context?session=" + session + "&session=" + session, "/api/extensions/project/git-status/notes?session=" + session + "&path=/tmp"]) {
       expect(() => extensionProxySuffix(path)).toThrow();
     }

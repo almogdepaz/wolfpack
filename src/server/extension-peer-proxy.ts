@@ -39,6 +39,12 @@ function invalidResponse(): never { throw new ProxyFailure(EXTENSION_PEER_ERROR.
 function cancelBody(response: Response): void { if (response.body && !response.body.locked) void response.body.cancel().catch(() => undefined); }
 function parseJson(bytes: Uint8Array): unknown { try { return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown; } catch { return invalidResponse(); } }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
+/** Accepted upstream media types by canonical read path; the suffix parser already rejected everything else. */
+function expectedMimes(path: string): readonly string[] {
+  if (path.startsWith("/api/extensions/assets/")) return ["text/javascript", "application/javascript"];
+  if (path.startsWith("/api/extensions/blobs/")) return ["application/octet-stream"];
+  return ["application/json"];
+}
 
 /** One total acquisition budget, shared by topology, both handshakes, policy and response bodies. */
 class RequestBudget {
@@ -96,12 +102,12 @@ function requireSuccess(status: number): void {
 }
 function authorize(catalog: ExtensionCatalogEnvelope, read: Exclude<ExtensionPeerRead, { readonly kind: "catalog" }>): ExtensionCatalogInstallation {
   const item = catalog.installations.find(value => value.extensionId === read.extensionId);
-  if (catalog.safeMode || !item?.enabled || (read.kind === "asset" && item.ui?.url !== read.path) || (read.kind === "document" && !item.documents.some(value => value.id === read.documentId))) {
+  if (catalog.safeMode || !item?.enabled || (read.kind === "asset" && item.ui?.url !== read.path) || (read.kind === "blob" && !item.blobs) || (read.kind === "document" && !item.documents.some(value => value.id === read.documentId))) {
     throw new ProxyFailure(EXTENSION_PEER_ERROR.FORBIDDEN, 403, "selected peer extension read is not enabled or declared");
   }
   return item;
 }
-function ownedData(bytes: Uint8Array, read: Exclude<ExtensionPeerRead, { readonly kind: "catalog" | "asset" }>, installationId: string): unknown {
+function ownedData(bytes: Uint8Array, read: Exclude<ExtensionPeerRead, { readonly kind: "catalog" | "asset" | "blob" }>, installationId: string): unknown {
   const value = parseJson(bytes);
   if (!record(value) || value.installationId !== installationId || value.scopeSessionId !== read.sessionId || value.extensionId !== read.extensionId) return invalidResponse();
   if (read.kind === "project") {
@@ -130,7 +136,7 @@ export class ExtensionPeerProxy {
   }
   private async readRemote(origin: string, path: string, maximum: number, budget: RequestBudget, authorization?: string): Promise<Uint8Array> {
     budget.check();
-    const headers = new Headers({ Accept: path.includes("/assets/") ? "text/javascript" : "application/json" });
+    const headers = new Headers({ Accept: expectedMimes(path)[0]! });
     if (authorization) headers.set("Authorization", authorization);
     const response = await budget.wait((this.options.fetchImpl ?? fetch)(`${origin}${path}`, { method: "GET", headers, signal: budget.controller.signal, redirect: "error", cache: "no-store", credentials: "omit" }).then(value => { if (budget.controller.signal.aborted) cancelBody(value); return value; }));
     if (response.redirected || (response.status >= 300 && response.status < 400)) { cancelBody(response); return invalidResponse(); }
@@ -138,7 +144,7 @@ export class ExtensionPeerProxy {
     if (response.status === 429) throw new PeerRateLimit(retryDelay(response.headers));
     requireSuccess(response.status);
     const mime = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-    if (path.includes("/assets/") ? mime !== "text/javascript" && mime !== "application/javascript" : mime !== "application/json") return invalidResponse();
+    if (!mime || !expectedMimes(path).includes(mime)) return invalidResponse();
     return bytes;
   }
   private async verify(nodeId: string, installationId: string, budget: RequestBudget, expectedOrigin?: string): Promise<string> {
@@ -168,13 +174,18 @@ export class ExtensionPeerProxy {
     const read = target.read;
     if (read.kind === "catalog") { await this.confirm(target, origin, budget); json(res, catalog); return; }
     const item = authorize(catalog, read);
-    const bytes = await this.readRemote(origin, read.path, read.maxBytes, budget, authorization);
+    const bytes = await this.readRemote(origin, read.path, read.kind === "blob" ? Math.min(read.maxBytes, item.blobs!.maxBlobBytes) : read.maxBytes, budget, authorization);
     const current = authorize(await this.catalog(origin, target.installationId, authorization, budget), read);
-    if (current.package.digest !== item.package.digest || current.ui?.digest !== item.ui?.digest) throw new ProxyFailure(EXTENSION_PEER_ERROR.FORBIDDEN, 409, "selected extension inventory changed");
+    if (current.package.digest !== item.package.digest || current.ui?.digest !== item.ui?.digest || current.blobs?.maxBlobBytes !== item.blobs?.maxBlobBytes) throw new ProxyFailure(EXTENSION_PEER_ERROR.FORBIDDEN, 409, "selected extension inventory changed");
     await this.confirm(target, origin, budget);
     if (read.kind === "asset") {
       if (!item.ui || createHash("sha256").update(bytes).digest("hex") !== item.ui.digest) return invalidResponse();
       res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "X-Wolfpack-Extension-Digest": item.ui.digest }); res.end(bytes); return;
+    }
+    if (read.kind === "blob") {
+      // Content-addressed: the requested digest is the only acceptable identity for the bytes.
+      if (createHash("sha256").update(bytes).digest("hex") !== read.digest) return invalidResponse();
+      res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": bytes.byteLength, "X-Wolfpack-Blob-Digest": read.digest }); res.end(bytes); return;
     }
     json(res, ownedData(bytes, read, target.installationId));
   }

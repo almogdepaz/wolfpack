@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { createSelectedHostFixture, SELECTED_HOST_SESSION } from "../fixtures/selected-host-extensions.ts";
 import { buildControlApiSchema } from "../../src/control-api/schema.ts";
 import { isJsonObject, validateControlApiSchemaValue } from "../control-api-schema-validator.ts";
@@ -42,6 +43,7 @@ describe("authenticated installed selected-peer extension proxy", () => {
       ["readSelectedPeerExtensionAsset", item.ui!.url.slice("/api/extensions/".length)],
       ["readSelectedPeerExtensionDocument", `documents/notes/context?session=${SELECTED_HOST_SESSION}`],
       ["readSelectedPeerExtensionProject", `project/git-status/notes?session=${SELECTED_HOST_SESSION}`],
+      ["readSelectedPeerExtensionBlob", `blobs/notes/${peer.blob!.digest}`],
     ] as const;
     for (const [operationId, suffix] of capabilities) {
       const operation = schema.http[operationId];
@@ -76,6 +78,46 @@ describe("authenticated installed selected-peer extension proxy", () => {
       expect(doc.status).toBe(200); expect(await doc.json()).toMatchObject({ installationId: peer.runtime.installationId, scopeSessionId: SELECTED_HOST_SESSION, extensionId: "notes", documentId: "context", document: `document ${peer.key}` });
       const git = await fetch(route(index, `project/git-status/notes?session=${SELECTED_HOST_SESSION}`), { headers: headers(index) });
       expect(git.status).toBe(200); expect(await git.json()).toMatchObject({ installationId: peer.runtime.installationId, scopeSessionId: SELECTED_HOST_SESSION, status: { state: "ready", branch: `branch-${peer.key}`, untracked: [{ path: `only-${peer.key}.txt` }] } });
+    }
+  });
+  test("reads declared peer blobs as verified octet-streams and refuses undeclared, missing, corrupt or mistyped ones", async () => {
+    const peer = fixture.peers[0]!, blob = peer.blob!;
+    const ok = await fetch(route(0, `blobs/notes/${blob.digest}`), { headers: headers(0) });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("content-type")).toBe("application/octet-stream");
+    expect(ok.headers.get("cache-control")).toBe("no-store");
+    expect(ok.headers.get("x-wolfpack-blob-digest")).toBe(blob.digest);
+    expect(Buffer.from(await ok.arrayBuffer()).equals(blob.bytes)).toBe(true);
+    const undeclared = await fetch(route(1, `blobs/notes/${blob.digest}`), { headers: headers(1) });
+    expect(undeclared.status).toBe(403); expect(await undeclared.json()).toMatchObject({ error: { code: "PEER_FORBIDDEN" } });
+    expect(fixture.peers[1]!.trace.some(value => value.path.includes("/blobs/"))).toBe(false);
+    const missing = await fetch(route(0, `blobs/notes/${"f".repeat(64)}`), { headers: headers(0) });
+    expect(missing.status).toBe(404); expect(await missing.json()).toMatchObject({ error: { code: "PEER_FORBIDDEN" } });
+    const forged: Array<[string, Uint8Array | string]> = [["application/octet-stream", new TextEncoder().encode("corrupt")], ["application/json", JSON.stringify([...blob.bytes])]];
+    for (const [type, body] of forged) {
+      peer.handleRequest = (req, res, url) => {
+        if (!url.pathname.startsWith("/api/extensions/blobs/")) return false;
+        res.writeHead(200, { "Content-Type": type }); res.end(body); return true;
+      };
+      try {
+        const response = await fetch(route(0, `blobs/notes/${blob.digest}`), { headers: headers(0) });
+        expect(response.status).toBe(503); expect(await response.json()).toMatchObject({ error: { code: "PEER_RESPONSE_INVALID" } });
+      } finally { peer.handleRequest = undefined; }
+    }
+    // The declared maxBlobBytes (4096 for peer a) caps the read even when the bytes would hash correctly.
+    const oversize = new Uint8Array(4097).fill(7), oversizeDigest = createHash("sha256").update(oversize).digest("hex");
+    for (const declareLength of [true, false]) {
+      peer.handleRequest = (req, res, url) => {
+        if (!url.pathname.startsWith("/api/extensions/blobs/")) return false;
+        res.writeHead(200, { "Content-Type": "application/octet-stream", ...(declareLength ? { "Content-Length": oversize.byteLength } : {}) }); res.end(oversize); return true;
+      };
+      try {
+        const response = await fetch(route(0, `blobs/notes/${oversizeDigest}`), { headers: headers(0) });
+        expect(response.status).toBe(503); expect(await response.json()).toMatchObject({ error: { code: "PEER_RESPONSE_INVALID" } });
+      } finally { peer.handleRequest = undefined; }
+    }
+    for (const suffix of [`blobs/notes/${blob.digest}?session=${SELECTED_HOST_SESSION}`, `blobs/notes/${blob.digest.toUpperCase()}`, `blobs/notes/${blob.digest.slice(1)}`]) {
+      expect((await fetch(route(0, suffix), { headers: headers(0) })).status).toBe(400);
     }
   });
   test("rejects absent/wrong peer auth without exposing private upstream text, cookies or headers", async () => {
