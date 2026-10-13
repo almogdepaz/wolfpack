@@ -6,6 +6,7 @@ export interface DelegationParentReference {
 export interface DelegationSessionIdentity {
   readonly wolfpackSessionId?: string;
   readonly wolfpackSessionName?: string;
+  readonly agentKind?: string;
   readonly parentSession?: unknown;
 }
 

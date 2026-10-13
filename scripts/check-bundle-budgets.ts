@@ -12,7 +12,8 @@ const limits: ReadonlyArray<readonly [string, number, number]> = [
   ["public/ghostty-web.bundle.js", 700_000, 210_000],
   // Phase-1 shell controls/full-view recovery: base 96978/17005; measured 100603/17595.
   // Selected-machine extensions + current main: approved raw cap 103000; measured 102177.
-  ["public/styles.css", 103_000, 20_000],
+  // Harness icon chips + current main: approved raw cap 104000; measured 103477.
+  ["public/styles.css", 104_000, 20_000],
 ];
 let failed = false;
 for (const [file, rawLimit, gzipLimit] of limits) {

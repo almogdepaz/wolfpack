@@ -457,7 +457,7 @@ test("mobile card swipe opens the selected terminal without exposing fallback in
       accessoryDisplay: accessory ? getComputedStyle(accessory).display : "missing",
       accessoryVisible: accessory?.classList.contains("visible") ?? false,
     };
-    const expectedSession = card.querySelector(".card-name")?.firstChild?.textContent ?? "";
+    const expectedSession = card.querySelector(".card-name-text")?.textContent ?? "";
     dispatchTouch("touchend", 40, 222);
     return {
       ...peek,
