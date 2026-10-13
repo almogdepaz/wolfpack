@@ -1,5 +1,6 @@
 import { CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
+import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
 import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
@@ -69,6 +70,7 @@ import { volatileRelayDefinitions } from "./volatile-relay-schema.ts";
 
 export const CONTROL_API_SCHEMA_VERSION = "1.0.0";
 export const CONTROL_API_SCHEMA_ARTIFACT = "docs/generated/control-api.schema.json";
+const SELECTED_EXTENSION_ERRORS = ["400 ExtensionPeerErrorEnvelope", "401 ErrorEnvelope|ExtensionPeerErrorEnvelope", "403 ExtensionPeerErrorEnvelope", "404 ExtensionPeerErrorEnvelope", "409 ExtensionPeerErrorEnvelope", "503 ExtensionPeerErrorEnvelope"] as const;
 
 type JsonSchema = {
   readonly [key: string]: unknown;
@@ -433,6 +435,8 @@ export const controlApiSource: ControlApiSource = {
     ExtensionBlobSessionId: { type: "string", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", description: "Exactly one session query parameter: a live local broker UUID authorizes writes/deletes; blobs themselves are installation+extension scoped." },
     ExtensionBlobBytes: { type: "string", contentMediaType: "application/octet-stream", description: `Raw unencoded bytes, not JSON or base64. Runtime bounds bytes to the installed maxBlobBytes declaration (hard ceiling ${EXTENSION_BLOB_LIMITS.maxBlobBytes}); recomputes SHA-256 on PUT. Quota per installation+extension: ${EXTENSION_BLOB_LIMITS.maxBlobsPerInstallation} blobs / ${EXTENSION_BLOB_LIMITS.maxBlobBytesPerInstallation} bytes, no eviction.` },
     ExtensionBlobReceipt: object({ digest: ref("ExtensionBlobDigest"), bytes: { type: "integer", minimum: 0, maximum: EXTENSION_BLOB_LIMITS.maxBlobBytes }, installationId: ref("ExtensionInstallationId"), extensionId: ref("ExtensionId"), created: boolean() }, ["digest", "bytes", "installationId", "extensionId", "created"]),
+    SelectedExtensionMachine: { type: "string", pattern: `${TAILNET_NODE_ID_PATTERN.slice(0, -1)}:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, description: "Canonical server-verified Tailnet node ID and host installation UUID, not an origin. Selected-peer bearer uses X-Wolfpack-Extension-Peer-Authorization; local owner auth remains independent." },
+    ExtensionPeerErrorEnvelope: object({ error: object({ code: { enum: [...Object.values(EXTENSION_PEER_ERROR), "INVALID_REQUEST"] }, message: string() }, ["code", "message"]) }, ["error"]),
     ExtensionDocumentCatalog: object({ id: ref("ExtensionId"), schemaVersion: { type: "integer", minimum: 1 } }, ["id", "schemaVersion"]),
     ExtensionCatalogInstallation: object({
       installationId: ref("ExtensionInstallationId"), extensionId: ref("ExtensionId"),
@@ -990,6 +994,30 @@ export const controlApiSource: ControlApiSource = {
       operationId: "readExtensionDocument", stable: true, auth: "jwt-when-configured",
       request: object({ extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["extensionId", "documentId", "session"]),
       response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), revision: { type: "integer", minimum: 0 }, document: {} }, ["installationId", "scopeSessionId", "extensionId", "documentId", "revision", "document"]), errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
+    },
+    "GET /api/extensions/peer/{machine}/catalog": {
+      operationId: "listSelectedPeerExtensions", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine") }, ["machine"]),
+      response: object({ safeMode: boolean(), installations: arrayOf(ref("ExtensionCatalogInstallation")) }, ["safeMode", "installations"]),
+      errors: SELECTED_EXTENSION_ERRORS,
+    },
+    "GET /api/extensions/peer/{machine}/assets/{extensionId}/{packageDigest}/{assetPath}": {
+      operationId: "readSelectedPeerExtensionAsset", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), packageDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, assetPath: string() }, ["machine", "extensionId", "packageDigest", "assetPath"]),
+      response: { type: "string", contentMediaType: "text/javascript" },
+      errors: SELECTED_EXTENSION_ERRORS,
+    },
+    "GET /api/extensions/peer/{machine}/documents/{extensionId}/{documentId}": {
+      operationId: "readSelectedPeerExtensionDocument", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["machine", "extensionId", "documentId", "session"]),
+      response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), revision: { type: "integer", minimum: 0 }, document: {} }, ["installationId", "scopeSessionId", "extensionId", "documentId", "revision", "document"]),
+      errors: SELECTED_EXTENSION_ERRORS,
+    },
+    "GET /api/extensions/peer/{machine}/project/git-status/{extensionId}": {
+      operationId: "readSelectedPeerExtensionProject", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["machine", "extensionId", "session"]),
+      response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), status: ref("ProjectGitStatus") }, ["installationId", "scopeSessionId", "extensionId", "status"]),
+      errors: SELECTED_EXTENSION_ERRORS,
     },
     "POST /api/extensions/documents/{extensionId}/{documentId}": {
       operationId: "publishExtensionDocument", stable: true, auth: "jwt-when-configured", requestContentType: "application/json",

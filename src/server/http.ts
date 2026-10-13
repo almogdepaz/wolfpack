@@ -277,22 +277,37 @@ function buildCsp(nonce: string): string {
     "default-src 'self'",
     // Authenticated extension modules are fetched as verified bytes and imported
     // from Blob URLs; no unsafe-eval or remote script source is permitted.
-    `script-src 'self' 'nonce-${nonce}' blob:`,
+    // wasm-unsafe-eval enables WebAssembly.compile/instantiate (Ghostty/extension WASM), not JavaScript unsafe-eval.
+    `script-src 'self' 'nonce-${nonce}' blob: 'wasm-unsafe-eval'`,
     "style-src 'self' 'unsafe-inline'",
-    "connect-src 'self' wss: https:",
+    "connect-src 'self' wss: https: data:",
     "img-src 'self' data:",
   ].join("; ");
 }
 
 /** Serve an HTML document with a per-response CSP nonce on every script tag. */
-export function serveHtml(res: ServerResponse, html: string): void {
+export function serveHtml(res: ServerResponse, html: string, contentType = "text/html", req?: IncomingMessage): void {
   const nonce = generateCspNonce();
-  res.writeHead(200, {
-    "Content-Type": "text/html",
+  const headers: Record<string, string> = {
+    "Content-Type": contentType,
     "Cache-Control": "no-cache",
     "Content-Security-Policy": buildCsp(nonce),
-  });
-  res.end(html.replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`));
+  };
+  let content = Buffer.from(html.replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`));
+  if (content.byteLength >= MIN_COMPRESS_BYTES) {
+    const existingVary = res.getHeader("Vary");
+    headers.Vary = existingVary ? `${String(existingVary)}, Accept-Encoding` : "Accept-Encoding";
+    const accepted = typeof req?.headers["accept-encoding"] === "string" ? req.headers["accept-encoding"] : undefined;
+    if (acceptsEncoding(accepted, "br")) {
+      content = brotliCompressSync(content, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } });
+      headers["Content-Encoding"] = "br";
+    } else if (acceptsEncoding(accepted, "gzip")) {
+      content = gzipSync(content, { level: 6 });
+      headers["Content-Encoding"] = "gzip";
+    }
+  }
+  res.writeHead(200, headers);
+  res.end(content);
 }
 
 interface CachedAsset {
@@ -353,8 +368,8 @@ export function serveFile(
   if (filename === "sw.js") {
     headers["Service-Worker-Allowed"] = "/";
   }
-  if (asset.mime === "text/html") {
-    serveHtml(res, typeof asset.content === "string" ? asset.content : asset.content.toString());
+  if (asset.mime.split(";", 1)[0]!.trim().toLowerCase() === "text/html") {
+    serveHtml(res, typeof asset.content === "string" ? asset.content : asset.content.toString(), asset.mime, req);
     return;
   }
 

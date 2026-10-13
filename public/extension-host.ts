@@ -1,17 +1,22 @@
+import { parseExtensionCatalog } from "../src/extensions/catalog-contract.ts";
+export { parseExtensionCatalog } from "../src/extensions/catalog-contract.ts";
 import { ExtensionContributionGate } from "../src/extensions/contribution-contract.ts";
 import { parseProjectGitStatus } from "../src/extensions/git-status-contract.ts";
 import { isExtensionIdentifier } from "../src/extensions/contribution-metadata.ts";
 import type { TerminalLayoutContribution } from "../src/extensions/layout-contract.ts";
 import type { ExtensionRegistration, ExtensionViewContext } from "../src/extensions/sdk.ts";
 import type { ExtensionCatalogEnvelope, ExtensionCatalogInstallation, ExtensionDocumentReadEnvelope } from "../src/extensions/runtime-contract.ts";
+import type { showAppDialog } from "./app-dialog.ts";
 import { browserAuthFetch } from "./browser-auth.ts";
+import { SelectedHostExtensionTransport } from "./extension-transport.ts";
+import type { ExtensionReadyPeer } from "./extension-transport.ts";
 import { contextScopeHint, ContextViewRegistry, type ContextViewScope } from "./context-view-registry.ts";
 import { SharedDocumentPoller } from "./extension-document-polling.ts";
 import { loadAuthenticatedExtensionBundle } from "./extension-loader.ts";
 import { isNativePanel, WidgetLayout, type WidgetArea } from "./widget-layout.ts";
 import { WidgetPanels, type WidgetPresentation, type NativeWorkspacePanel } from "./widget-panels.ts";
 
-export interface SelectedExtensionScope { readonly sessionId: string | null; readonly unavailable?: string; }
+export interface SelectedExtensionScope { readonly sessionId: string | null; readonly machine?: string; readonly unavailable?: string; }
 export interface ExtensionLayoutUnregisterOptions { readonly preservePreference?: boolean; }
 export interface ExtensionHostOptions {
   readonly container: HTMLElement;
@@ -27,6 +32,11 @@ export interface ExtensionHostOptions {
   readonly nativePanels?: readonly NativeWorkspacePanel[];
   readonly onPanelGeometryChange?: () => void;
   readonly authFetch?: typeof browserAuthFetch;
+  /** Host-only transport; package SDK contexts never receive routing controls. */
+  readonly selectedHostFetch?: (scope: SelectedExtensionScope, input: string, init: RequestInit) => Promise<Response>;
+  readonly resolvePeer?: (machine: string) => ExtensionReadyPeer | undefined;
+  readonly accessPrompt?: typeof showAppDialog;
+  readonly consentRemoteCode?: (scope: SelectedExtensionScope, catalog: ExtensionCatalogEnvelope, signal: AbortSignal) => Promise<boolean>;
   readonly bundleLoader?: typeof loadAuthenticatedExtensionBundle;
   readonly onChange?: () => void;
 }
@@ -39,46 +49,14 @@ type JsonRecord = Record<string, unknown>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
-function keyFor(installationId: string, extensionId: string, scopeId: string, suffix: string): string {
-  return `wolfpack-extension-ui:v1:${installationId}:${extensionId}:${scopeId}:${suffix}`;
+function keyFor(installationId: string, extensionId: string, scopeId: string, suffix: string, machine?: string): string {
+  const prefix = machine ? `wolfpack-extension-ui:v2:${machine}` : "wolfpack-extension-ui:v1";
+  return `${prefix}:${installationId}:${extensionId}:${scopeId}:${suffix}`;
 }
 function record(value: unknown): value is JsonRecord { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function text(value: unknown): value is string { return typeof value === "string"; }
-function positiveSafeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 1; }
-function safeRelativeAssetPath(value: unknown): value is string { return text(value) && value.length <= 256 && /^[A-Za-z0-9._@+/-]+$/.test(value) && !value.split("/").some(part => !part || part === "." || part === ".."); }
 function nonNegativeSafeInteger(value: unknown): value is number { return typeof value === "number" && Number.isSafeInteger(value) && value >= 0; }
 function catalogFailure(): never { throw new Error("invalid extension catalog envelope"); }
-
-/** Treat server JSON as hostile until every identity used for storage or loading is checked. */
-export function parseExtensionCatalog(value: unknown): ExtensionCatalogEnvelope {
-  if (!record(value) || typeof value.safeMode !== "boolean" || !Array.isArray(value.installations)) return catalogFailure();
-  let installationId: string | undefined;
-  const extensionIds = new Set<string>();
-  const installations: ExtensionCatalogInstallation[] = value.installations.map((candidate) => {
-    if (!record(candidate) || !text(candidate.installationId) || !UUID.test(candidate.installationId) || !text(candidate.extensionId) || !isExtensionIdentifier(candidate.extensionId) || typeof candidate.enabled !== "boolean" || !record(candidate.package) || !text(candidate.package.name) || !text(candidate.package.version) || !text(candidate.package.digest) || !SHA256.test(candidate.package.digest) || !Array.isArray(candidate.documents)) return catalogFailure();
-    if (installationId !== undefined && installationId !== candidate.installationId) return catalogFailure();
-    installationId = candidate.installationId;
-    if (extensionIds.has(candidate.extensionId)) return catalogFailure();
-    extensionIds.add(candidate.extensionId);
-    const documents = candidate.documents.map((document) => {
-      if (!record(document) || !text(document.id) || !isExtensionIdentifier(document.id) || !positiveSafeInteger(document.schemaVersion)) return catalogFailure();
-      return Object.freeze({ id: document.id, schemaVersion: document.schemaVersion });
-    });
-    if (documents.length > 32) return catalogFailure();
-    let ui: ExtensionCatalogInstallation["ui"];
-    if (candidate.ui !== undefined) {
-      if (!record(candidate.ui) || !safeRelativeAssetPath(candidate.ui.path) || !text(candidate.ui.url) || candidate.ui.url !== `/api/extensions/assets/${candidate.extensionId}/${candidate.package.digest}/${candidate.ui.path}` || !text(candidate.ui.digest) || !SHA256.test(candidate.ui.digest) || candidate.ui.mime !== "text/javascript") return catalogFailure();
-      ui = Object.freeze({ path: candidate.ui.path, url: candidate.ui.url, digest: candidate.ui.digest, mime: "text/javascript" });
-    }
-    let blobs: ExtensionCatalogInstallation["blobs"] = null;
-    if (candidate.blobs !== undefined && candidate.blobs !== null) {
-      if (!record(candidate.blobs) || !positiveSafeInteger(candidate.blobs.maxBlobBytes) || candidate.blobs.maxBlobBytes > 1048576 || Object.keys(candidate.blobs).some(key => key !== "maxBlobBytes")) return catalogFailure();
-      blobs = Object.freeze({ maxBlobBytes: candidate.blobs.maxBlobBytes });
-    }
-    return Object.freeze({ blobs, installationId: candidate.installationId, extensionId: candidate.extensionId, package: Object.freeze({ name: candidate.package.name, version: candidate.package.version, digest: candidate.package.digest }), enabled: candidate.enabled, ...(ui ? { ui } : {}), documents: Object.freeze(documents) });
-  });
-  return Object.freeze({ safeMode: value.safeMode, installations: Object.freeze(installations) });
-}
 function packageFingerprint(item: ExtensionCatalogInstallation): string {
   return `${item.installationId}:${item.extensionId}:${item.package.digest}:${item.ui?.url ?? ""}:${item.ui?.digest ?? ""}`;
 }
@@ -91,7 +69,9 @@ function parseDocumentEnvelope(value: unknown): ExtensionDocumentReadEnvelope {
 /** Browser host boundary: catalog/auth/loader/view cleanup are host-owned; package code receives only SDK context. */
 export class ExtensionHost {
   private readonly registry: ContextViewRegistry;
+  private readonly transport: SelectedHostExtensionTransport;
   private readonly loaded = new Map<string, LoadedPackage>();
+  private readonly verifiedModules = new Map<string, Promise<{ default?: ExtensionRegistration }>>();
   private readonly owners = new Map<string, ViewOwner>();
   private readonly pollers = new Map<string, SharedDocumentPoller>();
   /** Subscriber counts by exact document key/view: hidden views must not keep another key polling. */
@@ -104,6 +84,7 @@ export class ExtensionHost {
   private readonly documentStates = new Map<string, DocumentPollState>();
   private generation = 0;
   private catalogOperation: { readonly scope: SelectedExtensionScope; readonly generation: number; readonly controller: AbortController; readonly promise: Promise<void> } | null = null;
+  private activeController: AbortController | null = null;
   private currentScope: SelectedExtensionScope | null = null;
   private currentInstallationId: string | null = null;
   private catalog: ExtensionCatalogEnvelope | null = null;
@@ -112,6 +93,7 @@ export class ExtensionHost {
   private disposed = false;
 
   constructor(private readonly options: ExtensionHostOptions) {
+    this.transport = new SelectedHostExtensionTransport({ resolvePeer: options.resolvePeer ?? (() => undefined), authFetch: options.authFetch, prompt: options.accessPrompt });
     this.registry = new ContextViewRegistry({
       container: options.container,
       createContext: (scope, signal, viewId) => this.contextFor(scope, signal, viewId),
@@ -135,26 +117,30 @@ export class ExtensionHost {
   async refresh(): Promise<void> {
     if (this.disposed) return;
     const scope = this.options.scope();
-    const sameScope = this.currentScope?.sessionId === scope?.sessionId && this.currentScope?.unavailable === scope?.unavailable;
+    const sameScope = this.currentScope?.sessionId === scope?.sessionId && this.currentScope?.machine === scope?.machine && this.currentScope?.unavailable === scope?.unavailable;
     // Scope teardown is synchronous. Catalog acquisition is deliberately a
     // separate operation so repeated transition notifications cannot leave old
     // views alive or start duplicate fetches.
     if (!sameScope) {
+      this.activeController?.abort();
       ++this.generation;
       this.catalogOperation?.controller.abort();
       this.catalogOperation = null;
       this.catalog = null;
       this.registry.setScope(null);
-      this.cleanupScopeResources();
+      if (this.currentScope?.machine !== scope?.machine) this.cleanupAll(true);
+      else this.cleanupScopeResources();
     }
     this.currentScope = scope;
     if (!scope?.sessionId || scope.unavailable) {
+      if (scope?.machine) { this.cleanupAll(true); this.dropMachineModules(scope.machine); }
       this.render(scope?.unavailable ?? contextScopeHint());
       return;
     }
     // Re-evaluate safe mode even for an unchanged UUID; it is an immediate
     // boundary and must abort a shared request before any import can happen.
     if (this.options.safeMode?.()) {
+      this.activeController?.abort();
       ++this.generation;
       this.catalogOperation?.controller.abort();
       this.catalogOperation = null;
@@ -164,51 +150,70 @@ export class ExtensionHost {
       return;
     }
     const pending = this.catalogOperation;
-    if (pending && pending.scope.sessionId === scope.sessionId && pending.scope.unavailable === scope.unavailable) {
+    if (pending && pending.scope.sessionId === scope.sessionId && pending.scope.machine === scope.machine && pending.scope.unavailable === scope.unavailable) {
       return pending.promise;
     }
+    this.activeController?.abort();
     const generation = ++this.generation;
     const controller = new AbortController();
+    this.activeController = controller;
     const operation = { scope, generation, controller };
     const promise = this.acquireCatalog(operation);
     this.catalogOperation = { ...operation, promise };
     return promise;
   }
 
+  private request(scope: SelectedExtensionScope, path: string, init: RequestInit): Promise<Response> {
+    if (this.options.selectedHostFetch) return this.options.selectedHostFetch(scope, path, init);
+    if (scope.machine) return this.transport.request(scope, path, init);
+    return (this.options.authFetch ?? browserAuthFetch)(path, init);
+  }
+
   private async acquireCatalog(operation: { readonly scope: SelectedExtensionScope; readonly generation: number; readonly controller: AbortController }): Promise<void> {
     const { scope, generation, controller } = operation;
     try {
-      const response = await (this.options.authFetch ?? browserAuthFetch)("/api/extensions", { cache: "no-store", signal: controller.signal });
+      const response = await this.request(scope, "/api/extensions", { cache: "no-store", signal: controller.signal });
       if (!response.ok) throw new Error(`catalog request failed (${response.status})`);
       const catalog = parseExtensionCatalog(await response.json());
-      if (this.disposed || controller.signal.aborted || generation !== this.generation || this.currentScope?.sessionId !== scope.sessionId || this.currentScope?.unavailable !== scope.unavailable) return;
-      // Coalesce through the complete transport/body boundary. Package loading
-      // is intentionally not coalesced: a post-catalog refresh revalidates it.
-      if (this.catalogOperation?.controller === controller) this.catalogOperation = null;
+      if (this.disposed || controller.signal.aborted || generation !== this.generation || this.currentScope?.sessionId !== scope.sessionId || this.currentScope?.machine !== scope.machine || this.currentScope?.unavailable !== scope.unavailable) return;
       if (catalog.safeMode) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
       const installationId = catalog.installations[0]?.installationId ?? null;
+      if (scope.machine && installationId && !scope.machine.endsWith(`:${installationId}`)) throw new Error("selected machine installation mismatch");
+      if (scope.machine && catalog.installations.some(item => item.enabled && item.ui)) {
+        const consent = await (this.options.consentRemoteCode ?? this.transport.consentRemoteCode.bind(this.transport))(scope, catalog, controller.signal);
+        if (controller.signal.aborted || generation !== this.generation || this.options.safeMode?.()) return;
+        if (!consent) { this.registry.setScope(null); this.cleanupAll(); this.render("Local trust is required before running this machine's browser extensions."); return; }
+      }
+      // Coalesce through the complete transport/body and consent boundary. Package loading
+      // is intentionally not coalesced: a post-catalog refresh revalidates it.
+      if (this.catalogOperation?.controller === controller) this.catalogOperation = null;
+      const machinePrefix = `${scope.machine ?? "local"}|`;
+      const inventory = new Set(catalog.installations.filter(item => item.enabled && item.ui).map(item => machinePrefix + packageFingerprint(item)));
+      for (const key of this.verifiedModules.keys()) if (key.startsWith(machinePrefix) && !inventory.has(key)) this.verifiedModules.delete(key);
       if (this.currentInstallationId !== installationId) {
         this.registry.setScope(null);
         this.cleanupAll();
       }
       this.currentInstallationId = installationId;
-      this.registry.setScope(installationId ? { installationId, sessionId: scope.sessionId! } : null);
+      this.registry.setScope(installationId ? { installationId, sessionId: scope.sessionId!, ...(scope.machine ? { machine: scope.machine } : {}) } : null);
       const active = new Set(catalog.installations.filter(item => item.enabled && item.ui).map(item => item.extensionId));
       for (const id of [...this.loaded.keys()]) if (!active.has(id)) this.cleanupPackage(id);
-      for (const item of catalog.installations) if (item.enabled && item.ui) await this.load(item, generation);
-      if (!controller.signal.aborted && generation === this.generation && this.currentScope?.sessionId === scope.sessionId && this.currentScope?.unavailable === scope.unavailable) {
+      for (const item of catalog.installations) if (item.enabled && item.ui) await this.load(item, generation, controller.signal);
+      if (!controller.signal.aborted && generation === this.generation && this.currentScope?.sessionId === scope.sessionId && this.currentScope?.machine === scope.machine && this.currentScope?.unavailable === scope.unavailable) {
         this.catalog = catalog;
         try { this.options.onCatalogReady?.(); } catch {}
         this.render();
       }
     } catch {
-      if (!controller.signal.aborted && generation === this.generation && this.currentScope?.sessionId === scope.sessionId && this.currentScope?.unavailable === scope.unavailable) {
+      if (!controller.signal.aborted && generation === this.generation && this.currentScope?.sessionId === scope.sessionId && this.currentScope?.machine === scope.machine && this.currentScope?.unavailable === scope.unavailable) {
         this.registry.setScope(null);
-        this.cleanupScopeResources();
+        if (scope.machine) { this.cleanupAll(true); this.dropMachineModules(scope.machine); }
+        else this.cleanupScopeResources();
         this.render("Extension catalog unavailable for the selected scope.");
       }
     } finally {
       if (this.catalogOperation?.controller === controller) this.catalogOperation = null;
+      if (this.activeController === controller) this.activeController = null;
     }
   }
 
@@ -257,11 +262,13 @@ export class ExtensionHost {
     this.pausePollers();
     return true;
   }
-  dispose(): void { if (this.disposed) return; this.disposed = true; ++this.generation; this.catalogOperation?.controller.abort(); this.catalogOperation = null; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(true); this.panels.dispose(); this.registry.dispose(); }
+  dispose(): void { if (this.disposed) return; this.disposed = true; this.activeController?.abort(); this.activeController = null; this.verifiedModules.clear(); ++this.generation; this.catalogOperation?.controller.abort(); this.catalogOperation = null; document.removeEventListener("visibilitychange", this.onDocumentVisibility); this.cleanupAll(true); this.panels.dispose(); this.registry.dispose(); }
 
-  private async load(item: ExtensionCatalogInstallation, generation: number): Promise<void> {
+  private async load(item: ExtensionCatalogInstallation, generation: number, signal: AbortSignal): Promise<void> {
     const existing = this.loaded.get(item.extensionId);
-    const fingerprint = packageFingerprint(item);
+    const target = this.currentScope;
+    if (!target || this.options.safeMode?.()) return;
+    const fingerprint = `${target.machine ?? "local"}|${packageFingerprint(item)}`;
     if (existing?.fingerprint === fingerprint) return;
     if (existing) this.cleanupPackage(item.extensionId);
     const cleanups: Array<() => void> = [];
@@ -285,8 +292,34 @@ export class ExtensionHost {
       if (!registrationOpen || this.disposed || generation !== this.generation) throw new Error("extension registration is no longer active");
     };
     try {
-      const module = await (this.options.bundleLoader ?? loadAuthenticatedExtensionBundle)<{ default?: ExtensionRegistration }>(item.ui!.url, item.ui!.digest, { safeMode: false });
-      if (this.disposed || generation !== this.generation) return;
+      let pending = this.verifiedModules.get(fingerprint);
+      if (!pending) {
+        const assetUrl = this.transport.url(target, item.ui!.url);
+        pending = (this.options.bundleLoader ?? loadAuthenticatedExtensionBundle)<{ default?: ExtensionRegistration }>(assetUrl, item.ui!.digest, {
+          safeMode: false,
+          signal,
+          allowImport: () => {
+            const selected = this.options.scope();
+            return !this.disposed && !signal.aborted && generation === this.generation && !this.options.safeMode?.()
+              && selected?.sessionId === target.sessionId && selected?.machine === target.machine && !selected?.unavailable;
+          },
+          fetchImpl: (input, init = {}) => {
+            const raw = input instanceof Request ? input.url : input.toString();
+            const path = new URL(raw, location.href);
+            if (path.pathname + path.search !== assetUrl) throw new Error("invalid selected bundle target");
+            return this.request(target, item.ui!.url, init);
+          },
+        });
+        this.verifiedModules.set(fingerprint, pending);
+        while (this.verifiedModules.size > 16) this.verifiedModules.delete(this.verifiedModules.keys().next().value!);
+        const owned = pending;
+        void pending.catch(() => { if (this.verifiedModules.get(fingerprint) === owned) this.verifiedModules.delete(fingerprint); });
+      }
+      const module = await pending;
+      if (this.disposed || generation !== this.generation || this.options.safeMode?.()) {
+        if (this.verifiedModules.get(fingerprint) === pending) this.verifiedModules.delete(fingerprint);
+        return;
+      }
       if (typeof module.default !== "function") throw new Error("extension bundle has no registration function");
       const gate = new ExtensionContributionGate(item.extensionId);
       const registrationCleanup = module.default({
@@ -314,7 +347,9 @@ export class ExtensionHost {
     } catch {
       registrationOpen = false;
       cleanup();
-      this.render(`Extension ${item.extensionId} could not be registered.`);
+      if (!this.disposed && !signal.aborted && generation === this.generation) {
+        this.render(`Extension ${item.extensionId} could not be registered.`);
+      }
     }
   }
 
@@ -322,14 +357,15 @@ export class ExtensionHost {
     const owner = this.owners.get(viewId)?.extension;
     const extensionId = owner?.extensionId ?? "";
     const storage = {
-      get: (key: string) => localStorage.getItem(keyFor(scope.installationId, extensionId, scope.sessionId, `storage:${key}`)),
-      set: (key: string, value: string) => localStorage.setItem(keyFor(scope.installationId, extensionId, scope.sessionId, `storage:${key}`), value),
-      remove: (key: string) => localStorage.removeItem(keyFor(scope.installationId, extensionId, scope.sessionId, `storage:${key}`)),
+      get: (key: string) => localStorage.getItem(keyFor(scope.installationId, extensionId, scope.sessionId, `storage:${key}`, scope.machine)),
+      set: (key: string, value: string) => localStorage.setItem(keyFor(scope.installationId, extensionId, scope.sessionId, `storage:${key}`, scope.machine), value),
+      remove: (key: string) => localStorage.removeItem(keyFor(scope.installationId, extensionId, scope.sessionId, `storage:${key}`, scope.machine)),
     };
     const read = async (documentId: string): Promise<unknown> => this.readOnce(extensionId, documentId, scope, signal, viewId).then(value => value.document);
     const subscribe = (documentId: string, listener: (value: unknown, revision: number) => void): (() => void) => {
+      if (!this.scopeIsCurrent(scope, signal) || this.owners.get(viewId)?.extension !== owner) throw new Error("stale extension scope");
       this.assertDeclaredDocument(owner, documentId);
-      const pollerKey = keyFor(scope.installationId, extensionId, scope.sessionId, `document:${documentId}`);
+      const pollerKey = keyFor(scope.installationId, extensionId, scope.sessionId, `document:${documentId}`, scope.machine);
       this.linkDocumentView(viewId, pollerKey);
       const poller = this.poller(extensionId, documentId, scope, viewId, pollerKey);
       let unsubscribe: () => void;
@@ -354,7 +390,7 @@ export class ExtensionHost {
       const current = () => this.scopeIsCurrent(scope, active) && this.owners.get(viewId)?.extension === owner;
       if (!current()) throw new Error("stale extension scope");
       const url = `/api/extensions/project/git-status/${encodeURIComponent(extensionId)}?session=${encodeURIComponent(scope.sessionId)}`;
-      const response = await (this.options.authFetch ?? browserAuthFetch)(url, { cache: "no-store", signal: active });
+      const response = await this.request(scope, url, { cache: "no-store", signal: active });
       if (!current()) throw new Error("stale extension scope");
       if (!response.ok) throw new Error("project Git status unavailable");
       const value: unknown = await response.json();
@@ -363,11 +399,12 @@ export class ExtensionHost {
       return parseProjectGitStatus(value.status);
     } });
     const current = (active = signal) => this.scopeIsCurrent(scope, active) && this.owners.get(viewId)?.extension === owner;
-    const blobs = owner?.blobs ? Object.freeze({ read: async (digest: string, requestSignal?: AbortSignal): Promise<Uint8Array> => {
+    // The selected-machine proxy forwards catalog/asset/document/project reads only, so blob reads stay a local-host capability.
+    const blobs = owner?.blobs && !scope.machine ? Object.freeze({ read: async (digest: string, requestSignal?: AbortSignal): Promise<Uint8Array> => {
       if (typeof digest !== "string" || !SHA256.test(digest)) throw new Error("invalid blob digest");
       const active = requestSignal ? AbortSignal.any([signal, requestSignal]) : signal;
       if (!current(active)) throw new Error("stale extension scope");
-      const response = await (this.options.authFetch ?? browserAuthFetch)(`/api/extensions/blobs/${encodeURIComponent(extensionId)}/${digest}`, { cache: "no-store", signal: active });
+      const response = await this.request(scope, `/api/extensions/blobs/${encodeURIComponent(extensionId)}/${digest}`, { cache: "no-store", signal: active });
       if (!current(active)) throw new Error("stale extension scope");
       if (!response.ok) { await response.body?.cancel(); throw new Error("extension blob unavailable"); }
       if (!response.body) throw new Error("extension blob unavailable");
@@ -391,7 +428,7 @@ export class ExtensionHost {
     const theme: Record<string, string> = {};
     const style = typeof getComputedStyle === "function" ? getComputedStyle(document.documentElement) : null;
     for (const key of "--bg-base --bg-deep --bg-surface --bg-elevated --bg-inset --bg-hover --border --border-subtle --border-strong --accent --accent-muted --text-primary --text-secondary --text-muted --text-dim --danger --warning --font-ui --font-mono --radius-sm --radius-md --radius-lg".split(" ")) { const value = style?.getPropertyValue(key).trim(); if (value) theme[key] = value; }
-    return Object.freeze({ signal, scope: Object.freeze({ ...scope }), selection: Object.freeze({ selectedSessionId: scope.sessionId }), theme: Object.freeze(theme), storage: Object.freeze(storage), documents: Object.freeze({ read, subscribe }), project, ...(blobs ? { blobs } : {}), ...(terminal ? { terminal } : {}) });
+    return Object.freeze({ signal, scope: Object.freeze({ installationId: scope.installationId, sessionId: scope.sessionId }), selection: Object.freeze({ selectedSessionId: scope.sessionId }), theme: Object.freeze(theme), storage: Object.freeze(storage), documents: Object.freeze({ read, subscribe }), project, ...(blobs ? { blobs } : {}), ...(terminal ? { terminal } : {}) });
   }
 
   private assertDeclaredDocument(owner: ExtensionCatalogInstallation | undefined, documentId: string): void {
@@ -420,9 +457,10 @@ export class ExtensionHost {
     return poller;
   }
   private readOnce(extensionId: string, documentId: string, scope: ContextViewScope, signal: AbortSignal, viewId: string): Promise<{ document: unknown | null; revision: number }> {
+    if (!this.scopeIsCurrent(scope, signal)) return Promise.reject(new Error("stale extension scope"));
     const owner = [...this.owners.values()].find(candidate => candidate.extension.extensionId === extensionId)?.extension;
     this.assertDeclaredDocument(owner, documentId);
-    const key = keyFor(scope.installationId, extensionId, scope.sessionId, `document:${documentId}`);
+    const key = keyFor(scope.installationId, extensionId, scope.sessionId, `document:${documentId}`, scope.machine);
     this.linkDocumentView(viewId, key);
     const poller = this.pollerFor(extensionId, documentId, scope, key);
     this.linkPollerReader(key, viewId);
@@ -451,12 +489,12 @@ export class ExtensionHost {
   }
 
   private scopeIsCurrent(scope: ContextViewScope, signal: AbortSignal): boolean {
-    return !this.disposed && !signal.aborted && this.currentScope?.sessionId === scope.sessionId && this.currentInstallationId === scope.installationId;
+    return !this.disposed && !signal.aborted && this.currentScope?.sessionId === scope.sessionId && this.currentScope?.machine === scope.machine && this.currentInstallationId === scope.installationId && !this.options.safeMode?.();
   }
   private async readDocument(extensionId: string, documentId: string, scope: ContextViewScope, signal: AbortSignal): Promise<{ document: unknown | null; revision: number }> {
     if (!this.scopeIsCurrent(scope, signal)) throw new Error("stale extension scope");
     const url = `/api/extensions/documents/${encodeURIComponent(extensionId)}/${encodeURIComponent(documentId)}?session=${encodeURIComponent(scope.sessionId)}`;
-    const response = await (this.options.authFetch ?? browserAuthFetch)(url, { cache: "no-store", signal });
+    const response = await this.request(scope, url, { cache: "no-store", signal });
     if (!this.scopeIsCurrent(scope, signal)) throw new Error("stale extension scope");
     if (!response.ok) throw new Error("extension document unavailable");
     const value = parseDocumentEnvelope(await response.json());
@@ -507,6 +545,10 @@ export class ExtensionHost {
     poller?.dispose();
     this.pollers.delete(key);
     this.documentStates.delete(key);
+  }
+  private dropMachineModules(machine: string): void {
+    const prefix = `${machine}|`;
+    for (const key of this.verifiedModules.keys()) if (key.startsWith(prefix)) this.verifiedModules.delete(key);
   }
   private cleanupPackage(extensionId: string, preserveLayoutPreference = false): void { const loaded = this.loaded.get(extensionId); if (!loaded) return; this.loaded.delete(extensionId); loaded.cleanup({ preserveLayoutPreference }); }
   private cleanupScopeResources(): void {

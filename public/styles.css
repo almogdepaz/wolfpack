@@ -1709,6 +1709,11 @@ body.no-animations, body.no-animations * {
 body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hidden]{display:none}
 #workspace-terminal-layout { appearance: auto; padding: 10px; border: 1px solid var(--border-input); border-radius: var(--radius-md); background: var(--bg-base); color: var(--text-primary); font: inherit; }
 #workspace-terminal-layout:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#workspace-extension-access{flex:none;max-height:35vh;overflow:auto;padding:8px 12px;background:var(--bg-base)}
+#workspace-extension-access[hidden]{display:none}
+.extension-access-prompt p{margin:4px 0;font-size:12px}
+.extension-access-prompt label{display:inline-flex;gap:8px;align-items:center}
+.extension-access-prompt button{margin-right:8px}
 #workspace-shell{position:relative;display:grid;grid-template-columns:var(--workspace-left-size,0px) var(--workspace-left-divider,0px) minmax(0,1fr) var(--workspace-right-divider,0px) var(--workspace-right-size,320px);grid-template-rows:minmax(0,1fr) var(--workspace-bottom-divider,0px) var(--workspace-bottom-size,0px);flex:1;min-height:0;overflow:hidden;background:var(--bg-base)}
 #workspace-terminal-region{display:flex;min-width:0;min-height:0;flex-direction:column;overflow:hidden}
 #workspace-context-region,#workspace-context-container{display:contents}

@@ -1,3 +1,5 @@
+import { EXTENSION_PEER_PREFIX } from "../extensions/selected-host-contract.ts";
+import { ExtensionPeerProxy, type ExtensionPeerProxyOptions } from "./extension-peer-proxy.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ExtensionBlobStore } from "../extensions/blob-store.ts";
 import { ExtensionDocumentError, ExtensionDocumentStore, type ExtensionDocumentKey } from "../extensions/document-contract.ts";
@@ -19,14 +21,16 @@ function documentError(res: ServerResponse, value: unknown) {
 }
 function ids(pathname: string, prefix: string): { extensionId: string; documentId: string } | null { if (!pathname.startsWith(prefix)) return null; const parts = pathname.slice(prefix.length).split("/"); return parts.length === 2 && /^[a-z][a-z0-9-]{0,63}$/.test(parts[0]!) && /^[a-z][a-z0-9-]{0,63}$/.test(parts[1]!) ? { extensionId: parts[0]!, documentId: parts[1]! } : null; }
 
-export interface ExtensionRouteServiceOptions { readonly runtime?: ExtensionRuntime; readonly backend?: SessionBackend; readonly safeMode?: () => boolean; readonly readGitStatus?: typeof readProjectGitStatus; }
+export interface ExtensionRouteServiceOptions { readonly runtime?: ExtensionRuntime; readonly backend?: Pick<SessionBackend, "listSessionFacts">; readonly safeMode?: () => boolean; readonly readGitStatus?: typeof readProjectGitStatus; readonly peerProxy?: ExtensionPeerProxyOptions; }
 /** Server-owned service binds document persistence to installed schemas and broker UUID liveness. */
 export class ExtensionRouteService {
-  private readonly runtime: ExtensionRuntime; private readonly backend: SessionBackend; private readonly safeMode: () => boolean; private readonly store: ExtensionDocumentStore;
+  private readonly runtime: ExtensionRuntime; private readonly backend: Pick<SessionBackend, "listSessionFacts">; private readonly safeMode: () => boolean; private readonly store: ExtensionDocumentStore;
+  private readonly peerProxy: ExtensionPeerProxy;
   private gitRequests = 0;
   private readonly readGitStatus: typeof readProjectGitStatus;
-  constructor(options: ExtensionRouteServiceOptions = {}) { this.readGitStatus = options.readGitStatus ?? readProjectGitStatus; this.runtime = options.runtime ?? getExtensionRuntime(); this.backend = options.backend ?? getBackend(); this.safeMode = options.safeMode ?? (() => false); this.store = new ExtensionDocumentStore({ root: this.runtime.root, assertWritableScope: async (key) => { const facts = await this.backend.listSessionFacts(); const live = facts.some((fact) => fact.alive && fact.identity?.wolfpackSessionId === key.scopeSessionId); if (!live) throw new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "new documents require a live exact scope session UUID"); this.runtime.schema(key); } }); }
+  constructor(options: ExtensionRouteServiceOptions = {}) { this.readGitStatus = options.readGitStatus ?? readProjectGitStatus; this.runtime = options.runtime ?? getExtensionRuntime(); this.backend = options.backend ?? getBackend(); this.safeMode = options.safeMode ?? (() => false); this.peerProxy = new ExtensionPeerProxy(options.peerProxy, this.safeMode); this.store = new ExtensionDocumentStore({ root: this.runtime.root, assertWritableScope: async (key) => { const facts = await this.backend.listSessionFacts(); const live = facts.some((fact) => fact.alive && fact.identity?.wolfpackSessionId === key.scopeSessionId); if (!live) throw new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "new documents require a live exact scope session UUID"); this.runtime.schema(key); } }); }
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+    if (url.pathname.startsWith(EXTENSION_PEER_PREFIX) || req.url?.startsWith(EXTENSION_PEER_PREFIX)) { await this.peerProxy.handle(req, res, url); return true; }
     if (req.method === "GET" && url.pathname === "/api/extensions") { noStore(res); json(res, this.runtime.catalog(this.safeMode())); return true; }
     const assetPrefix = "/api/extensions/assets/";
     if (req.method === "GET" && url.pathname.startsWith(assetPrefix)) { const rest = url.pathname.slice(assetPrefix.length).split("/"); const assetPath = rest.slice(2).join("/"); if (rest.length < 3 || !/^[a-z][a-z0-9-]{0,63}$/.test(rest[0]!) || !/^[a-f0-9]{64}$/.test(rest[1]!) || !assetPath.endsWith(".js")) { error(res, EXTENSION_API_ERROR.ASSET_NOT_FOUND, "extension asset is not allowlisted", 404); return true; } try { if (this.safeMode()) throw new ExtensionRuntimeError("DISABLED", "safe mode prevents extension asset delivery"); const asset = this.runtime.asset(rest[0]!, rest[1]!, assetPath); noStore(res); res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "X-Wolfpack-Extension-Digest": asset.digest }); res.end(asset.bytes); } catch (value) { documentError(res, value); } return true; }
