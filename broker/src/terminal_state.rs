@@ -444,6 +444,8 @@ pub struct FeedOutcome {
     pub pty_reply: Vec<u8>,
     /// The program status record set changed during this feed.
     pub program_status_changed: bool,
+    /// A program stored a record during this feed, even an unchanged one.
+    pub program_status_reported: bool,
 }
 
 /// libghostty's write_pty is an untyped byte channel shared by every query
@@ -539,6 +541,9 @@ unsafe extern "C" fn collect_program_status(ctx: *mut c_void, report: *const WpP
         title: borrowed_bytes(report.title, report.title_len),
         message: borrowed_bytes(report.message, report.message_len),
     };
+    if matches!(action, ProgramStatusAction::Set(_)) {
+        collector.outcome.program_status_reported = true;
+    }
     if collector.records.apply(&parsed, now_ms()) {
         collector.outcome.program_status_changed = true;
     }
@@ -586,6 +591,16 @@ impl TerminalState {
     /// Every program status record, sorted by id.
     pub fn program_status_records(&self) -> Vec<ProgramStatusRecord> {
         self.program_status.records()
+    }
+
+    /// Remember the foreground process group behind the latest report.
+    pub fn set_program_status_reporter(&mut self, group: Option<libc::pid_t>) {
+        self.program_status.set_reporter_group(group);
+    }
+
+    /// The reporter group to watch while a working/blocked record exists.
+    pub fn watched_program_status_group(&self) -> Option<libc::pid_t> {
+        self.program_status.watched_group()
     }
 
     /// The program exited: drop working/blocked/idle records. True on change.
@@ -943,6 +958,19 @@ mod tests {
         assert!(outcome.program_status_changed);
         let ids: Vec<String> = terminal.program_status_records().into_iter().map(|record| record.id).collect();
         assert_eq!(ids, vec!["build"]);
+    }
+
+    #[test]
+    fn stored_reports_are_flagged_even_when_unchanged() {
+        let mut terminal = TerminalState::try_new(80, 24).expect("real terminal");
+        let outcome = terminal.try_feed(b"\x1b]7501;state=working\x07").expect("feed");
+        assert!(outcome.program_status_reported && outcome.program_status_changed);
+        let outcome = terminal.try_feed(b"\x1b]7501;state=working\x07").expect("feed");
+        assert!(outcome.program_status_reported && !outcome.program_status_changed);
+        let outcome = terminal.try_feed(b"\x1b]7501;state=clear\x07").expect("feed");
+        assert!(!outcome.program_status_reported, "a clear stores nothing");
+        let outcome = terminal.try_feed(b"\x1b]7501;?\x07plain").expect("feed");
+        assert!(!outcome.program_status_reported);
     }
 
     #[test]

@@ -9,6 +9,8 @@
 //!   an empty id clears everything (also what RIS reports);
 //! * process exit and a new shell prompt drop `working`, `blocked` and
 //!   `idle`; `done` and `error` survive until a later report/clear;
+//! * the session also drops them once the terminal's foreground process
+//!   group that made the latest report has left (see [`ProgramStatusRecords::watched_group`]);
 //! * at most [`MAX_PROGRAM_STATUS_RECORDS`]; a new record over the cap evicts
 //!   the record updated longest ago, except the root (`""`): it is the state
 //!   consumers show, and a program's own children must not clear it.
@@ -66,6 +68,9 @@ struct Entry {
 pub struct ProgramStatusRecords {
     entries: BTreeMap<String, Entry>,
     clock: u64,
+    /// The terminal's foreground process group when the latest report was
+    /// stored; `None` when it could not be read.
+    reporter_group: Option<libc::pid_t>,
 }
 
 impl ProgramStatusRecords {
@@ -124,6 +129,21 @@ impl ProgramStatusRecords {
             matches!(entry.record.state, ProgramStatusState::Done | ProgramStatusState::Error)
         });
         self.entries.len() != before
+    }
+
+    /// Remember the foreground process group behind the latest report; each
+    /// report replaces it.
+    pub fn set_reporter_group(&mut self, group: Option<libc::pid_t>) {
+        self.reporter_group = group;
+    }
+
+    /// The reporter group to watch: known, and some record still describes a
+    /// live program (`working` or `blocked`). `None` means nothing to watch.
+    pub fn watched_group(&self) -> Option<libc::pid_t> {
+        let live = self.entries.values().any(|entry| {
+            matches!(entry.record.state, ProgramStatusState::Working | ProgramStatusState::Blocked)
+        });
+        self.reporter_group.filter(|_| live)
     }
 
     pub fn root(&self) -> Option<&ProgramStatusRecord> {
@@ -346,6 +366,30 @@ mod tests {
         let kept = ids(&records);
         assert!(!kept.contains(&"test/0".to_string()), "oldest child was not evicted");
         assert!(kept.contains(&"test/299".to_string()));
+    }
+
+    #[test]
+    fn reporter_group_is_watched_only_while_a_working_or_blocked_record_exists() {
+        let mut records = ProgramStatusRecords::default();
+        records.apply(&set("build", ProgramStatusState::Done), 1);
+        records.set_reporter_group(Some(42));
+        assert_eq!(records.watched_group(), None, "done records need no watch");
+        records.apply(&set("", ProgramStatusState::Idle), 2);
+        assert_eq!(records.watched_group(), None, "idle records need no watch");
+
+        records.apply(&set("", ProgramStatusState::Working), 3);
+        assert_eq!(records.watched_group(), Some(42));
+        records.apply(&set("", ProgramStatusState::Blocked), 4);
+        records.set_reporter_group(Some(43));
+        assert_eq!(records.watched_group(), Some(43), "the latest report's group replaces the old one");
+
+        records.set_reporter_group(None);
+        assert_eq!(records.watched_group(), None, "an unreadable group is never watched");
+
+        records.set_reporter_group(Some(43));
+        assert!(records.drop_transient());
+        assert_eq!(records.watched_group(), None);
+        assert_eq!(ids(&records), vec!["build"]);
     }
 
     #[test]

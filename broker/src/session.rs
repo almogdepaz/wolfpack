@@ -21,10 +21,10 @@
 
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use thiserror::Error;
@@ -52,6 +52,11 @@ const EXIT_DRAIN_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 /// 256-slot event bus that also carries lifecycle events. The server batches
 /// its own refresh across sessions on top of this.
 const PROGRAM_STATUS_EVENT_INTERVAL: Duration = Duration::from_millis(200);
+/// How often a session holding `working`/`blocked` records checks that the
+/// process group behind the latest report still owns the terminal's
+/// foreground (see `ForegroundWatch`). Sessions without such records never
+/// check.
+const FOREGROUND_CHECK_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone)]
 pub struct SpawnOptions {
@@ -321,6 +326,8 @@ impl Session {
             inner: Some(writer),
             fd: writer_fd,
         });
+        let foreground_fd = dup_master_fd(pair.master.as_ref())
+            .map_err(|e| SpawnError::MasterDup(e.to_string()))?;
 
         let pid = child.process_id();
         let state = SessionState {
@@ -354,14 +361,17 @@ impl Session {
         let drain_inner = Arc::clone(&inner);
         let drain_events = events.clone();
         let input = Arc::new(PtyInput::new(id, writer, reply_fd));
+        let foreground = Arc::new(ForegroundGroup::new(id, foreground_fd));
         let program_status = Arc::new(ProgramStatusPublisher::new(
             id,
             events.clone(),
             PROGRAM_STATUS_EVENT_INTERVAL,
+            Some(Arc::new(ForegroundWatch::new(Arc::clone(&terminal), Arc::clone(&foreground)))),
         ));
         let drain_effects = DrainEffects {
             input: Arc::clone(&input),
             program_status: Arc::clone(&program_status),
+            foreground,
         };
         let mut drain_child_killer = child.clone_killer();
         if let Err(e) = spawn_named_thread(format!("broker-pty-read-{drain_id}"), move || {
@@ -717,6 +727,12 @@ trait TerminalFeed {
     fn program_status_root(&self) -> Option<ProgramStatusRecord> {
         None
     }
+
+    fn set_program_status_reporter(&mut self, _group: Option<libc::pid_t>) {}
+
+    fn watched_program_status_group(&self) -> Option<libc::pid_t> {
+        None
+    }
 }
 
 impl TerminalFeed for TerminalState {
@@ -727,13 +743,23 @@ impl TerminalFeed for TerminalState {
     fn program_status_root(&self) -> Option<ProgramStatusRecord> {
         TerminalState::program_status_root(self)
     }
+
+    fn set_program_status_reporter(&mut self, group: Option<libc::pid_t>) {
+        TerminalState::set_program_status_reporter(self, group)
+    }
+
+    fn watched_program_status_group(&self) -> Option<libc::pid_t> {
+        TerminalState::watched_program_status_group(self)
+    }
 }
 
 /// Where the drainer delivers feed side effects: OSC 7501 query replies go
-/// to the PTY input and record changes go to the paced publisher.
+/// to the PTY input, record changes go to the paced publisher, and each
+/// stored report is stamped with the terminal's foreground process group.
 struct DrainEffects {
     input: Arc<PtyInput>,
     program_status: Arc<ProgramStatusPublisher>,
+    foreground: Arc<ForegroundGroup>,
 }
 
 /// The session's PTY stdin, shared by client input and the drainer's OSC 7501
@@ -931,28 +957,38 @@ fn write_counting(writer: &mut dyn Write, data: &[u8]) -> Result<(), (usize, io:
 /// trailing event that carries the latest root, so the newest state is always
 /// delivered. A pacing thread starts on the first change (most sessions never
 /// report). `close` flushes a pending change and joins the thread.
+///
+/// The same thread runs the session's `ForegroundWatch` every
+/// `FOREGROUND_CHECK_INTERVAL` while the drainer reports a group to watch, and
+/// otherwise sleeps until the next change.
 struct ProgramStatusPublisher {
     session_id: Uuid,
     events: EventSender,
     interval: Duration,
-    shared: Arc<(Mutex<PublisherState>, Condvar)>,
+    shared: Arc<PublisherShared>,
+    watch: Option<Arc<ForegroundWatch>>,
 }
+
+type PublisherShared = (Mutex<PublisherState>, Condvar);
 
 #[derive(Default)]
 struct PublisherState {
     root: Option<ProgramStatusRecord>,
     dirty: bool,
     closed: bool,
+    /// A working/blocked record exists and its reporter group is known.
+    watching: bool,
     pacer: Option<thread::JoinHandle<()>>,
 }
 
 impl ProgramStatusPublisher {
-    fn new(session_id: Uuid, events: EventSender, interval: Duration) -> Self {
+    fn new(session_id: Uuid, events: EventSender, interval: Duration, watch: Option<Arc<ForegroundWatch>>) -> Self {
         Self {
             session_id,
             events,
             interval,
             shared: Arc::new((Mutex::new(PublisherState::default()), Condvar::new())),
+            watch,
         }
     }
 
@@ -985,6 +1021,17 @@ impl ProgramStatusPublisher {
         wake.notify_all();
     }
 
+    /// Start or stop foreground checks. Called by the drainer under the
+    /// terminal lock after every stored report or record change.
+    fn set_watching(&self, watching: bool) {
+        let (lock, wake) = &*self.shared;
+        let mut state = lock.lock().expect("program status poisoned");
+        if state.watching != watching {
+            state.watching = watching;
+            wake.notify_all();
+        }
+    }
+
     /// Flush any pending change and stop pacing; later updates publish
     /// directly.
     fn close(&self) {
@@ -1011,15 +1058,35 @@ impl ProgramStatusPublisher {
         let events = self.events.clone();
         let session_id = self.session_id;
         let interval = self.interval;
+        let watch = self.watch.clone();
         thread::Builder::new()
             .name(format!("broker-pty-status-{session_id}"))
             .spawn(move || {
                 let (lock, wake) = &*shared;
+                // Kept across events, so a stream of reports cannot keep
+                // pushing the next check back.
+                let mut next_check: Option<Instant> = None;
                 loop {
                     let root = {
                         let mut state = lock.lock().expect("program status poisoned");
                         while !state.dirty && !state.closed {
-                            state = wake.wait(state).expect("program status poisoned");
+                            let Some(watch) = watch.as_ref().filter(|_| state.watching) else {
+                                next_check = None;
+                                state = wake.wait(state).expect("program status poisoned");
+                                continue;
+                            };
+                            let due = *next_check.get_or_insert_with(|| Instant::now() + FOREGROUND_CHECK_INTERVAL);
+                            let now = Instant::now();
+                            if now < due {
+                                state = wake.wait_timeout(state, due - now).expect("program status poisoned").0;
+                                continue;
+                            }
+                            next_check = None;
+                            // The check takes the terminal lock, which the
+                            // drainer holds while it takes this one.
+                            drop(state);
+                            watch.check(&shared);
+                            state = lock.lock().expect("program status poisoned");
                         }
                         if !state.dirty {
                             return;
@@ -1043,6 +1110,117 @@ impl Drop for ProgramStatusPublisher {
     fn drop(&mut self) {
         self.close();
     }
+}
+
+/// The PTY's foreground process group, read on the master side
+/// (`tcgetpgrp`; Linux and macOS both answer it for a pty master).
+struct ForegroundGroup {
+    session_id: Uuid,
+    /// Dup of the PTY master; `None` when the PTY exposes no fd.
+    fd: Option<OwnedFd>,
+    unreadable_logged: AtomicBool,
+}
+
+impl ForegroundGroup {
+    fn new(session_id: Uuid, fd: Option<OwnedFd>) -> Self {
+        Self { session_id, fd, unreadable_logged: AtomicBool::new(false) }
+    }
+
+    /// `None` when the platform or PTY does not report one.
+    fn group(&self) -> Option<libc::pid_t> {
+        let result = match &self.fd {
+            // SAFETY: the fd is open for this borrow; tcgetpgrp only reads.
+            Some(fd) => match unsafe { libc::tcgetpgrp(fd.as_raw_fd()) } {
+                group if group > 0 => Ok(group),
+                _ => Err(io::Error::last_os_error()),
+            },
+            None => Err(io::Error::from(io::ErrorKind::Unsupported)),
+        };
+        result
+            .map_err(|error| {
+                if !self.unreadable_logged.swap(true, Ordering::Relaxed) {
+                    tracing::debug!(session_id = %self.session_id, %error, "PTY foreground process group unreadable; program status records keep exit/prompt drops only");
+                }
+            })
+            .ok()
+    }
+}
+
+/// Spec: when the process attached to the terminal exits, its `working` and
+/// `blocked` records no longer describe anything. The broker reads "attached"
+/// as the terminal's foreground process group: a program run from a shell is
+/// not the PTY leader, so a crash leaves the shell (leader) alive and no
+/// prompt mark arrives from shells without OSC 133. Each check drops live
+/// records, as an OSC 133 prompt start does, when the group behind the latest
+/// report has left the foreground or no longer exists.
+struct ForegroundWatch {
+    terminal: Arc<Mutex<TerminalState>>,
+    foreground: Arc<ForegroundGroup>,
+    #[cfg(test)]
+    checks: AtomicU64,
+}
+
+impl ForegroundWatch {
+    fn new(terminal: Arc<Mutex<TerminalState>>, foreground: Arc<ForegroundGroup>) -> Self {
+        Self {
+            terminal,
+            foreground,
+            #[cfg(test)]
+            checks: AtomicU64::new(0),
+        }
+    }
+
+    /// Pacing thread only, holding no publisher lock.
+    fn check(&self, shared: &PublisherShared) {
+        #[cfg(test)]
+        self.checks.fetch_add(1, Ordering::SeqCst);
+        let mut term = self.terminal.lock().expect("terminal poisoned");
+        if drop_if_reporter_left(&mut term, self.foreground.group(), process_group_exists) {
+            // Under the terminal lock, like the drainer's and reaper's
+            // updates, so a stale root can never overwrite a newer one.
+            let mut state = shared.0.lock().expect("program status poisoned");
+            state.root = term.program_status_root();
+            state.dirty = true;
+            state.watching = term.watched_program_status_group().is_some();
+        }
+    }
+}
+
+/// Drop working/blocked/idle records (done/error survive) when the watched
+/// reporter group has left the foreground. True when records were dropped.
+fn drop_if_reporter_left(
+    term: &mut TerminalState,
+    foreground: Option<libc::pid_t>,
+    group_exists: impl FnOnce(libc::pid_t) -> bool,
+) -> bool {
+    let Some(reporter) = term.watched_program_status_group() else {
+        return false;
+    };
+    reporter_left_foreground(reporter, foreground, group_exists) && term.drop_transient_program_status()
+}
+
+/// An unreadable foreground keeps the records (no new information). A
+/// different foreground group drops them at once, even if the reporter
+/// regains the foreground later (a job suspended and resumed with `fg` has no
+/// live record until it reports again).
+fn reporter_left_foreground(
+    reporter: libc::pid_t,
+    foreground: Option<libc::pid_t>,
+    group_exists: impl FnOnce(libc::pid_t) -> bool,
+) -> bool {
+    match foreground {
+        None => false,
+        Some(group) if group != reporter => true,
+        Some(_) => !group_exists(reporter),
+    }
+}
+
+/// `kill(-group, 0)`: only ESRCH proves the group is gone (EPERM means it
+/// exists under another user).
+fn process_group_exists(group: libc::pid_t) -> bool {
+    // SAFETY: signal 0 performs only the existence/permission check.
+    let result = unsafe { libc::kill(-group, 0) };
+    result == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 /// How a thread holding the PTY writer flushes queued replies.
@@ -1185,8 +1363,17 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                     };
                     // Under the terminal lock, so the reaper's exit update
                     // (same lock) can never be overwritten by a stale root.
+                    if outcome.program_status_reported {
+                        // The program that wrote the report may already be
+                        // gone by the time the chunk is read; the group read
+                        // here is then whoever owns the foreground now.
+                        term.set_program_status_reporter(effects.foreground.group());
+                    }
                     if outcome.program_status_changed {
                         effects.program_status.update(term.program_status_root());
+                    }
+                    if outcome.program_status_changed || outcome.program_status_reported {
+                        effects.program_status.set_watching(term.watched_program_status_group().is_some());
                     }
                     // Publish before releasing the terminal lock. Atomic
                     // snapshot+subscribe takes the same terminal→bus order,
@@ -1445,7 +1632,8 @@ mod tests {
         let (events, receiver) = broadcast::channel(16);
         let effects = DrainEffects {
             input: Arc::new(PtyInput::new(Uuid::nil(), Box::new(writes.clone()), None)),
-            program_status: Arc::new(ProgramStatusPublisher::new(Uuid::nil(), events, Duration::from_secs(1))),
+            program_status: Arc::new(ProgramStatusPublisher::new(Uuid::nil(), events, Duration::from_secs(1), None)),
+            foreground: Arc::new(ForegroundGroup::new(Uuid::nil(), None)),
         };
         (effects, writes, receiver)
     }
@@ -1789,7 +1977,7 @@ mod tests {
     fn publisher_sends_the_first_change_at_once_and_coalesces_the_rest_to_the_latest() {
         use crate::protocol::ProgramStatusState::{Blocked, Done, Working};
         let (events, mut rx) = broadcast::channel(16);
-        let publisher = ProgramStatusPublisher::new(Uuid::nil(), events, Duration::from_millis(400));
+        let publisher = ProgramStatusPublisher::new(Uuid::nil(), events, Duration::from_millis(400), None);
 
         publisher.update(record(Working));
         assert_eq!(next_root(&mut rx, Duration::from_millis(150)), Some(Some(Working)), "leading edge");
@@ -2932,6 +3120,119 @@ mod tests {
             }
         }
         assert_eq!(changes.last(), Some(&None), "exit publishes the cleared root: {changes:?}");
+    }
+
+    #[test]
+    fn reporter_left_foreground_only_on_a_readable_change_or_a_vanished_group() {
+        let exists = |_| true;
+        assert!(!reporter_left_foreground(10, Some(10), exists), "same group keeps");
+        assert!(reporter_left_foreground(10, Some(11), exists), "another foreground group drops");
+        assert!(reporter_left_foreground(10, Some(10), |_| false), "a vanished group drops");
+        assert!(!reporter_left_foreground(10, None, exists), "unreadable foreground keeps");
+        assert!(!reporter_left_foreground(10, None, |_| false), "unreadable foreground keeps");
+    }
+
+    fn ids_of(term: &TerminalState) -> Vec<String> {
+        term.program_status_records().into_iter().map(|record| record.id).collect()
+    }
+
+    #[test]
+    fn foreground_check_drops_working_and_blocked_and_keeps_done_and_error() {
+        let mut term = TerminalState::try_new(80, 24).expect("real terminal");
+        term.try_feed(
+            b"\x1b]7501;state=done:id=d\x07\x1b]7501;state=error:id=e\x07\
+              \x1b]7501;state=blocked:id=b\x07\x1b]7501;state=working\x07",
+        )
+        .expect("feed");
+        term.set_program_status_reporter(Some(10));
+
+        assert!(!drop_if_reporter_left(&mut term, Some(10), |_| true), "same group");
+        assert!(!drop_if_reporter_left(&mut term, None, |_| true), "unreadable foreground");
+        assert_eq!(ids_of(&term), vec!["", "b", "d", "e"]);
+
+        assert!(drop_if_reporter_left(&mut term, Some(11), |_| true));
+        assert_eq!(ids_of(&term), vec!["d", "e"]);
+        assert!(term.program_status_root().is_none());
+        assert!(!drop_if_reporter_left(&mut term, Some(12), |_| false), "nothing left to watch");
+    }
+
+    #[test]
+    fn foreground_check_ignores_records_whose_reporter_group_was_unreadable() {
+        let mut term = TerminalState::try_new(80, 24).expect("real terminal");
+        term.try_feed(b"\x1b]7501;state=working\x07").expect("feed");
+        term.set_program_status_reporter(None);
+        assert!(!drop_if_reporter_left(&mut term, Some(11), |_| false));
+        assert_eq!(ids_of(&term), vec![""]);
+    }
+
+    fn foreground_checks(sess: &Session) -> u64 {
+        sess.program_status.watch.as_ref().expect("session watch").checks.load(Ordering::SeqCst)
+    }
+
+    fn wait_until(what: &str, within: Duration, mut done: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + within;
+        while !done() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A job-control shell runs the reporter in its own foreground group; the
+    /// reporter dies by SIGKILL (no clear, no exit of the PTY leader, no OSC
+    /// 133), the shell takes the foreground back, and the live record goes.
+    #[test]
+    fn killed_foreground_reporter_under_a_job_control_shell_drops_live_records() {
+        let mut o = opts(vec!["bash", "--norc", "--noprofile", "-i"]);
+        o.env = vec![
+            ("PS1".into(), "$ ".into()),
+            ("BASH_SILENCE_DEPRECATION_WARNING".into(), "1".into()),
+        ];
+        let events = test_events();
+        let mut rx = events.subscribe();
+        let sess = Session::spawn(o, events).expect("spawn");
+        let shell_group = sess.pid().expect("shell pid") as libc::pid_t;
+        let foreground = || sess.program_status.watch.as_ref().expect("session watch").foreground.group();
+        wait_until("the shell to own the foreground", Duration::from_secs(5), || foreground() == Some(shell_group));
+
+        // A done record alone (reported by the shell itself) needs no checks.
+        sess.write_stdin(b"printf '\\033]7501;state=done:id=d\\007'\n").expect("write");
+        wait_until("the done record", Duration::from_secs(5), || !sess.program_status_records().is_empty());
+        std::thread::sleep(FOREGROUND_CHECK_INTERVAL * 2 + Duration::from_millis(100));
+        assert_eq!(foreground_checks(&sess), 0, "no working/blocked record: no foreground checks");
+
+        sess.write_stdin(b"sh -c \"printf '\\033]7501;state=working\\007'; exec sleep 30\"\n").expect("write");
+        wait_until("the working root", Duration::from_secs(5), || sess.info().program_status.is_some());
+        let reporter = foreground().expect("readable foreground group");
+        assert_ne!(reporter, shell_group, "job control runs the reporter in its own group");
+
+        // Its group keeps the foreground: checks run and keep the record.
+        wait_until("a foreground check", FOREGROUND_CHECK_INTERVAL * 3, || foreground_checks(&sess) > 0);
+        assert_eq!(
+            sess.info().program_status.map(|record| record.state),
+            Some(crate::protocol::ProgramStatusState::Working)
+        );
+
+        // SAFETY: signals only the reporter's own process group.
+        assert_eq!(unsafe { libc::kill(-reporter, libc::SIGKILL) }, 0);
+        let killed = std::time::Instant::now();
+        wait_until("the working root to drop", Duration::from_secs(5), || sess.info().program_status.is_none());
+        let latency = killed.elapsed();
+        assert!(latency <= FOREGROUND_CHECK_INTERVAL * 2, "dropped {latency:?} after the kill");
+        assert_eq!(ids_of(&sess.terminal.lock().expect("terminal")), vec!["d"], "done survives");
+        assert!(sess.alive(), "the shell (PTY leader) is still running");
+        // Published like any other change (paced), while the shell lives on.
+        let mut last = None;
+        wait_until("the cleared root event", PROGRAM_STATUS_EVENT_INTERVAL * 3, || {
+            while let Ok(event) = rx.try_recv() {
+                if let Event::ProgramStatusChanged { program_status, .. } = event {
+                    last = Some(program_status);
+                }
+            }
+            last == Some(None)
+        });
+
+        let _ = sess.kill(libc::SIGKILL);
+        assert!(sess.wait_for_exit(Duration::from_secs(5)));
     }
 
     #[test]

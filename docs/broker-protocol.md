@@ -432,6 +432,20 @@ per session, through libghostty-vt:
   and `idle` records while `done` and `error` survive; at most 256 records,
   evicting the least recently updated child (the root record is never
   evicted).
+- **Foreground drop.** A program run from a shell is not the PTY leader, so
+  its crash leaves the leader alive and, without OSC 133 shell integration,
+  no prompt mark arrives. The broker therefore reads "the process attached to
+  the terminal" as the PTY's foreground process group: each stored report
+  records the group in the foreground when the broker reads it (one per
+  session, replaced by every report). While a `working` or `blocked` record
+  exists the broker checks every 500 ms; when the foreground group differs
+  from the recorded one, or the recorded group no longer exists, it drops
+  records exactly as an OSC 133 prompt start does (same event). A change seen
+  at check time drops, even if the reporter would regain the foreground
+  later; there is no grace period. Sessions without `working`/`blocked`
+  records do no checks, and where the foreground group cannot be read
+  (`tcgetpgrp` on the master fails) only exit, prompt start and RIS drop
+  records.
 - **Byte fidelity.** OSC 7501 bytes are not stripped from `output_binary`,
   replay, or snapshots.
 - **Untrusted text.** `app`, `title` and `message` come from the program.
