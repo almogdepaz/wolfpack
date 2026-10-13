@@ -22,6 +22,7 @@ export interface ExtensionCatalogInstallation {
   readonly extensionId: string;
   readonly package: { readonly name: string; readonly version: string; readonly digest: string };
   readonly enabled: boolean;
+  readonly blobs?: Readonly<{ maxBlobBytes: number }> | null;
   readonly ui?: { readonly path: string; readonly url: string; readonly digest: string; readonly mime: "text/javascript" };
   readonly documents: readonly ExtensionCatalogDocument[];
 }

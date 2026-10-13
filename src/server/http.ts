@@ -142,36 +142,49 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+export function readBody(req: IncomingMessage, maxBytes?: number, preserveConnectionOnLimit?: boolean): Promise<string>;
+export function readBody(req: IncomingMessage, maxBytes: number, preserveConnectionOnLimit: boolean, raw: true): Promise<Buffer>;
 export function readBody(
   req: IncomingMessage,
   maxBytes = MAX_BODY,
   preserveConnectionOnLimit = false,
-): Promise<string> {
+  raw = false,
+): Promise<string | Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
-    req.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer) => {
       if (settled) return;
       size += chunk.length;
       if (size > maxBytes) {
         settled = true;
         chunks.length = 0;
+        req.off("data", onData);
         if (!preserveConnectionOnLimit) req.destroy();
+        else if (raw) req.pause();
         reject(new RequestBodyTooLargeError(maxBytes));
         return;
       }
       chunks.push(chunk);
-    });
+    };
+    req.on("data", onData);
     req.on("end", () => {
       if (settled) return;
       settled = true;
-      resolve(Buffer.concat(chunks).toString("utf-8"));
+      const bytes = Buffer.concat(chunks);
+      resolve(raw ? bytes : bytes.toString("utf-8"));
     });
     req.on("error", (error: Error) => {
       if (settled) return;
       settled = true;
       reject(error);
+    });
+    req.on("aborted", () => {
+      if (settled) return;
+      settled = true;
+      chunks.length = 0;
+      reject(new Error("request body aborted"));
     });
   });
 }

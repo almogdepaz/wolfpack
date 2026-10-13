@@ -5912,6 +5912,13 @@ extensionHost = extensionHostContainer ? new ExtensionHost({
   onPanelGeometryChange: () => scheduleGridStabilizedFit(),
   onWidgetAreasChange: (areas, collapsed) => workspaceShell?.setPanelAreas(areas, collapsed),
   onWidgetFocus: area => workspaceShell?.focusPanel(area),
+  composeTerminalInput: (sessionId, text) => {
+    if (state.currentView !== "terminal" || isGridActive() || (state.activeDelegationRoot && !state.focusedDelegationSession) || selectedExtensionScope()?.sessionId !== sessionId) return false;
+    msgInput.value = text;
+    msgInput.dispatchEvent(new Event("input", { bubbles: true }));
+    msgInput.focus();
+    return true;
+  },
   registerLayout: contribution => {
     const unregister = workspaceTerminalLayouts.register(contribution);
     const option = document.createElement("option");

@@ -29,7 +29,12 @@ export function parseExtensionCatalog(value: unknown): ExtensionCatalogEnvelope 
       if (!record(candidate.ui) || !safeRelativeAssetPath(candidate.ui.path) || !text(candidate.ui.url) || candidate.ui.url !== `/api/extensions/assets/${candidate.extensionId}/${candidate.package.digest}/${candidate.ui.path}` || !text(candidate.ui.digest) || !SHA256.test(candidate.ui.digest) || candidate.ui.mime !== "text/javascript") return catalogFailure();
       ui = Object.freeze({ path: candidate.ui.path, url: candidate.ui.url, digest: candidate.ui.digest, mime: "text/javascript" });
     }
-    return Object.freeze({ installationId: candidate.installationId, extensionId: candidate.extensionId, package: Object.freeze({ name: candidate.package.name, version: candidate.package.version, digest: candidate.package.digest }), enabled: candidate.enabled, ...(ui ? { ui } : {}), documents: Object.freeze(documents) });
+    let blobs: ExtensionCatalogInstallation["blobs"] = null;
+    if (candidate.blobs !== undefined && candidate.blobs !== null) {
+      if (!record(candidate.blobs) || !positiveSafeInteger(candidate.blobs.maxBlobBytes) || candidate.blobs.maxBlobBytes > 1048576 || Object.keys(candidate.blobs).some(key => key !== "maxBlobBytes")) return catalogFailure();
+      blobs = Object.freeze({ maxBlobBytes: candidate.blobs.maxBlobBytes });
+    }
+    return Object.freeze({ blobs, installationId: candidate.installationId, extensionId: candidate.extensionId, package: Object.freeze({ name: candidate.package.name, version: candidate.package.version, digest: candidate.package.digest }), enabled: candidate.enabled, ...(ui ? { ui } : {}), documents: Object.freeze(documents) });
   });
   return Object.freeze({ safeMode: value.safeMode, installations: Object.freeze(installations) });
 }

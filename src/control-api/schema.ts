@@ -1,4 +1,5 @@
 import { CREATABLE_HARNESSES } from "../agent-kind.ts";
+import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
 import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
@@ -79,7 +80,7 @@ type HttpRouteContract = {
   readonly operationId: string;
   readonly stable: boolean;
   readonly auth: "public" | "jwt-when-configured";
-  readonly requestContentType?: "application/json";
+  readonly requestContentType?: "application/json" | "application/octet-stream";
   readonly request?: JsonSchema;
   readonly response: JsonSchema;
   readonly errors: readonly string[];
@@ -412,6 +413,7 @@ export const controlApiSource: ControlApiSource = {
     "broker wire compatibility remains covered by broker codec/protocol tests, not by this schema",
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
+    "extension blob binary HTTP bodies use string/contentMediaType schema descriptions, not JSON encoding; runtime enforces declared byte ceilings, SHA-256 identity, installation+extension quotas and exact live-local session write authority",
     "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
     "volatile-v1 is the only task relay; all relay HTTP routes require loopback or trusted Tailnet access and inherit optional configured global auth; all visible online Tailnet peers are assumed honest, with canonical TLS routing and current epochs but no signatures, user/tag filtering, or key discovery (up to 1s local topology cache)",
     "relay profile metadata identifies the current RAM lifetime, not broker/worker readiness; restart loses active task state and never replays Pi session history",
@@ -428,6 +430,11 @@ export const controlApiSource: ControlApiSource = {
     ] },
     ExtensionId: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
     ExtensionInstallationId: { type: "string", format: "uuid" },
+    ExtensionBlobDigest: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    ExtensionBlobDeclaration: object({ maxBlobBytes: { type: "integer", minimum: 1, maximum: EXTENSION_BLOB_LIMITS.maxBlobBytes } }, ["maxBlobBytes"]),
+    ExtensionBlobSessionId: { type: "string", pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", description: "Exactly one session query parameter: a live local broker UUID authorizes writes/deletes; blobs themselves are installation+extension scoped." },
+    ExtensionBlobBytes: { type: "string", contentMediaType: "application/octet-stream", description: `Raw unencoded bytes, not JSON or base64. Runtime bounds bytes to the installed maxBlobBytes declaration (hard ceiling ${EXTENSION_BLOB_LIMITS.maxBlobBytes}); recomputes SHA-256 on PUT. Quota per installation+extension: ${EXTENSION_BLOB_LIMITS.maxBlobsPerInstallation} blobs / ${EXTENSION_BLOB_LIMITS.maxBlobBytesPerInstallation} bytes, no eviction.` },
+    ExtensionBlobReceipt: object({ digest: ref("ExtensionBlobDigest"), bytes: { type: "integer", minimum: 0, maximum: EXTENSION_BLOB_LIMITS.maxBlobBytes }, installationId: ref("ExtensionInstallationId"), extensionId: ref("ExtensionId"), created: boolean() }, ["digest", "bytes", "installationId", "extensionId", "created"]),
     SelectedExtensionMachine: { type: "string", pattern: `${TAILNET_NODE_ID_PATTERN.slice(0, -1)}:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, description: "Canonical server-verified Tailnet node ID and host installation UUID, not an origin. Selected-peer bearer uses X-Wolfpack-Extension-Peer-Authorization; local owner auth remains independent." },
     ExtensionPeerErrorEnvelope: object({ error: object({ code: { enum: [...Object.values(EXTENSION_PEER_ERROR), "INVALID_REQUEST"] }, message: string() }, ["code", "message"]) }, ["error"]),
     ExtensionDocumentCatalog: object({ id: ref("ExtensionId"), schemaVersion: { type: "integer", minimum: 1 } }, ["id", "schemaVersion"]),
@@ -435,7 +442,7 @@ export const controlApiSource: ControlApiSource = {
       installationId: ref("ExtensionInstallationId"), extensionId: ref("ExtensionId"),
       package: object({ name: string(), version: string(), digest: { type: "string", pattern: "^[a-f0-9]{64}$" } }, ["name", "version", "digest"]),
       enabled: boolean(), ui: object({ path: string(), url: string(), digest: { type: "string", pattern: "^[a-f0-9]{64}$" }, mime: { const: "text/javascript" } }, ["path", "url", "digest", "mime"]),
-      documents: arrayOf(ref("ExtensionDocumentCatalog")),
+      documents: arrayOf(ref("ExtensionDocumentCatalog")), blobs: { anyOf: [ref("ExtensionBlobDeclaration"), { type: "null" }] },
     }, ["installationId", "extensionId", "package", "enabled", "documents"]),
     ExtensionApiError: object({ code: string(), message: string(), currentRevision: { type: "integer", minimum: 0 } }, ["code", "message"]),
     ExtensionApiErrorEnvelope: object({ error: ref("ExtensionApiError") }, ["error"]),
@@ -965,6 +972,23 @@ export const controlApiSource: ControlApiSource = {
       request: object({ extensionId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["extensionId", "session"]),
       response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), status: ref("ProjectGitStatus") }, ["installationId", "scopeSessionId", "extensionId", "status"]),
       errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
+    },
+    "GET /api/extensions/blobs/{extensionId}/{digest}": {
+      operationId: "readExtensionBlob", stable: true, auth: "jwt-when-configured",
+      request: object({ extensionId: ref("ExtensionId"), digest: ref("ExtensionBlobDigest") }, ["extensionId", "digest"]),
+      response: { type: "string", contentMediaType: "application/octet-stream", description: "Raw blob bytes; Content-Type: application/octet-stream, Cache-Control: no-store, X-Wolfpack-Blob-Digest equals requested digest. No session/query parameters. Missing blob: 404 ASSET_NOT_FOUND; missing installation: 404 NOT_INSTALLED; disabled/safe mode: 409 DISABLED." },
+      errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "413 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
+    },
+    "PUT /api/extensions/blobs/{extensionId}/{digest}": {
+      operationId: "putExtensionBlob", stable: true, auth: "jwt-when-configured", requestContentType: "application/octet-stream",
+      // As with path/query-bearing read contracts, request describes transport inputs, not a JSON wrapper.
+      request: object({ extensionId: ref("ExtensionId"), digest: ref("ExtensionBlobDigest"), session: ref("ExtensionBlobSessionId"), body: ref("ExtensionBlobBytes") }, ["extensionId", "digest", "session", "body"], { description: "extensionId/digest are URL path fields, session is the sole query field, body is the raw octet-stream. New digest returns 201 created:true; existing digest returns 200 created:false. Mismatch/missing declaration: 400 INVALID_REQUEST; limit/quota: 413 QUOTA_EXCEEDED; disabled/safe mode: 409 DISABLED; dead session: 409 SCOPE_NOT_WRITABLE." }),
+      response: ref("ExtensionBlobReceipt"), errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "413 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
+    },
+    "DELETE /api/extensions/blobs/{extensionId}/{digest}": {
+      operationId: "deleteExtensionBlob", stable: true, auth: "jwt-when-configured",
+      request: object({ extensionId: ref("ExtensionId"), digest: ref("ExtensionBlobDigest"), session: ref("ExtensionBlobSessionId") }, ["extensionId", "digest", "session"], { description: "Same declaration/enabled/live-session authority as PUT; idempotent, 200 deleted:false when absent." }),
+      response: object({ digest: ref("ExtensionBlobDigest"), deleted: boolean() }, ["digest", "deleted"]), errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "413 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
     },
     "GET /api/extensions/documents/{extensionId}/{documentId}": {
       operationId: "readExtensionDocument", stable: true, auth: "jwt-when-configured",
