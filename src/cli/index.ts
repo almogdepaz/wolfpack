@@ -98,7 +98,7 @@ Commands:
   wolfpack logs [--follow|--json]  Read or follow service logs
   wolfpack events [--kinds ..] [--json] Follow live session and task events
   wolfpack extensions <action>     Install and manage local extension packages
-  wolfpack extension-data <action> Read or publish installed extension documents
+  wolfpack extension-data <action> Read/publish documents or put/delete extension blobs
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
   wolfpack --version               Print the installed version
 
@@ -261,7 +261,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
       "create", "open", "status", "read", "send", "wait", "prompt",
     ].includes(action ?? ""));
   }
-  if (family === "extension-data") return command.length === 1 || (command.length === 2 && ["read", "publish"].includes(action ?? ""));
+  if (family === "extension-data") return command.length === 1 || (command.length === 2 && ["read", "publish", "put-blob", "delete-blob"].includes(action ?? ""));
   return family === "agent"
     && (command.length === 1 || (command.length === 2 && action === "spawn"));
 }
@@ -272,7 +272,7 @@ function isMachineCommandSupported(argv: readonly string[]): boolean {
   if (family === "session") {
     return ["create", "open", "status", "read", "send", "wait", "prompt"].includes(action ?? "");
   }
-  if (family === "extension-data") return action === "read" || action === "publish";
+  if (family === "extension-data") return ["read", "publish", "put-blob", "delete-blob"].includes(action ?? "");
   return family === "agent" && action === "spawn";
 }
 
@@ -407,7 +407,7 @@ async function dispatchCommand(
   if (cmd === "kill") process.exit(await killSession(argv.slice(1), target));
   if (cmd === "extensions") process.exit(await extensionsCommand(argv.slice(1)));
   if (cmd === "extension-data") {
-    if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print(extensionDataUsage());
+    if ((argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) || (argv.length === 3 && ["read", "publish", "put-blob", "delete-blob"].includes(argv[1] ?? "") && HELP_ALIASES.has(argv[2] ?? ""))) print(extensionDataUsage());
     else process.exit(await extensionDataCommand(argv.slice(1), target));
     return;
   }

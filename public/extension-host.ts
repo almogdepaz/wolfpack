@@ -22,6 +22,7 @@ export interface ExtensionHostOptions {
   readonly container: HTMLElement;
   readonly scope: () => SelectedExtensionScope | null;
   readonly safeMode?: () => boolean;
+  readonly composeTerminalInput?: (sessionId: string, text: string) => boolean;
   readonly registerLayout?: (contribution: TerminalLayoutContribution) => ((options?: ExtensionLayoutUnregisterOptions) => void);
   readonly onCatalogReady?: () => void;
   readonly widgetVisible?: (installation: ExtensionCatalogInstallation) => boolean;
@@ -46,6 +47,7 @@ type DocumentPollState = "fresh" | "stale" | "paused" | "error";
 
 type JsonRecord = Record<string, unknown>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 
 function keyFor(installationId: string, extensionId: string, scopeId: string, suffix: string, machine?: string): string {
   const prefix = machine ? `wolfpack-extension-ui:v2:${machine}` : "wolfpack-extension-ui:v1";
@@ -396,7 +398,37 @@ export class ExtensionHost {
       if (!record(value) || value.installationId !== scope.installationId || value.scopeSessionId !== scope.sessionId || value.extensionId !== extensionId) throw new Error("project Git status identity mismatch");
       return parseProjectGitStatus(value.status);
     } });
-    return Object.freeze({ signal, scope: Object.freeze({ installationId: scope.installationId, sessionId: scope.sessionId }), selection: Object.freeze({ selectedSessionId: scope.sessionId }), theme: Object.freeze({}), storage: Object.freeze(storage), documents: Object.freeze({ read, subscribe }), project });
+    const current = (active = signal) => this.scopeIsCurrent(scope, active) && this.owners.get(viewId)?.extension === owner;
+    // The selected-machine proxy forwards catalog/asset/document/project reads only, so blob reads stay a local-host capability.
+    const blobs = owner?.blobs && !scope.machine ? Object.freeze({ read: async (digest: string, requestSignal?: AbortSignal): Promise<Uint8Array> => {
+      if (typeof digest !== "string" || !SHA256.test(digest)) throw new Error("invalid blob digest");
+      const active = requestSignal ? AbortSignal.any([signal, requestSignal]) : signal;
+      if (!current(active)) throw new Error("stale extension scope");
+      const response = await this.request(scope, `/api/extensions/blobs/${encodeURIComponent(extensionId)}/${digest}`, { cache: "no-store", signal: active });
+      if (!current(active)) throw new Error("stale extension scope");
+      if (!response.ok) { await response.body?.cancel(); throw new Error("extension blob unavailable"); }
+      if (!response.body) throw new Error("extension blob unavailable");
+      const limit = owner.blobs!.maxBlobBytes;
+      if (Number(response.headers.get("content-length")) > limit) { await response.body.cancel(); throw new Error("blob exceeds declared limit"); }
+      const reader = response.body.getReader(), chunks: Uint8Array[] = []; let length = 0;
+      try { while (true) { const part = await reader.read(); if (!current(active)) throw new Error("stale extension scope"); if (part.done) break; length += part.value.length; if (length > limit) throw new Error("blob exceeds declared limit"); chunks.push(part.value); } }
+      catch (error) { await reader.cancel().catch(() => {}); throw error; } finally { reader.releaseLock(); }
+      const bytes = new Uint8Array(length); let offset = 0; for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+      const actual = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      if (!current(active)) throw new Error("stale extension scope");
+      if (actual !== digest) throw new Error("blob digest mismatch");
+      return bytes;
+    } }) : undefined;
+    // Grid contexts can mount without an open single terminal; the injected app authority rejects those calls.
+    const terminal = this.options.composeTerminalInput && this.currentScope?.sessionId === scope.sessionId ? Object.freeze({ compose: (text: string): void => {
+      if (!current()) throw new Error("stale extension scope");
+      if (typeof text !== "string" || new TextEncoder().encode(text).length > 4096) throw new Error("terminal compose text exceeds 4096 UTF-8 bytes or is not a string");
+      if (!this.options.composeTerminalInput!(scope.sessionId, text)) throw new Error("terminal session is no longer selected");
+    } }) : undefined;
+    const theme: Record<string, string> = {};
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(document.documentElement) : null;
+    for (const key of "--bg-base --bg-deep --bg-surface --bg-elevated --bg-inset --bg-hover --border --border-subtle --border-strong --accent --accent-muted --text-primary --text-secondary --text-muted --text-dim --danger --warning --font-ui --font-mono --radius-sm --radius-md --radius-lg".split(" ")) { const value = style?.getPropertyValue(key).trim(); if (value) theme[key] = value; }
+    return Object.freeze({ signal, scope: Object.freeze({ installationId: scope.installationId, sessionId: scope.sessionId }), selection: Object.freeze({ selectedSessionId: scope.sessionId }), theme: Object.freeze(theme), storage: Object.freeze(storage), documents: Object.freeze({ read, subscribe }), project, ...(blobs ? { blobs } : {}), ...(terminal ? { terminal } : {}) });
   }
 
   private assertDeclaredDocument(owner: ExtensionCatalogInstallation | undefined, documentId: string): void {

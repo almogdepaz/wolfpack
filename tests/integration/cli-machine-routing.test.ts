@@ -65,6 +65,36 @@ afterEach(() => {
 });
 
 describe("remote machine cli network boundary", () => {
+  test.each(["put-blob", "delete-blob"])("extension-data %s help bypasses machine resolution", async action => {
+    const child = spawnCli(["--machine", "peer", "extension-data", action, "--help"], "http://127.0.0.1:1");
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(code).toBe(0); expect(stdout).toContain(`extension-data ${action}`); expect(stderr).toBe("");
+  });
+  test("routes blob mutations through verified machine handshake and authenticated binary requests", async () => {
+    const session = "11111111-1111-4111-8111-111111111111", bytes = Buffer.from([0, 255, 1]);
+    const digest = require("node:crypto").createHash("sha256").update(bytes).digest("hex");
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-blob-cli-")); tempHomes.push(home);
+    const file = join(home, "fixture.bin"); writeFileSync(file, bytes);
+    const paths: string[] = [];
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const url = new URL(request.url); paths.push(`${request.method} ${url.pathname}`);
+      expect(request.headers.get("authorization")).toMatch(/^Bearer /);
+      if (url.pathname === "/api/machine") return Response.json(handshake());
+      if (url.pathname === "/api/extensions") return Response.json({ safeMode: false, installations: [{ extensionId: "stage", enabled: true, blobs: { maxBlobBytes: 64 } }] });
+      expect(url.pathname).toBe(`/api/extensions/blobs/stage/${digest}`); expect(url.searchParams.get("session")).toBe(session);
+      if (request.method === "PUT") { expect(request.headers.get("content-type")).toBe("application/octet-stream"); expect(Buffer.from(await request.arrayBuffer())).toEqual(bytes); return Response.json({ digest, bytes: bytes.length, created: true }, { status: 201 }); }
+      expect(request.method).toBe("DELETE"); return Response.json({ digest, deleted: true });
+    } });
+    try {
+      for (const action of ["put-blob", "delete-blob"]) {
+        const args = action === "put-blob" ? ["--file", file] : ["--digest", digest];
+        const child = spawnCli(["--machine", "peer", "extension-data", action, "stage", "--session", session, ...args, "--json"], `http://127.0.0.1:${server.port}`);
+        const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+        expect(code).toBe(0); expect(stderr).toBe(""); expect(JSON.parse(stdout).digest).toBe(digest); expect(JSON.parse(stdout).machine).toEqual((handshake() as { machine: object }).machine);
+      }
+      expect(paths).toEqual(["GET /api/machine", "GET /api/extensions", `PUT /api/extensions/blobs/stage/${digest}`, "GET /api/machine", `DELETE /api/extensions/blobs/stage/${digest}`]);
+    } finally { server.stop(true); }
+  });
   test("authenticates the handshake and mutation, preserves sessionId, and emits canonical machine identity", async () => {
     const requests: Array<{ readonly path: string; readonly authorization: string | null }> = [];
     const server = Bun.serve({

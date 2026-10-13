@@ -27,6 +27,7 @@ export interface ExtensionManifest {
   readonly apiVersion: typeof EXTENSION_API_VERSION;
   readonly id: string;
   readonly ui?: string;
+  readonly blobs?: Readonly<{ maxBlobBytes: number }>;
   readonly skills: readonly string[];
   readonly documents: readonly ExtensionDocumentDeclaration[];
 }
@@ -53,6 +54,7 @@ const packageSchema = {
         apiVersion: { const: EXTENSION_API_VERSION },
         id: { type: "string", pattern: IDENTIFIER },
         ui: { type: "string", pattern: SAFE_RELATIVE_PATH, maxLength: 256 },
+        blobs: { type: "object", additionalProperties: false, required: ["maxBlobBytes"], properties: { maxBlobBytes: { type: "integer", minimum: 1, maximum: 1048576 } } },
         skills: {
           type: "array", maxItems: MAX_EXTENSION_CONTRIBUTIONS, uniqueItems: true,
           items: { type: "string", pattern: SAFE_RELATIVE_PATH, maxLength: 256 },

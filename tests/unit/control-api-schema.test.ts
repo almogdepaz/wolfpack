@@ -79,6 +79,26 @@ describe("control api schema generation", () => {
 });
 
 describe("control api schema", () => {
+  test("blob contracts describe binary authority and strict catalog/mutation envelopes", () => {
+    const session = "11111111-1111-4111-8111-111111111111", digest = "a".repeat(64);
+    const entry = { installationId: session, extensionId: "stage", package: { name: "stage", version: "1.0.0", digest }, enabled: true, documents: [] };
+    const catalog = httpResponse("listInstalledExtensions");
+    for (const blobs of [null, { maxBlobBytes: 1 }, { maxBlobBytes: 1048576 }]) expect(validate(catalog, { safeMode: false, installations: [{ ...entry, blobs }] }, artifact)).toEqual([]);
+    for (const blobs of [{ maxBlobBytes: 0 }, { maxBlobBytes: 1048577 }, { maxBlobBytes: 1.5 }, { maxBlobBytes: 64, extra: true }]) expect(validate(catalog, { safeMode: false, installations: [{ ...entry, blobs }] }, artifact)).not.toEqual([]);
+    const put = httpOperation("putExtensionBlob"), get = httpOperation("readExtensionBlob"), remove = httpOperation("deleteExtensionBlob");
+    expect(put).toMatchObject({ route: "PUT /api/extensions/blobs/{extensionId}/{digest}", stable: true, auth: "jwt-when-configured", requestContentType: "application/octet-stream" });
+    expect(get.response).toMatchObject({ type: "string", contentMediaType: "application/octet-stream" });
+    const input = { extensionId: "stage", digest, session, body: "raw binary bytes" };
+    expect(validate(put.request, input, artifact)).toEqual([]);
+    expect(validate(put.request, { ...input, digest: "A".repeat(64) }, artifact)).not.toEqual([]);
+    expect(validate(remove.request, { extensionId: "stage", digest, session: "name" }, artifact)).not.toEqual([]);
+    expect(validate(get.request, { extensionId: "stage", digest, session }, artifact)).not.toEqual([]);
+    expect(put.errors).toContain("413 ExtensionApiErrorEnvelope");
+    expect(validate(put.response, { installationId: session, extensionId: "stage", digest, bytes: 64, created: true }, artifact)).toEqual([]);
+    expect(validate(put.response, { installationId: session, extensionId: "stage", digest, bytes: 1048577, created: true }, artifact)).not.toEqual([]);
+    expect(validate(remove.response, { digest, deleted: false }, artifact)).toEqual([]);
+    expect(validate(remove.response, { digest, deleted: "false" }, artifact)).not.toEqual([]);
+  });
   test("publishes the runtime asset route with extension ID and immutable package digest", () => {
     expect(httpOperation("getInstalledExtensionAsset").route).toBe("GET /api/extensions/assets/{extensionId}/{packageDigest}/{assetPath}");
   });

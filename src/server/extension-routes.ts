@@ -1,12 +1,13 @@
 import { EXTENSION_PEER_PREFIX } from "../extensions/selected-host-contract.ts";
 import { ExtensionPeerProxy, type ExtensionPeerProxyOptions } from "./extension-peer-proxy.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { ExtensionBlobStore } from "../extensions/blob-store.ts";
 import { ExtensionDocumentError, ExtensionDocumentStore, type ExtensionDocumentKey } from "../extensions/document-contract.ts";
 import { ExtensionRuntime, ExtensionRuntimeError, getExtensionRuntime } from "../extensions/runtime.ts";
 import { EXTENSION_API_ERROR, type ExtensionApiErrorCode } from "../extensions/runtime-contract.ts";
 import type { SessionBackend } from "./backend-contract.ts";
 import { getBackend } from "./backend.ts";
-import { json, parseObjectBody } from "./http.ts";
+import { json, parseObjectBody, readBody, RequestBodyTooLargeError } from "./http.ts";
 import { readProjectGitStatus } from "./project-git-status.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -35,6 +36,7 @@ export class ExtensionRouteService {
     if (req.method === "GET" && url.pathname.startsWith(assetPrefix)) { const rest = url.pathname.slice(assetPrefix.length).split("/"); const assetPath = rest.slice(2).join("/"); if (rest.length < 3 || !/^[a-z][a-z0-9-]{0,63}$/.test(rest[0]!) || !/^[a-f0-9]{64}$/.test(rest[1]!) || !assetPath.endsWith(".js")) { error(res, EXTENSION_API_ERROR.ASSET_NOT_FOUND, "extension asset is not allowlisted", 404); return true; } try { if (this.safeMode()) throw new ExtensionRuntimeError("DISABLED", "safe mode prevents extension asset delivery"); const asset = this.runtime.asset(rest[0]!, rest[1]!, assetPath); noStore(res); res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "X-Wolfpack-Extension-Digest": asset.digest }); res.end(asset.bytes); } catch (value) { documentError(res, value); } return true; }
     const git = /^\/api\/extensions\/project\/git-status\/([a-z][a-z0-9-]{0,63})$/.exec(url.pathname);
     if (req.method === "GET" && git) { await this.projectGitStatus(res, url, git[1]!); return true; }
+    if (url.pathname.startsWith("/api/extensions/blobs/")) { await this.blob(req, res, url); return true; }
     const path = ids(url.pathname, "/api/extensions/documents/"); if (!path) return false;
     const sessionId = req.method === "GET" ? url.searchParams.get("session") : undefined;
     if (req.method === "GET") { if (!sessionId || !UUID.test(sessionId)) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "session must be an exact canonical UUID", 400); return true; } try { const installation = this.runtime.get(path.extensionId); const key: ExtensionDocumentKey = { installationId: installation.installationId, scopeSessionId: sessionId, extensionId: path.extensionId, documentId: path.documentId }; const saved = this.store.read(key); noStore(res); json(res, { installationId: installation.installationId, scopeSessionId: sessionId, extensionId: path.extensionId, documentId: path.documentId, revision: saved?.revision ?? 0, document: saved?.document ?? null }); } catch (value) { documentError(res, value); } return true; }
@@ -42,6 +44,47 @@ export class ExtensionRouteService {
     const body = await parseObjectBody(req, res, { maxBytes: 72 * 1024, invalidResponse: { envelope: { error: { code: EXTENSION_API_ERROR.INVALID_REQUEST, message: "body must be a JSON object" } }, status: 400 }, tooLargeResponse: { envelope: { error: { code: EXTENSION_API_ERROR.QUOTA_EXCEEDED, message: "document request exceeds limit" } }, status: 413 }, respondOnTooLarge: true }); if (!body) return true;
     if (!Object.keys(body).every((key) => ["sessionId", "document", "ifRevision", "requestId", "schemaVersion"].includes(key)) || !UUID.test(String(body.sessionId ?? ""))) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "publish requires exact sessionId, document, ifRevision, requestId and schemaVersion", 400); return true; }
     try { const declaration = this.runtime.declaration(path.extensionId, path.documentId); if (body.schemaVersion !== declaration.document.schemaVersion) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "schemaVersion must match the installed document declaration", 400); return true; } const installation = declaration.entry; const key: ExtensionDocumentKey = { installationId: installation.installationId, scopeSessionId: body.sessionId as string, extensionId: path.extensionId, documentId: path.documentId }; const receipt = await this.store.publish({ key, document: body.document, ifRevision: body.ifRevision as number, requestId: body.requestId as string, schemaVersion: declaration.document.schemaVersion }, this.runtime.schema(key)); noStore(res); json(res, { receipt }); } catch (value) { documentError(res, value); } return true;
+  }
+
+  private async blob(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const path = /^\/api\/extensions\/blobs\/([a-z][a-z0-9-]{0,63})\/([a-f0-9]{64})$/.exec(url.pathname);
+    if (!path || !["GET", "PUT", "DELETE"].includes(req.method ?? "")) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "invalid blob request", 400); return; }
+    const extensionId = path[1]!, digest = path[2]!;
+    try {
+      const declaration = this.runtime.blobDeclaration(extensionId);
+      const authority = async () => {
+        const current = this.runtime.blobDeclaration(extensionId);
+        if (this.safeMode() || !current.entry.enabled || current.entry.package.digest !== declaration.entry.package.digest) throw new ExtensionRuntimeError("DISABLED", "blob channel is disabled");
+        if (!current.blobs) throw new ExtensionDocumentError("INVALID_DOCUMENT", "extension has no declared blob channel");
+        if (req.method !== "GET") {
+          const sessionId = url.searchParams.get("session");
+          if (!sessionId || !UUID.test(sessionId) || url.searchParams.getAll("session").length !== 1 || [...url.searchParams.keys()].some(key => key !== "session")) throw new ExtensionDocumentError("INVALID_KEY", "session must be an exact canonical UUID");
+          const facts = await this.backend.listSessionFacts();
+          if (!facts.some(fact => fact.alive && fact.identity?.wolfpackSessionId === sessionId)) throw new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "blobs require a live exact scope session UUID");
+          const latest = this.runtime.get(extensionId);
+          if (this.safeMode() || !latest.enabled || latest.package.digest !== declaration.entry.package.digest) throw new ExtensionRuntimeError("DISABLED", "blob channel scope changed");
+        } else if ([...url.searchParams.keys()].length) throw new ExtensionDocumentError("INVALID_KEY", "blob reads accept no session or query parameters");
+      };
+      await authority();
+      const store = new ExtensionBlobStore({ root: this.runtime.root }), key = { installationId: declaration.entry.installationId, extensionId };
+      noStore(res);
+      if (req.method === "GET") { const bytes = store.read(key, digest); if (!bytes) { error(res, EXTENSION_API_ERROR.ASSET_NOT_FOUND, "blob not found", 404); return; } res.writeHead(200, { "Content-Type": "application/octet-stream", "X-Wolfpack-Blob-Digest": digest }); res.end(bytes); return; }
+      if (req.method === "DELETE") { json(res, { digest, deleted: store.delete(key, digest) }); return; }
+      if (req.headers["content-type"] !== "application/octet-stream") throw new ExtensionDocumentError("INVALID_DOCUMENT", "blob body must be application/octet-stream");
+      const limit = Math.min(declaration.blobs!.maxBlobBytes, 1048576);
+      let body: Buffer;
+      try {
+        if (Number(req.headers["content-length"]) > limit) throw new RequestBodyTooLargeError(limit);
+        body = await readBody(req, limit, true, true);
+      } catch (value) {
+        if (!(value instanceof RequestBodyTooLargeError)) throw value;
+        // Stop consuming now, but deliver 413 before closing the upload socket.
+        req.pause(); res.setHeader("Connection", "close"); res.once("finish", () => req.destroy());
+        throw new ExtensionDocumentError("QUOTA_EXCEEDED", "blob request exceeds limit");
+      }
+      await authority();
+      const receipt = store.put(key, digest, body, limit); json(res, receipt, receipt.created ? 201 : 200);
+    } catch (value) { documentError(res, value); }
   }
 
   private async projectGitStatus(res: ServerResponse, url: URL, extensionId: string): Promise<void> {

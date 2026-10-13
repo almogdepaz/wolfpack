@@ -49,14 +49,21 @@ export function readValidatedJsonFile<T>(
 
 /** Atomic, owner-only JSON persistence with file and best-effort directory durability. */
 export function writePrivateJsonFile(path: string, value: unknown): void {
+  writePrivateFile(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** Suffix protocol used by writePrivateFile; owner-private stores may recover regular crash leftovers. */
+export const PRIVATE_FILE_TEMP_SUFFIX_PATTERN = String.raw`\.tmp-\d+-[a-f0-9]+`;
+
+/** Binary callers may require directory fsync rather than the portable JSON fallback. */
+export function writePrivateFile(path: string, bytes: string | Uint8Array, requireDirectorySync = false): void {
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
   let fd: number | undefined;
   try {
     fd = openSync(tmp, "wx", 0o600);
-    writeFileSync(fd, `${JSON.stringify(value, null, 2)}
-`);
+    writeFileSync(fd, bytes);
     fsyncSync(fd);
     closeSync(fd);
     fd = undefined;
@@ -64,7 +71,7 @@ export function writePrivateJsonFile(path: string, value: unknown): void {
     try {
       const dirFd = openSync(directory, "r");
       try { fsyncSync(dirFd); } finally { closeSync(dirFd); }
-    } catch { /* directory fsync is not supported on every platform */ }
+    } catch (error) { if (requireDirectorySync) throw error; /* directory fsync is not supported on every platform */ }
   } finally {
     if (fd !== undefined) closeSync(fd);
     rmSync(tmp, { force: true });
