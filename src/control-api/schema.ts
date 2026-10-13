@@ -1007,6 +1007,12 @@ export const controlApiSource: ControlApiSource = {
       response: { type: "string", contentMediaType: "text/javascript" },
       errors: SELECTED_EXTENSION_ERRORS,
     },
+    "GET /api/extensions/peer/{machine}/blobs/{extensionId}/{digest}": {
+      operationId: "readSelectedPeerExtensionBlob", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), digest: ref("ExtensionBlobDigest") }, ["machine", "extensionId", "digest"]),
+      response: { type: "string", contentMediaType: "application/octet-stream", description: "Raw blob bytes re-verified against the requested digest; Content-Type: application/octet-stream, Cache-Control: no-store, X-Wolfpack-Blob-Digest. Bounded by the peer's declared maxBlobBytes. Undeclared channel: 403; missing blob: 404." },
+      errors: SELECTED_EXTENSION_ERRORS,
+    },
     "GET /api/extensions/peer/{machine}/documents/{extensionId}/{documentId}": {
       operationId: "readSelectedPeerExtensionDocument", stable: true, auth: "jwt-when-configured",
       request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["machine", "extensionId", "documentId", "session"]),

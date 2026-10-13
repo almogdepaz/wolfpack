@@ -20,7 +20,7 @@ HTTP: `PUT` and `DELETE /api/extensions/blobs/<extensionId>/<sha256>?session=<uu
 
 oversized uploads return HTTP 413 and close the connection. the shared HTTP reader stops buffering; the blob route pauses the upload and destroys the request after the response finishes, rather than destroying the socket before 413 can be sent. uploads are not drained indefinitely.
 
-views declaring the channel receive `context.blobs.read(digest, signal?)`, returning a verified `Uint8Array`. reads are bounded and uncached; stale scope or digest mismatch rejects. `context.blobs` is present only for the local host: the selected-machine proxy forwards catalog, asset, document and project reads, not blobs.
+views declaring the channel receive `context.blobs.read(digest, signal?)`, returning a verified `Uint8Array`. reads are bounded and uncached; stale scope or digest mismatch rejects. for a selected-machine scope the local server proxies the read (`GET /api/extensions/peer/<machine>/blobs/<ext>/<digest>`), re-verifies the digest and bounds it by the peer's declared `maxBlobBytes`.
 
 `context.terminal?.compose(text)` replaces the selected terminal input draft, dispatches its normal input handling and focuses it; **it never sends**. text must be a string of at most 4096 UTF-8 bytes. stale scopes and mismatched/open-grid terminals throw. the host exposes this optional capability for a selected context when app integration is available; because a selected grid context need not be the open single terminal, callers must handle rejection.
 

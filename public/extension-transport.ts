@@ -21,7 +21,7 @@ export interface ExtensionTransportOptions {
   /** May reduce, never enlarge, the complete remote-response deadline. */
   readonly timeoutMs?: number;
 }
-const { timeoutMs: REMOTE_REQUEST_TIMEOUT_MS, catalog: CATALOG_MAX_BYTES, asset: ASSET_MAX_BYTES, document: DOCUMENT_MAX_BYTES, project: PROJECT_MAX_BYTES, error: ERROR_MAX_BYTES } = EXTENSION_PEER_LIMITS;
+const { timeoutMs: REMOTE_REQUEST_TIMEOUT_MS, catalog: CATALOG_MAX_BYTES, asset: ASSET_MAX_BYTES, blob: BLOB_MAX_BYTES, document: DOCUMENT_MAX_BYTES, project: PROJECT_MAX_BYTES, error: ERROR_MAX_BYTES } = EXTENSION_PEER_LIMITS;
 
 /** Deadline covers headers AND body; hostile cancellation is never awaited. */
 async function boundedProxyResponse(authFetch: typeof browserAuthFetch, proxy: string, suffix: string, init: RequestInit, timeoutMs: number | undefined): Promise<Response> {
@@ -42,7 +42,7 @@ async function boundedProxyResponse(authFetch: typeof browserAuthFetch, proxy: s
     if (signal.aborted) throw new Error("selected host request cancelled");
     response = await Promise.race([authFetch(proxy, { ...init, signal }).then(value => { if (signal.aborted) cancelResponse(value); return value; }), aborted]);
     if (response.redirected || (response.url && response.url !== new URL(proxy, location.href).href)) throw new Error("selected host response redirected");
-    const maximum = !response.ok ? ERROR_MAX_BYTES : suffix.startsWith("assets/") ? ASSET_MAX_BYTES : suffix.startsWith("documents/") ? DOCUMENT_MAX_BYTES : suffix.startsWith("project/") ? PROJECT_MAX_BYTES : CATALOG_MAX_BYTES;
+    const maximum = !response.ok ? ERROR_MAX_BYTES : suffix.startsWith("assets/") ? ASSET_MAX_BYTES : suffix.startsWith("blobs/") ? BLOB_MAX_BYTES : suffix.startsWith("documents/") ? DOCUMENT_MAX_BYTES : suffix.startsWith("project/") ? PROJECT_MAX_BYTES : CATALOG_MAX_BYTES;
     const declared = response.headers.get("content-length");
     if (declared !== null && (!/^\d{1,16}$/.test(declared) || Number(declared) > maximum)) throw new Error("selected host response exceeds limit");
     let size = 0;

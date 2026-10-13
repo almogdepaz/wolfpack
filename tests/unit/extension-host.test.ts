@@ -379,6 +379,26 @@ describe("ExtensionHost", () => {
     } finally { host.dispose(); globalThis.getComputedStyle = previous; }
     expect(() => context.terminal!.compose("after dispose")).toThrow("stale");
   });
+  test("exposes verified blob reads for a selected-machine scope through the selected host fetch", async () => {
+    container = new FakeElement();
+    const machine = `node-a:${installationId}`;
+    const bytes = new Uint8Array([7, 8, 9]); const digest = require("node:crypto").createHash("sha256").update(bytes).digest("hex");
+    const reads: Array<[string, string]> = [];
+    let context!: ExtensionViewContext;
+    const host = new ExtensionHost({ container: container as unknown as HTMLElement, scope: () => ({ sessionId: "22222222-2222-4222-8222-222222222222", machine }),
+      consentRemoteCode: async () => true,
+      selectedHostFetch: async (scope, path) => {
+        if (path === "/api/extensions") return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "stage", enabled: true, blobs: { maxBlobBytes: 64 }, package: { name: "stage", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/stage/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
+        reads.push([scope.machine!, path]); return new Response(bytes, { headers: { "Content-Type": "application/octet-stream" } });
+      },
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => register.registerContextView({ id: "view", title: "Stage", mount(_root, value) { context = value; return { dispose() {} }; } }) })) as never,
+    });
+    try {
+      await host.refresh(); host.select();
+      expect(await context.blobs!.read(digest)).toEqual(bytes);
+      expect(reads).toEqual([[machine, `/api/extensions/blobs/stage/${digest}`]]);
+    } finally { host.dispose(); }
+  });
   test("derives area membership once per render, including native repair and collapsed peek", () => {
     container = new FakeElement();
     const layout = new WidgetLayout({ getItem: () => null, setItem() {} });

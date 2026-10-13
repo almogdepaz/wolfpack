@@ -2,7 +2,8 @@ import { isStableMachineIdentity } from "../tailnet-peer-registry.ts";
 
 export const EXTENSION_PEER_AUTH_HEADER = "X-Wolfpack-Extension-Peer-Authorization";
 export const EXTENSION_PEER_PREFIX = "/api/extensions/peer/";
-export const EXTENSION_PEER_LIMITS = { timeoutMs: 5_000, active: 8, handshake: 32 * 1024, catalog: 256 * 1024, asset: 1024 * 1024, document: 72 * 1024, project: 256 * 1024, error: 2048 } as const;
+/** blob matches the blob-store hard ceiling; the proxy tightens it to the peer's declared maxBlobBytes. */
+export const EXTENSION_PEER_LIMITS = { timeoutMs: 5_000, active: 8, handshake: 32 * 1024, catalog: 256 * 1024, asset: 1024 * 1024, blob: 1024 * 1024, document: 72 * 1024, project: 256 * 1024, error: 2048 } as const;
 export const EXTENSION_PEER_ERROR = {
   AUTH_REQUIRED: "PEER_AUTH_REQUIRED", FORBIDDEN: "PEER_FORBIDDEN", UNAVAILABLE: "PEER_UNAVAILABLE",
   INCOMPATIBLE: "PEER_INCOMPATIBLE", RESPONSE_INVALID: "PEER_RESPONSE_INVALID", BUSY: "PEER_BUSY", TIMEOUT: "PEER_TIMEOUT",
@@ -18,6 +19,7 @@ export function extensionProxySuffix(path: string): string {
   if (url.origin !== "http://extension.invalid" || path !== url.pathname + url.search || url.hash) throw new Error("invalid extension read path");
   const asset = new RegExp(`^/api/extensions/assets/${ID}/[a-f0-9]{64}/[A-Za-z0-9._@+/-]+\\.js$`);
   if (asset.test(path) && !path.slice("/api/extensions/assets/".length).split("/").some(part => !part || part === "." || part === "..")) return path.slice("/api/extensions/".length);
+  if (new RegExp(`^/api/extensions/blobs/${ID}/[a-f0-9]{64}$`).test(path)) return path.slice("/api/extensions/".length);
   if (!new RegExp(`^/api/extensions/(?:documents/${ID}/${ID}|project/git-status/${ID})$`).test(url.pathname)) throw new Error("invalid extension read path");
   const session = url.searchParams.get("session");
   if (!session || !UUID.test(session) || url.search !== `?session=${session}`) throw new Error("invalid extension read selector");
@@ -30,6 +32,7 @@ export function selectedExtensionUrl(machine: string, path: string): string {
 export type ExtensionPeerRead =
   | { readonly kind: "catalog"; readonly path: string; readonly maxBytes: number }
   | { readonly kind: "asset"; readonly path: string; readonly maxBytes: number; readonly extensionId: string }
+  | { readonly kind: "blob"; readonly path: string; readonly maxBytes: number; readonly extensionId: string; readonly digest: string }
   | { readonly kind: "document"; readonly path: string; readonly maxBytes: number; readonly extensionId: string; readonly documentId: string; readonly sessionId: string }
   | { readonly kind: "project"; readonly path: string; readonly maxBytes: number; readonly extensionId: string; readonly sessionId: string };
 
@@ -45,6 +48,7 @@ export function parseExtensionPeerRead(raw: string): { readonly machine: string;
   let read: ExtensionPeerRead;
   if (suffix === "catalog") read = { kind: "catalog", path, maxBytes: EXTENSION_PEER_LIMITS.catalog };
   else if (parts[3] === "assets") read = { kind: "asset", path, extensionId: parts[4]!, maxBytes: EXTENSION_PEER_LIMITS.asset };
+  else if (parts[3] === "blobs") read = { kind: "blob", path, extensionId: parts[4]!, digest: parts[5]!, maxBytes: EXTENSION_PEER_LIMITS.blob };
   else if (parts[3] === "documents") read = { kind: "document", path, extensionId: parts[4]!, documentId: parts[5]!, sessionId: url.searchParams.get("session")!, maxBytes: EXTENSION_PEER_LIMITS.document };
   else read = { kind: "project", path, extensionId: parts[5]!, sessionId: url.searchParams.get("session")!, maxBytes: EXTENSION_PEER_LIMITS.project };
   return { machine, nodeId: machine.slice(0, identitySeparator), installationId: machine.slice(identitySeparator + 1), read };

@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -30,6 +30,8 @@ export interface InstalledPeer {
   readonly token: string;
   readonly trace: Trace[];
   readonly stalled: ServerResponse[];
+  /** Peer a declares the blob channel and stores one blob; peer b declares none. */
+  readonly blob: { readonly digest: string; readonly bytes: Uint8Array } | undefined;
   readonly base: string;
   readonly server: Server;
   safeMode: boolean;
@@ -66,7 +68,7 @@ export async function createSelectedHostFixture(options: { readonly timeoutMs?: 
     const init = Bun.spawnSync(["git", "init", `--initial-branch=branch-${key}`, project], { stdout: "pipe", stderr: "pipe" });
     if (init.exitCode !== 0) throw new Error("owned git fixture initialization failed");
     writeFileSync(join(project, `only-${key}.txt`), key);
-    writeFileSync(join(source, "package.json"), JSON.stringify({ name: `remote-only-notes-${key}`, version: "1.0.0", wolfpack: { manifestVersion: 1, apiVersion: 1, id: "notes", ui: "dist/ui.js", skills: [], documents: [{ id: "context", schemaVersion: 1, schema: "schemas/context.json" }] } }));
+    writeFileSync(join(source, "package.json"), JSON.stringify({ name: `remote-only-notes-${key}`, version: "1.0.0", wolfpack: { manifestVersion: 1, apiVersion: 1, id: "notes", ui: "dist/ui.js", skills: [], documents: [{ id: "context", schemaVersion: 1, schema: "schemas/context.json" }], ...(key === "a" ? { blobs: { maxBlobBytes: 4096 } } : {}) } }));
     writeFileSync(join(source, "schemas/context.json"), JSON.stringify({ type: "string" }));
     writeFileSync(join(source, "dist/ui.js"), `globalThis.remoteBundleEvaluations=(globalThis.remoteBundleEvaluations||0)+1; export default host=>host.registerContextView({id:'scope',title:'Selected notes',mount(root,context){const code=document.createElement('p'),doc=document.createElement('p'),git=document.createElement('p'),draft=document.createElement('textarea');code.textContent='code ${key}';code.dataset.peerCode='${key}';doc.dataset.peerDocument='${key}';git.dataset.peerGit='${key}';draft.setAttribute('aria-label','Selected widget draft');draft.value=context.storage.get('draft')||'';draft.oninput=()=>context.storage.set('draft',draft.value);root.append(code,doc,git,draft);context.documents.subscribe('context',value=>doc.textContent=value||'empty');context.project.gitStatus().then(value=>git.textContent=value.state==='ready'?value.branch+':'+value.untracked.map(file=>file.path).join(','):value.state);return{dispose(){globalThis.remoteViewDisposals=(globalThis.remoteViewDisposals||0)+1}}}});`);
     const runtime = new ExtensionRuntime({ root: join(root, key, "runtime"), installationId: IDS[key] });
@@ -98,8 +100,13 @@ export async function createSelectedHostFixture(options: { readonly timeoutMs?: 
       if (!await service.handle(req, res, url)) { res.writeHead(404); res.end(); }
       if (url.pathname === "/api/extensions") peer.afterCatalog?.();
     });
-    peer = { key, identity: `node-${key}:${IDS[key]}`, origin: `https://${key}.fixture.ts.net`, runtime, token: fixtureToken(secret), trace: [], stalled: [], server, base: await listen(server), safeMode: false, online: true, mode: "normal" };
+    const blobBytes = new TextEncoder().encode(`blob ${key}`), blobDigest = createHash("sha256").update(blobBytes).digest("hex");
+    peer = { key, identity: `node-${key}:${IDS[key]}`, origin: `https://${key}.fixture.ts.net`, runtime, token: fixtureToken(secret), trace: [], stalled: [], server, base: await listen(server), safeMode: false, online: true, mode: "normal", blob: key === "a" ? { digest: blobDigest, bytes: blobBytes } : undefined };
     peers.push(peer);
+    if (peer.blob) {
+      const stored = await fetch(`${peer.base}/api/extensions/blobs/notes/${blobDigest}?session=${SELECTED_HOST_SESSION}`, { method: "PUT", headers: { Authorization: `Bearer ${peer.token}`, "Content-Type": "application/octet-stream" }, body: blobBytes });
+      if (stored.status !== 201) throw new Error(`owned blob fixture storage failed: ${stored.status}`);
+    }
     const published = await fetch(`${peer.base}/api/extensions/documents/notes/context`, { method: "POST", headers: { Authorization: `Bearer ${peer.token}`, "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: SELECTED_HOST_SESSION, document: `document ${key}`, ifRevision: 0, requestId: key === "a" ? "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" : "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", schemaVersion: 1 }) });
     if (published.status !== 200) throw new Error(`owned document fixture publication failed: ${published.status}`);
     peer.trace.length = 0;
