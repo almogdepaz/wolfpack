@@ -19,8 +19,8 @@ const PACKAGE_JSON = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"
   readonly files: readonly string[];
 };
 const LOCK = JSON.parse(readFileSync(join(ROOT, "ghostty-vt.lock.json"), "utf-8")) as GhosttyLock;
-const UUCODE_SOURCE_URL = "https://deps.files.ghostty.org/uucode-2826a37a4562284fdacd8fa029d49509cc9bffcd.tar.gz";
-const UUCODE_ZIG_PACKAGE_HASH = "sha256-R5RXW5tWIaDq5JOF2+oWd5YOYOyns6WH7f687WE+b20=";
+const UUCODE_SOURCE_URL = "https://github.com/jacobsandlund/uucode/archive/9d55524551411b493cca41ca06363625d90aff1e.tar.gz";
+const UUCODE_ZIG_PACKAGE_HASH = "sha256-KZbp/0dlJc5BdxM19ZOXH74WEjEilTvzie/BjT1aYvw=";
 
 const EXPECTED_LICENSE_HASHES: Record<string, string> = {
   "BEGIN GHOSTTY MIT LICENSE": "386211873e5b7a02f663ae4d7adf96285999f91608f8f9f31fecfd0f4095e6f1",

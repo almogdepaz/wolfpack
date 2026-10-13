@@ -26,6 +26,7 @@ import type {
   PublicSessionIdentity,
 } from "./session-identity.js";
 import type { SessionInspectionResult } from "../session-status-contract.js";
+import type { ProgramStatusRecord } from "../program-status-contract.js";
 import { resolveSessionSelector } from "./session-selector.js";
 
 export interface MockBackendOptions {
@@ -38,6 +39,7 @@ export interface MockBackendOptions {
 export class MockBackend implements SessionBackend {
   private _sessions: Set<string>;
   private _outputSequences: Map<string, string>;
+  private readonly _programStatus = new Map<string, ProgramStatusRecord>();
   private _capturePane: (session: string) => Promise<string>;
   private _onBeforeCreate: ((name: string) => void) | null;
   private readonly _parentSessions = new Map<string, ParentSessionIdentity>();
@@ -96,6 +98,11 @@ export class MockBackend implements SessionBackend {
     else this._outputSequences.set(name, outputSequence);
   }
 
+  setProgramStatus(name: string, record: ProgramStatusRecord | undefined): void {
+    if (record === undefined) this._programStatus.delete(name);
+    else this._programStatus.set(name, record);
+  }
+
   setOnAfterPrefill(fn: ((name: string, seq: bigint) => void) | null): void {
     this._onAfterPrefill = fn;
   }
@@ -114,6 +121,7 @@ export class MockBackend implements SessionBackend {
         outputSequence: this._outputSequences.get(name),
       }),
       ...(identities[name] && { identity: identities[name] }),
+      ...(this._programStatus.has(name) && { programStatus: this._programStatus.get(name) }),
     }));
   }
 

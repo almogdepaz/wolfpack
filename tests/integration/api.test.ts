@@ -433,6 +433,35 @@ describe("GET /api/sessions", () => {
     expect(data.sessions[0].runtimeState).toMatchObject({ state: "output" });
   });
 
+  test("a blocked OSC 7501 root record drives runtime state with its typed kind and message", async () => {
+    mockBackend.setProgramStatus("wolf-1", {
+      id: "",
+      state: "blocked",
+      kind: "permission",
+      app: "claude",
+      message: "Apply these changes?",
+      updatedAtMs: 1_700_000_000_000,
+    });
+    try {
+      const data = await (await get("/api/sessions")).json();
+      const blocked = data.sessions.find((session: { readonly name: string }) => session.name === "wolf-1");
+      const other = data.sessions.find((session: { readonly name: string }) => session.name === "wolf-2");
+
+      expect(blocked.runtimeState).toMatchObject({
+        state: "needs-input",
+        authority: "program",
+        source: "program-status",
+        inputKind: "permission",
+        app: "claude",
+        message: "Apply these changes?",
+      });
+      expect(other.runtimeState).toMatchObject({ authority: "fallback" });
+      expect(validateSchema(responseSchema("listSessions"), data, controlApiSchema)).toEqual([]);
+    } finally {
+      mockBackend.setProgramStatus("wolf-1", undefined);
+    }
+  });
+
   test("classifies idle when the rendered snapshot is unavailable", async () => {
     mockBackend.setCapturePane(async () => "last rendered output\n");
     await get("/api/sessions");

@@ -25,6 +25,8 @@ import type {
   AgentStatusSourceKind,
   AgentStatusState,
 } from "../agent-status-contract.js";
+import { programStatusAgentState } from "../program-status-contract.js";
+import type { ProgramStatusKind, ProgramStatusRecord } from "../program-status-contract.js";
 
 export type {
   AgentStatusAuthority,
@@ -37,7 +39,30 @@ export type {
 export const RUNTIME_STATE_PERSIST_DEBOUNCE_MS = 2_000;
 const log = createLogger("server");
 
-export interface AgentStatusSource {
+/**
+ * Typed detail from a program status (OSC 7501) report. Kept as flat optional
+ * fields, never folded into state strings, so runtime-state equality stays a
+ * shallow comparison.
+ */
+export interface ProgramStatusFields {
+  /** What a `needs-input` program is waiting for. */
+  readonly inputKind?: ProgramStatusKind;
+  /** 0-100, only for working/blocked reports that sent one. */
+  readonly progress?: number;
+  readonly app?: string;
+  readonly title?: string;
+}
+
+function programStatusFields(fields: ProgramStatusFields): ProgramStatusFields {
+  return {
+    ...(fields.inputKind ? { inputKind: fields.inputKind } : {}),
+    ...(typeof fields.progress === "number" ? { progress: fields.progress } : {}),
+    ...(fields.app ? { app: fields.app } : {}),
+    ...(fields.title ? { title: fields.title } : {}),
+  };
+}
+
+export interface AgentStatusSource extends ProgramStatusFields {
   readonly state: AgentStatusState;
   readonly authority: AgentStatusAuthority;
   readonly freshness: AgentStatusFreshness;
@@ -53,7 +78,7 @@ export interface AgentStatusSource {
   readonly signalSequence?: number;
 }
 
-export interface CandidateStatus {
+export interface CandidateStatus extends ProgramStatusFields {
   readonly state: AgentStatusState;
   readonly authority: AgentStatusAuthority;
   readonly freshness: AgentStatusFreshness;
@@ -71,7 +96,7 @@ export interface CandidateStatus {
 
 export type BrokerRuntimeLiveness = "alive" | "dead" | "unavailable";
 
-export interface AgentRuntimeState {
+export interface AgentRuntimeState extends ProgramStatusFields {
   readonly state: AgentStatusState;
   readonly authority: AgentStatusAuthority;
   readonly freshness: AgentStatusFreshness;
@@ -118,9 +143,14 @@ export const AGENT_STATUS_MANIFEST_PATH = ".wolfpack/agent-status.json";
 export const AGENT_STATUS_TTL_MS = 60_000;
 export const AGENT_RUNTIME_STATE_SCHEMA_VERSION = 1;
 
+// Program status (OSC 7501) is a live, protocol-validated self-report from the
+// exact process on the broker's PTY, so it outranks the TTL'd manifest file and
+// screen heuristics. It stays below broker liveness (a dead process cannot
+// report) and below Wolfpack-owned lifecycle facts.
 const AUTHORITY_RANK: Record<AgentStatusAuthority, number> = {
-  [AGENT_STATUS_AUTHORITY.BROKER]: 5,
-  [AGENT_STATUS_AUTHORITY.LIFECYCLE]: 4,
+  [AGENT_STATUS_AUTHORITY.BROKER]: 6,
+  [AGENT_STATUS_AUTHORITY.LIFECYCLE]: 5,
+  [AGENT_STATUS_AUTHORITY.PROGRAM]: 4,
   [AGENT_STATUS_AUTHORITY.MANIFEST]: 3,
   [AGENT_STATUS_AUTHORITY.FALLBACK]: 2,
   [AGENT_STATUS_AUTHORITY.IDENTITY]: 1,
@@ -202,7 +232,37 @@ function normalizeCandidate(candidate: CandidateStatus): AgentStatusSource {
     ...(candidate.runId ? { runId: candidate.runId } : {}),
     ...(typeof candidate.runOrder === "number" ? { runOrder: candidate.runOrder } : {}),
     ...(typeof candidate.signalSequence === "number" ? { signalSequence: candidate.signalSequence } : {}),
+    ...programStatusFields(candidate),
   };
+}
+
+/**
+ * Status source for a session's root program status record, or undefined when
+ * the program has not reported. The broker reports for this exact session, so
+ * the source carries the session's run id. No signal sequence: repeated
+ * reports refresh detail without minting a transition unless the state moves.
+ */
+export function programStatusSource(
+  record: ProgramStatusRecord | undefined,
+  context: { readonly runId?: string; readonly observedAt: string },
+): AgentStatusSource | undefined {
+  if (!record) return undefined;
+  return normalizeCandidate({
+    state: programStatusAgentState(record.state),
+    authority: AGENT_STATUS_AUTHORITY.PROGRAM,
+    freshness: AGENT_STATUS_FRESHNESS.FRESH,
+    source: AGENT_STATUS_SOURCE.PROGRAM_STATUS,
+    label: "program status",
+    stale: false,
+    observedAt: context.observedAt,
+    capabilities: [AGENT_STATUS_CAPABILITY.SEMANTIC_STATE],
+    ...(context.runId ? { runId: context.runId } : {}),
+    ...(record.message ? { message: record.message } : {}),
+    inputKind: record.kind,
+    progress: record.progress,
+    app: record.app,
+    title: record.title,
+  });
 }
 
 export function collectAgentStatusSources(
@@ -457,6 +517,19 @@ function structuredSignalAdvanced(previous: AgentRuntimeState | undefined, next:
     && next.signalSequence > previous.signalSequence;
 }
 
+/**
+ * A blocked program asking for something new (another kind or another
+ * question) is a new request even though the state is still needs-input, so
+ * the attention layer sees it. Only program status carries this detail, and
+ * only blocked requests count: working/done messages narrate progress and
+ * would otherwise mint a transition per report.
+ */
+function programRequestChanged(previous: AgentRuntimeState, next: AgentStatusSource): boolean {
+  return next.authority === AGENT_STATUS_AUTHORITY.PROGRAM
+    && next.state === AGENT_STATUS_STATE.NEEDS_INPUT
+    && (previous.inputKind !== next.inputKind || previous.message !== next.message);
+}
+
 function runtimeStateChanged(previous: AgentRuntimeState | undefined, next: AgentStatusSource, run: AgentRuntimeStateInput["currentRun"]): boolean {
   if (!previous) return true;
   return previous.state !== next.state
@@ -464,7 +537,8 @@ function runtimeStateChanged(previous: AgentRuntimeState | undefined, next: Agen
     || previous.source !== next.source
     || previous.freshness !== next.freshness
     || previous.runId !== runtimeRunId(next, run)
-    || previous.runOrder !== runtimeRunOrder(next, run);
+    || previous.runOrder !== runtimeRunOrder(next, run)
+    || programRequestChanged(previous, next);
 }
 
 export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRuntimeState {
@@ -500,6 +574,7 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
     ...(typeof input.currentRun?.runOrder === "number" ? { runOrder: input.currentRun.runOrder } : typeof selected.runOrder === "number" ? { runOrder: selected.runOrder } : {}),
     ...(typeof selected.signalSequence === "number" ? { signalSequence: selected.signalSequence } : {}),
     ...(selected.message ? { message: selected.message } : {}),
+    ...programStatusFields(selected),
   };
 }
 

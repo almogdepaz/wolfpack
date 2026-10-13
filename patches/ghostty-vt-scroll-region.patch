@@ -1,11 +1,9 @@
---- a/include/ghostty/vt/terminal.h	2026-07-22 18:26:45
-+++ b/include/ghostty/vt/terminal.h	2026-07-27 09:04:15
-@@ -334,6 +334,19 @@
-   /** Length of the visible area in rows. */
-   uint64_t len;
+--- a/include/ghostty/vt/terminal.h
++++ b/include/ghostty/vt/terminal.h
+@@ -401,6 +401,19 @@
  } GhosttyTerminalScrollbar;
-+
-+/**
+ 
+ /**
 + * Terminal vertical scrolling region, zero-indexed and inclusive.
 + *
 + * @ingroup terminal
@@ -17,55 +15,57 @@
 +  /** Bottom row of the vertical scrolling region. */
 +  uint16_t bottom;
 +} GhosttyTerminalScrollRegion;
-
- /**
-  * Callback function type for bell.
-@@ -1215,6 +1228,13 @@
-    * Output type: bool *
++
++/**
+  * Memory held by a terminal.
+  *
+  * Read with ghostty_terminal_get() and
+@@ -2845,6 +2858,13 @@
+    * Output type: GhosttyTerminalMemoryUsage *
     */
-   GHOSTTY_TERMINAL_DATA_VT_PROCESSING_ERROR = 33,
+   GHOSTTY_TERMINAL_DATA_MEMORY_USAGE = 42,
 +
 +  /**
 +   * The current vertical scrolling region, zero-indexed and inclusive.
 +   *
 +   * Output type: GhosttyTerminalScrollRegion *
 +   */
-+  GHOSTTY_TERMINAL_DATA_SCROLL_REGION = 34,
++  GHOSTTY_TERMINAL_DATA_SCROLL_REGION = 43,
    GHOSTTY_TERMINAL_DATA_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
  } GhosttyTerminalData;
-
---- a/src/terminal/c/terminal.zig	2026-07-22 18:26:45
-+++ b/src/terminal/c/terminal.zig	2026-07-27 09:03:32
-@@ -739,6 +739,12 @@
-
+ 
+--- a/src/terminal/c/terminal.zig
++++ b/src/terminal/c/terminal.zig
+@@ -1709,6 +1709,12 @@
  /// C: GhosttyTerminalScrollbar
  pub const TerminalScrollbar = PageList.Scrollbar.C;
-+
+ 
 +/// C: GhosttyTerminalScrollRegion
 +pub const TerminalScrollRegion = extern struct {
 +    top: size.CellCountInt,
 +    bottom: size.CellCountInt,
 +};
-
- /// C: GhosttyTerminalData
- pub const TerminalData = enum(c_int) {
-@@ -776,6 +782,7 @@
-     selection = 31,
-     viewport_active = 32,
-     vt_processing_error = 33,
-+    scroll_region = 34,
-
++
+ /// C: GhosttyTerminalMemoryUsage
+ ///
+ /// This is a sized struct, so new fields may only be added to the end.
+@@ -1809,6 +1815,7 @@
+     clipboard_write_max_bytes = 40,
+     mouse_shape = 41,
+     memory_usage = 42,
++    scroll_region = 43,
+ 
      /// Output type expected for querying the data of the given kind.
      pub fn OutType(comptime self: TerminalData) type {
-@@ -810,6 +817,7 @@
-             .kitty_image_medium_temp_file => lib.String,
-             .kitty_graphics => KittyGraphics,
+@@ -1854,6 +1861,7 @@
              .selection => selection_c.CSelection,
+             .mode => ModeConfig,
+             .memory_usage => TerminalMemoryUsage,
 +            .scroll_region => TerminalScrollRegion,
          };
      }
  };
-@@ -929,6 +937,10 @@
+@@ -1976,6 +1984,10 @@
          ),
          .viewport_active => out.* = t.screens.active.pages.viewport == .active,
          .vt_processing_error => out.* = wrapper.stream.handler.semantic_failure,
@@ -73,6 +73,6 @@
 +            .top = t.scrolling_region.top,
 +            .bottom = t.scrolling_region.bottom,
 +        },
-     }
-
-     return .success;
+         .vt_ground => out.* = wrapper.stream.ground(),
+         .scrollback_max_bytes => {
+             const max = t.screens.get(.primary).?.pages.limits.bytes.explicit;

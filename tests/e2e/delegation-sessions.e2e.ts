@@ -271,7 +271,7 @@ test("manual card order persists by stable identity and resets to server order",
   await collapseInitialSessionMenu(page);
   const list = page.locator(testInfo.project.name === "desktop" ? "#sidebar-session-list" : "#session-list");
   const names = list.locator('.card[data-session-order-machine=""] .card-name');
-  const cardNames = () => names.evaluateAll(elements => elements.map(element => element.firstChild?.textContent));
+  const cardNames = () => names.evaluateAll(elements => elements.map(element => element.querySelector(".card-name-text")?.textContent));
   await expect.poll(cardNames).toEqual(["one", "two", "three"]);
 
   sessions = [
@@ -335,7 +335,7 @@ test("desktop cmd+up/down follows the rendered manual card order", async ({ page
   await threeCard.focus();
   await page.keyboard.press("Alt+ArrowUp");
   await expect.poll(() => list.locator('.card[data-session-order-machine=""] .card-name')
-    .evaluateAll((elements) => elements.map((element) => element.firstChild?.textContent))).toEqual(["one", "three", "two"]);
+    .evaluateAll((elements) => elements.map((element) => element.querySelector(".card-name-text")?.textContent))).toEqual(["one", "three", "two"]);
 
   await openSessionFromUi(page, "one", "");
   await page.keyboard.press("Control+Shift+ArrowDown");
@@ -430,7 +430,7 @@ test("direct card drag previews live movement and keeps delegation children atta
   const parentCard = list.locator('.delegation-parent-card[data-session-order-machine=""]');
   const soloCard = list.locator('.card[data-session-order-machine=""][data-session-order-id="solo-id"]');
   const cardNames = () => list.locator('.card[data-session-order-machine=""] .card-name').evaluateAll(elements =>
-    elements.map(element => element.firstChild?.textContent),
+    elements.map(element => element.querySelector(".card-name-text")?.textContent),
   );
   await expect.poll(cardNames).toEqual(["parent", "solo"]);
 
@@ -469,7 +469,7 @@ test("direct card drag previews live movement and keeps delegation children atta
   await expect(floating).toContainText("solo");
   await expect(placeholder).toHaveCount(1);
   await expect.poll(() => placeholder.evaluate(element =>
-    element.nextElementSibling?.querySelector(".card-name")?.firstChild?.textContent,
+    element.nextElementSibling?.querySelector(".card-name-text")?.textContent,
   )).toBe("parent");
   await expect.poll(async () => (await parentCard.boundingBox())?.y ?? parentBox!.y)
     .toBeGreaterThan(parentBox!.y + 10);

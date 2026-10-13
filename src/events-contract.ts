@@ -3,6 +3,7 @@
  * Shared by the server and the CLI. Events are live-only: there is no replay.
  */
 import type { AgentStatusState } from "./agent-status-contract.js";
+import type { ProgramStatusKind } from "./program-status-contract.js";
 
 export const EVENTS_PATH = "/api/events";
 
@@ -47,6 +48,10 @@ export type WolfpackEventBody =
     readonly state: AgentStatusState;
     readonly label: string;
     readonly transitionSequence: number;
+    /** What a `needs-input` program reported waiting for (OSC 7501 program status). */
+    readonly inputKind?: ProgramStatusKind;
+    /** The program's OSC 7501 status message; absent for other authorities. */
+    readonly message?: string;
   }
   | {
     readonly kind: typeof WOLFPACK_EVENT_KIND.TASK_UPDATED;
