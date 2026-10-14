@@ -1025,10 +1025,9 @@ test("renders local and a verified peer while a malformed candidate stays non-ro
   expect(legacyUrlFetched).toBe(false);
 });
 
-test("enrolls notifications only after navigating to a currently ready verified peer", async ({ page }) => {
+test("enrolls notifications once on the home origin without per-machine setup redirects", async ({ page }) => {
   const peerOrigin = "https://peer.example.ts.net";
   const badOrigin = "https://bad.example.ts.net";
-  let candidateMode: "valid" | "error" = "valid";
   const peerPushRequests: string[] = [];
 
   await page.addInitScript(() => {
@@ -1067,10 +1066,6 @@ test("enrolls notifications only after navigating to a currently ready verified 
   await page.route("**/api/tailnet/v1/candidates", async (route) => {
     if (new URL(route.request().url()).origin === peerOrigin) {
       await route.fulfill({ contentType: "application/json", body: JSON.stringify({ candidates: [] }) });
-      return;
-    }
-    if (candidateMode === "error") {
-      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ candidates: [], error: "authority revoked" }) });
       return;
     }
     await route.fulfill({
@@ -1125,41 +1120,21 @@ test("enrolls notifications only after navigating to a currently ready verified 
   await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
   await page.getByRole("button", { name: "Settings" }).click();
 
-  const readyAction = page.getByRole("button", { name: "Set up notifications on verified peer" });
-  await expect(readyAction).toBeVisible();
-  await expect(page.getByRole("button", { name: /Set up notifications on/ })).toHaveCount(1);
-  const staleAction = await readyAction.elementHandle();
-
-  candidateMode = "error";
-  await page.getByRole("button", { name: "Discover Tailnet" }).click();
-  await expect(page.locator("#discover-status")).toContainText("authority revoked");
-  await expect(readyAction).toHaveCount(0);
-  await staleAction?.evaluate((button) => {
-    if (button instanceof HTMLButtonElement) button.click();
+  await expect(page.getByRole("button", { name: /Set up notifications on/ })).toHaveCount(0);
+  const homePushRequests: string[] = [];
+  await page.route(`${server.baseUrl}/api/push/**`, async route => {
+    homePushRequests.push(route.request().url());
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify(route.request().url().endsWith("vapid-key") ? { publicKey: "AQID" } : { ok: true }) });
   });
-  await expect(page).toHaveURL(server.baseUrl + "/");
-  await expect(page.locator("#discover-status")).toContainText("no longer ready");
-
-  candidateMode = "valid";
-  await page.getByRole("button", { name: "Discover Tailnet" }).click();
-  await expect(readyAction).toBeVisible();
-  await readyAction.click();
-  await expect(page).toHaveURL(`${peerOrigin}/#settings-effects`);
-  expect(peerPushRequests).toEqual([]);
-
   const notificationToggle = page.locator("#setting-notifications");
-  await expect(notificationToggle).toBeVisible();
   await notificationToggle.check();
-  await expect(page.locator("#notification-setting-status")).toContainText("Notifications are enabled");
-  expect(peerPushRequests).toEqual([
-    `GET ${peerOrigin}/api/push/vapid-key`,
-    `POST ${peerOrigin}/api/push/subscribe`,
-  ]);
+  await expect(page.locator("#notification-setting-status")).toContainText("all online machines");
+  await expect(page).toHaveURL(server.baseUrl + "/");
+  expect(peerPushRequests).toEqual([]);
+  expect(homePushRequests).toEqual([`${server.baseUrl}/api/push/vapid-key`, `${server.baseUrl}/api/push/subscribe`]);
   expect(await page.evaluate(() => (
     (window as unknown as { serviceWorkerRegistrationUrls: string[] }).serviceWorkerRegistrationUrls
-  ))).toEqual([`${peerOrigin}/sw.js`]);
-  expect(peerPushRequests.every((request) => request.includes(peerOrigin))).toBe(true);
-  expect(peerPushRequests.some((request) => request.includes(badOrigin) || request.includes(server.baseUrl))).toBe(false);
+  ))).toEqual([`${server.baseUrl}/sw.js`]);
 });
 
 test("replacement filters a mixed suspended grid without disrupting an unrelated focused delegation workspace", async ({ page }, testInfo) => {

@@ -4975,22 +4975,6 @@ async function showSettings() {
   toggleDebugPanel();
 }
 
-function setPeerNotificationEnrollmentUnavailable(): void {
-  const status = document.getElementById("discover-status");
-  if (!status) return;
-  status.textContent = "This Tailnet machine is no longer ready for notification setup.";
-  status.style.color = "#cc3333";
-}
-
-function setUpPeerNotifications(machineIdentity: string): void {
-  const origin = resolveReadyMachineOrigin(machineIdentity);
-  if (!origin) {
-    setPeerNotificationEnrollmentUnavailable();
-    return;
-  }
-  window.location.assign(new URL("/#settings-effects", origin).href);
-}
-
 function renderMachinesList(): void {
   const machines = getMachines();
   const el = document.getElementById("machines-list");
@@ -5001,21 +4985,11 @@ function renderMachinesList(): void {
   el.innerHTML = machines.map((machine) => {
     const dot = machine.ready ? "green" : "red";
     const status = machine.ready ? "online" : machine.diagnostic || "offline";
-    const notificationSetup = machine.ready
-      ? `<button class="machine-notification-setup" type="button" data-machine-identity="${escAttr(machine.url)}">Set up notifications on ${esc(machine.name)}</button>`
-      : "";
     return `<div class="machine-item">
       <div class="dot ${dot}" title="${escAttr(status)}"></div>
       <span class="machine-item-name">${esc(machine.name)}<span class="machine-item-url">${esc(machine.url)}</span></span>
-      ${notificationSetup}
     </div>`;
   }).join("");
-  el.querySelectorAll<HTMLButtonElement>(".machine-notification-setup").forEach((button) => {
-    button.addEventListener("click", () => {
-      const machineIdentity = button.dataset.machineIdentity;
-      if (machineIdentity) setUpPeerNotifications(machineIdentity);
-    });
-  });
 }
 
 async function discoverMachines(): Promise<void> {

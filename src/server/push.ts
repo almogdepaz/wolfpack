@@ -592,12 +592,25 @@ export async function sendPush(payload: PushPayload): Promise<PushDeliveryResult
   return { sent, failed, pruned };
 }
 
+/** Test delivery never broadcasts or accepts an unregistered destination. */
+export async function sendTestPush(endpoint: string): Promise<PushDeliveryResult | null> {
+  if (!loadSubscriptions().some(subscription => subscription.endpoint === endpoint)) return null;
+  const { sent, failed, pruned } = await sendPushToSubscriptions({ title: "Wolfpack", body: "Test notification", tag: "wolfpack-test", url: "/" }, new Set([endpoint]));
+  return { sent, failed, pruned };
+}
+
+export interface NotificationMachine {
+  readonly identity: string;
+  readonly name: string;
+}
+
 // ── Push state tracking (quiet-alert delivery) ──
 
 interface SessionTransitionFact {
   readonly name: string;
   readonly identity?: { readonly wolfpackSessionId?: string };
   readonly quietAlert?: QuietAlertFact;
+  readonly notificationMachine?: NotificationMachine;
 }
 
 interface QuietAlertDeliveryState {
@@ -617,6 +630,8 @@ const lastSessionPushTime = new Map<string, number>();
 const quietAlertRecipientSnapshots = new Map<string, Map<string, QuietAlertRecipientSnapshot>>();
 const PUSH_DEBOUNCE_MS = 30_000;
 const QUIET_ALERT_MAX_DELIVERY_ATTEMPTS = 3;
+/** Peers are polled every few seconds; this bounds poll and transport delay. */
+const PEER_QUIET_ALERT_MAX_AGE_MS = 30_000;
 
 /** Rate-limit timestamps for POST /api/notify (10/min). */
 let notifyTimestamps: number[] = [];
@@ -629,14 +644,14 @@ function sessionNotificationStableId(session: SessionTransitionFact): string | n
 function quietAlertPayload(session: SessionTransitionFact, sessionId: string): PushPayload {
   const canRoute = session.name.length > 0 && session.name.length <= 100;
   return {
-    title: `Wolfpack: ${session.name}`,
+    title: `Wolfpack: ${session.notificationMachine ? `${session.notificationMachine.name}: ` : ""}${session.name}`,
     body: "Quiet",
-    tag: `session-${sessionId}`,
+    tag: `session-${session.notificationMachine ? `${session.notificationMachine.identity}-` : ""}${sessionId}`,
     ...(canRoute && {
       url: buildSessionNotificationUrl({
         sessionId,
         sessionName: session.name,
-        machineIdentity: "local",
+        machineIdentity: session.notificationMachine?.identity ?? "local",
       }),
     }),
   };
@@ -652,8 +667,14 @@ async function sendSessionPush(payload: PushPayload, targetEndpoints: ReadonlySe
   return sendPushToSubscriptions(payload, targetEndpoints, []);
 }
 
-function deliveryKey(sessionId: string): string {
-  return sessionId;
+function deliveryKey(sessionId: string, machine?: NotificationMachine): string {
+  // Quiet-fact ids reject control characters and stable machine identities
+  // cannot contain NUL, so this namespace cannot collide with a local key.
+  return machine ? `\0${machine.identity}\0${sessionId}` : sessionId;
+}
+
+function inMachineScope(key: string, machine?: NotificationMachine): boolean {
+  return machine ? key.startsWith(`\0${machine.identity}\0`) : !key.startsWith("\0");
 }
 
 /** Records the recipients entitled to an episode when canonical policy first emits it. */
@@ -673,16 +694,17 @@ export function recordQuietAlertEmission(sessionId: string, episodeId: string): 
 
 function recipientSnapshot(sessionId: string, episodeId: string): ReadonlyMap<string, number> | undefined {
   const snapshot = quietAlertRecipientSnapshots.get(sessionId)?.get(episodeId);
-  return snapshot?.policyEpoch === quietAlertPolicyEpoch() ? snapshot.endpointGenerations : undefined;
+  return snapshot && (!inMachineScope(sessionId) || snapshot.policyEpoch === quietAlertPolicyEpoch()) ? snapshot.endpointGenerations : undefined;
 }
 
 export function pruneQuietAlertRecipientSnapshots(
   activeSessionIds: ReadonlySet<string>,
   policyEpoch = quietAlertPolicyEpoch(),
+  machine?: NotificationMachine,
 ): void {
   if (policyEpoch !== quietAlertPolicyEpoch()) return;
   for (const sessionId of quietAlertRecipientSnapshots.keys()) {
-    if (!activeSessionIds.has(sessionId)) quietAlertRecipientSnapshots.delete(sessionId);
+    if (inMachineScope(sessionId, machine) && !activeSessionIds.has(sessionId)) quietAlertRecipientSnapshots.delete(sessionId);
   }
 }
 
@@ -691,7 +713,10 @@ export function forgetQuietAlertRecipientSnapshots(sessionIds: readonly string[]
 }
 
 export function clearQuietAlertRecipientSnapshots(policyEpoch = quietAlertPolicyEpoch()): void {
-  if (policyEpoch === quietAlertPolicyEpoch()) quietAlertRecipientSnapshots.clear();
+  if (policyEpoch !== quietAlertPolicyEpoch()) return;
+  for (const key of quietAlertRecipientSnapshots.keys()) {
+    if (inMachineScope(key)) quietAlertRecipientSnapshots.delete(key);
+  }
 }
 
 function validQuietAlert(session: SessionTransitionFact, sessionId: string): QuietAlertFact | null {
@@ -709,7 +734,7 @@ async function deliverQuietAlert(
   canInitiate: SessionTransitionPermission,
 ): Promise<void> {
   if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
-  const key = deliveryKey(sessionId);
+  const key = deliveryKey(sessionId, session.notificationMachine);
   const existing = quietAlertDeliveries.get(key);
   if (existing?.episodeId === alert.episodeId && existing.pendingEndpoints.size === 0) return;
   if (existing?.episodeId === alert.episodeId && now < existing.nextAttemptAtMs) return;
@@ -719,12 +744,12 @@ async function deliverQuietAlert(
   // historical quiet alert when the delay expires.
   const registeredGenerations = registeredSubscriptionGenerations();
   const matchingEpisode = existing?.episodeId === alert.episodeId;
-  const recipients = recipientSnapshot(sessionId, alert.episodeId);
+  const recipients = recipientSnapshot(key, alert.episodeId);
   if (recipients === undefined) return;
   const targetEndpoints = matchingEpisode
     ? new Set([...existing.pendingEndpoints].filter((endpoint) => registeredGenerations.get(endpoint) === recipients.get(endpoint)))
     : new Set([...recipients.keys()].filter((endpoint) => registeredGenerations.get(endpoint) === recipients.get(endpoint)));
-  const last = lastSessionPushTime.get(sessionId) ?? 0;
+  const last = lastSessionPushTime.get(key) ?? 0;
   if (now - last < PUSH_DEBOUNCE_MS) {
     if (!matchingEpisode) {
       quietAlertDeliveries.set(key, {
@@ -759,9 +784,9 @@ async function deliverQuietAlert(
   // A new activity episode, continuity loss, disable, or removal can retire
   // this entry while the transport is in flight. Never let stale completion
   // consume or clear the newer episode.
-  if (policyEpoch !== quietAlertPolicyEpoch() || quietAlertDeliveries.get(key) !== ownership) return;
+  if ((!session.notificationMachine && policyEpoch !== quietAlertPolicyEpoch()) || quietAlertDeliveries.get(key) !== ownership) return;
 
-  if (delivery.sent > 0) lastSessionPushTime.set(sessionId, now);
+  if (delivery.sent > 0) lastSessionPushTime.set(key, now);
   const failedEndpoints = delivery.failedEndpoints === undefined
     ? (delivery.failed > 0 ? targetEndpoints : new Set<string>())
     : new Set(delivery.failedEndpoints.filter((endpoint) => (
@@ -780,6 +805,7 @@ export async function checkSessionTransitions(
   sessions: readonly SessionTransitionFact[],
   policyEpoch = quietAlertPolicyEpoch(),
   canInitiate: SessionTransitionPermission = () => true,
+  machine?: NotificationMachine,
 ): Promise<void> {
   if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate() || getSubscriptionCount() === 0) return;
   const now = Date.now();
@@ -788,23 +814,32 @@ export async function checkSessionTransitions(
     if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
     const sessionId = sessionNotificationStableId(session);
     if (!sessionId) continue;
-    activeSessionIds.add(sessionId);
+    const key = deliveryKey(sessionId, machine);
+    activeSessionIds.add(key);
     const alert = validQuietAlert(session, sessionId);
     if (!alert) {
-      quietAlertDeliveries.delete(deliveryKey(sessionId));
+      quietAlertDeliveries.delete(key);
+      if (machine) quietAlertRecipientSnapshots.delete(key);
       continue;
     }
-    await deliverQuietAlert(session, sessionId, alert, now, policyEpoch, canInitiate);
+    // The peer owns policy evaluation and keeps reporting an emitted episode
+    // while the session stays quiet. Freeze recipients only for an episode
+    // that became eligible recently on the peer's own clock; an older one
+    // first seen after a restart or first enrollment is a baseline.
+    if (machine && alert.observedAtMs - alert.eligibleAtMs <= PEER_QUIET_ALERT_MAX_AGE_MS) {
+      recordQuietAlertEmission(key, alert.episodeId);
+    }
+    await deliverQuietAlert({ ...session, notificationMachine: machine }, sessionId, alert, now, policyEpoch, canInitiate);
     if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
   }
   if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
   for (const sessionId of quietAlertDeliveries.keys()) {
-    if (!activeSessionIds.has(sessionId)) quietAlertDeliveries.delete(sessionId);
+    if (inMachineScope(sessionId, machine) && !activeSessionIds.has(sessionId)) quietAlertDeliveries.delete(sessionId);
   }
   for (const sessionId of lastSessionPushTime.keys()) {
-    if (!activeSessionIds.has(sessionId)) lastSessionPushTime.delete(sessionId);
+    if (inMachineScope(sessionId, machine) && !activeSessionIds.has(sessionId)) lastSessionPushTime.delete(sessionId);
   }
-  pruneQuietAlertRecipientSnapshots(activeSessionIds, policyEpoch);
+  pruneQuietAlertRecipientSnapshots(activeSessionIds, policyEpoch, machine);
 }
 
 export function resetSessionTransitionTracking(): void {
@@ -813,7 +848,13 @@ export function resetSessionTransitionTracking(): void {
 }
 
 function invalidateQuietAlertDeliveryOwnership(): void {
-  resetSessionTransitionTracking();
+  // A local policy change must not restart episodes owned by another machine.
+  for (const key of quietAlertDeliveries.keys()) {
+    if (inMachineScope(key)) quietAlertDeliveries.delete(key);
+  }
+  for (const key of lastSessionPushTime.keys()) {
+    if (inMachineScope(key)) lastSessionPushTime.delete(key);
+  }
   clearQuietAlertRecipientSnapshots();
 }
 
@@ -833,7 +874,8 @@ export function checkNotifyRateLimit(): string | null {
 /** Reset all per-namespace debounce and rate-limit state. Tests should call this in beforeEach. */
 export function _testingResetDebounce(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("_testingResetDebounce() is only available in test mode");
-  invalidateQuietAlertDeliveryOwnership();
+  resetSessionTransitionTracking();
+  quietAlertRecipientSnapshots.clear();
   notifyTimestamps = [];
   testSessionPushSender = null;
 }
