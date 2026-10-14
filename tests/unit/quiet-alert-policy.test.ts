@@ -186,6 +186,19 @@ describe("quiet alert kinds and suppression", () => {
     expect(released.fact?.observedAtMs).toBe(ACTIVITY_AT_MS + 50_000);
   });
 
+  test("a withheld episode becomes eligible when it is released, so relays treat it as fresh", () => {
+    const active = reduceQuietAlertPolicy(undefined, observation());
+    const suppressed = quietAt(active.state, 30_000, { suppressed: true });
+    const released = quietAt(suppressed.state, 120_000);
+    const repeated = quietAt(released.state, 130_000);
+    const unsuppressed = quietAt(reduceQuietAlertPolicy(undefined, observation()).state, 120_000);
+
+    expect(suppressed.state).toMatchObject({ withheld: true, emitted: false });
+    expect(released.fact).toMatchObject({ eligibleAtMs: ACTIVITY_AT_MS + 120_000, observedAtMs: ACTIVITY_AT_MS + 120_000 });
+    expect(repeated.fact).toMatchObject({ eligibleAtMs: ACTIVITY_AT_MS + 120_000, observedAtMs: ACTIVITY_AT_MS + 130_000 });
+    expect(unsuppressed.fact?.eligibleAtMs).toBe(ACTIVITY_AT_MS + 30_000);
+  });
+
   test("needs-input wins over suppression", () => {
     const active = reduceQuietAlertPolicy(undefined, observation());
     const needsInput = quietAt(active.state, 30_000, { suppressed: true, alert: { kind: "needs-input", inputKind: undefined } });

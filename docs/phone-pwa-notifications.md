@@ -48,7 +48,7 @@ An agent's alert fires once per activity episode, after its screen stays quiet f
 
 - **Quiet**: the screen went quiet.
 - **Needs input**: the screen went quiet while the agent's own program status (OSC 7501) said it waits on you, for example `Needs input (permission)`. This alert is never withheld.
-- **Waiting on a child**: a due quiet alert is withheld while any live descendant session (linked by `parentSession`, up to 8 generations) still works: its status is working, running, or printing, or its screen changed within the quiet interval. The episode stays open and alerts once the whole tree is quiet. `GET /api/sessions` reports the withheld state as `quietSuppressedBy: { reason: "waiting-on-child", sessionId, session }` on the parent; it never sends a notification. Only descendants on the same machine count.
+- **Waiting on a child**: a due quiet alert is withheld while any live descendant session (linked by `parentSession`, up to 8 generations) still works: its status is working, running, or printing, or its screen changed within the quiet interval. The episode stays open and alerts once the whole tree is quiet; the released alert's `eligibleAtMs` is the release time, so enrollment hosts relay it as fresh. `GET /api/sessions` reports the withheld state as `quietSuppressedBy: { reason: "waiting-on-child", sessionId, session }` on the parent; it never sends a notification. Only descendants on the same machine count.
 
 Agents with no children and no program status keep the plain quiet behavior. There is no setting for these rules.
 

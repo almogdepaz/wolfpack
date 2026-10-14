@@ -924,6 +924,34 @@ describe("push: checkSessionTransitions", () => {
     }
   });
 
+  test("delivers a peer episode released after a long child-wait suppression", async () => {
+    const { reduceQuietAlertPolicy } = await import("../../src/quiet-alert-policy.ts");
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const endpoint = `https://fcm.googleapis.com/peer-released-${Date.now()}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    const payloads: string[] = [];
+    _testing.sessionPushSender = async (payload) => {
+      payloads.push(payload.body);
+      return { sent: 1, failed: 0, pruned: 0 };
+    };
+    const activityAtMs = Date.now() - 300_000;
+    const base = { sessionId: "peer-released", continuity: "fresh" as const, policy: undefined };
+    const active = reduceQuietAlertPolicy(undefined, { ...base, observedAtMs: activityAtMs, renderedActivityAt: activityAtMs, episodeId: "released-episode" });
+    const withheld = reduceQuietAlertPolicy(active.state, { ...base, observedAtMs: activityAtMs + 30_000, renderedActivityAt: undefined, episodeId: undefined, suppressed: true });
+    const released = reduceQuietAlertPolicy(withheld.state, { ...base, observedAtMs: Date.now(), renderedActivityAt: undefined, episodeId: undefined });
+    try {
+      await checkSessionTransitions([{
+        name: "agent",
+        identity: { wolfpackSessionId: "peer-released" },
+        quietAlert: released.fact,
+      }], undefined, undefined, { identity: "n123:12345678-1234-4234-8234-123456789abc", name: "peer" });
+      expect(payloads).toEqual(["Quiet"]);
+    } finally {
+      _testing.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
+  });
+
   test("prunes delivery and debounce state for removed sessions", async () => {
     const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
     const endpoint = `https://fcm.googleapis.com/prune-quiet-${Date.now()}`;

@@ -65,6 +65,11 @@ export interface QuietAlertPolicyState {
   readonly renderedActivityAtMs: number;
   readonly eligibleAtMs: number;
   readonly emitted: boolean;
+  /**
+   * Set while a due episode is suppressed. On release the alert becomes eligible
+   * at emission time, so freshness-bounded relays do not drop it as stale.
+   */
+  readonly withheld?: true;
   /** Fixed when the episode emits, so later observations repeat the same alert. */
   readonly alert?: QuietAlertKindFields;
 }
@@ -200,10 +205,17 @@ export function reduceQuietAlertPolicy(
     observation.observedAtMs < state.eligibleAtMs
     || (observation.suppressed === true && alert.kind === QUIET_ALERT_KIND.QUIET)
   ) {
-    return { state, event: undefined, fact: undefined };
+    if (observation.observedAtMs < state.eligibleAtMs) return { state, event: undefined, fact: undefined };
+    return { state: { ...state, withheld: true }, event: undefined, fact: undefined };
   }
 
-  const emitted = { ...state, emitted: true, alert } as const;
+  const { withheld, ...episode } = state;
+  const emitted = {
+    ...episode,
+    ...(withheld && { eligibleAtMs: observation.observedAtMs }),
+    emitted: true,
+    alert,
+  } as const;
   return {
     state: emitted,
     event: { ...alert, episodeId: emitted.episodeId },
