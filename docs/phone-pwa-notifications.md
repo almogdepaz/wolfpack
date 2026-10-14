@@ -32,20 +32,23 @@ If the install action is absent, keep using Wolfpack in the browser and consult 
 
 ## enable notifications
 
-Notification permission and enrollment belong to the exact browser origin currently open.
+Enroll once, on one verified Wolfpack origin per device/browser profile. That host sends quiet alerts for its own agents and for agents on online, ready trusted Tailnet machines. Keep that enrollment host online: it is the notification relay for this device.
 
-1. Open Wolfpack from the verified origin.
-2. Open **Settings → Notifications** and enable the toggle.
+1. Open Wolfpack from the verified origin (on iPhone/iPad, launch its Home Screen app).
+2. Tap **Enable notifications** on the sessions view, or enable **Settings → Notifications**.
 3. When the browser or OS asks, allow notifications for that exact verified Wolfpack origin.
-4. Leave the toggle enabled and keep the installed app or browser origin available to the OS.
+4. In Settings, tap **Send test notification** to check delivery to this device only. A sent status means the push service accepted it; the OS may still delay or suppress display.
+5. Leave the toggle enabled. Clicking an agent notification opens this home origin and routes to the session on its verified machine.
 
-If permission was denied, use the browser or OS settings to find the exact verified Wolfpack origin, change its Notifications permission to **Allow**, reopen Wolfpack from that origin, and enable **Settings → Notifications** again. Do not broadly enable notifications for unrelated sites.
+An ordinary iOS Safari tab shows an **Add to Home Screen** hint instead of an enable button. Install and launch the app first. If permission was denied, on iOS open **Settings app → Notifications → Wolfpack**; in Chromium open **site settings for this origin** and allow notifications. Reopen Wolfpack and enable the toggle again. Do not broadly enable notifications for unrelated sites.
 
-## enroll every origin separately
+## one enrollment covers online machines
 
-A notification subscription is per origin: its scheme, hostname, and port identify one enrollment. Each distinct verified Wolfpack machine origin needs a separate subscription on each phone/browser profile. Open each origin and repeat the notification steps.
+The browser subscription still belongs to one origin (scheme, hostname, port). The enrolled server reads trusted peers' session lists and relays only quiet-alert facts those peers report: each peer keeps its own quiet-alert policy. Older peers also work when their session lists expose these facts; peers that do not expose quiet-alert facts cannot supply automatic alerts. Unreachable or incompatible peers are skipped without blocking local alerts.
 
-An existing subscription does not migrate when a hostname, port, scheme, browser profile, or Wolfpack origin changes. Re-enroll from the new verified origin and remove stale permissions for an origin you no longer use.
+If you enrolled on several machine origins before, **turn notifications off on the other machines you enrolled before**. There is no cross-origin deduplication: leaving multiple enrollments on can produce duplicate alerts on this device.
+
+An existing subscription does not migrate when a hostname, port, scheme, browser profile, or Wolfpack origin changes. Re-enroll once from the new verified origin and remove stale permissions for an origin you no longer use.
 
 ## what this setup does not promise
 
@@ -69,4 +72,4 @@ Bring the app to the foreground and reload it. Confirm that the phone is connect
 
 ### notification delivery fails
 
-Confirm all three sources of truth: the browser or OS allows Notifications for the exact origin, **Settings → Notifications** is enabled on that origin, and the phone can currently reach the Wolfpack host over the Tailnet. Re-enroll after any origin change. If delivery still fails, use [troubleshooting](./troubleshooting.md) without opening the service to a broader network.
+Confirm all three sources of truth: the browser or OS allows Notifications for the exact origin, **Settings → Notifications** is enabled on that origin, and the phone can currently reach the Wolfpack host over the Tailnet. Use **Send test notification** in Settings. For remote agents, also confirm their machines are online and their own quiet-alert policies are enabled. Re-enroll after any origin change. If delivery still fails, use [troubleshooting](./troubleshooting.md) without opening the service to a broader network.

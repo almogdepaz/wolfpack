@@ -7,6 +7,7 @@ import {
   getVapidPublicKey,
   removeSubscription,
   sendPush,
+  sendTestPush,
   validateSubscription,
 } from "./push.js";
 import type { PushSubscription } from "./push.js";
@@ -44,6 +45,17 @@ export const pushSubscriptionRoutes: Record<string, RouteHandler> = {
     if (!result.ok) return json(res, { error: result.error }, 429);
     if (!hadSubscriptions) resetNotificationObservation();
     json(res, { ok: true });
+  },
+
+  "POST /api/push/test": async (req, res) => {
+    const body = await parseObjectBody(req, res);
+    if (!body) return;
+    if (typeof body.endpoint !== "string" || !body.endpoint || body.endpoint.length > 1024) return json(res, { error: "invalid endpoint" }, 400);
+    const rateLimitError = checkNotifyRateLimit();
+    if (rateLimitError) return json(res, { error: rateLimitError }, 429);
+    const result = await sendTestPush(body.endpoint);
+    if (!result) return json(res, { error: "endpoint not registered" }, 404);
+    json(res, { ok: result.sent === 1 && result.failed === 0, ...result }, result.sent === 1 && result.failed === 0 ? 200 : 502);
   },
 
   "POST /api/push/unsubscribe": async (req, res) => {

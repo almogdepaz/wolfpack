@@ -74,6 +74,40 @@ const NOTIFICATION_FAILURE_MESSAGES: Readonly<Record<NotificationChangeFailure, 
 
 let notificationPreferenceBusy = false;
 
+function isIos(): boolean {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.userAgent.includes("Macintosh") && navigator.maxTouchPoints > 1);
+}
+
+function notificationGuidance(reason: NotificationChangeFailure): string {
+  if (reason === NOTIFICATION_CHANGE_FAILURE.UNSUPPORTED && isIos()
+    && !(navigator as Navigator & { standalone?: boolean }).standalone
+    && !window.matchMedia("(display-mode: standalone)").matches) {
+    return "Add Wolfpack to your home screen, then open it from there to turn on notifications.";
+  }
+  if (reason === NOTIFICATION_CHANGE_FAILURE.PERMISSION_DENIED) {
+    return isIos()
+      ? "Notifications are blocked. Open the Settings app → Notifications → Wolfpack to allow them."
+      : "Notifications are blocked in browser settings. Open site settings for this origin to allow them, then retry.";
+  }
+  return NOTIFICATION_FAILURE_MESSAGES[reason];
+}
+
+function renderNotificationControls(): void {
+  const test = document.getElementById("notification-test") as HTMLButtonElement | null;
+  if (test) test.hidden = !wpSettings.notifications || !state.notificationsEnabled;
+  const card = document.getElementById("notification-prompt");
+  if (!card) return;
+  let dismissed = false;
+  try { dismissed = localStorage.getItem("wp-notification-prompt-dismissed") === "1"; } catch {}
+  const hint = notificationGuidance(NOTIFICATION_CHANGE_FAILURE.UNSUPPORTED);
+  const iosHint = !notificationsSupported() && hint !== NOTIFICATION_FAILURE_MESSAGES[NOTIFICATION_CHANGE_FAILURE.UNSUPPORTED];
+  card.hidden = dismissed || wpSettings.notifications || !(iosHint || (notificationsSupported() && Notification.permission === "default"));
+  const message = document.getElementById("notification-prompt-message");
+  if (message) message.textContent = iosHint ? hint : "Get notified when an agent needs you.";
+  const enable = document.getElementById("notification-prompt-enable") as HTMLButtonElement | null;
+  if (enable) { enable.hidden = iosHint; enable.disabled = notificationPreferenceBusy; }
+}
+
 function setNotificationStatus(message: string, status: "idle" | "pending" | "success" | "error"): void {
   const control = document.getElementById("notification-setting-status");
   if (!control) return;
@@ -86,16 +120,17 @@ function notificationsSupported(): boolean {
 }
 
 function renderNotificationRestingStatus(): void {
+  renderNotificationControls();
   if (!notificationsSupported()) {
-    setNotificationStatus(NOTIFICATION_FAILURE_MESSAGES[NOTIFICATION_CHANGE_FAILURE.UNSUPPORTED], "error");
+    setNotificationStatus(notificationGuidance(NOTIFICATION_CHANGE_FAILURE.UNSUPPORTED), "error");
     return;
   }
   if (Notification.permission === "denied") {
-    setNotificationStatus(NOTIFICATION_FAILURE_MESSAGES[NOTIFICATION_CHANGE_FAILURE.PERMISSION_DENIED], "error");
+    setNotificationStatus(notificationGuidance(NOTIFICATION_CHANGE_FAILURE.PERMISSION_DENIED), "error");
     return;
   }
   if (wpSettings.notifications && state.notificationsEnabled) {
-    setNotificationStatus("Notifications are enabled on this device.", "success");
+    setNotificationStatus("Notifications on this device cover all online machines.", "success");
     return;
   }
   setNotificationStatus("Notifications are off.", "idle");
@@ -107,11 +142,13 @@ function renderNotificationOutcome(outcome: NotificationPreferenceOutcome): void
     renderNotificationRestingStatus();
     return;
   }
-  setNotificationStatus(NOTIFICATION_FAILURE_MESSAGES[change.reason], "error");
+  renderNotificationControls();
+  setNotificationStatus(notificationGuidance(change.reason), "error");
 }
 
 function setNotificationPreferenceBusy(busy: boolean, requested: boolean): void {
   notificationPreferenceBusy = busy;
+  renderNotificationControls();
   const control = document.getElementById("setting-notifications") as HTMLInputElement | null;
   if (control) control.disabled = busy;
   if (busy) setNotificationStatus(requested ? "Enabling notifications…" : "Disabling notifications…", "pending");
@@ -119,7 +156,7 @@ function setNotificationPreferenceBusy(busy: boolean, requested: boolean): void 
 
 function commitNotificationPreference(enabled: boolean): void {
   wpSettings.notifications = enabled;
-  localStorage.setItem("wp-effects", JSON.stringify(wpSettings));
+  try { localStorage.setItem("wp-effects", JSON.stringify(wpSettings)); } catch {}
   const control = document.getElementById("setting-notifications") as HTMLInputElement | null;
   if (control) control.checked = enabled;
 }
@@ -127,13 +164,16 @@ function commitNotificationPreference(enabled: boolean): void {
 let notificationPreferenceChange = Promise.resolve();
 
 async function changeNotificationPreference(requested: boolean): Promise<void> {
+  if (notificationPreferenceBusy) return;
+  setNotificationPreferenceBusy(true, requested);
+  // Start permission acquisition synchronously inside the user's click gesture.
+  const subscriptionChange = requested ? requestNotifications() : unsubscribeNotifications();
   const change = notificationPreferenceChange.then(async () => {
-    setNotificationPreferenceBusy(true, requested);
     try {
       const outcome = await applyNotificationPreference({
         current: wpSettings.notifications,
         requested,
-        changeSubscription: requested ? requestNotifications : unsubscribeNotifications,
+        changeSubscription: () => subscriptionChange,
         commit: commitNotificationPreference,
       });
       renderNotificationOutcome(outcome);
@@ -210,12 +250,32 @@ export function applyTermToXterm() {
 
 export function initSettings() {
   Object.entries(wpSettings).forEach(([k, v]) => {
-    applySetting(k, v);
+    if (k !== "notifications") applySetting(k, v);
     const el = document.getElementById("setting-" + k) as HTMLInputElement | null;
     if (!el) return;
     if (el.type === "checkbox") el.checked = v as boolean;
     else el.value = v as string;
   });
+  document.getElementById("notification-prompt-enable")?.addEventListener("click", () => toggleSetting("notifications", true));
+  document.getElementById("notification-prompt-dismiss")?.addEventListener("click", () => {
+    try { localStorage.setItem("wp-notification-prompt-dismissed", "1"); } catch {}
+    const card = document.getElementById("notification-prompt");
+    if (card) card.hidden = true;
+  });
+  document.getElementById("notification-test")?.addEventListener("click", () => { void sendTestNotification(); });
+  if (wpSettings.notifications && notificationsSupported() && Notification.permission === "granted") {
+    void changeNotificationPreference(true);
+  } else {
+    const permissionLost = wpSettings.notifications;
+    if (permissionLost) {
+      state.notificationsEnabled = false;
+      commitNotificationPreference(false);
+    }
+    renderNotificationRestingStatus();
+    if (permissionLost && notificationsSupported() && Notification.permission === "default") {
+      setNotificationStatus("Notifications were turned off because permission is no longer granted. Enable notifications to allow them again.", "error");
+    }
+  }
 }
 
 export function haptic(pattern) {
@@ -319,6 +379,28 @@ export async function requestNotifications(): Promise<NotificationChangeResult> 
   state.notificationsEnabled = true;
   console.log("Push subscription registered");
   return { ok: true };
+}
+
+export async function sendTestNotification(): Promise<void> {
+  const button = document.getElementById("notification-test") as HTMLButtonElement | null;
+  if (button) button.disabled = true;
+  setNotificationStatus("Sending test notification…", "pending");
+  try {
+    const registration = await navigator.serviceWorker.getRegistration();
+    const subscription = await registration?.pushManager.getSubscription();
+    if (!subscription) throw new Error("No push subscription on this device");
+    const response = await requestSameOriginPushApi(authenticatedFetchWithTimeout, location.origin, PUSH_API_PATH.test, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: subscription.endpoint }),
+    });
+    const result = await response.json();
+    if (!response.ok || result.sent !== 1 || result.failed !== 0) throw new Error("Test delivery failed");
+    setNotificationStatus("Test notification sent.", "success");
+  } catch (error: unknown) {
+    console.error("Test notification failed:", error);
+    setNotificationStatus("Test notification failed. Check your connection and notification settings, then retry.", "error");
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 export async function unsubscribeNotifications(): Promise<NotificationChangeResult> {

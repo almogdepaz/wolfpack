@@ -3002,6 +3002,40 @@
         "429 ErrorEnvelope"
       ]
     },
+    "sendTestNotification": {
+      "route": "POST /api/push/test",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:sendTestNotification:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendTestNotification request",
+        "type": "object",
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "required": [
+          "endpoint"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:sendTestNotification:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "sendTestNotification response",
+        "$ref": "#/$defs/PushTestDeliverySuccess"
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "429 ErrorEnvelope",
+        "502 PushTestDeliveryFailure"
+      ]
+    },
     "unsubscribePush": {
       "route": "POST /api/push/unsubscribe",
       "stable": true,
@@ -8763,6 +8797,58 @@
       "required": [
         "ok",
         "error"
+      ],
+      "additionalProperties": false
+    },
+    "PushTestDeliverySuccess": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": true
+        },
+        "sent": {
+          "const": 1
+        },
+        "failed": {
+          "const": 0
+        },
+        "pruned": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ok",
+        "sent",
+        "failed",
+        "pruned"
+      ],
+      "additionalProperties": false
+    },
+    "PushTestDeliveryFailure": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "sent": {
+          "const": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "pruned": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "ok",
+        "sent",
+        "failed",
+        "pruned"
       ],
       "additionalProperties": false
     },

@@ -103,6 +103,7 @@ const runtimeRenderedFingerprints = new Map<string, RuntimeRenderedFingerprint>(
 type ObservationPass = "full" | "program-status";
 let sessionNotificationObservationTimer: ReturnType<typeof setInterval> | null = null;
 let sessionNotificationObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
+let peerNotificationObservationPromise: Promise<void> | null = null;
 let sessionNotificationObservationPass: ObservationPass = "full";
 let dashboardObservationPromise: Promise<readonly ObservedSessionSummary[]> | null = null;
 let dashboardObservationCache: {
@@ -654,6 +655,22 @@ export async function observeDashboardSessions(): Promise<readonly ObservedSessi
   return dashboardObservationPromise;
 }
 
+function schedulePeerNotificationObservation(): void {
+  if (peerNotificationObservationPromise || getSubscriptionCount() === 0) return;
+  // Peer collection has its own flight, not its own delivery machinery. Even a
+  // stalled network map must not hold the next local observation behind it.
+  peerNotificationObservationPromise = (async () => {
+    const { observePeerNotifications } = await import("./peer-notifications.ts");
+    for (const peer of await observePeerNotifications()) {
+      await checkSessionTransitions(peer.sessions, quietAlertPolicyEpoch(), () => getSubscriptionCount() > 0, peer.machine);
+    }
+  })().catch((error: unknown) => {
+    log.warn("peer notification relay failed", { error: errMsg(error) });
+  }).finally(() => {
+    peerNotificationObservationPromise = null;
+  });
+}
+
 async function runSessionNotificationObservation(pass: ObservationPass = "full"): Promise<readonly ObservedSessionSummary[]> {
   if (getSubscriptionCount() === 0 && eventSubscriberCount() === 0) return [];
   if (sessionNotificationObservationPromise) {
@@ -681,6 +698,7 @@ async function runSessionNotificationObservation(pass: ObservationPass = "full")
         notificationEligible: !observation.unreliableSessionKeys.has(sessionKey),
       };
     }), policyEpoch, () => ownsObservationAuthority(authority));
+    if (pass === "full") schedulePeerNotificationObservation();
     if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
     return ownsObservationAuthority(authority)
       ? observation.sessions
@@ -751,6 +769,8 @@ export async function stopSessionNotificationObserver(): Promise<void> {
   }
   // Let already-running collections finish their reductions before draining.
   await Promise.allSettled([dashboardObservationPromise, sessionNotificationObservationPromise]);
+  // A finishing local pass can have started a peer flight while being drained.
+  await Promise.allSettled([peerNotificationObservationPromise]);
   await flushAgentRuntimeStateForShutdown();
 }
 

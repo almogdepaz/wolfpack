@@ -79,6 +79,25 @@ describe("control api schema generation", () => {
 });
 
 describe("control api schema", () => {
+  test("documents endpoint-only push test delivery and its distinct failure envelope", () => {
+    const operation = httpOperation("sendTestNotification");
+    expect(operation).toMatchObject({ route: "POST /api/push/test", stable: true, auth: "jwt-when-configured" });
+    expect(operation.errors).toEqual(["400 ErrorEnvelope", "404 ErrorEnvelope", "429 ErrorEnvelope", "502 PushTestDeliveryFailure"]);
+    const request = httpRequest("sendTestNotification");
+    expect(validate(request, { endpoint: "https://fcm.googleapis.com/test-device" }, artifact)).toEqual([]);
+    for (const value of [{}, { endpoint: "" }, { endpoint: 3 }, { endpoint: "a".repeat(1025) }]) {
+      expect(validate(request, value, artifact)).not.toEqual([]);
+    }
+    const response = httpResponse("sendTestNotification");
+    expect(validate(response, { ok: true, sent: 1, failed: 0, pruned: 0 }, artifact)).toEqual([]);
+    for (const value of [{ ok: true }, { ok: true, sent: 0, failed: 1, pruned: 0 }, { ok: true, sent: 1, failed: 0, pruned: -1 }]) {
+      expect(validate(response, value, artifact)).not.toEqual([]);
+    }
+    const failure = { $ref: "#/$defs/PushTestDeliveryFailure" };
+    expect(validate(failure, { ok: false, sent: 0, failed: 1, pruned: 0 }, artifact)).toEqual([]);
+    expect(validate(failure, { ok: false, sent: 0, failed: 0, pruned: 1 }, artifact)).toEqual([]);
+    expect(validate(failure, { error: "delivery failed" }, artifact)).not.toEqual([]);
+  });
   test("blob contracts describe binary authority and strict catalog/mutation envelopes", () => {
     const session = "11111111-1111-4111-8111-111111111111", digest = "a".repeat(64);
     const entry = { installationId: session, extensionId: "stage", package: { name: "stage", version: "1.0.0", digest }, enabled: true, documents: [] };

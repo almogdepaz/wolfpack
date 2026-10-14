@@ -936,6 +936,18 @@ export const controlApiSource: ControlApiSource = {
         path: string(),
       }, ["code", "message", "retryable"]),
     }, ["ok", "error"]),
+    PushTestDeliverySuccess: object({
+      ok: { const: true },
+      sent: { const: 1 },
+      failed: { const: 0 },
+      pruned: { type: "integer", minimum: 0 },
+    }, ["ok", "sent", "failed", "pruned"]),
+    PushTestDeliveryFailure: object({
+      ok: { const: false },
+      sent: { const: 0 },
+      failed: { type: "integer", minimum: 0, maximum: 1 },
+      pruned: { type: "integer", minimum: 0 },
+    }, ["ok", "sent", "failed", "pruned"]),
     PushSubscription: object({
       endpoint: string(),
       keys: object({
@@ -1585,6 +1597,14 @@ export const controlApiSource: ControlApiSource = {
       request: ref("PushSubscription"),
       response: ok,
       errors: ["400 ErrorEnvelope", "429 ErrorEnvelope"],
+    },
+    "POST /api/push/test": {
+      operationId: "sendTestNotification",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({ endpoint: { type: "string", minLength: 1, maxLength: 1024 } }, ["endpoint"]),
+      response: ref("PushTestDeliverySuccess"),
+      errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "429 ErrorEnvelope", "502 PushTestDeliveryFailure"],
     },
     "POST /api/push/unsubscribe": {
       operationId: "unsubscribePush",

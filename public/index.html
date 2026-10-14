@@ -114,6 +114,11 @@
     <main id="view-container">
     <!-- Sessions view -->
     <div id="sessions-view" class="view visible" role="region" aria-label="Sessions">
+      <div id="notification-prompt" class="notification-setting" hidden>
+        <span id="notification-prompt-message">Get notified when an agent needs you.</span>
+        <button id="notification-prompt-enable" type="button">Enable notifications</button>
+        <button id="notification-prompt-dismiss" type="button" aria-label="Dismiss notification prompt">Dismiss</button>
+      </div>
       <div id="expanded-toolbar">
         <div class="flex-row">
           <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
@@ -275,6 +280,7 @@
               </label>
               <a id="phone-pwa-notifications-guide-link" class="notification-setting-help" target="_blank" rel="noopener noreferrer">Phone, PWA, and notification help</a>
             </div>
+            <button id="notification-test" type="button" hidden>Send test notification</button>
             <div id="notification-setting-status" class="notification-setting-status" role="status" aria-live="polite"></div>
           </div>
           <div class="quiet-alert-setting">

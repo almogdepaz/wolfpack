@@ -2,6 +2,7 @@ export const PUSH_API_PATH = {
   vapidKey: "/api/push/vapid-key",
   subscribe: "/api/push/subscribe",
   unsubscribe: "/api/push/unsubscribe",
+  test: "/api/push/test",
 } as const;
 
 export type PushApiPath = (typeof PUSH_API_PATH)[keyof typeof PUSH_API_PATH];
