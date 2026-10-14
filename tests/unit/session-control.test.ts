@@ -600,6 +600,56 @@ describe("session control cli parsing", () => {
     });
   });
 
+  test("send --json keeps the validated outcome fields of a 503 failure and nothing else", () => {
+    const run = (body: unknown) => Bun.spawnSync([process.execPath, "-e", `
+      globalThis.fetch = async () => Response.json(${JSON.stringify(body)}, { status: 503 });
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["send", "alpha", "go", "--json"]));
+    `], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const failure = {
+      ok: false,
+      error: "backend unavailable",
+      session: "alpha",
+      sessionId: "id-alpha",
+      delivery: "not_delivered",
+      outcome: "not_delivered",
+      reason: "backend_unavailable",
+      observedMs: 0,
+    };
+    const structured = run(failure);
+    expect(structured.exitCode).toBe(SESSION_EXIT.BACKEND_UNAVAILABLE);
+    expect(JSON.parse(structured.stdout.toString())).toEqual({
+      ok: false,
+      session: "alpha",
+      sessionId: "id-alpha",
+      delivery: "not_delivered",
+      outcome: "not_delivered",
+      reason: "backend_unavailable",
+      observedMs: 0,
+      error: { code: "BACKEND_UNAVAILABLE", message: "backend unavailable" },
+    });
+
+    // Anything that is not a valid send failure keeps the generic envelope.
+    for (const body of [
+      { error: "backend unavailable" },
+      { ...failure, reason: "\u001b]0;pwned\u0007" },
+      { ...failure, outcome: "submitted" },
+      { ...failure, observedMs: -1 },
+    ]) {
+      const child = run(body);
+      expect(child.exitCode).toBe(SESSION_EXIT.BACKEND_UNAVAILABLE);
+      expect(JSON.parse(child.stdout.toString())).toEqual({
+        ok: false,
+        error: { code: "BACKEND_UNAVAILABLE", message: "backend unavailable" },
+      });
+    }
+  });
+
   test("send maps every outcome to a stable exit code and prints only unconfirmed ones", () => {
     const cases = [
       [{ delivery: "delivered", outcome: "submitted" }, SESSION_EXIT.OK, ""],

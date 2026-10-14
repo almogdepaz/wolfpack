@@ -286,53 +286,94 @@ type SendAttemptStop =
   | { readonly kind: "observed" }
   | { readonly kind: "not_delivered"; readonly reason: SessionSendFailureReason };
 
-interface SendAttemptEvidence {
-  readonly noEnter: boolean;
-  /** Root record when the write went out; undefined when none or unreadable. */
-  readonly baseline: ProgramStatusRecord | undefined;
-  /** Root records seen after the write, ending with the final read. */
-  readonly observations: ReadonlyArray<ProgramStatusRecord | undefined>;
-  /** The final `session_info` read failed, so the last state is unknown. */
-  readonly statusUnknown: boolean;
-  readonly outputSeen: boolean;
-  /** An earlier attempt of the same send already proved delivery. */
-  readonly priorDelivered: boolean;
-}
+/** Each status read inside a send's observation window gets at most this much of it. */
+const SESSION_SEND_STATUS_READ_MAX_MS = 200;
 
 function sameProgramStatus(a: ProgramStatusRecord | undefined, b: ProgramStatusRecord | undefined): boolean {
   if (a === undefined || b === undefined) return a === b;
   return a.state === b.state && a.updatedAtMs === b.updatedAtMs;
 }
 
-/** Leaving `idle` for any other state than the baseline's means the input was taken. */
-function isSubmissionStatus(baseline: ProgramStatusRecord | undefined, record: ProgramStatusRecord | undefined): boolean {
-  return record !== undefined
-    && record.state !== PROGRAM_STATUS_STATE.IDLE
-    && record.state !== baseline?.state;
+/**
+ * Root program status around one write, ordered by the broker's stamp rather
+ * than by arrival: pacing can deliver a pre-write transition after the write.
+ * The broker shares this host's wall clock; a stamp equal to the write time is
+ * ambiguous and counts as before it.
+ */
+class SendStatusTimeline {
+  /** Latest record stamped at or before the write; undefined when none or unread. */
+  baseline: ProgramStatusRecord | undefined;
+  /** Records stamped after the write, in arrival order; undefined is a cleared record. */
+  readonly after: Array<ProgramStatusRecord | undefined> = [];
+
+  admit(record: ProgramStatusRecord | undefined, writtenAtMs: number | undefined): void {
+    if (writtenAtMs === undefined) {
+      this.baseline = record;
+      return;
+    }
+    // A cleared record carries no stamp, so it only breaks the idle edge.
+    if (record === undefined) {
+      this.after.push(undefined);
+      return;
+    }
+    if (record.updatedAtMs <= writtenAtMs) {
+      // Out of order once later evidence exists; ignore rather than guess.
+      if (this.after.length === 0) this.baseline = record;
+      return;
+    }
+    const last = this.after[this.after.length - 1];
+    if (last !== undefined && sameProgramStatus(last, record)) return;
+    this.after.push(record);
+  }
+
+  /** A record the broker stamped after the write arrived, so the status changed since. */
+  changed(): boolean {
+    return this.after.some((record) => record !== undefined);
+  }
+
+  /** An observed `idle` directly followed by a non-idle record stamped after the write. */
+  submitted(): boolean {
+    let previous = this.baseline;
+    for (const record of this.after) {
+      if (previous?.state === PROGRAM_STATUS_STATE.IDLE && record !== undefined && record.state !== PROGRAM_STATUS_STATE.IDLE) {
+        return true;
+      }
+      previous = record;
+    }
+    return false;
+  }
+}
+
+interface SendAttemptEvidence {
+  readonly noEnter: boolean;
+  readonly status: SendStatusTimeline;
+  /** No final status read completed inside the window, so the last state is unknown. */
+  readonly statusUnknown: boolean;
+  readonly outputSeen: boolean;
+  /** An earlier attempt of the same send already proved delivery. */
+  readonly priorDelivered: boolean;
 }
 
 function classifySendAttempt(
   evidence: SendAttemptEvidence,
 ): { readonly delivery: SessionSendDelivery; readonly outcome: SessionSendOutcome } {
-  const { baseline, observations } = evidence;
-  const delivered = evidence.outputSeen
-    || evidence.priorDelivered
-    || observations.some((record) => !sameProgramStatus(baseline, record));
+  const { status } = evidence;
+  const delivered = evidence.outputSeen || evidence.priorDelivered || status.changed();
   const unverified = { delivery: SESSION_SEND_DELIVERY.UNVERIFIED, outcome: SESSION_SEND_OUTCOME.UNVERIFIED } as const;
   if (evidence.noEnter) {
     return delivered
       ? { delivery: SESSION_SEND_DELIVERY.DELIVERED, outcome: SESSION_SEND_OUTCOME.DELIVERED }
       : unverified;
   }
-  if (observations.some((record) => isSubmissionStatus(baseline, record))) {
+  if (status.submitted()) {
     return { delivery: SESSION_SEND_DELIVERY.DELIVERED, outcome: SESSION_SEND_OUTCOME.SUBMITTED };
   }
   if (!delivered) return unverified;
   // Only an untouched idle record proves the program sat on the text:
   // pacing can fold idle->working->idle into one idle with a new timestamp.
   const pasted = !evidence.statusUnknown
-    && baseline?.state === PROGRAM_STATUS_STATE.IDLE
-    && observations.every((record) => sameProgramStatus(baseline, record));
+    && status.baseline?.state === PROGRAM_STATUS_STATE.IDLE
+    && status.after.length === 0;
   return {
     delivery: SESSION_SEND_DELIVERY.DELIVERED,
     outcome: pasted ? SESSION_SEND_OUTCOME.PASTED_NOT_SUBMITTED : SESSION_SEND_OUTCOME.UNVERIFIED,
@@ -351,6 +392,8 @@ function notDeliveredSend(reason: SessionSendFailureReason): SessionSendObservat
 /** Live state of one `writeObservedInput` call, handed to its callbacks. */
 interface InputObservation<T> {
   inputSent: boolean;
+  /** Wall clock taken just before the write; set with `inputSent`. */
+  inputSentAtMs: number | undefined;
   /** Settle the observation; only the first call counts. */
   finish(result: T): void;
 }
@@ -805,11 +848,11 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       priorDelivered: true,
       sessionName: options.sessionName,
     });
-    // A retry that could not be written leaves the first attempt's verdict.
-    const settled = retry.delivery === SESSION_SEND_DELIVERY.NOT_DELIVERED ? first : retry;
+    // A retry that could not be written sent nothing: the first verdict stands.
+    if (retry.delivery === SESSION_SEND_DELIVERY.NOT_DELIVERED) return first;
     return {
-      delivery: settled.delivery,
-      outcome: settled.outcome,
+      delivery: retry.delivery,
+      outcome: retry.outcome,
       observedMs: first.observedMs + retry.observedMs,
       retried: true,
     };
@@ -826,39 +869,32 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       readonly sessionName: string | undefined;
     },
   ): Promise<SessionSendObservationResult> {
-    let baseline: ProgramStatusRecord | undefined;
-    const observations: Array<ProgramStatusRecord | undefined> = [];
+    // One deadline covers the baseline read, subscribe, write and final read;
+    // nothing after it is evidence.
+    const deadlineMs = Date.now() + attempt.observeMs;
+    const statusReadMs = Math.min(SESSION_SEND_STATUS_READ_MAX_MS, Math.floor(attempt.observeMs / 4));
+    const status = new SendStatusTimeline();
     let outputSeen = false;
-    let writtenAtMs: number | undefined;
     let observation: InputObservation<SendAttemptStop> | undefined;
     const observed: SendAttemptStop = { kind: "observed" };
     const notDelivered = (reason: SessionSendFailureReason): SendAttemptStop => ({ kind: "not_delivered", reason });
     const stopUnlessWritten = (reason: SessionSendFailureReason): SendAttemptStop =>
       observation?.inputSent ? observed : notDelivered(reason);
-    // Listen before reading the baseline: pushed changes until the write move
-    // the baseline, later ones are evidence.
+    const decided = (): boolean => (attempt.noEnter ? outputSeen || status.changed() : status.submitted());
+    // Listen before reading the baseline so no pushed change falls between them.
     const unsubscribeStatus = this.onProgramStatusById(sessionId, (record) => {
-      if (!observation?.inputSent) {
-        baseline = record;
-        return;
-      }
-      writtenAtMs ??= Date.now();
-      observations.push(record);
-      if (attempt.noEnter ? !sameProgramStatus(baseline, record) : isSubmissionStatus(baseline, record)) {
-        observation.finish(observed);
-      }
+      if (Date.now() > deadlineMs) return;
+      status.admit(record, observation?.inputSentAtMs);
+      if (observation?.inputSent && decided()) observation.finish(observed);
     });
     try {
-      try {
-        baseline = parseBrokerProgramStatusRecord((await this.exactSessionInfo(sessionId)).program_status);
-      } catch (error: unknown) {
-        log.debug("send baseline status read failed", { sessionId, error: errMsg(error) });
-      }
+      const initial = await this.rootProgramStatusWithin(sessionId, statusReadMs, "baseline");
+      if (initial) status.admit(initial.record, undefined);
       const targetUnavailableOutcome = () => this.targetUnavailableOutcome(sessionId, attempt.sessionName ?? name);
       const { result: stop } = await this.writeObservedInput<SendAttemptStop>(sessionId, {
         sessionName: name,
         input: attempt.input,
-        timeoutMs: attempt.observeMs,
+        timeoutMs: Math.max(0, deadlineMs - statusReadMs - Date.now()),
         bind: (bound) => { observation = bound; },
         onTimeout: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
         onLifecycle: (event) => stopUnlessWritten(event.kind === "exited"
@@ -867,40 +903,55 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         onSubscribeError: (error) => stopUnlessWritten(this.subscribeErrorOutcome(error, targetUnavailableOutcome)),
         onWriteError: () => notDelivered(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
         onOutput: (frame, current) => {
-          if (!current.inputSent || frame.data.length === 0) return;
-          writtenAtMs ??= Date.now();
+          if (!current.inputSent || frame.data.length === 0 || Date.now() > deadlineMs) return;
           outputSeen = true;
           if (attempt.noEnter) current.finish(observed);
         },
-        onInputSent: () => { writtenAtMs ??= Date.now(); },
       });
       if (stop.kind === "not_delivered") return notDeliveredSend(stop.reason);
-      const decided = attempt.noEnter
-        ? outputSeen || observations.some((record) => !sameProgramStatus(baseline, record))
-        : observations.some((record) => isSubmissionStatus(baseline, record));
+      const writtenAtMs = observation?.inputSentAtMs;
       let statusUnknown = false;
-      if (!decided) {
-        // Pushed changes are paced, so read the final state once.
-        try {
-          observations.push(parseBrokerProgramStatusRecord((await this.exactSessionInfo(sessionId)).program_status));
-        } catch (error: unknown) {
-          statusUnknown = true;
-          log.debug("send final status read failed", { sessionId, error: errMsg(error) });
-        }
+      if (!decided()) {
+        // Pushed changes are paced, so read the final state once, inside the window.
+        const final = await this.rootProgramStatusWithin(sessionId, deadlineMs - Date.now(), "final");
+        if (final) status.admit(final.record, writtenAtMs);
+        else statusUnknown = true;
       }
       return {
         ...classifySendAttempt({
           noEnter: attempt.noEnter,
-          baseline,
-          observations,
+          status,
           statusUnknown,
           outputSeen,
           priorDelivered: attempt.priorDelivered,
         }),
-        observedMs: writtenAtMs === undefined ? 0 : Date.now() - writtenAtMs,
+        observedMs: writtenAtMs === undefined ? 0 : Math.min(Date.now(), deadlineMs) - writtenAtMs,
       };
     } finally {
       unsubscribeStatus();
+    }
+  }
+
+  /** Reads the root status record, or undefined when the read fails or outlasts `timeoutMs`. */
+  private async rootProgramStatusWithin(
+    sessionId: string,
+    timeoutMs: number,
+    phase: "baseline" | "final",
+  ): Promise<{ readonly record: ProgramStatusRecord | undefined } | undefined> {
+    if (timeoutMs <= 0) return undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); });
+    try {
+      return await Promise.race([
+        this.exactSessionInfo(sessionId, timeoutMs)
+          .then((session) => ({ record: parseBrokerProgramStatusRecord(session.program_status) })),
+        expired,
+      ]);
+    } catch (error: unknown) {
+      log.debug(`send ${phase} status read failed`, { sessionId, error: errMsg(error) });
+      return undefined;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -1020,6 +1071,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     });
     const observation: InputObservation<T> = {
       inputSent: false,
+      inputSentAtMs: undefined,
       finish: (result) => {
         if (settled) return;
         settled = true;
@@ -1101,10 +1153,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       // Output can arrive while the write is still on the stack; it already
       // follows the input.
       observation.inputSent = true;
+      observation.inputSentAtMs = Date.now();
       try {
         this.client.writeInput(sessionId, TEXT_ENCODER.encode(spec.input));
       } catch {
         observation.inputSent = false;
+        observation.inputSentAtMs = undefined;
         observation.finish(spec.onWriteError());
         return await settle();
       }
@@ -1715,8 +1769,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     return snapshot as SnapshotPayload;
   }
 
-  private async exactSessionInfo(sessionId: string): Promise<BrokerSessionInfo> {
-    const payload = unwrap(await this.client.request("session_info", { session_id: sessionId }));
+  private async exactSessionInfo(sessionId: string, timeoutMs?: number): Promise<BrokerSessionInfo> {
+    const payload = unwrap(await this.client.request(
+      "session_info",
+      { session_id: sessionId },
+      timeoutMs === undefined ? undefined : { timeoutMs },
+    ));
     const session = payload.session;
     if (
       !session

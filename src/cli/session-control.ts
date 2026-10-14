@@ -39,8 +39,17 @@ import type {
   SessionPromptOutcome,
   SessionPromptWaitResult,
 } from "../session-prompt-contract.js";
-import { SESSION_SEND_MAX_OBSERVE_MS, SESSION_SEND_OUTCOME } from "../session-send-contract.js";
-import type { SessionSendObservationResult, SessionSendOutcome } from "../session-send-contract.js";
+import {
+  SESSION_SEND_DELIVERY,
+  SESSION_SEND_FAILURE_REASON,
+  SESSION_SEND_MAX_OBSERVE_MS,
+  SESSION_SEND_OUTCOME,
+} from "../session-send-contract.js";
+import type {
+  SessionSendFailureReason,
+  SessionSendObservationResult,
+  SessionSendOutcome,
+} from "../session-send-contract.js";
 import { call as callApi } from "./api.js";
 import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
@@ -681,6 +690,46 @@ function sessionSendExit(data: SessionSendResponse): number {
   return SESSION_SEND_EXIT[data.outcome] ?? SESSION_EXIT.GENERAL;
 }
 
+const SESSION_SEND_FAILURE_REASONS: ReadonlySet<unknown> = new Set(Object.values(SESSION_SEND_FAILURE_REASON));
+
+/**
+ * The outcome fields of a send that answered HTTP 503 because nothing was
+ * written; anything else, and the server's error text, stays generic.
+ */
+function sessionSendFailure(e: unknown): SessionSendResponse | undefined {
+  const err = e as Partial<ApiError>;
+  if (err.status !== 503 || !err.body) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(err.body);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const body = parsed as Record<string, unknown>;
+  if (
+    body.ok !== false
+    || body.delivery !== SESSION_SEND_DELIVERY.NOT_DELIVERED
+    || body.outcome !== SESSION_SEND_OUTCOME.NOT_DELIVERED
+    || !SESSION_SEND_FAILURE_REASONS.has(body.reason)
+    || !Number.isSafeInteger(body.observedMs)
+    || (body.observedMs as number) < 0
+    || !isBoundedSessionStatusIdentity(body.session)
+    || !isBoundedSessionStatusIdentity(body.sessionId)
+  ) {
+    return undefined;
+  }
+  return {
+    ok: false,
+    session: body.session,
+    sessionId: body.sessionId,
+    delivery: SESSION_SEND_DELIVERY.NOT_DELIVERED,
+    outcome: SESSION_SEND_OUTCOME.NOT_DELIVERED,
+    reason: body.reason as SessionSendFailureReason,
+    observedMs: body.observedMs as number,
+  };
+}
+
 function sessionSendSummary(data: SessionSendResponse): string | undefined {
   if (
     data.outcome === undefined
@@ -1229,16 +1278,25 @@ async function runTargetSessionCommand(
       return SESSION_EXIT.OK;
     }
     if (parsed.action === "send") {
-      const data = await call("/api/session-control/send", {
-        method: "POST",
-        body: JSON.stringify({
-          session: parsed.session,
-          text: parsed.text,
-          noEnter: parsed.noEnter,
-          ...(parsed.ensureSubmitted && { ensureSubmitted: true }),
-          ...(parsed.observeMs !== undefined && { observeMs: parsed.observeMs }),
-        }),
-      }, target) as SessionSendResponse;
+      let data: SessionSendResponse;
+      try {
+        data = await call("/api/session-control/send", {
+          method: "POST",
+          body: JSON.stringify({
+            session: parsed.session,
+            text: parsed.text,
+            noEnter: parsed.noEnter,
+            ...(parsed.ensureSubmitted && { ensureSubmitted: true }),
+            ...(parsed.observeMs !== undefined && { observeMs: parsed.observeMs }),
+          }),
+        }, target) as SessionSendResponse;
+      } catch (e: unknown) {
+        const failure = parsed.output === "json" ? sessionSendFailure(e) : undefined;
+        if (failure === undefined) throw e;
+        const { code, message } = SESSION_API_FAILURES[503];
+        jsonOut({ ...failure, error: { code, message } }, target);
+        return sessionSendExit(failure);
+      }
       if (parsed.output === "json") jsonOut(data, target);
       else {
         const summary = sessionSendSummary(data);

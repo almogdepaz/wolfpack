@@ -14,8 +14,10 @@ export type SessionSendDelivery = (typeof SESSION_SEND_DELIVERY)[keyof typeof SE
 
 /**
  * What the send achieved. Without `noEnter`, `submitted` means the program's
- * OSC 7501 status left `idle` after the write, and `pasted_not_submitted` means
- * the text arrived (output appeared) while an idle status stayed untouched.
+ * OSC 7501 root status was seen `idle` and then moved to another state the
+ * broker stamped after the write, within the observation window;
+ * `pasted_not_submitted` means the text arrived (output appeared) while an idle
+ * status stayed untouched.
  * With `noEnter` nothing is submitted, so the outcome mirrors `delivery`.
  */
 export const SESSION_SEND_OUTCOME = {
@@ -43,7 +45,7 @@ export type SessionSendFailureReason =
 export interface SessionSendObservationOptions {
   readonly text: string;
   readonly noEnter: boolean;
-  /** Bounds each observed write, subscribe included. */
+  /** Bounds each observed write: status reads, subscribe and write included. */
   readonly observeMs: number;
   /** Re-send one `\r` when the first write reads as `pasted_not_submitted`. */
   readonly ensureSubmitted: boolean;
@@ -55,6 +57,7 @@ export interface SessionSendObservationResult {
   readonly outcome: SessionSendOutcome;
   /** Milliseconds observed after the write(s); 0 when nothing was written. */
   readonly observedMs: number;
+  /** The `ensureSubmitted` retry actually wrote its `\r`. */
   readonly retried?: true;
   /** Present exactly when `delivery` is `not_delivered`. */
   readonly reason?: SessionSendFailureReason;
