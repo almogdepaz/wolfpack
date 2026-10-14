@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_STATE } from "../agent-status-contract.js";
+import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
+import type { AgentStatusState } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { createLogger, errMsg } from "../log.js";
 import { reduceActivityObservation } from "../session-activity.js";
-import { reduceQuietAlertPolicy } from "../quiet-alert-policy.js";
+import { QUIET_ALERT_KIND, QUIET_SUPPRESSION_REASON, reduceQuietAlertPolicy } from "../quiet-alert-policy.js";
 import {
   onQuietAlertPolicyInvalidation,
   quietAlertPolicyEpoch,
 } from "../quiet-alert-policy-invalidation.js";
-import type { QuietAlertFact, QuietAlertPolicyState } from "../quiet-alert-policy.js";
+import type {
+  QuietAlertFact,
+  QuietAlertKindFields,
+  QuietAlertPolicyState,
+  QuietSuppression,
+} from "../quiet-alert-policy.js";
 import type {
   SessionActivityHistory,
   SessionActivityObservation,
@@ -122,6 +128,15 @@ interface KnownSessionSummary {
   readonly identity?: PublicSessionIdentity;
 }
 
+/** Descendant generations searched for a busy child; bounds cycles and fan-out. */
+const QUIET_SUPPRESSION_MAX_DEPTH = 8;
+/** Descendant runtime states that count as still working on the parent's behalf. */
+const BUSY_DESCENDANT_STATES: ReadonlySet<AgentStatusState> = new Set([
+  AGENT_STATUS_STATE.WORKING,
+  AGENT_STATUS_STATE.RUNNING,
+  AGENT_STATUS_STATE.OUTPUT,
+]);
+
 interface ObservedSessionSummary {
   readonly name: string;
   readonly lastLine: string;
@@ -129,8 +144,22 @@ interface ObservedSessionSummary {
   readonly runtimeState: AgentRuntimeState;
   readonly activity: SessionActivityObservation;
   readonly quietAlert?: QuietAlertFact;
+  readonly quietSuppressedBy?: QuietSuppression;
   readonly outputSequence?: string;
   readonly identity?: PublicSessionIdentity;
+}
+
+/**
+ * A session observed in this collection, before its quiet episode is reduced.
+ * Quiet eligibility runs in one synchronous pass over the whole collection.
+ */
+interface PendingSessionObservation {
+  readonly sessionKey: string;
+  readonly observedAtMs: number;
+  /** Absent when this observation says nothing about quiet continuity. */
+  readonly quietContinuity?: "fresh" | "lost";
+  readonly alive: boolean;
+  readonly summary: Omit<ObservedSessionSummary, "quietAlert" | "quietSuppressedBy">;
 }
 
 interface SessionObservation {
@@ -140,7 +169,7 @@ interface SessionObservation {
 }
 
 function withoutQuietAlerts(sessions: readonly ObservedSessionSummary[]): readonly ObservedSessionSummary[] {
-  return sessions.map(({ quietAlert: _quietAlert, ...session }) => session);
+  return sessions.map(({ quietAlert: _quietAlert, quietSuppressedBy: _quietSuppressedBy, ...session }) => session);
 }
 
 const knownSessionSummaries = new Map<string, KnownSessionSummary>();
@@ -184,6 +213,11 @@ function reduceSessionActivity(
   return reduction;
 }
 
+interface QuietAlertEligibility {
+  readonly alert?: QuietAlertKindFields;
+  readonly suppressed?: boolean;
+}
+
 function reduceSessionQuietAlert(
   sessionKey: string,
   sessionId: string | undefined,
@@ -191,6 +225,7 @@ function reduceSessionQuietAlert(
   continuity: "fresh" | "lost",
   renderedActivityAtMs?: number,
   episodeId?: string,
+  eligibility: QuietAlertEligibility = {},
 ): QuietAlertFact | undefined {
   if (!sessionId) {
     quietAlertHistory.delete(sessionKey);
@@ -203,6 +238,7 @@ function reduceSessionQuietAlert(
     renderedActivityAt: renderedActivityAtMs,
     episodeId,
     policy: loadSettings().quietAlerts,
+    ...eligibility,
   });
   if (reduction.state) quietAlertHistory.set(sessionKey, reduction.state);
   else quietAlertHistory.delete(sessionKey);
@@ -434,7 +470,7 @@ async function observeSessionFact(
   unreliableSessionKeys: Set<string>,
   authority: ObservationAuthority,
   pass: ObservationPass,
-): Promise<ObservedSessionSummary | undefined> {
+): Promise<PendingSessionObservation | undefined> {
   if (!ownsObservationAuthority(authority)) return undefined;
   const name = fact.name;
   activeNames.add(name);
@@ -510,12 +546,11 @@ async function observeSessionFact(
   // Rendered activity is reduced once by its shared capture flight. Individual
   // dashboard/observer consumers can adopt that reduction, but a collection
   // retired while awaiting the capture cannot mutate its canonical state.
-  const quietAlert = brokerState === "alive" && currentRendered !== undefined
-    ? reduceSessionQuietAlert(sessionKey, identity?.wolfpackSessionId, observedAtMs, "fresh")
+  const quietContinuity = brokerState === "alive" && currentRendered !== undefined
+    ? "fresh" as const
     : brokerState !== "alive"
-      ? reduceSessionQuietAlert(sessionKey, identity?.wolfpackSessionId, observedAtMs, "lost")
+      ? "lost" as const
       : undefined;
-  if (!ownsObservationAuthority(authority)) return undefined;
 
   const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
   const renderedPreview = lastTerminalPreviewLine(currentRendered);
@@ -551,12 +586,117 @@ async function observeSessionFact(
     triage,
     runtimeState,
     activity: reduction.activity,
-    ...(quietAlert && { quietAlert }),
     ...(outputSequence !== undefined && { outputSequence }),
     ...(identity && { identity }),
   };
   knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
-  return summary;
+  return {
+    sessionKey,
+    observedAtMs,
+    ...(quietContinuity && { quietContinuity }),
+    alive: brokerState === "alive",
+    summary,
+  };
+}
+
+/** The program itself says it waits on the user; that alert is never withheld. */
+function needsInputAlert(runtimeState: AgentRuntimeState): QuietAlertKindFields | undefined {
+  if (runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT || runtimeState.authority !== AGENT_STATUS_AUTHORITY.PROGRAM) {
+    return undefined;
+  }
+  return {
+    kind: QUIET_ALERT_KIND.NEEDS_INPUT,
+    ...(runtimeState.inputKind && { inputKind: runtimeState.inputKind }),
+  };
+}
+
+/**
+ * A live descendant is busy while fresh status says it works or prints, or
+ * while its screen changed more recently than the parent's quiet window.
+ */
+function busyDescendant(pending: PendingSessionObservation, quietSinceMs: number): boolean {
+  if (!pending.alive) return false;
+  const { runtimeState, activity } = pending.summary;
+  if (
+    BUSY_DESCENDANT_STATES.has(runtimeState.state)
+    && runtimeState.freshness === AGENT_STATUS_FRESHNESS.FRESH
+    && !runtimeState.stale
+  ) return true;
+  const renderedAtMs = activity.lastRenderedActivityAt === undefined ? NaN : Date.parse(activity.lastRenderedActivityAt);
+  return renderedAtMs > quietSinceMs;
+}
+
+interface ChildObservation {
+  readonly sessionId: string;
+  readonly pending: PendingSessionObservation;
+}
+
+/** Nearest busy descendant by `parentSession` links, breadth first and depth bounded. */
+function findBusyDescendant(
+  parentId: string,
+  childrenByParentId: ReadonlyMap<string, readonly ChildObservation[]>,
+  quietSinceMs: number,
+): QuietSuppression | undefined {
+  const visited = new Set([parentId]);
+  let generation = [parentId];
+  for (let depth = 1; depth <= QUIET_SUPPRESSION_MAX_DEPTH && generation.length > 0; depth++) {
+    const next: string[] = [];
+    for (const id of generation) {
+      for (const { sessionId, pending } of childrenByParentId.get(id) ?? []) {
+        if (visited.has(sessionId)) continue;
+        visited.add(sessionId);
+        if (busyDescendant(pending, quietSinceMs)) {
+          return { reason: QUIET_SUPPRESSION_REASON.WAITING_ON_CHILD, sessionId, session: pending.summary.name };
+        }
+        next.push(sessionId);
+      }
+    }
+    generation = next;
+  }
+  return undefined;
+}
+
+/**
+ * Reduces each observed session's quiet episode. Synchronous, so it runs under
+ * one observation authority for the whole collection, which lets a parent's
+ * alert see its delegated children. A due `quiet` alert waits while a
+ * descendant is busy; `needs-input` from the program's own status wins over
+ * that, because the parent is waiting on the user, not the child.
+ */
+function reduceCollectedQuietAlerts(
+  pending: readonly PendingSessionObservation[],
+): ObservedSessionSummary[] {
+  const childrenByParentId = new Map<string, ChildObservation[]>();
+  for (const entry of pending) {
+    const identity = entry.summary.identity;
+    const parentId = identity?.parentSession?.wolfpackSessionId;
+    if (identity === undefined || parentId === undefined) continue;
+    const child = { sessionId: identity.wolfpackSessionId, pending: entry };
+    const siblings = childrenByParentId.get(parentId);
+    if (siblings) siblings.push(child);
+    else childrenByParentId.set(parentId, [child]);
+  }
+  const quietAfterMs = loadSettings().quietAlerts.quietAfterSeconds * 1_000;
+  return pending.map(({ sessionKey, observedAtMs, quietContinuity, summary }) => {
+    if (quietContinuity === undefined) return summary;
+    const sessionId = summary.identity?.wolfpackSessionId;
+    const alert = quietContinuity === "fresh" ? needsInputAlert(summary.runtimeState) : undefined;
+    const busy = quietContinuity === "fresh" && alert === undefined && sessionId !== undefined
+      ? findBusyDescendant(sessionId, childrenByParentId, observedAtMs - quietAfterMs)
+      : undefined;
+    const quietAlert = reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, quietContinuity, undefined, undefined, {
+      ...(alert && { alert }),
+      ...(busy && { suppressed: true }),
+    });
+    // Only a due episode is withheld; one still inside its window is just pending.
+    const episode = quietAlertHistory.get(sessionKey);
+    const withheld = busy !== undefined && episode !== undefined && !episode.emitted && observedAtMs >= episode.eligibleAtMs;
+    return {
+      ...summary,
+      ...(quietAlert && { quietAlert }),
+      ...(withheld && { quietSuppressedBy: busy }),
+    };
+  });
 }
 
 function pruneSessionObservationState(
@@ -622,7 +762,9 @@ async function collectSessionObservation(
   )));
   if (!ownsObservationAuthority(authority)) return staleSessionProjection(sessionFacts);
 
-  const sessions = observedSessions.filter((session): session is ObservedSessionSummary => session !== undefined);
+  const sessions = reduceCollectedQuietAlerts(
+    observedSessions.filter((session): session is PendingSessionObservation => session !== undefined),
+  );
   sessions.sort((a, b) => a.name.localeCompare(b.name));
   if (pass === "full") pruneSessionObservationState(fingerprints, activeSessionKeys, activeNames, store, authority);
   return { sessions, unreliableSessionKeys, authoritative: ownsObservationAuthority(authority) };

@@ -5627,36 +5627,101 @@
       "additionalProperties": false
     },
     "QuietAlertFact": {
+      "description": "Quiet episode alert. needs-input: the program's own status waited on the user when output went quiet; inputKind only accompanies it. Servers predating needs-input drop it.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "quiet"
+            },
+            "sessionId": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "episodeId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "eligibleAtMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "observedAtMs": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "sessionId",
+            "episodeId",
+            "eligibleAtMs",
+            "observedAtMs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "needs-input"
+            },
+            "inputKind": {
+              "enum": [
+                "permission",
+                "question",
+                "auth"
+              ]
+            },
+            "sessionId": {
+              "$ref": "#/$defs/SessionId"
+            },
+            "episodeId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "eligibleAtMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "observedAtMs": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "kind",
+            "sessionId",
+            "episodeId",
+            "eligibleAtMs",
+            "observedAtMs"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "QuietSuppression": {
       "type": "object",
       "properties": {
-        "kind": {
-          "const": "quiet"
+        "reason": {
+          "const": "waiting-on-child"
         },
         "sessionId": {
           "$ref": "#/$defs/SessionId"
         },
-        "episodeId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 128
-        },
-        "eligibleAtMs": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "observedAtMs": {
-          "type": "integer",
-          "minimum": 0
+        "session": {
+          "$ref": "#/$defs/SessionName"
         }
       },
       "required": [
-        "kind",
+        "reason",
         "sessionId",
-        "episodeId",
-        "eligibleAtMs",
-        "observedAtMs"
+        "session"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "description": "A due quiet alert withheld while the named descendant session still works; recomputed each observation."
     },
     "SessionSummary": {
       "type": "object",
@@ -5684,6 +5749,9 @@
         },
         "quietAlert": {
           "$ref": "#/$defs/QuietAlertFact"
+        },
+        "quietSuppressedBy": {
+          "$ref": "#/$defs/QuietSuppression"
         }
       },
       "required": [

@@ -21,9 +21,11 @@ import {
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
+  QUIET_ALERT_KIND,
   QUIET_ALERT_MAX_SECONDS,
   QUIET_ALERT_MIN_SECONDS,
   QUIET_ALERT_MODE,
+  QUIET_SUPPRESSION_REASON,
 } from "../quiet-alert-policy.ts";
 import {
   DIRECTORY_BREADCRUMB_LIMIT,
@@ -659,13 +661,33 @@ export const controlApiSource: ControlApiSource = {
       lastRenderedActivityAt: { type: "string", format: "date-time" },
       quietSince: { type: "string", format: "date-time" },
     }, ["freshness", "observedAt", "display"]),
-    QuietAlertFact: object({
-      kind: { const: "quiet" },
+    QuietAlertFact: {
+      description: "Quiet episode alert. needs-input: the program's own status waited on the user when output went quiet; inputKind only accompanies it. Servers predating needs-input drop it.",
+      oneOf: [
+        object({
+          kind: { const: QUIET_ALERT_KIND.QUIET },
+          sessionId: ref("SessionId"),
+          episodeId: { type: "string", minLength: 1, maxLength: 128 },
+          eligibleAtMs: { type: "integer", minimum: 0 },
+          observedAtMs: { type: "integer", minimum: 0 },
+        }, ["kind", "sessionId", "episodeId", "eligibleAtMs", "observedAtMs"]),
+        object({
+          kind: { const: QUIET_ALERT_KIND.NEEDS_INPUT },
+          inputKind: { enum: [...PROGRAM_STATUS_KINDS] },
+          sessionId: ref("SessionId"),
+          episodeId: { type: "string", minLength: 1, maxLength: 128 },
+          eligibleAtMs: { type: "integer", minimum: 0 },
+          observedAtMs: { type: "integer", minimum: 0 },
+        }, ["kind", "sessionId", "episodeId", "eligibleAtMs", "observedAtMs"]),
+      ],
+    },
+    QuietSuppression: object({
+      reason: { const: QUIET_SUPPRESSION_REASON.WAITING_ON_CHILD },
       sessionId: ref("SessionId"),
-      episodeId: { type: "string", minLength: 1, maxLength: 128 },
-      eligibleAtMs: { type: "integer", minimum: 0 },
-      observedAtMs: { type: "integer", minimum: 0 },
-    }, ["kind", "sessionId", "episodeId", "eligibleAtMs", "observedAtMs"]),
+      session: ref("SessionName"),
+    }, ["reason", "sessionId", "session"], {
+      description: "A due quiet alert withheld while the named descendant session still works; recomputed each observation.",
+    }),
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),
@@ -675,6 +697,7 @@ export const controlApiSource: ControlApiSource = {
       runtimeState: ref("AgentRuntimeState"),
       activity: ref("ActivityObservation"),
       quietAlert: ref("QuietAlertFact"),
+      quietSuppressedBy: ref("QuietSuppression"),
     }, ["name", "lastLine", "triage"]),
     SessionControlIdentity: object({
       session: ref("SessionName"),

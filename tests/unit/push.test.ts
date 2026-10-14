@@ -890,12 +890,38 @@ describe("push: checkSessionTransitions", () => {
 
   test("builds a stable-identity route for an observed quiet episode", async () => {
     const { _testing } = await import("../../src/server/push.ts");
-    expect(_testing.quietAlertPayload({ name: "agent one" }, "broker/session id")).toEqual({
+    const alert = { sessionId: "broker/session id", episodeId: "e", eligibleAtMs: 0, observedAtMs: 0 };
+    expect(_testing.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "quiet" })).toEqual({
       title: "Wolfpack: agent one",
       body: "Quiet",
       tag: "session-broker/session id",
       url: "/?sessionId=broker%2Fsession+id&session=agent+one&machine=local",
     });
+    const needsInput = _testing.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "needs-input", inputKind: "question" });
+    expect(needsInput).toMatchObject({ title: "Wolfpack: agent one", tag: "session-broker/session id", body: "Needs input (question)" });
+    expect(_testing.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "needs-input" }).body).toBe("Needs input");
+  });
+
+  test("delivers a relayed peer needs-input fact with its own text", async () => {
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    const endpoint = `https://fcm.googleapis.com/peer-needs-input-${Date.now()}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    const payloads: Array<{ readonly title: string; readonly body: string }> = [];
+    _testing.sessionPushSender = async (payload) => {
+      payloads.push({ title: payload.title, body: payload.body });
+      return { sent: 1, failed: 0, pruned: 0 };
+    };
+    try {
+      await checkSessionTransitions([{
+        name: "agent",
+        identity: { wolfpackSessionId: "peer-needs-input" },
+        quietAlert: { ...quietAlert("peer-needs-input-episode"), sessionId: "peer-needs-input", kind: "needs-input", inputKind: "permission" },
+      }], undefined, undefined, { identity: "n123:12345678-1234-4234-8234-123456789abc", name: "peer" });
+      expect(payloads).toEqual([{ title: "Wolfpack: peer: agent", body: "Needs input (permission)" }]);
+    } finally {
+      _testing.sessionPushSender = null;
+      removeSubscription(endpoint);
+    }
   });
 
   test("prunes delivery and debounce state for removed sessions", async () => {

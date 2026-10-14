@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_QUIET_ALERT_POLICY,
+  isQuietAlertFact,
   QUIET_ALERT_MODE,
   reduceQuietAlertPolicy,
 } from "../../src/quiet-alert-policy.ts";
@@ -140,5 +141,73 @@ describe("quiet alert policy", () => {
     expect(repeatedQuiet.event).toBeUndefined();
     expect(disabled.state).toBeUndefined();
     expect(reenabled.event).toBeUndefined();
+  });
+});
+
+describe("quiet alert kinds and suppression", () => {
+  const quietAt = (state: Parameters<typeof reduceQuietAlertPolicy>[0], offsetMs: number, overrides: Partial<Parameters<typeof reduceQuietAlertPolicy>[1]> = {}) =>
+    reduceQuietAlertPolicy(state, observation({
+      observedAtMs: ACTIVITY_AT_MS + offsetMs,
+      renderedActivityAt: undefined,
+      episodeId: undefined,
+      ...overrides,
+    }));
+
+  test("emits a needs-input alert once per episode and keeps its kind while the episode lasts", () => {
+    const active = reduceQuietAlertPolicy(undefined, observation());
+    const needsInput = quietAt(active.state, 30_000, { alert: { kind: "needs-input", inputKind: "permission" } });
+    const repeated = quietAt(needsInput.state, 60_000);
+
+    expect(needsInput.event).toEqual({ kind: "needs-input", episodeId: "episode-one", inputKind: "permission" });
+    expect(needsInput.fact).toEqual({
+      kind: "needs-input",
+      inputKind: "permission",
+      sessionId: SESSION_ID,
+      episodeId: "episode-one",
+      eligibleAtMs: ACTIVITY_AT_MS + 30_000,
+      observedAtMs: ACTIVITY_AT_MS + 30_000,
+    });
+    expect(isQuietAlertFact(needsInput.fact)).toBe(true);
+    expect(repeated.event).toBeUndefined();
+    expect(repeated.fact).toEqual({ ...needsInput.fact!, observedAtMs: ACTIVITY_AT_MS + 60_000 });
+  });
+
+  test("a suppressed eligible episode stays open and fires once suppression lifts", () => {
+    const active = reduceQuietAlertPolicy(undefined, observation());
+    const suppressed = quietAt(active.state, 30_000, { suppressed: true });
+    const stillSuppressed = quietAt(suppressed.state, 45_000, { suppressed: true });
+    const released = quietAt(stillSuppressed.state, 50_000);
+
+    expect(suppressed.event).toBeUndefined();
+    expect(suppressed.fact).toBeUndefined();
+    expect(suppressed.state).toMatchObject({ episodeId: "episode-one", emitted: false });
+    expect(stillSuppressed.event).toBeUndefined();
+    expect(released.event).toEqual({ kind: "quiet", episodeId: "episode-one" });
+    expect(released.fact?.observedAtMs).toBe(ACTIVITY_AT_MS + 50_000);
+  });
+
+  test("needs-input wins over suppression", () => {
+    const active = reduceQuietAlertPolicy(undefined, observation());
+    const needsInput = quietAt(active.state, 30_000, { suppressed: true, alert: { kind: "needs-input", inputKind: undefined } });
+
+    expect(needsInput.event).toEqual({ kind: "needs-input", episodeId: "episode-one" });
+    expect(needsInput.fact?.kind).toBe("needs-input");
+    expect(needsInput.fact).not.toHaveProperty("inputKind");
+  });
+
+  test("validates alert facts by kind", () => {
+    const base = {
+      sessionId: SESSION_ID,
+      episodeId: "episode-one",
+      eligibleAtMs: ACTIVITY_AT_MS,
+      observedAtMs: ACTIVITY_AT_MS,
+    };
+    expect(isQuietAlertFact({ ...base, kind: "quiet" })).toBe(true);
+    expect(isQuietAlertFact({ ...base, kind: "needs-input" })).toBe(true);
+    expect(isQuietAlertFact({ ...base, kind: "needs-input", inputKind: "question" })).toBe(true);
+    expect(isQuietAlertFact({ ...base, kind: "needs-input", inputKind: "coffee" })).toBe(false);
+    expect(isQuietAlertFact({ ...base, kind: "quiet", inputKind: "question" })).toBe(false);
+    expect(isQuietAlertFact({ ...base, kind: "waiting-on-child" })).toBe(false);
+    expect(isQuietAlertFact({ ...base, kind: "needs-input", extra: true })).toBe(false);
   });
 });

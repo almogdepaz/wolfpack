@@ -42,9 +42,19 @@ Enroll once, on one verified Wolfpack origin per device/browser profile. That ho
 
 An ordinary iOS Safari tab shows an **Add to Home Screen** hint instead of an enable button. Install and launch the app first. If permission was denied, on iOS open **Settings app → Notifications → Wolfpack**; in Chromium open **site settings for this origin** and allow notifications. Reopen Wolfpack and enable the toggle again. Do not broadly enable notifications for unrelated sites.
 
+## alert kinds
+
+An agent's alert fires once per activity episode, after its screen stays quiet for the configured interval.
+
+- **Quiet**: the screen went quiet.
+- **Needs input**: the screen went quiet while the agent's own program status (OSC 7501) said it waits on you, for example `Needs input (permission)`. This alert is never withheld.
+- **Waiting on a child**: a due quiet alert is withheld while any live descendant session (linked by `parentSession`, up to 8 generations) still works: its status is working, running, or printing, or its screen changed within the quiet interval. The episode stays open and alerts once the whole tree is quiet. `GET /api/sessions` reports the withheld state as `quietSuppressedBy: { reason: "waiting-on-child", sessionId, session }` on the parent; it never sends a notification. Only descendants on the same machine count.
+
+Agents with no children and no program status keep the plain quiet behavior. There is no setting for these rules.
+
 ## one enrollment covers online machines
 
-The browser subscription still belongs to one origin (scheme, hostname, port). The enrolled server reads trusted peers' session lists and relays only quiet-alert facts those peers report: each peer keeps its own quiet-alert policy. Older peers also work when their session lists expose these facts; peers that do not expose quiet-alert facts cannot supply automatic alerts. Unreachable or incompatible peers are skipped without blocking local alerts.
+The browser subscription still belongs to one origin (scheme, hostname, port). The enrolled server reads trusted peers' session lists and relays only quiet-alert facts those peers report: each peer keeps its own quiet-alert policy. Older peers also work when their session lists expose these facts; peers that do not expose quiet-alert facts cannot supply automatic alerts. An enrolled server older than the needs-input kind drops a newer peer's needs-input alerts instead of relaying them; update the enrollment host to receive them. Unreachable or incompatible peers are skipped without blocking local alerts.
 
 If you enrolled on several machine origins before, **turn notifications off on the other machines you enrolled before**. There is no cross-origin deduplication: leaving multiple enrollments on can produce duplicate alerts on this device.
 
