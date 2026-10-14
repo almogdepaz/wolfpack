@@ -66,7 +66,7 @@ wolfpack session send <session-or-id> '<text>' --json
 wolfpack session wait <session-or-id> '<text>' --json
 ```
 
-`wolfpack session send` is only for explicit interactive steering. Never send `/exit` or `/quit` to clean up a session: those are Pi input, not Wolfpack teardown. Do not guess lifecycle commands.
+`wolfpack session send` is only for explicit interactive steering. Act on the JSON `outcome`, not the exit status alone: `pasted_not_submitted` (exit 7) means the text sits unsubmitted in the target's input, so submit it with `wolfpack session send <session-or-id> $'\r' --no-enter` (do not re-send the text), or pass `--ensure-submitted` on the original send to retry Enter once automatically. Never send `/exit` or `/quit` to clean up a session: those are Pi input, not Wolfpack teardown. Do not guess lifecycle commands.
 
 Treat session selectors as opaque handles. Prefer the stable `sessionId` returned by create/spawn/list/status. If the user already supplied an exact target, do not list first.
 

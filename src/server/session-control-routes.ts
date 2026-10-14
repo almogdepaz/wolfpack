@@ -12,6 +12,14 @@ import {
   unicodeCodePointLength,
 } from "../session-prompt-contract.js";
 import {
+  SESSION_SEND_DEFAULT_OBSERVE_MS,
+  SESSION_SEND_DELIVERY,
+  SESSION_SEND_FAILURE_REASON,
+  SESSION_SEND_MAX_OBSERVE_MS,
+  SESSION_SEND_OUTCOME,
+  sessionSendOk,
+} from "../session-send-contract.js";
+import {
   isBoundedSessionStatusIdentity,
   SESSION_STATUS_ERROR,
   SESSION_STATUS_ERROR_MESSAGE,
@@ -108,6 +116,14 @@ function parseTimeoutMs(value: unknown): number | null {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1 || n > SESSION_WAIT_MAX_TIMEOUT_MS) return null;
   return n;
+}
+
+function parseObserveMs(value: unknown): number | null {
+  if (value === undefined) return SESSION_SEND_DEFAULT_OBSERVE_MS;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > SESSION_SEND_MAX_OBSERVE_MS) {
+    return null;
+  }
+  return value;
 }
 
 export async function resolveActiveSession(
@@ -393,15 +409,44 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
     if (typeof selector !== "string" || !selector) return json(res, { error: "missing session" }, 400);
     if (typeof body.text !== "string") return json(res, { error: "missing text" }, 400);
     if (!hasOptionalType(body, "noEnter", "boolean")) return json(res, { error: "noEnter must be a boolean" }, 400);
+    if (!hasOptionalType(body, "ensureSubmitted", "boolean")) {
+      return json(res, { error: "ensureSubmitted must be a boolean" }, 400);
+    }
+    const observeMs = parseObserveMs(body.observeMs);
+    if (observeMs === null) {
+      return json(res, { error: `observeMs must be an integer from 1 to ${SESSION_SEND_MAX_OBSERVE_MS}` }, 400);
+    }
     const resolved = await resolveActiveSession(res, selector);
     if (!resolved) return;
+    const session = resolved.name;
+    const sessionId = resolved.identity.wolfpackSessionId;
+    const noEnter = body.noEnter === true;
     try {
-      await getBackend().send(resolved.name, body.text, body.noEnter === true);
-      json(res, {
-        ok: true,
-        session: resolved.name,
-        sessionId: resolved.identity.wolfpackSessionId,
+      const streaming = getRouter().getStreamingBackendForSession(session);
+      if (!streaming) {
+        // Nothing to observe through: deliver as before and say so.
+        await getBackend().send(session, body.text, noEnter);
+        return json(res, {
+          ok: true,
+          session,
+          sessionId,
+          delivery: SESSION_SEND_DELIVERY.UNVERIFIED,
+          outcome: SESSION_SEND_OUTCOME.UNVERIFIED,
+          observedMs: 0,
+        });
+      }
+      const result = await streaming.sendAndObserveSubmission(sessionId, {
+        text: body.text,
+        noEnter,
+        observeMs,
+        ensureSubmitted: body.ensureSubmitted === true,
+        sessionName: session,
       });
+      if (result.reason === SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE) {
+        // Same status a failed write always had; the body says nothing was written.
+        return json(res, { ok: false, error: "backend unavailable", session, sessionId, ...result }, 503);
+      }
+      json(res, { ok: sessionSendOk(noEnter, result.outcome), session, sessionId, ...result });
     } catch (e: unknown) {
       log.warn("session-control send failed", { session: resolved.name, error: errMsg(e) });
       json(res, { error: "backend unavailable" }, 503);

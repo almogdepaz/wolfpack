@@ -2547,6 +2547,14 @@
           },
           "noEnter": {
             "type": "boolean"
+          },
+          "observeMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "ensureSubmitted": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -2562,19 +2570,54 @@
         "type": "object",
         "properties": {
           "ok": {
-            "const": true
+            "type": "boolean"
           },
           "session": {
             "$ref": "#/$defs/SessionName"
           },
           "sessionId": {
             "$ref": "#/$defs/SessionId"
+          },
+          "delivery": {
+            "enum": [
+              "delivered",
+              "not_delivered",
+              "unverified"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "submitted",
+              "pasted_not_submitted",
+              "delivered",
+              "not_delivered",
+              "unverified"
+            ]
+          },
+          "observedMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retried": {
+            "const": true
+          },
+          "reason": {
+            "enum": [
+              "target_unavailable",
+              "target_replaced",
+              "target_exited",
+              "replay_gap",
+              "backend_unavailable"
+            ]
           }
         },
         "required": [
           "ok",
           "session",
-          "sessionId"
+          "sessionId",
+          "delivery",
+          "outcome",
+          "observedMs"
         ],
         "additionalProperties": false
       },

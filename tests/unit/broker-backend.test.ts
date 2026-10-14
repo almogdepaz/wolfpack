@@ -1201,6 +1201,199 @@ describe("BrokerBackend.promptAndWaitForOutput", () => {
   });
 });
 
+describe("BrokerBackend.sendAndObserveSubmission", () => {
+  const encoder = new TextEncoder();
+  let rootStatus: Record<string, unknown> | undefined;
+
+  function status(state: string, updatedAtMs: number): Record<string, unknown> {
+    return { id: "", state, updated_at_ms: updatedAtMs };
+  }
+
+  function pushStatus(record: Record<string, unknown> | undefined): void {
+    rootStatus = record;
+    backend.ingestEvent({
+      event: "program_status_changed",
+      session_id: SESSION_UUID_1,
+      ...(record && { program_status: record }),
+    });
+  }
+
+  function inputs(): string[] {
+    return client.inputs.map((input) => new TextDecoder().decode(input.data));
+  }
+
+  beforeEach(async () => {
+    rootStatus = undefined;
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1 })],
+    }));
+    client.setHandler("session_info", () => okResp({
+      session: { ...sessionInfo({ name: "live", id: SESSION_UUID_1 }), ...(rootStatus && { program_status: rootStatus }) },
+    }));
+    await backend.list();
+  });
+
+  test("reports submitted as soon as program status leaves idle after the write", async () => {
+    rootStatus = status("idle", 1);
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, encoder.encode("run tests"), 18n);
+      pushStatus(status("working", 2));
+    };
+    const started = Date.now();
+    const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 5_000, ensureSubmitted: false,
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+    expect(result.retried).toBeUndefined();
+    expect(inputs()).toEqual(["run tests\r"]);
+  });
+
+  test("reports pasted_not_submitted when output arrives but an idle status stays untouched", async () => {
+    rootStatus = status("idle", 1);
+    client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("run tests"), 18n);
+    const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    });
+    expect(result).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+    expect(result.observedMs).toBeGreaterThanOrEqual(0);
+    expect(inputs()).toEqual(["run tests\r"]);
+  });
+
+  test("events before the write move the baseline instead of counting as evidence", async () => {
+    rootStatus = status("working", 1);
+    let releaseSubscribe!: () => void;
+    client.subscribeGate = new Promise<void>((resolve) => { releaseSubscribe = resolve; });
+    client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("next"), 18n);
+    const operation = backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "next", noEnter: false, observeMs: 60, ensureSubmitted: false,
+    });
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    pushStatus(status("idle", 2));
+    releaseSubscribe();
+    expect(await operation).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+  });
+
+  test("is unverified when nothing observable follows the write", async () => {
+    rootStatus = status("idle", 1);
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "unverified", outcome: "unverified" });
+    expect(inputs()).toEqual(["hello\r"]);
+  });
+
+  test("is unverified without a program status record even when output arrives", async () => {
+    client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("hello"), 18n);
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+  });
+
+  test("is unverified when a busy baseline stays busy", async () => {
+    rootStatus = status("working", 1);
+    client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("hello"), 18n);
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+  });
+
+  test("is unverified when the record changed but every observation reads idle", async () => {
+    rootStatus = status("idle", 1);
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, encoder.encode("hello"), 18n);
+      pushStatus(status("idle", 5));
+    };
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+  });
+
+  test("is unverified when the record is cleared after the write", async () => {
+    rootStatus = status("idle", 1);
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, encoder.encode("hello"), 18n);
+      pushStatus(undefined);
+    };
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+  });
+
+  test("reports not_delivered without writing for an id the backend does not know", async () => {
+    client.setHandler("list_sessions", () => okResp({ sessions: [] }));
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_2, {
+      text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    })).toEqual({ delivery: "not_delivered", outcome: "not_delivered", reason: "target_unavailable", observedMs: 0 });
+    expect(client.inputs).toEqual([]);
+  });
+
+  test("reports not_delivered when the input write throws", async () => {
+    rootStatus = status("idle", 1);
+    client.inputError = new Error("input plane down");
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    })).toEqual({ delivery: "not_delivered", outcome: "not_delivered", reason: "backend_unavailable", observedMs: 0 });
+  });
+
+  test("noEnter mirrors delivery and stops at the first output", async () => {
+    rootStatus = status("idle", 1);
+    client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("draft"), 18n);
+    const started = Date.now();
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "draft", noEnter: true, observeMs: 5_000, ensureSubmitted: true,
+    })).toMatchObject({ delivery: "delivered", outcome: "delivered" });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(inputs()).toEqual(["draft"]);
+  });
+
+  test("noEnter without evidence is unverified", async () => {
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "draft", noEnter: true, observeMs: 30, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "unverified", outcome: "unverified" });
+  });
+
+  test("ensureSubmitted re-sends one carriage return after a paste and reports the retry", async () => {
+    rootStatus = status("idle", 1);
+    client.onWriteInput = (sessionId, data) => {
+      if (new TextDecoder().decode(data) === "\r") pushStatus(status("working", 2));
+      else client.emit(sessionId, encoder.encode("run tests"), 18n);
+    };
+    const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: true,
+    });
+    expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted", retried: true });
+    expect(inputs()).toEqual(["run tests\r", "\r"]);
+  });
+
+  test("ensureSubmitted retries exactly once when the retry is swallowed too", async () => {
+    rootStatus = status("idle", 1);
+    client.onWriteInput = (sessionId, data) => {
+      if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, encoder.encode("run tests"), 18n);
+    };
+    const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: true,
+    });
+    expect(result).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted", retried: true });
+    expect(inputs()).toEqual(["run tests\r", "\r"]);
+  });
+
+  test("ensureSubmitted does not retry a submitted or unverified send", async () => {
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: true,
+    })).toMatchObject({ outcome: "unverified" });
+    expect(inputs()).toEqual(["hello\r"]);
+  });
+
+  test("releases its output subscription and status listener", async () => {
+    rootStatus = status("idle", 1);
+    await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 20, ensureSubmitted: false,
+    });
+    expect(client.activeSubscriptions.has(SESSION_UUID_1)).toBe(false);
+    pushStatus(status("working", 3));
+  });
+});
+
 describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
   // Tests below that don't care about subscribe-error semantics still need
   // to satisfy the now-required onSubscribeError contract. This noop is

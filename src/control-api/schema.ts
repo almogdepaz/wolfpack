@@ -37,6 +37,12 @@ import {
   SESSION_PROMPT_SELECTOR_MAX_CHARS,
 } from "../session-prompt-contract.ts";
 import {
+  SESSION_SEND_DELIVERY,
+  SESSION_SEND_FAILURE_REASON,
+  SESSION_SEND_MAX_OBSERVE_MS,
+  SESSION_SEND_OUTCOME,
+} from "../session-send-contract.ts";
+import {
   AGENT_STATUS_AUTHORITIES,
   AGENT_STATUS_FRESHNESS,
   AGENT_STATUS_FRESHNESSES,
@@ -1470,12 +1476,23 @@ export const controlApiSource: ControlApiSource = {
         session: ref("SessionSelector"),
         text: string(),
         noEnter: boolean(),
+        observeMs: {
+          type: "integer",
+          minimum: 1,
+          maximum: SESSION_SEND_MAX_OBSERVE_MS,
+        },
+        ensureSubmitted: boolean(),
       }, ["session", "text"]),
       response: object({
-        ok: { const: true },
+        ok: boolean(),
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
-      }, ["ok", "session", "sessionId"]),
+        delivery: { enum: Object.values(SESSION_SEND_DELIVERY) },
+        outcome: { enum: Object.values(SESSION_SEND_OUTCOME) },
+        observedMs: { type: "integer", minimum: 0 },
+        retried: { const: true },
+        reason: { enum: Object.values(SESSION_SEND_FAILURE_REASON) },
+      }, ["ok", "session", "sessionId", "delivery", "outcome", "observedMs"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "POST /api/session-control/prompt": {

@@ -173,19 +173,26 @@ The killed `sessionId` must be absent. Do not treat `/quit` as a substitute, and
 ## Send and wait
 
 ```bash
-wolfpack session send <session-or-id> <text...> [--no-enter] [--json]
+wolfpack session send <session-or-id> <text...> [--no-enter] [--ensure-submitted] [--observe-ms <1..10000>] [--json]
 wolfpack session wait <session-or-id> <text> [--timeout-ms <1..600000>] [--json]
 wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] [--timeout-ms <1..600000>] [--json]
 ```
 
-- `send` writes through the broker input plane and appends Enter unless `--no-enter` is set.
+- `send` writes through the broker input plane and appends Enter unless `--no-enter` is set. Like `prompt`, the server pins the resolved `sessionId`, subscribes to output, then writes, and reports what it saw within `--observe-ms` (default 1500, max 10000; bounds each write including subscribe):
+  - `delivery`: `delivered` (output or a program status change followed the write), `not_delivered` (nothing was written; `reason` is `target_unavailable`, `target_replaced`, `target_exited`, `replay_gap` or `backend_unavailable`), or `unverified`.
+  - `outcome`: `submitted` (the program's OSC 7501 root status left `idle` after the write), `pasted_not_submitted` (the text arrived but an `idle` status stayed untouched, so Enter was swallowed), `not_delivered`, or `unverified` (no status record, a busy or changed-but-idle status, or no evidence). With `--no-enter` nothing is submitted and `outcome` mirrors `delivery`.
+  - `ok` is true for `submitted` or `unverified` (`delivered` or `unverified` with `--no-enter`); `observedMs` is the time watched after the write.
+  - `--ensure-submitted` re-sends one `\r` when the first write reads as `pasted_not_submitted` and adds `retried: true`; it never retries twice or on any other outcome.
+  - Submission needs a program that reports OSC 7501 status (see [broker-protocol.md](broker-protocol.md#program-status-osc-7501)). An `idle` record left by a program that exited without clearing it (no OSC 133 shell integration) can make a shell command read as `pasted_not_submitted`.
+  - Exit codes: `0` for `submitted`, `delivered` and `unverified`; `7` for `pasted_not_submitted`; `3` when not delivered because the target is gone or replaced; `6` when not delivered for any other reason. A backend that could not take the input still answers HTTP `503`, now with the outcome fields beside `error`. Plain output prints the outcome (yellow) unless it is `submitted` or `delivered`; `--json` prints the full response.
+  - Servers from before outcome reporting answer `{ok, session, sessionId}` only; the CLI treats that as success (exit `0`).
 - `wait` checks the current snapshot, then subscribes from its sequence number with a bounded buffer and timeout.
 - `prompt` performs one `POST /api/session-control/prompt` request. The server resolves the selector once, pins the returned `sessionId`, registers broker output observation, waits for subscription readiness, records `outputBoundarySeq`, and only then writes input to that stable ID.
 - `prompt --until` is explicitly an `output contains` terminal primitive. It does not infer agent or task completion. Typed agent-state and delegated-task predicates remain deferred to #209 and #211.
 - prompt outcomes are `matched`, `timed_out`, `target_exited`, `target_unavailable`, `target_replaced`, `replay_gap`, or `backend_unavailable`. The bounded JSON envelope always includes canonical `session`, stable `sessionId`, `outcome`, and nullable `outputBoundarySeq`.
 - `target_replaced` means the pinned stable ID disappeared while its resolved session name now maps to a different stable ID; callers must re-resolve explicitly before retrying.
 - typed agent-state/delegated-task predicates and explicit cancellation are still deferred until #211 provides the structured event/cursor substrate; `prompt --until` remains output-contains only.
-- JSON responses from standalone send/wait retain their existing shape for backward compatibility.
+- JSON responses from standalone `wait` retain their existing shape for backward compatibility; `send` adds the outcome fields above.
 
 `wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for child agents launched with `--notify-parent`.
 
@@ -229,5 +236,6 @@ The stream is live-only: there is no replay, so events published while disconnec
 - `4`: wait timeout
 - `5`: auth failure
 - `6`: backend unavailable
+- `7`: `send` delivered the text but it was not submitted (`pasted_not_submitted`)
 
 Grid/layout ownership remains in the browser. Session commands never reconstruct browser state from terminal output.

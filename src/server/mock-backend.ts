@@ -13,6 +13,11 @@ import type {
 } from "./backend.js";
 import { DuplicateSessionError } from "./backend.js";
 import { SESSION_PROMPT_OUTCOME } from "../session-prompt-contract.js";
+import { SESSION_SEND_DELIVERY, SESSION_SEND_OUTCOME } from "../session-send-contract.js";
+import type {
+  SessionSendObservationOptions,
+  SessionSendObservationResult,
+} from "../session-send-contract.js";
 import type {
   SessionPromptWaitOptions,
   SessionPromptWaitResult,
@@ -64,6 +69,10 @@ export class MockBackend implements SessionBackend {
   lastResizeArgs: { name: string; cols: number; rows: number } | null = null;
   /** Last arguments passed to send (name, text, noEnter). */
   lastSendArgs: { name: string; text: string; noEnter: boolean | undefined } | null = null;
+  /** Last arguments passed to sendAndObserveSubmission. */
+  lastSendObservationArgs: { sessionId: string; options: SessionSendObservationOptions } | null = null;
+  /** Result sendAndObserveSubmission reports for a live session; null reports `unverified`. */
+  sendObservation: SessionSendObservationResult | null = null;
   private readonly _outputSubscribers = new Map<string, Set<(data: Uint8Array) => void>>();
   private readonly _outputHistory = new Map<string, Array<{ seq: bigint; data: Uint8Array }>>();
   private _nextOutputSeq = 1n;
@@ -255,6 +264,30 @@ export class MockBackend implements SessionBackend {
 
   async send(name: string, text: string, noEnter?: boolean): Promise<void> {
     this.lastSendArgs = { name, text, noEnter };
+  }
+
+  async sendAndObserveSubmission(
+    sessionId: string,
+    options: SessionSendObservationOptions,
+  ): Promise<SessionSendObservationResult> {
+    this.lastSendObservationArgs = { sessionId, options };
+    const identity = Object.values(await this.listIdentities()).find(
+      candidate => candidate.wolfpackSessionId === sessionId,
+    );
+    if (!identity || !this._sessions.has(identity.wolfpackSessionName)) {
+      return {
+        delivery: SESSION_SEND_DELIVERY.NOT_DELIVERED,
+        outcome: SESSION_SEND_OUTCOME.NOT_DELIVERED,
+        reason: SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE,
+        observedMs: 0,
+      };
+    }
+    await this.send(identity.wolfpackSessionName, options.text, options.noEnter);
+    return this.sendObservation ?? {
+      delivery: SESSION_SEND_DELIVERY.UNVERIFIED,
+      outcome: SESSION_SEND_OUTCOME.UNVERIFIED,
+      observedMs: 0,
+    };
   }
 
   async promptAndWaitForOutput(

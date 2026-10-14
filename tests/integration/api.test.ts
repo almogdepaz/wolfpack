@@ -2639,6 +2639,9 @@ describe("agent-native top-level session control", () => {
       ok: true,
       session: "wolf-1",
       sessionId: "mock:wolf-1",
+      delivery: "unverified",
+      outcome: "unverified",
+      observedMs: 0,
     });
     expect(mockBackend.lastSendArgs?.name).toBe("wolf-1");
 
@@ -3421,6 +3424,8 @@ describe("session control API", () => {
     mockBackend.setCapturePane(async (s: string) => `captured output for ${s}\n`);
     mockBackend.setOnAfterPrefill(null);
     mockBackend.lastSendArgs = null;
+    mockBackend.lastSendObservationArgs = null;
+    mockBackend.sendObservation = null;
   });
 
   test("status exposes stable liveness/project facts by name without reading terminal output", async () => {
@@ -3534,6 +3539,92 @@ describe("session control API", () => {
     });
     expect(res.status).toBe(200);
     expect(mockBackend.lastSendArgs).toEqual({ name: "wolf-1", text: "echo hi", noEnter: true });
+  });
+
+  test("send pins the stable id and reports the observed outcome", async () => {
+    const res = await post("/api/session-control/send", { session: "wolf-1", text: "echo hi" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      delivery: "unverified",
+      outcome: "unverified",
+      observedMs: 0,
+    });
+    expect(validateSchema(responseSchema("sendSessionInput"), data, controlApiSchema)).toEqual([]);
+    expect(mockBackend.lastSendObservationArgs).toEqual({
+      sessionId: "mock:wolf-1",
+      options: { text: "echo hi", noEnter: false, observeMs: 1_500, ensureSubmitted: false, sessionName: "wolf-1" },
+    });
+    expect(mockBackend.lastSendArgs).toEqual({ name: "wolf-1", text: "echo hi", noEnter: false });
+  });
+
+  test("send passes observeMs and ensureSubmitted through", async () => {
+    mockBackend.sendObservation = { delivery: "delivered", outcome: "submitted", observedMs: 12, retried: true };
+    const res = await post("/api/session-control/send", {
+      session: "wolf-1",
+      text: "go",
+      observeMs: 10_000,
+      ensureSubmitted: true,
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      delivery: "delivered",
+      outcome: "submitted",
+      observedMs: 12,
+      retried: true,
+    });
+    expect(validateSchema(responseSchema("sendSessionInput"), data, controlApiSchema)).toEqual([]);
+    expect(mockBackend.lastSendObservationArgs?.options).toMatchObject({ observeMs: 10_000, ensureSubmitted: true });
+  });
+
+  test("send validates observeMs and ensureSubmitted", async () => {
+    for (const observeMs of [0, -1, 10_001, 1.5, "100", null]) {
+      const res = await post("/api/session-control/send", { session: "wolf-1", text: "go", observeMs });
+      expect(res.status, String(observeMs)).toBe(400);
+    }
+    const res = await post("/api/session-control/send", { session: "wolf-1", text: "go", ensureSubmitted: "yes" });
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastSendObservationArgs).toBeNull();
+  });
+
+  test("send sets ok from the outcome and keeps undelivered input distinguishable", async () => {
+    const cases = [
+      { noEnter: false, observation: { delivery: "delivered", outcome: "pasted_not_submitted", observedMs: 1_500 }, ok: false },
+      { noEnter: true, observation: { delivery: "delivered", outcome: "delivered", observedMs: 3 }, ok: true },
+      { noEnter: true, observation: { delivery: "unverified", outcome: "unverified", observedMs: 1_500 }, ok: true },
+      { noEnter: false, observation: { delivery: "not_delivered", outcome: "not_delivered", reason: "target_exited", observedMs: 0 }, ok: false },
+    ] as const;
+    for (const { noEnter, observation, ok } of cases) {
+      mockBackend.sendObservation = observation;
+      const res = await post("/api/session-control/send", { session: "wolf-1", text: "go", noEnter });
+      expect(res.status, observation.outcome).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({ ok, session: "wolf-1", sessionId: "mock:wolf-1", ...observation });
+      expect(validateSchema(responseSchema("sendSessionInput"), data, controlApiSchema)).toEqual([]);
+    }
+  });
+
+  test("send reports a backend that could not take the input as 503", async () => {
+    mockBackend.sendObservation = { delivery: "not_delivered", outcome: "not_delivered", reason: "backend_unavailable", observedMs: 0 };
+    const res = await post("/api/session-control/send", { session: "wolf-1", text: "go" });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      ok: false,
+      error: "backend unavailable",
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      delivery: "not_delivered",
+      outcome: "not_delivered",
+      reason: "backend_unavailable",
+      observedMs: 0,
+    });
   });
 
   test("send returns 404 for unknown session", async () => {

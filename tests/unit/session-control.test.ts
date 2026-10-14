@@ -406,6 +406,22 @@ describe("session control cli parsing", () => {
     });
   });
 
+  test("parses send observation flags", () => {
+    expect(parseSessionCommand(["send", "alpha", "go", "--ensure-submitted", "--observe-ms", "2500", "--json"])).toEqual({
+      ok: true,
+      action: "send",
+      session: "alpha",
+      text: "go",
+      noEnter: false,
+      ensureSubmitted: true,
+      observeMs: 2_500,
+      output: "json",
+    });
+    for (const observeMs of ["0", "10001", "1.5", "soon"]) {
+      expect(parseSessionCommand(["send", "alpha", "go", "--observe-ms", observeMs]).ok, observeMs).toBe(false);
+    }
+  });
+
   test("parses wait timeout", () => {
     expect(parseSessionCommand(["wait", "alpha", "ready", "--timeout-ms", "250"])).toEqual({
       ok: true,
@@ -551,6 +567,73 @@ describe("session control cli parsing", () => {
       });
       expect(child.exitCode, outcome).toBe(expectedExit);
       expect(JSON.parse(child.stdout.toString()).outcome).toBe(outcome);
+    }
+  });
+
+  test("send forwards observation flags only when set", () => {
+    const script = `
+      const bodies = [];
+      globalThis.fetch = async (url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json({ ok: true, session: "alpha", sessionId: "id-alpha", delivery: "delivered", outcome: "submitted", observedMs: 4 });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      const codes = [
+        await runSessionCommand(["send", "alpha", "go"]),
+        await runSessionCommand(["send", "alpha", "go", "--ensure-submitted", "--observe-ms", "3000"]),
+      ];
+      console.log(JSON.stringify({ codes, bodies }));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.stderr.toString()).toBe("");
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      codes: [SESSION_EXIT.OK, SESSION_EXIT.OK],
+      bodies: [
+        { session: "alpha", text: "go", noEnter: false },
+        { session: "alpha", text: "go", noEnter: false, ensureSubmitted: true, observeMs: 3_000 },
+      ],
+    });
+  });
+
+  test("send maps every outcome to a stable exit code and prints only unconfirmed ones", () => {
+    const cases = [
+      [{ delivery: "delivered", outcome: "submitted" }, SESSION_EXIT.OK, ""],
+      [{ delivery: "delivered", outcome: "delivered" }, SESSION_EXIT.OK, ""],
+      [{ delivery: "unverified", outcome: "unverified" }, SESSION_EXIT.OK, "unverified\n"],
+      [{ delivery: "delivered", outcome: "pasted_not_submitted" }, SESSION_EXIT.NOT_SUBMITTED, "pasted_not_submitted\n"],
+      [{ delivery: "delivered", outcome: "pasted_not_submitted", retried: true }, SESSION_EXIT.NOT_SUBMITTED, "pasted_not_submitted (retried)\n"],
+      [{ delivery: "not_delivered", outcome: "not_delivered", reason: "target_exited" }, SESSION_EXIT.NOT_FOUND, "not_delivered: target_exited\n"],
+      [{ delivery: "not_delivered", outcome: "not_delivered", reason: "target_replaced" }, SESSION_EXIT.NOT_FOUND, "not_delivered: target_replaced\n"],
+      [{ delivery: "not_delivered", outcome: "not_delivered", reason: "replay_gap" }, SESSION_EXIT.BACKEND_UNAVAILABLE, "not_delivered: replay_gap\n"],
+      // Servers from before outcome reporting answer { ok: true } only.
+      [{}, SESSION_EXIT.OK, ""],
+    ] as const;
+    expect(new Set(Object.values(SESSION_EXIT)).size).toBe(Object.values(SESSION_EXIT).length);
+
+    for (const [observation, expectedExit, expectedPlain] of cases) {
+      for (const output of ["plain", "json"] as const) {
+        const response = { ok: true, session: "alpha", sessionId: "id-alpha", ...observation, observedMs: 5 };
+        const script = `
+          globalThis.fetch = async () => Response.json(${JSON.stringify(response)});
+          const { runSessionCommand } = await import("./src/cli/session-control.ts");
+          process.exit(await runSessionCommand(["send", "alpha", "go"${output === "json" ? ', "--json"' : ""}]));
+        `;
+        const child = Bun.spawnSync([process.execPath, "-e", script], {
+          cwd: process.cwd(),
+          env: { ...process.env, NO_COLOR: "1" },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const label = `${JSON.stringify(observation)} ${output}`;
+        expect(child.exitCode, label).toBe(expectedExit);
+        if (output === "json") expect(JSON.parse(child.stdout.toString()), label).toEqual(response);
+        else expect(child.stdout.toString(), label).toBe(expectedPlain);
+      }
     }
   });
 
@@ -765,6 +848,7 @@ describe("session control cli parsing", () => {
       TIMEOUT: 4,
       AUTH: 5,
       BACKEND_UNAVAILABLE: 6,
+      NOT_SUBMITTED: 7,
     });
   });
 });
