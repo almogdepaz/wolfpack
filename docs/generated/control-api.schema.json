@@ -3157,6 +3157,18 @@
           },
           "failed": {
             "type": "integer"
+          },
+          "pruned": {
+            "type": "integer"
+          },
+          "delivered": {
+            "type": "boolean"
+          },
+          "reason": {
+            "enum": [
+              "no_subscriptions",
+              "delivery_failed"
+            ]
           }
         },
         "required": [

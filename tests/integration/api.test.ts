@@ -5004,6 +5004,11 @@ describe("POST /api/notify", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
+    // This suite shares the host's push store; deterministic delivery cases
+    // live in tests/unit/fixtures/notify-route.fixture.ts.
+    expect(data.delivered).toBe(data.sent > 0);
+    if (data.delivered) expect(data).not.toHaveProperty("reason");
+    else expect(data.reason).toBe(data.failed > 0 ? "delivery_failed" : "no_subscriptions");
   });
 
   test("accepts a bounded stable session target", async () => {
