@@ -19,6 +19,19 @@ test("ready trusted peers expose only their reported facts with authenticated ca
   expect(result[0].sessions[0].quietAlert).toBeUndefined();
 });
 
+test("peer quiet facts of either kind are relayed and unknown kinds dropped", async () => {
+  const { observePeerNotifications } = await import("../../src/server/peer-notifications.ts");
+  const fact = { sessionId: "id", episodeId: "e", eligibleAtMs: 1, observedAtMs: 2 };
+  const sessions = [
+    { name: "quiet", identity: { wolfpackSessionId: "id" }, quietAlert: { ...fact, kind: "quiet" } },
+    { name: "input", identity: { wolfpackSessionId: "id" }, quietAlert: { ...fact, kind: "needs-input", inputKind: "auth" } },
+    { name: "future", identity: { wolfpackSessionId: "id" }, quietAlert: { ...fact, kind: "waiting-on-child" } },
+  ];
+  const result = await observePeerNotifications({ topology: async () => topology, jwt: () => "token", fetch: async (input) =>
+    Response.json(String(input).endsWith("/api/machine") ? handshake : { sessions }) });
+  expect(result[0].sessions.map((session) => session.quietAlert?.kind)).toEqual(["quiet", "needs-input", undefined]);
+});
+
 test("offline peers are not fetched and failures/timeouts do not discard healthy peers", async () => {
   const { observePeerNotifications } = await import("../../src/server/peer-notifications.ts");
   expect(await observePeerNotifications({ topology: async () => ({ ...topology, peers: new Map() }), fetch: async () => { throw new Error("offline must not fetch"); } })).toEqual([]);

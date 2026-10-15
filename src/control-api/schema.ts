@@ -21,9 +21,11 @@ import {
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
+  QUIET_ALERT_KIND,
   QUIET_ALERT_MAX_SECONDS,
   QUIET_ALERT_MIN_SECONDS,
   QUIET_ALERT_MODE,
+  QUIET_SUPPRESSION_REASON,
 } from "../quiet-alert-policy.ts";
 import {
   DIRECTORY_BREADCRUMB_LIMIT,
@@ -36,6 +38,12 @@ import {
   SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
   SESSION_PROMPT_SELECTOR_MAX_CHARS,
 } from "../session-prompt-contract.ts";
+import {
+  SESSION_SEND_DELIVERY,
+  SESSION_SEND_FAILURE_REASON,
+  SESSION_SEND_MAX_OBSERVE_MS,
+  SESSION_SEND_OUTCOME,
+} from "../session-send-contract.ts";
 import {
   AGENT_STATUS_AUTHORITIES,
   AGENT_STATUS_FRESHNESS,
@@ -653,13 +661,33 @@ export const controlApiSource: ControlApiSource = {
       lastRenderedActivityAt: { type: "string", format: "date-time" },
       quietSince: { type: "string", format: "date-time" },
     }, ["freshness", "observedAt", "display"]),
-    QuietAlertFact: object({
-      kind: { const: "quiet" },
+    QuietAlertFact: {
+      description: "Quiet episode alert. needs-input: the program's own status waited on the user when output went quiet; inputKind only accompanies it. Servers predating needs-input drop it.",
+      oneOf: [
+        object({
+          kind: { const: QUIET_ALERT_KIND.QUIET },
+          sessionId: ref("SessionId"),
+          episodeId: { type: "string", minLength: 1, maxLength: 128 },
+          eligibleAtMs: { type: "integer", minimum: 0 },
+          observedAtMs: { type: "integer", minimum: 0 },
+        }, ["kind", "sessionId", "episodeId", "eligibleAtMs", "observedAtMs"]),
+        object({
+          kind: { const: QUIET_ALERT_KIND.NEEDS_INPUT },
+          inputKind: { enum: [...PROGRAM_STATUS_KINDS] },
+          sessionId: ref("SessionId"),
+          episodeId: { type: "string", minLength: 1, maxLength: 128 },
+          eligibleAtMs: { type: "integer", minimum: 0 },
+          observedAtMs: { type: "integer", minimum: 0 },
+        }, ["kind", "sessionId", "episodeId", "eligibleAtMs", "observedAtMs"]),
+      ],
+    },
+    QuietSuppression: object({
+      reason: { const: QUIET_SUPPRESSION_REASON.WAITING_ON_CHILD },
       sessionId: ref("SessionId"),
-      episodeId: { type: "string", minLength: 1, maxLength: 128 },
-      eligibleAtMs: { type: "integer", minimum: 0 },
-      observedAtMs: { type: "integer", minimum: 0 },
-    }, ["kind", "sessionId", "episodeId", "eligibleAtMs", "observedAtMs"]),
+      session: ref("SessionName"),
+    }, ["reason", "sessionId", "session"], {
+      description: "A due quiet alert withheld while the named descendant session still works; recomputed each observation.",
+    }),
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),
@@ -669,6 +697,7 @@ export const controlApiSource: ControlApiSource = {
       runtimeState: ref("AgentRuntimeState"),
       activity: ref("ActivityObservation"),
       quietAlert: ref("QuietAlertFact"),
+      quietSuppressedBy: ref("QuietSuppression"),
     }, ["name", "lastLine", "triage"]),
     SessionControlIdentity: object({
       session: ref("SessionName"),
@@ -1470,12 +1499,23 @@ export const controlApiSource: ControlApiSource = {
         session: ref("SessionSelector"),
         text: string(),
         noEnter: boolean(),
+        observeMs: {
+          type: "integer",
+          minimum: 1,
+          maximum: SESSION_SEND_MAX_OBSERVE_MS,
+        },
+        ensureSubmitted: boolean(),
       }, ["session", "text"]),
       response: object({
-        ok: { const: true },
+        ok: boolean(),
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
-      }, ["ok", "session", "sessionId"]),
+        delivery: { enum: Object.values(SESSION_SEND_DELIVERY) },
+        outcome: { enum: Object.values(SESSION_SEND_OUTCOME) },
+        observedMs: { type: "integer", minimum: 0 },
+        retried: { const: true },
+        reason: { enum: Object.values(SESSION_SEND_FAILURE_REASON) },
+      }, ["ok", "session", "sessionId", "delivery", "outcome", "observedMs"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "POST /api/session-control/prompt": {

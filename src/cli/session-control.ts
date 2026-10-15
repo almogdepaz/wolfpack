@@ -39,6 +39,17 @@ import type {
   SessionPromptOutcome,
   SessionPromptWaitResult,
 } from "../session-prompt-contract.js";
+import {
+  SESSION_SEND_DELIVERY,
+  SESSION_SEND_FAILURE_REASON,
+  SESSION_SEND_MAX_OBSERVE_MS,
+  SESSION_SEND_OUTCOME,
+} from "../session-send-contract.js";
+import type {
+  SessionSendFailureReason,
+  SessionSendObservationResult,
+  SessionSendOutcome,
+} from "../session-send-contract.js";
 import { call as callApi } from "./api.js";
 import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
@@ -54,6 +65,8 @@ export const SESSION_EXIT = {
   TIMEOUT: 4,
   AUTH: 5,
   BACKEND_UNAVAILABLE: 6,
+  /** `send` delivered the text but the program did not take the Enter. */
+  NOT_SUBMITTED: 7,
 } as const;
 
 // Shell quoting is an output mode, independent of the shell harness taxonomy.
@@ -109,7 +122,7 @@ Commands:
   wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
   wolfpack session status <session-or-id> [--json]
   wolfpack session read <session-or-id> [--json]
-  wolfpack session send <session-or-id> <text...> [--no-enter] [--json]
+  wolfpack session send <session-or-id> <text...> [--no-enter] [--ensure-submitted] [--observe-ms <1..10000>] [--json]
   wolfpack session wait <session-or-id> <text> [--timeout-ms <1..600000>] [--json]
   wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] [--timeout-ms <1..600000>] [--json]
   wolfpack session current-context [--json|--shell]
@@ -154,7 +167,16 @@ export type ParsedSessionCommand =
   }
   | { readonly ok: true; readonly action: "status"; readonly session: string; readonly output: OutputMode }
   | { readonly ok: true; readonly action: "read"; readonly session: string; readonly output: OutputMode }
-  | { readonly ok: true; readonly action: "send"; readonly session: string; readonly text: string; readonly noEnter: boolean; readonly output: OutputMode }
+  | {
+    readonly ok: true;
+    readonly action: "send";
+    readonly session: string;
+    readonly text: string;
+    readonly noEnter: boolean;
+    readonly ensureSubmitted?: true;
+    readonly observeMs?: number;
+    readonly output: OutputMode;
+  }
   | { readonly ok: true; readonly action: "wait"; readonly session: string; readonly text: string; readonly timeoutMs: number; readonly output: OutputMode }
   | { readonly ok: true; readonly action: "prompt"; readonly session: string; readonly prompt: string; readonly outputContains: string; readonly noEnter: boolean; readonly timeoutMs: number; readonly output: OutputMode }
   | { readonly ok: true; readonly action: "current-context"; readonly output: OutputMode }
@@ -446,9 +468,29 @@ function parseTargetSessionCommand(
   }
   if (action === "send") {
     const noEnter = consumeFlag(args, "--no-enter");
+    const ensureSubmitted = consumeFlag(args, "--ensure-submitted");
+    const observeRaw = consumeValue(args, "--observe-ms");
+    const observeMs = observeRaw == null ? undefined : Number(observeRaw);
     const text = args.join(" ");
-    if (!text) return { ok: false, message: "Usage: wolfpack session send <session> <text...> [--no-enter] [--json]" };
-    return { ok: true, action, session, text, noEnter, output };
+    if (
+      !text
+      || (observeMs !== undefined && (!Number.isInteger(observeMs) || observeMs < 1 || observeMs > SESSION_SEND_MAX_OBSERVE_MS))
+    ) {
+      return {
+        ok: false,
+        message: `Usage: wolfpack session send <session> <text...> [--no-enter] [--ensure-submitted] [--observe-ms <1..${SESSION_SEND_MAX_OBSERVE_MS}>] [--json]`,
+      };
+    }
+    return {
+      ok: true,
+      action,
+      session,
+      text,
+      noEnter,
+      ...(ensureSubmitted && { ensureSubmitted: true }),
+      ...(observeMs !== undefined && { observeMs }),
+      output,
+    };
   }
   if (action === "prompt") {
     const noEnter = consumeFlag(args, "--no-enter");
@@ -622,6 +664,82 @@ interface SessionPromptResponse extends SessionPromptWaitResult {
   readonly ok: boolean;
   readonly session: string;
   readonly sessionId: string;
+}
+
+interface SessionSendResponse extends Partial<SessionSendObservationResult> {
+  readonly ok: boolean;
+  readonly session: string;
+  readonly sessionId: string;
+}
+
+const SESSION_SEND_EXIT: Readonly<Record<Exclude<SessionSendOutcome, "not_delivered">, number>> = {
+  [SESSION_SEND_OUTCOME.SUBMITTED]: SESSION_EXIT.OK,
+  [SESSION_SEND_OUTCOME.DELIVERED]: SESSION_EXIT.OK,
+  [SESSION_SEND_OUTCOME.UNVERIFIED]: SESSION_EXIT.OK,
+  [SESSION_SEND_OUTCOME.PASTED_NOT_SUBMITTED]: SESSION_EXIT.NOT_SUBMITTED,
+};
+
+/** Servers from before outcome reporting answer without `outcome`: that was success. */
+function sessionSendExit(data: SessionSendResponse): number {
+  if (data.outcome === undefined) return SESSION_EXIT.OK;
+  if (data.outcome === SESSION_SEND_OUTCOME.NOT_DELIVERED) {
+    return data.reason !== undefined && SESSION_PROMPT_EXIT[data.reason] === SESSION_EXIT.NOT_FOUND
+      ? SESSION_EXIT.NOT_FOUND
+      : SESSION_EXIT.BACKEND_UNAVAILABLE;
+  }
+  return SESSION_SEND_EXIT[data.outcome] ?? SESSION_EXIT.GENERAL;
+}
+
+const SESSION_SEND_FAILURE_REASONS: ReadonlySet<unknown> = new Set(Object.values(SESSION_SEND_FAILURE_REASON));
+
+/**
+ * The outcome fields of a send that answered HTTP 503 because nothing was
+ * written; anything else, and the server's error text, stays generic.
+ */
+function sessionSendFailure(e: unknown): SessionSendResponse | undefined {
+  const err = e as Partial<ApiError>;
+  if (err.status !== 503 || !err.body) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(err.body);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const body = parsed as Record<string, unknown>;
+  if (
+    body.ok !== false
+    || body.delivery !== SESSION_SEND_DELIVERY.NOT_DELIVERED
+    || body.outcome !== SESSION_SEND_OUTCOME.NOT_DELIVERED
+    || !SESSION_SEND_FAILURE_REASONS.has(body.reason)
+    || !Number.isSafeInteger(body.observedMs)
+    || (body.observedMs as number) < 0
+    || !isBoundedSessionStatusIdentity(body.session)
+    || !isBoundedSessionStatusIdentity(body.sessionId)
+  ) {
+    return undefined;
+  }
+  return {
+    ok: false,
+    session: body.session,
+    sessionId: body.sessionId,
+    delivery: SESSION_SEND_DELIVERY.NOT_DELIVERED,
+    outcome: SESSION_SEND_OUTCOME.NOT_DELIVERED,
+    reason: body.reason as SessionSendFailureReason,
+    observedMs: body.observedMs as number,
+  };
+}
+
+function sessionSendSummary(data: SessionSendResponse): string | undefined {
+  if (
+    data.outcome === undefined
+    || data.outcome === SESSION_SEND_OUTCOME.SUBMITTED
+    || data.outcome === SESSION_SEND_OUTCOME.DELIVERED
+  ) {
+    return undefined;
+  }
+  if (data.reason !== undefined) return `${data.outcome}: ${data.reason}`;
+  return data.retried ? `${data.outcome} (retried)` : data.outcome;
 }
 
 const SESSION_PROMPT_EXIT: Readonly<Record<SessionPromptOutcome, number>> = {
@@ -1160,12 +1278,31 @@ async function runTargetSessionCommand(
       return SESSION_EXIT.OK;
     }
     if (parsed.action === "send") {
-      const data = await call("/api/session-control/send", {
-        method: "POST",
-        body: JSON.stringify({ session: parsed.session, text: parsed.text, noEnter: parsed.noEnter }),
-      }, target);
+      let data: SessionSendResponse;
+      try {
+        data = await call("/api/session-control/send", {
+          method: "POST",
+          body: JSON.stringify({
+            session: parsed.session,
+            text: parsed.text,
+            noEnter: parsed.noEnter,
+            ...(parsed.ensureSubmitted && { ensureSubmitted: true }),
+            ...(parsed.observeMs !== undefined && { observeMs: parsed.observeMs }),
+          }),
+        }, target) as SessionSendResponse;
+      } catch (e: unknown) {
+        const failure = parsed.output === "json" ? sessionSendFailure(e) : undefined;
+        if (failure === undefined) throw e;
+        const { code, message } = SESSION_API_FAILURES[503];
+        jsonOut({ ...failure, error: { code, message } }, target);
+        return sessionSendExit(failure);
+      }
       if (parsed.output === "json") jsonOut(data, target);
-      return SESSION_EXIT.OK;
+      else {
+        const summary = sessionSendSummary(data);
+        if (summary !== undefined) print(yellow(summary));
+      }
+      return sessionSendExit(data);
     }
     if (parsed.action === "prompt") {
       const data = await call("/api/session-control/prompt", {

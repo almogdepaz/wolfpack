@@ -11,6 +11,10 @@ import type {
   SessionPromptWaitOptions,
   SessionPromptWaitResult,
 } from "../session-prompt-contract.js";
+import type {
+  SessionSendObservationOptions,
+  SessionSendObservationResult,
+} from "../session-send-contract.js";
 
 export class DuplicateSessionError extends Error {
   readonly code = "DUPLICATE_SESSION" as const;
@@ -199,4 +203,12 @@ export interface SessionPromptBackendMethods {
     sessionId: string,
     options: SessionPromptWaitOptions,
   ): Promise<SessionPromptWaitResult>;
+  /**
+   * Write to a pinned broker UUID and report whether the input was delivered
+   * and submitted, from output and program status after the write.
+   */
+  sendAndObserveSubmission(
+    sessionId: string,
+    options: SessionSendObservationOptions,
+  ): Promise<SessionSendObservationResult>;
 }

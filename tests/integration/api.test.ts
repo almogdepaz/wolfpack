@@ -15,6 +15,7 @@ import {
   SESSION_OPEN_MAX_MODEL_LENGTH,
 } from "../../src/session-open-contract.ts";
 import type { PublicSessionIdentity } from "../../src/server/session-identity.ts";
+import type { ProgramStatusRecord } from "../../src/program-status-contract.ts";
 import {
   SESSION_PROMPT_MAX_REQUEST_BODY_BYTES,
   SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS,
@@ -216,6 +217,7 @@ interface TestSessionFact {
   readonly alive: boolean;
   readonly outputSequence?: string;
   readonly identity?: PublicSessionIdentity;
+  readonly programStatus?: ProgramStatusRecord;
 }
 
 class FactBackend extends MockBackend {
@@ -276,6 +278,101 @@ function testIdentity(name: string, id: string): PublicSessionIdentity {
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+}
+
+function childIdentity(name: string, id: string, parent: PublicSessionIdentity): PublicSessionIdentity {
+  return {
+    ...testIdentity(name, id),
+    parentSession: { wolfpackSessionId: parent.wolfpackSessionId, wolfpackSessionName: parent.wolfpackSessionName },
+  };
+}
+
+function programStatusRecord(state: ProgramStatusRecord["state"], kind?: ProgramStatusRecord["kind"]): ProgramStatusRecord {
+  return { id: "", state, ...(kind && { kind }), updatedAtMs: 1_700_000_000_000 };
+}
+
+/**
+ * Drives the server quiet observer over a session tree with a 5s quiet policy:
+ * `arm` gives each named session new rendered activity, `tick` advances the
+ * clock and observes without new output.
+ */
+async function withQuietTree(
+  facts: TestSessionFact[],
+  body: (tree: {
+    readonly backend: FactBackend;
+    readonly deliveries: Array<{ readonly title: string; readonly body: string }>;
+    arm(names: readonly string[], status?: Readonly<Record<string, ProgramStatusRecord | undefined>>): Promise<void>;
+    tick(ms: number, status?: Readonly<Record<string, ProgramStatusRecord | undefined>>): Promise<readonly ObservedTreeSession[]>;
+  }) => Promise<void>,
+): Promise<void> {
+  const originalNow = Date.now;
+  let now = 40_000_000;
+  Date.now = () => now;
+  let current = facts;
+  let sequence = 1;
+  const backend = new FactBackend(current.map((fact) => ({ ...fact, outputSequence: String(sequence) })));
+  for (const fact of current) backend.setPane(fact.name, "baseline\n");
+  __setTestBackend(backend);
+  const endpoint = `https://fcm.googleapis.com/quiet-tree-${now}-${Math.random()}`;
+  addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+  const deliveries: Array<{ readonly title: string; readonly body: string }> = [];
+  pushTesting.sessionPushSender = async (payload) => {
+    deliveries.push({ title: payload.title, body: payload.body });
+    return { sent: 1, failed: 0, pruned: 0 };
+  };
+  const applyStatus = (status: Readonly<Record<string, ProgramStatusRecord | undefined>> = {}) => {
+    current = current.map((fact) => {
+      if (!(fact.name in status)) return fact;
+      const { programStatus: _previous, ...rest } = fact;
+      const record = status[fact.name];
+      return record ? { ...rest, programStatus: record } : rest;
+    });
+  };
+  try {
+    expect((await post("/api/settings", {
+      quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
+    })).status).toBe(200);
+    await __runSessionNotificationObservationForTests();
+    await body({
+      backend,
+      deliveries,
+      async arm(names, status) {
+        now += 1;
+        sequence++;
+        applyStatus(status);
+        for (const name of names) backend.setPane(name, `activity ${sequence}\n`);
+        current = current.map((fact) => names.includes(fact.name) ? { ...fact, outputSequence: String(sequence) } : fact);
+        backend.setFacts(current);
+        await __runSessionNotificationObservationForTests();
+      },
+      async tick(ms, status) {
+        now += ms;
+        applyStatus(status);
+        backend.setFacts(current);
+        return await __runSessionNotificationObservationForTests() as readonly ObservedTreeSession[];
+      },
+    });
+  } finally {
+    Date.now = originalNow;
+    pushTesting.sessionPushSender = null;
+    removeSubscription(endpoint);
+    await post("/api/settings", {
+      quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
+    });
+    __setTestBackend(mockBackend);
+  }
+}
+
+interface ObservedTreeSession {
+  readonly name: string;
+  readonly quietAlert?: Record<string, unknown>;
+  readonly quietSuppressedBy?: Record<string, unknown>;
+}
+
+function treeSession(sessions: readonly ObservedTreeSession[], name: string): ObservedTreeSession {
+  const session = sessions.find((candidate) => candidate.name === name);
+  if (!session) throw new Error(`missing observed session ${name}`);
+  return session;
 }
 
 function attachNotificationViewer(session: string): string[] {
@@ -633,6 +730,112 @@ describe("GET /api/sessions", () => {
       });
       __setTestBackend(mockBackend);
     }
+  });
+
+  test("a working child withholds the parent's quiet alert until the child goes quiet", async () => {
+    const parent = testIdentity("tree-parent", "tree-parent-id");
+    const child = childIdentity("tree-child", "tree-child-id", parent);
+    await withQuietTree([
+      { name: "tree-parent", alive: true, identity: parent },
+      { name: "tree-child", alive: true, identity: child, programStatus: programStatusRecord("working") },
+    ], async ({ arm, tick, deliveries }) => {
+      await arm(["tree-parent"]);
+      const due = await tick(5_000);
+      expect(treeSession(due, "tree-parent").quietAlert).toBeUndefined();
+      expect(treeSession(due, "tree-parent").quietSuppressedBy).toEqual({
+        reason: "waiting-on-child",
+        sessionId: "tree-child-id",
+        session: "tree-child",
+      });
+      expect(validateSchema(responseSchema("listSessions"), { sessions: due }, controlApiSchema)).toEqual([]);
+      expect(deliveries).toEqual([]);
+
+      const released = await tick(1_000, { "tree-child": programStatusRecord("idle") });
+      expect(treeSession(released, "tree-parent").quietAlert).toMatchObject({ kind: "quiet", sessionId: "tree-parent-id" });
+      expect(treeSession(released, "tree-parent")).not.toHaveProperty("quietSuppressedBy");
+      expect(deliveries).toEqual([{ title: "Wolfpack: tree-parent", body: "Quiet" }]);
+    });
+  });
+
+  test("a child with recent rendered activity withholds the parent's quiet alert; a quiet child does not", async () => {
+    const parent = testIdentity("render-parent", "render-parent-id");
+    const child = childIdentity("render-child", "render-child-id", parent);
+    await withQuietTree([
+      { name: "render-parent", alive: true, identity: parent },
+      { name: "render-child", alive: true, identity: child },
+    ], async ({ arm, tick, deliveries }) => {
+      await arm(["render-parent"]);
+      await tick(4_000);
+      await arm(["render-child"]);
+      const due = await tick(1_000);
+      expect(treeSession(due, "render-parent").quietAlert).toBeUndefined();
+      expect(treeSession(due, "render-parent").quietSuppressedBy).toMatchObject({ sessionId: "render-child-id" });
+      expect(deliveries).toEqual([]);
+
+      const quietTree = await tick(5_000);
+      expect(treeSession(quietTree, "render-parent").quietAlert).toMatchObject({ kind: "quiet" });
+      expect(deliveries.map(({ title }) => title).sort()).toEqual(["Wolfpack: render-child", "Wolfpack: render-parent"]);
+    });
+  });
+
+  test("descendant lookup follows the parent chain to depth 8, ignores other trees, and survives cycles", async () => {
+    const chain = (prefix: string, depth: number): TestSessionFact[] => {
+      const root = testIdentity(`${prefix}-0`, `${prefix}-0-id`);
+      const out: TestSessionFact[] = [{ name: root.wolfpackSessionName, alive: true, identity: root }];
+      for (let level = 1; level <= depth; level++) {
+        const identity = childIdentity(`${prefix}-${level}`, `${prefix}-${level}-id`, out[level - 1]!.identity!);
+        out.push({
+          name: identity.wolfpackSessionName,
+          alive: true,
+          identity,
+          ...(level === depth && { programStatus: programStatusRecord("working") }),
+        });
+      }
+      return out;
+    };
+    const cycleA = testIdentity("cycle-a", "cycle-a-id");
+    const cycleB = childIdentity("cycle-b", "cycle-b-id", cycleA);
+    await withQuietTree([
+      ...chain("deep8", 8),
+      ...chain("deep9", 9),
+      { name: "cycle-a", alive: true, identity: childIdentity("cycle-a", "cycle-a-id", cycleB) },
+      { name: "cycle-b", alive: true, identity: cycleB },
+    ], async ({ arm, tick }) => {
+      await arm(["deep8-0", "deep9-0", "cycle-a"]);
+      const due = await tick(5_000);
+      expect(treeSession(due, "deep8-0").quietAlert).toBeUndefined();
+      expect(treeSession(due, "deep8-0").quietSuppressedBy).toMatchObject({ sessionId: "deep8-8-id", session: "deep8-8" });
+      expect(treeSession(due, "deep9-0").quietAlert).toMatchObject({ kind: "quiet" });
+      expect(treeSession(due, "deep9-0")).not.toHaveProperty("quietSuppressedBy");
+      expect(treeSession(due, "cycle-a").quietAlert).toMatchObject({ kind: "quiet" });
+    });
+  });
+
+  test("a parent waiting on the user alerts needs-input even while a child works", async () => {
+    const parent = testIdentity("input-parent", "input-parent-id");
+    const child = childIdentity("input-child", "input-child-id", parent);
+    await withQuietTree([
+      { name: "input-parent", alive: true, identity: parent },
+      { name: "input-child", alive: true, identity: child, programStatus: programStatusRecord("working") },
+    ], async ({ arm, tick, deliveries }) => {
+      await arm(["input-parent"], { "input-parent": programStatusRecord("blocked", "permission") });
+      const due = await tick(5_000);
+      expect(treeSession(due, "input-parent").quietAlert).toEqual({
+        kind: "needs-input",
+        inputKind: "permission",
+        sessionId: "input-parent-id",
+        episodeId: expect.any(String),
+        eligibleAtMs: expect.any(Number),
+        observedAtMs: expect.any(Number),
+      });
+      expect(treeSession(due, "input-parent")).not.toHaveProperty("quietSuppressedBy");
+      expect(validateSchema(responseSchema("listSessions"), { sessions: due }, controlApiSchema)).toEqual([]);
+      expect(deliveries).toEqual([{ title: "Wolfpack: input-parent", body: "Needs input (permission)" }]);
+
+      const repeated = await tick(5_000);
+      expect(treeSession(repeated, "input-parent").quietAlert).toMatchObject({ kind: "needs-input" });
+      expect(deliveries).toHaveLength(1);
+    });
   });
 
   test("classifies idle when output sequence is stable despite prompt prose", async () => {
@@ -2639,6 +2842,9 @@ describe("agent-native top-level session control", () => {
       ok: true,
       session: "wolf-1",
       sessionId: "mock:wolf-1",
+      delivery: "unverified",
+      outcome: "unverified",
+      observedMs: 0,
     });
     expect(mockBackend.lastSendArgs?.name).toBe("wolf-1");
 
@@ -3421,6 +3627,8 @@ describe("session control API", () => {
     mockBackend.setCapturePane(async (s: string) => `captured output for ${s}\n`);
     mockBackend.setOnAfterPrefill(null);
     mockBackend.lastSendArgs = null;
+    mockBackend.lastSendObservationArgs = null;
+    mockBackend.sendObservation = null;
   });
 
   test("status exposes stable liveness/project facts by name without reading terminal output", async () => {
@@ -3534,6 +3742,92 @@ describe("session control API", () => {
     });
     expect(res.status).toBe(200);
     expect(mockBackend.lastSendArgs).toEqual({ name: "wolf-1", text: "echo hi", noEnter: true });
+  });
+
+  test("send pins the stable id and reports the observed outcome", async () => {
+    const res = await post("/api/session-control/send", { session: "wolf-1", text: "echo hi" });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      delivery: "unverified",
+      outcome: "unverified",
+      observedMs: 0,
+    });
+    expect(validateSchema(responseSchema("sendSessionInput"), data, controlApiSchema)).toEqual([]);
+    expect(mockBackend.lastSendObservationArgs).toEqual({
+      sessionId: "mock:wolf-1",
+      options: { text: "echo hi", noEnter: false, observeMs: 1_500, ensureSubmitted: false, sessionName: "wolf-1" },
+    });
+    expect(mockBackend.lastSendArgs).toEqual({ name: "wolf-1", text: "echo hi", noEnter: false });
+  });
+
+  test("send passes observeMs and ensureSubmitted through", async () => {
+    mockBackend.sendObservation = { delivery: "delivered", outcome: "submitted", observedMs: 12, retried: true };
+    const res = await post("/api/session-control/send", {
+      session: "wolf-1",
+      text: "go",
+      observeMs: 10_000,
+      ensureSubmitted: true,
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({
+      ok: true,
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      delivery: "delivered",
+      outcome: "submitted",
+      observedMs: 12,
+      retried: true,
+    });
+    expect(validateSchema(responseSchema("sendSessionInput"), data, controlApiSchema)).toEqual([]);
+    expect(mockBackend.lastSendObservationArgs?.options).toMatchObject({ observeMs: 10_000, ensureSubmitted: true });
+  });
+
+  test("send validates observeMs and ensureSubmitted", async () => {
+    for (const observeMs of [0, -1, 10_001, 1.5, "100", null]) {
+      const res = await post("/api/session-control/send", { session: "wolf-1", text: "go", observeMs });
+      expect(res.status, String(observeMs)).toBe(400);
+    }
+    const res = await post("/api/session-control/send", { session: "wolf-1", text: "go", ensureSubmitted: "yes" });
+    expect(res.status).toBe(400);
+    expect(mockBackend.lastSendObservationArgs).toBeNull();
+  });
+
+  test("send sets ok from the outcome and keeps undelivered input distinguishable", async () => {
+    const cases = [
+      { noEnter: false, observation: { delivery: "delivered", outcome: "pasted_not_submitted", observedMs: 1_500 }, ok: false },
+      { noEnter: true, observation: { delivery: "delivered", outcome: "delivered", observedMs: 3 }, ok: true },
+      { noEnter: true, observation: { delivery: "unverified", outcome: "unverified", observedMs: 1_500 }, ok: true },
+      { noEnter: false, observation: { delivery: "not_delivered", outcome: "not_delivered", reason: "target_exited", observedMs: 0 }, ok: false },
+    ] as const;
+    for (const { noEnter, observation, ok } of cases) {
+      mockBackend.sendObservation = observation;
+      const res = await post("/api/session-control/send", { session: "wolf-1", text: "go", noEnter });
+      expect(res.status, observation.outcome).toBe(200);
+      const data = await res.json();
+      expect(data).toEqual({ ok, session: "wolf-1", sessionId: "mock:wolf-1", ...observation });
+      expect(validateSchema(responseSchema("sendSessionInput"), data, controlApiSchema)).toEqual([]);
+    }
+  });
+
+  test("send reports a backend that could not take the input as 503", async () => {
+    mockBackend.sendObservation = { delivery: "not_delivered", outcome: "not_delivered", reason: "backend_unavailable", observedMs: 0 };
+    const res = await post("/api/session-control/send", { session: "wolf-1", text: "go" });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      ok: false,
+      error: "backend unavailable",
+      session: "wolf-1",
+      sessionId: "mock:wolf-1",
+      delivery: "not_delivered",
+      outcome: "not_delivered",
+      reason: "backend_unavailable",
+      observedMs: 0,
+    });
   });
 
   test("send returns 404 for unknown session", async () => {

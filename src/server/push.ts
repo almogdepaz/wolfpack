@@ -12,7 +12,7 @@ import {
   onQuietAlertPolicyInvalidation,
   quietAlertPolicyEpoch,
 } from "../quiet-alert-policy-invalidation.js";
-import { isQuietAlertFact } from "../quiet-alert-policy.js";
+import { isQuietAlertFact, QUIET_ALERT_KIND } from "../quiet-alert-policy.js";
 import type { QuietAlertFact } from "../quiet-alert-policy.js";
 import { readValidatedJsonFile } from "./persistence.js";
 
@@ -641,11 +641,16 @@ function sessionNotificationStableId(session: SessionTransitionFact): string | n
   return typeof id === "string" && id.length > 0 && id.length <= 256 ? id : null;
 }
 
-function quietAlertPayload(session: SessionTransitionFact, sessionId: string): PushPayload {
+function quietAlertBody(alert: QuietAlertFact): string {
+  if (alert.kind !== QUIET_ALERT_KIND.NEEDS_INPUT) return "Quiet";
+  return alert.inputKind ? `Needs input (${alert.inputKind})` : "Needs input";
+}
+
+function quietAlertPayload(session: SessionTransitionFact, sessionId: string, alert: QuietAlertFact): PushPayload {
   const canRoute = session.name.length > 0 && session.name.length <= 100;
   return {
     title: `Wolfpack: ${session.notificationMachine ? `${session.notificationMachine.name}: ` : ""}${session.name}`,
-    body: "Quiet",
+    body: quietAlertBody(alert),
     tag: `session-${session.notificationMachine ? `${session.notificationMachine.identity}-` : ""}${sessionId}`,
     ...(canRoute && {
       url: buildSessionNotificationUrl({
@@ -780,7 +785,7 @@ async function deliverQuietAlert(
   } as const;
   if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
   quietAlertDeliveries.set(key, ownership);
-  const delivery = await sendSessionPush(quietAlertPayload(session, sessionId), targetEndpoints);
+  const delivery = await sendSessionPush(quietAlertPayload(session, sessionId, alert), targetEndpoints);
   // A new activity episode, continuity loss, disable, or removal can retire
   // this entry while the transport is in flight. Never let stale completion
   // consume or clear the newer episode.
