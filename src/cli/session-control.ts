@@ -1154,15 +1154,15 @@ type NotifyParentResult =
 
 /**
  * The delivery fields of a `/api/notify` success body. Older servers answer
- * without `delivered` (undefined: reported as notified, like before). A body
- * with `delivered` must agree with the shared contract for its own counts;
- * anything else is a protocol error, never trusted or repaired.
+ * `ok: true` without `delivered` (undefined: reported as notified, like
+ * before). A body with `delivered` must agree with the shared contract for
+ * its own counts; anything else is a protocol error, never trusted or repaired.
  */
 function notifyParentResult(value: unknown): NotifyParentResult | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { invalid: "body is not an object" };
   const body = value as Record<string, unknown>;
-  if (body.delivered === undefined) return undefined;
   if (body.ok !== true) return { invalid: "ok is not true" };
+  if (body.delivered === undefined) return undefined;
   if (typeof body.delivered !== "boolean") return { invalid: "delivered is not a boolean" };
   if (
     !Number.isSafeInteger(body.sent) || (body.sent as number) < 0

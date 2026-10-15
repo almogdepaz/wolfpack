@@ -556,9 +556,22 @@ describe("session control fast-path requests", () => {
     }
   });
 
-  test("agent notify-parent keeps legacy success only when delivered is absent", () => {
-    for (const body of [{ ok: true }, { ok: true, sent: "1" }, "accepted"]) {
+  test("agent notify-parent keeps legacy success only for ok: true without delivered", () => {
+    for (const body of [{ ok: true }, { ok: true, sent: "1" }]) {
       expect(runNotifyParentAgainst(body, "plain")).toEqual({ exitCode: SESSION_EXIT.OK, stdout: "notified\n", stderr: "" });
+    }
+  });
+
+  test("agent notify-parent reports a body that is not an ok: true envelope as a protocol error", () => {
+    for (const body of [{ ok: false, sent: 0, failed: 1 }, {}, "accepted", null, [{ ok: true }]]) {
+      const plain = runNotifyParentAgainst(body, "plain");
+      expect(plain.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(plain.stdout).toBe("");
+      expect(plain.stderr).toStartWith("invalid /api/notify response: ");
+      const json = runNotifyParentAgainst(body, "json");
+      expect(json.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(JSON.parse(json.stdout)).toEqual(body);
+      expect(json.stderr).toStartWith("invalid /api/notify response: ");
     }
   });
 
