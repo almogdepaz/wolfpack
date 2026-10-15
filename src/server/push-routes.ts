@@ -17,6 +17,7 @@ import {
   parseObjectBody,
 } from "./http.js";
 import { resetNotificationObservation } from "./session-observation.js";
+import { notifyDelivery } from "../notify-contract.js";
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
@@ -93,6 +94,7 @@ export const pushNotifyRoutes: Record<string, RouteHandler> = {
     if (rateLimitError) return json(res, { error: rateLimitError }, 429);
 
     const result = await sendPush(payload);
-    json(res, { ok: true, ...result });
+    // `ok` means accepted; `delivered`/`reason` say whether any device got it.
+    json(res, { ok: true, ...result, ...notifyDelivery(result) });
   },
 };

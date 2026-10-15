@@ -50,6 +50,8 @@ import type {
   SessionSendObservationResult,
   SessionSendOutcome,
 } from "../session-send-contract.js";
+import { NOTIFY_UNDELIVERED_REASON, notifyDelivery } from "../notify-contract.js";
+import type { NotifyDelivery } from "../notify-contract.js";
 import { call as callApi } from "./api.js";
 import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
@@ -67,6 +69,8 @@ export const SESSION_EXIT = {
   BACKEND_UNAVAILABLE: 6,
   /** `send` delivered the text but the program did not take the Enter. */
   NOT_SUBMITTED: 7,
+  /** `agent notify-parent` was accepted but this host has no push subscription to deliver to. */
+  NOT_DELIVERED: 8,
 } as const;
 
 // Shell quoting is an output mode, independent of the shell harness taxonomy.
@@ -1144,6 +1148,58 @@ function defaultNotifyParentMessage(): string {
   return `${session} finished or blocked; ready for parent review`;
 }
 
+type NotifyParentResult =
+  | (NotifyDelivery & { readonly failed: number })
+  | { readonly invalid: string };
+
+/**
+ * The delivery fields of a `/api/notify` success body. Older servers answer
+ * `ok: true` without `delivered` (undefined: reported as notified, like
+ * before). A body with `delivered` must agree with the shared contract for
+ * its own counts; anything else is a protocol error, never trusted or repaired.
+ */
+function notifyParentResult(value: unknown): NotifyParentResult | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { invalid: "body is not an object" };
+  const body = value as Record<string, unknown>;
+  if (body.ok !== true) return { invalid: "ok is not true" };
+  if (body.delivered === undefined) return undefined;
+  if (typeof body.delivered !== "boolean") return { invalid: "delivered is not a boolean" };
+  if (
+    !Number.isSafeInteger(body.sent) || (body.sent as number) < 0
+    || !Number.isSafeInteger(body.failed) || (body.failed as number) < 0
+  ) {
+    return { invalid: "sent and failed are not non-negative integers" };
+  }
+  const failed = body.failed as number;
+  const expected = notifyDelivery({ sent: body.sent as number, failed });
+  if (body.delivered !== expected.delivered) return { invalid: "delivered contradicts sent" };
+  if (body.reason !== expected.reason) return { invalid: "reason contradicts sent and failed" };
+  return { ...expected, failed };
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function notifyParentExit(result: NotifyParentResult | undefined, output: OutputMode): number {
+  const plain = output !== "json";
+  if (result && "invalid" in result) {
+    printError(red(`invalid /api/notify response: ${result.invalid}`));
+    return SESSION_EXIT.GENERAL;
+  }
+  if (!result || result.delivered) {
+    if (plain) print("notified");
+    if (plain && result && result.failed > 0) printError(yellow(`warning: ${plural(result.failed, "push subscription")} failed`));
+    return SESSION_EXIT.OK;
+  }
+  if (result.reason === NOTIFY_UNDELIVERED_REASON.NO_SUBSCRIPTIONS) {
+    if (plain) printError(yellow("not delivered: no push subscriptions on this host"));
+    return SESSION_EXIT.NOT_DELIVERED;
+  }
+  if (plain) printError(yellow(`not delivered: push delivery failed (${plural(result.failed, "endpoint")})`));
+  return SESSION_EXIT.BACKEND_UNAVAILABLE;
+}
+
 async function runNotifyParent(
   parsed: Extract<ParsedAgentCommand, { readonly action: "notify-parent" }>,
 ): Promise<number> {
@@ -1162,8 +1218,7 @@ async function runNotifyParent(
       }),
     });
     if (parsed.output === "json") jsonOut(response);
-    else print("notified");
-    return SESSION_EXIT.OK;
+    return notifyParentExit(notifyParentResult(response), parsed.output);
   } catch (error: unknown) {
     return mapApiError(error, parsed.output);
   }

@@ -112,7 +112,7 @@ wolfpack agent spawn --project-dir <path> [--name <session>] [--model <provider/
 - for Pi parents only, accepts a bounded nonblank `--model <provider/model>` value and passes it unchanged to Pi's native `--model` option. Non-Pi parents reject model selection; omission preserves their existing same-harness launch behavior.
 - passes only explicit startup instructions; it does not inherit the parent transcript, model context, or summary.
 - supports `--plan <file>` and `--prompt-file <file>` like top-level creation.
-- `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked.
+- `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked. That command notifies the human, not the parent agent (see below).
 - stores structured parent ID/name metadata and sends a best-effort typed browser notification when opened.
 - json success has the same fields as top-level creation, including stable `sessionId`.
 
@@ -194,7 +194,10 @@ wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] 
 - typed agent-state/delegated-task predicates and explicit cancellation are still deferred until #211 provides the structured event/cursor substrate; `prompt --until` remains output-contains only.
 - JSON responses from standalone `wait` retain their existing shape for backward compatibility; `send` adds the outcome fields above.
 
-`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for child agents launched with `--notify-parent`.
+`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for child agents launched with `--notify-parent`. It sends a web-push notification to the human's browsers/phones enrolled on this host (see [phone-pwa-notifications.md](phone-pwa-notifications.md)); it delivers nothing into the parent agent's input. Any parent, Claude or Pi, verifies a `--notify-parent` child with `wolfpack session status` / `wolfpack session read`. Only `--task-worker` (endpoint) children report completion through Pi Tasks `agent_task_done`, and those reject `--notify-parent`.
+
+- `POST /api/notify` answers `ok: true` once the notification is accepted, with `sent`, `failed`, `pruned`, `delivered` (`sent > 0`), and, only when `delivered` is false, `reason`: `no_subscriptions` (no enrolled subscription remained on this host, including when every one expired and was pruned) or `delivery_failed` (every remaining subscription failed).
+- Exit codes: `0` when delivered (plain output `notified`, plus a yellow warning when some subscriptions failed) or when an older server answers `ok: true` without `delivered`; `8` for `no_subscriptions`; `6` for `delivery_failed`; `1` when the response has `delivered` but is malformed or contradicts `sent`/`failed` (a red `invalid /api/notify response: …` line). Plain output prints a yellow `not delivered: …` line instead of `notified`; `--json` always prints the full response.
 
 ### Current session identity
 
@@ -237,5 +240,6 @@ The stream is live-only: there is no replay, so events published while disconnec
 - `5`: auth failure
 - `6`: backend unavailable
 - `7`: `send` delivered the text but it was not submitted (`pasted_not_submitted`)
+- `8`: `agent notify-parent` was accepted but this host has no push subscription to deliver to (`no_subscriptions`)
 
 Grid/layout ownership remains in the browser. Session commands never reconstruct browser state from terminal output.

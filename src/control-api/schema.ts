@@ -19,6 +19,7 @@ import {
   SESSION_TERMINAL_STATUSES,
 } from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
+import { NOTIFY_UNDELIVERED_REASON } from "../notify-contract.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
   QUIET_ALERT_KIND,
@@ -1667,6 +1668,9 @@ export const controlApiSource: ControlApiSource = {
         ok: boolean(),
         sent: integer(),
         failed: integer(),
+        pruned: integer(),
+        delivered: boolean(),
+        reason: { enum: Object.values(NOTIFY_UNDELIVERED_REASON) },
       }, ["ok"], { additionalProperties: true }),
       errors: ["400 ErrorEnvelope", "429 ErrorEnvelope"],
     },

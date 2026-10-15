@@ -451,6 +451,130 @@ describe("session control fast-path requests", () => {
     expect(JSON.parse(child.stdout.toString())).toEqual({ ok: true, sent: 1 });
   });
 
+  function runNotifyParentAgainst(body: unknown, output: "plain" | "json") {
+    const script = `
+      globalThis.fetch = async () => Response.json(${JSON.stringify(body)});
+      const { runAgentCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runAgentCommand(["notify-parent", "--message", "ready"${output === "json" ? ', "--json"' : ""}]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return { exitCode: child.exitCode, stdout: child.stdout.toString(), stderr: child.stderr.toString() };
+  }
+
+  test("agent notify-parent reports a delivered push as notified", () => {
+    const body = { ok: true, sent: 1, failed: 0, pruned: 0, delivered: true };
+    expect(runNotifyParentAgainst(body, "plain")).toEqual({ exitCode: SESSION_EXIT.OK, stdout: "notified\n", stderr: "" });
+    const json = runNotifyParentAgainst(body, "json");
+    expect(json.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(json.stdout)).toEqual(body);
+    expect(json.stderr).toBe("");
+  });
+
+  test("agent notify-parent warns when some subscriptions failed but one was delivered", () => {
+    const body = { ok: true, sent: 1, failed: 2, pruned: 0, delivered: true };
+    expect(runNotifyParentAgainst(body, "plain")).toEqual({
+      exitCode: SESSION_EXIT.OK,
+      stdout: "notified\n",
+      stderr: "warning: 2 push subscriptions failed\n",
+    });
+  });
+
+  test("agent notify-parent exits NOT_DELIVERED when the host has no push subscriptions", () => {
+    const body = { ok: true, sent: 0, failed: 0, pruned: 0, delivered: false, reason: "no_subscriptions" };
+    expect(SESSION_EXIT.NOT_DELIVERED).toBe(8);
+    expect(runNotifyParentAgainst(body, "plain")).toEqual({
+      exitCode: SESSION_EXIT.NOT_DELIVERED,
+      stdout: "",
+      stderr: "not delivered: no push subscriptions on this host\n",
+    });
+    const json = runNotifyParentAgainst(body, "json");
+    expect(json.exitCode).toBe(SESSION_EXIT.NOT_DELIVERED);
+    expect(json.stdout.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(json.stdout)).toEqual(body);
+    expect(json.stderr).toBe("");
+  });
+
+  test("agent notify-parent exits BACKEND_UNAVAILABLE when every push failed", () => {
+    const body = { ok: true, sent: 0, failed: 3, pruned: 0, delivered: false, reason: "delivery_failed" };
+    expect(runNotifyParentAgainst(body, "plain")).toEqual({
+      exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
+      stdout: "",
+      stderr: "not delivered: push delivery failed (3 endpoints)\n",
+    });
+    const json = runNotifyParentAgainst(body, "json");
+    expect(json.exitCode).toBe(SESSION_EXIT.BACKEND_UNAVAILABLE);
+    expect(JSON.parse(json.stdout)).toEqual(body);
+  });
+
+  test("agent notify-parent treats an older server body without delivered as success", () => {
+    const body = { ok: true, sent: 0, failed: 0, pruned: 0 };
+    expect(runNotifyParentAgainst(body, "plain")).toEqual({ exitCode: SESSION_EXIT.OK, stdout: "notified\n", stderr: "" });
+    const json = runNotifyParentAgainst(body, "json");
+    expect(json.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(json.stdout)).toEqual(body);
+  });
+
+  test("agent notify-parent reports a malformed body with delivered as a protocol error", () => {
+    for (const body of [
+      { ok: true, sent: 0, failed: 0, delivered: false, reason: "unknown_reason" },
+      { ok: true, sent: 0, failed: 0, delivered: false },
+      { ok: true, sent: "0", failed: 0, delivered: false, reason: "no_subscriptions" },
+      { ok: true, sent: 0, failed: 0, delivered: "false", reason: "no_subscriptions" },
+      { ok: false, sent: 0, failed: 0, delivered: false, reason: "no_subscriptions" },
+    ]) {
+      const plain = runNotifyParentAgainst(body, "plain");
+      expect(plain.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(plain.stdout).toBe("");
+      expect(plain.stderr).toStartWith("invalid /api/notify response: ");
+      const json = runNotifyParentAgainst(body, "json");
+      expect(json.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(JSON.parse(json.stdout)).toEqual(body);
+      expect(json.stderr).toStartWith("invalid /api/notify response: ");
+    }
+  });
+
+  test("agent notify-parent reports delivery claims that contradict the counts as a protocol error", () => {
+    for (const body of [
+      { ok: true, sent: 0, failed: 0, pruned: 0, delivered: true },
+      { ok: true, sent: 1, failed: 0, pruned: 0, delivered: false, reason: "no_subscriptions" },
+      { ok: true, sent: 1, failed: 0, pruned: 0, delivered: true, reason: "no_subscriptions" },
+      { ok: true, sent: 0, failed: 3, pruned: 0, delivered: false, reason: "no_subscriptions" },
+      { ok: true, sent: 0, failed: 0, pruned: 0, delivered: false, reason: "delivery_failed" },
+    ]) {
+      const plain = runNotifyParentAgainst(body, "plain");
+      expect(plain.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(plain.stdout).toBe("");
+      expect(plain.stderr).toStartWith("invalid /api/notify response: ");
+      const json = runNotifyParentAgainst(body, "json");
+      expect(json.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(JSON.parse(json.stdout)).toEqual(body);
+    }
+  });
+
+  test("agent notify-parent keeps legacy success only for ok: true without delivered", () => {
+    for (const body of [{ ok: true }, { ok: true, sent: "1" }]) {
+      expect(runNotifyParentAgainst(body, "plain")).toEqual({ exitCode: SESSION_EXIT.OK, stdout: "notified\n", stderr: "" });
+    }
+  });
+
+  test("agent notify-parent reports a body that is not an ok: true envelope as a protocol error", () => {
+    for (const body of [{ ok: false, sent: 0, failed: 1 }, {}, "accepted", null, [{ ok: true }]]) {
+      const plain = runNotifyParentAgainst(body, "plain");
+      expect(plain.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(plain.stdout).toBe("");
+      expect(plain.stderr).toStartWith("invalid /api/notify response: ");
+      const json = runNotifyParentAgainst(body, "json");
+      expect(json.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(JSON.parse(json.stdout)).toEqual(body);
+      expect(json.stderr).toStartWith("invalid /api/notify response: ");
+    }
+  });
+
   test("status returns one json error envelope for an ambiguous selector", () => {
     const script = `
       globalThis.fetch = async () => Response.json({ error: "ambiguous session selector" }, { status: 409 });

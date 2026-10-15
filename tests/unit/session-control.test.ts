@@ -900,6 +900,7 @@ describe("session control cli parsing", () => {
       AUTH: 5,
       BACKEND_UNAVAILABLE: 6,
       NOT_SUBMITTED: 7,
+      NOT_DELIVERED: 8,
     });
   });
 });

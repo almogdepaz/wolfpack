@@ -52,6 +52,8 @@ An agent's alert fires once per activity episode, after its screen stays quiet f
 
 Agents with no children and no program status keep the plain quiet behavior. There is no setting for these rules.
 
+Agent-initiated `wolfpack agent notify-parent` messages are push notifications under the same enrollment, sent only to devices enrolled on the host where the child runs (they are not relayed between machines). With no enrollment on that host they are not delivered, and the CLI says so and exits `8`.
+
 ## one enrollment covers online machines
 
 The browser subscription still belongs to one origin (scheme, hostname, port). The enrolled server reads trusted peers' session lists and relays only quiet-alert facts those peers report: each peer keeps its own quiet-alert policy. Older peers also work when their session lists expose these facts; peers that do not expose quiet-alert facts cannot supply automatic alerts. An enrolled server older than the needs-input kind drops a newer peer's needs-input alerts instead of relaying them; update the enrollment host to receive them. Unreachable or incompatible peers are skipped without blocking local alerts.
