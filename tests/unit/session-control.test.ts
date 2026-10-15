@@ -660,6 +660,7 @@ describe("session control cli parsing", () => {
       [{ delivery: "not_delivered", outcome: "not_delivered", reason: "target_exited" }, SESSION_EXIT.NOT_FOUND, "not_delivered: target_exited\n"],
       [{ delivery: "not_delivered", outcome: "not_delivered", reason: "target_replaced" }, SESSION_EXIT.NOT_FOUND, "not_delivered: target_replaced\n"],
       [{ delivery: "not_delivered", outcome: "not_delivered", reason: "replay_gap" }, SESSION_EXIT.BACKEND_UNAVAILABLE, "not_delivered: replay_gap\n"],
+      [{ delivery: "not_delivered", outcome: "not_delivered", reason: "timed_out" }, SESSION_EXIT.BACKEND_UNAVAILABLE, "not_delivered: timed_out\n"],
       // Servers from before outcome reporting answer { ok: true } only.
       [{}, SESSION_EXIT.OK, ""],
     ] as const;

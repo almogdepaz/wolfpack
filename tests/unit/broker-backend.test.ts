@@ -1448,6 +1448,54 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(result.observedMs).toBeLessThanOrEqual(80);
   });
 
+  test("a baseline read that predates an observed clear cannot restore an idle anchor", async () => {
+    rootStatus = status("idle", 1);
+    let reads = 0;
+    client.setHandler("session_info", () => {
+      if (++reads !== 1) return sessionInfoResponse();
+      // The read captured idle; the record is cleared before its response lands.
+      const captured = sessionInfoResponse();
+      pushStatus(undefined);
+      return captured;
+    });
+    client.onWriteInput = () => pushStatus(afterWrite("working"));
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "next task", noEnter: false, observeMs: 100, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+  });
+
+  test("an attempt whose window ran out before the write writes nothing", async () => {
+    rootStatus = status("idle", 1);
+    client.setHandler("session_info", () => {
+      // A busy turn holds the baseline response past the whole window.
+      const until = Date.now() + 60;
+      while (Date.now() < until) { /* stall the event loop */ }
+      return sessionInfoResponse();
+    });
+    const subscribes = client.subscribeCallCount;
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 20, ensureSubmitted: false,
+    })).toEqual({ delivery: "not_delivered", outcome: "not_delivered", reason: "timed_out", observedMs: 0 });
+    expect(client.subscribeCallCount).toBe(subscribes);
+    expect(client.inputs).toEqual([]);
+  });
+
+  test("a subscription ready only after the window does not write, even before its timer runs", async () => {
+    rootStatus = status("idle", 1);
+    let releaseSubscribe!: () => void;
+    client.subscribeGate = new Promise<void>((resolve) => { releaseSubscribe = resolve; });
+    setTimeout(() => {
+      releaseSubscribe();
+      // The same busy turn runs past the window before the timeout callback can.
+      const until = Date.now() + 60;
+      while (Date.now() < until) { /* stall the event loop */ }
+    }, 5);
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 40, ensureSubmitted: false,
+    })).toEqual({ delivery: "not_delivered", outcome: "not_delivered", reason: "timed_out", observedMs: 0 });
+    expect(client.inputs).toEqual([]);
+  });
+
   test("a stalled baseline read counts against the observation window", async () => {
     rootStatus = status("idle", 1);
     let reads = 0;

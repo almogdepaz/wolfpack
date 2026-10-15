@@ -294,7 +294,8 @@ const SESSION_SEND_STATUS_READ_MAX_MS = 200;
  * than by arrival: pacing can deliver a pre-write transition after the write,
  * and a status read can return a snapshot older than an event already pushed.
  * The broker shares this host's wall clock; a stamp equal to the write time is
- * ambiguous and counts as before it.
+ * ambiguous and counts as before it. A clear carries no stamp, so its arrival
+ * time stands in: a read that returns later may have been taken before it.
  */
 class SendStatusTimeline {
   /** Latest record stamped at or before the write; undefined when none or unread. */
@@ -303,16 +304,23 @@ class SendStatusTimeline {
   readonly after: Array<ProgramStatusRecord | undefined> = [];
   /** Two records share a stamp but not a state, so their order is unknown. */
   ambiguous = false;
-  /** Newest record admitted; anything stamped before it is a stale snapshot. */
+  /** Stamp of the newest record, or arrival of a later clear; anything at or before it is stale. */
+  private newestMs: number | undefined;
+  /** The record that set `newestMs`; undefined when a clear set it. */
   private newest: ProgramStatusRecord | undefined;
 
   admit(record: ProgramStatusRecord | undefined, writtenAtMs: number | undefined): void {
-    if (record !== undefined && this.newest !== undefined && record.updatedAtMs <= this.newest.updatedAtMs) {
+    if (record === undefined) {
+      this.newestMs = Math.max(this.newestMs ?? 0, Date.now());
+      this.newest = undefined;
+    } else if (this.newestMs !== undefined && record.updatedAtMs <= this.newestMs) {
       // Placing a stale record by its stamp could only invent an edge; drop it.
-      if (record.updatedAtMs === this.newest.updatedAtMs && record.state !== this.newest.state) this.ambiguous = true;
+      if (record.updatedAtMs === this.newest?.updatedAtMs && record.state !== this.newest.state) this.ambiguous = true;
       return;
+    } else {
+      this.newestMs = record.updatedAtMs;
+      this.newest = record;
     }
-    if (record !== undefined) this.newest = record;
     if (writtenAtMs === undefined) {
       this.baseline = record;
       return;
@@ -418,6 +426,8 @@ interface ObservedInputSpec<T> {
   readonly onInputSent?: (observation: InputObservation<T>) => void;
   /** Runs synchronously before subscribing, for callers with other evidence sources. */
   readonly bind?: (observation: InputObservation<T>) => void;
+  /** Runs once the subscription is ready; a result settles the call without writing. */
+  readonly beforeWrite?: () => T | undefined;
 }
 
 class BrokerRpcError extends Error {
@@ -887,6 +897,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const stopUnlessWritten = (reason: SessionSendFailureReason): SendAttemptStop =>
       observation?.inputSent ? observed : notDelivered(reason);
     const decided = (): boolean => (attempt.noEnter ? outputSeen || status.changed() : status.submitted());
+    // The write must leave room for the final read; past this, nothing is written.
+    const writeByMs = deadlineMs - statusReadMs;
+    const windowSpent = (): boolean => Date.now() >= writeByMs;
     // Listen before reading the baseline so no pushed change falls between them.
     const unsubscribeStatus = this.onProgramStatusById(sessionId, (record) => {
       if (Date.now() > deadlineMs) return;
@@ -896,12 +909,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     try {
       const initial = await this.rootProgramStatusWithin(sessionId, Date.now() + statusReadMs, "baseline");
       if (initial) status.admit(initial.record, undefined);
+      // A timer cannot interrupt a busy turn, so check the clock before subscribing and writing.
+      if (windowSpent()) return notDeliveredSend(SESSION_SEND_FAILURE_REASON.TIMED_OUT);
       const targetUnavailableOutcome = () => this.targetUnavailableOutcome(sessionId, attempt.sessionName ?? name);
       const { result: stop } = await this.writeObservedInput<SendAttemptStop>(sessionId, {
         sessionName: name,
         input: attempt.input,
-        timeoutMs: Math.max(0, deadlineMs - statusReadMs - Date.now()),
+        timeoutMs: writeByMs - Date.now(),
         bind: (bound) => { observation = bound; },
+        beforeWrite: () => (windowSpent() ? notDelivered(SESSION_SEND_FAILURE_REASON.TIMED_OUT) : undefined),
         onTimeout: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
         onLifecycle: (event) => stopUnlessWritten(event.kind === "exited"
           ? SESSION_SEND_FAILURE_REASON.TARGET_EXITED
@@ -1163,6 +1179,11 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       for (const pending of pendingOutput) appendOutput(pending);
       pendingOutput.length = 0;
       if (settled) return await settle();
+      const stop = spec.beforeWrite?.();
+      if (stop !== undefined) {
+        observation.finish(stop);
+        return await settle();
+      }
       // Output can arrive while the write is still on the stack; it already
       // follows the input.
       observation.inputSent = true;

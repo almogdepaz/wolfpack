@@ -2607,7 +2607,8 @@
               "target_replaced",
               "target_exited",
               "replay_gap",
-              "backend_unavailable"
+              "backend_unavailable",
+              "timed_out"
             ]
           }
         },
