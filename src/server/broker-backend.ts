@@ -289,24 +289,30 @@ type SendAttemptStop =
 /** Each status read inside a send's observation window gets at most this much of it. */
 const SESSION_SEND_STATUS_READ_MAX_MS = 200;
 
-function sameProgramStatus(a: ProgramStatusRecord | undefined, b: ProgramStatusRecord | undefined): boolean {
-  if (a === undefined || b === undefined) return a === b;
-  return a.state === b.state && a.updatedAtMs === b.updatedAtMs;
-}
-
 /**
  * Root program status around one write, ordered by the broker's stamp rather
- * than by arrival: pacing can deliver a pre-write transition after the write.
+ * than by arrival: pacing can deliver a pre-write transition after the write,
+ * and a status read can return a snapshot older than an event already pushed.
  * The broker shares this host's wall clock; a stamp equal to the write time is
  * ambiguous and counts as before it.
  */
 class SendStatusTimeline {
   /** Latest record stamped at or before the write; undefined when none or unread. */
   baseline: ProgramStatusRecord | undefined;
-  /** Records stamped after the write, in arrival order; undefined is a cleared record. */
+  /** Records stamped after the write, in stamp order; undefined is a cleared record. */
   readonly after: Array<ProgramStatusRecord | undefined> = [];
+  /** Two records share a stamp but not a state, so their order is unknown. */
+  ambiguous = false;
+  /** Newest record admitted; anything stamped before it is a stale snapshot. */
+  private newest: ProgramStatusRecord | undefined;
 
   admit(record: ProgramStatusRecord | undefined, writtenAtMs: number | undefined): void {
+    if (record !== undefined && this.newest !== undefined && record.updatedAtMs <= this.newest.updatedAtMs) {
+      // Placing a stale record by its stamp could only invent an edge; drop it.
+      if (record.updatedAtMs === this.newest.updatedAtMs && record.state !== this.newest.state) this.ambiguous = true;
+      return;
+    }
+    if (record !== undefined) this.newest = record;
     if (writtenAtMs === undefined) {
       this.baseline = record;
       return;
@@ -317,12 +323,10 @@ class SendStatusTimeline {
       return;
     }
     if (record.updatedAtMs <= writtenAtMs) {
-      // Out of order once later evidence exists; ignore rather than guess.
+      // Its order against a cleared record is unknown; ignore rather than guess.
       if (this.after.length === 0) this.baseline = record;
       return;
     }
-    const last = this.after[this.after.length - 1];
-    if (last !== undefined && sameProgramStatus(last, record)) return;
     this.after.push(record);
   }
 
@@ -333,6 +337,7 @@ class SendStatusTimeline {
 
   /** An observed `idle` directly followed by a non-idle record stamped after the write. */
   submitted(): boolean {
+    if (this.ambiguous) return false;
     let previous = this.baseline;
     for (const record of this.after) {
       if (previous?.state === PROGRAM_STATUS_STATE.IDLE && record !== undefined && record.state !== PROGRAM_STATUS_STATE.IDLE) {
@@ -372,6 +377,7 @@ function classifySendAttempt(
   // Only an untouched idle record proves the program sat on the text:
   // pacing can fold idle->working->idle into one idle with a new timestamp.
   const pasted = !evidence.statusUnknown
+    && !status.ambiguous
     && status.baseline?.state === PROGRAM_STATUS_STATE.IDLE
     && status.after.length === 0;
   return {
@@ -888,7 +894,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       if (observation?.inputSent && decided()) observation.finish(observed);
     });
     try {
-      const initial = await this.rootProgramStatusWithin(sessionId, statusReadMs, "baseline");
+      const initial = await this.rootProgramStatusWithin(sessionId, Date.now() + statusReadMs, "baseline");
       if (initial) status.admit(initial.record, undefined);
       const targetUnavailableOutcome = () => this.targetUnavailableOutcome(sessionId, attempt.sessionName ?? name);
       const { result: stop } = await this.writeObservedInput<SendAttemptStop>(sessionId, {
@@ -913,7 +919,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       let statusUnknown = false;
       if (!decided()) {
         // Pushed changes are paced, so read the final state once, inside the window.
-        const final = await this.rootProgramStatusWithin(sessionId, deadlineMs - Date.now(), "final");
+        const final = await this.rootProgramStatusWithin(sessionId, deadlineMs, "final");
         if (final) status.admit(final.record, writtenAtMs);
         else statusUnknown = true;
       }
@@ -932,21 +938,28 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     }
   }
 
-  /** Reads the root status record, or undefined when the read fails or outlasts `timeoutMs`. */
+  /** Reads the root status record, or undefined when the read fails or is not handled by `untilMs`. */
   private async rootProgramStatusWithin(
     sessionId: string,
-    timeoutMs: number,
+    untilMs: number,
     phase: "baseline" | "final",
   ): Promise<{ readonly record: ProgramStatusRecord | undefined } | undefined> {
+    const timeoutMs = untilMs - Date.now();
     if (timeoutMs <= 0) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); });
     try {
-      return await Promise.race([
+      const read = await Promise.race([
         this.exactSessionInfo(sessionId, timeoutMs)
           .then((session) => ({ record: parseBrokerProgramStatusRecord(session.program_status) })),
         expired,
       ]);
+      // A busy turn can run the response before an expired timer, so check the clock and stamp too.
+      if (read && (Date.now() > untilMs || (read.record?.updatedAtMs ?? 0) > untilMs)) {
+        log.debug(`send ${phase} status read was late`, { sessionId });
+        return undefined;
+      }
+      return read;
     } catch (error: unknown) {
       log.debug(`send ${phase} status read failed`, { sessionId, error: errMsg(error) });
       return undefined;

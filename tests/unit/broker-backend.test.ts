@@ -1372,6 +1372,82 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(elapsed).toBeLessThan(150);
   });
 
+  test("a final snapshot older than a pushed record cannot create an idle edge", async () => {
+    rootStatus = status("working", 1);
+    // An earlier turn reports progress after the write; pacing holds that event.
+    client.onWriteInput = () => { rootStatus = { ...afterWrite("working", 4), progress: 50 }; };
+    let reads = 0;
+    client.setHandler("session_info", async () => {
+      if (++reads !== 2) return sessionInfoResponse();
+      // The final read captures that record, then the turn ends before the response lands.
+      const captured = sessionInfoResponse();
+      await sleep(10);
+      pushStatus(status("idle", Date.now() + 10));
+      return captured;
+    });
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "next task", noEnter: false, observeMs: 200, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+  });
+
+  test("records with the same stamp and different states leave the order unknown", async () => {
+    rootStatus = status("working", 1);
+    let stamp = 0;
+    client.onWriteInput = () => {
+      stamp = Date.now() + 5;
+      pushStatus(status("idle", stamp));
+    };
+    let reads = 0;
+    client.setHandler("session_info", () => (++reads === 2
+      ? okResp({ session: { ...sessionInfo({ name: "live", id: SESSION_UUID_1 }), program_status: status("working", stamp) } })
+      : sessionInfoResponse()));
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "next task", noEnter: false, observeMs: 200, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+  });
+
+  test("a baseline whose state is unknown at one stamp cannot anchor an idle edge", async () => {
+    const stamp = Date.now() - 5;
+    rootStatus = status("working", stamp);
+    let reads = 0;
+    client.setHandler("session_info", () => {
+      // The pushed idle and the read's working share a stamp; either may be the later state.
+      if (++reads === 1) pushStatus(status("idle", stamp));
+      return okResp({ session: { ...sessionInfo({ name: "live", id: SESSION_UUID_1 }), program_status: status("working", stamp) } });
+    });
+    const writes: Array<(sessionId: string) => void> = [
+      () => pushStatus(afterWrite("working")),
+      // Nor can it prove the text sat unsubmitted.
+      (sessionId) => client.emit(sessionId, encoder.encode("next task"), 18n),
+    ];
+    for (const write of writes) {
+      reads = 0;
+      client.onWriteInput = write;
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "next task", noEnter: false, observeMs: 100, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+    }
+  });
+
+  test("a final read that completes after the deadline is not evidence, even before its timer runs", async () => {
+    rootStatus = status("idle", 1);
+    let reads = 0;
+    client.setHandler("session_info", () => {
+      if (++reads === 2) {
+        // A busy turn blocks response dispatch past the deadline.
+        const until = Date.now() + 50;
+        while (Date.now() < until) { /* stall the event loop */ }
+        rootStatus = status("working", Date.now());
+      }
+      return sessionInfoResponse();
+    });
+    const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "hello", noEnter: false, observeMs: 80, ensureSubmitted: false,
+    });
+    expect(result).toMatchObject({ delivery: "unverified", outcome: "unverified" });
+    expect(result.observedMs).toBeLessThanOrEqual(80);
+  });
+
   test("a stalled baseline read counts against the observation window", async () => {
     rootStatus = status("idle", 1);
     let reads = 0;
