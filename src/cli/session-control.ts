@@ -50,6 +50,8 @@ import type {
   SessionSendObservationResult,
   SessionSendOutcome,
 } from "../session-send-contract.js";
+import { NOTIFY_UNDELIVERED_REASON } from "../notify-contract.js";
+import type { NotifyDelivery, NotifyUndeliveredReason } from "../notify-contract.js";
 import { call as callApi } from "./api.js";
 import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
@@ -67,6 +69,8 @@ export const SESSION_EXIT = {
   BACKEND_UNAVAILABLE: 6,
   /** `send` delivered the text but the program did not take the Enter. */
   NOT_SUBMITTED: 7,
+  /** `agent notify-parent` was accepted but this host has no push subscription to deliver to. */
+  NOT_DELIVERED: 8,
 } as const;
 
 // Shell quoting is an output mode, independent of the shell harness taxonomy.
@@ -1144,6 +1148,52 @@ function defaultNotifyParentMessage(): string {
   return `${session} finished or blocked; ready for parent review`;
 }
 
+const NOTIFY_UNDELIVERED_REASONS: ReadonlySet<unknown> = new Set(Object.values(NOTIFY_UNDELIVERED_REASON));
+
+type NotifyParentResult = NotifyDelivery & { readonly failed: number };
+
+/**
+ * The delivery fields of a `/api/notify` success body. Older servers answer
+ * without `delivered`, and a body that does not validate is not trusted;
+ * both stay reported as notified.
+ */
+function notifyParentResult(value: unknown): NotifyParentResult | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const body = value as Record<string, unknown>;
+  if (
+    body.ok !== true
+    || !Number.isSafeInteger(body.sent) || (body.sent as number) < 0
+    || !Number.isSafeInteger(body.failed) || (body.failed as number) < 0
+  ) {
+    return undefined;
+  }
+  const failed = body.failed as number;
+  if (body.delivered === true && body.reason === undefined) return { delivered: true, failed };
+  if (body.delivered === false && NOTIFY_UNDELIVERED_REASONS.has(body.reason)) {
+    return { delivered: false, reason: body.reason as NotifyUndeliveredReason, failed };
+  }
+  return undefined;
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function notifyParentExit(result: NotifyParentResult | undefined, output: OutputMode): number {
+  const plain = output !== "json";
+  if (!result || result.delivered) {
+    if (plain) print("notified");
+    if (plain && result && result.failed > 0) printError(yellow(`warning: ${plural(result.failed, "push subscription")} failed`));
+    return SESSION_EXIT.OK;
+  }
+  if (result.reason === NOTIFY_UNDELIVERED_REASON.NO_SUBSCRIPTIONS) {
+    if (plain) printError(yellow("not delivered: no push subscriptions on this host"));
+    return SESSION_EXIT.NOT_DELIVERED;
+  }
+  if (plain) printError(yellow(`not delivered: push delivery failed (${plural(result.failed, "endpoint")})`));
+  return SESSION_EXIT.BACKEND_UNAVAILABLE;
+}
+
 async function runNotifyParent(
   parsed: Extract<ParsedAgentCommand, { readonly action: "notify-parent" }>,
 ): Promise<number> {
@@ -1162,8 +1212,7 @@ async function runNotifyParent(
       }),
     });
     if (parsed.output === "json") jsonOut(response);
-    else print("notified");
-    return SESSION_EXIT.OK;
+    return notifyParentExit(notifyParentResult(response), parsed.output);
   } catch (error: unknown) {
     return mapApiError(error, parsed.output);
   }
