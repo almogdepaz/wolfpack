@@ -20,8 +20,8 @@ A same-harness **child** of the current agent (full-startup assignment):
 
 ```bash
 # Pi parent: resolve the role model explicitly; use the reviewer setting for review.
-IMPLEMENTER_MODEL="${WOLFPACK_IMPLEMENTER_MODEL:-openai-codex/gpt-5.6-terra}"
-REVIEWER_MODEL="${WOLFPACK_REVIEWER_MODEL:-openai-codex/gpt-5.6-sol}"
+IMPLEMENTER_MODEL="${WOLFPACK_IMPLEMENTER_MODEL:-openai-codex/gpt-6.1-sol:high}"
+REVIEWER_MODEL="${WOLFPACK_REVIEWER_MODEL:-openai-codex/gpt-6.1-sol:high}"
 wolfpack agent spawn <project> --name 200-implementation --model "$IMPLEMENTER_MODEL" --plan .plans/000-task.md --notify-parent --json
 # Non-Pi parent: --model is unsupported; omit it.
 ```
