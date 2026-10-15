@@ -50,8 +50,8 @@ import type {
   SessionSendObservationResult,
   SessionSendOutcome,
 } from "../session-send-contract.js";
-import { NOTIFY_UNDELIVERED_REASON } from "../notify-contract.js";
-import type { NotifyDelivery, NotifyUndeliveredReason } from "../notify-contract.js";
+import { NOTIFY_UNDELIVERED_REASON, notifyDelivery } from "../notify-contract.js";
+import type { NotifyDelivery } from "../notify-contract.js";
 import { call as callApi } from "./api.js";
 import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
@@ -1148,31 +1148,33 @@ function defaultNotifyParentMessage(): string {
   return `${session} finished or blocked; ready for parent review`;
 }
 
-const NOTIFY_UNDELIVERED_REASONS: ReadonlySet<unknown> = new Set(Object.values(NOTIFY_UNDELIVERED_REASON));
-
-type NotifyParentResult = NotifyDelivery & { readonly failed: number };
+type NotifyParentResult =
+  | (NotifyDelivery & { readonly failed: number })
+  | { readonly invalid: string };
 
 /**
  * The delivery fields of a `/api/notify` success body. Older servers answer
- * without `delivered`, and a body that does not validate is not trusted;
- * both stay reported as notified.
+ * without `delivered` (undefined: reported as notified, like before). A body
+ * with `delivered` must agree with the shared contract for its own counts;
+ * anything else is a protocol error, never trusted or repaired.
  */
 function notifyParentResult(value: unknown): NotifyParentResult | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const body = value as Record<string, unknown>;
+  if (body.delivered === undefined) return undefined;
+  if (body.ok !== true) return { invalid: "ok is not true" };
+  if (typeof body.delivered !== "boolean") return { invalid: "delivered is not a boolean" };
   if (
-    body.ok !== true
-    || !Number.isSafeInteger(body.sent) || (body.sent as number) < 0
+    !Number.isSafeInteger(body.sent) || (body.sent as number) < 0
     || !Number.isSafeInteger(body.failed) || (body.failed as number) < 0
   ) {
-    return undefined;
+    return { invalid: "sent and failed are not non-negative integers" };
   }
   const failed = body.failed as number;
-  if (body.delivered === true && body.reason === undefined) return { delivered: true, failed };
-  if (body.delivered === false && NOTIFY_UNDELIVERED_REASONS.has(body.reason)) {
-    return { delivered: false, reason: body.reason as NotifyUndeliveredReason, failed };
-  }
-  return undefined;
+  const expected = notifyDelivery({ sent: body.sent as number, failed });
+  if (body.delivered !== expected.delivered) return { invalid: "delivered contradicts sent" };
+  if (body.reason !== expected.reason) return { invalid: "reason contradicts sent and failed" };
+  return { ...expected, failed };
 }
 
 function plural(count: number, noun: string): string {
@@ -1181,6 +1183,10 @@ function plural(count: number, noun: string): string {
 
 function notifyParentExit(result: NotifyParentResult | undefined, output: OutputMode): number {
   const plain = output !== "json";
+  if (result && "invalid" in result) {
+    printError(red(`invalid /api/notify response: ${result.invalid}`));
+    return SESSION_EXIT.GENERAL;
+  }
   if (!result || result.delivered) {
     if (plain) print("notified");
     if (plain && result && result.failed > 0) printError(yellow(`warning: ${plural(result.failed, "push subscription")} failed`));

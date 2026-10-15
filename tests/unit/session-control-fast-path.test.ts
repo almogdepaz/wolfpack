@@ -519,13 +519,45 @@ describe("session control fast-path requests", () => {
     expect(JSON.parse(json.stdout)).toEqual(body);
   });
 
-  test("agent notify-parent does not trust delivery fields of an invalid body", () => {
+  test("agent notify-parent reports a malformed body with delivered as a protocol error", () => {
     for (const body of [
       { ok: true, sent: 0, failed: 0, delivered: false, reason: "unknown_reason" },
       { ok: true, sent: 0, failed: 0, delivered: false },
       { ok: true, sent: "0", failed: 0, delivered: false, reason: "no_subscriptions" },
       { ok: true, sent: 0, failed: 0, delivered: "false", reason: "no_subscriptions" },
+      { ok: false, sent: 0, failed: 0, delivered: false, reason: "no_subscriptions" },
     ]) {
+      const plain = runNotifyParentAgainst(body, "plain");
+      expect(plain.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(plain.stdout).toBe("");
+      expect(plain.stderr).toStartWith("invalid /api/notify response: ");
+      const json = runNotifyParentAgainst(body, "json");
+      expect(json.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(JSON.parse(json.stdout)).toEqual(body);
+      expect(json.stderr).toStartWith("invalid /api/notify response: ");
+    }
+  });
+
+  test("agent notify-parent reports delivery claims that contradict the counts as a protocol error", () => {
+    for (const body of [
+      { ok: true, sent: 0, failed: 0, pruned: 0, delivered: true },
+      { ok: true, sent: 1, failed: 0, pruned: 0, delivered: false, reason: "no_subscriptions" },
+      { ok: true, sent: 1, failed: 0, pruned: 0, delivered: true, reason: "no_subscriptions" },
+      { ok: true, sent: 0, failed: 3, pruned: 0, delivered: false, reason: "no_subscriptions" },
+      { ok: true, sent: 0, failed: 0, pruned: 0, delivered: false, reason: "delivery_failed" },
+    ]) {
+      const plain = runNotifyParentAgainst(body, "plain");
+      expect(plain.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(plain.stdout).toBe("");
+      expect(plain.stderr).toStartWith("invalid /api/notify response: ");
+      const json = runNotifyParentAgainst(body, "json");
+      expect(json.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(JSON.parse(json.stdout)).toEqual(body);
+    }
+  });
+
+  test("agent notify-parent keeps legacy success only when delivered is absent", () => {
+    for (const body of [{ ok: true }, { ok: true, sent: "1" }, "accepted"]) {
       expect(runNotifyParentAgainst(body, "plain")).toEqual({ exitCode: SESSION_EXIT.OK, stdout: "notified\n", stderr: "" });
     }
   });
