@@ -165,6 +165,18 @@ function remoteSidebarCard(page: Page, session: string): Locator {
   return page.locator(`#sidebar-session-list .card-open[data-session="${session}"]:not([data-machine=""])`).first();
 }
 
+/**
+ * Remote extension consent lives in page memory (public/extension-transport.ts) and its prompt
+ * prints the peer's real origin, so accept it before frames start. "Not now" would re-prompt on camera.
+ */
+async function trustRemoteExtensions(page: Page): Promise<void> {
+  const prompt = page.locator('form.extension-access-prompt[aria-label="Trust selected machine browser code?"]');
+  if (await prompt.waitFor({ timeout: 5000 }).then(() => true, () => false)) {
+    await prompt.getByRole("button", { name: "Trust this inventory" }).click();
+    await prompt.waitFor({ state: "detached", timeout: 5000 });
+  }
+}
+
 type Viewport = { readonly width: number; readonly height: number };
 
 /** A context whose machine names are placeholders and whose pointer is drawn. */
@@ -226,6 +238,7 @@ async function run(): Promise<void> {
       await remoteCard.waitFor({ timeout: 15000 });
       await remoteCard.click();
       await waitLive(page, 15000);
+      await trustRemoteExtensions(page);
       await page.waitForTimeout(400);
     }
     for (const session of warmOrder) {
@@ -345,11 +358,24 @@ const MOBILE_MP4_WIDTH = 780;
 async function recordMobile(browser: Browser): Promise<void> {
   const context = await demoContext(browser, MOBILE_STILL, true, 2);
   const page = await openDashboard(context);
+  const remoteCard = REMOTE_SESSION ? page.locator(`.card-open[data-session="${REMOTE_SESSION}"]:not([data-machine=""])`).first() : undefined;
+  if (remoteCard) {
+    // pre-roll (not recorded): consent to the remote machine's extensions, then back to the dashboard
+    await remoteCard.scrollIntoViewIfNeeded();
+    await remoteCard.tap();
+    await page.locator("canvas").first().waitFor({ timeout: 15000 });
+    await trustRemoteExtensions(page);
+    await page.locator("#back-btn:visible").first().tap();
+    await page.locator(".card-open").first().waitFor({ timeout: 10000 });
+    // the dashboard scrolls inside a container, not the window: reset every scrolled element
+    await page.evaluate(() => { for (const element of [document.scrollingElement, ...document.querySelectorAll("*")]) if (element && element.scrollTop) element.scrollTop = 0; });
+    await page.waitForTimeout(600);
+  }
   const capture = await startCapture(context, page, "frames-mobile");
   await page.waitForTimeout(1300);
   await checkpoint(page, "m-dashboard");
   const tour = [...SESSIONS.slice(0, 2).map((name) => cardOpen(page, name))];
-  if (REMOTE_SESSION) tour.push(page.locator(`.card-open[data-session="${REMOTE_SESSION}"]:not([data-machine=""])`).first());
+  if (remoteCard) tour.push(remoteCard);
   for (const [index, card] of tour.entries()) {
     await card.scrollIntoViewIfNeeded();
     await card.tap();
