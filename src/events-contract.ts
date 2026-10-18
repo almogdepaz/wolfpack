@@ -12,6 +12,7 @@ export const WOLFPACK_EVENT_KIND = {
   SESSION_EXITED: "session.exited",
   SESSION_STATE: "session.state",
   TASK_UPDATED: "task.updated",
+  PARENT_NOTIFIED: "parent_notified",
 } as const;
 
 export type WolfpackEventKind = typeof WOLFPACK_EVENT_KIND[keyof typeof WOLFPACK_EVENT_KIND];
@@ -26,6 +27,15 @@ export const SESSION_EXIT_REASON = {
 export type SessionExitReason = typeof SESSION_EXIT_REASON[keyof typeof SESSION_EXIT_REASON];
 
 export type WolfpackEventBody =
+  | {
+    readonly kind: typeof WOLFPACK_EVENT_KIND.PARENT_NOTIFIED;
+    readonly session: string;
+    readonly sessionId: string;
+    readonly seq: number;
+    readonly message: string;
+    /** Informational only, not an authenticated sender identity. */
+    readonly from?: string;
+  }
   | {
     readonly kind: typeof WOLFPACK_EVENT_KIND.SESSION_CREATED;
     readonly sessionId: string;
@@ -121,6 +131,8 @@ export function formatEventLine(event: WolfpackEvent): string {
     }
     case WOLFPACK_EVENT_KIND.SESSION_STATE:
       return `${event.at} ${event.kind} ${event.session} ${event.state} (${event.label})`;
+    case WOLFPACK_EVENT_KIND.PARENT_NOTIFIED:
+      return `${event.at} ${event.kind} ${event.session} seq=${event.seq}${event.from !== undefined ? ` [${event.from}]` : ""} ${event.message}`;
     case WOLFPACK_EVENT_KIND.TASK_UPDATED:
       return `${event.at} ${event.kind} ${event.taskId} ${event.eventType}`;
   }

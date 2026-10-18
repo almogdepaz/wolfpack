@@ -43,7 +43,7 @@ import { createTaskRoutes } from "./task-routes.ts";
 import { createVolatileRelayRoutes } from "./volatile-relay-routes.ts";
 import { createProjectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, createSessionControlRoutes } from "./session-control-routes.js";
-import { pushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
+import { createPushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
 import { createEventRoutes } from "./event-routes.js";
 
 const log = createLogger("routes");
@@ -286,7 +286,7 @@ return {
   ...createTaskRoutes(ctx),
   ...createVolatileRelayRoutes(ctx),
 
-  ...pushNotifyRoutes,
+  ...createPushNotifyRoutes(ctx),
   ...createEventRoutes(ctx),
 };
 }

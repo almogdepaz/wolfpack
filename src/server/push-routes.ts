@@ -18,6 +18,12 @@ import {
 } from "./http.js";
 import { resetNotificationObservation } from "./session-observation.js";
 import { notifyDelivery } from "../notify-contract.js";
+import { defaultServerContext, type ServerContext } from "./context.js";
+import { appendParentNotification } from "./parent-inbox.js";
+import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
+import { createLogger, errMsg } from "../log.js";
+
+const log = createLogger("push");
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
@@ -69,7 +75,8 @@ export const pushSubscriptionRoutes: Record<string, RouteHandler> = {
   },
 };
 
-export const pushNotifyRoutes: Record<string, RouteHandler> = {
+export function createPushNotifyRoutes(ctx: Pick<ServerContext, "backend" | "events">): Record<string, RouteHandler> {
+return {
   "POST /api/notify": async (req, res) => {
     const body = await parseObjectBody(req, res);
     if (!body) return;
@@ -79,6 +86,10 @@ export const pushNotifyRoutes: Record<string, RouteHandler> = {
     if ((sessionId === undefined) !== (sessionName === undefined)) {
       return json(res, { error: "sessionId and sessionName must be provided together" }, 400);
     }
+    if (body.from !== undefined && (typeof body.from !== "string" || [...body.from].length > 100)) {
+      return json(res, { error: "invalid notification sender" }, 400);
+    }
+    const from = typeof body.from === "string" ? body.from : undefined;
     const message = body.message.slice(0, 500);
     let payload;
     try {
@@ -93,8 +104,29 @@ export const pushNotifyRoutes: Record<string, RouteHandler> = {
     const rateLimitError = checkNotifyRateLimit();
     if (rateLimitError) return json(res, { error: rateLimitError }, 429);
 
+    let parentInbox: { queued: true; seq: number } | { queued: false; reason: "no_parent" | "parent_not_found" } =
+      { queued: false, reason: sessionId === undefined ? "no_parent" : "parent_not_found" };
+    if (sessionId !== undefined) {
+      try {
+        const inspection = await ctx.backend.inspectSession(sessionId);
+        // Selectors can also be names; require this exact live incarnation.
+        if (inspection.ok && inspection.alive && inspection.sessionId === sessionId && inspection.session === sessionName) {
+          const notification = { message, ...(from !== undefined && { from }) };
+          const { seq } = appendParentNotification(sessionId, notification);
+          parentInbox = { queued: true, seq };
+          ctx.events.publishEvent({ kind: WOLFPACK_EVENT_KIND.PARENT_NOTIFIED, session: inspection.session, sessionId, seq, ...notification });
+        }
+      } catch (error: unknown) {
+        // Inbox lookup must not change the existing push delivery contract.
+        log.warn("parent inbox target inspection failed", { error: errMsg(error) });
+      }
+    }
+
     const result = await sendPush(payload);
     // `ok` means accepted; `delivered`/`reason` say whether any device got it.
-    json(res, { ok: true, ...result, ...notifyDelivery(result) });
+    json(res, { ok: true, ...result, ...notifyDelivery(result), parentInbox });
   },
 };
+}
+
+export const pushNotifyRoutes = createPushNotifyRoutes(defaultServerContext);

@@ -69,6 +69,7 @@ import {
 import { SHELL } from "./shell.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
+import { clearParentInbox } from "./parent-inbox.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { PROGRAM_STATUS_STATE, parseBrokerProgramStatusRecord } from "../program-status-contract.js";
@@ -1451,6 +1452,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   }
 
   private emitSessionExited(id: string, exit: PendingSessionExit, killed: boolean, killName: string | undefined): void {
+    clearParentInbox(id);
     const name = exit.name ?? killName;
     this.emitEvent({
       kind: WOLFPACK_EVENT_KIND.SESSION_EXITED,

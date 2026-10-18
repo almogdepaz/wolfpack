@@ -2533,6 +2533,17 @@ describe("BrokerBackend lifecycle → event bus", () => {
     expect(seen).toEqual([]);
   });
 
+  test("session exit clears only that stable parent's inbox", async () => {
+    const { appendParentNotification, listParentNotifications, clearParentInbox } = await import("../../src/server/parent-inbox.ts");
+    clearParentInbox(SESSION_UUID_1); clearParentInbox(SESSION_UUID_2);
+    appendParentNotification(SESSION_UUID_1, { message: "one" });
+    appendParentNotification(SESSION_UUID_2, { message: "two" });
+    backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+    expect(listParentNotifications(SESSION_UUID_1)).toEqual([]);
+    expect(listParentNotifications(SESSION_UUID_2)).toHaveLength(1);
+    clearParentInbox(SESSION_UUID_2);
+  });
+
   test("natural exit publishes session.exited with reason exit and the cached name", async () => {
     client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1 })] }));
     await backend.list();
