@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { RELAY_LIMITS, isRelayEndpoint, isLocalRelay } from "../task-relay/domain.ts";
 import { getRelayPeerTransport, trustedRelayClient } from "./relay-peer-transport.ts";
 import { RelayPeerPolicyError } from "../task-relay/peer-transport.ts";
-import { getTaskRelayProfile, getVolatileTaskRelayGateway } from "../task-relay/gateway.ts";
+import { getTaskRelayProfile } from "../task-relay/gateway.ts";
 import { VOLATILE_RELAY_PATH, VOLATILE_PEER_PATH } from "../task-relay/volatile-protocol.ts";
 import { json } from "./http.ts";
 import { defaultServerContext, type ServerContext } from "./context.js";
@@ -52,7 +52,7 @@ const handlers: Record<string, Handler> = {
     if (active >= VOLATILE_HTTP_LIMITS.requests) return reject(res, "RELAY_CAPACITY", 503);
     active++;
     try {
-      const gateway = getVolatileTaskRelayGateway(selector => ctx.backend.inspectSession(selector));
+      const gateway = ctx.taskRelayGateway;
       const epoch = await gateway?.volatileEpoch();
       if (!epoch) return reject(res, "RELAY_UNAVAILABLE", 503);
       if (res.destroyed) return;
@@ -62,7 +62,7 @@ const handlers: Record<string, Handler> = {
     finally { active--; }
   },
   [`POST ${VOLATILE_PEER_PATH}`]: async (req, res) => {
-    const gateway = getVolatileTaskRelayGateway(selector => ctx.backend.inspectSession(selector));
+    const gateway = ctx.taskRelayGateway;
     if (!gateway) { discard(req, res); return reject(res, "RELAY_PROFILE_REQUIRED", 409); }
     if (activePeers >= 4) { discard(req, res); return reject(res, "RELAY_CAPACITY", 503); }
     activePeers++;
@@ -79,7 +79,7 @@ const handlers: Record<string, Handler> = {
     } finally { activePeers--; }
   },
   [`POST ${VOLATILE_RELAY_PATH}/resolve-peer`]: async (req, res) => {
-    const gateway = getVolatileTaskRelayGateway(selector => ctx.backend.inspectSession(selector));
+    const gateway = ctx.taskRelayGateway;
     if (!gateway) { discard(req, res); return reject(res, "RELAY_PROFILE_REQUIRED", 409); }
     if (active >= VOLATILE_HTTP_LIMITS.requests) { discard(req, res); return reject(res, "RELAY_CAPACITY", 503); }
     active++;
@@ -100,7 +100,7 @@ const handlers: Record<string, Handler> = {
     } finally { active--; }
   },
   [`POST ${VOLATILE_RELAY_PATH}`]: async (req, res) => {
-    const gateway = getVolatileTaskRelayGateway(selector => ctx.backend.inspectSession(selector));
+    const gateway = ctx.taskRelayGateway;
     if (!gateway) { discard(req, res); return reject(res, "RELAY_PROFILE_REQUIRED", 409); }
     if (active >= VOLATILE_HTTP_LIMITS.requests) { discard(req, res); return reject(res, "RELAY_CAPACITY", 503); }
     active++;

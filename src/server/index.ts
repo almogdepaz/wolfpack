@@ -13,8 +13,6 @@ import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } fr
 import { SHELL } from "./shell.js";
 import { createServerContext, defaultServerContext, setDefaultServerContext, type ServerContext } from "./context.js";
 import { createRoutes } from "./routes.js";
-import { getTaskGateway } from "../tasks/gateway.ts";
-import { getTaskRelayGateway } from "../task-relay/gateway.ts";
 import {
   startSessionNotificationObserver,
   stopSessionNotificationObserver,
@@ -36,7 +34,6 @@ import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
 import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
-import { getExtensionRouteService } from "./extension-routes.ts";
 import { installShutdownSignalHandlers } from "./shutdown.js";
 
 const log = createLogger("server");
@@ -183,7 +180,7 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
     }
 
     try {
-      if (await getExtensionRouteService().handle(req, res, url)) return;
+      if (await ctx.extensionRouteService.handle(req, res, url)) return;
       const key = `${req.method ?? "GET"} ${url.pathname}`;
       const handler = routes[key];
       if (handler) {
@@ -319,8 +316,8 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
     server.once("close", stopLogRotation);
   }
 
-  await getTaskGateway(selector => ctx.backend.inspectSession(selector)).initialize();
-  const taskRelay = getTaskRelayGateway(selector => ctx.backend.inspectSession(selector));
+  await ctx.taskGateway.initialize();
+  const taskRelay = ctx.taskRelayGateway;
   await taskRelay.initialize();
   ctx.backend.cleanupOrphans();
   startSessionNotificationObserver(ctx);

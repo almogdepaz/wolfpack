@@ -72,7 +72,7 @@ const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import(".
 await __resetTaskRelayGatewayForTests();
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
 const { DuplicateSessionError } = await import("../../src/server/backend-contract.ts");
-const { setDefaultServerContext } = await import("../../src/server/context.ts");
+const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
 const { EventBus } = await import("../../src/event-bus.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 __resetJwtAuthConfig();
@@ -99,10 +99,10 @@ const mockBackend = new MockBackend({
   capturePane: async (s: string) => `captured output for ${s}\n`,
 });
 let selectedBackend: import("../../src/server/context.ts").ServerBackend = mockBackend;
-const testContext: import("../../src/server/context.ts").ServerContext = {
+const testContext = createServerContext({
   get backend() { return selectedBackend; }, events: new EventBus(), config: null,
-};
-// Observation/extension singleton ownership remains a phase-5 concern.
+});
+// Observation/runtime singleton ownership remains a phase-5 concern.
 setDefaultServerContext(testContext);
 function useBackend(backend: import("../../src/server/context.ts").ServerBackend): void { selectedBackend = backend; }
 

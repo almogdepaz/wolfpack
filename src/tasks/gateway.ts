@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { getDefaultServerContext, getServerContextServiceCache } from "../server/context.ts";
 import { AGENT_KIND } from "../agent-kind.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import {
@@ -147,12 +148,12 @@ export class TaskGateway {
   readonly #random: () => number;
   readonly #peerOrigin: string | undefined;
   #initialized: Promise<void> | undefined;
-  #inspectSession: SessionInspector | undefined;
+  readonly #inspectSession: SessionInspector;
   readonly #idempotencyLocks = new Map<string, Promise<void>>();
   readonly #peerDeliveryLocks = new Map<string, Promise<void>>();
 
   constructor(options: GatewayOptions = { root: undefined }) {
-    this.#inspectSession = options.inspectSession;
+    this.#inspectSession = options.inspectSession ?? (selector => getDefaultServerContext().backend.inspectSession(selector));
     this.#store = options.store ?? new TaskStore({ root: options.root });
     this.#now = options.now ?? (() => new Date());
     this.#lifecycle = new TaskLifecycle(this.#store, { now: this.#now });
@@ -162,8 +163,6 @@ export class TaskGateway {
     this.#random = options.random ?? Math.random;
     this.#peerOrigin = options.peerOrigin;
   }
-
-  setSessionInspector(inspectSession: SessionInspector): void { this.#inspectSession = inspectSession; }
 
   get machineId(): string {
     return this.#machineId;
@@ -661,7 +660,6 @@ export class TaskGateway {
   async #resolve(selector: string, role: "caller" | "target"): Promise<{ readonly ok: true; readonly value: Inspection } | TaskFailure> {
     if (!isNonEmptyString(selector)) return failure(role === "caller" ? TASK_API_ERROR.CALLER_NOT_FOUND : TASK_API_ERROR.TARGET_NOT_FOUND, `${role} session not found`);
     const inspect = this.#inspectSession;
-    if (!inspect) return failure(TASK_API_ERROR.STORE_UNAVAILABLE, "authoritative session inspection is unavailable", true);
     let session: SessionInspectionResult;
     try { session = await inspect(selector); } catch { return failure(TASK_API_ERROR.STORE_UNAVAILABLE, "session backend is unavailable", true); }
     if (!session.ok) return failure(role === "caller" ? TASK_API_ERROR.CALLER_NOT_FOUND : TASK_API_ERROR.TARGET_NOT_FOUND, `${role} session not found`);
@@ -1107,15 +1105,12 @@ export class TaskGateway {
   }
 }
 
-let singleton: TaskGateway | undefined;
-
-export function getTaskGateway(inspectSession?: SessionInspector): TaskGateway {
-  singleton ??= new TaskGateway({ root: process.env.WOLFPACK_TASK_ROOT, inspectSession });
-  if (inspectSession) singleton.setSessionInspector(inspectSession);
-  return singleton;
+/** @deprecated Use the owning ServerContext.taskGateway. */
+export function getTaskGateway(): TaskGateway {
+  return getDefaultServerContext().taskGateway;
 }
 
 export function __resetTaskGatewayForTests(options?: GatewayOptions): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("task gateway reset is test-only");
-  singleton = options === undefined ? undefined : new TaskGateway(options);
+  getServerContextServiceCache(options === undefined ? undefined : getDefaultServerContext()).taskGateway = options === undefined ? undefined : new TaskGateway(options);
 }

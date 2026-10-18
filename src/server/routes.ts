@@ -41,7 +41,6 @@ export {
 } from "./session-observation.js";
 import { createTaskRoutes } from "./task-routes.ts";
 import { createVolatileRelayRoutes } from "./volatile-relay-routes.ts";
-import { getTaskGateway } from "../tasks/gateway.ts";
 import { createProjectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, createSessionControlRoutes } from "./session-control-routes.js";
 import { pushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
@@ -95,7 +94,7 @@ return {
   "GET /api/info": (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     const name = getMachineDisplayName();
-    json(res, { name, version: VERSION, machineId: getTaskGateway().machineId });
+    json(res, { name, version: VERSION, machineId: ctx.taskGateway.machineId });
   },
 
   "GET /api/machine": async (_req, res) => {

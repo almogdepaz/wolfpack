@@ -40,7 +40,7 @@ import {
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
-import { getTaskRelayGateway, getTaskRelayProfile } from "../task-relay/gateway.ts";
+import { getTaskRelayProfile } from "../task-relay/gateway.ts";
 import { isLiveTaskRelayRegistration } from "../task-relay/registration.ts";
 import type { TaskRelayRegistration } from "../task-relay/registration.ts";
 import type { RouteHandler } from "./route-handler.js";
@@ -284,7 +284,7 @@ return {
         return json(res, { error: "session identity unavailable" }, 503);
       }
       if (names.length === 0) return json(res, { sessions: [] });
-      const endpoints = await getTaskRelayGateway(selector => ctx.backend.inspectSession(selector)).registrationsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
+      const endpoints = await ctx.taskRelayGateway.registrationsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
       const sessions = names.map((name) => {
         const identity = identities[name]!;
         return sessionStatusPayload(name, identity, endpoints.get(identity.wolfpackSessionId));
@@ -330,7 +330,7 @@ return {
           ambiguous ? 409 : 404,
         );
       }
-      const status = inspectedSessionStatusPayload(selector, inspection, (await getTaskRelayGateway(selector => ctx.backend.inspectSession(selector)).registrationsForSessions([inspection.sessionId])).get(inspection.sessionId));
+      const status = inspectedSessionStatusPayload(selector, inspection, (await ctx.taskRelayGateway.registrationsForSessions([inspection.sessionId])).get(inspection.sessionId));
       if (!inspection.alive) {
         return json(
           res,

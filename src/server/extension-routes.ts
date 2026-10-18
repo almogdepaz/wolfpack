@@ -6,7 +6,7 @@ import { ExtensionDocumentError, ExtensionDocumentStore, type ExtensionDocumentK
 import { ExtensionRuntime, ExtensionRuntimeError, getExtensionRuntime } from "../extensions/runtime.ts";
 import { EXTENSION_API_ERROR, type ExtensionApiErrorCode } from "../extensions/runtime-contract.ts";
 import type { SessionBackend } from "./backend-contract.ts";
-import { getBackend } from "./backend.ts";
+import { getDefaultServerContext, getServerContextServiceCache } from "./context.ts";
 import { json, parseObjectBody, readBody, RequestBodyTooLargeError } from "./http.ts";
 import { readProjectGitStatus } from "./project-git-status.ts";
 
@@ -28,7 +28,7 @@ export class ExtensionRouteService {
   private readonly peerProxy: ExtensionPeerProxy;
   private gitRequests = 0;
   private readonly readGitStatus: typeof readProjectGitStatus;
-  constructor(options: ExtensionRouteServiceOptions = {}) { this.readGitStatus = options.readGitStatus ?? readProjectGitStatus; this.runtime = options.runtime ?? getExtensionRuntime(); this.backend = options.backend ?? getBackend(); this.safeMode = options.safeMode ?? (() => false); this.peerProxy = new ExtensionPeerProxy(options.peerProxy, this.safeMode); this.store = new ExtensionDocumentStore({ root: this.runtime.root, assertWritableScope: async (key) => { const facts = await this.backend.listSessionFacts(); const live = facts.some((fact) => fact.alive && fact.identity?.wolfpackSessionId === key.scopeSessionId); if (!live) throw new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "new documents require a live exact scope session UUID"); this.runtime.schema(key); } }); }
+  constructor(options: ExtensionRouteServiceOptions = {}) { this.readGitStatus = options.readGitStatus ?? readProjectGitStatus; this.runtime = options.runtime ?? getExtensionRuntime(); this.backend = options.backend ?? { listSessionFacts: () => getDefaultServerContext().backend.listSessionFacts() }; this.safeMode = options.safeMode ?? (() => false); this.peerProxy = new ExtensionPeerProxy(options.peerProxy, this.safeMode); this.store = new ExtensionDocumentStore({ root: this.runtime.root, assertWritableScope: async (key) => { const facts = await this.backend.listSessionFacts(); const live = facts.some((fact) => fact.alive && fact.identity?.wolfpackSessionId === key.scopeSessionId); if (!live) throw new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "new documents require a live exact scope session UUID"); this.runtime.schema(key); } }); }
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
     if (url.pathname.startsWith(EXTENSION_PEER_PREFIX) || req.url?.startsWith(EXTENSION_PEER_PREFIX)) { await this.peerProxy.handle(req, res, url); return true; }
     if (req.method === "GET" && url.pathname === "/api/extensions") { noStore(res); json(res, this.runtime.catalog(this.safeMode())); return true; }
@@ -115,6 +115,6 @@ export class ExtensionRouteService {
     } finally { this.gitRequests--; }
   }
 }
-let service: ExtensionRouteService | undefined;
-export function getExtensionRouteService(): ExtensionRouteService { return service ??= new ExtensionRouteService(); }
-export function __setExtensionRouteServiceForTests(value: ExtensionRouteService | undefined): void { if (!process.env.WOLFPACK_TEST) throw new Error("test-only extension route override"); service = value; }
+/** @deprecated Use the owning ServerContext.extensionRouteService. */
+export function getExtensionRouteService(): ExtensionRouteService { return getDefaultServerContext().extensionRouteService; }
+export function __setExtensionRouteServiceForTests(value: ExtensionRouteService | undefined): void { if (!process.env.WOLFPACK_TEST) throw new Error("test-only extension route override"); getServerContextServiceCache(getDefaultServerContext()).extensionRouteService = value; }
