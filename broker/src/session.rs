@@ -2957,6 +2957,80 @@ mod tests {
     }
 
     #[test]
+    fn nonblocking_stdin_waits_for_capacity() {
+        // Exercise actual nonblocking I/O and readiness, not a writer double.
+        // A duplicated descriptor shares flags just like the PTY halves.
+        let (writer, mut reader) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        writer.set_nonblocking(true).expect("nonblocking");
+        let fd = writer.as_fd().try_clone_to_owned().expect("dup writer");
+        let input = PtyInput::new(Uuid::nil(), Box::new(writer), Some(fd));
+        let (tx, rx) = std::sync::mpsc::channel();
+        const BYTES: usize = 1 << 20;
+        let writing = thread::spawn(move || {
+            let _ = tx.send(input.write_input(&vec![b'x'; BYTES]));
+        });
+        let early = rx.recv_timeout(Duration::from_millis(100));
+        assert!(matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)), "nonblocking input must wait for capacity, got {early:?}");
+        reader.set_read_timeout(Some(Duration::from_secs(5))).expect("read timeout");
+        let mut received = vec![0; BYTES];
+        reader.read_exact(&mut received).expect("drain input");
+        assert!(received.iter().all(|byte| *byte == b'x'));
+        rx.recv_timeout(Duration::from_secs(5)).expect("write finished").expect("write succeeded");
+        writing.join().expect("writer thread");
+    }
+
+    fn blocked_stdin_returns_after_child_exit(hold_slave_open: bool) {
+        let program = if hold_slave_open {
+            // Keep the slave alive after the direct child dies: POLLHUP alone
+            // cannot detect this exit. Ignore HUP in the descendant too.
+            "stty raw -echo; trap '' HUP; sleep 30 & printf 'READY:%s\\n' \"$!\"; wait"
+        } else {
+            "stty raw -echo; echo READY; exec sleep 30"
+        };
+        let sess = Arc::new(spawn_session(opts(vec!["sh", "-c", program])).expect("spawn"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let descendant = loop {
+            let snap = sess.snapshot_terminal(None, None).expect("snapshot");
+            if let Some(line) = snap.visible_screen.iter().map(line_text).find(|line| line.contains("READY")) {
+                break if hold_slave_open {
+                    Some(line.trim().strip_prefix("READY:").expect("descendant marker").parse::<i32>().expect("pid"))
+                } else {
+                    None
+                };
+            }
+            assert!(Instant::now() < deadline, "child never entered raw mode");
+            thread::sleep(Duration::from_millis(10));
+        };
+        let writer = Arc::clone(&sess);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writing = thread::spawn(move || {
+            let result = writer.write_stdin(&vec![b'x'; 1 << 20]);
+            let _ = done_tx.send(result);
+        });
+        assert!(matches!(done_rx.recv_timeout(Duration::from_millis(100)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)), "stdin should be blocked");
+        sess.kill(libc::SIGKILL).expect("kill child");
+        let result = done_rx.recv_timeout(Duration::from_secs(5));
+        // Clean up the exact descendant even on the pre-fix timeout path.
+        if let Some(pid) = descendant {
+            // SAFETY: pid is the child-reported sleep process owned by this test.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        assert!(result.expect("stdin write stayed blocked after child exit").is_err());
+        writing.join().expect("writer thread");
+        assert!(sess.wait_for_exit(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn blocked_stdin_fails_after_child_exit() {
+        blocked_stdin_returns_after_child_exit(false);
+    }
+
+    #[test]
+    fn blocked_stdin_fails_after_child_exit_with_inherited_slave() {
+        blocked_stdin_returns_after_child_exit(true);
+    }
+
+    #[test]
     fn query_reply_does_not_wait_behind_a_blocked_stdin_write() {
         // The program stops reading stdin, a client write fills the input
         // queue and blocks holding the writer, then the program queries. The
