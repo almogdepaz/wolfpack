@@ -207,6 +207,7 @@ describe("cli help dispatch", () => {
       const child = runCli(args);
       expect(child.exitCode).toBe(0);
       expect(child.stdout).toContain(args[0] === "agent" ? "wolfpack agent spawn" : "wolfpack session create");
+      expect(child.stdout).toContain("[--harness <agent>]");
       expect(child.stdout).not.toContain("No valid config found");
       expect(child.stderr).toBe("");
     });
@@ -288,6 +289,7 @@ describe("cli help dispatch", () => {
 
       expect(exitCode).toBe(0);
       expect(stdout).toContain("Usage: wolfpack session open <project>");
+      expect(stdout).toContain("[--harness <agent>]");
       expect(stdout).not.toContain("wolfpack session context is missing");
       expect(stderr).toBe("");
       expect(requestCount).toBe(0);

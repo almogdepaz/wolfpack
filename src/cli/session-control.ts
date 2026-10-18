@@ -102,8 +102,8 @@ The server owns validation, naming, identity, and launch.`;
 }
 
 export function sessionOpenUsage(): string {
-  return `Usage: wolfpack session open <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-       wolfpack session open --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
+  return `Usage: wolfpack session open <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+       wolfpack session open --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
 
 Global selector: wolfpack --machine <short-name-or-fqdn> session open ...
 
@@ -116,11 +116,11 @@ export function agentUsage(): string {
 Global selector: wolfpack --machine <short-name-or-fqdn> agent spawn ...
 
 Commands:
-  wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-  wolfpack agent spawn --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
+  wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+  wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
   wolfpack agent notify-parent [--message <text>] [--json]
 
-Spawns a same-harness child of the current Wolfpack agent session or sends a user-visible notification from a child agent.`;
+Spawns a child of the current Wolfpack agent session (same harness by default) or sends a user-visible notification from a child agent.`;
 }
 
 export function sessionUsage(): string {
@@ -163,6 +163,7 @@ export type ParsedSessionCommand =
     readonly ok: true;
     readonly action: "open";
     readonly selector: ExistingProjectSelector;
+    readonly harness?: OpenableHarness;
     readonly sessionName?: string;
     readonly model?: string;
     readonly prompt: string | undefined;
@@ -197,6 +198,7 @@ export type ParsedAgentCommand =
     readonly ok: true;
     readonly action: "spawn";
     readonly selector: ExistingProjectSelector;
+    readonly harness?: OpenableHarness;
     readonly sessionName?: string;
     readonly model?: string;
     readonly prompt: string | undefined;
@@ -375,7 +377,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
   const taskWorkerPolicyFileValue = consumeLaunchValue(args, "--task-worker-policy-file");
   const taskWorkerDryRun = consumeFlag(args, "--task-worker-dry-run");
   const readinessTimeoutValue = consumeLaunchValue(args, "--readiness-timeout-ms");
-  const harnessValue = action === "create" ? consumeValue(args, "--harness") : null;
+  const harnessValue = consumeValue(args, "--harness");
   const { mode: output, shellRequested } = parseOutputMode(args);
   if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
 
@@ -403,9 +405,8 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     || (Boolean(modelValue.trim())
       && unicodeCodePointLength(modelValue) <= SESSION_OPEN_MAX_MODEL_LENGTH);
   const validPromptSources = promptSources.length <= 1 && validPromptFile && validPlan;
-  const validHarness = action !== "create"
-    || harnessValue === null
-    || harness !== undefined;
+  const validHarness = harnessValue === null
+    || (harness !== undefined && (action === "create" || isOpenableHarness(harness)));
   const validNotify = action !== "create" || !notifyParent;
   const selector = parseExistingProjectSelector(project, projectDir);
   const readinessTimeoutMs = readinessTimeoutValue === null ? undefined : Number(readinessTimeoutValue);
@@ -451,6 +452,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     ok: true,
     action,
     selector,
+    ...(harness !== undefined && isOpenableHarness(harness) && { harness }),
     ...(sessionName !== undefined && { sessionName }),
     ...(model !== undefined && { model }),
     prompt,
@@ -575,13 +577,14 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     return { ok: false, message: action ? `Unknown agent command: ${action}` : "Usage: wolfpack agent spawn <project> ..." };
   }
   const parsed = parseSessionCommand(["open", ...args]);
-  const usage = "Usage: wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]";
+  const usage = "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]";
   if (!parsed.ok) return { ok: false, message: usage };
   if (parsed.action !== "open") return { ok: false, message: "Usage: wolfpack agent spawn <project> ..." };
   return {
     ok: true,
     action: "spawn",
     selector: parsed.selector,
+    ...(parsed.harness !== undefined && { harness: parsed.harness }),
     ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
     ...(parsed.model !== undefined && { model: parsed.model }),
     prompt: parsed.prompt,
@@ -1005,6 +1008,7 @@ interface LaunchPromptSource {
 
 interface SessionOpenLaunchArgs extends LaunchPromptSource {
   readonly selector: ExistingProjectSelector;
+  readonly harness?: OpenableHarness;
   readonly sessionName?: string;
   readonly model?: string;
   readonly taskWorker?: true;
@@ -1114,6 +1118,7 @@ async function runSessionOpen(
       body: JSON.stringify({
         ...projectSelectorRequest(parsed.selector),
         parentSession: context.parentSession,
+        ...(parsed.harness !== undefined && { harness: parsed.harness }),
         ...(parsed.sessionName !== undefined && { sessionName: parsed.sessionName }),
         ...(parsed.model !== undefined && { model: parsed.model }),
         ...(parsed.taskWorker && { taskWorker: true }),
