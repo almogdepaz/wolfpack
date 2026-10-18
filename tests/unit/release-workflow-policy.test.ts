@@ -199,7 +199,12 @@ function classifyTag(tag: string, fixtureProductVersion = productVersion): TagCl
       Object.keys(manifest.optionalDependencies).map(name => [name, fixtureProductVersion]),
     );
     writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
-    writeFileSync(join(root, "broker", "Cargo.toml"), readFileSync(join(process.cwd(), "broker", "Cargo.toml")));
+    // The release policy requires the broker Cargo version to equal the product version.
+    writeFileSync(
+      join(root, "broker", "Cargo.toml"),
+      readFileSync(join(process.cwd(), "broker", "Cargo.toml"), "utf-8")
+        .replace(/^version = ".*"$/m, `version = "${fixtureProductVersion}"`),
+    );
     execFileSync("git", ["init", "-q"], { cwd: root });
     execFileSync("git", ["add", "package.json", "broker/Cargo.toml"], { cwd: root });
     execFileSync(
