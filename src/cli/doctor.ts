@@ -382,6 +382,41 @@ function checkBinary(): CheckResult[] {
 }
 
 // ---------------------------------------------------------------------------
+// Check group: Security
+// ---------------------------------------------------------------------------
+
+/** `/api/health` answers 503 while degraded; its body still carries `auth`. */
+function checkSecurity(): CheckResult[] {
+  const config = loadConfig();
+  if (!config) return [];
+  let health: unknown = null;
+  try {
+    health = JSON.parse(execFileSync(
+      "curl", ["-s", "--max-time", "3", `http://localhost:${config.port}/api/health`],
+      { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] },
+    ));
+  } catch (e: unknown) {
+    log.debug("doctor health probe failed", { error: errMsg(e) });
+  }
+  return securityChecks(health);
+}
+
+export function securityChecks(health: unknown): CheckResult[] {
+  const mode = (health as { auth?: { mode?: unknown } } | null)?.auth?.mode;
+  if (mode === "jwt") {
+    return [{ name: "api authentication", group: "Security", status: "pass", detail: "jwt configured" }];
+  }
+  if (mode === "none") {
+    return [{
+      name: "api authentication", group: "Security", status: "warn",
+      detail: "unauthenticated; the tailnet is the only boundary",
+      fixHint: "set WOLFPACK_JWT_SECRET (32+ chars) for the server to require authentication",
+    }];
+  }
+  return [{ name: "api authentication", group: "Security", status: "warn", detail: "unknown (server health unavailable)" }];
+}
+
+// ---------------------------------------------------------------------------
 // Check group 6: Broker (PTY daemon)
 // ---------------------------------------------------------------------------
 
@@ -721,7 +756,7 @@ export interface DoctorOptions {
 export async function doctor({
   fix: doFix = process.argv.includes("--fix"),
   json = process.argv.includes("--json"),
-  checkGroups = [checkDeps, checkConfig, checkService, checkConnectivity, checkBinary, checkDoctorBroker, checkEnvironment, checkLogs],
+  checkGroups = [checkDeps, checkConfig, checkService, checkConnectivity, checkSecurity, checkBinary, checkDoctorBroker, checkEnvironment, checkLogs],
 }: DoctorOptions = {}) {
 
   let allResults = await runCheckGroups(checkGroups);

@@ -261,8 +261,9 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   assertSupportedBunRuntime();
   // Verify JWT auth configuration BEFORE any listeners are bound. We fail
   // hard on misconfiguration (secret set but rejected) so a typo can never
-  // silently disable authentication. A missing secret is surfaced as an
-  // informational notice because Tailscale is the default remote-access boundary.
+  // silently disable authentication. A missing secret is surfaced as a
+  // warning (not an error: Tailscale is the default remote-access boundary, and
+  // doctor treats logged errors as unhealthy).
   const authCfg = getCachedJwtAuthConfig();
   const authStatus = verifyJwtAuthAtStartup(authCfg);
   if (authStatus === "invalid") {
@@ -273,7 +274,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
     process.exit(1);
   }
   if (authStatus === "missing") {
-    log.info("WOLFPACK_JWT_SECRET is not set — ALL API ENDPOINTS ARE UNAUTHENTICATED", {
+    log.warn("WOLFPACK_JWT_SECRET is not set — ALL API ENDPOINTS ARE UNAUTHENTICATED", {
       hint: "set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication",
     });
   }

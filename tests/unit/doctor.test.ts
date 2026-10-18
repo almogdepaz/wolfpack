@@ -368,6 +368,33 @@ describe("doctor dependency probe wiring", () => {
   });
 });
 
+describe("doctor security checks", () => {
+  test("passes when the server reports JWT authentication", async () => {
+    const { securityChecks } = await import("../../src/cli/doctor.ts");
+    expect(securityChecks({ status: "ready", auth: { mode: "jwt" } })).toEqual([
+      { name: "api authentication", group: "Security", status: "pass", detail: "jwt configured" },
+    ]);
+  });
+
+  test("warns when the server runs unauthenticated", async () => {
+    const { securityChecks } = await import("../../src/cli/doctor.ts");
+    expect(securityChecks({ status: "degraded", auth: { mode: "none" } })).toEqual([{
+      name: "api authentication", group: "Security", status: "warn",
+      detail: "unauthenticated; the tailnet is the only boundary",
+      fixHint: "set WOLFPACK_JWT_SECRET (32+ chars) for the server to require authentication",
+    }]);
+  });
+
+  test("warns unknown when health is unreachable or predates the auth field", async () => {
+    const { securityChecks } = await import("../../src/cli/doctor.ts");
+    for (const health of [null, { status: "ready" }, { auth: { mode: "other" } }]) {
+      expect(securityChecks(health)).toEqual([
+        { name: "api authentication", group: "Security", status: "warn", detail: "unknown (server health unavailable)" },
+      ]);
+    }
+  });
+});
+
 describe("doctor broker version checks", () => {
   test("passes a compatible broker from the same release", async () => {
     const { brokerHandshakeChecks } = await import("../../src/cli/doctor.ts");

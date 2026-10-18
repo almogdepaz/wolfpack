@@ -1,3 +1,4 @@
+import { getCachedJwtAuthConfig } from "../auth.js";
 import { defaultServerContext, type ServerContext } from "./context.js";
 import { isLoopbackAddress } from "./client-address.js";
 export { isLoopbackAddress } from "./client-address.js";
@@ -56,6 +57,8 @@ export function operationalHealth(ctx: ServerContext = defaultServerContext): Re
       version: version?.brokerVersion ?? null,
       protocolVersion: version?.protocolVersion ?? null,
     },
+    // Mode only, never the secret. An invalid secret refuses server start.
+    auth: { mode: getCachedJwtAuthConfig().enabled ? "jwt" : "none" },
     uptimeSeconds: Math.floor(process.uptime()),
   };
 }

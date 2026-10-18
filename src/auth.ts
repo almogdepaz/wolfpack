@@ -114,7 +114,7 @@ export function getJwtAuthConfig(env: NodeJS.ProcessEnv = process.env): JwtAuthC
 
 /** Pure classifier for startup decisions. Returns:
  *  - `"invalid"` — secret was set but rejected; caller MUST refuse to start.
- *  - `"missing"` — no secret at all; caller SHOULD log an informational notice and continue.
+ *  - `"missing"` — no secret at all; caller SHOULD log a warning and continue.
  *  - `"ok"` — secret valid and JWT enforcement is on.
  */
 export function verifyJwtAuthAtStartup(cfg: JwtAuthConfig): JwtStartupStatus {
