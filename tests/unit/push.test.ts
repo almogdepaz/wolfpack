@@ -229,60 +229,34 @@ describe("push: crypto round-trip", () => {
     expect(ciphertext.length).toBeGreaterThan(0);
   });
 
-  test("derToRaw converts DER ECDSA signatures to 64 bytes", async () => {
+  test("encryptPayload reproduces the RFC 8291 Appendix A example body", async () => {
     const { _testing } = await import("../../src/server/push.ts");
-    // Minimal valid DER: 0x30 <len> 0x02 <rlen> <r> 0x02 <slen> <s>
-    const r = Buffer.alloc(32, 0x01);
-    const s = Buffer.alloc(32, 0x02);
-    const inner = Buffer.concat([Buffer.from([0x02, 32]), r, Buffer.from([0x02, 32]), s]);
-    const der = Buffer.concat([Buffer.from([0x30, inner.length]), inner]);
-    const raw = _testing.derToRaw(der);
-    expect(raw.length).toBe(64);
-    expect(raw.subarray(0, 32)).toEqual(r);
-    expect(raw.subarray(32, 64)).toEqual(s);
-  });
+    // RFC 8291 section 5 and Appendix A (rfc-editor.org/rfc/rfc8291).
+    const serverEcdh = createECDH("prime256v1");
+    serverEcdh.setPrivateKey(_testing.b64urlDecode("yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"));
+    expect(_testing.b64urlEncode(serverEcdh.getPublicKey() as Buffer))
+      .toBe("BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8");
+    const sub = {
+      endpoint: "https://push.example.net/push/JzLQ3raZJfFBR0aqvOMsLrt54w4rJUsV",
+      keys: {
+        p256dh: "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+        auth: "BTBZMqHH6r4Tts7J_aSIgg",
+      },
+    };
 
-  test("derToRaw throws on missing SEQUENCE header", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    expect(() => _testing.derToRaw(Buffer.from([0x02, 0x00, 0x02, 0x00, 0x02, 0x00, 0x02, 0x00]))).toThrow(/invalid DER header/);
-  });
+    const { body } = _testing.encryptPayload(Buffer.from("When I grow up, I want to be a watermelon"), sub, {
+      serverEcdh,
+      salt: _testing.b64urlDecode("DGv6ra1nlYgDCS1FRnbzlw"),
+    });
 
-  test("derToRaw throws on undersized DER input", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    expect(() => _testing.derToRaw(Buffer.from([0x30, 0x04]))).toThrow(/invalid DER header/);
-  });
-
-  test("derToRaw throws on missing INTEGER tag", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    // 0x30 <len> <not 0x02> ...
-    const bad = Buffer.from([0x30, 0x06, 0x03, 0x01, 0x00, 0x02, 0x01, 0x00]);
-    expect(() => _testing.derToRaw(bad)).toThrow(/expected INTEGER tag/);
-  });
-
-  test("derToRaw throws when r length overflows buffer", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    // Claims rlen=100 but buffer is tiny
-    const bad = Buffer.from([0x30, 0x06, 0x02, 0x64, 0x00, 0x00, 0x00, 0x00]);
-    expect(() => _testing.derToRaw(bad)).toThrow(/r length overflows/);
-  });
-
-  test("hkdfSha256 throws when requested length exceeds 32 bytes (single-block limit)", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    const ikm = Buffer.alloc(32, 0x01);
-    const salt = Buffer.alloc(16, 0x02);
-    const info = Buffer.from("info");
-    expect(() => _testing.hkdfSha256(ikm, salt, info, 33)).toThrow(/single-block limit/);
-    expect(() => _testing.hkdfSha256(ikm, salt, info, 64)).toThrow(/single-block limit/);
-  });
-
-  test("hkdfSha256 accepts lengths up to 32 bytes", async () => {
-    const { _testing } = await import("../../src/server/push.ts");
-    const ikm = Buffer.alloc(32, 0x01);
-    const salt = Buffer.alloc(16, 0x02);
-    const info = Buffer.from("info");
-    expect(_testing.hkdfSha256(ikm, salt, info, 32).length).toBe(32);
-    expect(_testing.hkdfSha256(ikm, salt, info, 16).length).toBe(16);
-    expect(_testing.hkdfSha256(ikm, salt, info, 12).length).toBe(12);
+    // 86-byte header + 42-byte padded plaintext + 16-byte tag. (The example's
+    // Content-Length header says 145; its base64url body decodes to 144.)
+    expect(body.length).toBe(144);
+    expect(_testing.b64urlEncode(body)).toBe(
+      "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27ml"
+      + "mlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPT"
+      + "pK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN",
+    );
   });
 });
 

@@ -2,7 +2,7 @@
  * Web Push notification support — VAPID signing + payload encryption (RFC 8291).
  * Zero external dependencies, uses node:crypto only.
  */
-import { createECDH, createSign, createPrivateKey, createHmac, createCipheriv, randomBytes } from "node:crypto";
+import { createECDH, createSign, createPrivateKey, createCipheriv, hkdfSync, randomBytes, type ECDH } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createLogger, errMsg } from "../log.js";
@@ -262,73 +262,45 @@ function createVapidJwt(audience: string, subject: string, vapid: VapidKeys, exp
   const unsigned = `${header}.${payload}`;
   const signer = createSign("SHA256");
   signer.update(unsigned);
-  const sig = signer.sign(buildSigningKey(vapid));
-
-  // Convert DER signature to raw r||s (each 32 bytes)
-  const rawSig = derToRaw(sig);
-  const sigB64 = b64urlEncode(rawSig);
+  // JWS ES256 wants raw r||s (32 bytes each), not DER.
+  const sig = signer.sign({ key: buildSigningKey(vapid), dsaEncoding: "ieee-p1363" });
+  const sigB64 = b64urlEncode(sig);
 
   return `${unsigned}.${sigB64}`;
 }
 
-/** Convert DER ECDSA signature to raw 64-byte r||s. */
-function derToRaw(der: Buffer): Buffer {
-  // DER: 0x30 <len> 0x02 <rlen> <r> 0x02 <slen> <s>
-  // P-256 sigs are always < 128 bytes so BER multi-byte length encoding cannot occur here.
-  if (der.length < 8 || der[0] !== 0x30) throw new Error("derToRaw: invalid DER header");
-  let offset = 2; // skip 0x30 + total length
-  if (der[offset] !== 0x02) throw new Error("derToRaw: expected INTEGER tag for r");
-  offset += 1;
-  const rLen = der[offset++];
-  if (offset + rLen > der.length) throw new Error("derToRaw: r length overflows");
-  const r = der.subarray(offset, offset + rLen);
-  offset += rLen;
-  if (der[offset] !== 0x02) throw new Error("derToRaw: expected INTEGER tag for s");
-  offset += 1;
-  const sLen = der[offset++];
-  if (offset + sLen > der.length) throw new Error("derToRaw: s length overflows");
-  const s = der.subarray(offset, offset + sLen);
-
-  // Pad/trim to 32 bytes each
-  const raw = Buffer.alloc(64);
-  r.copy(raw, 32 - Math.min(r.length, 32), Math.max(r.length - 32, 0));
-  s.copy(raw, 64 - Math.min(s.length, 32), Math.max(s.length - 32, 0));
-  return raw;
-}
-
 // ── Web Push Encryption (RFC 8291, aes128gcm) ──
 
-/**
- * HKDF-SHA256 extract-then-expand (RFC 5869) — single iteration only.
- * Safe for output lengths <= 32 bytes (one HMAC block), which covers
- * AES-128-GCM key (16 bytes) and nonce (12 bytes) derivation.
- */
+/** HKDF-SHA256 extract-then-expand (RFC 5869). */
 function hkdfSha256(ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer {
-  if (length > 32) throw new Error(`hkdfSha256: single-block limit is 32 bytes, requested ${length}`);
-  const prk = createHmac("sha256", salt).update(ikm).digest();
-  const infoWithCounter = Buffer.concat([info, Buffer.from([1])]);
-  const okm = createHmac("sha256", prk).update(infoWithCounter).digest();
-  return okm.subarray(0, length);
+  return Buffer.from(hkdfSync("sha256", ikm, salt, info, length));
+}
+
+/** Fixed inputs for known-answer tests; production always draws both fresh. */
+interface EncryptPayloadTestInputs {
+  readonly serverEcdh?: ECDH;
+  readonly salt?: Buffer;
 }
 
 function encryptPayload(
   payload: Buffer,
   sub: PushSubscription,
+  testInputs: EncryptPayloadTestInputs = {},
 ): { body: Buffer; salt: Buffer; serverPub: Buffer } {
   // Client public key and auth secret
   const clientPub = b64urlDecode(sub.keys.p256dh);
   const clientAuth = b64urlDecode(sub.keys.auth);
 
   // Generate ephemeral ECDH keypair
-  const serverEcdh = createECDH("prime256v1");
-  serverEcdh.generateKeys();
+  const serverEcdh = testInputs.serverEcdh ?? createECDH("prime256v1");
+  if (testInputs.serverEcdh === undefined) serverEcdh.generateKeys();
   const serverPub = serverEcdh.getPublicKey() as Buffer;
 
   // Shared secret via ECDH
   const sharedSecret = serverEcdh.computeSecret(clientPub);
 
   // Generate salt
-  const salt = randomBytes(16);
+  const salt = testInputs.salt ?? randomBytes(16);
 
   // IKM from auth secret
   const authInfo = Buffer.concat([
@@ -888,8 +860,6 @@ export function _testingResetDebounce(): void {
 export const _testing = {
   createVapidJwt,
   encryptPayload,
-  derToRaw,
-  hkdfSha256,
   b64urlEncode,
   b64urlDecode,
   quietAlertDeliveries,
