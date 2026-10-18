@@ -23,8 +23,7 @@ describe("server startup JWT notice", () => {
     try {
       const result = spawnSync(process.execPath, ["-e", `
         const serverModule = await import("${join(process.cwd(), "src/server/index.ts")}");
-        const { MockBackend } = await import("${join(process.cwd(), "src/server/mock-backend.ts")}");
-        await serverModule.startServer(0, "127.0.0.1", { backend: new MockBackend() });
+        await serverModule.startServer(0);
         await new Promise((resolve) => serverModule.server.once("listening", resolve));
         await new Promise((resolve) => serverModule.server.close(resolve));
       `], {

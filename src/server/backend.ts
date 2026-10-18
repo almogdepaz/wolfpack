@@ -21,7 +21,7 @@ export type {
 
 /** @deprecated Use an explicitly constructed ServerContext. */
 export function initBackend(): SessionBackend {
-  const context = createServerContext({ supervisor: new BrokerSupervisor({ start: !process.env.WOLFPACK_TEST }) });
+  const context = createServerContext();
   setDefaultServerContext(context);
   return context.backend;
 }

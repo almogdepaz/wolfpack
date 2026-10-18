@@ -13,9 +13,13 @@ export interface ServerContext {
   readonly supervisor?: BrokerSupervisor;
 }
 
+function defaultSupervisor(events: EventBus): BrokerSupervisor {
+  return new BrokerSupervisor({ events, start: !process.env.WOLFPACK_TEST });
+}
+
 export function createServerContext(overrides: Partial<ServerContext> = {}): ServerContext {
   const events = overrides.events ?? defaultEventBus;
-  const supervisor = overrides.supervisor ?? (overrides.backend ? undefined : new BrokerSupervisor({ events }));
+  const supervisor = overrides.supervisor ?? (overrides.backend ? undefined : defaultSupervisor(events));
   return {
     backend: overrides.backend ?? supervisedBackend(supervisor!),
     events,
@@ -26,7 +30,7 @@ export function createServerContext(overrides: Partial<ServerContext> = {}): Ser
 
 let current: ServerContext | undefined;
 export function getDefaultServerContext(): ServerContext {
-  return current ??= createServerContext({ supervisor: new BrokerSupervisor({ start: !process.env.WOLFPACK_TEST }) });
+  return current ??= createServerContext();
 }
 export function setDefaultServerContext(context: ServerContext): void {
   current = context;

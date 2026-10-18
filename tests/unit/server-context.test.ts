@@ -12,6 +12,12 @@ import { __setTestBackend, getBackend } from "../../src/server/backend.ts";
 const created = { kind: WOLFPACK_EVENT_KIND.SESSION_CREATED, sessionId: "test-id", session: "session", cwd: "/tmp" } as const;
 
 describe("explicit server context", () => {
+  test("default construction in test mode does not start a broker supervisor", () => {
+    const ctx = createServerContext();
+    expect(ctx.supervisor).toBeDefined();
+    expect(ctx.supervisor!.backend()).toBeNull();
+    expect(ctx.supervisor!.isBrokerAvailable()).toBe(false);
+  });
   test("event buses own their subscriptions and event sequences", () => {
     const first = new EventBus(), second = new EventBus();
     const seen: number[] = [];
