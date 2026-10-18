@@ -130,6 +130,7 @@ describe("control api schema", () => {
       readSelectedPeerExtensionAsset: "GET /api/extensions/peer/{machine}/assets/{extensionId}/{packageDigest}/{assetPath}",
       readSelectedPeerExtensionDocument: "GET /api/extensions/peer/{machine}/documents/{extensionId}/{documentId}",
       readSelectedPeerExtensionProject: "GET /api/extensions/peer/{machine}/project/git-status/{extensionId}",
+      readSelectedPeerExtensionProjectGitDiff: "GET /api/extensions/peer/{machine}/project/git-diff/{extensionId}",
       readSelectedPeerExtensionBlob: "GET /api/extensions/peer/{machine}/blobs/{extensionId}/{digest}",
     };
     for (const [id, route] of Object.entries(routes)) {

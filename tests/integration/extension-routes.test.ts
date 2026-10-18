@@ -163,6 +163,60 @@ describe("extension HTTP routes", () => {
       __setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, backend }));
     }
   });
+  test("Git diff is authenticated, exact-session scoped, read-only and diffs no untracked files", async () => {
+    const route = `${base}/api/extensions/project/git-diff/route-fixture`;
+    expect((await fetch(`${route}?session=${scope}`)).status).toBe(401);
+    const headers = { Authorization: `Bearer ${token()}` };
+    const response = await fetch(`${route}?session=${scope}`, { headers });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const value = await response.json() as any;
+    contract("readExtensionProjectGitDiff", value);
+    expect(value).toEqual({ installationId: runtime.get("route-fixture").installationId, scopeSessionId: scope, extensionId: "route-fixture", diff: { state: "ready", staged: "", unstaged: "", truncated: false } });
+    for (const query of ["session=live", `session=${scope}&path=/tmp`, `session=${scope}&session=${scope}`, `session=${scope}&args=--output=/tmp/x`]) {
+      expect((await fetch(`${route}?${query}`, { headers })).status).toBe(400);
+    }
+    expect((await fetch(`${route}?session=11111111-1111-4111-8111-111111111111`, { headers })).status).toBe(404);
+    expect((await fetch(`${base}/api/extensions/project/git-diff/not-installed?session=${scope}`, { headers })).status).toBe(404);
+    expect((await fetch(`${route}?session=${scope}`, { method: "POST", headers })).status).toBe(404);
+  });
+  test("Git diff shares the project work bound with status and maps reader failures to PROJECT_UNAVAILABLE", async () => {
+    const headers = { Authorization: `Bearer ${token()}` };
+    const status = `${base}/api/extensions/project/git-status/route-fixture?session=${scope}`, diff = `${base}/api/extensions/project/git-diff/route-fixture?session=${scope}`;
+    let statusCalls = 0, diffCalls = 0, fail = false, safeMode = false;
+    let release!: () => void, ready!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    const check = () => { if (statusCalls + diffCalls === 2) ready(); };
+    const service = new ExtensionRouteService({ runtime, backend, safeMode: () => safeMode,
+      readGitStatus: async () => { statusCalls++; check(); await pending; return { state: "not-repository" }; },
+      readGitDiff: async path => { expect(path).toBe(project); diffCalls++; check(); await pending; if (fail) throw new Error("Git diff unavailable"); return { state: "ready", staged: "diff --git a/x b/x\n", unstaged: "", truncated: true }; },
+    });
+    __setExtensionRouteServiceForTests(service);
+    try {
+      runtime.setEnabled("route-fixture", false);
+      expect((await fetch(diff, { headers })).status).toBe(409); expect(diffCalls).toBe(0);
+      runtime.setEnabled("route-fixture", true); safeMode = true;
+      expect((await fetch(diff, { headers })).status).toBe(409); expect(diffCalls).toBe(0);
+      safeMode = false;
+      const first = fetch(status, { headers }), second = fetch(diff, { headers });
+      await started;
+      const busy = await fetch(diff, { headers });
+      expect(busy.status).toBe(503); expect(await busy.json()).toMatchObject({ error: { code: "PROJECT_UNAVAILABLE" } });
+      expect([statusCalls, diffCalls]).toEqual([1, 1]);
+      release();
+      expect((await first).status).toBe(200);
+      const value = await (await second).json() as any;
+      contract("readExtensionProjectGitDiff", value);
+      expect(value.diff).toEqual({ state: "ready", staged: "diff --git a/x b/x\n", unstaged: "", truncated: true }); expect(value.status).toBeUndefined();
+      fail = true;
+      const failed = await fetch(diff, { headers });
+      expect(failed.status).toBe(503); expect(await failed.json()).toMatchObject({ error: { code: "PROJECT_UNAVAILABLE", message: "Git diff unavailable for this project" } });
+    } finally {
+      release(); runtime.setEnabled("route-fixture", true);
+      __setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, backend }));
+    }
+  });
   test("requires normal API auth and only delivers installed allowlisted JS", async () => { expect((await fetch(`${base}/api/extensions`)).status).toBe(401); const headers = { Authorization: `Bearer ${token()}` }; const catalog = await fetch(`${base}/api/extensions`, { headers }); expect(catalog.status).toBe(200); const item = (await catalog.json() as any).installations.find((item: any) => item.extensionId === "route-fixture"); const asset = await fetch(`${base}${item.ui.url}`, { headers }); expect(asset.status).toBe(200); expect(asset.headers.get("cache-control")).toBe("no-store"); expect(asset.headers.get("x-wolfpack-extension-digest")).toBe(item.ui.digest); const denied = await fetch(`${base}/api/extensions/assets/${item.extensionId}/${item.package.digest}/package.json`, { headers }); expect(denied.status).toBe(404); });
   test("rejects nonexact scopes before document publication", async () => { const headers = { Authorization: `Bearer ${token()}`, "Content-Type": "application/json" }; const response = await fetch(`${base}/api/extensions/documents/route-fixture/context`, { method: "POST", headers, body: JSON.stringify({ sessionId: "not-a-uuid", document: { schemaVersion: 1 }, ifRevision: 0, requestId: "c0a80123-1234-4234-9234-123456789abc", schemaVersion: 1 }) }); expect(response.status).toBe(400); });
 });

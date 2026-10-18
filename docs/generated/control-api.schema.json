@@ -208,6 +208,65 @@
         "503 ExtensionApiErrorEnvelope"
       ]
     },
+    "readExtensionProjectGitDiff": {
+      "route": "GET /api/extensions/project/git-diff/{extensionId}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readExtensionProjectGitDiff:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readExtensionProjectGitDiff request",
+        "type": "object",
+        "properties": {
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "session": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "extensionId",
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readExtensionProjectGitDiff:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readExtensionProjectGitDiff response",
+        "type": "object",
+        "properties": {
+          "installationId": {
+            "$ref": "#/$defs/ExtensionInstallationId"
+          },
+          "scopeSessionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "diff": {
+            "$ref": "#/$defs/ProjectGitDiff"
+          }
+        },
+        "required": [
+          "installationId",
+          "scopeSessionId",
+          "extensionId",
+          "diff"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ExtensionApiErrorEnvelope",
+        "404 ExtensionApiErrorEnvelope",
+        "409 ExtensionApiErrorEnvelope",
+        "503 ExtensionApiErrorEnvelope"
+      ]
+    },
     "readExtensionBlob": {
       "route": "GET /api/extensions/blobs/{extensionId}/{digest}",
       "stable": true,
@@ -689,6 +748,71 @@
           "scopeSessionId",
           "extensionId",
           "status"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ExtensionPeerErrorEnvelope",
+        "401 ErrorEnvelope|ExtensionPeerErrorEnvelope",
+        "403 ExtensionPeerErrorEnvelope",
+        "404 ExtensionPeerErrorEnvelope",
+        "409 ExtensionPeerErrorEnvelope",
+        "503 ExtensionPeerErrorEnvelope"
+      ]
+    },
+    "readSelectedPeerExtensionProjectGitDiff": {
+      "route": "GET /api/extensions/peer/{machine}/project/git-diff/{extensionId}",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionProjectGitDiff:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionProjectGitDiff request",
+        "type": "object",
+        "properties": {
+          "machine": {
+            "$ref": "#/$defs/SelectedExtensionMachine"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "session": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "required": [
+          "machine",
+          "extensionId",
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readSelectedPeerExtensionProjectGitDiff:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readSelectedPeerExtensionProjectGitDiff response",
+        "type": "object",
+        "properties": {
+          "installationId": {
+            "$ref": "#/$defs/ExtensionInstallationId"
+          },
+          "scopeSessionId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "extensionId": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "diff": {
+            "$ref": "#/$defs/ProjectGitDiff"
+          }
+        },
+        "required": [
+          "installationId",
+          "scopeSessionId",
+          "extensionId",
+          "diff"
         ],
         "additionalProperties": false
       },
@@ -4543,6 +4667,48 @@
             "staged",
             "unstaged",
             "untracked"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ProjectGitDiff": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "not-repository"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "ready"
+            },
+            "staged": {
+              "type": "string",
+              "maxLength": 98304
+            },
+            "unstaged": {
+              "type": "string",
+              "maxLength": 98304
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "state",
+            "staged",
+            "unstaged",
+            "truncated"
           ],
           "additionalProperties": false
         }
