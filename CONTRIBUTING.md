@@ -23,14 +23,14 @@ For an end-to-end local install (build + service install + restart) on macOS, us
 ```bash
 bun test                                  # all bun tests
 bun test tests/unit/                      # unit tests only
-bun test tests/unit/plan-parsing.test.ts  # single file
+bun test tests/unit/validation.test.ts    # single file
 bunx playwright test                      # e2e (uses test-server harness)
 ```
 
 Layout:
 
-- `tests/unit/` — pure-logic tests (plan parsing, ralph log parsing, escaping, validation, grid logic, broker codec, etc.)
-- `tests/integration/` — API routes, broker backend, ralph loop endpoints, WS dispatch
+- `tests/unit/` — pure-logic tests (escaping, validation, grid logic, broker codec, agent status, push crypto, CLI parsing, etc.)
+- `tests/integration/` — API routes, broker backend, WS dispatch, task gateway and relay, extensions, installation startup
 - `tests/snapshot/` — launchd plist and systemd unit generation
 - `tests/e2e/` — Playwright end-to-end (`test:e2e` / `test:e2e:headed`)
 
@@ -79,13 +79,3 @@ Without the verified Ghostty VT bundle, Cargo fails closed instead of downloadin
 - Tests must pass (`bun test`)
 - Keep PRs focused — one feature or fix per PR
 - Match existing style; no large unrelated refactors mixed in
-
-## Migrating Old Plan Files
-
-If you have a Ralph plan file from before the `## N. Title` header convention:
-
-```bash
-wolfpack migrate-plan PLAN.md
-```
-
-This rewrites the file in place.
