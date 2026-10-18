@@ -1,4 +1,3 @@
-import { getDefaultServerContext } from "../server/context.ts";
 import { Worker } from "node:worker_threads";
 import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { types as utilTypes } from "node:util";
@@ -17,6 +16,8 @@ import {
 
 const log = createLogger("task-relay");
 const owners = new Map<string, symbol>();
+/** Ownership is released only after worker termination is confirmed. */
+export function hasRelayWorkerOwners(): boolean { return owners.size > 0; }
 type WorkerGatewayOptions = GatewayOptions & { requestTimeoutMs?: number; profile?: "volatile-v1" };
 const optionNames = new Set(["profile", "root", "peerOrigin", "peerFetch", "inspectSession", "requestTimeoutMs"]);
 
@@ -88,7 +89,7 @@ export class WorkerRelayGateway implements RelayGateway {
     this.#requestMs = options.requestTimeoutMs ?? LIMIT.requestMs;
     if (!Number.isInteger(this.#requestMs) || this.#requestMs < 1 || this.#requestMs > LIMIT.requestMs) throw new TypeError("invalid relay worker request timeout");
     this.#options = options;
-    this.#inspectSession = options.inspectSession ?? (selector => getDefaultServerContext().backend.inspectSession(selector));
+    this.#inspectSession = options.inspectSession ?? (async () => { throw new Error("session inspection unavailable"); });
     this.root = resolve(options.root ?? join(homedir(), ".wolfpack", "task-relay"));
     this.#ownedRoot = this.root;
     if (owners.has(this.root)) throw new Error("relay root already has a worker owner; await close before replacement");

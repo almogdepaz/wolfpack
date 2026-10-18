@@ -9,7 +9,8 @@ import type { AddressInfo } from "node:net";
 import { MockBackend } from "../../src/server/mock-backend.ts";
 import { createServerContext, getDefaultServerContext, setDefaultServerContext } from "../../src/server/context.ts";
 import { createTaskRoutes } from "../../src/server/task-routes.ts";
-import { TaskGateway, __resetTaskGatewayForTests } from "../../src/tasks/gateway.ts";
+import { TaskGateway } from "../../src/tasks/gateway.ts";
+import { getTaskGateway, getTaskRelayGateway, __resetTaskGatewayForTests } from "../../src/server/task-gateways.ts";
 import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
 
 process.env.WOLFPACK_TEST = "1";
@@ -136,18 +137,53 @@ test("extension document authority follows the HTTP context, not the default bac
   }
 });
 
-test("gateways without an inspector retain default-backend inspection", async () => {
+test("server-side gateway getters retain default-backend inspection", async () => {
   const root = mkdtempSync(join(tmpdir(), "context-fallback-"));
+  const previous = getDefaultServerContext();
+  const backend = new InspectableBackend("legacy", root);
+  setDefaultServerContext(createServerContext({ backend, taskRoot: join(root, "tasks"), taskRelayRoot: join(root, "relay") }));
+  const tasks = getTaskGateway();
+  const relay = getTaskRelayGateway();
+  try {
+    const taskResult = await tasks.inbox("legacy", "0", false);
+    const relayResult = await relay.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "legacy", generation: "generation", protocolVersions: [2] });
+    expect({ taskResult, relayResult }).toMatchObject({ taskResult: { ok: true }, relayResult: { ok: true, value: { kind: "connected" } } });
+    expect(backend.inspected.filter(selector => selector === "legacy").length).toBeGreaterThanOrEqual(2);
+  } finally {
+    await relay.close();
+    setDefaultServerContext(previous);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("server-side task reset options retain the owning default backend inspector", async () => {
+  const root = mkdtempSync(join(tmpdir(), "context-reset-"));
+  const previous = getDefaultServerContext();
+  const backend = new InspectableBackend("legacy", root);
+  setDefaultServerContext(createServerContext({ backend }));
+  try {
+    __resetTaskGatewayForTests({ root: join(root, "tasks") });
+    expect(await getTaskGateway().inbox("legacy", "0", false)).toMatchObject({ ok: true });
+    expect(backend.inspected).toContain("legacy");
+  } finally {
+    __resetTaskGatewayForTests();
+    setDefaultServerContext(previous);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("direct gateways without inspectors fail closed instead of consulting the default backend", async () => {
+  const root = mkdtempSync(join(tmpdir(), "context-no-inspector-"));
   const previous = getDefaultServerContext();
   const backend = new InspectableBackend("legacy", root);
   setDefaultServerContext(createServerContext({ backend }));
   const tasks = new TaskGateway({ root: join(root, "tasks") });
   const relay = new WorkerRelayGateway({ root: join(root, "relay") });
   try {
-    const taskResult = await tasks.inbox("legacy", "0", false);
-    const relayResult = await relay.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "legacy", generation: "generation", protocolVersions: [2] });
-    expect({ taskResult, relayResult }).toMatchObject({ taskResult: { ok: true }, relayResult: { ok: true, value: { kind: "connected" } } });
-    expect(backend.inspected.filter(selector => selector === "legacy").length).toBeGreaterThanOrEqual(2);
+    expect(await tasks.inbox("legacy", "0", false)).toMatchObject({ ok: false, error: { code: "STORE_UNAVAILABLE" } });
+    expect(await relay.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "legacy", generation: "generation", protocolVersions: [2] }))
+      .toMatchObject({ ok: false, error: { code: "RELAY_UNAVAILABLE" } });
+    expect(backend.inspected).toEqual([]);
   } finally {
     await relay.close();
     setDefaultServerContext(previous);

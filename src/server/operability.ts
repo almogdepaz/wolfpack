@@ -1,4 +1,6 @@
 import { defaultServerContext, type ServerContext } from "./context.js";
+import { isLoopbackAddress } from "./client-address.js";
+export { isLoopbackAddress } from "./client-address.js";
 
 export interface RequestClientInput {
   readonly remoteAddress: string | undefined;
@@ -67,11 +69,6 @@ export function boundedMetrics(ctx: ServerContext = defaultServerContext): Reado
 
 export function prometheusMetrics(ctx: ServerContext = defaultServerContext): string {
   return Object.entries(boundedMetrics(ctx)).map(([name, value]) => `# TYPE ${name} gauge\n${name} ${value}`).join("\n") + "\n";
-}
-
-export function isLoopbackAddress(address: string | undefined): boolean {
-  if (!address) return false;
-  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
 }
 
 /**

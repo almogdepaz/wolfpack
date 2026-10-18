@@ -43,7 +43,8 @@ const {
 const { TASK_EVENT_TYPE, TASK_LIMITS, hashImmutableAssignment } = await import("../../src/tasks/domain.ts");
 const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/domain.ts");
 const { TASK_LEDGER_ROLE, TaskStore } = await import("../../src/tasks/store.ts");
-const { TaskGateway, __resetTaskGatewayForTests } = await import("../../src/tasks/gateway.ts");
+const { TaskGateway } = await import("../../src/tasks/gateway.ts");
+const { __resetTaskGatewayForTests } = await import("../../src/server/task-gateways.ts");
 
 __resetTaskGatewayForTests();
 

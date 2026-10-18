@@ -135,7 +135,7 @@ class PeerBackend extends MockBackend {
 }
 
 __setTestBackend(new PeerBackend({ sessions: [role === "sender" ? "parent" : "receiver"] }));
-const { getTaskGateway, __resetTaskGatewayForTests } = await import("../../../src/tasks/gateway.ts");
+const { getTaskGateway, __resetTaskGatewayForTests } = await import("../../../src/server/task-gateways.ts");
 if (process.env.WOLFPACK_TEST_FAST_RETRY === "1") {
   // Accelerate only peer retry backoff, not HTTP keepalive or unrelated deadlines.
   __resetTaskGatewayForTests({ root: taskRoot, sleep: () => new Promise((resolve) => setTimeout(resolve, 1)) });

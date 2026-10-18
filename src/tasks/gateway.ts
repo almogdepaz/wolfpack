@@ -2,7 +2,6 @@ import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { getDefaultServerContext, getServerContextServiceCache } from "../server/context.ts";
 import { AGENT_KIND } from "../agent-kind.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import {
@@ -153,7 +152,7 @@ export class TaskGateway {
   readonly #peerDeliveryLocks = new Map<string, Promise<void>>();
 
   constructor(options: GatewayOptions = { root: undefined }) {
-    this.#inspectSession = options.inspectSession ?? (selector => getDefaultServerContext().backend.inspectSession(selector));
+    this.#inspectSession = options.inspectSession ?? (async () => { throw new Error("authoritative session inspection is unavailable"); });
     this.#store = options.store ?? new TaskStore({ root: options.root });
     this.#now = options.now ?? (() => new Date());
     this.#lifecycle = new TaskLifecycle(this.#store, { now: this.#now });
@@ -1103,14 +1102,4 @@ export class TaskGateway {
   #inside(path: string, root: string): boolean {
     return path === root || path.startsWith(`${root}/`);
   }
-}
-
-/** @deprecated Use the owning ServerContext.taskGateway. */
-export function getTaskGateway(): TaskGateway {
-  return getDefaultServerContext().taskGateway;
-}
-
-export function __resetTaskGatewayForTests(options?: GatewayOptions): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("task gateway reset is test-only");
-  getServerContextServiceCache(options === undefined ? undefined : getDefaultServerContext()).taskGateway = options === undefined ? undefined : new TaskGateway(options);
 }

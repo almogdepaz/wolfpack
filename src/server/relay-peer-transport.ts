@@ -3,8 +3,8 @@ import { loadConfig, remoteUrl } from "../config.ts";
 import { issueJwt } from "../jwt-issue.ts";
 import { RelayPeerTransport } from "../task-relay/peer-transport.ts";
 import type { RelayGateway } from "../task-relay/worker-protocol.ts";
-import { readRelayPeerTopology } from "./http.ts";
-import { isLoopbackAddress } from "./operability.ts";
+import { readRelayPeerTopology } from "./tailscale-status.ts";
+import { isLoopbackAddress } from "./client-address.ts";
 
 const owners = new WeakMap<RelayGateway, RelayPeerTransport>();
 export function getRelayPeerTransport(gateway: RelayGateway, origin?: string): RelayPeerTransport {

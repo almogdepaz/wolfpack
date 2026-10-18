@@ -68,7 +68,7 @@ process.env.WOLFPACK_SETTINGS_PATH = TEST_SETTINGS_PATH;
 process.env.WOLFPACK_TASK_RELAY_ROOT = TEST_TASK_RELAY_ROOT;
 process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = TEST_TASK_WORKER_POLICY_PATH;
 
-const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/task-relay/gateway.ts");
+const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/server/task-gateways.ts");
 await __resetTaskRelayGatewayForTests();
 const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
 const { DuplicateSessionError } = await import("../../src/server/backend-contract.ts");
@@ -2503,7 +2503,7 @@ describe("GET /api/sessions", () => {
 describe("session-control relay lookup batching", () => {
   test("lists stable-ID memory registrations in one RPC, sees retirement, and skips empty-list queries", async () => {
     const { WorkerRelayGateway } = await import("../../src/task-relay/worker-client.ts");
-    const { __setTaskRelayGatewayForTests } = await import("../../src/task-relay/gateway.ts");
+    const { __setTaskRelayGatewayForTests } = await import("../../src/server/task-gateways.ts");
     const relayRoot = mkdtempSync(join(TEST_DEV_DIR, "relay-list-batch-"));
     const names = Array.from({ length: 20 }, (_, i) => `relay-list-${19 - i}`);
     const backend = new MockBackend({ sessions: names });

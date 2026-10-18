@@ -10,6 +10,12 @@ import type { SessionBackend, PtyBackendMethods, SessionPromptBackendMethods } f
 
 export type ServerBackend = SessionBackend & PtyBackendMethods & SessionPromptBackendMethods;
 
+/**
+ * Non-default contexts must use distinct taskRoot and taskRelayRoot values and
+ * must not share an extension runtime (inject an independently owned extension
+ * route service). Store lock maps are instance-local, while relay roots have a
+ * single-owner guard. Close owned workers before reusing their roots.
+ */
 export interface ServerContext {
   readonly backend: ServerBackend;
   readonly events: EventBus;
@@ -29,8 +35,10 @@ interface ServiceCache {
 }
 const serviceCaches = new WeakMap<ServerContext, ServiceCache>();
 /** @internal Compatibility shim lookup; request handlers use context properties. */
-export function getServerContextServiceCache(context = current): ServiceCache {
-  if (!context) return {};
+export function getServerContextServiceCache(context: ServerContext): ServiceCache;
+export function getServerContextServiceCache(): ServiceCache | undefined;
+export function getServerContextServiceCache(context = current): ServiceCache | undefined {
+  if (!context) return undefined;
   let cache = serviceCaches.get(context);
   if (!cache) { cache = {}; serviceCaches.set(context, cache); }
   return cache;
