@@ -1,6 +1,6 @@
 # fix: linux pty master write never unblocks after child exit (ci `test` job hangs)
 
-status: implementation and macos broker verification complete; preparing draft pr for linux ci; reviewer pending.
+status: implementation complete; draft pr #455 open; linux ci in progress; coordinator review/integration pending.
 branch: `fix/pty-blocked-write-hang` off `main` @ f863a5c1, worktree `/Users/home/Dev/.worktrees/wolfpack/pty-blocked-write`.
 
 ## symptom
@@ -70,6 +70,9 @@ alternatives considered and rejected: cancelling the blocking thread (not possib
 - `cargo fmt --check` exit 1 on both changed tree and archived base `f863a5c1`; repository-wide pre-existing formatting differences left untouched (`fmt-initial.log`, `fmt-baseline.log`). no clippy command found in package scripts, CONTRIBUTING, or workflows.
 - cached linux Python kernel probes reconfirm blocked write remains stuck 5 seconds after child death, while nonblocking poll reports HUP and write still returns EAGAIN (both probe commands exit 0; `linux-blocking-repro.log`, `linux-nonblocking-repro.log`). these are mechanism evidence, not Rust acceptance.
 - local linux Rust image unavailable (`rust:1.89` not cached); no image/tool installation. linux Rust gate will be draft-pr ci.
+- commits: tests `aec2f2f1`, production `2a62f924`; pushed to `origin/fix/pty-blocked-write-hang`. draft pr: https://github.com/almogdepaz/wolfpack/pull/455 (verified draft).
+- linux ci: https://github.com/almogdepaz/wolfpack/actions/runs/39148467958 at production commit `2a62f924` is in progress (native archive build; broker tests not yet started). no Linux Rust success claim. final production focused check exit 0, 6/6 (`final-stdin.log`).
+- report: `.plans/pty-blocked-write-hang-report.md`; parent owns pending independent review and final-head ci verification. report/status-only follow-up commit does not change tested production source.
 - commit/push/draft-pr authority unchanged; no merge/deploy. no open design decisions.
 
 ## ledger
@@ -77,5 +80,5 @@ alternatives considered and rejected: cancelling the blocking thread (not possib
 | role | session id | assignment | state |
 | --- | --- | --- | --- |
 | coordinator | 146621c3-fc1f-467c-bc53-7f1eba382b4e (wolfpack-3) | plan, verify, lifecycle | active |
-| implementer | 0287cf28-6e82-45c9-963d-886d06defd94 (pty-hang-implementation) | full plan above | running; sub-session of wolfpack-3 |
+| implementer | 0287cf28-6e82-45c9-963d-886d06defd94 (pty-hang-implementation) | full plan above | implementation complete; retained open for coordinator review/corrections |
 | reviewer | (fill on spawn) | read-only review of the pr diff vs this plan | pending |
