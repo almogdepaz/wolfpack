@@ -1,5 +1,4 @@
 import { loadConfig, remoteUrl } from "../cli/config.ts";
-import { issueJwt } from "../cli/api.ts";
 import { classifyMachineHandshake } from "../tailnet-machine-contract.ts";
 import { stableMachineIdentity } from "../tailnet-peer-registry.ts";
 import { isQuietAlertFact } from "../quiet-alert-policy.ts";
@@ -23,13 +22,14 @@ interface PeerObservation {
 interface Options {
   readonly topology: () => Promise<RelayPeerTopology>;
   readonly fetch?: (input: string, init: RequestInit) => Promise<Response>;
-  readonly jwt?: () => string | null;
   readonly timeoutMs?: number;
 }
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** Only locally trusted, online canonical peers can supply notification facts.
- * No policy reduction here: older peers work if they expose quietAlert facts. */
+ * No policy reduction here: older peers work if they expose quietAlert facts.
+ * Requests are anonymous: the local owner JWT is never sent to peers, so peers
+ * that require authentication are skipped until a peer-specific credential exists. */
 export async function observePeerNotifications(options?: Options): Promise<readonly PeerObservation[]> {
   const config = options ? null : loadConfig();
   const configuredOrigin = config ? remoteUrl(config) ?? undefined : undefined;
@@ -47,11 +47,9 @@ export async function observePeerNotifications(options?: Options): Promise<reado
       const timer = setTimeout(() => controller.abort(), options?.timeoutMs ?? 4_000);
       try {
         const observation = await withPeerAbort(controller.signal, async () => {
-          const headers = new Headers();
-          const jwt = (options?.jwt ?? issueJwt)();
-          if (jwt) headers.set("authorization", `Bearer ${jwt}`);
           const request = async (path: string, limit: number): Promise<unknown> => {
-            const response = await (options?.fetch ?? fetch)(origin + path, { headers, redirect: "error", cache: "no-store", signal: controller.signal });
+            const response = await (options?.fetch ?? fetch)(origin + path, { redirect: "error", cache: "no-store", signal: controller.signal });
+            if (response.status === 401 || response.status === 403) throw new Error(`peer requires authentication (${response.status}); skipped without a peer credential`);
             if (!response.ok) throw new Error(`peer request failed: ${response.status}`);
             return JSON.parse(await readPeerResponse(response, controller.signal, limit));
           };

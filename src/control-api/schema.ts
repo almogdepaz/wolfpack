@@ -424,7 +424,7 @@ export const controlApiSource: ControlApiSource = {
     "session-open follows ordinary global JWT policy when configured and adds no inter-session authorization layer",
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
     "extension blob binary HTTP bodies use string/contentMediaType schema descriptions, not JSON encoding; runtime enforces declared byte ceilings, SHA-256 identity, installation+extension quotas and exact live-local session write authority",
-    "Pi Tasks relay v2 inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
+    "the Pi Tasks relay inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
     "volatile-v1 is the only task relay; all relay HTTP routes require loopback or trusted Tailnet access and inherit optional configured global auth; all visible online Tailnet peers are assumed honest, with canonical TLS routing and current epochs but no signatures, user/tag filtering, or key discovery (up to 1s local topology cache)",
     "relay profile metadata identifies the current RAM lifetime, not broker/worker readiness; restart loses active task state and never replays Pi session history",
   ],

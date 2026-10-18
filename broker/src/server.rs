@@ -370,8 +370,14 @@ async fn handle_connection(
         while let Some(inp) = input_rx.recv().await {
             match input_registry.get(inp.session_id) {
                 Some(session) => {
-                    if let Err(error) = session.write_stdin(&inp.data) {
-                        warn!(session_id = %inp.session_id, %error, "write_stdin failed");
+                    // A child that stops reading blocks this write. Run it on
+                    // the blocking pool and await it so input stays FIFO and
+                    // backpressured without holding an executor thread.
+                    let session_id = inp.session_id;
+                    match tokio::task::spawn_blocking(move || session.write_stdin(&inp.data)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => warn!(%session_id, %error, "write_stdin failed"),
+                        Err(error) => warn!(%session_id, %error, "write_stdin task failed"),
                     }
                 }
                 None => {

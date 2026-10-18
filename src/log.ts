@@ -91,5 +91,8 @@ export function createLogger(component: Component) {
   };
 }
 
-/** Convenience: extract message from unknown catch value. Re-exported from process-cleanup. */
-export { errMsg } from "./shared/process-cleanup.js";
+/** Extract a human-readable message from an unknown catch value. */
+export function errMsg(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return String(e);
+}

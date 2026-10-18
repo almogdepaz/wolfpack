@@ -39,6 +39,8 @@ const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const MIN_TIMEOUT_MS = 1_000;
 const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MAX_MESSAGE_BYTES = TASK_LIMITS.TASK_BYTES;
+/** Diagnostic for a legacy completion intent whose projection can be neither replayed nor recomputed. */
+const COMPLETION_PROJECTION_UNAVAILABLE = "COMPLETION_PROJECTION_UNAVAILABLE";
 const INTERNAL_EVENT_TYPES = new Set<string>([
   TASK_EVENT_TYPE.CREATED,
   TASK_EVENT_TYPE.RECEIVED,
@@ -126,6 +128,11 @@ function sameAddress(left: TaskAddress, right: TaskAddress): boolean {
 
 function terminalEvent(status: "completed" | "failed" | "cancelled"): "task.completed" | "task.failed" | "task.cancelled" {
   return status === "completed" ? TASK_EVENT_TYPE.COMPLETED : status === "failed" ? TASK_EVENT_TYPE.FAILED : TASK_EVENT_TYPE.CANCELLED;
+}
+
+/** Sender acceptance requires a gateway projection for these terminal events (see `acceptSenderEvent`). */
+function requiresCompletionProjection(event: TaskEventInput): boolean {
+  return event.type === TASK_EVENT_TYPE.COMPLETED || event.type === TASK_EVENT_TYPE.FAILED || event.type === TASK_EVENT_TYPE.CANCELLED;
 }
 
 export class TaskGateway {
@@ -462,6 +469,8 @@ export class TaskGateway {
         if (current.header.assignment.target.machine !== this.#machineId) {
           const delivered = await this.#forwardSenderEvent(taskId, event.id);
           if (!delivered.ok) return delivered;
+        } else {
+          await this.#ensureLocalReceiverCleanup(taskId, event);
         }
         return { ok: true, taskId, eventId: event.id, sequence: event.sequence };
       }
@@ -480,17 +489,31 @@ export class TaskGateway {
     } as TaskEventInput, { actor: "sender", address: ledger.header.participants.sender });
     if (!acknowledged.ok) return acknowledged;
     if (ledger.header.assignment.target.machine === this.#machineId) {
-      const receiver = await this.#receiverLedger(taskId);
       const event = (await this.#senderLedger(taskId)).state.events.find((candidate) => candidate.id === acknowledged.eventId);
       if (!event) return failure(TASK_API_ERROR.STORE_UNAVAILABLE, "canonical acknowledgment disappeared", true);
-      await this.#store.markCleanupEligible(receiver, {
-        id: `cleanup:${pendingId}`,
-        acknowledgedEventId: `receiver-ack:${pendingId}`,
-        occurredAt: event.occurredAt,
-      });
+      await this.#ensureLocalReceiverCleanup(taskId, event);
     }
     const delivered = await this.#forwardSenderEvent(taskId, acknowledged.eventId);
     return delivered.ok ? acknowledged : delivered;
+  }
+
+  /**
+   * Local receiver retention requires its acknowledgment and cleanup records. Both derive
+   * from the canonical parent acknowledgment, so a crash after that commit is repaired by
+   * idempotent retries and startup reconciliation instead of stranding the receiver payload.
+   */
+  async #ensureLocalReceiverCleanup(taskId: string, acknowledged: CanonicalTaskEvent): Promise<void> {
+    if (acknowledged.payload.kind !== "parent_ack") return;
+    const pendingId = acknowledged.payload.pendingAckEventId;
+    const receiverAckId = `receiver-ack:${pendingId}`;
+    const cleanupId = `cleanup:${pendingId}`;
+    let receiver = await this.#receiverLedger(taskId);
+    if (receiver.records.some((record) => record.id === cleanupId)) return;
+    if (!receiver.records.some((record) => record.id === receiverAckId)) {
+      await this.#store.appendAcknowledgment(receiver, { id: receiverAckId, eventId: pendingId, occurredAt: acknowledged.occurredAt });
+      receiver = await this.#receiverLedger(taskId);
+    }
+    await this.#store.markCleanupEligible(receiver, { id: cleanupId, acknowledgedEventId: receiverAckId, occurredAt: acknowledged.occurredAt });
   }
 
   async receivePeer(input: unknown): Promise<GatewayResult<{ readonly receiptId: string }>> {
@@ -696,6 +719,8 @@ export class TaskGateway {
       const replica = await this.#receiverLedger(sender.key.taskId);
       for (const event of canonical.state.events) await this.#store.appendEvent(replica, event);
       for (const event of canonical.state.events) await this.#appendInboxIfVisible(canonical, event);
+      const parentAcknowledged = canonical.state.events.find((event) => event.id === canonical.state.parentAcknowledgedEventId);
+      if (parentAcknowledged) await this.#ensureLocalReceiverCleanup(sender.key.taskId, parentAcknowledged);
     }
     for (const sender of await this.#store.ledgers()) {
       if (sender.key.role !== TASK_LEDGER_ROLE.SENDER || sender.header.assignment.target.machine === this.#machineId) continue;
@@ -709,7 +734,16 @@ export class TaskGateway {
       for (const record of receiver.records) {
         if (record.kind !== "outbox.intent" || receiver.state.events.some((event) => event.id === record.event.id)
           || receiver.records.some((candidate) => candidate.kind === "diagnostic" && candidate.id === `peer.delivery:${record.event.id}`)) continue;
-        await this.#forwardReceiverEvent(receiver, record.event);
+        const projection = record.projection ?? (requiresCompletionProjection(record.event) ? await this.#legacyCompletionProjection(receiver, record.event) : undefined);
+        if (requiresCompletionProjection(record.event) && !projection) {
+          await this.#store.appendDiagnostic(receiver, {
+            id: `peer.delivery:${record.event.id}`, code: COMPLETION_PROJECTION_UNAVAILABLE,
+            message: "legacy completion intent has no stored projection and the receiver session cannot be inspected to recompute it",
+            occurredAt: this.#now().toISOString(),
+          });
+          continue;
+        }
+        await this.#deliverReceiverIntent(receiver, record.event, projection);
       }
     }
   }
@@ -742,7 +776,16 @@ export class TaskGateway {
     projection: TaskCompletionProjection | undefined = undefined,
   ): Promise<GatewayResult<{ readonly taskId: string; readonly eventId: string; readonly sequence: string }>> {
     if (receiver.key.role !== TASK_LEDGER_ROLE.RECEIVER) return failure(TASK_API_ERROR.TASK_NOT_FOUND, "receiver replica is unavailable");
-    await this.#store.appendOutboundIntent(receiver, event);
+    await this.#store.appendOutboundIntent(receiver, event, projection);
+    return this.#deliverReceiverIntent(receiver, event, projection);
+  }
+
+  /** Delivers a durably recorded receiver intent and mirrors the sender's canonical acknowledgment locally. */
+  async #deliverReceiverIntent(
+    receiver: TaskLedger,
+    event: TaskEventInput,
+    projection: TaskCompletionProjection | undefined,
+  ): Promise<GatewayResult<{ readonly taskId: string; readonly eventId: string; readonly sequence: string }>> {
     const delivered = await this.#deliverPeerEvent(receiver, event, projection);
     if (!delivered.ok) return delivered;
     if (!delivered.event) return failure(TASK_API_ERROR.MALFORMED_UPSTREAM_RESPONSE, "sender acknowledgment omitted canonical event", true);
@@ -1021,6 +1064,16 @@ export class TaskGateway {
       if (!allowedRoots.some((root) => this.#inside(actual, realpathSync(root)))) return [{ code: "INVALID_REF", message: `context ref escapes its project root: ${path}` }];
       return [];
     } catch { return [{ code: "MISSING_REF", message: `context ref is unavailable: ${path}` }]; }
+  }
+
+  /** Recomputes the projection for an intent written before projections were persisted, from the receiver session's project. */
+  async #legacyCompletionProjection(receiver: TaskLedger, event: TaskEventInput): Promise<TaskCompletionProjection | undefined> {
+    const inspect = getBackend().inspectSession;
+    if (!inspect) return undefined;
+    try {
+      const session = await inspect.call(getBackend(), receiver.header.participants.receiver.sessionId);
+      return session.ok ? this.#artifactProjection(event.completion?.artifacts, session.projectPath) : undefined;
+    } catch { return undefined; }
   }
 
   #artifactProjection(artifacts: readonly ArtifactInput[] | undefined, projectRoot: string): TaskCompletionProjection {

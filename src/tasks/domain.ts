@@ -388,7 +388,7 @@ export type SenderEventAcceptance =
   }
   | {
     readonly kind: "rejected";
-    readonly code: typeof TASK_API_ERROR.CALLER_MISMATCH | typeof TASK_API_ERROR.INVALID_REPLY | typeof TASK_API_ERROR.INVALID_TRANSITION | typeof TASK_API_ERROR.OPEN_QUESTION_CONFLICT;
+    readonly code: typeof TASK_API_ERROR.CALLER_MISMATCH | typeof TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT | typeof TASK_API_ERROR.INVALID_REPLY | typeof TASK_API_ERROR.INVALID_TRANSITION | typeof TASK_API_ERROR.OPEN_QUESTION_CONFLICT;
     readonly state: TaskStateSnapshot;
   };
 
@@ -825,6 +825,28 @@ export function rebuildTaskState(
   return state;
 }
 
+/**
+ * A retry must reproduce the caller-owned fields of the stored event. Sender-derived
+ * fields (source, destination, sequence, artifact projection, warnings) are excluded;
+ * a late terminal retains only its original type and time.
+ */
+function duplicateMatchesInput(event: CanonicalTaskEvent, input: TaskEventInput): boolean {
+  if (event.type === TASK_EVENT_TYPE.LATE_TERMINAL) {
+    return event.payload.originalType === input.type && event.occurredAt === input.occurredAt;
+  }
+  const callerFields = (candidate: AcceptedCanonicalTaskEvent | TaskEventInput) => ({
+    taskId: candidate.taskId,
+    type: candidate.type,
+    actor: candidate.actor,
+    occurredAt: candidate.occurredAt,
+    message: candidate.message,
+    replyToMessageId: candidate.replyToMessageId,
+    payload: candidate.payload,
+    completion: candidate.completion && { summary: candidate.completion.summary, result: candidate.completion.result, error: candidate.completion.error },
+  });
+  return canonicalJson(callerFields(event)) === canonicalJson(callerFields(input));
+}
+
 export function acceptSenderEvent(
   state: TaskStateSnapshot,
   input: TaskEventInput,
@@ -853,7 +875,11 @@ export function acceptSenderEvent(
   }
   if (input.taskId !== state.taskId) return { kind: "rejected", code: TASK_API_ERROR.INVALID_TRANSITION, state };
   const duplicate = state.events.find((event) => event.id === input.id);
-  if (duplicate) return { kind: "duplicate", acknowledgedEventId: duplicate.id, state };
+  if (duplicate) {
+    return duplicateMatchesInput(duplicate, input)
+      ? { kind: "duplicate", acknowledgedEventId: duplicate.id, state }
+      : { kind: "rejected", code: TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT, state };
+  }
 
   if (isTerminalEventType(input.type) && isTerminal(state.status)) {
     const lateTerminalEvent: CanonicalTaskEvent = {

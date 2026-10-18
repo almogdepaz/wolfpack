@@ -1372,6 +1372,35 @@ describe("local task gateway", () => {
     rmSync(taskRoot, { recursive: true, force: true });
   });
 
+  test("repairs receiver cleanup eligibility lost after a committed local acknowledgment", async () => {
+    const taskRoot = join(tmpdir(), `wolfpack-task-ack-cleanup-${process.pid}-${Date.now()}`);
+    class CleanupCrashStore extends TaskStore {
+      override async markCleanupEligible(): Promise<never> {
+        throw new Error("simulated crash before receiver cleanup eligibility");
+      }
+    }
+    const crashing = new TaskGateway({ root: taskRoot, store: new CleanupCrashStore({ root: taskRoot, testHooks: undefined }) });
+    const sent = await crashing.send({ callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "repair cleanup", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: "repair-cleanup", rawBody: undefined });
+    if (!sent.ok) throw new Error("expected local receipt");
+    expect(await crashing.complete({ callerSession: "receiver", taskId: sent.taskId, status: "completed", result: { summary: "done", result: undefined, error: undefined, artifacts: undefined }, rawBody: undefined })).toMatchObject({ ok: true });
+    await expect(crashing.acknowledge("parent", sent.taskId)).rejects.toThrow("simulated crash before receiver cleanup eligibility");
+    const receiverKey = { role: TASK_LEDGER_ROLE.RECEIVER, sourceMachine: crashing.machineId, taskId: sent.taskId };
+    expect((await new TaskStore({ root: taskRoot }).getLedger(receiverKey))?.records.some((record) => record.kind === "cleanup.eligible")).toBe(false);
+
+    const restarted = new TaskGateway({ root: taskRoot });
+    await restarted.initialize();
+    const repaired = await new TaskStore({ root: taskRoot }).getLedger(receiverKey);
+    const acknowledged = repaired?.state.events.find((event) => event.type === TASK_EVENT_TYPE.PARENT_ACKNOWLEDGED);
+    const pendingId = repaired?.state.pendingParentAckEventId;
+    if (!acknowledged) throw new Error("expected canonical parent acknowledgment");
+    expect(repaired?.records.filter((record) => record.kind === "cleanup.eligible")).toEqual([
+      { kind: "cleanup.eligible", id: `cleanup:${pendingId}`, acknowledgedEventId: `receiver-ack:${pendingId}`, occurredAt: acknowledged.occurredAt },
+    ]);
+    expect(await restarted.acknowledge("parent", sent.taskId)).toMatchObject({ ok: true, eventId: acknowledged.id });
+    expect((await new TaskStore({ root: taskRoot }).getLedger(receiverKey))?.records.filter((record) => record.kind === "cleanup.eligible")).toHaveLength(1);
+    rmSync(taskRoot, { recursive: true, force: true });
+  });
+
   test("does not confirm an overdue received assignment during restart recovery", async () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-overdue-receipt-${process.pid}-${Date.now()}`);
     const createdAt = new Date("2026-01-01T00:00:00.000Z");
@@ -1961,6 +1990,91 @@ describe("local task gateway", () => {
     expect(first).toMatchObject({ ok: true });
     expect(second).toEqual(first);
     rmSync(taskRoot, { recursive: true, force: true });
+  });
+
+  test("recovers a remote completion intent whose receiver crashed before the first delivery attempt", async () => {
+    const taskRoot = join(tmpdir(), `wolfpack-task-peer-completion-crash-${process.pid}-${Date.now()}`);
+    let receiverLedgerWrites: number | undefined;
+    const receiverStore = new TaskStore({
+      root: join(taskRoot, "receiver"),
+      testHooks: {
+        beforeFsync: (step, path) => {
+          if (receiverLedgerWrites === undefined || step !== "ledger-file" || !path.includes("/ledgers/receiver/")) return;
+          receiverLedgerWrites += 1;
+          // First write is the durable completion intent; crash on the first outbox attempt.
+          if (receiverLedgerWrites === 2) { receiverLedgerWrites = undefined; throw new Error("simulated receiver crash"); }
+        },
+        afterFsync: undefined,
+      },
+    });
+    const { sender, receiver, receiverRoot } = createPeerPair(taskRoot, { receiverStore });
+    const sent = await sender.send(remoteSendInput("recover completion before first delivery"));
+    if (!sent.ok) throw new Error("expected remote send");
+    receiverLedgerWrites = 0;
+    await expect(receiver.complete({
+      callerSession: "receiver", taskId: sent.taskId, status: "completed",
+      result: { summary: "durable completion", result: undefined, error: undefined, artifacts: undefined }, rawBody: undefined,
+    })).rejects.toThrow();
+    expect(await sender.status("parent", sent.taskId)).toMatchObject({ ok: true, status: "received" });
+    const crashed = (await new TaskStore({ root: receiverRoot }).ledgers()).find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.RECEIVER && ledger.key.taskId === sent.taskId);
+    expect(crashed?.records).toContainEqual(expect.objectContaining({ kind: "outbox.intent", event: expect.objectContaining({ type: TASK_EVENT_TYPE.COMPLETED }), projection: { artifacts: undefined, warnings: [] } }));
+
+    const restarted = new TaskGateway({
+      root: receiverRoot,
+      peerOrigin: "https://receiver.example.ts.net",
+      peerFetch: async (_url, init) => peerResponse(await sender.acceptPeerEvent(JSON.parse(String(init?.body)) as Record<string, unknown>)),
+      sleep: async () => undefined,
+      random: () => 0.5,
+    });
+    expect(await restarted.status("receiver", sent.taskId)).toMatchObject({ ok: true, status: "completed" });
+    expect(await sender.status("parent", sent.taskId)).toMatchObject({ ok: true, status: "completed" });
+    rmSync(taskRoot, { recursive: true, force: true });
+  });
+
+  test("recovers legacy projection-less completion intents or records why they cannot be delivered", async () => {
+    for (const receiverInspectable of [true, false]) {
+      const taskRoot = join(tmpdir(), `wolfpack-task-peer-legacy-intent-${receiverInspectable}-${process.pid}-${Date.now()}`);
+      const { sender, receiverRoot } = createPeerPair(taskRoot);
+      const sent = await sender.send(remoteSendInput("recover legacy completion intent"));
+      if (!sent.ok) throw new Error("expected remote send");
+      const store = new TaskStore({ root: receiverRoot });
+      const replica = (await store.ledgers()).find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.RECEIVER && ledger.key.taskId === sent.taskId);
+      if (!replica) throw new Error("expected receiver replica");
+      const legacyEventId = "0190a0a0-0000-7000-8000-000000000001";
+      await store.appendOutboundIntent(replica, {
+        id: legacyEventId, taskId: sent.taskId, type: TASK_EVENT_TYPE.COMPLETED, actor: "receiver", occurredAt: new Date().toISOString(),
+        message: undefined, replyToMessageId: undefined, payload: { kind: "none" },
+        completion: { summary: "legacy completion", result: undefined, error: undefined, artifacts: undefined },
+      });
+      const deliveries: string[] = [];
+      const restarted = new TaskGateway({
+        root: receiverRoot,
+        peerOrigin: "https://receiver.example.ts.net",
+        peerFetch: async (_url, init) => {
+          const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          deliveries.push(String((payload.event as { readonly id?: unknown } | undefined)?.id));
+          return peerResponse(await sender.acceptPeerEvent(payload));
+        },
+        sleep: async () => undefined,
+        random: () => 0.5,
+      });
+      if (!receiverInspectable) __setTestBackend(new PiBackend({ sessions: ["parent"] }));
+      try {
+        await restarted.status("parent", sent.taskId);
+      } finally {
+        if (!receiverInspectable) __setTestBackend(new PiBackend({ sessions: ["parent", "receiver"] }));
+      }
+      const after = (await new TaskStore({ root: receiverRoot }).ledgers()).find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.RECEIVER && ledger.key.taskId === sent.taskId);
+      if (receiverInspectable) {
+        expect(deliveries).toEqual([legacyEventId]);
+        expect(await sender.status("parent", sent.taskId)).toMatchObject({ ok: true, status: "completed" });
+      } else {
+        expect(deliveries).toEqual([]);
+        expect(after?.records).toContainEqual(expect.objectContaining({ kind: "diagnostic", id: `peer.delivery:${legacyEventId}`, code: "COMPLETION_PROJECTION_UNAVAILABLE" }));
+        expect(await sender.status("parent", sent.taskId)).toMatchObject({ ok: true, status: "received" });
+      }
+      rmSync(taskRoot, { recursive: true, force: true });
+    }
   });
 
   test("does not replay an exhausted parent acknowledgment after the receiver becomes reachable", async () => {

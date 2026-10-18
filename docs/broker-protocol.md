@@ -46,10 +46,24 @@ Every frame on the wire has a 5-byte header:
 - `kind`: frame kind discriminator (see table below).
 - `payload length`: number of payload bytes that follow, big-endian unsigned 32.
 - A receiver MUST reject any frame whose declared payload length exceeds
-  `MAX_FRAME_PAYLOAD` (64 MiB). This caps a misbehaving peer's blast radius.
-  The cap was raised from the original 16 MiB once heavy TUI snapshots
-  (Claude with full scrollback + per-cell SGR) were observed to exceed
-  16 MiB on the wire.
+  its kind's ceiling; the daemon treats an overrun as connection-fatal. This
+  caps a misbehaving peer's blast radius. `broker/src/codec.rs` is
+  authoritative and `src/broker/codec.ts` mirrors it:
+
+  | Kind               | Ceiling                         |
+  |--------------------|---------------------------------|
+  | `control_request`  | 1 MiB                           |
+  | `control_response` | 16 MiB (`MAX_FRAME_PAYLOAD`)    |
+  | `output_binary`    | 1 MiB                           |
+  | `input_binary`     | 256 KiB (16-byte UUID included) |
+  | `event`            | 256 KiB                         |
+
+  Senders MUST NOT emit an oversize frame. The TS client splits input into
+  ordered `input_binary` frames within the ceiling and rejects an oversize
+  control request locally without sending it. A response whose JSON exceeds
+  16 MiB (for example an unbounded heavy snapshot) is not supported: the
+  daemon cannot encode it and closes that connection. The earlier 64 MiB
+  TS-only allowance was never accepted by the daemon.
 
 ### Frame kinds
 
@@ -145,6 +159,10 @@ Spawns a new PTY session under the broker.
   { "kind": "create_session", "session": SessionInfo }
   ```
 - failure modes: `duplicate_session_name`, `spawn_failed`, `invalid_request`.
+  Metadata (`name`, `cwd`, `command`, `env`) whose `session_started` event,
+  with derived fields and a root program-status record at their widest, would
+  exceed the 256 KiB event ceiling is rejected with `invalid_request` before
+  anything is spawned.
 
 #### `kill_session`
 

@@ -64,6 +64,16 @@ describe("CSP header on HTML responses", () => {
     }
   });
 
+  test("HTML responses refuse to be framed by any parent", async () => {
+    for (const path of ["/", "/index.html"]) {
+      const res = await fetch(base + path);
+      const csp = res.headers.get("content-security-policy")!;
+      const frameAncestors = csp.split(";").map(d => d.trim()).find(d => d.startsWith("frame-ancestors"));
+      expect(frameAncestors).toBe("frame-ancestors 'none'");
+      expect(res.headers.get("x-frame-options")).toBe("DENY");
+    }
+  });
+
   test("connect-src permits the Ghostty embedded WASM loader", async () => {
     const res = await fetch(base + "/index.html");
     const csp = res.headers.get("content-security-policy")!;

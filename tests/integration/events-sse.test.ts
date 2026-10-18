@@ -6,6 +6,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { connect } from "node:net";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -168,6 +169,25 @@ describe("GET /api/events", () => {
     await waitFor(() => eventSubscriberCount() === 1);
     stream.close();
     await waitFor(() => eventSubscriberCount() === 0);
+  });
+
+  test("closes a stream whose client stops reading instead of buffering without bound", async () => {
+    const { port } = (server as Server).address() as AddressInfo;
+    const socket = connect(port, "127.0.0.1");
+    try {
+      await new Promise<void>((resolve) => socket.once("connect", () => resolve()));
+      socket.write("GET /api/events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+      socket.pause();
+      await waitFor(() => eventSubscriberCount() === 1);
+      const cwd = `/tmp/${"x".repeat(4096)}`;
+      for (let index = 0; index < 4_000 && eventSubscriberCount() === 1; index++) {
+        publishEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_CREATED, sessionId: SESSION_ID, session: "wolf-1", cwd });
+        if (index % 100 === 99) await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      await waitFor(() => eventSubscriberCount() === 0);
+    } finally {
+      socket.destroy();
+    }
   });
 
   test("caps concurrent streams with 429", async () => {

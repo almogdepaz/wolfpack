@@ -137,6 +137,8 @@ export interface TaskOutboundIntentRecord {
   readonly kind: "outbox.intent";
   readonly id: string;
   readonly event: TaskEventInput;
+  /** Gateway-owned completion projection replayed with a result-bearing terminal event; absent on legacy intents. */
+  readonly projection?: TaskCompletionProjection;
   readonly deliveryState: "pending";
 }
 
@@ -331,7 +333,9 @@ function isLedgerRecord(value: unknown): value is TaskLedgerRecord {
     case "outbox.intent":
       return isObject(value.event) && typeof value.event.id === "string" && value.event.id.length > 0
         && typeof value.event.taskId === "string" && value.event.taskId.length > 0
-        && (value.event.actor === "parent" || value.event.actor === "receiver" || value.event.actor === "sender") && value.deliveryState === "pending";
+        && (value.event.actor === "parent" || value.event.actor === "receiver" || value.event.actor === "sender") && value.deliveryState === "pending"
+        && (value.projection === undefined || (isObject(value.projection) && Array.isArray(value.projection.warnings)
+          && (value.projection.artifacts === undefined || Array.isArray(value.projection.artifacts))));
     case "cleanup.eligible":
       return typeof value.acknowledgedEventId === "string" && value.acknowledgedEventId.length > 0 && typeof value.occurredAt === "string";
     default:
@@ -479,6 +483,8 @@ export class TaskStore {
   readonly #deliverySequenceLocks = new Map<string, Promise<void>>();
   readonly #idempotencyLocks = new Map<string, Promise<void>>();
   readonly #rebuiltLedgerKeys = new Set<string>();
+  /** Ledgers whose last append failed after its bytes may have reached disk; the cache is not authoritative until reloaded. */
+  readonly #uncertainLedgerKeys = new Set<string>();
   readonly #testHooks: TaskStoreTestHooks | undefined;
   #nextDeliverySequence = 1n;
   #initialized: Promise<void> | undefined;
@@ -564,6 +570,7 @@ export class TaskStore {
   ): Promise<SenderEventAcceptance> {
     await this.initialize();
     const accepted = await lock(this.#taskLocks, keyString(key), async () => {
+      await this.#recoverUncertainLedgerLocked(key);
       const ledger = this.#ledgers.get(keyString(key));
       if (!ledger) throw new TaskStoreError("sender task ledger does not exist", undefined);
       const accepted = acceptSenderEvent(ledger.state, input, principal, projection);
@@ -649,7 +656,7 @@ export class TaskStore {
     });
   }
 
-  async appendOutboundIntent(ledger: TaskLedger, event: TaskEventInput): Promise<AppendRecordResult> {
+  async appendOutboundIntent(ledger: TaskLedger, event: TaskEventInput, projection: TaskCompletionProjection | undefined = undefined): Promise<AppendRecordResult> {
     if (event.taskId !== ledger.key.taskId) {
       throw new TaskStoreError("outbound intent must belong to its task ledger", undefined);
     }
@@ -657,6 +664,7 @@ export class TaskStore {
       kind: "outbox.intent",
       id: `outbox.intent:${event.id}`,
       event,
+      ...(projection ? { projection } : {}),
       deliveryState: "pending",
     });
   }
@@ -843,10 +851,26 @@ export class TaskStore {
   async #appendRecord(key: TaskLedgerKey, record: TaskLedgerRecord): Promise<AppendRecordResult> {
     await this.initialize();
     return lock(this.#taskLocks, keyString(key), async () => {
+      await this.#recoverUncertainLedgerLocked(key);
       const ledger = this.#ledgers.get(keyString(key));
       if (!ledger) throw this.#storeError("could not append task ledger record", new TypeError("task ledger does not exist"));
       return this.#appendRecordLocked(ledger, record);
     });
+  }
+
+  /** Makes the on-disk ledger durable and authoritative again before any mutation reads cached state. */
+  async #recoverUncertainLedgerLocked(key: TaskLedgerKey): Promise<void> {
+    const ledger = this.#ledgers.get(keyString(key));
+    if (!ledger || !this.#uncertainLedgerKeys.has(keyString(key))) return;
+    try {
+      this.#testHooks?.beforeFsync?.("ledger-file", ledger.paths.ledgerPath);
+      fsyncFile(ledger.paths.ledgerPath, "", true);
+      this.#testHooks?.afterFsync?.("ledger-file", ledger.paths.ledgerPath);
+      this.#setLedger(await parseLedger(ledger.paths.ledgerPath));
+      this.#uncertainLedgerKeys.delete(keyString(key));
+    } catch (error: unknown) {
+      throw this.#storeError("could not recover task ledger after an uncertain append", error);
+    }
   }
 
   #appendRecordLocked(ledger: TaskLedger, record: TaskLedgerRecord): AppendRecordResult {
@@ -860,9 +884,11 @@ export class TaskStore {
       }
       const next = this.#deriveLedger(ledger.header, [...ledger.records, record], 0);
       this.#testHooks?.beforeFsync?.("ledger-file", ledger.paths.ledgerPath);
+      this.#uncertainLedgerKeys.add(keyString(ledger.key));
       fsyncFile(ledger.paths.ledgerPath, `${canonicalJson(record)}\n`, true);
       this.#testHooks?.afterFsync?.("ledger-file", ledger.paths.ledgerPath);
       this.#setLedger(next);
+      this.#uncertainLedgerKeys.delete(keyString(ledger.key));
       return { kind: "appended", record };
     } catch (error: unknown) {
       throw this.#storeError("could not append task ledger record", error);

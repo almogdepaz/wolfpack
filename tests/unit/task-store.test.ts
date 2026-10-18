@@ -289,6 +289,36 @@ describe("task append-only store", () => {
     })).resolves.toMatchObject({ kind: "conflict", code: "IMMUTABLE_CONTENT_CONFLICT" });
   });
 
+  test("recovers ledger state from disk after an append whose durability was uncertain", async () => {
+    const root = testRoot();
+    let failNextLedgerSync = false;
+    const store = new TaskStore({
+      root,
+      testHooks: {
+        beforeFsync: undefined,
+        afterFsync: (step) => {
+          if (step === "ledger-file" && failNextLedgerSync) {
+            failNextLedgerSync = false;
+            throw new Error("sync reported failure after the record was written");
+          }
+        },
+      },
+    });
+    const ledger = await createSender(store, "task-uncertain");
+    failNextLedgerSync = true;
+    await expect(store.appendEvent(ledger, createdEvent("task-uncertain"))).rejects.toMatchObject({ code: "STORE_UNAVAILABLE" });
+
+    await expect(store.appendEvent(ledger, createdEvent("task-uncertain"))).resolves.toMatchObject({ kind: "reused" });
+    await expect(store.appendEvent(ledger, receivedEvent("task-uncertain"))).resolves.toMatchObject({ kind: "appended" });
+    const recordIds = readFileSync(ledger.paths.ledgerPath, "utf-8").trim().split("\n").map((line) => (JSON.parse(line) as { id: string }).id);
+    expect(recordIds).toEqual(["header", "created-task-uncertain", "received-task-uncertain"]);
+    await expect(store.getLedger(ledger.key)).resolves.toMatchObject({ state: { events: [{ id: "created-task-uncertain" }, { id: "received-task-uncertain" }] } });
+
+    const restarted = new TaskStore({ root });
+    await expect(restarted.getLedger(ledger.key)).resolves.toMatchObject({ state: { events: [{ id: "created-task-uncertain" }, { id: "received-task-uncertain" }] } });
+    expect(existsSync(ledger.paths.quarantinePath)).toBe(false);
+  });
+
   test("preserves and ignores a crash-truncated final line", async () => {
     const root = testRoot();
     const store = new TaskStore({ root });

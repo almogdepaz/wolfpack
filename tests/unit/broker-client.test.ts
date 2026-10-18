@@ -24,6 +24,7 @@ import {
   FRAME_KIND_EVENT,
   FRAME_KIND_INPUT_BINARY,
   FRAME_KIND_OUTPUT_BINARY,
+  MAX_INPUT_BINARY_PAYLOAD,
   type ControlRequest,
   type EventBody,
   type Frame,
@@ -352,6 +353,30 @@ describe("BrokerClient: input_binary", () => {
     expect(received[0].data[0]).toBe(0x03);
     expect(received[1].data[0]).toBe(0x71);
     expect(received[1].data[1]).toBe(0x0d);
+  });
+
+  test("writeInput splits input larger than the daemon's input ceiling into ordered frames", async () => {
+    const { server, client } = await bootClientToServer();
+    const received: InputBinaryFrame[] = [];
+    server.onInput = (frame) => received.push(frame);
+    const data = new Uint8Array(MAX_INPUT_BINARY_PAYLOAD * 2 + 7).map((_, index) => index % 251);
+    client.writeInput(SAMPLE_UUID, data);
+    await waitFor(() => received.reduce((total, frame) => total + frame.data.length, 0) === data.length);
+    expect(received.length).toBe(3);
+    for (const frame of received) expect(16 + frame.data.length).toBeLessThanOrEqual(MAX_INPUT_BINARY_PAYLOAD);
+    const joined = new Uint8Array(data.length);
+    let offset = 0;
+    for (const frame of received) { joined.set(frame.data, offset); offset += frame.data.length; }
+    expect(joined).toEqual(data);
+  });
+
+  test("request rejects an oversize control request without sending it", async () => {
+    const { server, client } = await bootClientToServer();
+    let requests = 0;
+    server.onRequest = () => { requests += 1; };
+    await expect(client.request("noop", { blob: "x".repeat(1024 * 1024) })).rejects.toMatchObject({ code: "frame_too_large" });
+    expect(requests).toBe(0);
+    expect(client.isConnected()).toBe(true);
   });
 
   test("writeInput rejects additional input while the broker socket is backpressured", async () => {

@@ -71,6 +71,21 @@ describe("extension runtime integration", () => {
     runtime.remove("fixture"); runtime.purge("fixture");
     expect(runtime.catalog().installations).toEqual([]);
   });
+  test("reclaims superseded snapshots on update and leaves none after purge", async () => {
+    const base = root(); const runtimeRoot = join(base, "runtime"); const runtime = new ExtensionRuntime({ root: runtimeRoot });
+    const snapshots = () => fs.readdirSync(join(runtimeRoot, "snapshots")).filter((name) => !name.startsWith(".")).sort();
+    const v1 = await runtime.install({ source: fixture(base, "1.0.0", "first"), trustBrowserCode: true });
+    const v2 = await runtime.install({ source: fixture(base, "1.1.0", "second"), trustBrowserCode: true });
+    const v3 = await runtime.install({ source: fixture(base, "1.2.0", "third"), trustBrowserCode: true });
+    expect(snapshots()).toEqual([v2.installation.package.digest, v3.installation.package.digest].sort());
+    expect(fs.existsSync(v1.installation.snapshot)).toBe(false);
+    const again = await runtime.install({ source: fixture(base, "1.1.0", "second"), trustBrowserCode: true });
+    expect(again.installation.package.digest).toBe(v2.installation.package.digest);
+    expect(snapshots()).toEqual([v2.installation.package.digest, v3.installation.package.digest].sort());
+    expect(runtime.asset("fixture", v2.installation.package.digest, "dist/ui.js").bytes.toString()).toContain("second");
+    runtime.remove("fixture"); runtime.purge("fixture");
+    expect(snapshots()).toEqual([]);
+  });
   test("rejects a registry snapshot whose copied bytes no longer match its immutable digest", async () => {
     const base = root(); const runtime = new ExtensionRuntime({ root: join(base, "runtime") });
     const installed = await runtime.install({ source: fixture(base), trustBrowserCode: true });

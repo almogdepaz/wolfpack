@@ -4,15 +4,22 @@ const origin = "https://peer.test.ts.net";
 const handshake = buildMachineHandshake({ tailscaleHostname: "peer.test.ts.net", tailscaleNodeId: "n123", installationId: "12345678-1234-4234-8234-123456789abc", displayName: "peer", version: "1.0.0" });
 const topology = { origin: "https://home.test.ts.net", nodeId: "home", peers: new Map([[origin, "n123"]]) };
 
-test("ready trusted peers expose only their reported facts with authenticated canonical requests", async () => {
+async function withLocalJwtSecret<T>(run: () => Promise<T>): Promise<T> {
+  const previous = process.env.WOLFPACK_JWT_SECRET;
+  process.env.WOLFPACK_JWT_SECRET = "local-owner-secret-that-is-at-least-32-chars";
+  try { return await run(); }
+  finally { if (previous === undefined) delete process.env.WOLFPACK_JWT_SECRET; else process.env.WOLFPACK_JWT_SECRET = previous; }
+}
+
+test("ready trusted peers expose only their reported facts without receiving the local owner credential", async () => {
   const { observePeerNotifications } = await import("../../src/server/peer-notifications.ts");
   const calls: string[] = [];
-  const result = await observePeerNotifications({ topology: async () => topology, jwt: () => "token", fetch: async (input, init) => {
+  const result = await withLocalJwtSecret(() => observePeerNotifications({ topology: async () => topology, fetch: async (input, init) => {
     calls.push(String(input));
-    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer token");
+    expect(new Headers(init?.headers).has("authorization")).toBe(false);
     expect(init?.redirect).toBe("error");
     return Response.json(String(input).endsWith("/api/machine") ? handshake : { sessions: [{ name: "agent", identity: { wolfpackSessionId: "id" } }] });
-  } });
+  } }));
   expect(calls).toEqual([origin + "/api/machine", origin + "/api/sessions"]);
   expect(result).toHaveLength(1);
   expect(result[0].machine.identity).toBe("n123:12345678-1234-4234-8234-123456789abc");
@@ -27,7 +34,7 @@ test("peer quiet facts of either kind are relayed and unknown kinds dropped", as
     { name: "input", identity: { wolfpackSessionId: "id" }, quietAlert: { ...fact, kind: "needs-input", inputKind: "auth" } },
     { name: "future", identity: { wolfpackSessionId: "id" }, quietAlert: { ...fact, kind: "waiting-on-child" } },
   ];
-  const result = await observePeerNotifications({ topology: async () => topology, jwt: () => "token", fetch: async (input) =>
+  const result = await observePeerNotifications({ topology: async () => topology, fetch: async (input) =>
     Response.json(String(input).endsWith("/api/machine") ? handshake : { sessions }) });
   expect(result[0].sessions.map((session) => session.quietAlert?.kind)).toEqual(["quiet", "needs-input", undefined]);
 });
@@ -75,4 +82,15 @@ test("peer reads use at most four concurrent requests", async () => {
   expect(result).toHaveLength(9);
   expect(maximum).toBeLessThanOrEqual(4);
   expect(maximum).toBeGreaterThan(1);
+});
+
+test("auth-required peers are skipped without blocking other peers", async () => {
+  const { observePeerNotifications } = await import("../../src/server/peer-notifications.ts");
+  const peers = new Map([["https://locked.test.ts.net", "locked"], ...topology.peers]);
+  const result = await withLocalJwtSecret(() => observePeerNotifications({ topology: async () => ({ ...topology, peers }), fetch: async (input, init) => {
+    expect(new Headers(init?.headers).has("authorization")).toBe(false);
+    if (String(input).includes("locked.test")) return new Response("unauthorized", { status: 401 });
+    return Response.json(String(input).endsWith("/api/machine") ? handshake : { sessions: [] });
+  } }));
+  expect(result.map(observation => observation.machine.identity)).toEqual(["n123:12345678-1234-4234-8234-123456789abc"]);
 });
