@@ -122,15 +122,15 @@ Create a top-level project session with an initial instruction:
 wolfpack session create project-name --harness pi --plan .plans/000-task.md --json
 ```
 
-Spawn a same-harness child agent:
+Spawn a child agent (same harness by default; override with `--harness`):
 
 ```bash
-wolfpack agent spawn project-name --plan .plans/000-review.md --notify-parent --json
+wolfpack agent spawn project-name --harness claude --plan .plans/000-review.md --notify-parent --json
 ```
 
 To select an existing directory outside the configured projects root, replace the project name with `--project-dir <path>` on either command. Relative CLI paths are resolved locally; the server accepts and canonicalizes only existing absolute directories.
 
-Use `wolfpack session create <project>` for top-level work and `wolfpack agent spawn <project>` for a same-harness child. The server validates the project selector and command, allocates a stable broker session ID, and delivers the initial instruction directly to the harness. For the full command surface and automation contract, use [session control](docs/session-control.md) and the [control API schema](docs/generated/control-api.schema.json).
+Use `wolfpack session create <project>` for top-level work and `wolfpack agent spawn <project>` for a child (same harness by default). The server validates the project selector and command, allocates a stable broker session ID, and delivers the initial instruction directly to the harness. For the full command surface and automation contract, use [session control](docs/session-control.md) and the [control API schema](docs/generated/control-api.schema.json).
 
 ## contributing
 

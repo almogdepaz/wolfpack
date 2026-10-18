@@ -38,7 +38,7 @@ wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--pro
 
 ## Opt into Pi task-worker readiness
 
-Add `--task-worker` to `session create` or `agent spawn` only with `--project-dir <absolute-existing-worktree>`. It requires the Pi harness, accepts optional `--model` only for child Pi sessions, and rejects named-only project selection, `--prompt`, `--prompt-file`, `--plan`, and `--notify-parent`. `--readiness-timeout-ms <1..60000>` bounds the server gate (default 30000 ms); the CLI request deadline includes a small response grace period.
+Add `--task-worker` to `session create` or `agent spawn` only with `--project-dir <absolute-existing-worktree>`. It requires the child (or top-level session) to use the Pi harness; a child may select it with `--harness pi` regardless of the parent's supported harness. It accepts optional `--model` only for child Pi sessions, and rejects named-only project selection, `--prompt`, `--prompt-file`, `--plan`, and `--notify-parent`. `--readiness-timeout-ms <1..60000>` bounds the server gate (default 30000 ms); the CLI request deadline includes a small response grace period.
 
 Before creating anything, Wolfpack resolves and validates only the resources it will launch: `WOLFPACK_TASK_WORKER_PI_EXECUTABLE` (otherwise `pi` from `PATH`) and `WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION` (otherwise `$PI_CODING_AGENT_DIR/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts`, or `~/.pi/agent/...` when the Pi config directory is unset). Both configured paths must be absolute; the executable must be a regular executable file (working package-manager symlinks are accepted), and the extension must be a readable regular file.
 
@@ -100,23 +100,24 @@ After creation, a failed root/identity/liveness/endpoint check or deadline kills
 ## Spawn a child agent
 
 ```bash
-wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-wolfpack agent spawn --project-dir <path> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
 ```
 
 - performs one `POST /api/session-open` request.
 - uses the same mutually exclusive name/`--project-dir` selection and server validation as top-level creation.
 - requires `WOLFPACK_SESSION_NAME` and `WOLFPACK_AGENT_KIND` from the current parent agent.
-- resolves the parent through structured broker identity and launches the same supported harness.
+- resolves the parent through structured broker identity; the parent must still use a supported agent harness.
+- inherits the parent harness by default. `--harness <pi|claude|codex|gemini|cursor>` selects a different child harness without changing parent lineage; `shell` is not accepted for children.
 - accepts `--name <session>` for meaningful child names such as `200-security-review`; if omitted, derives `<parent>-sub-agent`, then numbered names.
-- for Pi parents only, accepts a bounded nonblank `--model <provider/model>` value and passes it unchanged to Pi's native `--model` option. Non-Pi parents reject model selection; omission preserves their existing same-harness launch behavior.
+- for Pi children only, accepts a bounded nonblank `--model <provider/model>` value and passes it unchanged to Pi's native `--model` option. A non-Pi parent can use `--harness pi --model ...`; a non-Pi child rejects `--model` and `--task-worker` before creation.
 - passes only explicit startup instructions; it does not inherit the parent transcript, model context, or summary.
 - supports `--plan <file>` and `--prompt-file <file>` like top-level creation.
 - `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked. That command notifies the human, not the parent agent (see below).
 - stores structured parent ID/name metadata and sends a best-effort typed browser notification when opened.
-- json success has the same fields as top-level creation, including stable `sessionId`.
+- json success has the same fields as top-level creation, including stable `sessionId`; `harness` reports the child's harness.
 
-`wolfpack session open` remains a deprecated compatibility alias for `wolfpack agent spawn` and accepts the same selectors and optional Pi model selection. It never means top-level creation.
+`wolfpack session open` remains a deprecated compatibility alias for `wolfpack agent spawn` and accepts the same selectors, optional `--harness`, and Pi-child model selection. It never means top-level creation.
 
 The browser project picker keeps the configured-root catalog as its default. **Open existing directory** accepts a server-local absolute path; it does not enumerate the filesystem or create directories outside `WOLFPACK_DEV_DIR`.
 

@@ -1979,6 +1979,10 @@
           "projectDir": {
             "$ref": "#/$defs/ProjectDirectory"
           },
+          "harness": {
+            "$ref": "#/$defs/OpenableHarness",
+            "description": "Child harness; defaults to the parent harness. model and taskWorker require a pi child."
+          },
           "parentSession": {
             "$ref": "#/$defs/SessionName"
           },
@@ -2032,6 +2036,10 @@
               "projectDir": {
                 "$ref": "#/$defs/ProjectDirectory"
               },
+              "harness": {
+                "$ref": "#/$defs/OpenableHarness",
+                "description": "Child harness; defaults to the parent harness. model and taskWorker require a pi child."
+              },
               "parentSession": {
                 "$ref": "#/$defs/SessionName"
               },
@@ -2083,6 +2091,10 @@
           {
             "type": "object",
             "properties": {
+              "harness": {
+                "$ref": "#/$defs/OpenableHarness",
+                "description": "Child harness; defaults to the parent harness. model and taskWorker require a pi child."
+              },
               "parentSession": {
                 "$ref": "#/$defs/SessionName"
               },

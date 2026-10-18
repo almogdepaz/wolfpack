@@ -252,6 +252,10 @@ function sessionCreateRequestSchema(): JsonSchema {
 
 function sessionOpenRequestSchema(): JsonSchema {
   const ordinaryProperties = {
+    harness: {
+      ...ref("OpenableHarness"),
+      description: "Child harness; defaults to the parent harness. model and taskWorker require a pi child.",
+    },
     parentSession: ref("SessionName"),
     sessionName: ref("SessionName"),
     model: {
@@ -268,6 +272,7 @@ function sessionOpenRequestSchema(): JsonSchema {
     plan: ref("SessionOpenPlanRequest"),
   };
   const taskWorkerProperties = {
+    harness: ordinaryProperties.harness,
     parentSession: ref("SessionName"),
     projectDir: ref("ProjectDirectory"),
     sessionName: ref("SessionName"),

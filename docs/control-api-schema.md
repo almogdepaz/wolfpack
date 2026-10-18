@@ -24,6 +24,12 @@ Compatibility rules:
 - Breaking changes include removing or renaming stable fields/routes/messages, making optional fields required, changing auth expectations, or tightening stable enum/pattern constraints.
 - Breaking changes need release notes that name the changed operation/message and migration path.
 
+## child harness selection
+
+`POST /api/session-open` (`openSession`) accepts optional `harness: "pi" | "claude" | "codex" | "gemini" | "cursor"`. Omission inherits the parent's harness; `shell` is not accepted for children. The parent must still use a supported agent harness. Child selection preserves parent ID/name lineage, naming, and notification behavior; success `harness` reports the child's harness.
+
+`model` and `taskWorker` require a Pi child, not a Pi parent. A non-Pi parent can select `harness: "pi"` with `model`; an explicit non-Pi child with either option is rejected before creation. Invalid child harnesses return HTTP 400 `INVALID_REQUEST`. Runtime routes enforce these child-option requirements, including when the harness is inherited from parent identity.
+
 ## tailnet discovery compatibility
 
 `GET /api/tailnet/v1/candidates` is the canonical typed Tailnet candidate operation. It returns bounded local Tailscale-status facts only; clients probe candidate origins directly. The server never probes or proxies peer endpoints.

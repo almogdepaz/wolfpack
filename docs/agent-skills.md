@@ -6,8 +6,8 @@ The repository, not a compiled executable, is the source of truth.
 
 Bundled skill:
 
-- `wolfpack-tailnet-control` - top-level session creation, same-harness child
-  spawning, and safe local/Tailscale session inspection/control workflows.
+- `wolfpack-tailnet-control` - top-level session creation, child spawning
+  (same harness by default), and safe local/Tailscale session inspection/control workflows.
 
 ## Pi opt-in setup
 
@@ -142,7 +142,7 @@ For a top-level project session:
 wolfpack session create <project> --harness pi --plan .plans/000-task.md --json
 ```
 
-For a same-harness child of the current agent:
+For a child of the current agent (same harness by default; add `--harness claude` or another supported agent harness to override):
 
 ```bash
 wolfpack agent spawn <project> --name 200-implementation --plan .plans/000-task.md --notify-parent --json
