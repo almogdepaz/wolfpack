@@ -4,6 +4,12 @@ import { createLogger, errMsg } from "../log.js";
 import { defaultEventBus, type EventBus } from "../event-bus.js";
 import { BrokerClient, defaultBrokerSocketPath } from "../broker/client.js";
 import type { EventBody } from "../broker/codec.js";
+import {
+  BROKER_HELLO_METHOD,
+  BROKER_PROTOCOL_VERSION,
+  classifyBrokerHello,
+  type BrokerVersionInfo,
+} from "../broker/hello.js";
 import { createBrokerBackend, type BrokerBackend, type BrokerClientApi } from "./broker-backend.js";
 import type { SessionBackend } from "./backend-contract.js";
 
@@ -36,6 +42,8 @@ export class BrokerSupervisor {
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
   /** Re-entrancy guard — a slow handshake must not stack on top of itself. */
   private watchdogInFlight = false;
+  /** From the last successful `hello`; null for a pre-hello broker or no broker. */
+  private brokerVersion: BrokerVersionInfo | null = null;
 
   constructor(private readonly options: { start?: boolean; events?: EventBus } = {}) {
     this.brokerSocketPath = defaultBrokerSocketPath();
@@ -165,6 +173,7 @@ export class BrokerSupervisor {
     this.brokerClient = null;
     this.broker = null;
     this._brokerAvailable = false;
+    this.brokerVersion = null;
   }
 
   /** Current broker instance; consumers pin it for the lifetime of an attach. */
@@ -175,6 +184,7 @@ export class BrokerSupervisor {
     return this._brokerAvailable && this.brokerClient?.isConnected() === true;
   }
   getBrokerSocketPath(): string { return this.brokerSocketPath; }
+  getBrokerVersion(): BrokerVersionInfo | null { return this.brokerVersion; }
 
   /** Re-probe the broker socket. Starts the client if it appeared.
    *  Disappearance is a fatal condition for the broker session pool —
@@ -199,8 +209,9 @@ export class BrokerSupervisor {
 
   /**
    * Async handshake probe: waits for the broker connection to come up, then
-   * issues `list_sessions` with a tight timeout. On failure, tears the client
-   * down. Returns whether the handshake succeeded.
+   * issues `hello` with a tight timeout (`list_sessions` for a broker that
+   * predates `hello`). A broker speaking another protocol version, or any
+   * failure, tears the client down. Returns whether the handshake succeeded.
    */
   async verifyBrokerHandshake(): Promise<boolean> {
     if (!this.brokerClient) return false;
@@ -219,6 +230,38 @@ export class BrokerSupervisor {
     }
 
     try {
+      const hello = classifyBrokerHello(await client.request(
+        BROKER_HELLO_METHOD,
+        {},
+        { timeoutMs: BROKER_HANDSHAKE_TIMEOUT_MS },
+      ));
+      switch (hello.kind) {
+        case "compatible":
+          this.brokerVersion = { protocolVersion: hello.protocolVersion, brokerVersion: hello.brokerVersion };
+          log.info("broker handshake ok", {
+            socketPath: this.brokerSocketPath,
+            brokerVersion: hello.brokerVersion,
+            protocolVersion: hello.protocolVersion,
+          });
+          return true;
+        case "incompatible":
+          log.error("broker protocol version is incompatible; restart the broker from this release", {
+            socketPath: this.brokerSocketPath,
+            brokerVersion: hello.brokerVersion,
+            protocolVersion: hello.protocolVersion,
+            expectedProtocolVersion: BROKER_PROTOCOL_VERSION,
+          });
+          this.teardownBrokerClient();
+          return false;
+        case "error":
+          log.warn("broker handshake: hello failed", { error: hello.message });
+          this.teardownBrokerClient();
+          return false;
+        case "pre_hello":
+          log.warn("broker predates hello; version unknown", { socketPath: this.brokerSocketPath });
+          this.brokerVersion = null;
+          break;
+      }
       const resp = (await client.request(
         "list_sessions",
         {},
@@ -259,7 +302,9 @@ export class BrokerSupervisor {
     this.brokerClient = {
       close() {},
       isConnected: () => true,
-      request: async () => ({ id: 0, status: "ok" }),
+      request: async (method: string) => method === BROKER_HELLO_METHOD
+        ? { id: 0, status: "ok", payload: { kind: BROKER_HELLO_METHOD, protocol_version: BROKER_PROTOCOL_VERSION, broker_version: "test" } }
+        : { id: 0, status: "ok" },
       start() {},
     };
     this._brokerAvailable = true;

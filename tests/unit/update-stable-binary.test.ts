@@ -35,7 +35,7 @@ function runStableBinaryUpdate(testHome: string, candidate: string): { readonly 
   writeFileSync(runner, `import { writeFileSync } from "node:fs";\nimport { updateStableBinary } from ${JSON.stringify(join(process.cwd(), "src/cli/service.ts"))};\nwriteFileSync(${JSON.stringify(resultPath)}, JSON.stringify({ updated: updateStableBinary() }));\n`);
   const output = execFileSync(candidate, [runner], {
     encoding: "utf-8",
-    env: { ...process.env, HOME: testHome },
+    env: { ...process.env, HOME: testHome, WOLFPACK_DIR: join(testHome, ".wolfpack") },
   });
   const parsed: unknown = JSON.parse(readFileSync(resultPath, "utf-8"));
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {

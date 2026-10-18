@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, spyOn } from "bun:test";
 import type { CheckResult } from "../../src/cli/doctor.ts";
+import pkg from "../../package.json";
+
+const packageVersion: string = pkg.version;
 
 /**
  * Doctor tests — we test the exported `doctor()` function end-to-end.
@@ -365,6 +368,70 @@ describe("doctor dependency probe wiring", () => {
   });
 });
 
+describe("doctor security checks", () => {
+  test("passes when the server reports JWT authentication", async () => {
+    const { securityChecks } = await import("../../src/cli/doctor.ts");
+    expect(securityChecks({ status: "ready", auth: { mode: "jwt" } })).toEqual([
+      { name: "api authentication", group: "Security", status: "pass", detail: "jwt configured" },
+    ]);
+  });
+
+  test("warns when the server runs unauthenticated", async () => {
+    const { securityChecks } = await import("../../src/cli/doctor.ts");
+    expect(securityChecks({ status: "degraded", auth: { mode: "none" } })).toEqual([{
+      name: "api authentication", group: "Security", status: "warn",
+      detail: "unauthenticated; the tailnet is the only boundary",
+      fixHint: "set WOLFPACK_JWT_SECRET (32+ chars) for the server to require authentication",
+    }]);
+  });
+
+  test("warns unknown when health is unreachable or predates the auth field", async () => {
+    const { securityChecks } = await import("../../src/cli/doctor.ts");
+    for (const health of [null, { status: "ready" }, { auth: { mode: "other" } }]) {
+      expect(securityChecks(health)).toEqual([
+        { name: "api authentication", group: "Security", status: "warn", detail: "unknown (server health unavailable)" },
+      ]);
+    }
+  });
+});
+
+describe("doctor broker version checks", () => {
+  test("passes a compatible broker from the same release", async () => {
+    const { brokerHandshakeChecks } = await import("../../src/cli/doctor.ts");
+    const results = brokerHandshakeChecks({ kind: "compatible", protocolVersion: 2, brokerVersion: "1.6.26" }, 4, "1.6.26");
+    expect(results.map(({ name, status, detail }) => ({ name, status, detail }))).toEqual([
+      { name: "broker handshake", status: "pass", detail: "broker 1.6.26 (protocol 2) (4ms)" },
+      { name: "broker version", status: "pass", detail: "matches cli 1.6.26" },
+    ]);
+  });
+
+  test("warns when a server-only upgrade left an older broker running", async () => {
+    const { brokerHandshakeChecks } = await import("../../src/cli/doctor.ts");
+    const results = brokerHandshakeChecks({ kind: "compatible", protocolVersion: 2, brokerVersion: "1.6.25" }, 4, "1.6.26");
+    expect(results[0]).toMatchObject({ name: "broker handshake", status: "pass", fact: "broker-healthy" });
+    expect(results[1]).toMatchObject({
+      name: "broker version",
+      status: "warn",
+      detail: "broker 1.6.25 differs from cli 1.6.26",
+      fixHint: expect.stringContaining("wolfpack service restart --broker"),
+    });
+  });
+
+  test("warns that a pre-hello broker's version is unknown", async () => {
+    const { brokerHandshakeChecks } = await import("../../src/cli/doctor.ts");
+    const results = brokerHandshakeChecks({ kind: "pre_hello" }, 4, "1.6.26");
+    expect(results[0]).toMatchObject({ name: "broker handshake", status: "pass", detail: "list_sessions ok; broker predates hello (4ms)" });
+    expect(results[1]).toMatchObject({ name: "broker version", status: "warn", detail: "unknown (broker predates hello); cli 1.6.26" });
+  });
+
+  test("fails a broker speaking another protocol version", async () => {
+    const { brokerHandshakeChecks } = await import("../../src/cli/doctor.ts");
+    const results = brokerHandshakeChecks({ kind: "incompatible", protocolVersion: 3, brokerVersion: "9.0.0" }, 4, "1.6.26");
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ name: "broker handshake", status: "fail", detail: "broker 9.0.0 speaks protocol 3; this release needs protocol 2" });
+  });
+});
+
 describe("doctor runtime probes", () => {
   test.each(["xdg", "home"] as const)("uses the real default broker socket in an owned %s environment", (socketMode) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "wpd-")));
@@ -383,7 +450,7 @@ describe("doctor runtime probes", () => {
       mkdirSync(dirname(${JSON.stringify(brokerPath)}), { recursive: true });
       writeFileSync(${JSON.stringify(brokerPath)}, "broker");
       const server = createServer((socket) => socket.once("data", () => {
-        const payload = Buffer.from(JSON.stringify({ id: 1, status: "ok" }));
+        const payload = Buffer.from(JSON.stringify({ id: 1, status: "ok", payload: { kind: "hello", protocol_version: 2, broker_version: ${JSON.stringify(packageVersion)} } }));
         const frame = Buffer.alloc(5 + payload.length);
         frame[0] = 2;
         frame.writeUInt32BE(payload.length, 1);
@@ -402,11 +469,15 @@ describe("doctor runtime probes", () => {
       const output = execFileSync(process.execPath, ["--eval", script], {
         cwd: root,
         encoding: "utf-8",
-        env: { ...process.env, HOME: home, XDG_RUNTIME_DIR: socketMode === "xdg" ? runtime : "" },
+        env: { ...process.env, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), XDG_RUNTIME_DIR: socketMode === "xdg" ? runtime : "" },
         timeout: 2500,
       });
       const results = JSON.parse(output) as CheckResult[];
-      expect(results.find((check) => check.name === "broker handshake")?.status).toBe("pass");
+      expect(results.find((check) => check.name === "broker handshake")).toMatchObject({
+        status: "pass",
+        detail: expect.stringContaining(`broker ${packageVersion} (protocol 2)`),
+      });
+      expect(results.find((check) => check.name === "broker version")?.status).toBe("pass");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

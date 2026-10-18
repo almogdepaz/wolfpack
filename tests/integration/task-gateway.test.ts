@@ -171,6 +171,7 @@ async function spawnPeerServer(options: PeerServerOptions): Promise<PeerServer> 
     env: {
       ...process.env,
       HOME: options.home,
+      WOLFPACK_DIR: join(options.home, ".wolfpack"),
       WOLFPACK_TASK_ROOT: options.taskRoot,
       WOLFPACK_TEST: "1",
       WOLFPACK_TEST_DISPATCH_LOG: options.dispatchLogPath,

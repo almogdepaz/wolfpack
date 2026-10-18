@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { homedir } from "node:os";
 import { AGENT_KIND, isCreatableHarness } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
 import { detectProviderReadiness } from "../provider-readiness.js";
@@ -35,6 +34,7 @@ import {
 } from "../session-plan-contract.js";
 import type { SessionPlanRequest } from "../session-plan-contract.js";
 import { DEV_DIR } from "./dev-dir.js";
+import { resolveWolfpackDir } from "../wolfpack-dir.js";
 import { browseServerDirectory } from "./directory-browser.js";
 import type { DirectoryBrowseResult } from "./directory-browser.js";
 import {
@@ -309,7 +309,7 @@ function directoryBrowseHttpStatus(code: DirectoryBrowseFailure["code"]): Direct
  *  hit a temp file instead of the user's real ~/.wolfpack/bridge-settings.json.
  *  Resolved at every call so test setup that mutates env mid-process is honored. */
 function settingsPath(): string {
-  return process.env.WOLFPACK_SETTINGS_PATH || join(homedir(), ".wolfpack", "bridge-settings.json");
+  return process.env.WOLFPACK_SETTINGS_PATH || join(resolveWolfpackDir(), "bridge-settings.json");
 }
 
 /**

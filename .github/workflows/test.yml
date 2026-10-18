@@ -21,6 +21,26 @@ jobs:
         with:
           toolchain: 1.89.0
 
+      - name: Cache cargo registry and broker target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            broker/target
+          key: cargo-test-${{ runner.os }}-rust-1.89.0-${{ hashFiles('broker/Cargo.lock') }}
+          restore-keys: |
+            cargo-test-${{ runner.os }}-rust-1.89.0-
+
+      - name: Cache bun install cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
       - name: Install frozen dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
@@ -62,6 +82,18 @@ jobs:
 
       - name: Run all unit and snapshot tests
         run: bun test tests/unit/ tests/snapshot/
+
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: echo "version=$(bun -e 'console.log(require("@playwright/test/package.json").version)')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium-webkit
+          restore-keys: |
+            playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-
 
       - name: Install critical Playwright browsers
         run: bunx playwright install --with-deps chromium webkit
@@ -124,6 +156,26 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.2
+
+      - name: Cache cargo registry and broker target
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            broker/target
+          key: cargo-ghostty-vt-${{ runner.os }}-rust-1.89.0-${{ hashFiles('broker/Cargo.lock') }}
+          restore-keys: |
+            cargo-ghostty-vt-${{ runner.os }}-rust-1.89.0-
+
+      - name: Cache bun install cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts

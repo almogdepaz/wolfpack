@@ -6,6 +6,7 @@ import {
   operationalHealth,
 } from "../../src/server/operability";
 import { __resetBackend, getRouter } from "../../src/server/backend";
+import { __resetJwtAuthConfig } from "../../src/auth";
 
 describe("operability contracts", () => {
   test("tracks explicit broker health transitions", () => {
@@ -27,6 +28,37 @@ describe("operability contracts", () => {
       status: "degraded",
       broker: { state: "unavailable" },
     });
+  });
+
+  test("reports the broker release and protocol version, null until a hello succeeds", () => {
+    process.env.WOLFPACK_TEST = "1";
+    __resetBackend();
+    const router = getRouter();
+    (router as any)._brokerAvailable = true;
+    (router as any).brokerClient = { isConnected: () => true };
+
+    expect(operationalHealth()).toMatchObject({ broker: { state: "ready", version: null, protocolVersion: null } });
+    (router as any).brokerVersion = { protocolVersion: 2, brokerVersion: "1.6.26" };
+    expect(operationalHealth()).toMatchObject({ broker: { state: "ready", version: "1.6.26", protocolVersion: 2 } });
+  });
+
+  test("reports whether API authentication is configured, never the secret", () => {
+    process.env.WOLFPACK_TEST = "1";
+    const prior = process.env.WOLFPACK_JWT_SECRET;
+    try {
+      delete process.env.WOLFPACK_JWT_SECRET;
+      __resetJwtAuthConfig();
+      expect(operationalHealth().auth).toEqual({ mode: "none" });
+
+      process.env.WOLFPACK_JWT_SECRET = "s".repeat(40);
+      __resetJwtAuthConfig();
+      expect(operationalHealth().auth).toEqual({ mode: "jwt" });
+      expect(JSON.stringify(operationalHealth())).not.toContain("s".repeat(40));
+    } finally {
+      if (prior === undefined) delete process.env.WOLFPACK_JWT_SECRET;
+      else process.env.WOLFPACK_JWT_SECRET = prior;
+      __resetJwtAuthConfig();
+    }
   });
 
   test("limits unauthenticated readiness to direct loopback addresses", () => {

@@ -21,7 +21,6 @@
  * No SessionBackend coupling — this module is pure transport + RPC plumbing.
  */
 import * as net from "node:net";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import {
@@ -40,6 +39,7 @@ import {
   type EventBody,
   type OutputBinaryFrame,
 } from "./codec.js";
+import { resolveWolfpackDir } from "../wolfpack-dir.js";
 
 export type OutputSubscriber = (frame: OutputBinaryFrame) => void;
 export type EventSubscriber = (event: EventBody) => void;
@@ -151,7 +151,7 @@ export function defaultBrokerSocketPath(): string {
   if (xdg && xdg.length > 0) {
     return path.join(xdg, "wolfpack-broker.sock");
   }
-  return path.join(os.homedir(), ".wolfpack", "broker.sock");
+  return path.join(resolveWolfpackDir(), "broker.sock");
 }
 
 export class BrokerNotConnectedError extends Error {

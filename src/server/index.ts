@@ -6,11 +6,10 @@ import { SERVER_LISTENING } from "../server-startup-contract.js";
 import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { WebSocketServer } from "ws";
 
-import { existsSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
 import { SHELL } from "./shell.js";
+import { resolveLoginShellPath } from "./login-shell-path.js";
 import { createServerContext, defaultServerContext, setDefaultServerContext, type ServerContext } from "./context.js";
 import { createRoutes } from "./routes.js";
 import {
@@ -42,19 +41,10 @@ const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
 
 // inherit user's full PATH from login shell — launchd PATH is minimal
-try {
-  const shellPath = execFileSync(SHELL, ["-lic", "echo $PATH"]).toString().trim();
-  if (shellPath) process.env.PATH = shellPath;
-} catch { /* shell PATH extraction failed — apply common fallback paths */
-  const extra = [
-    `${process.env.HOME}/.local/bin`,
-    "/opt/homebrew/bin",
-    "/usr/local/bin",
-  ];
-  const cur = process.env.PATH || "";
-  const have = new Set(cur.split(":"));
-  const add = extra.filter(p => !have.has(p) && existsSync(p));
-  if (add.length) process.env.PATH = [...add, cur].join(":");
+const loginShellPath = resolveLoginShellPath({ shell: SHELL, currentPath: process.env.PATH || "", home: process.env.HOME });
+if (loginShellPath.path) process.env.PATH = loginShellPath.path;
+if (loginShellPath.source === "fallback") {
+  log.warn("login shell PATH unavailable; using fallback PATH", { shell: SHELL, reason: loginShellPath.reason });
 }
 
 // Cross-origin Tailnet access derives solely from the canonical hostname that
@@ -271,8 +261,9 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   assertSupportedBunRuntime();
   // Verify JWT auth configuration BEFORE any listeners are bound. We fail
   // hard on misconfiguration (secret set but rejected) so a typo can never
-  // silently disable authentication. A missing secret is surfaced as an
-  // informational notice because Tailscale is the default remote-access boundary.
+  // silently disable authentication. A missing secret is surfaced as a
+  // warning (not an error: Tailscale is the default remote-access boundary, and
+  // doctor treats logged errors as unhealthy).
   const authCfg = getCachedJwtAuthConfig();
   const authStatus = verifyJwtAuthAtStartup(authCfg);
   if (authStatus === "invalid") {
@@ -283,7 +274,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
     process.exit(1);
   }
   if (authStatus === "missing") {
-    log.info("WOLFPACK_JWT_SECRET is not set — ALL API ENDPOINTS ARE UNAUTHENTICATED", {
+    log.warn("WOLFPACK_JWT_SECRET is not set — ALL API ENDPOINTS ARE UNAUTHENTICATED", {
       hint: "set WOLFPACK_JWT_SECRET (32+ chars) to enable authentication",
     });
   }

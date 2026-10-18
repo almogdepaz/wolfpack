@@ -17,7 +17,7 @@ afterEach(() => {
 
 function prepareFixture(
   productVersion: string,
-  brokerVersion = "0.0.1",
+  brokerVersion = productVersion,
   optionalDependencies: Record<string, string> = Object.fromEntries(
     Object.values(BROKER_TARGETS).map(target => [target.packageName, productVersion]),
   ),
@@ -64,13 +64,13 @@ describe("release version policy", () => {
     const missing = Object.fromEntries(
       Object.values(BROKER_TARGETS).slice(1).map(target => [target.packageName, "1.6.20"]),
     );
-    expect(() => validateReleaseVersions(prepareFixture("1.6.20", "0.0.1", missing))).toThrow("missing");
+    expect(() => validateReleaseVersions(prepareFixture("1.6.20", "1.6.20", missing))).toThrow("missing");
 
     const mismatched = Object.fromEntries(
       Object.values(BROKER_TARGETS).map(target => [target.packageName, "1.6.20"]),
     );
     mismatched[Object.values(BROKER_TARGETS)[0].packageName] = "1.6.19";
-    expect(() => validateReleaseVersions(prepareFixture("1.6.20", "0.0.1", mismatched))).toThrow("1.6.19");
+    expect(() => validateReleaseVersions(prepareFixture("1.6.20", "1.6.20", mismatched))).toThrow("1.6.19");
 
     const extra = {
       ...Object.fromEntries(
@@ -78,18 +78,25 @@ describe("release version policy", () => {
       ),
       "wolfpack-bridge-freebsd-x64": "1.6.20",
     };
-    expect(() => validateReleaseVersions(prepareFixture("1.6.20", "0.0.1", extra))).toThrow(
+    expect(() => validateReleaseVersions(prepareFixture("1.6.20", "1.6.20", extra))).toThrow(
       "unexpected optional platform dependency",
     );
   });
 
-  test("keeps the broker Cargo version independent from the product version", () => {
-    const fixture = prepareFixture("1.6.20", "0.0.1");
-
-    expect(validateReleaseVersions(fixture)).toEqual({
+  test("requires the broker Cargo version to equal the product version", () => {
+    expect(validateReleaseVersions(prepareFixture("1.6.20"))).toEqual({
       productVersion: "1.6.20",
-      brokerVersion: "0.0.1",
+      brokerVersion: "1.6.20",
     });
+    expect(() => validateReleaseVersions(prepareFixture("1.6.20", "0.0.1"))).toThrow(
+      "broker/Cargo.toml package version 0.0.1 does not match package.json version 1.6.20; bump broker/Cargo.toml",
+    );
+  });
+
+  test("the checked-in broker Cargo version matches package.json", () => {
+    const root = join(import.meta.dir, "..", "..");
+    const versions = validateReleaseVersions(root);
+    expect(versions.brokerVersion).toBe(versions.productVersion);
   });
 
   test("accepts only exact version command output", () => {

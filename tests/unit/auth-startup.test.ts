@@ -5,7 +5,7 @@
  * Contract:
  *   - WOLFPACK_JWT_SECRET set, ≥32 chars  →  enforce auth ("ok")
  *   - WOLFPACK_JWT_SECRET set, <32 chars  →  refuse to start ("invalid")
- *   - WOLFPACK_JWT_SECRET unset           →  log an informational security notice and continue ("missing")
+ *   - WOLFPACK_JWT_SECRET unset           →  log a security warning and continue ("missing")
  *
  * The "invalid" case is the dangerous one — without this check, a typo
  * (e.g. setting the var to something short) silently disables all auth.
@@ -18,7 +18,7 @@ import { describe, expect, test } from "bun:test";
 import { getJwtAuthConfig, verifyJwtAuthAtStartup } from "../../src/auth.ts";
 
 describe("server startup JWT notice", () => {
-  test("logs an informational notice when JWT is intentionally unset", () => {
+  test("logs a warning (not an error) when JWT is intentionally unset", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-no-jwt-"));
     try {
       const result = spawnSync(process.execPath, ["-e", `
@@ -39,8 +39,9 @@ describe("server startup JWT notice", () => {
 
       expect(result.status).toBe(0);
       expect(result.stderr).not.toContain("WOLFPACK_JWT_SECRET is not set");
-      expect(result.stdout).toContain('"level":"info"');
-      expect(result.stdout).toContain("WOLFPACK_JWT_SECRET is not set");
+      const notice = result.stdout.split("\n").find((line) => line.includes("WOLFPACK_JWT_SECRET is not set"));
+      expect(notice).toBeDefined();
+      expect(JSON.parse(notice!).level).toBe("warn");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

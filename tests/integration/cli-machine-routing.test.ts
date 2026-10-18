@@ -51,6 +51,7 @@ function spawnCli(args: readonly string[], fixtureUrl: string): Subprocess<"igno
     env: {
       ...process.env,
       HOME: home,
+      WOLFPACK_DIR: join(home, ".wolfpack"),
       NO_COLOR: "1",
       WOLFPACK_JWT_SECRET: JWT_SECRET,
     },

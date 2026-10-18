@@ -1,14 +1,15 @@
 /** Non-interactive configuration shared by the CLI and server. */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir, platform } from "node:os";
+import { platform } from "node:os";
 import { isValidPort } from "./validation.js";
+import { resolveWolfpackDir } from "./wolfpack-dir.js";
 import { canonicalTailnetOrigin } from "./tailnet-machine-contract.js";
 
 export const IS_MACOS = platform() === "darwin";
 export const IS_LINUX = platform() === "linux";
 
-export const WOLFPACK_DIR = join(homedir(), ".wolfpack");
+export const WOLFPACK_DIR = resolveWolfpackDir();
 export const CONFIG_PATH = join(WOLFPACK_DIR, "config.json");
 
 export interface Config {

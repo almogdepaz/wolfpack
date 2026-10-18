@@ -23,7 +23,8 @@ import type {
 } from "../session-activity.js";
 import type { TriageStatus } from "../triage.js";
 import {
-  collectAgentStatusSources,
+  agentStatusSources,
+  readLocalStatusManifest,
   flushAgentRuntimeStateForShutdown,
   getAgentRuntimeStateStore,
   programStatusSource,
@@ -494,9 +495,14 @@ async function observeSessionFact(
     || outputSequence === undefined
     || previousFingerprint.outputSequence !== outputSequence
   );
-  const sample = shouldSampleRenderedState
-    ? await renderedActivitySample(backend, sessionKey, name, outputSequence)
-    : undefined;
+  // The project status manifest is read alongside the rendered sample so the
+  // fs work adds no await point after the ownership check below.
+  const [sample, statusManifest] = await Promise.all([
+    shouldSampleRenderedState
+      ? renderedActivitySample(backend, sessionKey, name, outputSequence)
+      : undefined,
+    identity?.projectPath ? readLocalStatusManifest(identity.projectPath) : undefined,
+  ]);
   if (!ownsObservationAuthority(authority)) return undefined;
   const currentRendered = sample === undefined ? previousFingerprint?.rendered : sample.rendered;
   const rawOutputChanged = shouldSampleRenderedState
@@ -570,7 +576,7 @@ async function observeSessionFact(
     broker: { state: brokerState, observedAt },
     sources: [
       ...(programStatus ? [programStatus] : []),
-      ...(identity?.projectPath ? collectAgentStatusSources(identity.projectPath, {
+      ...(statusManifest ? agentStatusSources(statusManifest, {
         state: runtimeOutputChanged ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE,
         stale: false,
         observedAt,

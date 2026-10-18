@@ -47,11 +47,9 @@ PLAN*.md
 .worktrees/
 public/.DS_Store
 .edc/
-edc-context/
 broker/target/
 .playwright-mcp/
 .context/
-docs/broker-protocol.md
 docs/ralph-broker-plan.md
 /docs/tailnet-release-matrix.md
 /docs/multi-machine-trial-feedback.md

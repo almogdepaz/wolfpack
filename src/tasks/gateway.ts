@@ -1,8 +1,8 @@
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { AGENT_KIND } from "../agent-kind.ts";
+import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import {
   TASK_API_ERROR,
@@ -983,7 +983,7 @@ export class TaskGateway {
   #localPeerOrigin(): string | undefined {
     try {
       const configured = this.#peerOrigin ?? (() => {
-        const hostname = JSON.parse(readFileSync(join(homedir(), ".wolfpack", "config.json"), "utf-8")).tailscaleHostname;
+        const hostname = JSON.parse(readFileSync(join(resolveWolfpackDir(), "config.json"), "utf-8")).tailscaleHostname;
         return typeof hostname === "string" ? `https://${hostname}` : "";
       })();
       return this.#isPeerOrigin(configured) ? configured : undefined;
@@ -996,7 +996,7 @@ export class TaskGateway {
     try {
       const url = new URL(value);
       const localOrigin = this.#peerOrigin ?? (() => {
-        const hostname = JSON.parse(readFileSync(join(homedir(), ".wolfpack", "config.json"), "utf-8")).tailscaleHostname;
+        const hostname = JSON.parse(readFileSync(join(resolveWolfpackDir(), "config.json"), "utf-8")).tailscaleHostname;
         return typeof hostname === "string" ? `https://${hostname}` : "";
       })();
       const configuredSuffix = process.env.WOLFPACK_TAILNET_SUFFIX?.trim();

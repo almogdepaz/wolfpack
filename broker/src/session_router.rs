@@ -35,7 +35,7 @@ use crate::codec::MAX_EVENT_PAYLOAD;
 use crate::protocol::{
     methods, ControlRequest, ControlResponse, CreateSessionParams, ErrorCode, Event,
     KillSessionParams, ListSessionsParams, ProtocolError, ResizeParams, ResponsePayload,
-    SessionInfo, SessionInfoParams, SnapshotParams,
+    SessionInfo, SessionInfoParams, SnapshotParams, PROTOCOL_VERSION,
 };
 use crate::registry::{CreateError, CreateOptions, Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::session::{EventSender, KillError, KillOutcome, ResizeError, SpawnError};
@@ -69,6 +69,13 @@ impl SessionRouter {
     pub fn handle(&self, req: ControlRequest) -> ControlResponse {
         let id = req.id;
         match req.method.as_str() {
+            methods::HELLO => ControlResponse::ok(
+                id,
+                ResponsePayload::Hello {
+                    protocol_version: PROTOCOL_VERSION,
+                    broker_version: env!("CARGO_PKG_VERSION").to_string(),
+                },
+            ),
             methods::LIST_SESSIONS => match req.parse_params::<ListSessionsParams>() {
                 Ok(_) => self.list(id),
                 Err(e) => invalid_request(id, format!("list_sessions params: {e}")),
@@ -419,6 +426,20 @@ mod tests {
         for s in reg.list() {
             let _ = s.kill(libc::SIGKILL);
             let _ = s.wait_for_exit(Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    fn hello_reports_protocol_and_crate_version() {
+        let (router, _reg) = router();
+        let resp = router.handle(req(1, methods::HELLO, json!({})));
+        assert_eq!(resp.status, Status::Ok);
+        match resp.payload.expect("payload") {
+            ResponsePayload::Hello { protocol_version, broker_version } => {
+                assert_eq!(protocol_version, PROTOCOL_VERSION);
+                assert_eq!(broker_version, env!("CARGO_PKG_VERSION"));
+            }
+            other => panic!("unexpected: {other:?}"),
         }
     }
 

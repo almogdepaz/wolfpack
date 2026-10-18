@@ -1,6 +1,6 @@
 [package]
 name = "wolfpack-broker"
-version = "0.0.1"
+version = "1.6.26"
 edition = "2021"
 publish = false
 description = "Wolfpack PTY broker daemon and protocol contract."

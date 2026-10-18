@@ -109,6 +109,7 @@ export async function createTailnetOriginServerFixture(): Promise<TailnetOriginS
     env: {
       ...process.env,
       HOME: home,
+      WOLFPACK_DIR: join(home, ".wolfpack"),
       WOLFPACK_TEST: "1",
       WOLFPACK_PORT: String(TAILNET_CONFIG_PORT),
     },

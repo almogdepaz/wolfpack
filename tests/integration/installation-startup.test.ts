@@ -36,6 +36,8 @@ function fixture(): Fixture {
   const home = mkdtempSync(join(suite, "home-"));
   const state = join(home, ".wolfpack");
   const bin = join(home, "commands");
+  // The state dir is XDG_RUNTIME_DIR and the broker socket parent; the broker refuses a group-writable parent (umask 0002).
+  mkdirSync(state, { mode: 0o700 });
   for (const path of [join(state, "bin"), bin, join(home, "Dev"), join(home, "tmp")]) mkdirSync(path, { recursive: true });
   copyFileSync(brokerBinary, join(state, "bin", "wolfpack-broker"));
   chmodSync(join(state, "bin", "wolfpack-broker"), 0o755);

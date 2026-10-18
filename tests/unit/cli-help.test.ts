@@ -72,7 +72,7 @@ function runServiceRestartCli(serviceRestartResult: boolean): CliResult {
       "--server-only",
     ], {
       cwd: root,
-      env: { ...process.env, HOME: home, NO_COLOR: "1", WOLFPACK_SERVICE: "1" },
+      env: { ...process.env, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), NO_COLOR: "1", WOLFPACK_SERVICE: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -129,7 +129,7 @@ async function runDashboard(fixture: DashboardServiceFixture): Promise<Dashboard
   try {
     const child = Bun.spawn([process.execPath, "--preload", preloadPath, cliEntry], {
       cwd: root,
-      env: { ...environment, HOME: home, NO_COLOR: "1" },
+      env: { ...environment, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), NO_COLOR: "1" },
       stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 3000,
     });
     const [exitCode, stdout, stderr] = await Promise.all([
@@ -411,12 +411,13 @@ describe("cli help dispatch", () => {
   });
 
   test("uninstall refusal writes its diagnostic to stderr", () => {
-    const child = runCli(["uninstall"]);
+    // Names the directory uninstall would actually remove (WOLFPACK_DIR-aware).
+    const child = runCli(["uninstall"], { WOLFPACK_DIR: "/tmp/wolfpack-uninstall-target" });
 
     expect(child.exitCode).toBe(1);
     expect(child.stdout).toBe("");
     expect(child.stderr).toContain("Refusing to uninstall without confirmation.");
-    expect(child.stderr).toContain("This will recursively delete ~/.wolfpack/ (keys, secrets, config).");
+    expect(child.stderr).toContain("This will recursively delete /tmp/wolfpack-uninstall-target/ (keys, secrets, config).");
     expect(child.stderr).toContain("Re-run with: wolfpack uninstall --yes");
     expect(child.stderr).not.toContain("\x1b[");
   });

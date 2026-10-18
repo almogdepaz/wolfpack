@@ -81,6 +81,13 @@ export function validateReleaseVersions(root: string): ReleaseVersions {
 
   const brokerVersion = readBrokerVersion(root);
   matchSemVer(brokerVersion, "broker/Cargo.toml package version");
+  // `hello` reports the Cargo version; doctor compares it with the CLI's to
+  // spot a stale broker, so the two must move together.
+  if (brokerVersion !== productVersion) {
+    throw new Error(
+      `broker/Cargo.toml package version ${brokerVersion} does not match package.json version ${productVersion}; bump broker/Cargo.toml (and broker/Cargo.lock) with package.json`,
+    );
+  }
   return { productVersion, brokerVersion };
 }
 
