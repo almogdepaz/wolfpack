@@ -285,6 +285,32 @@ describe("session control fast-path requests", () => {
     });
   });
 
+  test("create plan mode sends the plan path, and an unreadable reply without a path stays generic", () => {
+    const script = `
+      const calls = [];
+      globalThis.fetch = async (url, init) => {
+        calls.push(JSON.parse(String(init?.body)));
+        return Response.json({ error: "plan file not readable", code: "PLAN_FILE_UNREADABLE", planPath: 7 }, { status: 404 });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      const code = await runSessionCommand(["create", "branchout", "--harness", "pi", "--plan", ".plans/000-task.md", "--json"]);
+      const expected = [{ project: "branchout", harness: "pi", plan: { path: ".plans/000-task.md" } }];
+      if (JSON.stringify(calls) !== JSON.stringify(expected)) process.exit(99);
+      process.exit(code);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: { code: "PLAN_FILE_UNREADABLE", message: "plan file not readable" },
+    });
+  });
+
   test("agent spawn performs the existing one-request child flow", () => {
     const script = `
       process.env.WOLFPACK_SESSION_NAME = "wolfpack";
@@ -402,6 +428,7 @@ describe("session control fast-path requests", () => {
     expect(JSON.parse(child.stdout.toString())).toEqual({
       ok: false,
       error: { code: "PLAN_FILE_UNREADABLE", message: "plan file not readable: /srv/branchout/.plans/x.md" },
+      planPath: "/srv/branchout/.plans/x.md",
     });
   });
 

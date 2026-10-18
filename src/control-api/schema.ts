@@ -242,6 +242,7 @@ function sessionCreateRequestSchema(): JsonSchema {
       taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
     },
     additionalProperties: false,
+    not: { required: ["plan", "initialPrompt"] },
     oneOf: [
       existingProjectSelectorSchema(ordinaryProperties),
       object(taskWorkerProperties, ["projectDir", "taskWorker"]),
@@ -292,6 +293,7 @@ function sessionOpenRequestSchema(): JsonSchema {
       taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
     },
     additionalProperties: false,
+    not: { required: ["plan", "initialPrompt"] },
     oneOf: [
       existingProjectSelectorSchema(ordinaryProperties, ["parentSession"]),
       object(taskWorkerProperties, ["parentSession", "projectDir", "taskWorker"]),
@@ -469,7 +471,7 @@ export const controlApiSource: ControlApiSource = {
     ExtensionDocumentReceipt: object({ requestId: { type: "string", format: "uuid" }, scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), revision: { type: "integer", minimum: 1 }, acceptedAt: string(), payloadDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, baseRevision: { type: "integer", minimum: 0 }, schemaVersion: { type: "integer", minimum: 1 } }, ["requestId", "scopeSessionId", "extensionId", "documentId", "revision", "acceptedAt", "payloadDigest", "baseRevision", "schemaVersion"]),
     SessionPlanRequest: {
       ...object({ path: sessionPlanPathSchema }, ["path"]),
-      description: "Mutually exclusive with initialPrompt. The server resolves a relative path against the selected project directory, verifies it exists, and launches with a compact prompt naming the resolved path; missing files return 404 PLAN_FILE_UNREADABLE with planPath.",
+      description: "Mutually exclusive with initialPrompt. The server resolves a relative path against the selected project directory, verifies it is a readable regular file, and launches with a compact prompt naming the resolved path; otherwise it returns 404 PLAN_FILE_UNREADABLE with planPath.",
     },
     SessionOpenPlanRequest: {
       ...object({ path: sessionPlanPathSchema, notifyParent: { const: true } }, ["path"]),

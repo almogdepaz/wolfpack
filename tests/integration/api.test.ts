@@ -2621,13 +2621,26 @@ describe("agent-native top-level session control", () => {
       code: "PLAN_FILE_UNREADABLE",
       planPath: join(projectDir, "missing.md"),
     });
+    mkdirSync(join(projectDir, "plan-dir"));
+    writeFileSync(join(projectDir, "locked.md"), "# plan\n");
+    chmodSync(join(projectDir, "locked.md"), 0o000);
+    // Root ignores mode bits, so a locked file only proves unreadability for other users.
+    for (const path of process.getuid?.() === 0 ? ["plan-dir"] : ["plan-dir", "locked.md"]) {
+      const res = await post("/api/session-create", { projectDir, harness: "pi", plan: { path } });
+      expect(res.status, path).toBe(404);
+      expect(await res.json()).toMatchObject({ code: "PLAN_FILE_UNREADABLE", planPath: join(projectDir, path) });
+    }
     for (const body of [
       { projectDir, harness: "pi", plan: { path: "/etc/hosts", notifyParent: true } },
       { projectDir, harness: "pi", plan: { path: "/etc/hosts" }, initialPrompt: "x" },
+      { projectDir, harness: "pi", plan: { path: "/etc/hosts" }, taskWorker: true },
     ]) {
       const res = await post("/api/session-create", body);
-      expect(res.status).toBe(400);
+      expect(res.status, JSON.stringify(body)).toBe(400);
     }
+    const shell = await post("/api/session-create", { projectDir, harness: "shell", plan: { path: "/etc/hosts" } });
+    expect(shell.status).toBe(400);
+    expect(await shell.json()).toMatchObject({ code: SESSION_CREATE_ERROR.UNSUPPORTED_HARNESS });
     expect(mockBackend.lastCreateArgs).toBeNull();
   });
 
@@ -3331,6 +3344,7 @@ describe("POST /api/session-open", () => {
     const prompt = String(mockBackend.lastCreateArgs?.initialPrompt);
     expect(prompt).toStartWith(`implement ${join(projectDir, ".plans", "000-task.md")}. `);
     expect(prompt).toContain("follow the plan's commit/push boundary; if it states none, do not commit, push, merge, or deploy.");
+    expect(prompt).toContain("update plan status as work progresses unless the plan restricts writes.");
     expect(prompt).toContain("wolfpack agent notify-parent");
     expect(prompt).not.toContain("plan body");
   });
@@ -3350,7 +3364,21 @@ describe("POST /api/session-open", () => {
       code: "PLAN_FILE_UNREADABLE",
       planPath: join(projectDir, ".plans", "missing.md"),
     });
+    mkdirSync(join(projectDir, ".plans"));
+    const dir = await post("/api/session-open", { projectDir, parentSession: "wolf-1", plan: { path: ".plans" } });
+    expect(dir.status).toBe(404);
+    expect(await dir.json()).toMatchObject({ code: "PLAN_FILE_UNREADABLE", planPath: join(projectDir, ".plans") });
     expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("keeps an absolute plan path unchanged", async () => {
+    const projectDir = createExplicitProjectDir("child absolute plan");
+    const planPath = join(createExplicitProjectDir("plan elsewhere"), "plan.md");
+    writeFileSync(planPath, "# plan\n");
+    const res = await post("/api/session-open", { projectDir, parentSession: "wolf-1", plan: { path: planPath } });
+
+    expect(res.status).toBe(200);
+    expect(String(mockBackend.lastCreateArgs?.initialPrompt)).toStartWith(`implement ${planPath}. `);
   });
 
   test("rejects plan combined with an initial prompt or malformed plan", async () => {
@@ -3362,7 +3390,14 @@ describe("POST /api/session-open", () => {
     }
     const both = await post("/api/session-open", { project: "my-app", parentSession: "wolf-1", plan: { path: "/etc/hosts" }, initialPrompt: "x" });
     expect(both.status).toBe(400);
+    const worker = await post("/api/session-open", { projectDir: createExplicitProjectDir("child plan worker"), parentSession: "wolf-1", plan: { path: "/etc/hosts" }, taskWorker: true });
+    expect(worker.status).toBe(400);
     expect(mockBackend.lastCreateArgs).toBeNull();
+    // The limit counts code points, matching the schema's maxLength.
+    const atLimit = await post("/api/session-open", { project: "my-app", parentSession: "wolf-1", plan: { path: "😀".repeat(4096) } });
+    expect(atLimit.status).toBe(404);
+    const overLimit = await post("/api/session-open", { project: "my-app", parentSession: "wolf-1", plan: { path: "😀".repeat(4097) } });
+    expect(overLimit.status).toBe(400);
   });
 
   test("rejects relative and ambiguous explicit directory selections before child launch", async () => {

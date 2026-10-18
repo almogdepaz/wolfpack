@@ -55,7 +55,6 @@ import {
   NOTIFY_PARENT_PROMPT,
   PLAN_FILE_UNREADABLE,
   PLAN_FILE_UNREADABLE_MESSAGE,
-  SESSION_PLAN_MAX_PATH_LENGTH,
 } from "../session-plan-contract.js";
 import type { SessionPlanRequest } from "../session-plan-contract.js";
 import type { NotifyDelivery } from "../notify-contract.js";
@@ -825,11 +824,13 @@ function writeOpenError(
   message: string,
   exitCode: number,
   recovery: TaskWorkerRecovery | undefined = undefined,
+  planPath: string | undefined = undefined,
 ): number {
   if (output === "json") jsonOut({
     ok: false,
     error: { code, message },
     ...(recovery && { createdSession: recovery.createdSession, cleanup: recovery.cleanup }),
+    ...(planPath !== undefined && { planPath }),
   });
   else printError(red(message));
   return exitCode;
@@ -926,15 +927,16 @@ const CREATE_API_ERRORS: Readonly<Record<SessionCreateErrorCode, CliErrorDescrip
   },
 };
 
-function planUnreadableMessage(body: string): string {
+/** The server-resolved path from a PLAN_FILE_UNREADABLE body, if well-formed. */
+function unreadablePlanPath(code: string, body: string): string | undefined {
+  if (code !== PLAN_FILE_UNREADABLE) return undefined;
   try {
     const parsed: unknown = JSON.parse(body);
     const planPath = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).planPath : undefined;
-    if (typeof planPath === "string" && planPath.length <= SESSION_PLAN_MAX_PATH_LENGTH) {
-      return `${PLAN_FILE_UNREADABLE_MESSAGE}: ${planPath}`;
-    }
-  } catch { /* malformed body: fall back to the generic message */ }
-  return PLAN_FILE_UNREADABLE_MESSAGE;
+    return typeof planPath === "string" && planPath.length > 0 ? planPath : undefined;
+  } catch {
+    return undefined; // malformed body: the generic message still applies
+  }
 }
 
 function mapCreateApiError(output: OutputMode, error: unknown): number {
@@ -944,12 +946,14 @@ function mapCreateApiError(output: OutputMode, error: unknown): number {
   }
   if (apiError.code && isSessionCreateErrorCode(apiError.code)) {
     const known = CREATE_API_ERRORS[apiError.code];
+    const planPath = unreadablePlanPath(apiError.code, apiError.body ?? "");
     return writeOpenError(
       output,
       apiError.code,
-      apiError.code === PLAN_FILE_UNREADABLE ? planUnreadableMessage(apiError.body ?? "") : known.message,
+      planPath === undefined ? known.message : `${PLAN_FILE_UNREADABLE_MESSAGE}: ${planPath}`,
       known.exitCode,
       parseTaskWorkerRecovery(apiError.body ?? "", apiError.code),
+      planPath,
     );
   }
   return writeOpenError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
@@ -962,12 +966,14 @@ function mapOpenApiError(output: OutputMode, error: unknown): number {
   }
   if (apiError.code && isSessionOpenErrorCode(apiError.code)) {
     const known = sessionOpenCliError(apiError.code);
+    const planPath = unreadablePlanPath(apiError.code, apiError.body ?? "");
     return writeOpenError(
       output,
       apiError.code,
-      apiError.code === PLAN_FILE_UNREADABLE ? planUnreadableMessage(apiError.body ?? "") : known.message,
+      planPath === undefined ? known.message : `${PLAN_FILE_UNREADABLE_MESSAGE}: ${planPath}`,
       known.exitCode,
       parseTaskWorkerRecovery(apiError.body ?? "", apiError.code),
+      planPath,
     );
   }
   if (apiError.status === 404) {

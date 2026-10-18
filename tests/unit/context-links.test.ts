@@ -26,6 +26,8 @@ test("declared targets in this checkout are not gitignored", () => {
   const declared = JSON.parse(readFileSync(join(repo, "edc-context/manifest.json"), "utf8"));
   const targets = [declared.repoContextFile, declared.build?.buildInfoFile, ...declared.modules.map((m: { doc: string }) => m.doc), ...Object.values(declared.reports ?? {})].filter(Boolean);
   const ignored = Bun.spawnSync(["git", "check-ignore", "--stdin"], { cwd: repo, stdin: Buffer.from(targets.join("\n")) });
+  // 0 = some ignored, 1 = none ignored; anything else (no git, not a repo) must not pass vacuously.
+  expect([0, 1]).toContain(ignored.exitCode);
   expect(ignored.stdout.toString().trim().split("\n").filter(Boolean)).toEqual([]);
 });
 test("minimal valid routes, with optional empty reports", () => expect(checkContextLinks(root)).toEqual([]));

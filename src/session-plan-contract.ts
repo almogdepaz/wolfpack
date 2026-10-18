@@ -3,6 +3,8 @@
  * child. The server resolves `path` against the selected project directory, so
  * a relative plan means the same file the child reads.
  */
+import { unicodeCodePointLength } from "./session-prompt-contract.js";
+
 export interface SessionPlanRequest {
   readonly path: string;
   readonly notifyParent?: true;
@@ -20,13 +22,13 @@ export function isSessionPlanRequest(value: unknown, allowNotifyParent: boolean)
   return Object.keys(plan).every(key => key === "path" || (allowNotifyParent && key === "notifyParent"))
     && typeof plan.path === "string"
     && plan.path.length > 0
-    && plan.path.length <= SESSION_PLAN_MAX_PATH_LENGTH
+    && unicodeCodePointLength(plan.path) <= SESSION_PLAN_MAX_PATH_LENGTH
     && !plan.path.includes("\0")
     && (plan.notifyParent === undefined || plan.notifyParent === true);
 }
 
 /** Compact startup prompt: points the child at the plan without copying it. */
 export function compactPlanPrompt(planPath: string, notifyParent?: true): string {
-  const base = `implement ${planPath}. read repo instructions and the full plan first; update plan status as work progresses. preserve unrelated dirty work. follow the plan's commit/push boundary; if it states none, do not commit, push, merge, or deploy. when done or blocked, leave this session open and summarize changes, verification, and concerns.`;
+  const base = `implement ${planPath}. read repo instructions and the full plan first; update plan status as work progresses unless the plan restricts writes. preserve unrelated dirty work. follow the plan's commit/push boundary; if it states none, do not commit, push, merge, or deploy. when done or blocked, leave this session open and summarize changes, verification, and concerns.`;
   return notifyParent ? `${base} ${NOTIFY_PARENT_PROMPT}` : base;
 }

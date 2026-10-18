@@ -6,7 +6,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { access } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { AGENT_KIND, isCreatableHarness } from "../agent-kind.js";
@@ -213,11 +214,13 @@ async function planLaunchPrompt(
 ): Promise<{ readonly prompt: string } | { readonly unreadable: string }> {
   const planPath = resolve(projectDir, plan.path);
   try {
-    await access(planPath);
+    // The child runs as this uid, so readable here means readable by the child.
+    await access(planPath, fsConstants.R_OK);
+    if ((await stat(planPath)).isFile()) return { prompt: compactPlanPrompt(planPath, plan.notifyParent) };
   } catch {
-    return { unreadable: planPath };
+    // Missing or unreadable: reported with the resolved path below.
   }
-  return { prompt: compactPlanPrompt(planPath, plan.notifyParent) };
+  return { unreadable: planPath };
 }
 
 function planUnreadable(res: Parameters<RouteHandler>[1], planPath: string): void {

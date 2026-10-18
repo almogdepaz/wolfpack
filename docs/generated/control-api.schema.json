@@ -1830,6 +1830,12 @@
           }
         },
         "additionalProperties": false,
+        "not": {
+          "required": [
+            "plan",
+            "initialPrompt"
+          ]
+        },
         "oneOf": [
           {
             "type": "object",
@@ -2010,6 +2016,12 @@
           }
         },
         "additionalProperties": false,
+        "not": {
+          "required": [
+            "plan",
+            "initialPrompt"
+          ]
+        },
         "oneOf": [
           {
             "type": "object",
@@ -4838,7 +4850,7 @@
         "path"
       ],
       "additionalProperties": false,
-      "description": "Mutually exclusive with initialPrompt. The server resolves a relative path against the selected project directory, verifies it exists, and launches with a compact prompt naming the resolved path; missing files return 404 PLAN_FILE_UNREADABLE with planPath."
+      "description": "Mutually exclusive with initialPrompt. The server resolves a relative path against the selected project directory, verifies it is a readable regular file, and launches with a compact prompt naming the resolved path; otherwise it returns 404 PLAN_FILE_UNREADABLE with planPath."
     },
     "SessionOpenPlanRequest": {
       "type": "object",

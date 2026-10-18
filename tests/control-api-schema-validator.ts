@@ -26,6 +26,14 @@ export function validateControlApiSchemaValue(
   const resolved = resolveControlApiSchemaRef(schema, root);
   if (resolved !== schema) return validateControlApiSchemaValue(resolved, value, root, path);
 
+  if (isJsonObject(resolved.not)) {
+    const { not: forbidden, ...withoutNot } = resolved;
+    const errors = validateControlApiSchemaValue(withoutNot, value, root, path);
+    return validateControlApiSchemaValue(forbidden, value, root, path).length === 0
+      ? [...errors, `${path} matched a forbidden schema`]
+      : errors;
+  }
+
   if (Array.isArray(resolved.anyOf)) {
     const variants = resolved.anyOf.map(candidate => validateControlApiSchemaValue(candidate, value, root, path));
     return variants.some(errors => errors.length === 0)

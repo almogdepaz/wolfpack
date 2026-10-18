@@ -38,4 +38,16 @@ describe("control api schema validator", () => {
     expect(validateControlApiSchemaValue(schema, { newProjectParent: "/tmp" }, root)).not.toEqual([]);
     expect(validateControlApiSchemaValue(schema, { newProject: "child", newProjectParent: "/tmp" }, root)).toEqual([]);
   });
+
+  test("enforces emitted negated schemas alongside sibling keywords", () => {
+    const schema = {
+      type: "object",
+      properties: { plan: {}, initialPrompt: {} },
+      not: { required: ["plan", "initialPrompt"] },
+      anyOf: [{ required: ["plan"] }, { required: ["initialPrompt"] }],
+    };
+
+    expect(validateControlApiSchemaValue(schema, { plan: 1, initialPrompt: "x" }, root)).not.toEqual([]);
+    expect(validateControlApiSchemaValue(schema, { plan: 1 }, root)).toEqual([]);
+  });
 });

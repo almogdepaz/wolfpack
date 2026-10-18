@@ -553,6 +553,17 @@ describe("control api schema compatibility samples", () => {
     }, artifact)).toEqual([]);
   });
 
+  test("both launch contracts accept a plan but never with an initial prompt", () => {
+    for (const [operationId, selector] of [
+      ["createTopLevelSession", { project: "wolfpack", harness: "pi" }],
+      ["openSession", { project: "wolfpack", parentSession: "pi-main" }],
+    ] as const) {
+      const request = httpRequest(operationId);
+      expect(validate(request, { ...selector, plan: { path: ".plans/000-task.md" } }, artifact), operationId).toEqual([]);
+      expect(validate(request, { ...selector, plan: { path: ".plans/000-task.md" }, initialPrompt: "x" }, artifact), operationId).not.toEqual([]);
+    }
+  });
+
   test("publishes opt-in task-worker readiness on both launch contracts", () => {
     const endpoint = { relay: "wolfpack-pi-tasks-v2", id: "e4ef9a6c-90e2-4e08-a74e-904a2e4f59f5" };
     const topLevel = httpRequest("createTopLevelSession");
