@@ -3354,6 +3354,45 @@ describe("POST /api/session-open", () => {
     }
   });
 
+  test.each(
+    ["available", "missing-executable", "missing-extension"].flatMap(resource =>
+      [false, true].map(dryRun => [resource, dryRun] as const)),
+  )("rejects inherited non-pi task workers with %s resources (dry-run: %s)", async (resource, dryRun) => {
+    useParentHarness("claude");
+    const projectDir = createExplicitProjectDir("inherited-worker-gate");
+    const executable = join(projectDir, "pi");
+    const extension = join(projectDir, "extension.ts");
+    if (resource !== "missing-executable") {
+      writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+      chmodSync(executable, 0o755);
+    }
+    if (resource !== "missing-extension") writeFileSync(extension, "export {}\n");
+    const priorExecutable = process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE;
+    const priorExtension = process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION;
+    const priorPolicyPath = process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
+    process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE = executable;
+    process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION = extension;
+    process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = join(projectDir, "absent-policy.json");
+    try {
+      const res = await post("/api/session-open", {
+        projectDir, parentSession: "wolf-1", taskWorker: true,
+        ...(dryRun && { taskWorkerDryRun: true }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "invalid session-open request", code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    } finally {
+      if (priorExecutable === undefined) delete process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE;
+      else process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE = priorExecutable;
+      if (priorExtension === undefined) delete process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION;
+      else process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION = priorExtension;
+      if (priorPolicyPath === undefined) delete process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
+      else process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = priorPolicyPath;
+    }
+  });
+
   test("accepts model selection for a pi child of a non-pi parent", async () => {
     useParentHarness("claude");
     const model = "anthropic/claude-opus-4-1";

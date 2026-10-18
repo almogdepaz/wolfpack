@@ -62,7 +62,8 @@ import {
 import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity } from "./session-identity.js";
 import { createTopLevelSession } from "./session-create.js";
-import { openSubSession, SessionOpenError } from "./session-open.js";
+import { openSubSession, resolveSubSessionHarness, SessionOpenError } from "./session-open.js";
+import type { SessionOpenBackend } from "./session-open.js";
 import {
   TaskWorkerReadinessError,
   prepareTaskWorkerLaunch,
@@ -784,22 +785,6 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       initialPrompt = planned.prompt;
     }
 
-    let taskWorker;
-    try {
-      taskWorker = body.taskWorker === true
-        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
-        : undefined;
-    } catch (error: unknown) {
-      if (error instanceof TaskWorkerReadinessError) {
-        return json(res, taskWorkerFailureBody(error), 503);
-      }
-      throw error;
-    }
-
-    if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
-      return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
-    }
-
     const backend = getBackend();
     if (!backend.listIdentities) {
       return json(res, {
@@ -809,16 +794,32 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     }
 
     try {
+      const sessionOpenBackend: SessionOpenBackend = {
+        list: () => backend.list(),
+        listIdentities: () => backend.listIdentities!(),
+        createSession: (name, cwd, cmd, loadSettings, options) => (
+          backend.createSession(name, cwd, cmd, loadSettings, options)
+        ),
+        inspectSession: backend.inspectSession?.bind(backend),
+        killSessionById: backend.killSessionById.bind(backend),
+      };
+      if (body.taskWorker === true) {
+        const childHarness = await resolveSubSessionHarness(
+          sessionOpenBackend, body.parentSession, body.harness,
+        );
+        if (childHarness !== AGENT_KIND.PI.id) {
+          throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
+        }
+      }
+      const taskWorker = body.taskWorker === true
+        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
+        : undefined;
+      if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+        return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
+      }
+
       const result = await openSubSession({
-        backend: {
-          list: () => backend.list(),
-          listIdentities: () => backend.listIdentities!(),
-          createSession: (name, cwd, cmd, loadSettings, options) => (
-            backend.createSession(name, cwd, cmd, loadSettings, options)
-          ),
-          inspectSession: backend.inspectSession?.bind(backend),
-          killSessionById: backend.killSessionById.bind(backend),
-        },
+        backend: sessionOpenBackend,
         parentSession: body.parentSession,
         project,
         projectDir,

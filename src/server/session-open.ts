@@ -130,6 +130,15 @@ async function readParentState(
   return { names, identity, harness: identity.agentKind };
 }
 
+export async function resolveSubSessionHarness(
+  backend: SessionOpenBackend,
+  parentSession: string,
+  harness?: OpenableHarness,
+): Promise<OpenableHarness> {
+  const parentState = await readParentState(backend, parentSession);
+  return harness ?? parentState.harness;
+}
+
 export function chooseSubAgentSessionName(
   parentSession: string,
   existingNames: readonly string[],
