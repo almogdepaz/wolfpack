@@ -282,6 +282,9 @@ function buildCsp(nonce: string): string {
     "style-src 'self' 'unsafe-inline'",
     "connect-src 'self' wss: https: data:",
     "img-src 'self' data:",
+    // default-src does not cover frame-ancestors; the control room is never
+    // embedded, and framing would allow clickjacking of destructive controls.
+    "frame-ancestors 'none'",
   ].join("; ");
 }
 
@@ -292,6 +295,8 @@ export function serveHtml(res: ServerResponse, html: string, contentType = "text
     "Content-Type": contentType,
     "Cache-Control": "no-cache",
     "Content-Security-Policy": buildCsp(nonce),
+    // Legacy-browser counterpart of frame-ancestors 'none'.
+    "X-Frame-Options": "DENY",
   };
   let content = Buffer.from(html.replace(/<script(?=[\s>])/g, `<script nonce="${nonce}"`));
   if (content.byteLength >= MIN_COMPRESS_BYTES) {

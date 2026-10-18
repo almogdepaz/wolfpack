@@ -235,6 +235,27 @@ D("BrokerBackend ↔ real broker", () => {
     await backend!.killSession(ATOMIC_SESSION);
   }, 15_000);
 
+  test("input larger than the daemon's input frame ceiling arrives intact without dropping the connection", async () => {
+    const LARGE_INPUT_SESSION = "agent-it-large-input";
+    const inputBytes = 300 * 1024;
+    const scriptPath = path.join(tmpdir, "large-input.sh");
+    const capturePath = path.join(tmpdir, "large-input.bin");
+    fs.writeFileSync(scriptPath, `#!/bin/sh\nstty raw -echo\n: > large-input.ready\nhead -c ${inputBytes} > large-input.bin.tmp && mv large-input.bin.tmp large-input.bin\nsleep 30\n`, { mode: 0o700 });
+    await backend!.createSession(LARGE_INPUT_SESSION, tmpdir, "./large-input.sh", () => ({ agentCmd: "shell" }));
+    try {
+      // Raw mode must be active first: canonical-mode line limits would drop a long unterminated line.
+      await waitForFile(path.join(tmpdir, "large-input.ready"), 5_000);
+      const text = Array.from({ length: inputBytes }, (_, index) => String.fromCharCode(97 + (index % 26))).join("");
+      await backend!.send(LARGE_INPUT_SESSION, text, true);
+      await waitForFile(capturePath, 10_000);
+      expect(fs.readFileSync(capturePath, "utf8")).toBe(text);
+      expect(client!.isConnected()).toBe(true);
+      expect((await client!.request("list_sessions", {})).status).toBe("ok");
+    } finally {
+      await backend!.killSession(LARGE_INPUT_SESSION);
+    }
+  }, 20_000);
+
   test("resize changes broker-tracked dimensions without disturbing the session", async () => {
     await backend!.resize(SESSION, 100, 30);
     // Session should still be alive and snapshot-able after resize.

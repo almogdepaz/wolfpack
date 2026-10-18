@@ -2108,3 +2108,94 @@ async fn oversized_frame_drops_connection_server_survives() {
     drop(good);
     h.shutdown().await;
 }
+
+/// Creation metadata that cannot fit the mandatory `session_started` event
+/// frame is rejected before spawn with `invalid_request`; neither the creator
+/// nor an unrelated observer loses its connection. Metadata that fits still
+/// creates and fans out normally.
+#[tokio::test]
+async fn create_rejects_metadata_that_cannot_fit_the_started_event() {
+    let h = Harness::boot().await;
+    let mut creator = connect(&h.socket_path).await;
+    let mut observer = connect(&h.socket_path).await;
+    let mut creator_events: Vec<Event> = Vec::new();
+    let mut observer_events: Vec<Event> = Vec::new();
+
+    let oversized = "n".repeat(270 * 1024);
+    let resp = round_trip_with_events(
+        &mut creator,
+        create_request(1, Some(&oversized), &["sleep", "30"]),
+        &mut creator_events,
+    )
+    .await;
+    assert_eq!(resp.status, Status::Error);
+    assert_eq!(resp.error.expect("error").code, ErrorCode::InvalidRequest);
+    assert!(h.registry.list().is_empty(), "rejected create must not spawn");
+
+    for (stream, id) in [(&mut creator, 2), (&mut observer, 3)] {
+        let resp = round_trip(
+            stream,
+            ControlRequest { id, method: methods::LIST_SESSIONS.into(), params: json!({}) },
+        )
+        .await;
+        assert_eq!(resp.status, Status::Ok, "connection {id} must stay usable");
+    }
+
+    let fitting = "f".repeat(200 * 1024);
+    let resp = round_trip_with_events(
+        &mut creator,
+        create_request(4, Some(&fitting), &["sleep", "30"]),
+        &mut creator_events,
+    )
+    .await;
+    assert_eq!(resp.status, Status::Ok);
+    let created = match resp.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session,
+        other => panic!("unexpected: {other:?}"),
+    };
+    let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
+    let _ = await_event_buffered(&mut observer, &mut observer_events, deadline, |ev| {
+        matches!(ev, Event::SessionStarted { session } if session.id == created.id)
+    })
+    .await;
+
+    h.shutdown().await;
+}
+
+/// A child that stops reading its PTY blocks the input write. That write must
+/// not occupy an async executor thread: on a one-worker runtime another
+/// connection's list and kill must still be served while input is blocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn blocked_pty_input_does_not_stall_other_connections() {
+    let h = Harness::boot().await;
+    let ready = h._dir.path().join("raw.ready");
+    let script = format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display());
+    let mut writer = connect(&h.socket_path).await;
+    let mut other = connect(&h.socket_path).await;
+    let resp = round_trip(&mut writer, create_request(1, Some("stalled-input"), &["sh", "-c", &script])).await;
+    assert_eq!(resp.status, Status::Ok);
+    let session_id = match resp.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session.id,
+        other => panic!("unexpected: {other:?}"),
+    };
+    timeout(TEST_TIMEOUT, async {
+        while !ready.exists() { tokio::time::sleep(POLL_INTERVAL).await; }
+    }).await.expect("raw mode ready timeout");
+
+    timeout(TEST_TIMEOUT, write_frame_async(&mut writer, &Frame::InputBinary(InputFrame {
+        session_id, data: vec![b'x'; 256 * 1024 - 16],
+    }))).await.expect("input write timeout").expect("input write");
+
+    let list = timeout(Duration::from_secs(1), round_trip(&mut other, ControlRequest {
+        id: 2, method: methods::LIST_SESSIONS.into(), params: json!({}),
+    })).await.expect("list must be served while another connection's input is blocked");
+    assert_eq!(list.status, Status::Ok);
+    let kill = timeout(Duration::from_secs(1), round_trip(&mut other, ControlRequest {
+        id: 3, method: methods::KILL_SESSION.into(),
+        params: json!({ "session_id": session_id, "signal": libc::SIGKILL }),
+    })).await.expect("kill must be served while another connection's input is blocked");
+    assert_eq!(kill.status, Status::Ok);
+
+    drop(writer);
+    h.shutdown().await;
+}

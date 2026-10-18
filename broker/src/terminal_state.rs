@@ -65,7 +65,7 @@ const _: () = assert!(
 // per input byte (`\u00XX`), plus fixed field overhead per record. One root
 // record must fit an event frame; every record must fit a `session_info`
 // response next to the SessionInfo metadata.
-const PROGRAM_STATUS_RECORD_JSON_BYTES: usize = 6 * MAX_PROGRAM_STATUS_RECORD_TEXT_BYTES + 1024;
+pub(crate) const PROGRAM_STATUS_RECORD_JSON_BYTES: usize = 6 * MAX_PROGRAM_STATUS_RECORD_TEXT_BYTES + 1024;
 const _: () = assert!(PROGRAM_STATUS_RECORD_JSON_BYTES + 1024 <= MAX_EVENT_PAYLOAD as usize);
 const _: () = assert!(
     MAX_PROGRAM_STATUS_RECORDS * PROGRAM_STATUS_RECORD_JSON_BYTES + 4 * 1024 * 1024

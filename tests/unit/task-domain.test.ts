@@ -204,6 +204,25 @@ describe("task domain", () => {
     expect(forgedDuplicate).toMatchObject({ kind: "rejected", code: TASK_API_ERROR.CALLER_MISMATCH });
   });
 
+  test("acknowledges exact duplicates but rejects a reused event id with changed content", () => {
+    let current = accept(state(), created("created"));
+    current = accept(current, received("received"));
+    current = accept(current, information("information", "parent", "original"));
+    expect(acceptEvent(current, information("information", "parent", "original"))).toMatchObject({ kind: "duplicate", acknowledgedEventId: "information" });
+    expect(acceptEvent(current, information("information", "parent", "changed"))).toMatchObject({ kind: "rejected", code: TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT });
+
+    current = accept(current, receiverTerminal("completed", "task.completed"));
+    expect(acceptEvent(current, receiverTerminal("completed", "task.completed"))).toMatchObject({ kind: "duplicate" });
+    const changedTerminal = receiverTerminal("completed", "task.completed");
+    expect(acceptEvent(current, { ...changedTerminal, completion: { ...changedTerminal.completion, summary: "different" } })).toMatchObject({ kind: "rejected", code: TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT });
+    expect(acceptEvent(current, receiverTerminal("completed", "task.failed"))).toMatchObject({ kind: "rejected", code: TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT });
+
+    const late = acceptEvent(current, receiverTerminal("late", "task.cancelled"));
+    if (late.kind !== "late-terminal") throw new Error("expected late terminal");
+    expect(acceptEvent(late.state, receiverTerminal("late", "task.cancelled"))).toMatchObject({ kind: "duplicate", acknowledgedEventId: "late" });
+    expect(acceptEvent(late.state, receiverTerminal("late", "task.failed"))).toMatchObject({ kind: "rejected", code: TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT });
+  });
+
   test("derives waiting directions, validates replies, and leaves diagnostics state-neutral", () => {
     let current = accept(state(), created("created"));
     current = accept(current, received("received"));

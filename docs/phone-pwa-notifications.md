@@ -56,7 +56,7 @@ Agent-initiated `wolfpack agent notify-parent` messages are push notifications u
 
 ## one enrollment covers online machines
 
-The browser subscription still belongs to one origin (scheme, hostname, port). The enrolled server reads trusted peers' session lists and relays only quiet-alert facts those peers report: each peer keeps its own quiet-alert policy. Older peers also work when their session lists expose these facts; peers that do not expose quiet-alert facts cannot supply automatic alerts. An enrolled server older than the needs-input kind drops a newer peer's needs-input alerts instead of relaying them; update the enrollment host to receive them. Unreachable or incompatible peers are skipped without blocking local alerts.
+The browser subscription still belongs to one origin (scheme, hostname, port). The enrolled server reads trusted peers' session lists and relays only quiet-alert facts those peers report: each peer keeps its own quiet-alert policy. Older peers also work when their session lists expose these facts; peers that do not expose quiet-alert facts cannot supply automatic alerts. An enrolled server older than the needs-input kind drops a newer peer's needs-input alerts instead of relaying them; update the enrollment host to receive them. These peer reads are anonymous: the enrolled server never forwards its own JWT to a peer, so peers that require JWT authentication are skipped and cannot supply automatic alerts. Unreachable or incompatible peers are skipped without blocking local alerts.
 
 If you enrolled on several machine origins before, **turn notifications off on the other machines you enrolled before**. There is no cross-origin deduplication: leaving multiple enrollments on can produce duplicate alerts on this device.
 

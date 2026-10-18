@@ -16,7 +16,29 @@ export const FRAME_KIND_INPUT_BINARY = 0x04;
 export const FRAME_KIND_EVENT = 0x05;
 
 export const FRAME_HEADER_BYTES = 5;
-export const MAX_FRAME_PAYLOAD = 64 * 1024 * 1024;
+/**
+ * Per-kind payload ceilings mirror `broker/src/codec.rs`. The daemon treats an
+ * overrun as connection-fatal, so the client must refuse to emit one.
+ */
+export const MAX_FRAME_PAYLOAD = 16 * 1024 * 1024;
+export const MAX_CONTROL_REQUEST_PAYLOAD = 1024 * 1024;
+export const MAX_CONTROL_RESPONSE_PAYLOAD = MAX_FRAME_PAYLOAD;
+export const MAX_OUTPUT_BINARY_PAYLOAD = 1024 * 1024;
+export const MAX_INPUT_BINARY_PAYLOAD = 256 * 1024;
+export const MAX_EVENT_PAYLOAD = 256 * 1024;
+/** input_binary payloads begin with the 16-byte session UUID. */
+export const INPUT_BINARY_HEADER_BYTES = 16;
+
+function maxPayloadForKind(kind: number): number | undefined {
+  switch (kind) {
+    case FRAME_KIND_CONTROL_REQUEST: return MAX_CONTROL_REQUEST_PAYLOAD;
+    case FRAME_KIND_CONTROL_RESPONSE: return MAX_CONTROL_RESPONSE_PAYLOAD;
+    case FRAME_KIND_OUTPUT_BINARY: return MAX_OUTPUT_BINARY_PAYLOAD;
+    case FRAME_KIND_INPUT_BINARY: return MAX_INPUT_BINARY_PAYLOAD;
+    case FRAME_KIND_EVENT: return MAX_EVENT_PAYLOAD;
+    default: return undefined;
+  }
+}
 
 export type FrameKind =
   | typeof FRAME_KIND_CONTROL_REQUEST
@@ -176,10 +198,11 @@ function encodeJsonFrame(kind: FrameKind, value: unknown): Uint8Array {
 }
 
 function wrapFrame(kind: FrameKind, body: Uint8Array): Uint8Array {
-  if (body.length > MAX_FRAME_PAYLOAD) {
+  const max = maxPayloadForKind(kind) ?? MAX_FRAME_PAYLOAD;
+  if (body.length > max) {
     throw new CodecError(
       "frame_too_large",
-      `frame too large: ${body.length} bytes (max ${MAX_FRAME_PAYLOAD})`,
+      `frame too large: ${body.length} bytes (max ${max})`,
     );
   }
   const out = new Uint8Array(FRAME_HEADER_BYTES + body.length);
@@ -293,10 +316,17 @@ export class FrameParser {
     const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
     const kind = head[0];
     const len = dv.getUint32(1, false);
-    if (len > MAX_FRAME_PAYLOAD) {
+    const max = maxPayloadForKind(kind);
+    if (max === undefined) {
+      throw new CodecError(
+        "unknown_kind",
+        `unknown frame kind: 0x${kind.toString(16).padStart(2, "0")}`,
+      );
+    }
+    if (len > max) {
       throw new CodecError(
         "frame_too_large",
-        `frame too large: ${len} bytes (max ${MAX_FRAME_PAYLOAD})`,
+        `frame too large: ${len} bytes (max ${max})`,
       );
     }
     const total = FRAME_HEADER_BYTES + len;

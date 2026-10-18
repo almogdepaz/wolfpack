@@ -31,14 +31,15 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use crate::codec::MAX_EVENT_PAYLOAD;
 use crate::protocol::{
     methods, ControlRequest, ControlResponse, CreateSessionParams, ErrorCode, Event,
     KillSessionParams, ListSessionsParams, ProtocolError, ResizeParams, ResponsePayload,
-    SessionInfoParams, SnapshotParams,
+    SessionInfo, SessionInfoParams, SnapshotParams,
 };
 use crate::registry::{CreateError, CreateOptions, Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::session::{EventSender, KillError, KillOutcome, ResizeError, SpawnError};
-use crate::terminal_state::TerminalStateError;
+use crate::terminal_state::{TerminalStateError, PROGRAM_STATUS_RECORD_JSON_BYTES};
 
 pub const EVENT_BUS_CAPACITY: usize = 256;
 const MIN_TERMINAL_COLS: u16 = 20;
@@ -130,6 +131,12 @@ impl SessionRouter {
     fn create(&self, id: u64, p: CreateSessionParams) -> ControlResponse {
         if let Err(message) = validate_dimensions(p.cols, p.rows) {
             return invalid_request(id, format!("create_session params: {message}"));
+        }
+        if !started_event_fits(&p) {
+            return invalid_request(
+                id,
+                format!("create_session params: metadata exceeds the {MAX_EVENT_PAYLOAD}-byte session_started event limit"),
+            );
         }
         let opts = CreateOptions {
             name: p.name,
@@ -287,6 +294,31 @@ pub(crate) fn validate_snapshot_target_cols(target_cols: Option<u16>) -> Result<
         }
     }
     Ok(())
+}
+
+/// Every create broadcasts `session_started` with the full metadata, so it
+/// must fit one event frame before anything is spawned. Derived fields use
+/// their widest encodings, and the root program-status record a fast child
+/// may report before the event is built gets its full JSON budget.
+fn started_event_fits(p: &CreateSessionParams) -> bool {
+    let session = SessionInfo {
+        id: Uuid::nil(),
+        name: p.name.clone().unwrap_or_else(|| format!("session-{}", u64::MAX)),
+        cwd: p.cwd.clone(),
+        command: p.command.clone(),
+        env: p.env.clone(),
+        cols: p.cols,
+        rows: p.rows,
+        pid: Some(u32::MAX),
+        started_at_ms: u64::MAX,
+        alive: false,
+        exit_code: Some(i32::MIN),
+        output_seq: Some(u64::MAX.to_string()),
+        program_status: None,
+    };
+    serde_json::to_vec(&Event::SessionStarted { session }).is_ok_and(|bytes| {
+        bytes.len() + PROGRAM_STATUS_RECORD_JSON_BYTES <= MAX_EVENT_PAYLOAD as usize
+    })
 }
 
 fn validate_dimensions(cols: u16, rows: u16) -> Result<(), String> {

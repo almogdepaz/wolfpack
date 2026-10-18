@@ -32,10 +32,21 @@ Compatibility rules:
 
 Schema compatibility checks live in `tests/unit/control-api-schema.test.ts`; representative runtime response checks live in integration tests.
 
-## pi tasks relay v2 boundary
+## pi tasks relay (volatile-v1)
 
-`/api/task-relay/v2/*` is the Pi Tasks adapter contract. It preserves the v1 task routes and ledgers; relay v2 is a separate, content-blind transport and does not interpret task payloads or own task lifecycle.
+The durable task API (`/api/tasks/v1/*`) and the Pi Tasks relay are separate contracts. Task ledgers, completion, and recovery live only in `/api/tasks/v1/*`. The relay is a content-blind, memory-owned transport: it does not interpret task payloads, own task lifecycle, or survive restart.
 
-The relay inherits Wolfpack's trusted local processes and trusted Tailnet machines boundary. It does not provide per-Pi-session authorization or per-session relay credentials in v2. Normal Wolfpack HTTP/JWT and Tailnet admission remain the authority for peer requests.
+`volatile-v1` is the only relay profile (`WOLFPACK_TASK_RELAY_PROFILE` accepts nothing else). Negotiation:
 
-Relay endpoint fields are opaque IDs. A trusted local adapter qualifies a remote relay's local endpoint through `POST /api/task-relay/v2/peer/resolve`; its canonical Tailnet origin is persisted only in the local relay route directory, and the response contains only the opaque peer-qualified endpoint. Peer Tailnet origins never appear in generic Pi Tasks records or endpoint fields. Remote envelopes persist only in the sender's forwarding outbox until the target relay accepts them; the recipient mailbox is created solely by the target relay. Forwarding retries are single-flight per envelope, bounded, durable, and retain exhaustion diagnostics for cleanup.
+- `GET /api/task-relay/profile` returns `{ ok, profile: "volatile-v1", epoch, endpointPath: "/api/task-relay/volatile-v1", federation: "trusted-tailnet-v1" }`. `epoch` is an opaque ID for the relay's current RAM lifetime, not broker or worker readiness.
+- `POST /api/task-relay/volatile-v1` takes one JSON command selected by `operation`. `connect` (`profile`, `callerSession`, `generation`, `protocolVersions`, optional `leaseMs`/`epoch`) returns the caller's opaque `endpoint` and `leaseExpiresAt`. Every later command carries the binding `profile`, `epoch`, `callerSession`, `endpoint` plus one of `resolve` (`target`), `send` (`envelope`), `receive` (`cursor`, optional `limit`), `acknowledge` (`envelopeId`), `disconnect`, or `health`.
+- `POST /api/task-relay/volatile-v1/resolve-peer` (binding plus `origin`, `target`) qualifies a remote relay endpoint against current verified Tailnet topology and returns only an opaque peer-qualified alias. Peer Tailnet origins never appear in Pi Tasks records or endpoint fields; aliases are stable only within one epoch pair.
+- `POST /api/task-relay/volatile-v1/peer` is trusted-peer ingress for relay-to-relay forwarding, never an endpoint client route.
+
+Results are `{ ok, profile, epoch, value }` or `{ ok: false, profile, epoch?, error: { code, message, retryable, mayHaveBeenDelivered?, retryAfterMs? } }`; `src/task-relay/volatile-protocol.ts` and the generated schema are authoritative for shapes and codes.
+
+Reset and loss: routes, registrations, mailboxes, receipts, and in-flight forwards exist only in memory. A Wolfpack or relay-worker restart creates a new epoch and loses all of it; Pi session history is never replayed. Any command bound to a stale epoch fails with `RELAY_RESET` (`mayHaveBeenDelivered: true`). Clients must re-read the profile, `connect` again, re-resolve peer aliases, and treat unacknowledged sends as possibly delivered or lost; anything that must survive restart belongs in `/api/tasks/v1/*`. Re-connecting with a different `generation` for the same session replaces the endpoint and drops its unreachable obligations.
+
+Trust: the relay inherits Wolfpack's trusted local processes and trusted Tailnet machines boundary, requires loopback or trusted Tailnet access, and inherits optional global auth. It has no per-Pi-session authorization or per-session credentials, and peer forwarding has no signatures.
+
+Migration from the retired relay v2: `/api/task-relay/v2/*` (including `peer/resolve`, `send`, `receive`, `delivery-ack`) and the durable relay route directory/forwarding outbox no longer exist and return 404; `durable-v2` profile selection is an error, not a compatibility mode. v2 clients should discover through `GET /api/task-relay/profile`, map `connect`/`resolve`/`send`/`receive`/`delivery-ack` to the corresponding `volatile-v1` operations (`delivery-ack` → `acknowledge`, `peer/resolve` → `resolve-peer`), and drop any assumption that queued relay mail survives restart.

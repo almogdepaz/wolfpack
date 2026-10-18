@@ -118,7 +118,13 @@ pub struct Registry {
     inner: Mutex<Inner>,
     events: EventSender,
     snapshots_in_flight: AtomicUsize,
+    /// Test barrier between spawn and registry commit.
+    #[cfg(test)]
+    before_commit: Mutex<Option<BeforeCommitHook>>,
 }
+
+#[cfg(test)]
+type BeforeCommitHook = Box<dyn Fn(&Registry, &Arc<Session>) + Send>;
 
 impl Registry {
     pub fn new(events: EventSender) -> Self {
@@ -126,6 +132,8 @@ impl Registry {
             inner: Mutex::new(Inner::default()),
             events,
             snapshots_in_flight: AtomicUsize::new(0),
+            #[cfg(test)]
+            before_commit: Mutex::new(None),
         }
     }
 
@@ -177,6 +185,10 @@ impl Registry {
             }
         };
         let id = session.id();
+        #[cfg(test)]
+        if let Some(hook) = self.before_commit.lock().expect("hook poisoned").as_ref() {
+            hook(self, &session);
+        }
         {
             let mut inner = self.inner.lock().expect("registry poisoned");
             debug_assert_eq!(inner.names.get(&name), Some(&reservation_id));
@@ -189,6 +201,13 @@ impl Registry {
         let _ = self.events.send(Event::SessionStarted {
             session: session.info(),
         });
+        // The exit waiter starts before this commit. If the exit reaper
+        // consumed `session_exited` while the id was still absent, its reap
+        // was a no-op; `alive` is cleared before that event is sent, so
+        // reconcile here through the same idempotent path.
+        if !session.alive() {
+            self.reap(id);
+        }
         Ok(session)
     }
 
@@ -420,6 +439,30 @@ mod tests {
     fn cleanup(sess: &Session) {
         let _ = sess.kill(libc::SIGKILL);
         let _ = sess.wait_for_exit(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn create_reconciles_an_exit_reaped_before_registry_commit() {
+        let reg = Registry::new(test_events());
+        *reg.before_commit.lock().unwrap() = Some(Box::new(|reg, session| {
+            assert!(session.wait_for_exit(Duration::from_secs(5)));
+            // The exit reaper handled `session_exited` while the id was absent.
+            reg.reap(session.id());
+        }));
+        let early = reg
+            .create(create_opts(Some("early-exit"), &["true"]))
+            .expect("create early-exit");
+        *reg.before_commit.lock().unwrap() = None;
+
+        assert!(
+            reg.list().iter().all(|s| s.id() != early.id()),
+            "a dead session must not stay in the live table"
+        );
+        assert!(reg.get(early.id()).is_some(), "dead session stays retrievable by id");
+        let reused = reg
+            .create(create_opts(Some("early-exit"), &["sleep", "30"]))
+            .expect("name must be reusable");
+        cleanup(&reused);
     }
 
     #[test]

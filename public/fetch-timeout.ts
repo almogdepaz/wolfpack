@@ -9,29 +9,28 @@ export class RequestTimeoutError extends Error {
 
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-/** Fetch with a hard deadline while preserving an optional caller abort signal. */
+/** True for a deadline expiry before headers (`RequestTimeoutError`) or while reading the body (`TimeoutError`). */
+export function isRequestTimeout(error: unknown): boolean {
+  return error instanceof RequestTimeoutError || (error instanceof DOMException && error.name === "TimeoutError");
+}
+
+/**
+ * Fetch with a hard deadline while preserving an optional caller abort signal.
+ * The combined signal stays attached to the response, so the deadline and caller
+ * cancellation also bound body consumption.
+ */
 export async function fetchWithTimeout(
   input: RequestInfo | URL,
   init: RequestInit = {},
   timeoutMs = API_REQUEST_TIMEOUT_MS,
   fetchImpl: FetchLike = fetch,
 ): Promise<Response> {
-  const controller = new AbortController();
-  let timedOut = false;
-  const abortFromCaller = (): void => controller.abort(init.signal?.reason);
-  if (init.signal?.aborted) abortFromCaller();
-  else init.signal?.addEventListener("abort", abortFromCaller, { once: true });
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
   try {
-    return await fetchImpl(input, { ...init, signal: controller.signal });
+    return await fetchImpl(input, { ...init, signal });
   } catch (error: unknown) {
-    if (timedOut) throw new RequestTimeoutError(timeoutMs);
+    if (deadline.aborted) throw new RequestTimeoutError(timeoutMs);
     throw error;
-  } finally {
-    clearTimeout(timer);
-    init.signal?.removeEventListener("abort", abortFromCaller);
   }
 }

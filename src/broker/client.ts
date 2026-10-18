@@ -33,6 +33,8 @@ import {
   FRAME_KIND_EVENT,
   FRAME_KIND_INPUT_BINARY,
   FRAME_KIND_OUTPUT_BINARY,
+  INPUT_BINARY_HEADER_BYTES,
+  MAX_INPUT_BINARY_PAYLOAD,
   type ControlRequest,
   type ControlResponse,
   type EventBody,
@@ -301,7 +303,13 @@ export class BrokerClient {
     }
     const id = this.nextId++;
     const req: ControlRequest = { id, method, params };
-    const frame = encodeFrame({ kind: FRAME_KIND_CONTROL_REQUEST, value: req });
+    let frame: Uint8Array;
+    try {
+      frame = encodeFrame({ kind: FRAME_KIND_CONTROL_REQUEST, value: req });
+    } catch (error) {
+      // An oversize request is refused locally; sending it would make the daemon drop the shared connection.
+      return Promise.reject(error);
+    }
     const timeoutMs = opts.timeoutMs ?? this.requestTimeoutMs;
 
     return new Promise<ControlResponse>((resolve, reject) => {
@@ -357,7 +365,10 @@ export class BrokerClient {
     );
   }
 
-  /** Send an input_binary frame for the given session. */
+  /**
+   * Send input for the given session as one or more ordered input_binary
+   * frames, each within the daemon's input ceiling.
+   */
   writeInput(sessionId: string, data: Uint8Array): void {
     if (!this.socket || this.state !== "connected") {
       throw new BrokerNotConnectedError();
@@ -365,12 +376,16 @@ export class BrokerClient {
     if (this.inputBackpressured) {
       throw new BrokerInputBackpressureError();
     }
-    const frame = encodeFrame({
-      kind: FRAME_KIND_INPUT_BINARY,
-      value: { sessionId, data },
-    });
-    if (!this.socket.write(frame)) {
-      this.inputBackpressured = true;
+    const chunkBytes = MAX_INPUT_BINARY_PAYLOAD - INPUT_BINARY_HEADER_BYTES;
+    for (let offset = 0; offset === 0 || offset < data.length; offset += chunkBytes) {
+      const frame = encodeFrame({
+        kind: FRAME_KIND_INPUT_BINARY,
+        value: { sessionId, data: data.subarray(offset, offset + chunkBytes) },
+      });
+      // Every chunk is queued even under backpressure so input is never truncated mid-write.
+      if (!this.socket.write(frame)) {
+        this.inputBackpressured = true;
+      }
     }
   }
 

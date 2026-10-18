@@ -11,7 +11,12 @@ import {
   FRAME_KIND_INPUT_BINARY,
   FRAME_KIND_OUTPUT_BINARY,
   FrameParser,
+  MAX_CONTROL_REQUEST_PAYLOAD,
+  MAX_CONTROL_RESPONSE_PAYLOAD,
+  MAX_EVENT_PAYLOAD,
   MAX_FRAME_PAYLOAD,
+  MAX_INPUT_BINARY_PAYLOAD,
+  MAX_OUTPUT_BINARY_PAYLOAD,
   uuidFromBytes,
   uuidToBytes,
   type Frame,
@@ -274,8 +279,45 @@ describe("rejection paths", () => {
     expect(() => parser.drain()).toThrow(CodecError);
   });
 
+  test("mirrors the Rust daemon's per-kind payload ceilings", () => {
+    expect(MAX_FRAME_PAYLOAD).toBe(16 * 1024 * 1024);
+    expect(MAX_CONTROL_REQUEST_PAYLOAD).toBe(1024 * 1024);
+    expect(MAX_CONTROL_RESPONSE_PAYLOAD).toBe(MAX_FRAME_PAYLOAD);
+    expect(MAX_OUTPUT_BINARY_PAYLOAD).toBe(1024 * 1024);
+    expect(MAX_INPUT_BINARY_PAYLOAD).toBe(256 * 1024);
+    expect(MAX_EVENT_PAYLOAD).toBe(256 * 1024);
+  });
+
+  test("encodes input exactly at its ceiling and rejects one byte over", () => {
+    const atLimit = new Uint8Array(MAX_INPUT_BINARY_PAYLOAD - 16);
+    expect(encodeFrame({ kind: FRAME_KIND_INPUT_BINARY, value: { sessionId: NIL_UUID, data: atLimit } }).length).toBe(FRAME_HEADER_BYTES + MAX_INPUT_BINARY_PAYLOAD);
+    expect(() => encodeFrame({ kind: FRAME_KIND_INPUT_BINARY, value: { sessionId: NIL_UUID, data: new Uint8Array(atLimit.length + 1) } })).toThrow(CodecError);
+  });
+
+  test("rejects a control request above the request ceiling before sending", () => {
+    const params = { blob: "x".repeat(MAX_CONTROL_REQUEST_PAYLOAD) };
+    expect(() => encodeFrame({ kind: FRAME_KIND_CONTROL_REQUEST, value: { id: 1, method: "noop", params } })).toThrow(CodecError);
+  });
+
+  test("rejects each kind's declared length one byte above its ceiling", () => {
+    for (const [kind, max] of [
+      [FRAME_KIND_CONTROL_REQUEST, MAX_CONTROL_REQUEST_PAYLOAD],
+      [FRAME_KIND_CONTROL_RESPONSE, MAX_CONTROL_RESPONSE_PAYLOAD],
+      [FRAME_KIND_OUTPUT_BINARY, MAX_OUTPUT_BINARY_PAYLOAD],
+      [FRAME_KIND_INPUT_BINARY, MAX_INPUT_BINARY_PAYLOAD],
+      [FRAME_KIND_EVENT, MAX_EVENT_PAYLOAD],
+    ] as const) {
+      const head = new Uint8Array(FRAME_HEADER_BYTES);
+      head[0] = kind;
+      new DataView(head.buffer).setUint32(1, max + 1, false);
+      const parser = new FrameParser();
+      parser.push(head);
+      expect(() => parser.drain()).toThrow(expect.objectContaining({ code: "frame_too_large" }));
+    }
+  });
+
   test("rejects oversized declared length", () => {
-    // 128 MiB declared, exceeds 64 MiB cap
+    // 128 MiB declared, exceeds every per-kind cap
     const buf = new Uint8Array([FRAME_KIND_INPUT_BINARY, 0x08, 0x00, 0x00, 0x00]);
     const parser = new FrameParser();
     parser.push(buf);

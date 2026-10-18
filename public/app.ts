@@ -38,7 +38,7 @@ import { showAppDialog } from "./app-dialog";
 import { createSessionInspector } from "./session-inspector";
 import { rankProjectNames } from "./project-picker";
 import { authenticatedFetchWithTimeout, browserAuthFetch, getBrowserAuthToken } from "./browser-auth";
-import { RequestTimeoutError } from "./fetch-timeout";
+import { isRequestTimeout } from "./fetch-timeout";
 import { probeBackendStatus } from "./backend-probe";
 import { createReconnectBanner } from "./reconnect-banner";
 import { keyboardOcclusionHeight } from "./viewport-geometry";
@@ -2712,7 +2712,7 @@ function directoryBrowseErrorCode(error: unknown): string | undefined {
 
 function directoryBrowseErrorMessage(error: unknown): string {
   const machineName = projectMachineName();
-  if (error instanceof RequestTimeoutError) {
+  if (isRequestTimeout(error)) {
     return `The folder request timed out on ${machineName}. Wolfpack may be waiting for macOS folder authorization on that machine. Approve or deny the host prompt, or choose another folder.`;
   }
   if (directoryBrowseErrorCode(error) !== "permission_denied") return errorMessage(error);
