@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use tempfile::tempdir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::broadcast;
@@ -20,6 +19,15 @@ use wolfpack_broker::protocol::{
 use wolfpack_broker::registry::Registry;
 use wolfpack_broker::server::{start, Server, ServerConfig};
 use wolfpack_broker::session_router::{SessionRouter, EVENT_BUS_CAPACITY};
+
+/// The broker refuses a group/other-writable socket parent, and `tempfile`
+/// directories inherit the umask (0775 under umask 0002), so every fixture
+/// directory that holds a socket is created owner-only.
+fn tempdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+}
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
@@ -2001,7 +2009,7 @@ async fn startup_refuses_unsafe_existing_socket_parent_without_mutation() {
 #[tokio::test]
 async fn socket_file_has_mode_0600_custom_path() {
     // Boot using a deeply nested custom path (not the default ~/.wolfpack name)
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = tempdir().expect("tempdir");
     let socket_path = dir.path().join("custom").join("sub").join("broker.sock");
 
     let (events, _) = tokio::sync::broadcast::channel::<wolfpack_broker::protocol::Event>(

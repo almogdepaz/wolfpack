@@ -36,6 +36,8 @@ Layout:
 
 The Rust broker has its own tests under `broker/tests/` — run with `cargo test` from `broker/`.
 
+The broker refuses a group- or other-writable socket parent, so tests must create every directory that holds a broker socket with mode `0700` (`mkdtempSync` already does; `mkdirSync` and `tempfile::tempdir()` inherit the umask).
+
 ## Asset Pipeline
 
 Frontend files live in `public/`. The server doesn't serve from disk — everything is embedded into the binary:
