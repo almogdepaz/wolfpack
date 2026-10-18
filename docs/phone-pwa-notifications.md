@@ -52,7 +52,7 @@ An agent's alert fires once per activity episode, after its screen stays quiet f
 
 Agents with no children and no program status keep the plain quiet behavior. There is no setting for these rules.
 
-Agent-initiated `wolfpack agent notify-parent` messages are push notifications under the same enrollment, sent only to devices enrolled on the host where the child runs (they are not relayed between machines). With no enrollment on that host they are not delivered, and the CLI says so and exits `8`.
+Agent-initiated `wolfpack agent notify-parent` messages are push notifications under the same enrollment, sent only to devices enrolled on the host where the child runs (they are not relayed between machines). The same command also queues a message in the exact live parent session's memory-only inbox (see [session control](session-control.md#notify-and-poll-the-parent-inbox)). With no enrollment on that host, push is not delivered; a queued parent inbox entry still exits `0` with a plain-mode warning. Exit `8` means neither an inbox entry nor a push subscription was available.
 
 ## one enrollment covers online machines
 

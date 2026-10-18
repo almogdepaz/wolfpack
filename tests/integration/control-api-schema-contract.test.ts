@@ -174,6 +174,23 @@ describe("control api generated schema against runtime responses", () => {
     }
   });
 
+  test("validates a notified parent's inbox and the live event against generated contracts", async () => {
+    const seen: unknown[] = [];
+    const unsubscribe = context.events.subscribeEvents({ session: "mock:wolf-1" }, event => seen.push(event));
+    try {
+      const request = { message: "ready", from: "child", sessionId: "mock:wolf-1", sessionName: "wolf-1" };
+      expect(validate(httpRequest("sendNotification"), request, artifact)).toEqual([]);
+      const notified = await postJson("/api/notify", request);
+      expect(validate(httpResponse("sendNotification"), notified, artifact)).toEqual([]);
+      expect(notified).toMatchObject({ parentInbox: { queued: true, seq: expect.any(Number) } });
+      const inbox = await getJson("/api/session-control/inbox?session=mock%3Awolf-1&since=0");
+      expect(validate(httpResponse("getSessionInbox"), inbox, artifact)).toEqual([]);
+      expect(inbox).toMatchObject({ session: "wolf-1", sessionId: "mock:wolf-1", notifications: [expect.objectContaining({ message: "ready", from: "child" })] });
+      expect(seen).toHaveLength(1);
+      expect(validate({ $ref: "#/$defs/ParentNotifiedEvent" }, seen[0], artifact)).toEqual([]);
+    } finally { unsubscribe(); }
+  });
+
   test("validates an explicit child harness request and its cross-harness runtime response", async () => {
     const request = { project: "wolfpack", parentSession: "wolf-1", harness: "claude" };
     expect(validate(httpRequest("openSession"), request, artifact)).toEqual([]);

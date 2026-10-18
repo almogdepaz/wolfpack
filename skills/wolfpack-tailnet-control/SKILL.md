@@ -63,6 +63,8 @@ Short names use the exact configured `tailscaleHostname` suffix; full names must
 wolfpack list --json
 wolfpack session status <session-or-id> --json
 wolfpack session read <session-or-id> --json
+wolfpack agent inbox --json
+wolfpack session inbox <session-or-id> --since <seq> --json
 wolfpack session send <session-or-id> '<text>' --json
 wolfpack session wait <session-or-id> '<text>' --json
 ```
@@ -73,7 +75,7 @@ Treat session selectors as opaque handles. Prefer the stable `sessionId` returne
 
 Read-only inspection is allowed when requested. Creation, sending input, killing, taking control, remote-host access, and notifications require explicit user intent for that action and target. Interactive attach/takeover is a UI workflow; do not reconstruct it through the CLI or a private API. Inspect current attach source/tests only when explicitly asked for low-level automation.
 
-Spawning a child grants the spawning coordinator cleanup authority for that exact child. Endpoint assignments use `agent_task_done` followed by one parent `agent_task_ack`; only after that task lifecycle may the parent retain or kill the exact stable session ID. Full-startup children have no task ID, and `--notify-parent` only sends a push notification to the human, never to the parent agent: verify the child by reading its screen (`wolfpack session status <stable-session-id> --json`, `wolfpack session read <stable-session-id> --json`), then deliberately retain or run `wolfpack kill <stable-session-id> --json`. In either mode, verify that exact ID is absent from `wolfpack list --json` after a kill. Never scrape terminal/UI prose as protocol, bypass auth, guess tokens, or kill a mistaken session as cleanup without permission.
+Spawning a child grants the spawning coordinator cleanup authority for that exact child. Endpoint assignments use `agent_task_done` followed by one parent `agent_task_ack`; only after that task lifecycle may the parent retain or kill the exact stable session ID. Full-startup children have no task ID. `--notify-parent` queues a structured message in the exact live parent's memory-only inbox and also sends web push to enrolled human devices; it never injects terminal input. The coordinator polls `wolfpack agent inbox --json` (optionally `--since <last-seq>`) or follows `wolfpack events --session <self> --kinds parent_notified --json`. Inbox entries retain the newest 100 per parent, disappear on parent exit/server restart, and carry an unverified informational `from`; they are not task-completion evidence. Verify the child's actual work and stable session (`wolfpack session status <stable-session-id> --json`; `wolfpack session read <stable-session-id> --json` when terminal inspection is needed), then deliberately retain or run `wolfpack kill <stable-session-id> --json`. In either mode, verify that exact ID is absent from `wolfpack list --json` after a kill. Never scrape terminal/UI prose as protocol, bypass auth, guess tokens, or kill a mistaken session as cleanup without permission.
 
 ## References — load only when needed
 

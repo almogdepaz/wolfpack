@@ -8,7 +8,7 @@ Wolfpack exposes a scriptable session surface for agents and operators. The serv
 wolfpack --machine <short-name-or-fqdn> <control-command> ...
 ```
 
-The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `session status`, `session read`, `session send`, `session wait`, `session prompt`, `kill`, and `events`. Other commands reject it.
+The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `agent inbox`, `session status`, `session inbox`, `session read`, `session send`, `session wait`, `session prompt`, `kill`, and `events`. Other commands reject it.
 
 A short name is expanded using the exact Tailnet suffix from configured `tailscaleHostname`. A full name must be a canonical HTTPS Tailnet hostname in that suffix; URLs, ports, paths, foreign suffixes, malformed or duplicate selectors, and missing configuration fail closed without a localhost fallback. Before any control request, the CLI sends an exact, bounded `GET /api/machine` probe with redirects disabled, a bounded timeout, and the normal Wolfpack JWT `Authorization` header when configured. The structured handshake must report the selected canonical origin and session-control capability.
 
@@ -113,7 +113,7 @@ wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>]
 - for Pi children only, accepts a bounded nonblank `--model <provider/model>` value and passes it unchanged to Pi's native `--model` option. A non-Pi parent can use `--harness pi --model ...`; a non-Pi child rejects `--model` and `--task-worker` before creation.
 - passes only explicit startup instructions; it does not inherit the parent transcript, model context, or summary.
 - supports `--plan <file>` and `--prompt-file <file>` like top-level creation.
-- `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked. That command notifies the human, not the parent agent (see below).
+- `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked. That command queues the message in the live parent's inbox and also notifies enrolled human devices (see below).
 - stores structured parent ID/name metadata and sends a best-effort typed browser notification when opened.
 - json success has the same fields as top-level creation, including stable `sessionId`; `harness` reports the child's harness.
 
@@ -136,6 +136,8 @@ Put durable instructions in the repository plan. Pick a short issue/role slug fo
 ```bash
 wolfpack list --json
 wolfpack session status <session-or-id> [--json]
+wolfpack session inbox <session-or-id> [--since <seq>] [--json]
+wolfpack agent inbox [--since <seq>] [--json]
 wolfpack session read <session-or-id> [--json]
 ```
 
@@ -195,10 +197,31 @@ wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] 
 - typed agent-state/delegated-task predicates and explicit cancellation are still deferred until #211 provides the structured event/cursor substrate; `prompt --until` remains output-contains only.
 - JSON responses from standalone `wait` retain their existing shape for backward compatibility; `send` adds the outcome fields above.
 
-`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for child agents launched with `--notify-parent`. It sends a web-push notification to the human's browsers/phones enrolled on this host (see [phone-pwa-notifications.md](phone-pwa-notifications.md)); it delivers nothing into the parent agent's input. Any parent, Claude or Pi, verifies a `--notify-parent` child with `wolfpack session status` / `wolfpack session read`. Only `--task-worker` (endpoint) children report completion through Pi Tasks `agent_task_done`, and those reject `--notify-parent`.
+### Notify and poll the parent inbox
 
-- `POST /api/notify` answers `ok: true` once the notification is accepted, with `sent`, `failed`, `pruned`, `delivered` (`sent > 0`), and, only when `delivered` is false, `reason`: `no_subscriptions` (no enrolled subscription remained on this host, including when every one expired and was pruned) or `delivery_failed` (every remaining subscription failed).
-- Exit codes: `0` when delivered (plain output `notified`, plus a yellow warning when some subscriptions failed) or when an older server answers `ok: true` without `delivered`; `8` for `no_subscriptions`; `6` for `delivery_failed`; `1` when the response has `delivered` but is malformed or contradicts `sent`/`failed` (a red `invalid /api/notify response: …` line). Plain output prints a yellow `not delivered: …` line instead of `notified`; `--json` always prints the full response.
+`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for full-startup children launched with `--notify-parent`. The CLI sends the parent ID/name from `WOLFPACK_PARENT_SESSION_ID` / `WOLFPACK_PARENT_SESSION_NAME` and an optional informational `from` from `WOLFPACK_SESSION_NAME`. The server queues the message only for that exact live parent ID **and** name, and still sends web push to the human's devices enrolled on this host (see [phone-pwa-notifications.md](phone-pwa-notifications.md)). Nothing is injected into the parent terminal.
+
+- `POST /api/notify` retains `ok: true` for acceptance, `sent`, `failed`, `pruned`, `delivered` (`sent > 0`), and push-only `reason` when not delivered: `no_subscriptions` or `delivery_failed`. Rate limiting and push subscription handling are unchanged.
+- It also returns `parentInbox: {queued:true, seq}` or `{queued:false, reason:"no_parent"|"parent_not_found"}`. `no_parent` means no session target; `parent_not_found` means the exact live ID/name could not be confirmed (including backend unavailability). A same-name replacement is never substituted.
+- `from` is optional, at most 100 Unicode code points, and **unverified**: it is not authenticated sender identity or task-completion evidence.
+- Exit `0` when the inbox is queued, even without push subscriptions or when push fails; plain output reports `parent inbox queued (seq N)` and warns about missing/failed push delivery. Otherwise the existing push exits apply: `0` when delivered (or legacy `ok:true` without `delivered`), `8` for `no_subscriptions`, `6` for `delivery_failed`. Plain output also reports why the inbox was not queued.
+- Malformed or contradictory delivery/inbox fields remain protocol errors (exit `1`, `invalid /api/notify response: …`). `--json` prints the full response, including the inbox result, without plain warnings.
+
+Poll without terminal scraping:
+
+```bash
+wolfpack agent inbox --json
+wolfpack agent inbox --since 12 --json
+wolfpack session inbox <parent-session-id> --since 12 --json
+# optional live follow (no replay)
+wolfpack events --session <parent-session-id> --kinds parent_notified --json
+```
+
+Both inbox commands call `GET /api/session-control/inbox?session=<name-or-id>[&since=<seq>]`, using the same selector and not-found/dead/ambiguous/unavailable envelopes as `session status`. `agent inbox` resolves the current agent session from its Wolfpack environment, preferring the injected stable ID; it uses the same missing/unsupported-context error path as spawn. Both support the verified `--machine` selector like status; this reads that host's inbox, not a cross-machine relay.
+
+The response is `{session, sessionId, notifications:[{seq, at, message, from?}]}`. `seq` starts at 1 per parent, `at` is an ISO timestamp, and `since` is a non-negative safe integer returning only entries with `seq > since`. Reads do not consume entries; retain the last sequence to avoid duplicates. Plain output is `seq at [from] message` per entry (sender omitted when absent); line breaks are replaced with spaces in human inbox/event lines, while JSON preserves the original text.
+
+The inbox is **memory-only**, retains only the newest **100** entries per parent, and is dropped on parent session exit. A server restart loses every inbox and resets sequences; slow/disconnected pollers may miss overwritten entries. It is not a durable task ledger or an acknowledgement protocol. Verify the child's actual work before cleanup. Pi coordinators keep using Pi Tasks `agent_task_done` / `agent_task_ack` for `--task-worker` endpoint children, which reject `--notify-parent`.
 
 ### Current session identity
 
@@ -225,6 +248,7 @@ Streams `GET /api/events` (server-sent events, ordinary API auth). Kinds:
 - `session.created` — `sessionId`, `session`, `cwd`
 - `session.exited` — `sessionId`, `session` (when known), `reason` (`exit` or `killed`), `exitCode?`, `signal?`
 - `session.state` — `session`, `sessionId?`, `state`, `label`, `transitionSequence`, plus `inputKind?` and `message?` when the state comes from the program's own OSC 7501 status report; published when an agent's runtime state transitions, including a blocked program switching to a different request (new `inputKind` or `message`) while staying `needs-input`. Observed every ~5s, so expect up to that much latency.
+- `parent_notified` — parent `session`, `sessionId`, inbox `seq`, `message`, optional unverified `from`; emitted when a parent inbox entry is queued. `--session` matches the parent name or ID, not the sender.
 - `task.updated` — `taskId`, `eventId`, `eventType` (canonical task event, e.g. `task.completed`), `sequence`; emitted by the machine holding the task's sender ledger.
 
 Every event also carries a per-server-process monotonic `id` and an ISO `at`. `--session` matches a name or stable id and excludes task events. `--json` prints one event object per line; otherwise one human line per event.
@@ -241,6 +265,6 @@ The stream is live-only: there is no replay, so events published while disconnec
 - `5`: auth failure
 - `6`: backend unavailable
 - `7`: `send` delivered the text but it was not submitted (`pasted_not_submitted`)
-- `8`: `agent notify-parent` was accepted but this host has no push subscription to deliver to (`no_subscriptions`)
+- `8`: `agent notify-parent` did not queue a parent inbox entry and this host has no push subscription to deliver to (`no_subscriptions`)
 
 Grid/layout ownership remains in the browser. Session commands never reconstruct browser state from terminal output.

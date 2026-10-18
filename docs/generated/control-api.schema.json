@@ -2484,6 +2484,65 @@
         "503 SessionStatusFailure"
       ]
     },
+    "getSessionInbox": {
+      "route": "GET /api/session-control/inbox",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:getSessionInbox:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getSessionInbox request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:getSessionInbox:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getSessionInbox response",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "notifications": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ParentNotification"
+            },
+            "maxItems": 100
+          }
+        },
+        "required": [
+          "session",
+          "sessionId",
+          "notifications"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure"
+      ]
+    },
     "snapshotSessionVisibleScreen": {
       "route": "GET /api/session-control/snapshot",
       "stable": true,
@@ -3167,6 +3226,11 @@
           "message": {
             "type": "string"
           },
+          "from": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "Unverified, informational sender session name."
+          },
           "sessionId": {
             "$ref": "#/$defs/SessionId"
           },
@@ -3205,6 +3269,9 @@
               "no_subscriptions",
               "delivery_failed"
             ]
+          },
+          "parentInbox": {
+            "$ref": "#/$defs/ParentInboxDelivery"
           }
         },
         "required": [
@@ -3546,6 +3613,123 @@
     }
   },
   "$defs": {
+    "ParentNotification": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO timestamp"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "from": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Unverified, informational sender session name."
+        }
+      },
+      "required": [
+        "seq",
+        "at",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "ParentNotifiedEvent": {
+      "type": "object",
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO timestamp"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "from": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Unverified, informational sender session name."
+        },
+        "kind": {
+          "const": "parent_notified"
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "kind",
+        "session",
+        "sessionId",
+        "seq",
+        "message"
+      ],
+      "additionalProperties": false,
+      "description": "Live GET /api/events parent notification; session/sessionId identify the parent, not the unverified sender."
+    },
+    "ParentInboxDelivery": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "queued": {
+              "const": true
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "queued",
+            "seq"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "queued": {
+              "const": false
+            },
+            "reason": {
+              "enum": [
+                "no_parent",
+                "parent_not_found"
+              ]
+            }
+          },
+          "required": [
+            "queued",
+            "reason"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "VolatileEnvelope": {
       "type": "object",
       "properties": {
