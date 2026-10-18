@@ -20,7 +20,7 @@ export function extensionProxySuffix(path: string): string {
   const asset = new RegExp(`^/api/extensions/assets/${ID}/[a-f0-9]{64}/[A-Za-z0-9._@+/-]+\\.js$`);
   if (asset.test(path) && !path.slice("/api/extensions/assets/".length).split("/").some(part => !part || part === "." || part === "..")) return path.slice("/api/extensions/".length);
   if (new RegExp(`^/api/extensions/blobs/${ID}/[a-f0-9]{64}$`).test(path)) return path.slice("/api/extensions/".length);
-  if (!new RegExp(`^/api/extensions/(?:documents/${ID}/${ID}|project/git-status/${ID})$`).test(url.pathname)) throw new Error("invalid extension read path");
+  if (!new RegExp(`^/api/extensions/(?:documents/${ID}/${ID}|project/git-(?:status|diff)/${ID})$`).test(url.pathname)) throw new Error("invalid extension read path");
   const session = url.searchParams.get("session");
   if (!session || !UUID.test(session) || url.search !== `?session=${session}`) throw new Error("invalid extension read selector");
   return path.slice("/api/extensions/".length);
@@ -34,7 +34,7 @@ export type ExtensionPeerRead =
   | { readonly kind: "asset"; readonly path: string; readonly maxBytes: number; readonly extensionId: string }
   | { readonly kind: "blob"; readonly path: string; readonly maxBytes: number; readonly extensionId: string; readonly digest: string }
   | { readonly kind: "document"; readonly path: string; readonly maxBytes: number; readonly extensionId: string; readonly documentId: string; readonly sessionId: string }
-  | { readonly kind: "project"; readonly path: string; readonly maxBytes: number; readonly extensionId: string; readonly sessionId: string };
+  | { readonly kind: "project"; readonly path: string; readonly maxBytes: number; readonly extensionId: string; readonly sessionId: string; readonly git: "status" | "diff" };
 
 export function parseExtensionPeerRead(raw: string): { readonly machine: string; readonly nodeId: string; readonly installationId: string; readonly read: ExtensionPeerRead } {
   if (!raw.startsWith(EXTENSION_PEER_PREFIX) || raw.length > 2048) throw new Error("invalid selected extension route");
@@ -50,6 +50,6 @@ export function parseExtensionPeerRead(raw: string): { readonly machine: string;
   else if (parts[3] === "assets") read = { kind: "asset", path, extensionId: parts[4]!, maxBytes: EXTENSION_PEER_LIMITS.asset };
   else if (parts[3] === "blobs") read = { kind: "blob", path, extensionId: parts[4]!, digest: parts[5]!, maxBytes: EXTENSION_PEER_LIMITS.blob };
   else if (parts[3] === "documents") read = { kind: "document", path, extensionId: parts[4]!, documentId: parts[5]!, sessionId: url.searchParams.get("session")!, maxBytes: EXTENSION_PEER_LIMITS.document };
-  else read = { kind: "project", path, extensionId: parts[5]!, sessionId: url.searchParams.get("session")!, maxBytes: EXTENSION_PEER_LIMITS.project };
+  else read = { kind: "project", path, extensionId: parts[5]!, sessionId: url.searchParams.get("session")!, git: parts[4] === "git-diff" ? "diff" : "status", maxBytes: EXTENSION_PEER_LIMITS.project };
   return { machine, nodeId: machine.slice(0, identitySeparator), installationId: machine.slice(identitySeparator + 1), read };
 }

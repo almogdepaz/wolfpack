@@ -312,6 +312,7 @@ describe("ExtensionHost", () => {
       selectedHostFetch: async (scope, path) => {
         if (path === "/api/extensions") return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "notes", enabled: true,
           package: { name: "notes", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/notes/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [{ id: "context", schemaVersion: 1 }] }] });
+        if (path.includes("git-diff")) return Response.json({ installationId, scopeSessionId: selected.sessionId, extensionId: "notes", diff: { state: scope.machine === `node-a:${installationId}` ? "not-repository" : "wrong-machine" } });
         readMachines.push(scope.machine!);
         if (path.includes("git-status")) return Response.json({ installationId, scopeSessionId: selected.sessionId, extensionId: "notes", status: { state: "not-repository" } });
         return Response.json({ installationId, scopeSessionId: selected.sessionId, extensionId: "notes", documentId: "context", revision: 1, document: scope.machine });
@@ -327,7 +328,7 @@ describe("ExtensionHost", () => {
       expect(context.scope).toEqual({ installationId, sessionId: selected.sessionId });
       const old = context; old.storage.set("draft", "a");
       expect(await old.documents.read("context")).toBe(selected.machine);
-      await old.project.gitStatus();
+      await old.project.gitStatus(); expect(await old.project.gitDiff()).toEqual({ state: "not-repository" });
       selected = { ...selected, machine: `node-b:${installationId}` };
       await host.refresh(); host.select();
       expect(old.signal.aborted).toBe(true); expect(disposals).toBe(1);
@@ -498,6 +499,38 @@ describe("ExtensionHost", () => {
       const stale = context.project.gitStatus(); selected = { sessionId: id, unavailable: "Remote scope unavailable" }; await host.refresh();
       expect(requestSignal?.aborted).toBe(true); release!(reply()); await expect(stale).rejects.toThrow();
       await expect(context.project.gitStatus()).rejects.toThrow(); expect(requests).toBe(4);
+    } finally { host.dispose(); }
+  });
+  test("project Git diff binds host scope, validates identity and the diff payload and aborts obsolete or caller-cancelled reads", async () => {
+    container = new FakeElement();
+    const id = "22222222-2222-4222-8222-222222222222";
+    let selected: { sessionId: string; unavailable?: string } = { sessionId: id };
+    let context!: ExtensionViewContext; let body: Record<string, unknown> = {}; let requests = 0;
+    let requestSignal: AbortSignal | undefined;
+    let release: ((response: Response) => void) | undefined;
+    const diff = { state: "ready" as const, staged: "diff --git a/a b/a\n", unstaged: "", truncated: true };
+    const reply = () => Response.json({ installationId, scopeSessionId: id, extensionId: "git-view", diff, ...body });
+    const host = new ExtensionHost({ container: container as unknown as HTMLElement, scope: () => selected,
+      authFetch: async (input, options) => {
+        if (String(input) === "/api/extensions") return Response.json({ safeMode: false, installations: [{ installationId, extensionId: "git-view", enabled: true, package: { name: "git-view-fixture", version: "1", digest: "a".repeat(64) }, ui: { path: "ui.js", url: `/api/extensions/assets/git-view/${"a".repeat(64)}/ui.js`, digest: "b".repeat(64), mime: "text/javascript" }, documents: [] }] });
+        expect(String(input)).toBe(`/api/extensions/project/git-diff/git-view?session=${id}`); requests++; requestSignal = options?.signal as AbortSignal;
+        return requests > 4 ? new Promise<Response>(resolve => { release = resolve; }) : reply();
+      },
+      bundleLoader: (async () => ({ default: (register: ExtensionRegistrationHost) => register.registerContextView({ id: "git-view", title: "Git view", mount(_root, value) { context = value; return { dispose() {} }; } }) })) as never,
+    });
+    try {
+      await host.refresh(); host.select();
+      const value = await context.project.gitDiff();
+      expect(value).toEqual(diff); expect(Object.isFrozen(value)).toBe(true);
+      body = { scopeSessionId: "33333333-3333-4333-8333-333333333333" }; await expect(context.project.gitDiff()).rejects.toThrow("identity");
+      body = { diff: undefined, status: { state: "not-repository" } }; await expect(context.project.gitDiff()).rejects.toThrow("invalid project Git diff");
+      body = { diff: { ...diff, staged: 7 } }; await expect(context.project.gitDiff()).rejects.toThrow("invalid project Git diff");
+      body = {};
+      const abort = new AbortController(); const pending = context.project.gitDiff(abort.signal); abort.abort();
+      expect(requestSignal?.aborted).toBe(true); release!(reply()); await expect(pending).rejects.toThrow();
+      const stale = context.project.gitDiff(); selected = { sessionId: id, unavailable: "Remote scope unavailable" }; await host.refresh();
+      expect(requestSignal?.aborted).toBe(true); release!(reply()); await expect(stale).rejects.toThrow();
+      await expect(context.project.gitDiff()).rejects.toThrow(); expect(requests).toBe(6);
     } finally { host.dispose(); }
   });
   test("native panels preserve the full 32-view registry bound and recover Main without disposing content", async () => {

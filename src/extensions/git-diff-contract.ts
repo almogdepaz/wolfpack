@@ -12,16 +12,15 @@ export type ProjectGitDiff = { readonly state: "not-repository" } | {
   readonly truncated: boolean;
 };
 
-const encoder = new TextEncoder();
-export const serializedDiffBytes = (section: string) => encoder.encode(JSON.stringify(section)).byteLength;
+export const serializedDiffBytes = (section: string) => new TextEncoder().encode(JSON.stringify(section)).byteLength;
 
 /** Validate host JSON before handing it to trusted package code. */
 export function parseProjectGitDiff(value: unknown): ProjectGitDiff {
   const fail = (): never => { throw new Error("invalid project Git diff"); };
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return fail();
-  const object = value as Record<string, unknown>;
-  if (object.state === "not-repository") return Object.freeze({ state: "not-repository" });
+  // Arrays and primitives carry no `state`, so property checks alone reject them.
+  const object = value as { state?: unknown; staged?: unknown; unstaged?: unknown; truncated?: unknown } | null | undefined;
+  if (object?.state === "not-repository") return Object.freeze({ state: "not-repository" });
   const section = (v: unknown): string => typeof v === "string" && serializedDiffBytes(v) <= MAX_GIT_DIFF_SECTION_BYTES ? v : fail();
-  if (object.state !== "ready" || typeof object.truncated !== "boolean") return fail();
+  if (object?.state !== "ready" || typeof object.truncated !== "boolean") return fail();
   return Object.freeze({ state: "ready", staged: section(object.staged), unstaged: section(object.unstaged), truncated: object.truncated });
 }

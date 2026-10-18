@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { canonicalTailnetOrigin, classifyMachineHandshake, type TailnetMachineCandidate } from "../tailnet-machine-contract.ts";
 import { parseExtensionCatalog } from "../extensions/catalog-contract.ts";
+import { parseProjectGitDiff } from "../extensions/git-diff-contract.ts";
 import { parseProjectGitStatus } from "../extensions/git-status-contract.ts";
 import { EXTENSION_API_ERROR, type ExtensionCatalogEnvelope, type ExtensionCatalogInstallation } from "../extensions/runtime-contract.ts";
 import { EXTENSION_PEER_AUTH_HEADER, EXTENSION_PEER_ERROR, EXTENSION_PEER_LIMITS, parseExtensionPeerRead, type ExtensionPeerErrorCode, type ExtensionPeerRead } from "../extensions/selected-host-contract.ts";
@@ -111,7 +112,7 @@ function ownedData(bytes: Uint8Array, read: Exclude<ExtensionPeerRead, { readonl
   const value = parseJson(bytes);
   if (!record(value) || value.installationId !== installationId || value.scopeSessionId !== read.sessionId || value.extensionId !== read.extensionId) return invalidResponse();
   if (read.kind === "project") {
-    try { return { installationId, scopeSessionId: read.sessionId, extensionId: read.extensionId, status: parseProjectGitStatus(value.status) }; }
+    try { return { installationId, scopeSessionId: read.sessionId, extensionId: read.extensionId, ...(read.git === "diff" ? { diff: parseProjectGitDiff(value.diff) } : { status: parseProjectGitStatus(value.status) }) }; }
     catch { return invalidResponse(); }
   }
   if (value.documentId !== read.documentId || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !("document" in value)) return invalidResponse();

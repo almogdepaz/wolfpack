@@ -43,6 +43,7 @@ describe("authenticated installed selected-peer extension proxy", () => {
       ["readSelectedPeerExtensionAsset", item.ui!.url.slice("/api/extensions/".length)],
       ["readSelectedPeerExtensionDocument", `documents/notes/context?session=${SELECTED_HOST_SESSION}`],
       ["readSelectedPeerExtensionProject", `project/git-status/notes?session=${SELECTED_HOST_SESSION}`],
+      ["readSelectedPeerExtensionProjectGitDiff", `project/git-diff/notes?session=${SELECTED_HOST_SESSION}`],
       ["readSelectedPeerExtensionBlob", `blobs/notes/${peer.blob!.digest}`],
     ] as const;
     for (const [operationId, suffix] of capabilities) {
@@ -78,6 +79,35 @@ describe("authenticated installed selected-peer extension proxy", () => {
       expect(doc.status).toBe(200); expect(await doc.json()).toMatchObject({ installationId: peer.runtime.installationId, scopeSessionId: SELECTED_HOST_SESSION, extensionId: "notes", documentId: "context", document: `document ${peer.key}` });
       const git = await fetch(route(index, `project/git-status/notes?session=${SELECTED_HOST_SESSION}`), { headers: headers(index) });
       expect(git.status).toBe(200); expect(await git.json()).toMatchObject({ installationId: peer.runtime.installationId, scopeSessionId: SELECTED_HOST_SESSION, status: { state: "ready", branch: `branch-${peer.key}`, untracked: [{ path: `only-${peer.key}.txt` }] } });
+    }
+  });
+  test("reads actual peer Git diffs and refuses forged, mislabelled or oversized diff responses", async () => {
+    for (let index = 0; index < 2; index++) {
+      const peer = fixture.peers[index]!;
+      const diff = await fetch(route(index, `project/git-diff/notes?session=${SELECTED_HOST_SESSION}`), { headers: headers(index) });
+      expect(diff.status).toBe(200);
+      // The fixture repositories hold only untracked files, which are never diffed.
+      expect(await diff.json()).toEqual({ installationId: peer.runtime.installationId, scopeSessionId: SELECTED_HOST_SESSION, extensionId: "notes", diff: { state: "ready", staged: "", unstaged: "", truncated: false } });
+    }
+    const peer = fixture.peers[0]!, envelope = { installationId: peer.runtime.installationId, scopeSessionId: SELECTED_HOST_SESSION, extensionId: "notes" };
+    const forged = [
+      { ...envelope, diff: { state: "ready", staged: "diff --git a/x b/x\n", unstaged: "", truncated: false, extra: "dropped" } },
+      { ...envelope, status: { state: "not-repository" } },
+      { ...envelope, diff: { state: "ready", staged: 1, unstaged: "", truncated: false } },
+      { ...envelope, diff: { state: "ready", staged: "\u0001".repeat(20_000), unstaged: "", truncated: false } },
+      { ...envelope, installationId: "33333333-3333-4333-8333-333333333333", diff: { state: "not-repository" } },
+      { ...envelope, diff: { state: "ready", staged: "x".repeat(140_000), unstaged: "y".repeat(140_000), truncated: true } },
+    ];
+    for (const [index, body] of forged.entries()) {
+      peer.handleRequest = (req, res, url) => {
+        if (!url.pathname.startsWith("/api/extensions/project/git-diff/")) return false;
+        res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); return true;
+      };
+      try {
+        const response = await fetch(route(0, `project/git-diff/notes?session=${SELECTED_HOST_SESSION}`), { headers: headers(0) });
+        if (index === 0) { expect(response.status).toBe(200); expect(await response.json()).toEqual({ ...envelope, diff: { state: "ready", staged: "diff --git a/x b/x\n", unstaged: "", truncated: false } }); continue; }
+        expect(response.status).toBe(503); expect(await response.json()).toMatchObject({ error: { code: "PEER_RESPONSE_INVALID" } });
+      } finally { peer.handleRequest = undefined; }
     }
   });
   test("reads declared peer blobs as verified octet-streams and refuses undeclared, missing, corrupt or mistyped ones", async () => {
@@ -150,7 +180,7 @@ describe("authenticated installed selected-peer extension proxy", () => {
     peer.safeMode = true;
     try {
       const catalog = await fetch(route(0), { headers: headers(0) }); expect(catalog.status).toBe(200); expect(await catalog.json()).toMatchObject({ safeMode: true });
-      for (const suffix of [item.ui!.url.slice("/api/extensions/".length), `documents/notes/context?session=${SELECTED_HOST_SESSION}`, `project/git-status/notes?session=${SELECTED_HOST_SESSION}`]) expect((await fetch(route(0, suffix), { headers: headers(0) })).status).toBe(403);
+      for (const suffix of [item.ui!.url.slice("/api/extensions/".length), `documents/notes/context?session=${SELECTED_HOST_SESSION}`, `project/git-status/notes?session=${SELECTED_HOST_SESSION}`, `project/git-diff/notes?session=${SELECTED_HOST_SESSION}`]) expect((await fetch(route(0, suffix), { headers: headers(0) })).status).toBe(403);
     } finally { peer.safeMode = false; }
     peer.runtime.setEnabled("notes", false);
     try { expect((await fetch(route(0, `documents/notes/context?session=${SELECTED_HOST_SESSION}`), { headers: headers(0) })).status).toBe(403); }
@@ -158,7 +188,7 @@ describe("authenticated installed selected-peer extension proxy", () => {
   });
   test("rejects write/open-proxy/query aliases before any peer access", async () => {
     const before = fixture.fetchTrace.length;
-    const suffixes = ["catalog?origin=https://evil.invalid", "https://evil.invalid/", "documents/notes/context?session=" + SELECTED_HOST_SESSION + "&path=/tmp", "documents/notes/context?session=" + SELECTED_HOST_SESSION + "&session=" + SELECTED_HOST_SESSION, "project/git-status/notes?session=by-name", "assets/notes/" + "a".repeat(64) + "/dist//ui.js", "assets/notes/" + "a".repeat(64) + "/dist/%252e%252e/ui.js"];
+    const suffixes = ["catalog?origin=https://evil.invalid", "https://evil.invalid/", "documents/notes/context?session=" + SELECTED_HOST_SESSION + "&path=/tmp", "documents/notes/context?session=" + SELECTED_HOST_SESSION + "&session=" + SELECTED_HOST_SESSION, "project/git-status/notes?session=by-name", "project/git-diff/notes?session=by-name", "project/git-diff/notes?session=" + SELECTED_HOST_SESSION + "&args=--output=/tmp/x", "project/git-log/notes?session=" + SELECTED_HOST_SESSION, "assets/notes/" + "a".repeat(64) + "/dist//ui.js", "assets/notes/" + "a".repeat(64) + "/dist/%252e%252e/ui.js"];
     for (const suffix of suffixes) expect((await fetch(route(0, suffix), { headers: headers(0) })).status).toBe(400);
     expect((await fetch(route(0), { method: "POST", headers: headers(0), body: "{}" })).status).toBe(405);
     expect(fixture.fetchTrace).toHaveLength(before);

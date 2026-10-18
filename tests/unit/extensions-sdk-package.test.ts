@@ -16,6 +16,7 @@ test("builds a self-contained public extensions SDK with generated declarations"
   const declarations = readFileSync(join(root, "sdk", "types", "public-sdk.d.ts"), "utf8");
   expect(declarations).toContain("ContextViewContribution");
   expect(declarations).toContain("ProjectGitStatus");
+  expect(declarations).toContain("ProjectGitDiff");
   expect(declarations).toContain("MAX_RETAINED_CONTEXT_VIEWS_PER_SCOPE");
 });
 
@@ -35,13 +36,17 @@ test("packs a consumer-importable SDK without installation scripts or checkout s
   const placed = Bun.spawnSync(["ln", "-s", "../package", join(nodeModules, "wolfpack-bridge")], { stdout: "pipe", stderr: "pipe" });
   expect(placed.exitCode).toBe(0);
   const entry = join(consumer, "entry.ts");
-  await Bun.write(entry, `import { leadStackLayout, EXTENSION_LIFECYCLE_RULES_VERSION, type ExtensionViewContext, type ProjectGitStatus, type GitFileChange } from "wolfpack-bridge/extensions";
+  await Bun.write(entry, `import { leadStackLayout, EXTENSION_LIFECYCLE_RULES_VERSION, type ExtensionViewContext, type ProjectGitStatus, type ProjectGitDiff, type GitFileChange } from "wolfpack-bridge/extensions";
 const value = leadStackLayout({ panes: [{ id: "one" }, { id: "two" }], selectedPaneId: "one", viewport: { width: 1, height: 1 } });
 if (value.version !== EXTENSION_LIFECYCLE_RULES_VERSION) throw new Error("bad SDK");
 export async function readChanges(context: ExtensionViewContext): Promise<ProjectGitStatus> {
   const status = await context.project.gitStatus(new AbortController().signal);
   if (status.state === "ready") { const files: readonly GitFileChange[] = status.staged; const branch: string | null = status.branch; }
   return status;
+}
+export async function readDiff(context: ExtensionViewContext): Promise<string> {
+  const diff: ProjectGitDiff = await context.project.gitDiff(new AbortController().signal);
+  return diff.state === "ready" ? (diff.truncated ? "" : diff.staged + diff.unstaged) : diff.state;
 }
 `);
   const checked = Bun.spawnSync([process.execPath, join(root, "node_modules/typescript/bin/tsc"), "--noEmit", "--strict", "--skipLibCheck", "--moduleResolution", "Bundler", "--module", "ESNext", "--target", "ES2022", entry], { cwd: consumer, stdout: "pipe", stderr: "pipe" });
