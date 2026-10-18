@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkContextLinks } from "../../scripts/check-context-links";
@@ -19,6 +19,14 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 test("declared docs exist in this checkout", () => {
   expect(checkContextLinks(resolve(import.meta.dir, "../.."))).toEqual([]);
+});
+test("declared targets in this checkout are not gitignored", () => {
+  // `edc-context/` is ignored; untracked targets pass locally but are absent from CI checkouts.
+  const repo = resolve(import.meta.dir, "../..");
+  const declared = JSON.parse(readFileSync(join(repo, "edc-context/manifest.json"), "utf8"));
+  const targets = [declared.repoContextFile, declared.build?.buildInfoFile, ...declared.modules.map((m: { doc: string }) => m.doc), ...Object.values(declared.reports ?? {})].filter(Boolean);
+  const ignored = Bun.spawnSync(["git", "check-ignore", "--stdin"], { cwd: repo, stdin: Buffer.from(targets.join("\n")) });
+  expect(ignored.stdout.toString().trim().split("\n").filter(Boolean)).toEqual([]);
 });
 test("minimal valid routes, with optional empty reports", () => expect(checkContextLinks(root)).toEqual([]));
 test("missing declared module fails", () => {
