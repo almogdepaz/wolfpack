@@ -22,10 +22,10 @@ describe("server startup JWT notice", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-no-jwt-"));
     try {
       const result = spawnSync(process.execPath, ["-e", `
-        const serverModule = await import("${join(process.cwd(), "src/server/index.ts")}");
-        await serverModule.startServer(0);
-        await new Promise((resolve) => serverModule.server.once("listening", resolve));
-        await new Promise((resolve) => serverModule.server.close(resolve));
+        const { startServer, server } = await import("${join(process.cwd(), "src/server/index.ts")}");
+        await startServer(0);
+        await new Promise((resolve) => server.once("listening", resolve));
+        await new Promise((resolve) => server.close(resolve));
       `], {
         encoding: "utf-8",
         env: {

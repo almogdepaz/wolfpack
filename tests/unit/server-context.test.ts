@@ -6,7 +6,8 @@ import { EventBus } from "../../src/event-bus.ts";
 import { WOLFPACK_EVENT_KIND } from "../../src/events-contract.ts";
 import { createServerContext } from "../../src/server/context.ts";
 import { MockBackend } from "../../src/server/mock-backend.ts";
-import { createServerInstance } from "../../src/server/index.ts";
+// Set test mode before loading the auto-starting server entrypoint.
+const { createServerInstance } = await import("../../src/server/index.ts");
 import { __setTestBackend, getBackend } from "../../src/server/backend.ts";
 
 const created = { kind: WOLFPACK_EVENT_KIND.SESSION_CREATED, sessionId: "test-id", session: "session", cwd: "/tmp" } as const;

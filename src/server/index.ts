@@ -266,8 +266,9 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
   return { server, wss };
 }
 
-// Module-level singleton for production
-let { server, wss } = createServerInstance();
+// Stable exports also support embedders that attach listeners before startup.
+// Handlers use the lazy default context view, bound by startServer below.
+const { server, wss } = createServerInstance(defaultServerContext);
 
 export async function startServer(port = PORT, host = "127.0.0.1", overrides: Partial<ServerContext> = {}): Promise<void> {
   assertSupportedBunRuntime();
@@ -294,7 +295,6 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   // WOLFPACK_BACKEND env var is accepted for back-compat but ignored).
   const ctx = createServerContext(overrides);
   setDefaultServerContext(ctx);
-  ({ server, wss } = createServerInstance(ctx));
   log.info("backend initialized", { type: "broker" });
 
   // Verify the broker handshake before listening so we surface a clear error
