@@ -567,6 +567,31 @@ describe("GET /api/sessions", () => {
     }
   });
 
+  test("the observer reads a session's project status manifest", async () => {
+    const projectPath = join(TEST_DEV_DIR, "my-app");
+    const manifestDir = join(projectPath, ".wolfpack");
+    mkdirSync(manifestDir, { recursive: true });
+    writeFileSync(join(manifestDir, "agent-status.json"), JSON.stringify({
+      state: "cleanup",
+      observedAt: new Date().toISOString(),
+      capabilities: ["semantic-state"],
+      runId: "mock:wolf-1",
+    }));
+    const originalListIdentities = mockBackend.listIdentities.bind(mockBackend);
+    mockBackend.listIdentities = async () => {
+      const identities = await originalListIdentities();
+      return { ...identities, "wolf-1": { ...identities["wolf-1"]!, projectPath } };
+    };
+    try {
+      const data = await (await get("/api/sessions")).json();
+      const session = data.sessions.find((candidate: { readonly name: string }) => candidate.name === "wolf-1");
+      expect(session.runtimeState).toMatchObject({ state: "cleanup", authority: "manifest", source: "local-manifest" });
+    } finally {
+      mockBackend.listIdentities = originalListIdentities;
+      rmSync(manifestDir, { recursive: true, force: true });
+    }
+  });
+
   test("classifies idle when the rendered snapshot is unavailable", async () => {
     mockBackend.setCapturePane(async () => "last rendered output\n");
     await get("/api/sessions");

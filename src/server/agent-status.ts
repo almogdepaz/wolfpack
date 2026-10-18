@@ -1,10 +1,8 @@
 import {
   existsSync,
   readFileSync,
-  realpathSync,
-  statSync,
 } from "node:fs";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { createLogger, errMsg } from "../log.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
@@ -177,7 +175,7 @@ function isSafeRelativePath(path: string): boolean {
   return !isAbsolute(normalized) && normalized !== ".." && !normalized.startsWith("../");
 }
 
-function resolveUnder(baseDir: string, relativePath: string): ResolveUnderResult {
+async function resolveUnder(baseDir: string, relativePath: string): Promise<ResolveUnderResult> {
   if (!isSafeRelativePath(relativePath)) {
     return {
       kind: RESOLVE_UNDER_KIND.INVALID,
@@ -186,10 +184,11 @@ function resolveUnder(baseDir: string, relativePath: string): ResolveUnderResult
   }
 
   try {
-    const baseReal = realpathSync(baseDir);
+    const baseReal = await realpath(baseDir);
     const candidate = resolve(baseReal, relativePath);
-    if (existsSync(candidate)) {
-      const candidateReal = realpathSync(candidate);
+    // Like existsSync, any failure to resolve the candidate means "not there".
+    const candidateReal = await realpath(candidate).catch(() => undefined);
+    if (candidateReal !== undefined) {
       return candidateReal === baseReal || candidateReal.startsWith(baseReal + "/")
         ? { kind: RESOLVE_UNDER_KIND.RESOLVED, path: candidateReal }
         : {
@@ -265,12 +264,20 @@ export function programStatusSource(
   });
 }
 
-export function collectAgentStatusSources(
+export async function collectAgentStatusSources(
   projectDir: string,
+  fallback: Omit<CandidateStatus, "authority" | "source" | "label" | "freshness">,
+): Promise<AgentStatusSource[]> {
+  return agentStatusSources(await readLocalStatusManifest(projectDir), fallback);
+}
+
+/** Sources from an already-read manifest plus the screen fallback. */
+export function agentStatusSources(
+  manifest: CandidateStatus,
   fallback: Omit<CandidateStatus, "authority" | "source" | "label" | "freshness">,
 ): AgentStatusSource[] {
   const candidates: CandidateStatus[] = [
-    readLocalStatusManifest(projectDir),
+    manifest,
     {
       ...fallback,
       authority: AGENT_STATUS_AUTHORITY.FALLBACK,
@@ -326,15 +333,15 @@ function statusFromObject(raw: unknown): Pick<CandidateStatus, "state" | "observ
   };
 }
 
-function readStructuredStatusFile(
+async function readStructuredStatusFile(
   projectDir: string,
   relativePath: string,
   authority: AgentStatusAuthority,
   source: AgentStatusSource["source"],
   label: string,
   nowMs = Date.now(),
-): CandidateStatus {
-  const statusLocation = resolveUnder(projectDir, relativePath);
+): Promise<CandidateStatus> {
+  const statusLocation = await resolveUnder(projectDir, relativePath);
   if (statusLocation.kind === RESOLVE_UNDER_KIND.INVALID) {
     return {
       state: AGENT_STATUS_STATE.UNKNOWN,
@@ -346,7 +353,11 @@ function readStructuredStatusFile(
       message: statusLocation.message,
     };
   }
-  if (statusLocation.kind === RESOLVE_UNDER_KIND.BASE_MISSING || !existsSync(statusLocation.path)) {
+  // Like existsSync, any stat failure means the manifest is missing.
+  const fileStat = statusLocation.kind === RESOLVE_UNDER_KIND.BASE_MISSING
+    ? undefined
+    : await stat(statusLocation.path).catch(() => undefined);
+  if (statusLocation.kind === RESOLVE_UNDER_KIND.BASE_MISSING || fileStat === undefined) {
     return {
       state: AGENT_STATUS_STATE.UNKNOWN,
       authority,
@@ -358,7 +369,7 @@ function readStructuredStatusFile(
   }
 
   try {
-    const parsed = statusFromObject(JSON.parse(readFileSync(statusLocation.path, "utf-8")));
+    const parsed = statusFromObject(JSON.parse(await readFile(statusLocation.path, "utf-8")));
     if (!parsed) {
       return {
         state: AGENT_STATUS_STATE.UNKNOWN,
@@ -369,8 +380,7 @@ function readStructuredStatusFile(
         path: relativePath,
       };
     }
-    const stat = statSync(statusLocation.path);
-    const stale = nowMs - stat.mtimeMs > AGENT_STATUS_TTL_MS;
+    const stale = nowMs - fileStat.mtimeMs > AGENT_STATUS_TTL_MS;
     return {
       state: parsed.state,
       authority,
@@ -398,7 +408,7 @@ function readStructuredStatusFile(
   }
 }
 
-export function readLocalStatusManifest(projectDir: string, nowMs = Date.now()): CandidateStatus {
+export function readLocalStatusManifest(projectDir: string, nowMs = Date.now()): Promise<CandidateStatus> {
   return readStructuredStatusFile(
     projectDir,
     AGENT_STATUS_MANIFEST_PATH,
@@ -409,11 +419,11 @@ export function readLocalStatusManifest(projectDir: string, nowMs = Date.now()):
   );
 }
 
-export function collectAgentStatus(
+export async function collectAgentStatus(
   projectDir: string,
   fallback: Omit<CandidateStatus, "authority" | "source" | "label" | "freshness">,
-): AgentStatusSource {
-  return chooseAgentStatusSource(collectAgentStatusSources(projectDir, fallback));
+): Promise<AgentStatusSource> {
+  return chooseAgentStatusSource(await collectAgentStatusSources(projectDir, fallback));
 }
 
 function sourceHasSemanticCapability(source: AgentStatusSource): boolean {
