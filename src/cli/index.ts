@@ -93,7 +93,7 @@ Commands:
   wolfpack list [--json]           List active sessions (alias: ls)
   wolfpack session create <project> Create a top-level session
   wolfpack session <action>        Inspect or control sessions
-  wolfpack agent spawn <project>   Spawn a same-harness child agent
+  wolfpack agent spawn <project>   Spawn a child agent (same harness by default)
   wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack logs [--follow|--json]  Read or follow service logs

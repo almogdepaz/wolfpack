@@ -507,6 +507,21 @@ describe("control api schema compatibility samples", () => {
     }, artifact)).not.toEqual([]);
   });
 
+  test("session-open accepts only openable child harnesses in ordinary and worker requests", () => {
+    const request = httpRequest("openSession");
+    const ordinary = { project: "wolfpack", parentSession: "pi-main" };
+    const worker = { projectDir: "/worktrees/wolfpack", parentSession: "claude-main", taskWorker: true };
+    for (const harness of ["pi", "claude", "codex", "gemini", "cursor"]) {
+      expect(validate(request, { ...ordinary, harness }, artifact), harness).toEqual([]);
+    }
+    expect(validate(request, { ...worker, harness: "pi" }, artifact)).toEqual([]);
+    for (const harness of ["shell", "bogus", "custom", "", null, 42]) {
+      expect(validate(request, { ...ordinary, harness }, artifact)).not.toEqual([]);
+      expect(validate(request, { ...worker, harness }, artifact)).not.toEqual([]);
+    }
+    expect((request.properties as JsonObject).harness).toMatchObject({ $ref: "#/$defs/OpenableHarness" });
+  });
+
   test("session-open publishes a strict ordinary-auth request and deterministic success", () => {
     const operation = httpOperation("openSession");
     const request = httpRequest("openSession");

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { OPENABLE_HARNESSES } from "../../src/agent-kind.ts";
 import { DuplicateSessionError } from "../../src/server/backend.ts";
 import type { SessionLaunchOptions } from "../../src/server/backend.ts";
 import type { PublicSessionIdentity } from "../../src/server/session-identity.ts";
@@ -32,6 +33,7 @@ interface CreateCall {
   readonly name: string;
   readonly cwd: string;
   readonly cmd: string | undefined;
+  readonly agentCmd: string;
   readonly options: SessionLaunchOptions | undefined;
 }
 
@@ -91,10 +93,10 @@ class FakeSessionOpenBackend implements SessionOpenBackend {
     name: string,
     cwd: string,
     cmd: string | undefined,
-    _loadSettings: () => { agentCmd: string },
+    loadSettings: () => { agentCmd: string },
     options?: SessionLaunchOptions,
   ): Promise<PublicSessionIdentity> {
-    this.createCalls.push({ name, cwd, cmd, options });
+    this.createCalls.push({ name, cwd, cmd, agentCmd: loadSettings().agentCmd, options });
     const failure = this.createFailures.shift();
     if (failure) throw failure;
     this.sessions.push(name);
@@ -130,6 +132,67 @@ describe("server-owned sub-session naming", () => {
 });
 
 describe("openSubSession", () => {
+  test("uses the selected child harness for launch, response and lineage, inheriting only by default", async () => {
+    for (const parentHarness of OPENABLE_HARNESSES) {
+      for (const harness of [undefined, ...OPENABLE_HARNESSES]) {
+        const backend = new FakeSessionOpenBackend("parent", parentHarness);
+        const notifications: string[] = [];
+        const result = await openSubSession({
+          backend,
+          parentSession: "parent",
+          project: "wolfpack",
+          projectDir: "/dev/wolfpack",
+          harness,
+          notify: (parent, child) => notifications.push(`${parent.wolfpackSessionId}:${child}`),
+        });
+        const childHarness = harness ?? parentHarness;
+        expect(result).toMatchObject({ harness: childHarness, session: "parent-sub-agent" });
+        expect(backend.createCalls).toEqual([{
+          name: "parent-sub-agent",
+          cwd: "/dev/wolfpack",
+          cmd: childHarness,
+          agentCmd: childHarness,
+          options: {
+            agentKind: childHarness,
+            parentSession: { wolfpackSessionId: PARENT_ID, wolfpackSessionName: "parent" },
+            initialPrompt: undefined,
+          },
+        }]);
+        expect(notifications).toEqual([`${PARENT_ID}:parent-sub-agent`]);
+      }
+    }
+  });
+
+  test("accepts model selection for a pi child of a non-pi parent", async () => {
+    const backend = new FakeSessionOpenBackend("claude-main", "claude");
+    const model = "anthropic/claude-opus-4-1";
+    const result = await openSubSession({
+      backend, parentSession: "claude-main", project: "wolfpack", projectDir: "/dev/wolfpack",
+      harness: "pi", model,
+    });
+    expect(result.harness).toBe("pi");
+    expect(backend.createCalls[0]?.options).toMatchObject({ agentKind: "pi", model });
+  });
+
+  for (const option of [{ model: "anthropic/claude-opus-4-1" }, {
+    taskWorker: { executable: "/bin/true", extension: "/tmp/extension.ts" },
+  }]) {
+    test(`rejects ${"model" in option ? "model" : "taskWorker"} for a non-pi child before creation`, async () => {
+      const backend = new FakeSessionOpenBackend("pi-main", "pi");
+      let failure: unknown;
+      try {
+        await openSubSession({
+          backend, parentSession: "pi-main", project: "wolfpack", projectDir: "/dev/wolfpack",
+          harness: "claude", ...option,
+        });
+      } catch (error: unknown) {
+        failure = error;
+      }
+      expectSessionOpenError(failure, "INVALID_REQUEST");
+      expect(backend.createCalls).toEqual([]);
+    });
+  }
+
   test("derives harness and exact parent identity and forwards the prompt unchanged", async () => {
     const backend = new FakeSessionOpenBackend("pi-main", "pi");
     backend.sessions.push("pi-main-sub-agent");
@@ -164,6 +227,7 @@ describe("openSubSession", () => {
       name: "pi-main-sub-agent-2",
       cwd: "/dev/wolfpack",
       cmd: "pi",
+      agentCmd: "pi",
       options: {
         agentKind: "pi",
         parentSession: {
@@ -181,8 +245,8 @@ describe("openSubSession", () => {
     }]);
   });
 
-  test("waits for the child Pi Tasks endpoint before returning a task worker", async () => {
-    const backend = new FakeSessionOpenBackend("pi-main", "pi");
+  test("waits for the child Pi Tasks endpoint with an explicit pi child of a non-pi parent", async () => {
+    const backend = new FakeSessionOpenBackend("pi-main", "claude");
     const endpoint = { relay: "wolfpack-pi-tasks-v2", id: "e4ef9a6c-90e2-4e08-a74e-904a2e4f59f5" };
 
     const result = await openSubSession({
@@ -190,6 +254,7 @@ describe("openSubSession", () => {
       parentSession: "pi-main",
       project: "parent",
       projectDir: "/dev/parent",
+      harness: "pi",
       taskWorker: {
         executable: "/opt/homebrew/bin/pi",
         extension: "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts",
@@ -343,6 +408,7 @@ describe("openSubSession", () => {
           parentSession: "parent",
           project: "wolfpack",
           projectDir: "/dev/wolfpack",
+          harness: "pi",
         });
       } catch (error: unknown) {
         failure = error;

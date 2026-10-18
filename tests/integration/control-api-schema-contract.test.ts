@@ -174,6 +174,18 @@ describe("control api generated schema against runtime responses", () => {
     }
   });
 
+  test("validates an explicit child harness request and its cross-harness runtime response", async () => {
+    const request = { project: "wolfpack", parentSession: "wolf-1", harness: "claude" };
+    expect(validate(httpRequest("openSession"), request, artifact)).toEqual([]);
+    const response = await postJson("/api/session-open", request);
+    expect(validate(httpResponse("openSession"), response, artifact)).toEqual([]);
+    expect(response).toMatchObject({ ok: true, harness: "claude" });
+    expect(mockBackend.lastCreateArgs).toMatchObject({
+      cmd: "claude", agentKind: "claude",
+      parentSession: { wolfpackSessionId: "mock:wolf-1", wolfpackSessionName: "wolf-1" },
+    });
+  });
+
   test("rejects an encoded snapshot response above the route byte guard", async () => {
     const sessionId = "00000000-0000-4000-8000-0000000000fe";
     const boundedBackend = new MockBackend();
@@ -199,6 +211,18 @@ describe("control api generated schema against runtime responses", () => {
   });
 
   const invalidRequestCases = [
+    {
+      name: "rejects shell as a child harness",
+      operationId: "openSession",
+      path: "/api/session-open",
+      body: { project: "wolfpack", parentSession: "wolf-1", harness: "shell" },
+    },
+    {
+      name: "rejects unknown child harnesses",
+      operationId: "openSession",
+      path: "/api/session-open",
+      body: { project: "wolfpack", parentSession: "wolf-1", harness: "nope" },
+    },
     {
       name: "rejects unknown create properties",
       operationId: "createSession",

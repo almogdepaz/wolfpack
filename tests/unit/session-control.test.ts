@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   SESSION_EXIT,
   parseSessionCommand,
+  parseAgentCommand,
   resolveSessionOpenContext,
 } from "../../src/cli/session-control.ts";
 import { TASK_WORKER_POLICY_MAX_BYTES } from "../../src/task-worker-policy-contract.ts";
@@ -383,7 +384,24 @@ describe("session control cli parsing", () => {
     expect(parseSessionCommand(["open", "wolfpack", "--prompt", "--json"]).ok).toBe(false);
     expect(parseSessionCommand(["open", "wolfpack", "--prompt", " "]).ok).toBe(false);
     expect(parseSessionCommand(["open", "wolfpack", "--prompt", "x".repeat(32_769)]).ok).toBe(false);
-    expect(parseSessionCommand(["open", "wolfpack", "--harness", "claude"]).ok).toBe(false);
+    for (const harness of ["shell", "bogus"]) {
+      expect(parseSessionCommand(["open", "wolfpack", "--harness", harness]).ok).toBe(false);
+      expect(parseAgentCommand(["spawn", "wolfpack", "--harness", harness]).ok).toBe(false);
+    }
+  });
+
+  test("parses child harness overrides for spawn and open without changing create", () => {
+    for (const harness of ["pi", "claude", "codex", "gemini", "cursor"]) {
+      expect(parseSessionCommand(["open", "wolfpack", "--harness", harness])).toMatchObject({
+        ok: true, action: "open", harness,
+      });
+      expect(parseAgentCommand(["spawn", "wolfpack", "--harness", harness])).toMatchObject({
+        ok: true, action: "spawn", harness,
+      });
+    }
+    expect(parseSessionCommand(["create", "wolfpack", "--harness", "shell"])).toMatchObject({
+      ok: true, action: "create", harness: "shell",
+    });
   });
 
   test("parses read with json output", () => {
@@ -707,6 +725,8 @@ describe("session control cli parsing", () => {
       const code = await runSessionCommand([
         "open",
         "wolfpack",
+        "--harness",
+        "pi",
         "--model",
         "anthropic/claude-opus-4-1",
         "--prompt",
@@ -719,6 +739,7 @@ describe("session control cli parsing", () => {
         body: {
           project: "wolfpack",
           parentSession: "pi-main",
+          harness: "pi",
           model: "anthropic/claude-opus-4-1",
           initialPrompt: "perform differential review only",
         },

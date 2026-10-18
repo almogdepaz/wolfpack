@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { AGENT_KIND, isCreatableHarness } from "../agent-kind.js";
+import { AGENT_KIND, isCreatableHarness, isOpenableHarness } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
 import { detectProviderReadiness } from "../provider-readiness.js";
 import {
@@ -62,7 +62,8 @@ import {
 import { inferAgentKind } from "./session-identity.js";
 import type { ParentSessionIdentity } from "./session-identity.js";
 import { createTopLevelSession } from "./session-create.js";
-import { openSubSession, SessionOpenError } from "./session-open.js";
+import { openSubSession, resolveSubSessionHarness, SessionOpenError } from "./session-open.js";
+import type { SessionOpenBackend } from "./session-open.js";
 import {
   TaskWorkerReadinessError,
   prepareTaskWorkerLaunch,
@@ -182,6 +183,7 @@ interface SessionOpenBody extends Record<string, unknown> {
   projectDir?: string;
   parentSession: string;
   sessionName?: string;
+  harness?: string;
   model?: string;
   initialPrompt?: string;
   plan?: SessionPlanRequest;
@@ -192,12 +194,13 @@ interface SessionOpenBody extends Record<string, unknown> {
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
-  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "model", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
+  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "harness", "model", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
     && typeof body.parentSession === "string"
     && hasOptionalType(body, "sessionName", "string")
+    && hasOptionalType(body, "harness", "string")
     && hasOptionalType(body, "model", "string")
     && hasOptionalType(body, "initialPrompt", "string")
     && (body.plan === undefined || isSessionPlanRequest(body.plan, true))
@@ -722,6 +725,9 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       !isSessionOpenBody(body)
       || !isValidSessionName(body.parentSession)
       || (body.sessionName !== undefined && !isValidSessionName(body.sessionName))
+      || (body.harness !== undefined && !isOpenableHarness(body.harness))
+      || (body.harness !== undefined && body.harness !== AGENT_KIND.PI.id
+        && (body.model !== undefined || body.taskWorker === true))
       || (
         body.model !== undefined
         && (!body.model.trim()
@@ -779,22 +785,6 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       initialPrompt = planned.prompt;
     }
 
-    let taskWorker;
-    try {
-      taskWorker = body.taskWorker === true
-        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
-        : undefined;
-    } catch (error: unknown) {
-      if (error instanceof TaskWorkerReadinessError) {
-        return json(res, taskWorkerFailureBody(error), 503);
-      }
-      throw error;
-    }
-
-    if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
-      return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
-    }
-
     const backend = getBackend();
     if (!backend.listIdentities) {
       return json(res, {
@@ -804,20 +794,37 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     }
 
     try {
+      const sessionOpenBackend: SessionOpenBackend = {
+        list: () => backend.list(),
+        listIdentities: () => backend.listIdentities!(),
+        createSession: (name, cwd, cmd, loadSettings, options) => (
+          backend.createSession(name, cwd, cmd, loadSettings, options)
+        ),
+        inspectSession: backend.inspectSession?.bind(backend),
+        killSessionById: backend.killSessionById.bind(backend),
+      };
+      if (body.taskWorker === true) {
+        const childHarness = await resolveSubSessionHarness(
+          sessionOpenBackend, body.parentSession, body.harness,
+        );
+        if (childHarness !== AGENT_KIND.PI.id) {
+          throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
+        }
+      }
+      const taskWorker = body.taskWorker === true
+        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
+        : undefined;
+      if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+        return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
+      }
+
       const result = await openSubSession({
-        backend: {
-          list: () => backend.list(),
-          listIdentities: () => backend.listIdentities!(),
-          createSession: (name, cwd, cmd, loadSettings, options) => (
-            backend.createSession(name, cwd, cmd, loadSettings, options)
-          ),
-          inspectSession: backend.inspectSession?.bind(backend),
-          killSessionById: backend.killSessionById.bind(backend),
-        },
+        backend: sessionOpenBackend,
         parentSession: body.parentSession,
         project,
         projectDir,
         sessionName: body.sessionName,
+        harness: body.harness,
         model: body.model,
         initialPrompt,
         ...(taskWorker !== undefined && {

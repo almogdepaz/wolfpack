@@ -90,6 +90,7 @@ interface OpenSubSessionInput extends TaskWorkerTransportLookup {
   readonly project: string;
   readonly projectDir: string;
   readonly sessionName?: string;
+  readonly harness?: OpenableHarness;
   readonly model?: string;
   readonly initialPrompt?: string;
   readonly taskWorker?: TaskWorkerLaunch;
@@ -129,6 +130,15 @@ async function readParentState(
   return { names, identity, harness: identity.agentKind };
 }
 
+export async function resolveSubSessionHarness(
+  backend: SessionOpenBackend,
+  parentSession: string,
+  harness?: OpenableHarness,
+): Promise<OpenableHarness> {
+  const parentState = await readParentState(backend, parentSession);
+  return harness ?? parentState.harness;
+}
+
 export function chooseSubAgentSessionName(
   parentSession: string,
   existingNames: readonly string[],
@@ -154,9 +164,10 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
   };
 
   for (let attempt = 0; attempt < SESSION_OPEN_MAX_CREATE_ATTEMPTS; attempt++) {
+    const childHarness = input.harness ?? parentState.harness;
     if (
       (input.model !== undefined || input.taskWorker !== undefined)
-      && parentState.harness !== AGENT_KIND.PI.id
+      && childHarness !== AGENT_KIND.PI.id
     ) {
       throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
     }
@@ -170,10 +181,10 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
       identity = await input.backend.createSession(
         session,
         input.projectDir,
-        parentState.harness,
-        () => ({ agentCmd: parentState.harness }),
+        childHarness,
+        () => ({ agentCmd: childHarness }),
         {
-          agentKind: parentState.harness,
+          agentKind: childHarness,
           parentSession: parentIdentity,
           ...(input.model !== undefined && { model: input.model }),
           initialPrompt: input.initialPrompt,
@@ -232,7 +243,7 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
       session,
       sessionId: identity.wolfpackSessionId,
       project: input.project,
-      harness: parentState.harness,
+      harness: childHarness,
       ...(taskEndpoint && { taskEndpoint }),
     };
   }

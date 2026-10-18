@@ -86,7 +86,7 @@ describe("session control fast-path parsing", () => {
   test("reports agent-native usage for invalid child-agent spawn", () => {
     expect(parseAgentCommand(["spawn"])).toEqual({
       ok: false,
-      message: "Usage: wolfpack agent spawn <project> [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]",
+      message: "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]",
     });
   });
 
@@ -311,10 +311,10 @@ describe("session control fast-path requests", () => {
     });
   });
 
-  test("agent spawn performs the existing one-request child flow", () => {
+  test("agent spawn selects a Pi child from a non-Pi parent in one request", () => {
     const script = `
       process.env.WOLFPACK_SESSION_NAME = "wolfpack";
-      process.env.WOLFPACK_AGENT_KIND = "pi";
+      process.env.WOLFPACK_AGENT_KIND = "claude";
       const calls = [];
       globalThis.fetch = async (url, init) => {
         calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
@@ -327,11 +327,11 @@ describe("session control fast-path requests", () => {
         });
       };
       const { runAgentCommand } = await import("./src/cli/session-control.ts");
-      const code = await runAgentCommand(["spawn", "branchout", "--name", "issue-200-reviewer", "--model", "openrouter/anthropic/claude-sonnet-4", "--prompt", "execute the plan", "--json"]);
+      const code = await runAgentCommand(["spawn", "branchout", "--harness", "pi", "--name", "issue-200-reviewer", "--model", "openrouter/anthropic/claude-sonnet-4", "--prompt", "execute the plan", "--json"]);
       const expected = [{
         url: "http://127.0.0.1:18790/api/session-open",
         method: "POST",
-        body: { project: "branchout", parentSession: "wolfpack", sessionName: "issue-200-reviewer", model: "openrouter/anthropic/claude-sonnet-4", initialPrompt: "execute the plan" },
+        body: { project: "branchout", parentSession: "wolfpack", harness: "pi", sessionName: "issue-200-reviewer", model: "openrouter/anthropic/claude-sonnet-4", initialPrompt: "execute the plan" },
       }];
       if (JSON.stringify(calls) !== JSON.stringify(expected)) process.exit(99);
       process.exit(code);
