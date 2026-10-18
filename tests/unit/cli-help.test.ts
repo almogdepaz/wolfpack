@@ -411,12 +411,13 @@ describe("cli help dispatch", () => {
   });
 
   test("uninstall refusal writes its diagnostic to stderr", () => {
-    const child = runCli(["uninstall"]);
+    // Names the directory uninstall would actually remove (WOLFPACK_DIR-aware).
+    const child = runCli(["uninstall"], { WOLFPACK_DIR: "/tmp/wolfpack-uninstall-target" });
 
     expect(child.exitCode).toBe(1);
     expect(child.stdout).toBe("");
     expect(child.stderr).toContain("Refusing to uninstall without confirmation.");
-    expect(child.stderr).toContain("This will recursively delete ~/.wolfpack/ (keys, secrets, config).");
+    expect(child.stderr).toContain("This will recursively delete /tmp/wolfpack-uninstall-target/ (keys, secrets, config).");
     expect(child.stderr).toContain("Re-run with: wolfpack uninstall --yes");
     expect(child.stderr).not.toContain("\x1b[");
   });

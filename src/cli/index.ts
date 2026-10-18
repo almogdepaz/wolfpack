@@ -11,6 +11,7 @@ import pkg from "../../package.json";
 import {
   loadConfig,
   remoteUrl,
+  WOLFPACK_DIR,
 } from "./config.js";
 import {
   serviceInstall,
@@ -360,7 +361,7 @@ function runUninstallCommand(argv: readonly string[]): void {
   }
   if (!hasUninstallConfirmationFlag(argv.slice(1))) {
     printError(red("  Refusing to uninstall without confirmation."));
-    printError(dim("  This will recursively delete ~/.wolfpack/ (keys, secrets, config)."));
+    printError(dim(`  This will recursively delete ${WOLFPACK_DIR}/ (keys, secrets, config).`));
     printError(dim("  Re-run with: wolfpack uninstall --yes"));
     process.exit(1);
   }
