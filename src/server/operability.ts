@@ -48,9 +48,14 @@ const brokerHealth = new BrokerHealthMonitor();
 
 export function operationalHealth(ctx: ServerContext = defaultServerContext): Record<string, unknown> {
   const broker = brokerHealth.observe(ctx.supervisor?.isBrokerReady() ?? true);
+  const version = ctx.supervisor?.getBrokerVersion() ?? null;
   return {
     status: broker === "ready" ? "ready" : "degraded",
-    broker: brokerHealth.snapshot(),
+    broker: {
+      ...brokerHealth.snapshot(),
+      version: version?.brokerVersion ?? null,
+      protocolVersion: version?.protocolVersion ?? null,
+    },
     uptimeSeconds: Math.floor(process.uptime()),
   };
 }

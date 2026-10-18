@@ -129,6 +129,18 @@ and close the connection.
 
 ### Method reference
 
+#### `hello`
+
+Reports the broker's wire protocol version and its release version, so a
+client can detect a broker left running from a different release.
+
+- params: `{}`
+- ok payload:
+  ```json
+  { "kind": "hello", "protocol_version": 2, "broker_version": "1.6.26" }
+  ```
+- brokers that predate this method answer `unknown_method`.
+
 #### `list_sessions`
 
 Returns the broker's current session table.
@@ -607,6 +619,9 @@ long as deserializers default-fill unknown fields.
 - `unknown_method` is the protocol's "unknown verb" error: a v1 client talking
   to a v2 broker that requested a v2-only method would get this rather than a
   silent drop.
+- Clients should call `hello` first and refuse a broker whose
+  `protocol_version` differs from their own; `unknown_method` means a
+  pre-`hello` broker whose version is unknown.
 
 ---
 

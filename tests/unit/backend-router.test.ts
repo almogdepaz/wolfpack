@@ -168,6 +168,61 @@ describe("BrokerSupervisor", () => {
       const router = new BackendRouter({ start: false });
       expect(await router.verifyBrokerHandshake()).toBe(false);
     });
+
+    describe("verifyBrokerHandshake hello negotiation", () => {
+      function routerWithClient(respond: (method: string) => Promise<unknown>) {
+        const { router } = createTestRouter();
+        const methods: string[] = [];
+        let closed = false;
+        (router as any).brokerClient = {
+          close: () => { closed = true; },
+          isConnected: () => true,
+          request: async (method: string) => { methods.push(method); return respond(method); },
+          start() {},
+        };
+        return { router, methods, closed: () => closed };
+      }
+
+      test("records the broker and protocol version from a compatible hello", async () => {
+        const { router, methods, closed } = routerWithClient(async () => ({
+          status: "ok",
+          payload: { kind: "hello", protocol_version: 2, broker_version: "1.6.26" },
+        }));
+        expect(await router.verifyBrokerHandshake()).toBe(true);
+        expect(methods).toEqual(["hello"]);
+        expect(router.getBrokerVersion()).toEqual({ protocolVersion: 2, brokerVersion: "1.6.26" });
+        expect(closed()).toBe(false);
+      });
+
+      test("falls back to list_sessions for a pre-hello broker and leaves the version unknown", async () => {
+        const { router, methods, closed } = routerWithClient(async (method) => method === "hello"
+          ? { status: "error", error: { code: "unknown_method", message: "unknown method: hello" } }
+          : { status: "ok", payload: { kind: "list_sessions", sessions: [] } });
+        expect(await router.verifyBrokerHandshake()).toBe(true);
+        expect(methods).toEqual(["hello", "list_sessions"]);
+        expect(router.getBrokerVersion()).toBeNull();
+        expect(closed()).toBe(false);
+      });
+
+      test("tears down a broker speaking a different protocol version", async () => {
+        const { router, methods, closed } = routerWithClient(async () => ({
+          status: "ok",
+          payload: { kind: "hello", protocol_version: 3, broker_version: "9.0.0" },
+        }));
+        expect(await router.verifyBrokerHandshake()).toBe(false);
+        expect(methods).toEqual(["hello"]);
+        expect(closed()).toBe(true);
+        expect(router.isBrokerAvailable()).toBe(false);
+        expect(router.getBrokerVersion()).toBeNull();
+      });
+
+      test("tears down on a transport failure", async () => {
+        const { router, closed } = routerWithClient(async () => { throw new Error("broker request timed out"); });
+        expect(await router.verifyBrokerHandshake()).toBe(false);
+        expect(closed()).toBe(true);
+        expect(router.isBrokerAvailable()).toBe(false);
+      });
+    });
   });
 
   describe("checkBrokerSocketExists", () => {

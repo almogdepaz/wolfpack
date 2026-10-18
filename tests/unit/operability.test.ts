@@ -29,6 +29,18 @@ describe("operability contracts", () => {
     });
   });
 
+  test("reports the broker release and protocol version, null until a hello succeeds", () => {
+    process.env.WOLFPACK_TEST = "1";
+    __resetBackend();
+    const router = getRouter();
+    (router as any)._brokerAvailable = true;
+    (router as any).brokerClient = { isConnected: () => true };
+
+    expect(operationalHealth()).toMatchObject({ broker: { state: "ready", version: null, protocolVersion: null } });
+    (router as any).brokerVersion = { protocolVersion: 2, brokerVersion: "1.6.26" };
+    expect(operationalHealth()).toMatchObject({ broker: { state: "ready", version: "1.6.26", protocolVersion: 2 } });
+  });
+
   test("limits unauthenticated readiness to direct loopback addresses", () => {
     expect(isLoopbackAddress("127.0.0.1")).toBe(true);
     expect(isLoopbackAddress("::1")).toBe(true);

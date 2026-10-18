@@ -268,6 +268,9 @@ impl ControlResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResponsePayload {
+    /// `hello`: lets a client detect a broker built from a different release
+    /// before relying on it. Brokers that predate it answer `unknown_method`.
+    Hello { protocol_version: u32, broker_version: String },
     ListSessions { sessions: Vec<SessionInfo> },
     CreateSession { session: SessionInfo },
     KillSession { killed: bool },
@@ -330,6 +333,7 @@ pub enum ErrorCode {
 // ---------------------------------------------------------------------------
 
 pub mod methods {
+    pub const HELLO: &str = "hello";
     pub const LIST_SESSIONS: &str = "list_sessions";
     pub const CREATE_SESSION: &str = "create_session";
     pub const KILL_SESSION: &str = "kill_session";
@@ -646,6 +650,21 @@ mod tests {
         assert!(v["payload"].get("program_status_records").is_none());
         assert!(v["payload"]["session"].get("program_status").is_none());
         assert!(v.get("error").is_none() || v["error"].is_null());
+        let back: ControlResponse = serde_json::from_value(v).unwrap();
+        assert_eq!(resp, back);
+    }
+
+    #[test]
+    fn response_hello_payload() {
+        let resp = ControlResponse::ok(
+            1,
+            ResponsePayload::Hello { protocol_version: PROTOCOL_VERSION, broker_version: "1.2.3".into() },
+        );
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["payload"]["kind"], "hello");
+        assert_eq!(v["payload"]["protocol_version"], 2);
+        assert_eq!(v["payload"]["broker_version"], "1.2.3");
         let back: ControlResponse = serde_json::from_value(v).unwrap();
         assert_eq!(resp, back);
     }

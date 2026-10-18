@@ -16,9 +16,17 @@ import * as net from "node:net";
 import { createLogger, errMsg } from "../log.js";
 import { LOG_ROTATE_BYTES } from "../log-rotation.js";
 import { defaultBrokerSocketPath } from "../broker/client.js";
+import {
+  BROKER_HELLO_METHOD,
+  BROKER_PROTOCOL_VERSION,
+  classifyBrokerHello,
+  type BrokerHelloResult,
+} from "../broker/hello.js";
+import pkg from "../../package.json";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
 
 const log = createLogger("doctor");
+const CLI_VERSION: string = pkg.version;
 import {
   WOLFPACK_DIR,
   IS_MACOS,
@@ -413,30 +421,74 @@ export async function checkDoctorBroker(): Promise<CheckResult[]> {
     return results;
   }
 
-  // Probe handshake.
-  const handshake = await brokerHandshake(socketPath, 1000);
-  if (handshake.ok) {
-    results.push({
-      name: "broker handshake", group: "Broker", status: "pass",
-      detail: `list_sessions ok (${handshake.elapsedMs}ms)`, fact: "broker-healthy",
-    });
-  } else {
-    results.push({
-      name: "broker handshake", group: "Broker", status: "fail",
-      detail: handshake.reason ?? "no response",
-      fixHint: IS_MACOS ? "launchctl kickstart gui/$(id -u)/com.wolfpack.broker" : "systemctl --user restart wolfpack-broker",
-      fix: found ? () => kickstartBroker() : undefined,
-    });
+  // Probe handshake: `hello`, or `list_sessions` for a broker that predates it.
+  const restartHint = IS_MACOS ? "launchctl kickstart gui/$(id -u)/com.wolfpack.broker" : "systemctl --user restart wolfpack-broker";
+  const handshakeFailure = (detail: string): CheckResult => ({
+    name: "broker handshake", group: "Broker", status: "fail", detail,
+    fixHint: restartHint,
+    fix: found ? () => kickstartBroker() : undefined,
+  });
+  const hello = await brokerRequest(socketPath, BROKER_HELLO_METHOD, 1000);
+  if (!hello.ok) {
+    results.push(handshakeFailure(hello.reason));
+    return results;
   }
-
+  const classified = classifyBrokerHello(hello.response);
+  let elapsedMs = hello.elapsedMs;
+  if (classified.kind === "pre_hello") {
+    const listed = await brokerRequest(socketPath, "list_sessions", 1000);
+    if (!listed.ok || (listed.response as { status?: unknown } | null)?.status !== "ok") {
+      results.push(handshakeFailure(listed.ok ? `broker replied status=${String((listed.response as { status?: unknown } | null)?.status)}` : listed.reason));
+      return results;
+    }
+    elapsedMs += listed.elapsedMs;
+  }
+  results.push(...brokerHandshakeChecks(classified, elapsedMs, CLI_VERSION, handshakeFailure));
   return results;
 }
 
-/** Speak the broker's framed-JSON RPC just enough to verify list_sessions
- *  returns `{ status: "ok" }`. Wire format mirrors src/broker/codec.ts:
- *  `[1 byte kind][4 bytes BE length][payload]`. CONTROL_REQUEST kind = 0x01,
- *  CONTROL_RESPONSE kind = 0x02. */
-function brokerHandshake(socketPath: string, timeoutMs: number): Promise<{ ok: boolean; elapsedMs: number; reason?: string }> {
+/** Rows for a broker that answered `hello` (or, pre-hello, `list_sessions`).
+ *  A version differing from the CLI's is the stale broker left running by a
+ *  server-only upgrade. */
+export function brokerHandshakeChecks(
+  hello: BrokerHelloResult,
+  elapsedMs: number,
+  cliVersion: string,
+  failure: (detail: string) => CheckResult = (detail) => ({ name: "broker handshake", group: "Broker", status: "fail", detail }),
+): CheckResult[] {
+  switch (hello.kind) {
+    case "error":
+      return [failure(hello.message)];
+    case "incompatible":
+      return [failure(`broker ${hello.brokerVersion} speaks protocol ${hello.protocolVersion}; this release needs protocol ${BROKER_PROTOCOL_VERSION}`)];
+    case "pre_hello":
+      return [
+        { name: "broker handshake", group: "Broker", status: "pass", detail: `list_sessions ok; broker predates hello (${elapsedMs}ms)`, fact: "broker-healthy" },
+        { name: "broker version", group: "Broker", status: "warn", detail: `unknown (broker predates hello); cli ${cliVersion}`, fixHint: STALE_BROKER_HINT },
+      ];
+    case "compatible": {
+      const handshake: CheckResult = {
+        name: "broker handshake", group: "Broker", status: "pass",
+        detail: `broker ${hello.brokerVersion} (protocol ${hello.protocolVersion}) (${elapsedMs}ms)`, fact: "broker-healthy",
+      };
+      const version: CheckResult = hello.brokerVersion === cliVersion
+        ? { name: "broker version", group: "Broker", status: "pass", detail: `matches cli ${cliVersion}` }
+        : { name: "broker version", group: "Broker", status: "warn", detail: `broker ${hello.brokerVersion} differs from cli ${cliVersion}`, fixHint: STALE_BROKER_HINT };
+      return [handshake, version];
+    }
+  }
+}
+
+const STALE_BROKER_HINT = "restarting the broker ends every session; when convenient run `wolfpack service restart --broker`";
+
+/** One framed-JSON control request; resolves with the first CONTROL_RESPONSE.
+ *  Wire format mirrors src/broker/codec.ts: `[1 byte kind][4 bytes BE
+ *  length][payload]`. CONTROL_REQUEST kind = 0x01, CONTROL_RESPONSE = 0x02. */
+function brokerRequest(
+  socketPath: string,
+  method: string,
+  timeoutMs: number,
+): Promise<{ ok: true; response: unknown; elapsedMs: number } | { ok: false; reason: string; elapsedMs: number }> {
   return new Promise((resolve) => {
     const FRAME_KIND_CONTROL_REQUEST = 0x01;
     const FRAME_KIND_CONTROL_RESPONSE = 0x02;
@@ -444,16 +496,16 @@ function brokerHandshake(socketPath: string, timeoutMs: number): Promise<{ ok: b
     const sock = net.createConnection(socketPath);
     let done = false;
     let buf = Buffer.alloc(0);
-    const finish = (ok: boolean, reason?: string) => {
+    const finish = (result: { ok: true; response: unknown } | { ok: false; reason: string }) => {
       if (done) return;
       done = true;
       try { sock.destroy(); } catch (e: unknown) { log.debug("broker probe destroy failed", { error: errMsg(e) }); }
-      resolve({ ok, elapsedMs: Date.now() - start, reason });
+      resolve({ ...result, elapsedMs: Date.now() - start });
     };
-    const timer = setTimeout(() => finish(false, `timed out after ${timeoutMs}ms`), timeoutMs);
-    sock.once("error", (e) => { clearTimeout(timer); finish(false, errMsg(e)); });
+    const timer = setTimeout(() => finish({ ok: false, reason: `timed out after ${timeoutMs}ms` }), timeoutMs);
+    sock.once("error", (e) => { clearTimeout(timer); finish({ ok: false, reason: errMsg(e) }); });
     sock.once("connect", () => {
-      const payload = JSON.stringify({ id: 1, method: "list_sessions", params: {} });
+      const payload = JSON.stringify({ id: 1, method, params: {} });
       const body = Buffer.from(payload, "utf-8");
       const frame = Buffer.alloc(5 + body.length);
       frame[0] = FRAME_KIND_CONTROL_REQUEST;
@@ -473,13 +525,12 @@ function brokerHandshake(socketPath: string, timeoutMs: number): Promise<{ ok: b
         buf = buf.subarray(5 + len);
         if (kind !== FRAME_KIND_CONTROL_RESPONSE) continue;
         try {
-          const msg = JSON.parse(payload.toString("utf-8"));
+          const msg: unknown = JSON.parse(payload.toString("utf-8"));
           clearTimeout(timer);
-          if (msg?.status === "ok") finish(true);
-          else finish(false, `broker replied status=${msg?.status}`);
+          finish({ ok: true, response: msg });
         } catch (e: unknown) {
           clearTimeout(timer);
-          finish(false, `parse error: ${errMsg(e)}`);
+          finish({ ok: false, reason: `parse error: ${errMsg(e)}` });
         }
         return;
       }
