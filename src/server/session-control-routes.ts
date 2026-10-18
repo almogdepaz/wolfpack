@@ -1,4 +1,4 @@
-import type { ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename } from "node:path";
 import { createLogger, errMsg } from "../log.js";
 import {
@@ -37,6 +37,7 @@ import {
   json,
   parseObjectBody,
 } from "./http.js";
+import { listParentNotifications } from "./parent-inbox.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
@@ -273,34 +274,13 @@ async function waitForSessionText(session: string, text: string, timeoutMs: numb
   });
 }
 
-return {
-  "GET /api/session-control/list": async (_req, res) => {
-    res.setHeader("Cache-Control", "no-store");
-    try {
-      const backend = getBackend();
-      const names = await backend.list();
-      const identities = await backend.listIdentities?.();
-      if (!identities || names.some(name => !identities[name])) {
-        return json(res, { error: "session identity unavailable" }, 503);
-      }
-      if (names.length === 0) return json(res, { sessions: [] });
-      const endpoints = await ctx.taskRelayGateway.registrationsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
-      const sessions = names.map((name) => {
-        const identity = identities[name]!;
-        return sessionStatusPayload(name, identity, endpoints.get(identity.wolfpackSessionId));
-      }).sort((left, right) => left.session.localeCompare(right.session));
-      json(res, { sessions });
-    } catch (error: unknown) {
-      log.warn("session-control list failed", { error: errMsg(error) });
-      json(res, { error: "backend unavailable" }, 503);
-    }
-  },
-
-  "GET /api/session-control/status": async (req, res) => {
+async function inspectSessionRoute(req: IncomingMessage, res: ServerResponse, inbox = false): Promise<void> {
     res.setHeader("Cache-Control", "no-store");
     const url = new URL(req.url ?? "/", "http://localhost");
     const selector = url.searchParams.get("session") ?? undefined;
-    if (!selector) {
+    const sinceRaw = url.searchParams.get("since");
+    const since = sinceRaw === null ? undefined : Number(sinceRaw);
+    if (!selector || (inbox && sinceRaw !== null && (!/^\d+$/.test(sinceRaw) || !Number.isSafeInteger(since) || (since ?? 0) < 0))) {
       return json(res, sessionStatusFailure(undefined, SESSION_STATUS_ERROR.INVALID_REQUEST), 400);
     }
     try {
@@ -330,7 +310,7 @@ return {
           ambiguous ? 409 : 404,
         );
       }
-      const status = inspectedSessionStatusPayload(selector, inspection, (await ctx.taskRelayGateway.registrationsForSessions([inspection.sessionId])).get(inspection.sessionId));
+      const status = inspectedSessionStatusPayload(selector, inspection, inbox ? undefined : (await ctx.taskRelayGateway.registrationsForSessions([inspection.sessionId])).get(inspection.sessionId));
       if (!inspection.alive) {
         return json(
           res,
@@ -342,6 +322,9 @@ return {
           ),
           410,
         );
+      }
+      if (inbox) {
+        return json(res, { session: inspection.session, sessionId: inspection.sessionId, notifications: listParentNotifications(inspection.sessionId, since) });
       }
       return json(res, status);
     } catch (error: unknown) {
@@ -356,7 +339,33 @@ return {
         503,
       );
     }
+}
+
+return {
+  "GET /api/session-control/list": async (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    try {
+      const backend = getBackend();
+      const names = await backend.list();
+      const identities = await backend.listIdentities?.();
+      if (!identities || names.some(name => !identities[name])) {
+        return json(res, { error: "session identity unavailable" }, 503);
+      }
+      if (names.length === 0) return json(res, { sessions: [] });
+      const endpoints = await ctx.taskRelayGateway.registrationsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
+      const sessions = names.map((name) => {
+        const identity = identities[name]!;
+        return sessionStatusPayload(name, identity, endpoints.get(identity.wolfpackSessionId));
+      }).sort((left, right) => left.session.localeCompare(right.session));
+      json(res, { sessions });
+    } catch (error: unknown) {
+      log.warn("session-control list failed", { error: errMsg(error) });
+      json(res, { error: "backend unavailable" }, 503);
+    }
   },
+
+  "GET /api/session-control/status": (req, res) => inspectSessionRoute(req, res),
+  "GET /api/session-control/inbox": (req, res) => inspectSessionRoute(req, res, true),
 
   "GET /api/session-control/snapshot": async (req, res) => {
     res.setHeader("Cache-Control", "no-store");

@@ -213,11 +213,23 @@ describe("cli help dispatch", () => {
     });
   }
 
+  test("inbox help is side-effect-free and documents polling", () => {
+    for (const args of [["session", "inbox", "--help"], ["agent", "inbox", "--help"]]) {
+      const child = runCli(args);
+      expect(child.exitCode).toBe(0);
+      expect(child.stdout).toContain("inbox");
+      expect(child.stdout).toContain("--since <seq>");
+      expect(child.stderr).toBe("");
+    }
+  });
+
   test("global machine help is side-effect-free and documents the selector", () => {
     for (const args of [
       ["--machine", "peer", "--help"],
       ["--machine", "peer", "session", "--help"],
       ["--machine", "peer", "session", "status", "--help"],
+      ["--machine", "peer", "session", "inbox", "--help"],
+      ["--machine", "peer", "agent", "inbox", "--help"],
       ["--machine", "peer", "session", "prompt", "--help"],
       ["--machine", "peer", "agent", "spawn", "--help"],
       ["--machine", "peer", "list", "--help"],

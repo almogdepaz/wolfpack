@@ -75,7 +75,7 @@ export const SESSION_EXIT = {
   BACKEND_UNAVAILABLE: 6,
   /** `send` delivered the text but the program did not take the Enter. */
   NOT_SUBMITTED: 7,
-  /** `agent notify-parent` was accepted but this host has no push subscription to deliver to. */
+  /** `agent notify-parent` reached neither a parent inbox nor an enrolled push device. */
   NOT_DELIVERED: 8,
 } as const;
 
@@ -113,14 +113,16 @@ Deprecated alias for: wolfpack agent spawn`;
 export function agentUsage(): string {
   return `Usage: wolfpack agent <command> [options]
 
-Global selector: wolfpack --machine <short-name-or-fqdn> agent spawn ...
+Global selector: wolfpack --machine <short-name-or-fqdn> agent <spawn|inbox> ...
 
 Commands:
   wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
   wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
   wolfpack agent notify-parent [--message <text>] [--json]
+  wolfpack agent inbox [--since <seq>] [--json]
 
-Spawns a child of the current Wolfpack agent session (same harness by default) or sends a user-visible notification from a child agent.`;
+Spawns a child of the current Wolfpack agent session (same harness by default),
+notifies its parent's inbox and enrolled devices, or polls the current session's inbox.`;
 }
 
 export function sessionUsage(): string {
@@ -131,6 +133,7 @@ Global selector: wolfpack --machine <short-name-or-fqdn> session <supported-comm
 Commands:
   wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
   wolfpack session status <session-or-id> [--json]
+  wolfpack session inbox <session-or-id> [--since <seq>] [--json]
   wolfpack session read <session-or-id> [--json]
   wolfpack session send <session-or-id> <text...> [--no-enter] [--ensure-submitted] [--observe-ms <1..10000>] [--json]
   wolfpack session wait <session-or-id> <text> [--timeout-ms <1..600000>] [--json]
@@ -177,6 +180,7 @@ export type ParsedSessionCommand =
     readonly output: OutputMode;
   }
   | { readonly ok: true; readonly action: "status"; readonly session: string; readonly output: OutputMode }
+  | { readonly ok: true; readonly action: "inbox"; readonly session: string; readonly since?: number; readonly output: OutputMode }
   | { readonly ok: true; readonly action: "read"; readonly session: string; readonly output: OutputMode }
   | {
     readonly ok: true;
@@ -194,6 +198,7 @@ export type ParsedSessionCommand =
   | { readonly ok: false; readonly message: string };
 
 export type ParsedAgentCommand =
+  | { readonly ok: true; readonly action: "inbox"; readonly since?: number; readonly output: OutputMode }
   | {
     readonly ok: true;
     readonly action: "spawn";
@@ -354,7 +359,7 @@ function parseExistingProjectSelector(
 }
 
 type LaunchSessionAction = "create" | "open";
-const TARGET_SESSION_ACTIONS = ["status", "read", "send", "wait", "prompt"] as const;
+const TARGET_SESSION_ACTIONS = ["status", "inbox", "read", "send", "wait", "prompt"] as const;
 type TargetSessionAction = (typeof TARGET_SESSION_ACTIONS)[number];
 
 function isTargetSessionAction(action: string): action is TargetSessionAction {
@@ -467,6 +472,15 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
   };
 }
 
+function parseInboxOptions(args: string[], output: OutputMode): Extract<ParsedAgentCommand, { action: "inbox" } | { ok: false }> {
+  const raw = consumeValue(args, "--since");
+  const since = raw === null ? undefined : Number(raw);
+  if (args.length > 0 || (raw !== null && (!/^\d+$/.test(raw) || !Number.isSafeInteger(since) || (since ?? 0) < 0))) {
+    return { ok: false, message: "Usage: wolfpack session inbox <session-or-id> [--since <seq>] [--json] or wolfpack agent inbox [--since <seq>] [--json]" };
+  }
+  return { ok: true, action: "inbox", ...(since !== undefined && { since }), output };
+}
+
 function parseTargetSessionCommand(
   action: TargetSessionAction,
   args: string[],
@@ -474,6 +488,10 @@ function parseTargetSessionCommand(
 ): ParsedSessionCommand {
   const session = args.shift();
   if (!session) return { ok: false, message: `Usage: wolfpack session ${action} <session> ...` };
+  if (action === "inbox") {
+    const parsed = parseInboxOptions(args, output);
+    return parsed.ok ? { ...parsed, session } : parsed;
+  }
   if (action === "status" || action === "read") {
     if (args.length > 0) return { ok: false, message: `Usage: wolfpack session ${action} <session-or-id> [--json]` };
     return { ok: true, action, session, output };
@@ -547,7 +565,7 @@ function parseTargetSessionCommand(
 export function parseSessionCommand(argv: readonly string[]): ParsedSessionCommand {
   const args = [...argv];
   const action = args.shift();
-  if (!action) return { ok: false, message: "Usage: wolfpack session <create|status|read|send|wait|prompt|current-context> ..." };
+  if (!action) return { ok: false, message: "Usage: wolfpack session <create|status|inbox|read|send|wait|prompt|current-context> ..." };
   if (!isSessionAction(action)) return { ok: false, message: `Unknown session command: ${action}` };
   if (action === "create" || action === "open") return parseLaunchSessionCommand(action, args);
 
@@ -563,6 +581,11 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
 export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
   const [action, ...rest] = argv;
   const args = [...rest];
+  if (action === "inbox") {
+    const { mode: output, shellRequested } = parseOutputMode(args);
+    if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
+    return parseInboxOptions(args, output);
+  }
   if (action === "notify-parent") {
     const messageValue = consumeLaunchValue(args, "--message");
     const { mode: output, shellRequested } = parseOutputMode(args);
@@ -1173,8 +1196,10 @@ function defaultNotifyParentMessage(): string {
   return `${session} finished or blocked; ready for parent review`;
 }
 
+type ParentInboxDelivery = { readonly queued: true; readonly seq: number } | { readonly queued: false; readonly reason: "no_parent" | "parent_not_found" };
+
 type NotifyParentResult =
-  | (NotifyDelivery & { readonly failed: number })
+  | (NotifyDelivery & { readonly failed: number; readonly parentInbox?: ParentInboxDelivery })
   | { readonly invalid: string };
 
 /**
@@ -1187,7 +1212,18 @@ function notifyParentResult(value: unknown): NotifyParentResult | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { invalid: "body is not an object" };
   const body = value as Record<string, unknown>;
   if (body.ok !== true) return { invalid: "ok is not true" };
-  if (body.delivered === undefined) return undefined;
+  let parentInbox: ParentInboxDelivery | undefined;
+  if (body.parentInbox !== undefined) {
+    const inbox = body.parentInbox;
+    if (!inbox || typeof inbox !== "object" || Array.isArray(inbox)) return { invalid: "parentInbox is not an object" };
+    const entry = inbox as Record<string, unknown>;
+    if (entry.queued === true && entry.reason === undefined && Number.isSafeInteger(entry.seq) && (entry.seq as number) > 0) {
+      parentInbox = { queued: true, seq: entry.seq as number };
+    } else if (entry.queued === false && entry.seq === undefined && (entry.reason === "no_parent" || entry.reason === "parent_not_found")) {
+      parentInbox = { queued: false, reason: entry.reason };
+    } else return { invalid: "invalid parentInbox outcome" };
+  }
+  if (body.delivered === undefined) return parentInbox === undefined ? undefined : { invalid: "missing delivered with parentInbox" };
   if (typeof body.delivered !== "boolean") return { invalid: "delivered is not a boolean" };
   if (
     !Number.isSafeInteger(body.sent) || (body.sent as number) < 0
@@ -1199,7 +1235,7 @@ function notifyParentResult(value: unknown): NotifyParentResult | undefined {
   const expected = notifyDelivery({ sent: body.sent as number, failed });
   if (body.delivered !== expected.delivered) return { invalid: "delivered contradicts sent" };
   if (body.reason !== expected.reason) return { invalid: "reason contradicts sent and failed" };
-  return { ...expected, failed };
+  return { ...expected, failed, ...(parentInbox !== undefined && { parentInbox }) };
 }
 
 function plural(count: number, noun: string): string {
@@ -1211,6 +1247,18 @@ function notifyParentExit(result: NotifyParentResult | undefined, output: Output
   if (result && "invalid" in result) {
     printError(red(`invalid /api/notify response: ${result.invalid}`));
     return SESSION_EXIT.GENERAL;
+  }
+  if (result?.parentInbox) {
+    const inbox = result.parentInbox;
+    if (plain) print(inbox.queued ? `parent inbox queued (seq ${inbox.seq})` : `parent inbox not queued: ${inbox.reason}`);
+    if (inbox.queued) {
+      if (plain && !result.delivered) {
+        printError(yellow(result.reason === NOTIFY_UNDELIVERED_REASON.NO_SUBSCRIPTIONS
+          ? "warning: no push subscriptions on this host"
+          : `warning: push delivery failed (${plural(result.failed, "endpoint")})`));
+      } else if (plain && result.failed > 0) printError(yellow(`warning: ${plural(result.failed, "push subscription")} failed`));
+      return SESSION_EXIT.OK;
+    }
   }
   if (!result || result.delivered) {
     if (plain) print("notified");
@@ -1236,6 +1284,7 @@ async function runNotifyParent(
       method: "POST",
       body: JSON.stringify({
         message,
+        ...(process.env.WOLFPACK_SESSION_NAME && { from: process.env.WOLFPACK_SESSION_NAME }),
         ...(parentSessionId && parentSessionName && {
           sessionId: parentSessionId,
           sessionName: parentSessionName,
@@ -1261,7 +1310,7 @@ export async function runAgentCommand(
     print(agentUsage());
     return SESSION_EXIT.OK;
   }
-  if (argv.length === 2 && argv[0] === "notify-parent" && HELP_ALIASES.has(argv[1])) {
+  if (argv.length === 2 && (argv[0] === "notify-parent" || argv[0] === "inbox") && HELP_ALIASES.has(argv[1])) {
     print(agentUsage());
     return SESSION_EXIT.OK;
   }
@@ -1276,6 +1325,11 @@ export async function runAgentCommand(
       return SESSION_EXIT.USAGE;
     }
     return runNotifyParent(parsed);
+  }
+  if (parsed.action === "inbox") {
+    const context = resolveSessionOpenContext(process.env);
+    if (!context.ok) return writeOpenError(parsed.output, context.code, context.message, SESSION_EXIT.NOT_FOUND);
+    return runTargetSessionCommand({ ...parsed, session: process.env.WOLFPACK_SESSION_ID?.trim() || context.parentSession }, target);
   }
   return runSessionOpen(parsed, target);
 }
@@ -1333,6 +1387,18 @@ async function runTargetSessionCommand(
   target?: VerifiedMachineTarget,
 ): Promise<number> {
   try {
+    if (parsed.action === "inbox") {
+      const query = new URLSearchParams({ session: parsed.session });
+      if (parsed.since !== undefined) query.set("since", String(parsed.since));
+      const data = await call(`/api/session-control/inbox?${query}`, {}, target) as {
+        session: string;
+        sessionId: string;
+        notifications: Array<{ seq: number; at: string; message: string; from?: string }>;
+      };
+      if (parsed.output === "json") jsonOut(data, target);
+      else for (const entry of data.notifications) print(`${entry.seq} ${entry.at}${entry.from !== undefined ? ` [${entry.from}]` : ""} ${entry.message}`.replace(/[\r\n\u2028\u2029]/g, " "));
+      return SESSION_EXIT.OK;
+    }
     if (parsed.action === "status") {
       const data = await call(
         `/api/session-control/status?session=${encodeURIComponent(parsed.session)}`,

@@ -33,6 +33,7 @@ test("parent notifications filter by parent name or id and render for humans", (
   expect(matchesEventFilter(event, { session: "parent-id" })).toBe(true);
   expect(matchesEventFilter(event, { session: "child" })).toBe(false);
   expect(formatEventLine(event)).toBe("t parent_notified parent seq=2 [child] ready");
+  expect(formatEventLine({ ...event, from: "child\nagent", message: "ready\r\nfor review" })).toBe("t parent_notified parent seq=2 [child agent] ready  for review");
 });
 
 describe("parseEventFilter", () => {

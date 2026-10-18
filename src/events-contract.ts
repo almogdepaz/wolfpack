@@ -132,7 +132,7 @@ export function formatEventLine(event: WolfpackEvent): string {
     case WOLFPACK_EVENT_KIND.SESSION_STATE:
       return `${event.at} ${event.kind} ${event.session} ${event.state} (${event.label})`;
     case WOLFPACK_EVENT_KIND.PARENT_NOTIFIED:
-      return `${event.at} ${event.kind} ${event.session} seq=${event.seq}${event.from !== undefined ? ` [${event.from}]` : ""} ${event.message}`;
+      return `${event.at} ${event.kind} ${event.session} seq=${event.seq}${event.from !== undefined ? ` [${event.from}]` : ""} ${event.message}`.replace(/[\r\n\u2028\u2029]/g, " ");
     case WOLFPACK_EVENT_KIND.TASK_UPDATED:
       return `${event.at} ${event.kind} ${event.taskId} ${event.eventType}`;
   }

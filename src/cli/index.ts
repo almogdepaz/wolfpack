@@ -94,6 +94,8 @@ Commands:
   wolfpack session create <project> Create a top-level session
   wolfpack session <action>        Inspect or control sessions
   wolfpack agent spawn <project>   Spawn a child agent (same harness by default)
+  wolfpack agent inbox             Poll this agent session\u0027s parent-notification inbox
+  wolfpack session inbox <session> Poll a session\u0027s parent-notification inbox
   wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack logs [--follow|--json]  Read or follow service logs
@@ -259,22 +261,22 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
   if (["list", "ls", "kill", "events"].includes(family ?? "")) return command.length === 1;
   if (family === "session") {
     return command.length === 1 || (command.length === 2 && [
-      "create", "open", "status", "read", "send", "wait", "prompt",
+      "create", "open", "status", "inbox", "read", "send", "wait", "prompt",
     ].includes(action ?? ""));
   }
   if (family === "extension-data") return command.length === 1 || (command.length === 2 && ["read", "publish", "put-blob", "delete-blob"].includes(action ?? ""));
   return family === "agent"
-    && (command.length === 1 || (command.length === 2 && action === "spawn"));
+    && (command.length === 1 || (command.length === 2 && (action === "spawn" || action === "inbox")));
 }
 
 function isMachineCommandSupported(argv: readonly string[]): boolean {
   const [family, action] = argv;
   if (["list", "ls", "kill", "events"].includes(family ?? "")) return true;
   if (family === "session") {
-    return ["create", "open", "status", "read", "send", "wait", "prompt"].includes(action ?? "");
+    return ["create", "open", "status", "inbox", "read", "send", "wait", "prompt"].includes(action ?? "");
   }
   if (family === "extension-data") return ["read", "publish", "put-blob", "delete-blob"].includes(action ?? "");
-  return family === "agent" && action === "spawn";
+  return family === "agent" && (action === "spawn" || action === "inbox");
 }
 
 function emitMachineFailure(
