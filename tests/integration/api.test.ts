@@ -3308,6 +3308,63 @@ describe("POST /api/session-open", () => {
     activePtySessions.clear();
   });
 
+  test("selects a cross-harness child while preserving parent lineage and notification", async () => {
+    const frames = attachNotificationViewer("wolf-1");
+    const res = await post("/api/session-open", {
+      project: "my-app", parentSession: "wolf-1", harness: "claude",
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true, session: "wolf-1-sub-agent", sessionId: "mock:wolf-1-sub-agent",
+      project: "my-app", harness: "claude",
+    });
+    expect(mockBackend.lastCreateArgs).toMatchObject({
+      cmd: "claude", agentKind: "claude",
+      parentSession: { wolfpackSessionId: "mock:wolf-1", wolfpackSessionName: "wolf-1" },
+    });
+    expect(frames.map((frame) => JSON.parse(frame))).toEqual([{
+      type: "sub_session_opened", parentSession: "wolf-1", session: "wolf-1-sub-agent",
+    }]);
+  });
+
+  test("rejects invalid or non-openable child harnesses before creation", async () => {
+    for (const harness of ["shell", "nope", "custom", "", 42, null, {}]) {
+      const res = await post("/api/session-open", {
+        project: "my-app", parentSession: "wolf-1", harness,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "invalid session-open request", code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
+  test("gates model and task-worker options on the child harness before creation or preflight", async () => {
+    const projectDir = createExplicitProjectDir("non-pi child");
+    for (const option of [{ model: "anthropic/claude-opus-4-1" }, { taskWorker: true }, { taskWorker: true, taskWorkerDryRun: true }]) {
+      const res = await post("/api/session-open", {
+        projectDir, parentSession: "wolf-1", harness: "claude", ...option,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "invalid session-open request", code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+  });
+
+  test("accepts model selection for a pi child of a non-pi parent", async () => {
+    useParentHarness("claude");
+    const model = "anthropic/claude-opus-4-1";
+    const res = await post("/api/session-open", {
+      project: "my-app", parentSession: "wolf-1", harness: "pi", model,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, harness: "pi" });
+    expect(mockBackend.lastCreateArgs).toMatchObject({ cmd: "pi", agentKind: "pi", model });
+  });
+
   test("creates one same-harness child with exact parent identity and prompt", async () => {
     const prompt = "review '$(touch /tmp/not-executed)' \"$HOME\"; done";
     const model = "openrouter/anthropic/claude-sonnet-4";

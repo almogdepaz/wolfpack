@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { AGENT_KIND, isCreatableHarness } from "../agent-kind.js";
+import { AGENT_KIND, isCreatableHarness, isOpenableHarness } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
 import { detectProviderReadiness } from "../provider-readiness.js";
 import {
@@ -182,6 +182,7 @@ interface SessionOpenBody extends Record<string, unknown> {
   projectDir?: string;
   parentSession: string;
   sessionName?: string;
+  harness?: string;
   model?: string;
   initialPrompt?: string;
   plan?: SessionPlanRequest;
@@ -192,12 +193,13 @@ interface SessionOpenBody extends Record<string, unknown> {
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
-  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "model", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
+  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "harness", "model", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
     && typeof body.parentSession === "string"
     && hasOptionalType(body, "sessionName", "string")
+    && hasOptionalType(body, "harness", "string")
     && hasOptionalType(body, "model", "string")
     && hasOptionalType(body, "initialPrompt", "string")
     && (body.plan === undefined || isSessionPlanRequest(body.plan, true))
@@ -722,6 +724,9 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       !isSessionOpenBody(body)
       || !isValidSessionName(body.parentSession)
       || (body.sessionName !== undefined && !isValidSessionName(body.sessionName))
+      || (body.harness !== undefined && !isOpenableHarness(body.harness))
+      || (body.harness !== undefined && body.harness !== AGENT_KIND.PI.id
+        && (body.model !== undefined || body.taskWorker === true))
       || (
         body.model !== undefined
         && (!body.model.trim()
@@ -818,6 +823,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         project,
         projectDir,
         sessionName: body.sessionName,
+        harness: body.harness,
         model: body.model,
         initialPrompt,
         ...(taskWorker !== undefined && {
