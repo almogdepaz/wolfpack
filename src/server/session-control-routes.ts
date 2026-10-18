@@ -30,10 +30,8 @@ import type {
   SessionStatusErrorCode,
   SessionTerminalLiveness,
 } from "../session-status-contract.js";
-import {
-  getBackend,
-  getRouter,
-} from "./backend.js";
+import { defaultServerContext, type ServerContext } from "./context.js";
+import type { SessionBackend } from "./backend-contract.js";
 import {
   hasOptionalType,
   json,
@@ -59,6 +57,41 @@ const SESSION_WAIT_MAX_TIMEOUT_MS = 600_000;
 const SESSION_WAIT_BUFFER_MAX_CHARS = 128 * 1024;
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export async function resolveActiveSession(
+  res: ServerResponse,
+  selector: string,
+  backend: SessionBackend = defaultServerContext.backend,
+): Promise<Extract<SessionSelectorResult, { readonly ok: true }> | null> {
+  try {
+    const names = await backend.list();
+    const identities = await backend.listIdentities?.();
+    if (!identities) {
+      json(res, { error: "session identity unavailable" }, 503);
+      return null;
+    }
+    const resolved = resolveSessionSelector(selector, names, identities);
+    if (!resolved.ok) {
+      json(
+        res,
+        {
+          error: resolved.code === "AMBIGUOUS" ? "ambiguous session selector" : "session not found",
+          code: resolved.code === "AMBIGUOUS" ? "AMBIGUOUS_SELECTOR" : "SESSION_NOT_FOUND",
+        },
+        resolved.code === "AMBIGUOUS" ? 409 : 404,
+      );
+      return null;
+    }
+    return resolved;
+  } catch (error: unknown) {
+    log.warn("session selector resolution failed", { error: errMsg(error) });
+    json(res, { error: "backend unavailable" }, 503);
+    return null;
+  }
+}
+
+export function createSessionControlRoutes(ctx: ServerContext): Record<string, RouteHandler> {
+const getBackend = () => ctx.backend;
+const streamingBackend = () => ctx.supervisor ? ctx.supervisor.backend() : ctx.backend;
 let sessionSnapshotService: SessionSnapshotService | null = null;
 
 function snapshots(): SessionSnapshotService {
@@ -126,40 +159,8 @@ function parseObserveMs(value: unknown): number | null {
   return value;
 }
 
-export async function resolveActiveSession(
-  res: ServerResponse,
-  selector: string,
-): Promise<Extract<SessionSelectorResult, { readonly ok: true }> | null> {
-  try {
-    const backend = getBackend();
-    const names = await backend.list();
-    const identities = await backend.listIdentities?.();
-    if (!identities) {
-      json(res, { error: "session identity unavailable" }, 503);
-      return null;
-    }
-    const resolved = resolveSessionSelector(selector, names, identities);
-    if (!resolved.ok) {
-      json(
-        res,
-        {
-          error: resolved.code === "AMBIGUOUS" ? "ambiguous session selector" : "session not found",
-          code: resolved.code === "AMBIGUOUS" ? "AMBIGUOUS_SELECTOR" : "SESSION_NOT_FOUND",
-        },
-        resolved.code === "AMBIGUOUS" ? 409 : 404,
-      );
-      return null;
-    }
-    return resolved;
-  } catch (error: unknown) {
-    log.warn("session selector resolution failed", { error: errMsg(error) });
-    json(res, { error: "backend unavailable" }, 503);
-    return null;
-  }
-}
-
 function sessionTerminalLiveness(name: string): SessionTerminalLiveness {
-  const streaming = getRouter().getStreamingBackendForSession(name);
+  const streaming = streamingBackend();
   if (!streaming) {
     return { exists: true, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE };
   }
@@ -234,7 +235,7 @@ function sessionStatusFailure(
 }
 
 async function waitForSessionText(session: string, text: string, timeoutMs: number): Promise<"matched" | "timeout" | "unavailable"> {
-  const streaming = getRouter().getStreamingBackendForSession(session);
+  const streaming = streamingBackend();
   if (!streaming) {
     const existing = await getBackend().capturePane(session);
     return existing.includes(text) ? "matched" : "unavailable";
@@ -272,7 +273,7 @@ async function waitForSessionText(session: string, text: string, timeoutMs: numb
   });
 }
 
-export const sessionControlRoutes: Record<string, RouteHandler> = {
+return {
   "GET /api/session-control/list": async (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     try {
@@ -283,7 +284,7 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
         return json(res, { error: "session identity unavailable" }, 503);
       }
       if (names.length === 0) return json(res, { sessions: [] });
-      const endpoints = await getTaskRelayGateway().registrationsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
+      const endpoints = await getTaskRelayGateway(selector => ctx.backend.inspectSession(selector)).registrationsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
       const sessions = names.map((name) => {
         const identity = identities[name]!;
         return sessionStatusPayload(name, identity, endpoints.get(identity.wolfpackSessionId));
@@ -329,7 +330,7 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
           ambiguous ? 409 : 404,
         );
       }
-      const status = inspectedSessionStatusPayload(selector, inspection, (await getTaskRelayGateway().registrationsForSessions([inspection.sessionId])).get(inspection.sessionId));
+      const status = inspectedSessionStatusPayload(selector, inspection, (await getTaskRelayGateway(selector => ctx.backend.inspectSession(selector)).registrationsForSessions([inspection.sessionId])).get(inspection.sessionId));
       if (!inspection.alive) {
         return json(
           res,
@@ -387,7 +388,7 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
     const url = new URL(req.url ?? "/", "http://localhost");
     const selector = url.searchParams.get("session");
     if (!selector) return json(res, { error: "missing session" }, 400);
-    const resolved = await resolveActiveSession(res, selector);
+    const resolved = await resolveActiveSession(res, selector, ctx.backend);
     if (!resolved) return;
     try {
       const output = await getBackend().capturePane(resolved.name);
@@ -416,13 +417,13 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
     if (observeMs === null) {
       return json(res, { error: `observeMs must be an integer from 1 to ${SESSION_SEND_MAX_OBSERVE_MS}` }, 400);
     }
-    const resolved = await resolveActiveSession(res, selector);
+    const resolved = await resolveActiveSession(res, selector, ctx.backend);
     if (!resolved) return;
     const session = resolved.name;
     const sessionId = resolved.identity.wolfpackSessionId;
     const noEnter = body.noEnter === true;
     try {
-      const streaming = getRouter().getStreamingBackendForSession(session);
+      const streaming = streamingBackend();
       if (!streaming) {
         // Nothing to observe through: deliver as before and say so.
         await getBackend().send(session, body.text, noEnter);
@@ -468,11 +469,11 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
         error: `timeoutMs must be an integer from 1 to ${SESSION_WAIT_MAX_TIMEOUT_MS}`,
       }, 400);
     }
-    const resolved = await resolveActiveSession(res, body.session);
+    const resolved = await resolveActiveSession(res, body.session, ctx.backend);
     if (!resolved) return;
     const session = resolved.name;
     const sessionId = resolved.identity.wolfpackSessionId;
-    const streaming = getRouter().getStreamingBackendForSession(session);
+    const streaming = streamingBackend();
     if (!streaming) {
       return json(res, {
         ok: false,
@@ -523,7 +524,7 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
     if (timeoutMs === null) {
       return json(res, { error: `timeoutMs must be an integer from 1 to ${SESSION_WAIT_MAX_TIMEOUT_MS}` }, 400);
     }
-    const resolved = await resolveActiveSession(res, selector);
+    const resolved = await resolveActiveSession(res, selector, ctx.backend);
     if (!resolved) return;
     try {
       const result = await waitForSessionText(resolved.name, body.text, timeoutMs);
@@ -538,3 +539,5 @@ export const sessionControlRoutes: Record<string, RouteHandler> = {
     }
   },
 };
+}
+export const sessionControlRoutes = createSessionControlRoutes(defaultServerContext);

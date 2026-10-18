@@ -506,7 +506,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   private readonly killRequests = new Map<string, KillRequestState>();
   private brokerUnavailableTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(client: BrokerClientApi) {
+  constructor(client: BrokerClientApi, private readonly emitEvent: typeof publishEvent = publishEvent) {
     this.client = client;
   }
 
@@ -1383,7 +1383,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         if (typeof session !== "object" || session === null) return;
         const { id, name, cwd } = session as Record<string, unknown>;
         if (typeof id !== "string" || typeof name !== "string" || typeof cwd !== "string") return;
-        publishEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_CREATED, sessionId: id, session: name, cwd });
+        this.emitEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_CREATED, sessionId: id, session: name, cwd });
         return;
       }
       case "session_exited": {
@@ -1452,7 +1452,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 
   private emitSessionExited(id: string, exit: PendingSessionExit, killed: boolean, killName: string | undefined): void {
     const name = exit.name ?? killName;
-    publishEvent({
+    this.emitEvent({
       kind: WOLFPACK_EVENT_KIND.SESSION_EXITED,
       sessionId: id,
       ...(name !== undefined && { session: name }),
@@ -1835,6 +1835,6 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 }
 
 /** Construct a BrokerBackend bound to a real BrokerClient. */
-export function createBrokerBackend(client: BrokerClient): BrokerBackend {
-  return new BrokerBackend(client);
+export function createBrokerBackend(client: BrokerClient, emitEvent: typeof publishEvent = publishEvent): BrokerBackend {
+  return new BrokerBackend(client, emitEvent);
 }

@@ -18,7 +18,7 @@ import {
   operationalHealth,
   prometheusMetrics,
 } from "./operability.js";
-import { getBackend, getRouter } from "./backend.js";
+import { defaultServerContext, type ServerContext } from "./context.js";
 
 import {
   hasOnlyKeys,
@@ -39,13 +39,13 @@ export {
   __resetSessionObservationForTests,
   __runSessionNotificationObservationForTests,
 } from "./session-observation.js";
-import { taskRoutes } from "./task-routes.ts";
-import { volatileRelayRoutes } from "./volatile-relay-routes.ts";
+import { createTaskRoutes } from "./task-routes.ts";
+import { createVolatileRelayRoutes } from "./volatile-relay-routes.ts";
 import { getTaskGateway } from "../tasks/gateway.ts";
-import { projectSettingsRoutes } from "./project-settings-routes.js";
-import { resolveActiveSession, sessionControlRoutes } from "./session-control-routes.js";
+import { createProjectSettingsRoutes } from "./project-settings-routes.js";
+import { resolveActiveSession, createSessionControlRoutes } from "./session-control-routes.js";
 import { pushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
-import { eventRoutes } from "./event-routes.js";
+import { createEventRoutes } from "./event-routes.js";
 
 const log = createLogger("routes");
 const RESIZE_BODY_KEYS = new Set(["session", "cols", "rows"]);
@@ -66,10 +66,10 @@ function isAgentRuntimeAckBody(body: Record<string, unknown>): body is AgentRunt
 }
 
 const VERSION: string = pkg.version;
-export const routes: Record<
-  string,
-  (req: IncomingMessage, res: ServerResponse) => void | Promise<void>
-> = {
+type Routes = Record<string, (req: IncomingMessage, res: ServerResponse) => void | Promise<void>>;
+export function createRoutes(ctx: ServerContext): Routes {
+const getBackend = () => ctx.backend;
+return {
   "GET /": (req, res) => serveFile(res, "index.html", req),
   "GET /manifest.json": (req, res) => {
     const asset = assets.get("manifest.json");
@@ -106,7 +106,7 @@ export const routes: Record<
   },
 
   "GET /api/sessions": async (_req, res) => {
-    json(res, { sessions: await observeDashboardSessions() });
+    json(res, { sessions: await observeDashboardSessions(ctx) });
   },
 
   "POST /api/agent-runtime-state/ack": async (req, res) => {
@@ -120,10 +120,14 @@ export const routes: Record<
     json(res, { ok: true, runtimeState });
   },
 
-  ...projectSettingsRoutes,
+  ...createProjectSettingsRoutes(ctx),
 
   "GET /api/backend": async (_req, res) => {
-    const router = getRouter();
+    const router = ctx.supervisor ?? {
+      isBrokerAvailable: () => true,
+      isBrokerReady: () => true,
+      getSessionCounts: async () => ({ broker: (await ctx.backend.list()).length }),
+    };
     // brokerReady tracks the live connection; brokerAvailable only flips on a
     // failed handshake. Reconnecting clients probe this to detect broker-down.
     let counts: Awaited<ReturnType<typeof router.getSessionCounts>>;
@@ -146,7 +150,7 @@ export const routes: Record<
     if (!body) return;
     const selector = body.session;
     if (typeof selector !== "string" || !selector) return json(res, { error: "missing session" }, 400);
-    const resolved = await resolveActiveSession(res, selector);
+    const resolved = await resolveActiveSession(res, selector, ctx.backend);
     if (!resolved) return;
     // Clean up any associated desktop PTY session (wp_*) before killing
     teardownPty(resolved.name);
@@ -159,7 +163,7 @@ export const routes: Record<
     });
   },
 
-  ...sessionControlRoutes,
+  ...createSessionControlRoutes(ctx),
 
   "POST /api/resize": async (req, res) => {
     const body = await parseObjectBody(req, res);
@@ -171,7 +175,7 @@ export const routes: Record<
       typeof cols !== "number" || !Number.isInteger(cols) ||
       typeof rows !== "number" || !Number.isInteger(rows)
     ) return json(res, { error: "missing params" }, 400);
-    if (!(await isAllowedSession(session)))
+    if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
     if (!activePtySessions.has(session)) {
       try {
@@ -208,7 +212,7 @@ export const routes: Record<
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");
     if (!session) return json(res, { error: "missing session param" }, 400);
-    if (!(await isAllowedSession(session)))
+    if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
     const pane = await getBackend().capturePane(session);
     json(res, { pane });
@@ -218,7 +222,7 @@ export const routes: Record<
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");
     if (!session) return json(res, { error: "missing session param" }, 400);
-    if (!(await isAllowedSession(session)))
+    if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
     const text = await getBackend().capturePane(session);
     res.writeHead(200, {
@@ -232,7 +236,7 @@ export const routes: Record<
     const url = new URL(req.url ?? "/", "http://localhost");
     const session = url.searchParams.get("session");
     if (!validateProjectParam(res, session)) return;
-    if (!(await isAllowedSession(session)))
+    if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
     const projectDir = getBackend().sessionDir(session);
     if (!projectDir || !existsSync(projectDir))
@@ -253,15 +257,15 @@ export const routes: Record<
   // ── Readiness and bounded operational metrics ──
 
   "GET /api/health": (_req, res) => {
-    const health = operationalHealth();
+    const health = operationalHealth(ctx);
     json(res, health, health.status === "ready" ? 200 : 503);
   },
 
-  "GET /api/metrics": (_req, res) => json(res, boundedMetrics()),
+  "GET /api/metrics": (_req, res) => json(res, boundedMetrics(ctx)),
 
   "GET /metrics": (_req, res) => {
     res.writeHead(200, { "Content-Type": "text/plain; version=0.0.4; charset=utf-8" });
-    res.end(prometheusMetrics());
+    res.end(prometheusMetrics(ctx));
   },
 
   // ── Browser authentication ──
@@ -280,9 +284,11 @@ export const routes: Record<
 
   // ── Agent-triggered notifications ──
 
-  ...taskRoutes,
-  ...volatileRelayRoutes,
+  ...createTaskRoutes(ctx),
+  ...createVolatileRelayRoutes(ctx),
 
   ...pushNotifyRoutes,
-  ...eventRoutes,
+  ...createEventRoutes(ctx),
 };
+}
+export const routes = createRoutes(defaultServerContext);

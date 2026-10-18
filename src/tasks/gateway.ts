@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { AGENT_KIND } from "../agent-kind.ts";
-import { getBackend } from "../server/backend.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import {
   TASK_API_ERROR,
@@ -55,7 +54,10 @@ type TaskFailure = { readonly ok: false; readonly error: { readonly code: TaskAp
 type GatewayResult<T> = TaskResponse<T> | TaskFailure;
 type Inspection = Extract<SessionInspectionResult, { readonly ok: true }>;
 
+type SessionInspector = (selector: string) => Promise<SessionInspectionResult>;
+
 interface GatewayOptions {
+  readonly inspectSession?: SessionInspector;
   readonly root: string | undefined;
   /** Test-only injected durable store for deterministic post-canonical crash recovery. */
   readonly store?: TaskStore;
@@ -145,10 +147,12 @@ export class TaskGateway {
   readonly #random: () => number;
   readonly #peerOrigin: string | undefined;
   #initialized: Promise<void> | undefined;
+  #inspectSession: SessionInspector | undefined;
   readonly #idempotencyLocks = new Map<string, Promise<void>>();
   readonly #peerDeliveryLocks = new Map<string, Promise<void>>();
 
   constructor(options: GatewayOptions = { root: undefined }) {
+    this.#inspectSession = options.inspectSession;
     this.#store = options.store ?? new TaskStore({ root: options.root });
     this.#now = options.now ?? (() => new Date());
     this.#lifecycle = new TaskLifecycle(this.#store, { now: this.#now });
@@ -158,6 +162,8 @@ export class TaskGateway {
     this.#random = options.random ?? Math.random;
     this.#peerOrigin = options.peerOrigin;
   }
+
+  setSessionInspector(inspectSession: SessionInspector): void { this.#inspectSession = inspectSession; }
 
   get machineId(): string {
     return this.#machineId;
@@ -654,10 +660,10 @@ export class TaskGateway {
 
   async #resolve(selector: string, role: "caller" | "target"): Promise<{ readonly ok: true; readonly value: Inspection } | TaskFailure> {
     if (!isNonEmptyString(selector)) return failure(role === "caller" ? TASK_API_ERROR.CALLER_NOT_FOUND : TASK_API_ERROR.TARGET_NOT_FOUND, `${role} session not found`);
-    const inspect = getBackend().inspectSession;
+    const inspect = this.#inspectSession;
     if (!inspect) return failure(TASK_API_ERROR.STORE_UNAVAILABLE, "authoritative session inspection is unavailable", true);
     let session: SessionInspectionResult;
-    try { session = await inspect.call(getBackend(), selector); } catch { return failure(TASK_API_ERROR.STORE_UNAVAILABLE, "session backend is unavailable", true); }
+    try { session = await inspect(selector); } catch { return failure(TASK_API_ERROR.STORE_UNAVAILABLE, "session backend is unavailable", true); }
     if (!session.ok) return failure(role === "caller" ? TASK_API_ERROR.CALLER_NOT_FOUND : TASK_API_ERROR.TARGET_NOT_FOUND, `${role} session not found`);
     if (!session.alive) return failure(TASK_API_ERROR.TARGET_DEAD, `${role} terminal is not live`);
     return { ok: true, value: session };
@@ -1068,10 +1074,10 @@ export class TaskGateway {
 
   /** Recomputes the projection for an intent written before projections were persisted, from the receiver session's project. */
   async #legacyCompletionProjection(receiver: TaskLedger, event: TaskEventInput): Promise<TaskCompletionProjection | undefined> {
-    const inspect = getBackend().inspectSession;
+    const inspect = this.#inspectSession;
     if (!inspect) return undefined;
     try {
-      const session = await inspect.call(getBackend(), receiver.header.participants.receiver.sessionId);
+      const session = await inspect(receiver.header.participants.receiver.sessionId);
       return session.ok ? this.#artifactProjection(event.completion?.artifacts, session.projectPath) : undefined;
     } catch { return undefined; }
   }
@@ -1103,8 +1109,9 @@ export class TaskGateway {
 
 let singleton: TaskGateway | undefined;
 
-export function getTaskGateway(): TaskGateway {
-  singleton ??= new TaskGateway({ root: process.env.WOLFPACK_TASK_ROOT });
+export function getTaskGateway(inspectSession?: SessionInspector): TaskGateway {
+  singleton ??= new TaskGateway({ root: process.env.WOLFPACK_TASK_ROOT, inspectSession });
+  if (inspectSession) singleton.setSessionInspector(inspectSession);
   return singleton;
 }
 

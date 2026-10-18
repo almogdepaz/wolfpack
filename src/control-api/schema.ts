@@ -31,8 +31,8 @@ import {
 import {
   DIRECTORY_BREADCRUMB_LIMIT,
   DIRECTORY_BROWSE_LIMIT,
-} from "../server/directory-browser.ts";
-import { MAX_PROJECT_DIR_LENGTH } from "../server/validate-project-dir.ts";
+} from "../directory-browse-contract.ts";
+import { MAX_PROJECT_DIR_LENGTH } from "../directory-browse-contract.ts";
 import {
   SESSION_PROMPT_MAX_TIMEOUT_MS,
   SESSION_PROMPT_OUTCOME,

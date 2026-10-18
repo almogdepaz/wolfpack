@@ -74,8 +74,8 @@ export interface SessionBackend {
   list(): Promise<string[]>;
   /** Authoritative complete session table for canonical runtime projection. */
   listSessionFacts(): Promise<SessionListFact[]>;
-  listIdentities?(): Promise<Record<string, PublicSessionIdentity>>;
-  inspectSession?(selector: string): Promise<SessionInspectionResult>;
+  listIdentities(): Promise<Record<string, PublicSessionIdentity>>;
+  inspectSession(selector: string): Promise<SessionInspectionResult>;
   createSession(
     name: string,
     cwd: string,

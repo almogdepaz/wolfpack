@@ -9,6 +9,7 @@ import { ASSET_VERSIONS, assets } from "../public-assets.js";
 import { exec } from "./shell.js";
 import type { ExecFn } from "./shell.js";
 import { getBackend } from "./backend.js";
+import type { SessionBackend } from "./backend-contract.js";
 import { createLogger, errMsg } from "../log.js";
 import {
   buildMachineHandshakeFromTailnetStatus,
@@ -79,9 +80,9 @@ export function createPerIpRateLimiter(rate: number, evictIntervalMs = 60_000) {
 
 // ── Session helpers ──
 
-export async function uniqueSessionName(base: string): Promise<string> {
+export async function uniqueSessionName(base: string, backend: SessionBackend = getBackend()): Promise<string> {
   base = projectLabelToSessionName(base).slice(0, MAX_SESSION_NAME_LENGTH);
-  const sessions = await getBackend().list();
+  const sessions = await backend.list();
   if (!sessions.includes(base)) return base;
   let i = 2;
   while (true) {
@@ -91,8 +92,8 @@ export async function uniqueSessionName(base: string): Promise<string> {
   }
 }
 
-export async function isAllowedSession(session: string): Promise<boolean> {
-  const allowed = await getBackend().list();
+export async function isAllowedSession(session: string, backend: SessionBackend = getBackend()): Promise<boolean> {
+  const allowed = await backend.list();
   return allowed.includes(session);
 }
 

@@ -7,6 +7,9 @@
 import type {
   SessionAttachLease,
   SessionBackend,
+  PtyBackendMethods,
+  SessionPromptBackendMethods,
+  SessionLifecycleEvent,
   SessionLaunchOptions,
   SessionListFact,
   SessionPrefillOptions,
@@ -41,7 +44,7 @@ export interface MockBackendOptions {
   onBeforeCreate?: (name: string) => void;
 }
 
-export class MockBackend implements SessionBackend {
+export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPromptBackendMethods {
   private _sessions: Set<string>;
   private _outputSequences: Map<string, string>;
   private readonly _programStatus = new Map<string, ProgramStatusRecord>();
@@ -435,7 +438,7 @@ export class MockBackend implements SessionBackend {
     };
   }
 
-  onSessionLifecycle(_name: string, _cb: (event: unknown) => void): (() => void) | null {
+  onSessionLifecycle(_name: string, _cb: (event: SessionLifecycleEvent) => void): (() => void) | null {
     return () => {};
   }
 }

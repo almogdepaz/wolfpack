@@ -4,7 +4,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { EVENTS_PATH, formatSseEvent, parseEventFilter } from "../events-contract.js";
-import { subscribeEvents } from "./event-bus.js";
+import { defaultServerContext, type ServerContext } from "./context.js";
 import { json } from "./http.js";
 
 export const EVENTS_MAX_STREAMS = 32;
@@ -15,6 +15,7 @@ const EVENTS_PING_INTERVAL_MS = 15_000;
  */
 export const EVENTS_MAX_BUFFERED_BYTES = 256 * 1024;
 
+export function createEventRoutes(ctx: ServerContext): Record<string, (req: IncomingMessage, res: ServerResponse) => void> {
 let openStreams = 0;
 
 function handleEventStream(req: IncomingMessage, res: ServerResponse): void {
@@ -36,7 +37,7 @@ function handleEventStream(req: IncomingMessage, res: ServerResponse): void {
     res.write(chunk);
     if (res.writableLength > EVENTS_MAX_BUFFERED_BYTES) res.destroy();
   };
-  const unsubscribe = subscribeEvents(parsed.filter, (event) => write(formatSseEvent(event)));
+  const unsubscribe = ctx.events.subscribeEvents(parsed.filter, (event) => write(formatSseEvent(event)));
   const ping = setInterval(() => write(": ping\n\n"), EVENTS_PING_INTERVAL_MS);
   let closed = false;
   res.on("close", () => {
@@ -48,6 +49,6 @@ function handleEventStream(req: IncomingMessage, res: ServerResponse): void {
   });
 }
 
-export const eventRoutes: Record<string, (req: IncomingMessage, res: ServerResponse) => void> = {
-  [`GET ${EVENTS_PATH}`]: handleEventStream,
-};
+return { [`GET ${EVENTS_PATH}`]: handleEventStream };
+}
+export const eventRoutes = createEventRoutes(defaultServerContext);

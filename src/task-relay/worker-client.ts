@@ -3,7 +3,6 @@ import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { types as utilTypes } from "node:util";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { getBackend } from "../server/backend.ts";
 import { createLogger } from "../log.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
@@ -65,6 +64,7 @@ export class WorkerRelayGateway implements RelayGateway {
   readonly #owner = Symbol("relay worker owner");
   readonly #worker: Worker;
   readonly #options: WorkerGatewayOptions;
+  #inspectSession: GatewayOptions["inspectSession"];
   readonly #requestMs: number;
   readonly #pending = new Map<number, Pending>();
   readonly #callbacks = new Set<number>();
@@ -87,6 +87,7 @@ export class WorkerRelayGateway implements RelayGateway {
     this.#requestMs = options.requestTimeoutMs ?? LIMIT.requestMs;
     if (!Number.isInteger(this.#requestMs) || this.#requestMs < 1 || this.#requestMs > LIMIT.requestMs) throw new TypeError("invalid relay worker request timeout");
     this.#options = options;
+    this.#inspectSession = options.inspectSession;
     this.root = resolve(options.root ?? join(homedir(), ".wolfpack", "task-relay"));
     this.#ownedRoot = this.root;
     if (owners.has(this.root)) throw new Error("relay root already has a worker owner; await close before replacement");
@@ -113,6 +114,10 @@ export class WorkerRelayGateway implements RelayGateway {
       else this.#releaseOwner();
       throw error;
     }
+  }
+
+  setSessionInspector(inspectSession: NonNullable<GatewayOptions["inspectSession"]>): void {
+    this.#inspectSession = inspectSession;
   }
 
   #releaseOwner(): void {
@@ -146,11 +151,8 @@ export class WorkerRelayGateway implements RelayGateway {
       let value: unknown;
       if (message.kind === "inspect") {
         if (typeof message.selector !== "string" || message.selector.length > 512) throw new Error("invalid selector");
-        const inspect = this.#options.inspectSession ?? (async (selector: string) => {
-          const backend = getBackend();
-          return backend.inspectSession ? backend.inspectSession(selector) : { ok: false as const, code: "NOT_FOUND" as const };
-        });
-        value = await inspect(message.selector);
+        if (!this.#inspectSession) throw new Error("session inspection unavailable");
+        value = await this.#inspectSession(message.selector);
       } else {
         if (!this.#options.peerFetch || typeof message.body !== "string" || Buffer.byteLength(message.body) > LIMIT.requestBytes) throw new Error("unexpected peer callback");
         const controller = new AbortController();

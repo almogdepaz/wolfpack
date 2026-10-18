@@ -1,22 +1,23 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { MockBackend } from "../../src/server/mock-backend";
 import {
-  BackendRouter,
-  __resetBackend,
+  BrokerSupervisor as BackendRouter,
   checkBrokerSocketExists,
-} from "../../src/server/backend";
+} from "../../src/server/broker-supervisor";
+import { __resetBackend } from "../../src/server/backend";
+import { createServerContext } from "../../src/server/context";
+const backendFor = (supervisor: BackendRouter) => createServerContext({ supervisor }).backend;
 
 /**
  * Construct a BackendRouter with a mock broker injected. Live broker startup
- * is suppressed by WOLFPACK_TEST=1 (set in beforeEach), so the constructor
- * leaves `broker` null — we patch it in directly.
+ * is disabled explicitly, so the constructor leaves `broker` null — we patch it in directly.
  */
 function createTestRouter(opts?: { brokerMock?: MockBackend }): {
   router: BackendRouter;
   brokerMock: MockBackend;
 } {
   const brokerMock = opts?.brokerMock ?? new MockBackend();
-  const router = new BackendRouter();
+  const router = new BackendRouter({ start: false });
   (router as any).broker = brokerMock;
   (router as any)._brokerAvailable = true;
   return { router, brokerMock };
@@ -24,7 +25,7 @@ function createTestRouter(opts?: { brokerMock?: MockBackend }): {
 
 const loadSettings = () => ({ agentCmd: "shell" });
 
-describe("BackendRouter", () => {
+describe("BrokerSupervisor", () => {
   beforeEach(() => {
     process.env.WOLFPACK_TEST = "1";
     __resetBackend();
@@ -34,19 +35,19 @@ describe("BackendRouter", () => {
     test("returns broker sessions sorted", async () => {
       const { router, brokerMock } = createTestRouter();
       brokerMock.setSessions(["zebra", "alpha"]);
-      expect(await router.list()).toEqual(["alpha", "zebra"]);
+      expect(await backendFor(router).list()).toEqual(["alpha", "zebra"]);
     });
 
     test("returns empty list when broker has no sessions", async () => {
       const { router } = createTestRouter();
-      expect(await router.list()).toEqual([]);
+      expect(await backendFor(router).list()).toEqual([]);
     });
   });
 
   describe("createSession()", () => {
     test("creates session on the broker", async () => {
       const { router, brokerMock } = createTestRouter();
-      await router.createSession("new-sess", "/tmp", undefined, loadSettings);
+      await backendFor(router).createSession("new-sess", "/tmp", undefined, loadSettings);
       expect(await brokerMock.hasSession("new-sess")).toBe(true);
     });
 
@@ -54,7 +55,7 @@ describe("BackendRouter", () => {
       const { router, brokerMock } = createTestRouter();
       brokerMock.setSessions(["existing"]);
       await expect(
-        router.createSession("existing", "/tmp", undefined, loadSettings),
+        backendFor(router).createSession("existing", "/tmp", undefined, loadSettings),
       ).rejects.toThrow("duplicate session");
     });
   });
@@ -65,13 +66,13 @@ describe("BackendRouter", () => {
       brokerMock.setSessions(["sess"]);
       brokerMock.setCapturePane(async () => "broker-output");
 
-      expect(await router.hasSession("sess")).toBe(true);
-      expect(await router.capturePane("sess")).toBe("broker-output");
+      expect(await backendFor(router).hasSession("sess")).toBe(true);
+      expect(await backendFor(router).capturePane("sess")).toBe("broker-output");
 
-      await router.send("sess", "hello");
-      await router.sendKey("sess", "Enter");
-      await router.resize("sess", 80, 24);
-      await router.killSession("sess");
+      await backendFor(router).send("sess", "hello");
+      await backendFor(router).sendKey("sess", "Enter");
+      await backendFor(router).resize("sess", 80, 24);
+      await backendFor(router).killSession("sess");
       expect(await brokerMock.hasSession("sess")).toBe(false);
     });
   });
@@ -84,7 +85,7 @@ describe("BackendRouter", () => {
     });
 
     test("returns zero when broker absent", async () => {
-      const router = new BackendRouter();
+      const router = new BackendRouter({ start: false });
       expect(await router.getSessionCounts()).toEqual({ broker: 0 });
     });
   });
@@ -94,19 +95,60 @@ describe("BackendRouter", () => {
       const { router, brokerMock } = createTestRouter();
       let called = false;
       (brokerMock as any).cleanupOrphans = async () => { called = true; };
-      await router.cleanupOrphans();
+      await backendFor(router).cleanupOrphans();
       expect(called).toBe(true);
     });
 
     test("noop when broker absent", async () => {
-      const router = new BackendRouter();
-      await router.cleanupOrphans();
+      const router = new BackendRouter({ start: false });
+      await backendFor(router).cleanupOrphans();
     });
+  });
+
+  test("backend accessor returns the owned broker, or null when absent", () => {
+    const { router, brokerMock } = createTestRouter();
+    const first = router.backend();
+    expect(Object.is(first, brokerMock)).toBe(true);
+    expect(router.backend()).toBe(first);
+    expect(new BackendRouter({ start: false }).backend()).toBeNull();
+  });
+
+  test("unavailable backend preserves empty listings, no-op cleanup, and mutation failures", async () => {
+    const router = new BackendRouter({ start: false });
+    expect(await backendFor(router).list()).toEqual([]);
+    expect(await backendFor(router).listSessionFacts()).toEqual([]);
+    expect(await backendFor(router).listIdentities()).toEqual({});
+    expect(backendFor(router).sessionDir("missing")).toBeUndefined();
+    await backendFor(router).cleanupOrphans();
+    await expect(backendFor(router).inspectSession("missing")).rejects.toThrow("broker backend unavailable");
+    await expect(backendFor(router).createSession("missing", "/tmp", undefined, loadSettings)).rejects.toThrow("broker backend unavailable");
+    await expect(backendFor(router).killSession("missing")).rejects.toThrow("broker backend unavailable");
+    await expect(backendFor(router).killSessionById("missing")).rejects.toThrow("broker backend unavailable");
+    await expect(backendFor(router).hasSession("missing")).rejects.toThrow("broker backend unavailable");
+    await expect(backendFor(router).capturePane("missing")).rejects.toThrow("broker backend unavailable");
+    await expect(backendFor(router).captureSessionSnapshotById("missing")).rejects.toThrow("broker backend unavailable");
+    await expect(backendFor(router).resize("missing", 80, 24)).rejects.toThrow("broker backend unavailable");
+    await expect(backendFor(router).send("missing", "text")).rejects.toThrow("broker backend unavailable");
+    await expect(backendFor(router).sendKey("missing", "Enter")).rejects.toThrow("broker backend unavailable");
+  });
+
+  test("session facades follow recovery while streaming backends stay pinned", async () => {
+    const router = new BackendRouter({ start: false });
+    const first = new MockBackend({ sessions: ["session"], capturePane: async () => "first" });
+    const second = new MockBackend({ sessions: ["session"], capturePane: async () => "second" });
+    router.__setBrokerForTest(first);
+    const ctx = createServerContext({ supervisor: router });
+    const retained = ctx.backend;
+    const streaming = router.backend()!;
+    router.__setBrokerForTest(second);
+    expect(await retained.capturePane("session")).toBe("second");
+    expect(await streaming.capturePane("session")).toBe("first");
+    expect(ctx.backend).toBe(retained);
   });
 
   describe("broker availability", () => {
     test("isBrokerAvailable reflects internal flag", () => {
-      const router = new BackendRouter();
+      const router = new BackendRouter({ start: false });
       expect(router.isBrokerAvailable()).toBe(false);
       const { router: r2 } = createTestRouter();
       expect(r2.isBrokerAvailable()).toBe(true);
@@ -123,7 +165,7 @@ describe("BackendRouter", () => {
     });
 
     test("verifyBrokerHandshake returns false when no broker client", async () => {
-      const router = new BackendRouter();
+      const router = new BackendRouter({ start: false });
       expect(await router.verifyBrokerHandshake()).toBe(false);
     });
   });
@@ -154,7 +196,7 @@ describe("BackendRouter", () => {
     });
 
     test("watchdog flips broker back to available when handshake succeeds", async () => {
-      const router = new BackendRouter();
+      const router = new BackendRouter({ start: false });
       // Pretend we just had a wedge: socket exists, client torn down,
       // availability flag is false.
       (router as any).brokerSocketPath = "/tmp"; // exists
@@ -182,7 +224,7 @@ describe("BackendRouter", () => {
     });
 
     test("watchdog keeps retrying while handshake fails", async () => {
-      const router = new BackendRouter();
+      const router = new BackendRouter({ start: false });
       (router as any).brokerSocketPath = "/tmp";
       (router as any)._brokerAvailable = false;
       (router as any).brokerClient = null;
@@ -207,7 +249,7 @@ describe("BackendRouter", () => {
     });
 
     test("watchdog is a no-op when the socket file is missing", async () => {
-      const router = new BackendRouter();
+      const router = new BackendRouter({ start: false });
       (router as any).brokerSocketPath = "/tmp/wp-definitely-missing-watchdog.sock";
       (router as any)._brokerAvailable = false;
       let verifies = 0;

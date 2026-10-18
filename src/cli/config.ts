@@ -4,29 +4,13 @@
 import { execFileSync } from "node:child_process";
 import {
   closeSync,
-  mkdirSync,
   openSync,
-  readFileSync,
   readSync,
-  writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
-import { homedir, platform } from "node:os";
+import { IS_MACOS } from "../config.js";
+export * from "../config.js";
 import { isValidPort } from "../validation.js";
-import { canonicalTailnetOrigin } from "../tailnet-machine-contract.js";
 import { print, dim, yellow } from "./formatting.js";
-
-export const IS_MACOS = platform() === "darwin";
-export const IS_LINUX = platform() === "linux";
-
-export const WOLFPACK_DIR = join(homedir(), ".wolfpack");
-export const CONFIG_PATH = join(WOLFPACK_DIR, "config.json");
-
-export interface Config {
-  devDir: string;
-  port: number;
-  tailscaleHostname?: string;
-}
 
 export let hasTTY = true;
 
@@ -47,44 +31,6 @@ export function ask(question: string): string {
     closeSync(fd);
   }
   return buf.subarray(0, n).toString("utf-8").trim();
-}
-
-export function parseConfig(raw: unknown): Config | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const candidate = raw as Record<string, unknown>;
-  const devDir = typeof candidate.devDir === "string" ? candidate.devDir.trim() : "";
-  const port = candidate.port;
-  if (!devDir || typeof port !== "number" || !isValidPort(port)) return null;
-  const configuredHostname = typeof candidate.tailscaleHostname === "string"
-    ? candidate.tailscaleHostname.trim()
-    : "";
-  const canonicalOrigin = configuredHostname ? canonicalTailnetOrigin(configuredHostname) : null;
-  const tailscaleHostname = canonicalOrigin?.slice("https://".length);
-  return { devDir, port, tailscaleHostname };
-}
-
-export function loadConfigFromText(text: string): Config | null {
-  try {
-    return parseConfig(JSON.parse(text));
-  } catch { /* expected: malformed or empty config text */
-    return null;
-  }
-}
-
-export function loadConfig(): Config | null {
-  try {
-    return loadConfigFromText(readFileSync(CONFIG_PATH, "utf-8"));
-  } catch { /* expected: config file doesn't exist yet */
-    return null;
-  }
-}
-
-export function saveConfig(c: Config) {
-  mkdirSync(WOLFPACK_DIR, { recursive: true, mode: 0o700 });
-  // 0600 — config holds Tailscale hostname and port; on shared machines
-  // a default-umask 0644 would leak the network address to other local
-  // users.
-  writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2), { mode: 0o600 });
 }
 
 export function sleepSync(ms: number) {
@@ -175,10 +121,6 @@ export function waitForPortFree(port: number, timeoutMs = 10000) {
     sleepSync(500);
   }
   print(yellow(`  Warning: port ${port} still in use after ${timeoutMs / 1000}s`));
-}
-
-export function remoteUrl(config: Config): string | null {
-  return canonicalTailnetOrigin(config.tailscaleHostname);
 }
 
 const TAILSCALE_MAC_CLI =

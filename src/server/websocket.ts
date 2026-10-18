@@ -21,7 +21,7 @@ import {
   PTY_BINARY_FRAME_MAX_BYTES,
   WS_CLOSE_REASONS,
 } from "../ws-constants.js";
-import { getRouter } from "./backend.js";
+import { defaultServerContext, type ServerContext } from "./context.js";
 import type { SessionAttachLease, SessionBackend, PtyBackendMethods } from "./backend.js";
 import { createRateLimiter } from "./http.js";
 import { registerSubSessionOpenedNotifier } from "./session-notifications.js";
@@ -474,7 +474,7 @@ export function teardownPty(session: string): void {
   }
 }
 
-export function handlePtyWs(ws: WebSocket, session: string, reset = false): void {
+export function handlePtyWs(ws: WebSocket, session: string, reset = false, serverContext: ServerContext = defaultServerContext): void {
   const initialTiming = createServerTerminalLoadTiming(session);
   initialTiming?.mark("upgrade.accepted", { reset });
   // Force teardown existing PTY so a fresh one is spawned at the caller's dimensions
@@ -516,7 +516,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
         tryWsClose(existing.pendingViewer, CLOSE_CODE_DISPLACED, WS_CLOSE_REASONS.DISPLACED, "displaced pendingViewer close failed", session);
         existing.pendingViewer = null;
       }
-      setupNewPtyEntry(ws, session, dims, initialTiming);
+      setupNewPtyEntry(ws, session, serverContext, dims, initialTiming);
       safeViewerSend({ viewer: ws, alive: true }, session, JSON.stringify({ type: "control_granted" }));
     }
 
@@ -615,7 +615,7 @@ export function handlePtyWs(ws: WebSocket, session: string, reset = false): void
   }
 
   // No active PTY — create new entry
-  setupNewPtyEntry(ws, session, undefined, initialTiming);
+  setupNewPtyEntry(ws, session, serverContext, undefined, initialTiming);
 }
 
 /** Returns true iff the helper should bail because the entry is no longer
@@ -1161,6 +1161,7 @@ async function subscribeWithCoalescing(
 function setupNewPtyEntry(
   ws: WebSocket,
   session: string,
+  serverContext: ServerContext,
   initialDims?: PtyAttachDimensions | null,
   timing?: ServerTerminalLoadTiming | null,
 ): void {
@@ -1205,7 +1206,7 @@ function setupNewPtyEntry(
 
   // Streaming attach path: snapshot prefill + subscribe to broker output stream.
   const streamingBackend: (SessionBackend & PtyBackendMethods) | null =
-    getRouter().getStreamingBackendForSession(session);
+    serverContext.supervisor ? serverContext.supervisor.backend() : serverContext.backend;
 
   if (!streamingBackend) {
     log.warn("ws attach: streaming backend unavailable", { session });

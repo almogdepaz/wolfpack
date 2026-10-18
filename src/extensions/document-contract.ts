@@ -3,7 +3,7 @@ import { lstatSync, mkdirSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import { canonicalJson } from "../canonical-json.ts";
-import { writePrivateJsonFile } from "../server/persistence.ts";
+import { writePrivateJsonFile } from "../persistence.ts";
 import { boundedCanonicalJson, isPlainJsonObject, type JsonBudget } from "./bounded-json.ts";
 import { readBoundedRegularFile } from "./bounded-file.ts";
 

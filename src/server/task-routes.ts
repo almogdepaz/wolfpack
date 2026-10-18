@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { json, parseBody } from "./http.ts";
-import { getTaskGateway } from "../tasks/gateway.ts";
+import { defaultServerContext, type ServerContext } from "./context.js";
+import { getTaskGateway as taskGateway } from "../tasks/gateway.ts";
 import type { TaskApiErrorCode, TaskResultInput } from "../tasks/domain.ts";
 import { TASK_API_ERROR, TASK_LIMITS } from "../tasks/domain.ts";
 
@@ -153,7 +154,9 @@ function taskResult(value: unknown): TaskResultInput | undefined {
   return value as unknown as TaskResultInput;
 }
 
-export const taskRoutes: Record<string, Handler> = {
+export function createTaskRoutes(ctx: ServerContext): Record<string, Handler> {
+const getTaskGateway = () => taskGateway(selector => ctx.backend.inspectSession(selector));
+return {
   "POST /api/tasks/v1/send": async (req, res) => {
     const body = await taskBody(req, res);
     if (!body) return;
@@ -245,3 +248,5 @@ export const taskRoutes: Record<string, Handler> = {
     response(res, await getTaskGateway().acceptPeerEvent(body));
   },
 };
+}
+export const taskRoutes = createTaskRoutes(defaultServerContext);
