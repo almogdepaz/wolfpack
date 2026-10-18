@@ -45,6 +45,8 @@ pub type EventSender = broadcast::Sender<Event>;
 /// flooding queries without reading stdin, and extra replies are dropped.
 const MAX_PENDING_REPLY_BYTES: usize = 1024;
 const EXIT_DRAIN_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
+/// Re-check child exit even when a descendant keeps the slave open.
+const PTY_POLL_TIMEOUT_MS: libc::c_int = 250;
 /// Minimum spacing of one session's `program_status_changed` events. Real
 /// emitters change state on human time scales (claude: idle → working → done
 /// over seconds), so 200ms (≤ 5 events/s per session) costs no visible latency,
@@ -123,6 +125,8 @@ pub enum SpawnError {
     WriterTake(String),
     #[error("PTY master fd duplication failed: {0}")]
     MasterDup(String),
+    #[error("PTY master nonblocking setup failed: {0}")]
+    MasterNonblocking(String),
     #[error("thread spawn failed: {0}")]
     ThreadSpawn(String),
     #[error("terminal state failed: {0}")]
@@ -312,20 +316,17 @@ impl Session {
             .take_writer()
             .map_err(|e| SpawnError::WriterTake(e.to_string()))?;
 
-        // Neither the drainer's query replies nor the writer's final drop may
-        // block (see `NonBlockingReply` and `PtyWriter`); each owns a dup of
-        // the master so the fd it sets flags on cannot be closed and reused
-        // underneath it.
+        // All duplicates share the open file description. Keep it permanently
+        // nonblocking so neither stdin nor portable-pty's EOF write on drop can
+        // get stuck in the kernel after child exit. Both halves poll readiness.
         #[cfg(test)]
         fail_forced_setup_step(ForcedSetupFailure::MasterDup)?;
         let reply_fd = dup_master_fd(pair.master.as_ref())
             .map_err(|e| SpawnError::MasterDup(e.to_string()))?;
-        let writer_fd = dup_master_fd(pair.master.as_ref())
-            .map_err(|e| SpawnError::MasterDup(e.to_string()))?;
-        let writer: Box<dyn Write + Send> = Box::new(PtyWriter {
-            inner: Some(writer),
-            fd: writer_fd,
-        });
+        let fd = reply_fd.as_ref().ok_or_else(|| SpawnError::MasterNonblocking("master exposes no fd".into()))?;
+        fd_status_flags(fd.as_fd())
+            .and_then(|flags| set_fd_status_flags(fd.as_fd(), flags | libc::O_NONBLOCK))
+            .map_err(|e| SpawnError::MasterNonblocking(e.to_string()))?;
         let foreground_fd = dup_master_fd(pair.master.as_ref())
             .map_err(|e| SpawnError::MasterDup(e.to_string()))?;
 
@@ -401,6 +402,7 @@ impl Session {
         let reap_id = id;
         let reaper_events = events.clone();
         let reaper_program_status = Arc::clone(&program_status);
+        let reaper_input = Arc::clone(&input);
         spawn_named_thread(format!("broker-pty-wait-{reap_id}"), move || {
             reap(
                 child.into_child(),
@@ -411,6 +413,7 @@ impl Session {
                 reap_id,
                 reaper_events,
                 &reaper_program_status,
+                &reaper_input,
             )
         })
         .map_err(|e| SpawnError::ThreadSpawn(e.to_string()))?;
@@ -773,11 +776,9 @@ struct DrainEffects {
 /// write. That writer re-checks the queue after unlocking, so a reply queued
 /// while it held the lock is never stranded.
 ///
-/// Only the drainer writes replies non-blocking (`NonBlockingReply`, dropped
-/// when the input queue is full): the flag lives on the open file description
-/// the drainer reads from, so no other thread may set it while the drainer
-/// could be inside `read()`. A client thread flushes replies with an ordinary
-/// blocking write, which is its own backpressure anyway.
+/// The shared description is always nonblocking. Client threads poll capacity
+/// with bounded waits and stop on hangup or child exit. The drainer never waits
+/// for capacity: replies are best-effort when the input queue is full.
 ///
 /// A full queue can also cut a reply mid-way. The program's parser is then
 /// inside an OSC, so the unwritten tail of that reply is re-queued first and
@@ -790,6 +791,8 @@ struct PtyInput {
     /// Dup of the PTY master (shares the writer's open file description);
     /// `None` only for test writers that cannot block.
     reply_fd: Option<OwnedFd>,
+    /// Set immediately after wait(), before the output-drain barrier.
+    child_exited: AtomicBool,
 }
 
 impl PtyInput {
@@ -799,6 +802,7 @@ impl PtyInput {
             writer: Mutex::new(writer),
             pending_replies: Mutex::new(PendingReplies::default()),
             reply_fd,
+            child_exited: AtomicBool::new(false),
         }
     }
 
@@ -809,12 +813,44 @@ impl PtyInput {
             // A reply the drainer could only write part of must be completed
             // before this input, or the program parses the input as OSC text.
             self.flush_replies(&mut writer, ReplyWrite::Blocking);
-            let written = writer.write_all(data);
+            let written = self.write_blocking(writer.as_mut(), data).map_err(|(count, error)| {
+                tracing::debug!(session_id = %self.session_id, written = count, total = data.len(), %error, "PTY stdin write failed");
+                error
+            });
             self.flush_replies(&mut writer, ReplyWrite::Blocking);
             written
         };
         self.flush_replies_if_idle(ReplyWrite::Blocking);
         written
+    }
+
+    /// Synchronous backpressure without ever entering a blocking write(2).
+    fn write_blocking(&self, writer: &mut dyn Write, data: &[u8]) -> Result<(), (usize, io::Error)> {
+        let Some(fd) = &self.reply_fd else {
+            return write_counting(writer, data);
+        };
+        let mut count = 0;
+        while count < data.len() {
+            if self.child_exited.load(Ordering::Acquire) {
+                return Err((count, io::ErrorKind::BrokenPipe.into()));
+            }
+            let ready = poll_fd(fd.as_fd(), libc::POLLOUT).map_err(|error| (count, error))?;
+            // Linux can return EAGAIN forever after hangup: inspect revents,
+            // not just write errors. Never write after an observed hangup.
+            if ready & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                return Err((count, io::ErrorKind::BrokenPipe.into()));
+            }
+            if ready & libc::POLLOUT == 0 {
+                continue;
+            }
+            match writer.write(&data[count..]) {
+                Ok(0) => return Err((count, io::ErrorKind::WriteZero.into())),
+                Ok(n) => count += n,
+                Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {}
+                Err(error) => return Err((count, error)),
+            }
+        }
+        Ok(())
     }
 
     fn send_reply(&self, reply: &[u8]) {
@@ -850,12 +886,9 @@ impl PtyInput {
             return;
         }
         let batch = replies.batch();
-        let written = match (mode, &self.reply_fd) {
-            (ReplyWrite::NonBlocking, Some(fd)) => match NonBlockingReply::enter(fd.as_fd()) {
-                Ok(_restore) => write_counting(writer, &batch),
-                Err(error) => Err((0, error)),
-            },
-            _ => write_counting(writer, &batch),
+        let written = match mode {
+            ReplyWrite::NonBlocking => write_counting(writer, &batch),
+            ReplyWrite::Blocking => self.write_blocking(writer.as_mut(), &batch),
         };
         // Best effort, like the probe itself: a dropped or failed reply only
         // means the program sees the protocol as unsupported.
@@ -868,8 +901,8 @@ impl PtyInput {
                     "PTY input full; dropped program status query reply"
                 );
             }
-            Err((_, error)) => {
-                tracing::warn!(session_id = %self.session_id, %error, "failed to answer program status query");
+            Err((count, error)) => {
+                tracing::warn!(session_id = %self.session_id, written = count, total = batch.len(), %error, "failed to answer program status query");
             }
         }
     }
@@ -1226,74 +1259,26 @@ fn process_group_exists(group: libc::pid_t) -> bool {
 /// How a thread holding the PTY writer flushes queued replies.
 #[derive(Clone, Copy)]
 enum ReplyWrite {
-    /// Drainer thread only (see `PtyInput`).
+    /// Drainer thread only: never wait for input capacity.
     NonBlocking,
     /// Client input threads.
     Blocking,
 }
 
-/// Holds the PTY master's open file description in `O_NONBLOCK` for one
-/// query reply and restores its flags on drop. Drainer thread only.
-///
-/// A blocking reply write would stall the drainer whenever the program does
-/// not read stdin (a raw-mode program flooding `OSC 7501 ; ?` wedges its
-/// whole session: no output drain, so the program blocks on stdout too). With
-/// the writer mutex held on the drainer thread, nothing else can observe the
-/// flag: stdin writes take the same mutex, the reader shares the description
-/// but is this drainer thread, and resize is an ioctl on the master. A full
-/// input queue drops the reply (possibly after a partial write the program is
-/// not reading anyway).
-struct NonBlockingReply<'a> {
-    fd: BorrowedFd<'a>,
-    flags: libc::c_int,
-}
-
-impl<'a> NonBlockingReply<'a> {
-    fn enter(fd: BorrowedFd<'a>) -> io::Result<Self> {
-        let flags = fd_status_flags(fd)?;
-        set_fd_status_flags(fd, flags | libc::O_NONBLOCK)?;
-        Ok(Self { fd, flags })
-    }
-}
-
-impl Drop for NonBlockingReply<'_> {
-    fn drop(&mut self) {
-        let _ = set_fd_status_flags(self.fd, self.flags);
-    }
-}
-
-/// The session's PTY stdin writer. portable-pty's writer writes `\n` + VEOF
-/// to the master when dropped; once the program has exited leaving its input
-/// queue full (e.g. unread query replies), nothing will ever read that queue
-/// and the blocking write would hang the dropping thread forever. The last
-/// owner drops it only after the drainer has stopped reading and stdin writes
-/// have ended, so switching the description to non-blocking here is
-/// unobservable.
-struct PtyWriter {
-    inner: Option<Box<dyn Write + Send>>,
-    /// Dup of the PTY master; `None` when the PTY exposes no fd.
-    fd: Option<OwnedFd>,
-}
-
-impl Write for PtyWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.inner.as_mut().expect("writer present until drop").write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.as_mut().expect("writer present until drop").flush()
-    }
-}
-
-impl Drop for PtyWriter {
-    fn drop(&mut self) {
-        if let Some(fd) = &self.fd {
-            if let Ok(flags) = fd_status_flags(fd.as_fd()) {
-                let _ = set_fd_status_flags(fd.as_fd(), flags | libc::O_NONBLOCK);
-            }
+/// One bounded readiness wait. EINTR returns to the caller so it can also
+/// re-check lifecycle state rather than extending the wait indefinitely.
+fn poll_fd(fd: BorrowedFd<'_>, events: libc::c_short) -> io::Result<libc::c_short> {
+    let mut pollfd = libc::pollfd { fd: fd.as_raw_fd(), events, revents: 0 };
+    // SAFETY: pollfd points to one initialized entry and fd stays borrowed.
+    let result = unsafe { libc::poll(&mut pollfd, 1, PTY_POLL_TIMEOUT_MS) };
+    if result < 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
         }
-        drop(self.inner.take());
+        return Ok(0);
     }
+    Ok(pollfd.revents)
 }
 
 fn dup_master_fd(master: &dyn MasterPty) -> io::Result<Option<OwnedFd>> {
@@ -1340,6 +1325,9 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
 ) -> io::Result<()> {
     let mut buf = [0u8; 8192];
     let outcome = loop {
+        if bus.is_closed() {
+            break Ok(());
+        }
         match r.read(&mut buf) {
             Ok(0) => break Ok(()),
             Ok(n) => {
@@ -1388,6 +1376,24 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
                 // viewer's DA reply, which needs a full broker→browser→broker
                 // round trip of the chunk just published.
                 effects.input.send_reply(&reply);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            // PTYs use EIO for EOF on some platforms (portable-pty also
+            // normalizes it to Ok(0)). Preserve already-readable final bytes.
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => break Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let Some(fd) = &effects.input.reply_fd else {
+                    break Err(error);
+                };
+                match poll_fd(fd.as_fd(), libc::POLLIN) {
+                    Ok(ready) if ready & libc::POLLIN != 0 => continue,
+                    Ok(ready) if ready & libc::POLLHUP != 0 => break Ok(()),
+                    Ok(ready) if ready & (libc::POLLERR | libc::POLLNVAL) != 0 => {
+                        break Err(io::Error::other("PTY read poll failed"));
+                    }
+                    Ok(_) => continue,
+                    Err(error) => break Err(error),
+                }
             }
             Err(error) => break Err(error),
         }
@@ -1508,8 +1514,10 @@ fn reap(
     session_id: Uuid,
     events: EventSender,
     program_status: &ProgramStatusPublisher,
+    input: &PtyInput,
 ) {
     let exit = child.wait();
+    input.child_exited.store(true, Ordering::Release);
     let final_seq = if output_bus.wait_closed(EXIT_DRAIN_BARRIER_TIMEOUT) {
         seq.load(Ordering::SeqCst)
     } else {
@@ -2954,6 +2962,99 @@ mod tests {
             dropped_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
             "session drop blocked on the PTY"
         );
+    }
+
+    #[test]
+    fn nonblocking_stdin_waits_for_capacity() {
+        // Exercise actual nonblocking I/O and readiness, not a writer double.
+        // A duplicated descriptor shares flags just like the PTY halves.
+        let (writer, mut reader) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        writer.set_nonblocking(true).expect("nonblocking");
+        let fd = writer.as_fd().try_clone_to_owned().expect("dup writer");
+        let input = PtyInput::new(Uuid::nil(), Box::new(writer), Some(fd));
+        let (tx, rx) = std::sync::mpsc::channel();
+        const BYTES: usize = 1 << 20;
+        let writing = thread::spawn(move || {
+            let _ = tx.send(input.write_input(&vec![b'x'; BYTES]));
+        });
+        let early = rx.recv_timeout(Duration::from_millis(100));
+        assert!(matches!(early, Err(std::sync::mpsc::RecvTimeoutError::Timeout)), "nonblocking input must wait for capacity, got {early:?}");
+        reader.set_read_timeout(Some(Duration::from_secs(5))).expect("read timeout");
+        let mut received = vec![0; BYTES];
+        reader.read_exact(&mut received).expect("drain input");
+        assert!(received.iter().all(|byte| *byte == b'x'));
+        rx.recv_timeout(Duration::from_secs(5)).expect("write finished").expect("write succeeded");
+        writing.join().expect("writer thread");
+    }
+
+    #[test]
+    fn nonblocking_stdin_stops_on_child_exit_with_open_peer() {
+        let (writer, _reader) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        writer.set_nonblocking(true).expect("nonblocking");
+        let fd = writer.as_fd().try_clone_to_owned().expect("dup writer");
+        let input = Arc::new(PtyInput::new(Uuid::nil(), Box::new(writer), Some(fd)));
+        let writing_input = Arc::clone(&input);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let writing = thread::spawn(move || {
+            let _ = tx.send(writing_input.write_input(&vec![b'x'; 1 << 20]));
+        });
+        assert!(matches!(rx.recv_timeout(Duration::from_millis(100)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)));
+        // The peer remains open, as when a descendant retains the PTY slave.
+        input.child_exited.store(true, Ordering::Release);
+        let error = rx.recv_timeout(Duration::from_secs(2)).expect("exit must interrupt backpressure").expect_err("child exited");
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        writing.join().expect("writer thread");
+    }
+
+    fn blocked_stdin_returns_after_child_exit(hold_slave_open: bool) {
+        let program = if hold_slave_open {
+            // Keep the slave alive after the direct child dies: POLLHUP alone
+            // cannot detect this exit. Ignore HUP in the descendant too.
+            "stty raw -echo; trap '' HUP; sleep 30 & printf 'READY:%s\\n' \"$!\"; wait"
+        } else {
+            "stty raw -echo; echo READY; exec sleep 30"
+        };
+        let sess = Arc::new(spawn_session(opts(vec!["sh", "-c", program])).expect("spawn"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let descendant = loop {
+            let snap = sess.snapshot_terminal(None, None).expect("snapshot");
+            if let Some(line) = snap.visible_screen.iter().map(line_text).find(|line| line.contains("READY")) {
+                break if hold_slave_open {
+                    Some(line.trim().strip_prefix("READY:").expect("descendant marker").parse::<i32>().expect("pid"))
+                } else {
+                    None
+                };
+            }
+            assert!(Instant::now() < deadline, "child never entered raw mode");
+            thread::sleep(Duration::from_millis(10));
+        };
+        let writer = Arc::clone(&sess);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writing = thread::spawn(move || {
+            let result = writer.write_stdin(&vec![b'x'; 1 << 20]);
+            let _ = done_tx.send(result);
+        });
+        assert!(matches!(done_rx.recv_timeout(Duration::from_millis(100)), Err(std::sync::mpsc::RecvTimeoutError::Timeout)), "stdin should be blocked");
+        sess.kill(libc::SIGKILL).expect("kill child");
+        let result = done_rx.recv_timeout(Duration::from_secs(5));
+        // Clean up the exact descendant even on the pre-fix timeout path.
+        if let Some(pid) = descendant {
+            // SAFETY: pid is the child-reported sleep process owned by this test.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        assert!(result.expect("stdin write stayed blocked after child exit").is_err());
+        writing.join().expect("writer thread");
+        assert!(sess.wait_for_exit(Duration::from_secs(10)));
+    }
+
+    #[test]
+    fn blocked_stdin_fails_after_child_exit() {
+        blocked_stdin_returns_after_child_exit(false);
+    }
+
+    #[test]
+    fn blocked_stdin_fails_after_child_exit_with_inherited_slave() {
+        blocked_stdin_returns_after_child_exit(true);
     }
 
     #[test]
