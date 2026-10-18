@@ -1,4 +1,5 @@
 import {
+  constants as fsConstants,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -6,7 +7,6 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { constants as fsConstants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
