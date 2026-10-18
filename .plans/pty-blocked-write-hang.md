@@ -1,6 +1,6 @@
 # fix: linux pty master write never unblocks after child exit (ci `test` job hangs)
 
-status: implementation active; regression red observed; reviewer pending.
+status: implementation and macos broker verification complete; preparing draft pr for linux ci; reviewer pending.
 branch: `fix/pty-blocked-write-hang` off `main` @ f863a5c1, worktree `/Users/home/Dev/.worktrees/wolfpack/pty-blocked-write`.
 
 ## symptom
@@ -65,6 +65,10 @@ alternatives considered and rejected: cancelling the blocking thread (not possib
 - baseline child-exit tests (including inherited slave) and socket regression pass on macos; they are characterization, not red evidence.
 - red: `nonblocking_stdin_waits_for_capacity` uses real nonblocking socket I/O and fails with premature `WouldBlock` (exit 101). this covers the retry path needed for permanently nonblocking PTYs.
 - private artifacts: `/tmp/pty-blocked-write-checks-0287cf28/` (`red.log`, `red-capacity.log`, `baseline-socket.log`). native bundle reused through `WOLFPACK_GHOSTTY_VT_DIR=/Users/home/Dev/wolfpack/broker/native/ghostty-vt/aarch64-apple-darwin` and verified by Cargo build.rs.
+- implementation uses permanent nonblocking master flags, 250ms readiness polling, immediate child-exit flag publication, and unchanged output-drain/exit ordering. removed obsolete flag-toggle/drop wrappers; added the 45-minute test job timeout.
+- green: focused stdin tests 6/6 (exit 0); full `cargo test --locked --manifest-path broker/Cargo.toml --all` exit 0, 33.8s (`cargo-all.log`).
+- `cargo fmt --check` exit 1 on both changed tree and archived base `f863a5c1`; repository-wide pre-existing formatting differences left untouched (`fmt-initial.log`, `fmt-baseline.log`). no clippy command found in package scripts, CONTRIBUTING, or workflows.
+- cached linux Python kernel probes reconfirm blocked write remains stuck 5 seconds after child death, while nonblocking poll reports HUP and write still returns EAGAIN (both probe commands exit 0; `linux-blocking-repro.log`, `linux-nonblocking-repro.log`). these are mechanism evidence, not Rust acceptance.
 - local linux Rust image unavailable (`rust:1.89` not cached); no image/tool installation. linux Rust gate will be draft-pr ci.
 - commit/push/draft-pr authority unchanged; no merge/deploy. no open design decisions.
 
