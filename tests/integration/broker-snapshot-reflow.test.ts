@@ -18,7 +18,6 @@ process.env.WOLFPACK_TEST = "1";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import { BrokerClient } from "../../src/broker/client";
@@ -102,7 +101,8 @@ D("broker snapshot reflow (target_cols=80)", () => {
     "for i in $(seq 60); do printf \"%110s\\n\" | tr \" \" A; done; exec /bin/sh -i";
 
   beforeAll(async () => {
-    tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "wolfpack-broker-reflow-it-"));
+    // Short /tmp dir: macOS caps AF_UNIX paths at ~104 bytes; TMPDIR can be long.
+    tmpdir = fs.mkdtempSync("/tmp/wolfpack-broker-reflow-it-");
     socketPath = path.join(tmpdir, "broker.sock");
 
     proc = spawn(BROKER_BIN!, [], {
@@ -354,7 +354,7 @@ D("broker attach: second client at cols=80 when session was cols=120", () => {
     "for i in $(seq 35); do printf \"%90s\\n\" | tr \" \" C; done; exec /bin/sh -i";
 
   beforeAll(async () => {
-    tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "wolfpack-broker-attach-it-"));
+    tmpdir = fs.mkdtempSync("/tmp/wolfpack-broker-attach-it-");
     socketPath = path.join(tmpdir, "broker.sock");
 
     proc = spawn(BROKER_BIN!, [], {

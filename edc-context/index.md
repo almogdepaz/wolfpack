@@ -1,34 +1,44 @@
-# Wolfpack EDC Context Index
+# Wolfpack context index
 
 ## How to use
 
-Start here, then open only the module sections for the paths or contracts you are changing. `edc-context/manifest.json` is routing authority; the workflow selectors below do not change path ownership.
-
-Do not treat generated bundles, staged EDC artifacts, screenshots/media, generated schemas, site assets, or prior test results as source truth. Reports and contextless machine coverage are intentionally outside the normal human read path.
+1. Route by the path or task below; read only the relevant section of the linked module document. Both modules are intentionally broad—neither document is a mandatory cover-to-cover reading list.
+2. Read the second module only when the task crosses the application/daemon boundary. Confirm exact signatures, limits, and behavior in current source and focused tests; these documents explain authority and ordering, not frozen APIs.
+3. Use [`manifest.json`](manifest.json) for authoritative machine routing and policy. This index is the human operational route, not a report or file-accounting catalog. Module evidence limits are not acceptance-test results.
 
 ## Route by path/task
 
-| Path or task | Read first | Notes |
-| --- | --- | --- |
-| `broker/**` | `modules/broker.md` | Rust PTY daemon, protocol, terminal state, and FFI. |
-| `src/**`, `public/**`, `bin/**`, `scripts/**` | `modules/wolfpack.md` | Server/CLI/browser runtime and packaging; select the relevant internal section. |
-| `tests/**` | `modules/tests.md` | Harness selection and regression intent, not production authority. |
-| Auth or Tailnet | `modules/wolfpack.md` | Authority Boundaries; Browser App, Grid, and Session Cards. |
-| Tasks, relay, or task-worker readiness | `modules/wolfpack.md` + relevant `modules/tests.md` sections | Separate durable tasks from volatile relay; select worker/compiled/process/package coverage as needed. |
-| Setup, install, service, or release | `modules/wolfpack.md` + relevant `modules/tests.md` sections | Separate package launch, foreground startup, and managed installation. |
+| Path or task | Start here | Conditional companion / verification |
+|---|---|---|
+| `src/cli/`, `bin/`, `install.sh`; startup, readiness, services, auth | [Wolfpack: startup, exposure, and lifetime boundaries](modules/wolfpack.md#startup-exposure-and-lifetime-boundaries) | Broker context for socket setup or daemon shutdown; distinguish degraded listening from live readiness. |
+| `src/server/session-*`, `project-*`, `broker-backend.ts`; UUID selection, launch, paths, observed input | [Wolfpack: session identity, paths, and mutation ordering](modules/wolfpack.md#session-identity-paths-and-mutation-ordering) | Broker lifecycle for reservation/spawn/exit changes; creation is not an application-wide atomic transaction. |
+| `src/server/websocket.ts`, `src/broker/`, backend contracts, `public/pty-*`, resize/hydration/pool; attach, reconnect, takeover, credit | [Wolfpack: terminal transport](modules/wolfpack.md#terminal-transport-preserve-the-cuts-not-just-the-bytes) | [Broker: two attach barriers](modules/broker.md#the-two-attach-barriers) and backpressure for boundary changes; pair focused browser/server tests with real-broker integration. |
+| `src/server/agent-status.ts`, observation, push, peer notifications, SSE | [Wolfpack: status, activity, attention, and notifications](modules/wolfpack.md#status-activity-attention-and-notifications) | Broker status semantics if changing source facts; unavailable is not dead, output is not semantic activity. |
+| Tailnet discovery, selected-machine routing, peer identity | [Wolfpack: multi-machine routing](modules/wolfpack.md#multi-machine-routing) | Extension selected-host proxy and relay federation are separate trust/transport paths. |
+| `src/extensions/`, extension routes/proxy, `public/extension-*`, `sdk/` | [Wolfpack: extensions](modules/wolfpack.md#extensions-trusted-code-constrained-data-channels) | SDK generation and compiled-host fixtures; installed UI is trusted page code, not sandboxed code. |
+| `src/tasks/`, `src/task-relay/`, worker policy/readiness | [Wolfpack: durable tasks versus volatile relay](modules/wolfpack.md#durable-tasks-versus-volatile-relay--task-worker-readiness) | Ledger fault-injection tests for durability; compiled-worker and selected-host fixtures for worker ownership/readiness. |
+| `public/`, root package/Bun/TypeScript/Playwright config, `scripts/`, `patches/`, native lock, `tests/` | [Wolfpack: generated artifacts and verification](modules/wolfpack.md#generated-artifacts-native-coupling-and-verification-routing) | Isolated UI/helper work can stay local. Browser edits require asset generation; native/distribution changes also require broker build checks. |
+| `broker/src/server.rs`, `codec.rs`, `protocol.rs`; socket security, wire framing, dispatch | [Broker: trust and execution boundary](modules/broker.md#trust-and-execution-boundary) | TypeScript codec/client/backend for wire compatibility; malformed framing is connection-fatal. |
+| `broker/src/session.rs`, `registry.rs`, output bus/ring; PTYs, exits, replay, snapshot/resize cost | [Broker: session lifetime](modules/broker.md#session-lifetime-and-registry-ownership), [attach barriers](modules/broker.md#the-two-attach-barriers), [backpressure](modules/broker.md#backpressure-ordering-and-snapshot-cost) | Application viewer drain/reconnect when crossing the socket; session/server unit tests and real socket/PTY tests. |
+| `broker/native/`, terminal state, ANSI rendering, program status | [Broker: native semantics and status side effects](modules/broker.md#native-semantics-and-status-side-effects) | Browser palette/query responsibilities and application semantic reducers; ANSI fixture parity for rendering changes. |
+| `broker/build.rs`, Cargo/native linking, `broker/tests/` | [Broker: verification and evidence limits](modules/broker.md#verification-routing-and-evidence-limits) | Application owns native bundle preparation/lock/patch provenance. Cargo requires the verified native bundle; browser WASM is unrelated. |
 
-## Global boundaries
+## Critical global invariants
 
-- Broker UUIDs/session IDs identify sessions; names are convenience selectors. The broker owns PTYs and terminal truth.
-- Remote exposure is shell-equivalent host access. Owner-API auth does not replace trusted Tailnet/canonical-origin verification.
-- Tasks are durable authority; relay is volatile, epoch-bound transport, not restart recovery or task-execution evidence.
+- **Authority stays divided.** Broker owns UUIDs, PTYs/processes, canonical terminal state and watermarks; application owns perimeter authorization, viewer/input ownership, identity augmentation and semantic policy. Unix-socket access bypasses application policy. Browser terminals and identity sidecars are projections, not liveness authority.
+- **Pin incarnations by UUID.** Names are reusable addresses. Live lists and retained dead-by-ID inspection intentionally differ. Unavailable facts do not establish death; cleanup and worker readiness must target the exact UUID.
+- **Preserve both attach cuts.** Terminal snapshot plus subscription must be atomic, and the associated response must actually be written before output is released. Every application attach lease must be activated or cancelled. Browser geometry/prefill/resize/reveal barriers remain necessary; attach acknowledgement alone is not readiness.
+- **Watermarks are full-width, not counts.** Preserve binary integers/TypeScript `bigint` and decimal-string boundaries. Coalescing reports the last included sequence; replay truncation requires re-snapshot. Resize can change terminal truth without advancing sequence, so cache generations and resize acknowledgements matter independently.
+- **Exit is not delivered output.** Control events can overtake bytes; final watermarks cover published output, not socket delivery. Drain queued viewer output under credit/deadline policy before closing.
+- **Disconnect is not destruction or safe replay.** Client/viewer teardown drops subscriptions, not broker sessions. In-flight RPCs reject instead of automatically replaying mutations. Broker state is memory-only; server restart, daemon replacement and complete process-tree cleanup are different operations.
+- **Do not transfer guarantees across stores.** Durable task ledger commits, extension documents, live SSE and volatile relay have separate authority/recovery models. Worker ready requires live UUID/project/harness/relay registration, not just a running process.
+- **Terminal status is untrusted.** Sanitized PTY reports do not authenticate their emitter. Rendered activity, agent execution, terminal liveness and user acknowledgement are distinct. Keep broker capability replies separate from browser terminal query replies to avoid duplicate stdin.
+- **Snapshot budgets are representation-specific.** ANSI preserves the visible screen and may exceed the requested budget; JSON/legacy can trim tails. Capability fallback, hard frame ceilings and error semantics must agree across the boundary.
 
-## Conditional cross-boundary reads
+## Cross-module coupling / blast radius
 
-- For protocol, attach/reconnect, resize, or passive inspection changes, read the matching broker and wolfpack sections plus real-broker test guidance.
-- For restart/install changes, consult broker lifecycle guidance only when broker ownership or replacement is affected. Server-only restarts preserve broker PTYs, not volatile relay state; broker restart terminates PTYs.
-- For relay worker changes, select compiled/process checks; for packaged delivery or installation, also select artifact/lifecycle checks in `modules/tests.md`. Skips are not verification.
-
-## Architecture overview
-
-Wolfpack is a self-hosted control room for persistent coding-agent terminals. The TypeScript server/CLI/browser layer authenticates users, validates project/session intent, exposes HTTP/WS/CLI surfaces, handles Tailnet peers, tasks, notifications, setup, and packaging. The Rust broker is the local daemon that owns PTY child processes and terminal state behind an owner-only Unix socket.
+- **Wire / attach / resize / output-exit changes:** span Rust protocol/server, TypeScript codec/backend and browser transport. Check daemon response-written ordering and application real-broker tests; mocks alone do not prove this boundary. Failed snapshot replacement preserves the old daemon subscription; unsubscribe cannot retract queued frames, so generations, cancellation and deduplication must handle late delivery.
+- **Backpressure and recovery:** replay rings, subscriber FIFOs, socket queues and browser credit are independent bounds. Slow-consumer recovery should re-snapshot that consumer. A malformed connection drops its subscriptions, not sessions, but a shared application broker-client disconnect affects every session routed through it. Registry-wide snapshot admission intentionally couples expensive work across sessions/connections.
+- **Startup and creation:** application auth/router readiness depend on the daemon's live socket probe, not port/path existence. Broker spawn rollback does not make later application identity/parent/worker steps atomic; failed application operations can leave resources requiring exact-UUID cleanup.
+- **Native/browser rendering:** palette and ANSI changes couple native snapshots to browser live rendering. Query handling changes can duplicate input if both sides answer. Native lock/ABI/patch changes couple application bundle preparation to daemon hash/link verification and paired packaging/install; server-only compilation is not deployable-pair proof.
+- **Build/test safety:** browser source is served through generated embedded assets, not directly from `public/`. Isolate production singleton imports before tests (`WOLFPACK_TEST` and existing fixtures); do not run release/deploy/install scripts as ordinary checks. Consult each module's evidence limits before treating any historical probe or cached executable result as current-source acceptance.

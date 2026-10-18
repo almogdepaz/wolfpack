@@ -16,7 +16,6 @@ process.env.WOLFPACK_TEST = "1";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import { BrokerClient } from "../../src/broker/client";
@@ -93,7 +92,7 @@ D("Broker restart/crash recovery", () => {
 
   beforeAll(async () => {
     // Keep socketPath short — macOS AF_UNIX is capped at ~104 bytes.
-    tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "wp-brk-restart-"));
+    tmpdir = fs.mkdtempSync("/tmp/wp-brk-restart-");
     socketPath = path.join(tmpdir, "b.sock");
 
     proc = spawn(BROKER_BIN!, [], {
@@ -181,7 +180,7 @@ D("Broker restart/crash recovery", () => {
   test("broker death surfaces an error to BrokerBackend (no silent zombies)", async () => {
     // Spawn a SECOND ephemeral broker so killing it doesn't break the suite's
     // long-lived broker (`proc`). Each test gets isolated lifecycle state.
-    const sub = fs.mkdtempSync(path.join(os.tmpdir(), "wp-brk-die-"));
+    const sub = fs.mkdtempSync("/tmp/wp-brk-die-");
     const subSocket = path.join(sub, "b.sock");
     const subProc = spawn(BROKER_BIN!, [], {
       env: {
@@ -229,7 +228,7 @@ D("Broker restart/crash recovery", () => {
   }, 20_000);
 
   test("broker death outlasting the grace window notifies lifecycle subscribers", async () => {
-    const sub = fs.mkdtempSync(path.join(os.tmpdir(), "wp-brk-grace-"));
+    const sub = fs.mkdtempSync("/tmp/wp-brk-grace-");
     const subSocket = path.join(sub, "b.sock");
     const subProc = spawn(BROKER_BIN!, [], {
       env: { ...process.env, WOLFPACK_BROKER_SOCKET: subSocket, WOLFPACK_BROKER_LOG: "warn" },

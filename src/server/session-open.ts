@@ -28,7 +28,7 @@ export const SESSION_OPEN_MAX_CREATE_ATTEMPTS = 4;
 
 type SessionOpenAllocationErrorCode = Exclude<
   SessionOpenErrorCode,
-  typeof SESSION_OPEN_ERROR.PROJECT_NOT_FOUND
+  typeof SESSION_OPEN_ERROR.PROJECT_NOT_FOUND | typeof SESSION_OPEN_ERROR.PLAN_FILE_UNREADABLE
 >;
 
 const ERROR_MESSAGE: Record<SessionOpenAllocationErrorCode, string> = {

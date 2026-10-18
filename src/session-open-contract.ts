@@ -3,6 +3,7 @@ export {
   isOpenableHarness,
 } from "./agent-kind.js";
 export type { OpenableHarness } from "./agent-kind.js";
+import { PLAN_FILE_UNREADABLE } from "./session-plan-contract.js";
 
 export const SESSION_OPEN_MAX_MODEL_LENGTH = 512;
 export const SESSION_TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS = 30_000;
@@ -22,6 +23,7 @@ export const SESSION_OPEN_ERROR = {
   BACKEND_UNAVAILABLE: "BACKEND_UNAVAILABLE",
   TASK_WORKER_PREFLIGHT_FAILED: "TASK_WORKER_PREFLIGHT_FAILED",
   TASK_WORKER_NOT_READY: "TASK_WORKER_NOT_READY",
+  PLAN_FILE_UNREADABLE,
 } as const;
 
 export type SessionOpenErrorCode = typeof SESSION_OPEN_ERROR[keyof typeof SESSION_OPEN_ERROR];
@@ -37,6 +39,7 @@ export const SESSION_OPEN_HTTP_STATUS = {
   [SESSION_OPEN_ERROR.BACKEND_UNAVAILABLE]: 503,
   [SESSION_OPEN_ERROR.TASK_WORKER_PREFLIGHT_FAILED]: 503,
   [SESSION_OPEN_ERROR.TASK_WORKER_NOT_READY]: 503,
+  [SESSION_OPEN_ERROR.PLAN_FILE_UNREADABLE]: 404,
 } as const satisfies Readonly<Record<SessionOpenErrorCode, number>>;
 
 const SESSION_OPEN_ERROR_SET: ReadonlySet<string> = new Set(Object.values(SESSION_OPEN_ERROR));

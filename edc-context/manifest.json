@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "edcVersion": "2.0.0",
+  "edcVersion": "1.1.5",
   "repoContextFile": "edc-context/index.md",
   "reports": {},
   "build": {
@@ -14,38 +14,37 @@
     {
       "name": "wolfpack",
       "doc": "edc-context/modules/wolfpack.md",
-      "summary": "Bun server, CLI, browser PWA, TypeScript broker boundary, sessions/control, Tailnet peers, tasks/relay, notifications, setup/service, and packaging.",
+      "summary": "Bun application and CLI, browser control room, TypeScript broker adapter, extensions, tasks, and build/install/test integration.",
       "priority": 100,
       "match": {
+        "exactFiles": [
+          "package.json",
+          "bun.lock",
+          "bunfig.toml",
+          "tsconfig.json",
+          "playwright.config.ts",
+          "ghostty-vt.lock.json",
+          "install.sh"
+        ],
         "prefixes": [
-          "bin/",
           "src/",
           "public/",
+          "bin/",
+          "sdk/",
           "scripts/",
-          "examples/extensions/",
-          "sdk/"
+          "tests/",
+          "patches/"
         ]
       }
     },
     {
       "name": "broker",
       "doc": "edc-context/modules/broker.md",
-      "summary": "Rust Unix-socket PTY broker daemon, binary/JSON protocol, session registry/tombstones, output replay, terminal snapshots, resize, and Ghostty VT FFI.",
-      "priority": 90,
+      "summary": "Rust Unix-socket daemon owning PTYs, session UUIDs, canonical native terminal state, ordered attach/replay, and native-link verification.",
+      "priority": 110,
       "match": {
         "prefixes": [
           "broker/"
-        ]
-      }
-    },
-    {
-      "name": "tests",
-      "doc": "edc-context/modules/tests.md",
-      "summary": "Bun, integration, Playwright, snapshot, schema, fixture, isolation, and real-broker regression contracts.",
-      "priority": 80,
-      "match": {
-        "prefixes": [
-          "tests/"
         ]
       }
     }
@@ -53,17 +52,7 @@
   "contextless": {
     "entries": [
       {
-        "id": "documentation-and-skills",
-        "globs": [
-          "docs/**",
-          "site/**",
-          "skills/**"
-        ],
-        "reason": "Documentation, site assets, and skill guidance do not need dedicated context files; inspect owning runtime source when behavior is in question.",
-        "reviewPolicy": "no-context-review"
-      },
-      {
-        "id": "repository-metadata",
+        "id": "supporting-documentation",
         "globs": [
           "README.md",
           "CONTRIBUTING.md",
@@ -72,76 +61,55 @@
           "LICENSE",
           "THIRD_PARTY_NOTICES",
           "llms.txt",
-          "package.json",
-          "bun.lock",
-          "bunfig.toml",
-          "tsconfig*.json",
-          "playwright.config.ts",
-          "Cargo.lock",
-          "install.sh",
-          "AGENTS.md",
-          "ghostty-vt.lock.json",
-          ".gitignore"
+          "docs/**"
         ],
-        "reason": "Top-level repository metadata and tool configuration are lightweight source files, not a separate runtime authority boundary.",
+        "reason": "Public documentation and notices are outside the discovered implementation modules; review directly for consistency with current contracts.",
         "reviewPolicy": "no-context-review"
       },
       {
-        "id": "generated-and-planning-artifacts",
+        "id": "site-and-skills",
         "globs": [
-          "edc-context/**",
-          "artifacts/**",
-          ".github/**",
-          ".plans/**",
-          "plans/**",
-          "patches/**"
+          "site/**",
+          "skills/**"
         ],
-        "reason": "Generated context, CI/planning material, patches, and collected artifacts route back to owning source modules when semantic behavior is in question.",
+        "reason": "Website and distributed skill content were not assigned deep implementation context by discovery; review changes directly without implying source analysis.",
         "reviewPolicy": "no-context-review"
+      },
+      {
+        "id": "repository-automation",
+        "globs": [
+          ".github/**",
+          ".gitignore"
+        ],
+        "reason": "Repository automation and ignore policy lie outside the discovered modules and need direct review rather than inferred implementation coverage.",
+        "reviewPolicy": "no-context-review"
+      },
+      {
+        "id": "edc-generated-context",
+        "globs": [
+          "AGENTS.md",
+          "EDC_AGENTS.md",
+          "edc-context/**"
+        ],
+        "reason": "Generated routing, context and report artifacts are metadata, not another human implementation module.",
+        "reviewPolicy": "account-only"
       }
     ]
   },
   "unmapped": {
-    "allowedGlobs": [
-      "docs/**",
-      "site/**",
-      "skills/**",
-      "README.md",
-      "CONTRIBUTING.md",
-      "SECURITY.md",
-      "SUPPORT.md",
-      "LICENSE",
-      "THIRD_PARTY_NOTICES",
-      "llms.txt",
-      "package.json",
-      "bun.lock",
-      "bunfig.toml",
-      "tsconfig*.json",
-      "playwright.config.ts",
-      "Cargo.lock",
-      "install.sh",
-      "AGENTS.md",
-      "ghostty-vt.lock.json",
-      ".gitignore",
-      "edc-context/**",
-      "artifacts/**",
-      ".github/**",
-      ".plans/**",
-      "plans/**",
-      "patches/**"
-    ]
+    "allowedGlobs": []
   },
-  "generatedAt": "2026-09-16T23:58:41Z",
-  "sourceCommit": "7f2846f74a071e51fda4ce0ad8fb4c9776f527c2",
+  "generatedAt": "2026-10-15T20:40:03Z",
+  "sourceCommit": "88b760182222602628bcdc4d39a9cffc8af8255c",
   "coverage": {
-    "contextMappedFileCount": 572,
-    "contextlessFileCount": 103,
+    "contextMappedFileCount": 736,
+    "contextlessFileCount": 64,
     "uncoveredFileCount": 0,
     "ambiguousPathCount": 0,
     "ignoredFileCount": 0,
     "ignoreSource": "none",
     "ignoreGlobs": [],
-    "mappedFileCount": 572,
-    "unmappedFileCount": 103
+    "mappedFileCount": 736,
+    "unmappedFileCount": 64
   }
 }

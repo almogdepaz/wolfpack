@@ -19,6 +19,7 @@ import {
   SESSION_TERMINAL_STATUSES,
 } from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
+import { SESSION_PLAN_MAX_PATH_LENGTH } from "../session-plan-contract.ts";
 import { NOTIFY_UNDELIVERED_REASON } from "../notify-contract.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
@@ -200,6 +201,13 @@ function existingProjectSelectorSchema(
   };
 }
 
+const sessionPlanPathSchema: JsonSchema = {
+  type: "string",
+  minLength: 1,
+  maxLength: SESSION_PLAN_MAX_PATH_LENGTH,
+  description: "Plan file path; relative paths resolve against the selected project directory.",
+};
+
 function sessionCreateRequestSchema(): JsonSchema {
   const ordinaryProperties = {
     harness: ref("CreatableHarness"),
@@ -208,6 +216,7 @@ function sessionCreateRequestSchema(): JsonSchema {
       minLength: 1,
       maxLength: MAX_INITIAL_PROMPT_LENGTH,
     },
+    plan: ref("SessionPlanRequest"),
   };
   const taskWorkerProperties = {
     projectDir: ref("ProjectDirectory"),
@@ -233,6 +242,7 @@ function sessionCreateRequestSchema(): JsonSchema {
       taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
     },
     additionalProperties: false,
+    not: { required: ["plan", "initialPrompt"] },
     oneOf: [
       existingProjectSelectorSchema(ordinaryProperties),
       object(taskWorkerProperties, ["projectDir", "taskWorker"]),
@@ -255,6 +265,7 @@ function sessionOpenRequestSchema(): JsonSchema {
       minLength: 1,
       maxLength: MAX_INITIAL_PROMPT_LENGTH,
     },
+    plan: ref("SessionOpenPlanRequest"),
   };
   const taskWorkerProperties = {
     parentSession: ref("SessionName"),
@@ -282,6 +293,7 @@ function sessionOpenRequestSchema(): JsonSchema {
       taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
     },
     additionalProperties: false,
+    not: { required: ["plan", "initialPrompt"] },
     oneOf: [
       existingProjectSelectorSchema(ordinaryProperties, ["parentSession"]),
       object(taskWorkerProperties, ["parentSession", "projectDir", "taskWorker"]),
@@ -457,6 +469,14 @@ export const controlApiSource: ControlApiSource = {
     ExtensionApiError: object({ code: string(), message: string(), currentRevision: { type: "integer", minimum: 0 } }, ["code", "message"]),
     ExtensionApiErrorEnvelope: object({ error: ref("ExtensionApiError") }, ["error"]),
     ExtensionDocumentReceipt: object({ requestId: { type: "string", format: "uuid" }, scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), documentId: ref("ExtensionId"), revision: { type: "integer", minimum: 1 }, acceptedAt: string(), payloadDigest: { type: "string", pattern: "^[a-f0-9]{64}$" }, baseRevision: { type: "integer", minimum: 0 }, schemaVersion: { type: "integer", minimum: 1 } }, ["requestId", "scopeSessionId", "extensionId", "documentId", "revision", "acceptedAt", "payloadDigest", "baseRevision", "schemaVersion"]),
+    SessionPlanRequest: {
+      ...object({ path: sessionPlanPathSchema }, ["path"]),
+      description: "Mutually exclusive with initialPrompt. The server resolves a relative path against the selected project directory, verifies it is a readable regular file, and launches with a compact prompt naming the resolved path; otherwise it returns 404 PLAN_FILE_UNREADABLE with planPath.",
+    },
+    SessionOpenPlanRequest: {
+      ...object({ path: sessionPlanPathSchema, notifyParent: { const: true } }, ["path"]),
+      description: "SessionPlanRequest plus notifyParent, which appends the notify-parent instruction to the generated prompt.",
+    },
     TaskWorkerCreatedSession: object({
       session: ref("SessionName"),
       sessionId: ref("SessionId"),

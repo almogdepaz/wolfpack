@@ -32,7 +32,7 @@ wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--pro
 - allocates `<project>`, then `<project>-2`, `<project>-3`, and so on with bounded collision retries.
 - passes one explicit prompt as an opaque argv value when the harness starts; no terminal-readiness send race is involved.
 - `--prompt-file <file>` reads instruction text from disk to avoid shell heredoc/quoting failures.
-- `--plan <file>` verifies the file exists and generates a compact "read and implement this plan" startup prompt without copying plan contents.
+- `--plan <file>` sends the path to the server that runs the child. That server resolves a relative path against the selected project directory (absolute paths are unchanged), verifies it is a readable file there, and launches with a compact "read and implement this plan" prompt naming the resolved path, without copying plan contents. The prompt tells the child to follow the plan's commit/push boundary and, when the plan states none, not to commit, push, merge, or deploy. A missing, unreadable, or non-file path fails with `PLAN_FILE_UNREADABLE` and the resolved path (`planPath` in `--json` output).
 - rejects prompts when the effective command is a plain shell.
 - json success: `{ "ok": true, "session": string, "sessionId": string, "project": string, "harness": string }`.
 
