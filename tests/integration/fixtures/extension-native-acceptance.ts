@@ -10,7 +10,6 @@
 import { randomUUID, createHash, createHmac } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { BrokerClient } from "../../../src/broker/client.ts";
 import type { BrokerBackend } from "../../../src/server/broker-backend.ts";
@@ -18,7 +17,8 @@ import type { BrokerBackend } from "../../../src/server/broker-backend.ts";
 const ROOT = join(import.meta.dirname, "..", "..", "..");
 const brokerBin = process.env.WOLFPACK_BROKER_BIN ?? join(ROOT, "broker", "target", "release", "wolfpack-broker");
 const expectedBrokerSha256 = process.env.WOLFPACK_BROKER_SHA256;
-const sandbox = mkdtempSync(join(tmpdir(), "wolfpack-extension-native-"));
+// Short /tmp root keeps broker.sock under the macOS ~104-byte AF_UNIX limit.
+const sandbox = mkdtempSync("/tmp/wolfpack-extension-native-");
 const home = join(sandbox, "home");
 const socket = join(sandbox, "broker.sock");
 const bin = join(sandbox, "bin");

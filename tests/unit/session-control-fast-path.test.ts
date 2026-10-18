@@ -350,12 +350,10 @@ describe("session control fast-path requests", () => {
     expect(child.exitCode).toBe(SESSION_EXIT.OK);
   });
 
-  test("agent spawn plan mode sends a compact prompt, not the plan contents", () => {
+  test("agent spawn plan mode sends the plan path for the server to resolve, not a local check or contents", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "wolfpack-plan-spawn-"));
     try {
-      const planPath = join(tempRoot, ".plans/009-token.md");
-      mkdirSync(join(tempRoot, ".plans"), { recursive: true });
-      writeFileSync(planPath, "# huge plan body that must not be copied into the prompt\n");
+      // The plan exists only in the target project, never in the caller's cwd.
       const script = `
         process.env.WOLFPACK_SESSION_NAME = "wolfpack";
         process.env.WOLFPACK_AGENT_KIND = "pi";
@@ -365,11 +363,9 @@ describe("session control fast-path requests", () => {
           return Response.json({ ok: true, session: "wolfpack-sub-agent", sessionId: "id-child", project: "branchout", harness: "pi" });
         };
         const { runAgentCommand } = await import("${process.cwd()}/src/cli/session-control.ts");
-        const code = await runAgentCommand(["spawn", "branchout", "--plan", "${planPath}", "--notify-parent", "--json"]);
-        const prompt = calls[0]?.body?.initialPrompt ?? "";
-        if (!prompt.includes("implement ${planPath}")) process.exit(97);
-        if (!prompt.includes("wolfpack agent notify-parent")) process.exit(98);
-        if (prompt.includes("huge plan body")) process.exit(99);
+        const code = await runAgentCommand(["spawn", "branchout", "--plan", ".plans/009-token.md", "--notify-parent", "--json"]);
+        const expected = { project: "branchout", parentSession: "wolfpack", plan: { path: ".plans/009-token.md", notifyParent: true } };
+        if (JSON.stringify(calls[0]?.body) !== JSON.stringify(expected)) process.exit(97);
         process.exit(code);
       `;
       const child = Bun.spawnSync([process.execPath, "-e", script], {
@@ -383,6 +379,30 @@ describe("session control fast-path requests", () => {
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
+  });
+
+  test("agent spawn reports the server-resolved path of an unreadable plan", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "wolfpack";
+      process.env.WOLFPACK_AGENT_KIND = "pi";
+      globalThis.fetch = async () => Response.json(
+        { error: "plan file not readable", code: "PLAN_FILE_UNREADABLE", planPath: "/srv/branchout/.plans/x.md" },
+        { status: 404 },
+      );
+      const { runAgentCommand } = await import("${process.cwd()}/src/cli/session-control.ts");
+      process.exit(await runAgentCommand(["spawn", "branchout", "--plan", ".plans/x.md", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: { code: "PLAN_FILE_UNREADABLE", message: "plan file not readable: /srv/branchout/.plans/x.md" },
+    });
   });
 
   test("prompt-file passes file contents without requiring shell heredocs", () => {

@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { AGENT_KIND, isCreatableHarness, isKnownAgentKind } from "../agent-kind.js";
 import type { CreatableHarness } from "../agent-kind.js";
@@ -51,6 +51,13 @@ import type {
   SessionSendOutcome,
 } from "../session-send-contract.js";
 import { NOTIFY_UNDELIVERED_REASON, notifyDelivery } from "../notify-contract.js";
+import {
+  NOTIFY_PARENT_PROMPT,
+  PLAN_FILE_UNREADABLE,
+  PLAN_FILE_UNREADABLE_MESSAGE,
+  SESSION_PLAN_MAX_PATH_LENGTH,
+} from "../session-plan-contract.js";
+import type { SessionPlanRequest } from "../session-plan-contract.js";
 import type { NotifyDelivery } from "../notify-contract.js";
 import { call as callApi } from "./api.js";
 import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
@@ -874,6 +881,10 @@ const OPEN_API_ERRORS: Readonly<Record<SessionOpenErrorCode, CliErrorDescriptor>
     message: "task worker not ready",
     exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
   },
+  [SESSION_OPEN_ERROR.PLAN_FILE_UNREADABLE]: {
+    message: PLAN_FILE_UNREADABLE_MESSAGE,
+    exitCode: SESSION_EXIT.NOT_FOUND,
+  },
 };
 
 export function sessionOpenCliError(code: SessionOpenErrorCode): CliErrorDescriptor {
@@ -909,7 +920,22 @@ const CREATE_API_ERRORS: Readonly<Record<SessionCreateErrorCode, CliErrorDescrip
     message: "task worker not ready",
     exitCode: SESSION_EXIT.BACKEND_UNAVAILABLE,
   },
+  [SESSION_CREATE_ERROR.PLAN_FILE_UNREADABLE]: {
+    message: PLAN_FILE_UNREADABLE_MESSAGE,
+    exitCode: SESSION_EXIT.NOT_FOUND,
+  },
 };
+
+function planUnreadableMessage(body: string): string {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const planPath = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>).planPath : undefined;
+    if (typeof planPath === "string" && planPath.length <= SESSION_PLAN_MAX_PATH_LENGTH) {
+      return `${PLAN_FILE_UNREADABLE_MESSAGE}: ${planPath}`;
+    }
+  } catch { /* malformed body: fall back to the generic message */ }
+  return PLAN_FILE_UNREADABLE_MESSAGE;
+}
 
 function mapCreateApiError(output: OutputMode, error: unknown): number {
   const apiError = error as Partial<ApiError>;
@@ -921,7 +947,7 @@ function mapCreateApiError(output: OutputMode, error: unknown): number {
     return writeOpenError(
       output,
       apiError.code,
-      known.message,
+      apiError.code === PLAN_FILE_UNREADABLE ? planUnreadableMessage(apiError.body ?? "") : known.message,
       known.exitCode,
       parseTaskWorkerRecovery(apiError.body ?? "", apiError.code),
     );
@@ -939,7 +965,7 @@ function mapOpenApiError(output: OutputMode, error: unknown): number {
     return writeOpenError(
       output,
       apiError.code,
-      known.message,
+      apiError.code === PLAN_FILE_UNREADABLE ? planUnreadableMessage(apiError.body ?? "") : known.message,
       known.exitCode,
       parseTaskWorkerRecovery(apiError.body ?? "", apiError.code),
     );
@@ -1000,11 +1026,10 @@ function projectSelectorRequest(selector: ExistingProjectSelector):
   return { projectDir: resolve(selector.projectDir) };
 }
 
-const NOTIFY_PARENT_PROMPT = "when done or blocked, run `wolfpack agent notify-parent` once, then summarize changes, verification, and concerns.";
-
-function compactPlanPrompt(plan: string, notifyParent?: true): string {
-  const base = `implement ${plan}. read repo instructions and the full plan first; update plan status as work progresses. preserve unrelated dirty work. do not commit, push, merge, or deploy. when done or blocked, leave this session open and summarize changes, verification, and concerns.`;
-  return notifyParent ? `${base} ${NOTIFY_PARENT_PROMPT}` : base;
+/** The server resolves and verifies the plan where the child runs (#447). */
+function planRequest(source: LaunchPromptSource): { readonly plan: SessionPlanRequest } | undefined {
+  if (source.plan === undefined) return undefined;
+  return { plan: { path: source.plan, ...(source.notifyParent && { notifyParent: true }) } };
 }
 
 async function readPromptFile(path: string, output: OutputMode): Promise<string | number> {
@@ -1012,15 +1037,6 @@ async function readPromptFile(path: string, output: OutputMode): Promise<string 
     return await readFile(path, "utf8");
   } catch {
     return writeOpenError(output, "PROMPT_FILE_UNREADABLE", "prompt file not readable", SESSION_EXIT.NOT_FOUND);
-  }
-}
-
-async function verifyReadablePlan(path: string, output: OutputMode): Promise<number | undefined> {
-  try {
-    await access(path);
-    return undefined;
-  } catch {
-    return writeOpenError(output, "PLAN_FILE_UNREADABLE", "plan file not readable", SESSION_EXIT.NOT_FOUND);
   }
 }
 
@@ -1052,19 +1068,15 @@ async function materializeTaskWorkerPolicy(
 }
 
 async function materializeInitialPrompt(source: LaunchPromptSource): Promise<string | undefined | number> {
+  // Plan launches carry notify-parent inside the server-built plan prompt.
+  if (source.plan !== undefined) return undefined;
   let prompt = source.prompt;
-  let includesNotifyParent = false;
   if (source.promptFile !== undefined) {
     const promptFileContent = await readPromptFile(source.promptFile, source.output);
     if (typeof promptFileContent === "number") return promptFileContent;
     prompt = promptFileContent;
-  } else if (source.plan !== undefined) {
-    const planError = await verifyReadablePlan(source.plan, source.output);
-    if (planError !== undefined) return planError;
-    prompt = compactPlanPrompt(source.plan, source.notifyParent);
-    includesNotifyParent = Boolean(source.notifyParent);
   }
-  if (source.notifyParent && !includesNotifyParent) {
+  if (source.notifyParent) {
     prompt = prompt !== undefined ? `${prompt} ${NOTIFY_PARENT_PROMPT}` : NOTIFY_PARENT_PROMPT;
   }
 
@@ -1103,6 +1115,7 @@ async function runSessionOpen(
         ...(parsed.taskWorkerDryRun && { taskWorkerDryRun: true }),
         ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
         ...(initialPrompt !== undefined && { initialPrompt }),
+        ...planRequest(parsed),
       }),
     }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse | TaskWorkerDryRunResponse;
     if (parsed.output === "json") jsonOut(response, target);
@@ -1133,6 +1146,7 @@ async function runSessionCreate(
         ...(parsed.taskWorkerDryRun && { taskWorkerDryRun: true }),
         ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
         ...(initialPrompt !== undefined && { initialPrompt }),
+        ...planRequest(parsed),
       }),
     }, target, launchRequestTimeoutMs(parsed.taskWorker === true, parsed.readinessTimeoutMs)) as SessionLaunchResponse | TaskWorkerDryRunResponse;
     if (parsed.output === "json") jsonOut(response, target);

@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
 const cli = process.env.WOLFPACK_PACKAGED_CLI;
@@ -22,7 +21,7 @@ test.skipIf(!cli)("packaged CLI/native broker/installed Pi tool loop survives se
   expect(digest(cli!)).toBe(required("WOLFPACK_PACKAGED_CLI_SHA256"));
   expect(digest(broker)).toBe(required("WOLFPACK_BROKER_SHA256"));
   expect(digest(archive)).toBe(required("WOLFPACK_PI_TASKS_ARCHIVE_SHA256"));
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "wp-pkg-worker-"))); chmodSync(root, 0o700);
+  const root = realpathSync(mkdtempSync("/tmp/wp-pkg-worker-")); chmodSync(root, 0o700);
   let model: ReturnType<typeof Bun.serve> | undefined;
   try {
   const home = join(root, "home"), project = join(root, "project"), bin = join(root, "bin"), socket = join(home, ".wolfpack", "broker.sock");

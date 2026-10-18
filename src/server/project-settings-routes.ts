@@ -6,7 +6,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { access } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { AGENT_KIND, isCreatableHarness } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
@@ -25,6 +26,13 @@ import {
   SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS,
 } from "../session-open-contract.js";
 import { unicodeCodePointLength } from "../session-prompt-contract.js";
+import {
+  compactPlanPrompt,
+  isSessionPlanRequest,
+  PLAN_FILE_UNREADABLE,
+  PLAN_FILE_UNREADABLE_MESSAGE,
+} from "../session-plan-contract.js";
+import type { SessionPlanRequest } from "../session-plan-contract.js";
 import { DEV_DIR } from "./dev-dir.js";
 import { browseServerDirectory } from "./directory-browser.js";
 import type { DirectoryBrowseResult } from "./directory-browser.js";
@@ -147,6 +155,7 @@ interface SessionCreateBody extends Record<string, unknown> {
   projectDir?: string;
   harness?: string;
   initialPrompt?: string;
+  plan?: SessionPlanRequest;
   taskWorker?: boolean;
   readinessTimeoutMs?: number;
   taskWorkerPolicy?: Record<string, unknown>;
@@ -154,12 +163,13 @@ interface SessionCreateBody extends Record<string, unknown> {
 }
 
 function isSessionCreateBody(body: Record<string, unknown>): body is SessionCreateBody {
-  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
+  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
     && hasOptionalType(body, "harness", "string")
     && hasOptionalType(body, "initialPrompt", "string")
+    && (body.plan === undefined || isSessionPlanRequest(body.plan, false))
     && hasOptionalType(body, "taskWorker", "boolean")
     && hasOptionalType(body, "readinessTimeoutMs", "number")
     && (body.taskWorkerPolicy === undefined || isJsonObject(body.taskWorkerPolicy))
@@ -173,6 +183,7 @@ interface SessionOpenBody extends Record<string, unknown> {
   sessionName?: string;
   model?: string;
   initialPrompt?: string;
+  plan?: SessionPlanRequest;
   taskWorker?: boolean;
   readinessTimeoutMs?: number;
   taskWorkerPolicy?: Record<string, unknown>;
@@ -180,7 +191,7 @@ interface SessionOpenBody extends Record<string, unknown> {
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
-  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "model", "initialPrompt", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
+  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "model", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
@@ -188,10 +199,29 @@ function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBo
     && hasOptionalType(body, "sessionName", "string")
     && hasOptionalType(body, "model", "string")
     && hasOptionalType(body, "initialPrompt", "string")
+    && (body.plan === undefined || isSessionPlanRequest(body.plan, true))
     && hasOptionalType(body, "taskWorker", "boolean")
     && hasOptionalType(body, "readinessTimeoutMs", "number")
     && (body.taskWorkerPolicy === undefined || isJsonObject(body.taskWorkerPolicy))
     && hasOptionalType(body, "taskWorkerDryRun", "boolean");
+}
+
+/** Resolves a `--plan` path against the project the child runs in. */
+async function planLaunchPrompt(
+  plan: SessionPlanRequest,
+  projectDir: string,
+): Promise<{ readonly prompt: string } | { readonly unreadable: string }> {
+  const planPath = resolve(projectDir, plan.path);
+  try {
+    await access(planPath);
+  } catch {
+    return { unreadable: planPath };
+  }
+  return { prompt: compactPlanPrompt(planPath, plan.notifyParent) };
+}
+
+function planUnreadable(res: Parameters<RouteHandler>[1], planPath: string): void {
+  json(res, { error: PLAN_FILE_UNREADABLE_MESSAGE, code: PLAN_FILE_UNREADABLE, planPath }, 404);
 }
 
 interface SettingsBody extends Record<string, unknown> {
@@ -572,9 +602,11 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       || (body.taskWorkerPolicy !== undefined && body.taskWorker !== true)
       || (body.taskWorkerDryRun !== undefined && body.taskWorker !== true)
       || (body.taskWorkerDryRun !== undefined && body.taskWorkerDryRun !== true)
+      || (body.plan !== undefined && body.initialPrompt !== undefined)
       || (body.taskWorker === true && (
         body.projectDir === undefined
         || body.initialPrompt !== undefined
+        || body.plan !== undefined
       ))
     ) {
       if (body) json(res, {
@@ -612,11 +644,17 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         code: SESSION_CREATE_ERROR.INVALID_REQUEST,
       }, 400);
     }
-    if (body.initialPrompt !== undefined && inferAgentKind(configuredCommand) === AGENT_KIND.SHELL.id) {
+    if ((body.initialPrompt !== undefined || body.plan !== undefined) && inferAgentKind(configuredCommand) === AGENT_KIND.SHELL.id) {
       return json(res, {
         error: "initial prompt requires an agent harness",
         code: SESSION_CREATE_ERROR.UNSUPPORTED_HARNESS,
       }, 400);
+    }
+    let initialPrompt = body.initialPrompt;
+    if (body.plan !== undefined) {
+      const planned = await planLaunchPrompt(body.plan, projectDir);
+      if ("unreadable" in planned) return planUnreadable(res, planned.unreadable);
+      initialPrompt = planned.prompt;
     }
 
     let taskWorker;
@@ -642,7 +680,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         project,
         projectDir,
         command: configuredCommand,
-        initialPrompt: body.initialPrompt,
+        initialPrompt,
         ...(taskWorker !== undefined && {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,
@@ -695,9 +733,11 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       || (body.taskWorkerPolicy !== undefined && body.taskWorker !== true)
       || (body.taskWorkerDryRun !== undefined && body.taskWorker !== true)
       || (body.taskWorkerDryRun !== undefined && body.taskWorkerDryRun !== true)
+      || (body.plan !== undefined && body.initialPrompt !== undefined)
       || (body.taskWorker === true && (
         body.projectDir === undefined
         || body.initialPrompt !== undefined
+        || body.plan !== undefined
       ))
     ) {
       return json(
@@ -727,6 +767,12 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
     }
     const { project, projectDir } = projectSelection.value;
+    let initialPrompt = body.initialPrompt;
+    if (body.plan !== undefined) {
+      const planned = await planLaunchPrompt(body.plan, projectDir);
+      if ("unreadable" in planned) return planUnreadable(res, planned.unreadable);
+      initialPrompt = planned.prompt;
+    }
 
     let taskWorker;
     try {
@@ -768,7 +814,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         projectDir,
         sessionName: body.sessionName,
         model: body.model,
-        initialPrompt: body.initialPrompt,
+        initialPrompt,
         ...(taskWorker !== undefined && {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,

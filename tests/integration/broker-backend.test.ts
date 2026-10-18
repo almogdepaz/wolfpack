@@ -14,7 +14,6 @@ process.env.WOLFPACK_TEST = "1";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import { BrokerClient } from "../../src/broker/client";
@@ -75,7 +74,9 @@ D("BrokerBackend ↔ real broker", () => {
   const MARKER = `WOLFPACK_MARKER_${process.pid}_${Math.random().toString(36).slice(2, 10)}`;
 
   beforeAll(async () => {
-    tmpdir = fs.mkdtempSync(path.join(os.tmpdir(), "wolfpack-broker-it-"));
+    // Short private /tmp dir: macOS caps AF_UNIX paths at ~104 bytes, and
+    // sandboxed sessions often set a long TMPDIR.
+    tmpdir = fs.mkdtempSync("/tmp/wolfpack-broker-it-");
     socketPath = path.join(tmpdir, "broker.sock");
 
     proc = spawn(BROKER_BIN!, [], {

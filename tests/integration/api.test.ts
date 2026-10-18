@@ -2598,6 +2598,39 @@ describe("agent-native top-level session control", () => {
     });
   });
 
+  test("resolves a relative plan against the selected top-level project directory", async () => {
+    const projectDir = createExplicitProjectDir("top plan workspace");
+    mkdirSync(join(projectDir, ".plans"));
+    writeFileSync(join(projectDir, ".plans", "000-task.md"), "# plan\n");
+    const res = await post("/api/session-create", { projectDir, harness: "pi", plan: { path: ".plans/000-task.md" } });
+
+    expect(res.status).toBe(200);
+    const prompt = String(mockBackend.lastCreateArgs?.initialPrompt);
+    expect(prompt).toStartWith(`implement ${join(projectDir, ".plans", "000-task.md")}. `);
+    expect(prompt).toContain("follow the plan's commit/push boundary");
+    expect(prompt).not.toContain("notify-parent");
+  });
+
+  test("rejects an unreadable top-level plan, notify-parent, or plan with a prompt", async () => {
+    const projectDir = createExplicitProjectDir("top missing plan");
+    mockBackend.lastCreateArgs = null;
+    const missing = await post("/api/session-create", { projectDir, harness: "pi", plan: { path: "missing.md" } });
+    expect(missing.status).toBe(404);
+    expect(await missing.json()).toEqual({
+      error: "plan file not readable",
+      code: "PLAN_FILE_UNREADABLE",
+      planPath: join(projectDir, "missing.md"),
+    });
+    for (const body of [
+      { projectDir, harness: "pi", plan: { path: "/etc/hosts", notifyParent: true } },
+      { projectDir, harness: "pi", plan: { path: "/etc/hosts" }, initialPrompt: "x" },
+    ]) {
+      const res = await post("/api/session-create", body);
+      expect(res.status).toBe(400);
+    }
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
   test("rejects unchecked or ambiguous explicit directory selectors before launch", async () => {
     const projectDir = createExplicitProjectDir("ambiguous");
     for (const body of [
@@ -3282,6 +3315,54 @@ describe("POST /api/session-open", () => {
       harness: "pi",
     });
     expect(mockBackend.lastCreateArgs?.cwd).toBe(projectDir);
+  });
+
+  test("resolves a relative plan against the selected project directory", async () => {
+    const projectDir = createExplicitProjectDir("child plan workspace");
+    mkdirSync(join(projectDir, ".plans"));
+    writeFileSync(join(projectDir, ".plans", "000-task.md"), "# plan body that must not be copied\n");
+    const res = await post("/api/session-open", {
+      projectDir,
+      parentSession: "wolf-1",
+      plan: { path: ".plans/000-task.md", notifyParent: true },
+    });
+
+    expect(res.status).toBe(200);
+    const prompt = String(mockBackend.lastCreateArgs?.initialPrompt);
+    expect(prompt).toStartWith(`implement ${join(projectDir, ".plans", "000-task.md")}. `);
+    expect(prompt).toContain("follow the plan's commit/push boundary; if it states none, do not commit, push, merge, or deploy.");
+    expect(prompt).toContain("wolfpack agent notify-parent");
+    expect(prompt).not.toContain("plan body");
+  });
+
+  test("rejects an unreadable plan with the resolved path before child launch", async () => {
+    const projectDir = createExplicitProjectDir("child missing plan");
+    mockBackend.lastCreateArgs = null;
+    const res = await post("/api/session-open", {
+      projectDir,
+      parentSession: "wolf-1",
+      plan: { path: ".plans/missing.md" },
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: "plan file not readable",
+      code: "PLAN_FILE_UNREADABLE",
+      planPath: join(projectDir, ".plans", "missing.md"),
+    });
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("rejects plan combined with an initial prompt or malformed plan", async () => {
+    for (const plan of [{ path: "" }, { path: "a\0b" }, { path: 1 }, { path: "x.md", extra: true }, { path: "x.md", notifyParent: false }, "x.md"]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-open", { project: "my-app", parentSession: "wolf-1", plan });
+      expect(res.status).toBe(400);
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+    const both = await post("/api/session-open", { project: "my-app", parentSession: "wolf-1", plan: { path: "/etc/hosts" }, initialPrompt: "x" });
+    expect(both.status).toBe(400);
+    expect(mockBackend.lastCreateArgs).toBeNull();
   });
 
   test("rejects relative and ambiguous explicit directory selections before child launch", async () => {
