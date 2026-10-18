@@ -72,7 +72,7 @@ function runServiceRestartCli(serviceRestartResult: boolean): CliResult {
       "--server-only",
     ], {
       cwd: root,
-      env: { ...process.env, HOME: home, NO_COLOR: "1", WOLFPACK_SERVICE: "1" },
+      env: { ...process.env, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), NO_COLOR: "1", WOLFPACK_SERVICE: "1" },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -129,7 +129,7 @@ async function runDashboard(fixture: DashboardServiceFixture): Promise<Dashboard
   try {
     const child = Bun.spawn([process.execPath, "--preload", preloadPath, cliEntry], {
       cwd: root,
-      env: { ...environment, HOME: home, NO_COLOR: "1" },
+      env: { ...environment, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), NO_COLOR: "1" },
       stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 3000,
     });
     const [exitCode, stdout, stderr] = await Promise.all([

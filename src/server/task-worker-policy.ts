@@ -1,8 +1,8 @@
 import { realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { canonicalReadableRegularFile } from "./task-worker-resource.js";
 import { readBoundedTaskWorkerPolicyFile } from "../task-worker-policy-file.js";
+import { resolveWolfpackDir } from "../wolfpack-dir.js";
 import {
   parseTaskWorkerPolicyOverride,
   TASK_WORKER_DEFAULT_EXTENSION_POLICY,
@@ -67,7 +67,7 @@ function canonicalExtension(path: string): string {
 
 export function taskWorkerPolicyPath(env: Readonly<Record<string, string | undefined>>): string {
   const configured = env.WOLFPACK_TASK_WORKER_POLICY_PATH;
-  if (configured === undefined) return `${homedir()}/.wolfpack/task-worker-policy.json`;
+  if (configured === undefined) return join(resolveWolfpackDir(env), "task-worker-policy.json");
   if (!configured || configured.length > 4_096 || configured.includes("\0") || !isAbsolute(configured)) policyError();
   return configured;
 }

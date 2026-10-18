@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { resolveWolfpackDir } from "../../src/wolfpack-dir.ts";
 import type { CanonicalTaskEvent, ImmutableTaskAssignment, TaskAddress, TaskParticipants } from "../../src/tasks/domain.ts";
 import {
   TASK_LEDGER_ROLE,
@@ -98,7 +99,7 @@ async function createSender(store: TaskStore, taskId: string) {
 
 describe("task append-only store", () => {
   test("uses a machine-global default root and containment-safe generated ledger paths", () => {
-    expect(taskStorePaths().root).toMatch(/\.wolfpack\/tasks$/);
+    expect(taskStorePaths().root).toBe(join(resolveWolfpackDir(), "tasks"));
     const root = testRoot();
     const paths = taskStorePaths(root, {
       role: TASK_LEDGER_ROLE.RECEIVER,

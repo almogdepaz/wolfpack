@@ -13,10 +13,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { canonicalJson } from "../canonical-json.ts";
 import { publishEvent } from "../event-bus.ts";
+import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.ts";
 import {
   TASK_API_ERROR,
@@ -399,7 +399,7 @@ function containedPath(root: string, ...segments: string[]): string {
   return path;
 }
 
-export function taskStorePaths(root: string = join(homedir(), ".wolfpack", "tasks"), key: TaskLedgerKey | undefined = undefined): TaskLedgerPaths {
+export function taskStorePaths(root: string = join(resolveWolfpackDir(), "tasks"), key: TaskLedgerKey | undefined = undefined): TaskLedgerPaths {
   const resolvedRoot = resolve(root);
   const ledgerSegment = key === undefined
     ? "placeholder"

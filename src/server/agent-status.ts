@@ -7,7 +7,7 @@ import {
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { createLogger, errMsg } from "../log.js";
-import { homedir } from "node:os";
+import { resolveWolfpackDir } from "../wolfpack-dir.js";
 import { dirname, isAbsolute, normalize, resolve } from "node:path";
 import {
   AGENT_STATUS_AUTHORITY,
@@ -602,7 +602,7 @@ function isAgentRuntimeStateFile(value: unknown): value is AgentRuntimeStateFile
 }
 
 export function agentRuntimeStatePath(): string {
-  return process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH || resolve(homedir(), ".wolfpack", "agent-runtime-state.json");
+  return process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH || resolve(resolveWolfpackDir(), "agent-runtime-state.json");
 }
 
 function sameRuntimeState(previous: AgentRuntimeState | undefined, next: AgentRuntimeState): boolean {

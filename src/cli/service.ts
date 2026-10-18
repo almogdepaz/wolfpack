@@ -330,7 +330,7 @@ export function generatePlist(
   return renderPlist(
     loadConfig(),
     programArgs(),
-    join(homedir(), ".wolfpack", "wolfpack.log"),
+    join(WOLFPACK_DIR, "wolfpack.log"),
     serviceAuthPath,
   );
 }

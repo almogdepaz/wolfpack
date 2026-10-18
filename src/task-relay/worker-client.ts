@@ -1,9 +1,9 @@
 import { Worker } from "node:worker_threads";
 import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { types as utilTypes } from "node:util";
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createLogger } from "../log.ts";
+import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
 import { volatileFailure, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
@@ -90,7 +90,7 @@ export class WorkerRelayGateway implements RelayGateway {
     if (!Number.isInteger(this.#requestMs) || this.#requestMs < 1 || this.#requestMs > LIMIT.requestMs) throw new TypeError("invalid relay worker request timeout");
     this.#options = options;
     this.#inspectSession = options.inspectSession ?? (async () => { throw new Error("session inspection unavailable"); });
-    this.root = resolve(options.root ?? join(homedir(), ".wolfpack", "task-relay"));
+    this.root = resolve(options.root ?? join(resolveWolfpackDir(), "task-relay"));
     this.#ownedRoot = this.root;
     if (owners.has(this.root)) throw new Error("relay root already has a worker owner; await close before replacement");
     this.#ready = new Promise((resolve, reject) => { this.#resolveReady = resolve; this.#rejectReady = reject; });

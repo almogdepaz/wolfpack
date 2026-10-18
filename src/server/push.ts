@@ -5,7 +5,6 @@
 import { createECDH, createSign, createPrivateKey, createHmac, createCipheriv, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, openSync, fsyncSync, closeSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
 import { createLogger, errMsg } from "../log.js";
 import { buildSessionNotificationUrl } from "../session-notification-route.js";
 import {
@@ -15,10 +14,11 @@ import {
 import { isQuietAlertFact, QUIET_ALERT_KIND } from "../quiet-alert-policy.js";
 import type { QuietAlertFact } from "../quiet-alert-policy.js";
 import { readValidatedJsonFile } from "./persistence.js";
+import { resolveWolfpackDir } from "../wolfpack-dir.js";
 
 const log = createLogger("push");
 
-const WOLFPACK_DIR = join(homedir(), ".wolfpack");
+const WOLFPACK_DIR = resolveWolfpackDir();
 const VAPID_PATH = join(WOLFPACK_DIR, "vapid-keys.json");
 const SUBS_PATH = join(WOLFPACK_DIR, "push-subscriptions.json");
 let nextSubscriptionEnrollmentGeneration = 0;

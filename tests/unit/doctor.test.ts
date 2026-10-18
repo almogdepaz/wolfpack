@@ -402,7 +402,7 @@ describe("doctor runtime probes", () => {
       const output = execFileSync(process.execPath, ["--eval", script], {
         cwd: root,
         encoding: "utf-8",
-        env: { ...process.env, HOME: home, XDG_RUNTIME_DIR: socketMode === "xdg" ? runtime : "" },
+        env: { ...process.env, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), XDG_RUNTIME_DIR: socketMode === "xdg" ? runtime : "" },
         timeout: 2500,
       });
       const results = JSON.parse(output) as CheckResult[];

@@ -1,11 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import { randomUUID } from "node:crypto";
 
 function machineIdPath(taskRoot: string | undefined): string {
   if (process.env.WOLFPACK_MACHINE_ID_PATH) return process.env.WOLFPACK_MACHINE_ID_PATH;
-  return taskRoot === undefined ? join(homedir(), ".wolfpack", "machine-id") : join(dirname(taskRoot), "machine-id");
+  return taskRoot === undefined ? join(resolveWolfpackDir(), "machine-id") : join(dirname(taskRoot), "machine-id");
 }
 
 /** Stable install identity; tests inject the task root instead of touching a user install. */

@@ -66,7 +66,7 @@ describe("push: subscription persistence initialization", () => {
     `;
     const child = Bun.spawnSync([process.execPath, "-e", script], {
       cwd: process.cwd(),
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack") },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -96,7 +96,7 @@ describe("push: corrupt subscription persistence", () => {
     `;
     const child = Bun.spawnSync([process.execPath, "-e", script], {
       cwd: process.cwd(),
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack") },
       stdout: "pipe",
       stderr: "pipe",
     });
