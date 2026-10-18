@@ -30,8 +30,8 @@ import { browseServerDirectory } from "./directory-browser.js";
 import type { DirectoryBrowseResult } from "./directory-browser.js";
 import {
   DuplicateSessionError,
-  getBackend,
 } from "./backend.js";
+import { defaultServerContext, type ServerContext } from "./context.js";
 import {
   hasOnlyKeys,
   hasOptionalType,
@@ -69,7 +69,7 @@ import {
 } from "../task-worker-policy-contract.js";
 import { writePrivateJsonFile } from "./persistence.js";
 import { notifySubSessionOpened } from "./session-notifications.js";
-import { getTaskRelayGateway, getTaskRelayProfile } from "../task-relay/gateway.js";
+import { getTaskRelayProfile } from "../task-relay/gateway.js";
 import {
   DEFAULT_QUIET_ALERT_POLICY,
   isQuietAlertPolicy,
@@ -384,7 +384,9 @@ export function effectiveCmds(s: Pick<Settings, "agentCmd" | "cmds">): string[] 
   return enabled.length > 0 ? enabled : [AGENT_KIND.SHELL.id];
 }
 
-export const projectSettingsRoutes: Record<string, RouteHandler> = {
+export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, RouteHandler> {
+  const getBackend = () => ctx.backend;
+  return {
   "GET /api/projects": async (_req, res) => {
     const projects = listDevProjects();
     json(res, { projects });
@@ -410,7 +412,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
         json(res, { error: "invalid project selection" }, 400);
         return;
       }
-      json(res, { name: await uniqueSessionName(newProject) });
+      json(res, { name: await uniqueSessionName(newProject, ctx.backend) });
       return;
     }
     const selection = resolveExistingProjectSelection({ project, projectDir });
@@ -418,7 +420,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       json(res, { error: selection.error }, projectDirectoryHttpStatus(selection.code));
       return;
     }
-    const name = await uniqueSessionName(selection.value.project);
+    const name = await uniqueSessionName(selection.value.project, ctx.backend);
     json(res, { name });
   },
 
@@ -465,7 +467,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       if (!parentName || !isValidSessionName(parentName)) {
         return json(res, { error: "invalid parent session" }, 400);
       }
-      if (!(await isAllowedSession(parentName))) {
+      if (!(await isAllowedSession(parentName, ctx.backend))) {
         return json(res, {
           error: "parent session not found",
           code: SESSION_OPEN_ERROR.PARENT_SESSION_NOT_FOUND,
@@ -530,7 +532,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       projectSelection = selection.value;
     }
     const { project: projectLabel, projectDir } = projectSelection;
-    const finalName = customName || await uniqueSessionName(projectLabel);
+    const finalName = customName || await uniqueSessionName(projectLabel, ctx.backend);
     try {
       // Backends accept a `loadSettings` thunk that returns the agent to spawn.
       // Resolve the effective agent (respecting enabled-state + fallbacks) here
@@ -647,7 +649,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,
           relayProfile: getTaskRelayProfile(),
-          registrationForSession: async (sessionId) => (await getTaskRelayGateway().registrationsForSessions([sessionId])).get(sessionId),
+          registrationForSession: async (sessionId) => (await ctx.taskRelayGateway.registrationsForSessions([sessionId])).get(sessionId),
         }),
         loadSettings: () => ({ agentCmd: configuredCommand }),
       });
@@ -773,7 +775,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,
           relayProfile: getTaskRelayProfile(),
-          registrationForSession: async (sessionId) => (await getTaskRelayGateway().registrationsForSessions([sessionId])).get(sessionId),
+          registrationForSession: async (sessionId) => (await ctx.taskRelayGateway.registrationsForSessions([sessionId])).get(sessionId),
         }),
         notify: (parent, session) => {
           notifySubSessionOpened(parent.wolfpackSessionName, session);
@@ -927,4 +929,7 @@ export const projectSettingsRoutes: Record<string, RouteHandler> = {
       },
     });
   },
-};
+  };
+}
+
+export const projectSettingsRoutes = createProjectSettingsRoutes(defaultServerContext);

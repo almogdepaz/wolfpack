@@ -11,10 +11,8 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
 import { SHELL } from "./shell.js";
-import { initBackend, getBackend, getRouter } from "./backend.js";
-import { routes } from "./routes.js";
-import { getTaskGateway } from "../tasks/gateway.ts";
-import { getTaskRelayGateway } from "../task-relay/gateway.ts";
+import { createServerContext, defaultServerContext, setDefaultServerContext, type ServerContext } from "./context.js";
+import { createRoutes } from "./routes.js";
 import {
   startSessionNotificationObserver,
   stopSessionNotificationObserver,
@@ -31,12 +29,11 @@ import { handlePtyWs } from "./websocket.js";
 import { createLogger, errMsg } from "../log.js";
 import { isValidSessionName } from "../validation.js";
 import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
-import { loadConfig, WOLFPACK_DIR } from "../cli/config.js";
+import { loadConfig, WOLFPACK_DIR } from "../config.js";
 import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
 import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
-import { getExtensionRouteService } from "./extension-routes.ts";
 import { installShutdownSignalHandlers } from "./shutdown.js";
 
 const log = createLogger("server");
@@ -120,7 +117,8 @@ export {
 // ── Server factory ──
 
 /** Create an isolated server + WebSocketServer pair. Used by tests for parallel isolation. */
-export function createServerInstance(): { server: ReturnType<typeof createServer>; wss: InstanceType<typeof WebSocketServer> } {
+export function createServerInstance(ctx: ServerContext = defaultServerContext): { server: ReturnType<typeof createServer>; wss: InstanceType<typeof WebSocketServer> } {
+  const routes = createRoutes(ctx);
   const wss = new WebSocketServer({
     noServer: true,
     maxPayload: PTY_WEBSOCKET_MAX_PAYLOAD_BYTES,
@@ -182,7 +180,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
     }
 
     try {
-      if (await getExtensionRouteService().handle(req, res, url)) return;
+      if (await ctx.extensionRouteService.handle(req, res, url)) return;
       const key = `${req.method ?? "GET"} ${url.pathname}`;
       const handler = routes[key];
       if (handler) {
@@ -238,7 +236,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
       }
 
       const session = url.searchParams.get("session");
-      if (!session || !isValidSessionName(session) || !(await isAllowedSession(session))) {
+      if (!session || !isValidSessionName(session) || !(await isAllowedSession(session, ctx.backend))) {
         socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
         socket.destroy();
         return;
@@ -249,7 +247,7 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
         const activeClientKey = client.clientKey;
         reservedIp = null;
         ws.once("close", () => releaseWsConnection(activeClientKey));
-        handlePtyWs(ws, session, reset);
+        handlePtyWs(ws, session, reset, ctx);
       });
     } catch (e: unknown) {
       log.error("ws upgrade error", { error: errMsg(e) });
@@ -265,10 +263,11 @@ export function createServerInstance(): { server: ReturnType<typeof createServer
   return { server, wss };
 }
 
-// Module-level singleton for production
-const { server, wss } = createServerInstance();
+// Stable exports also support embedders that attach listeners before startup.
+// Handlers use the lazy default context view, bound by startServer below.
+const { server, wss } = createServerInstance(defaultServerContext);
 
-export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void> {
+export async function startServer(port = PORT, host = "127.0.0.1", overrides: Partial<ServerContext> = {}): Promise<void> {
   assertSupportedBunRuntime();
   // Verify JWT auth configuration BEFORE any listeners are bound. We fail
   // hard on misconfiguration (secret set but rejected) so a typo can never
@@ -291,15 +290,16 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
 
   // Initialize session backend (broker is the only supported backend; the
   // WOLFPACK_BACKEND env var is accepted for back-compat but ignored).
-  initBackend();
+  const ctx = createServerContext(overrides);
+  setDefaultServerContext(ctx);
   log.info("backend initialized", { type: "broker" });
 
   // Verify the broker handshake before listening so we surface a clear error
   // before any session-create requests land. The router has already done a
   // sync socket-file probe; this catches the case where the file exists but
   // the daemon is dead or unresponsive.
-  const router = getRouter();
-  if (router.isBrokerAvailable()) {
+  const router = ctx.supervisor;
+  if (router?.isBrokerAvailable()) {
     const ok = await router.verifyBrokerHandshake();
     if (!ok) {
       log.error("broker unreachable", { socketPath: router.getBrokerSocketPath() });
@@ -316,11 +316,11 @@ export async function startServer(port = PORT, host = "127.0.0.1"): Promise<void
     server.once("close", stopLogRotation);
   }
 
-  await getTaskGateway().initialize();
-  const taskRelay = getTaskRelayGateway();
+  await ctx.taskGateway.initialize();
+  const taskRelay = ctx.taskRelayGateway;
   await taskRelay.initialize();
-  getBackend().cleanupOrphans();
-  startSessionNotificationObserver();
+  ctx.backend.cleanupOrphans();
+  startSessionNotificationObserver(ctx);
   server.once("close", () => {
     taskRelay.close();
     stopSessionNotificationObserver();

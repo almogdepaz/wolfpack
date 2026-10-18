@@ -4,9 +4,9 @@ import { dirname, isAbsolute, join, parse, relative, sep } from "node:path";
 
 import { MAX_PROJECT_DIR_LENGTH } from "./validate-project-dir.js";
 
-export const DIRECTORY_BROWSE_LIMIT = 200;
+import { DIRECTORY_BROWSE_LIMIT, DIRECTORY_BREADCRUMB_LIMIT } from "../directory-browse-contract.js";
+export { DIRECTORY_BROWSE_LIMIT, DIRECTORY_BREADCRUMB_LIMIT } from "../directory-browse-contract.js";
 export const DIRECTORY_BROWSE_SCAN_LIMIT = 1_000;
-export const DIRECTORY_BREADCRUMB_LIMIT = 12;
 
 // One stalled authorization still leaves capacity for an independent browse.
 const DIRECTORY_BROWSE_CONCURRENCY_LIMIT = 2;

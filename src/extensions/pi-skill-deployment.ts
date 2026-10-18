@@ -6,7 +6,7 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { canonicalJson } from "../canonical-json.ts";
-import { writePrivateJsonFile } from "../server/persistence.ts";
+import { writePrivateJsonFile } from "../persistence.ts";
 import { boundedCanonicalJson, isPlainJsonObject } from "./bounded-json.ts";
 import { readBoundedRegularFile } from "./bounded-file.ts";
 import { assertPortablePackagePath, portableFileInventory } from "./portable-path.ts";

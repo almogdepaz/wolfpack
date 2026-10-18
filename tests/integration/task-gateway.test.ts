@@ -34,6 +34,7 @@ const {
   MockBackend,
 } = await import("../../src/test-hooks.ts");
 __resetJwtAuthConfig();
+const { getBackend } = await import("../../src/server/backend.ts");
 const {
   createServerInstance,
   __globalRateLimiter,
@@ -42,7 +43,8 @@ const {
 const { TASK_EVENT_TYPE, TASK_LIMITS, hashImmutableAssignment } = await import("../../src/tasks/domain.ts");
 const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/domain.ts");
 const { TASK_LEDGER_ROLE, TaskStore } = await import("../../src/tasks/store.ts");
-const { TaskGateway, __resetTaskGatewayForTests } = await import("../../src/tasks/gateway.ts");
+const { TaskGateway } = await import("../../src/tasks/gateway.ts");
+const { __resetTaskGatewayForTests } = await import("../../src/server/task-gateways.ts");
 
 __resetTaskGatewayForTests();
 
@@ -337,7 +339,7 @@ function createPeerPair(taskRoot: string, options: PeerPairOptions = {}): {
   const senderRoot = join(taskRoot, "sender");
   const receiverRoot = join(taskRoot, "receiver");
   let sender: InstanceType<typeof TaskGateway>;
-  const receiver = new TaskGateway({
+  const receiver = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
     root: receiverRoot,
     store: options.receiverStore,
     peerOrigin: "https://receiver.example.ts.net",
@@ -350,7 +352,7 @@ function createPeerPair(taskRoot: string, options: PeerPairOptions = {}): {
     sleep: async () => undefined,
     random: () => 0.5,
   });
-  sender = new TaskGateway({
+  sender = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
     root: senderRoot,
     peerOrigin: "https://sender.example.ts.net",
     now: options.now,
@@ -1295,7 +1297,7 @@ describe("local task gateway", () => {
           afterFsync: undefined,
         },
       });
-      const gateway = new TaskGateway({ root: taskRoot, store });
+      const gateway = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot, store });
       const sent = await gateway.send({ callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: `recover ${event}`, context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: undefined, rawBody: undefined });
       if (!sent.ok) throw new Error("expected task send");
 
@@ -1324,7 +1326,7 @@ describe("local task gateway", () => {
         await store.appendInboxRecord(recipientLedger, { id: `inbox:${expectedEventId}`, eventId: expectedEventId, occurredAt: "2000-01-01T00:00:00.000Z" });
       }
 
-      const restarted = new TaskGateway({ root: taskRoot });
+      const restarted = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot });
       const recipient = event === "answer" ? "receiver" : "parent";
       const inbox = await restarted.inbox(recipient, "0", false);
       expect(inbox.ok).toBe(true);
@@ -1345,7 +1347,7 @@ describe("local task gateway", () => {
   test("recovers a received assignment before confirmation without exposing a false receipt", async () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-receipt-reconcile-${process.pid}-${Date.now()}`);
     let receiverLedgerWrites = 0;
-    const crashing = new TaskGateway({
+    const crashing = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: taskRoot,
       store: new TaskStore({
         root: taskRoot,
@@ -1360,7 +1362,7 @@ describe("local task gateway", () => {
     const body = { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "recover receipt", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: "recover-receipt", rawBody: undefined };
     await expect(crashing.send(body)).rejects.toThrow("could not append task ledger record");
 
-    const restarted = new TaskGateway({ root: taskRoot });
+    const restarted = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot });
     const receipt = await restarted.send(body);
     expect(receipt).toMatchObject({ ok: true });
     if (!receipt.ok) throw new Error("expected recovered receipt");
@@ -1379,7 +1381,7 @@ describe("local task gateway", () => {
         throw new Error("simulated crash before receiver cleanup eligibility");
       }
     }
-    const crashing = new TaskGateway({ root: taskRoot, store: new CleanupCrashStore({ root: taskRoot, testHooks: undefined }) });
+    const crashing = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot, store: new CleanupCrashStore({ root: taskRoot, testHooks: undefined }) });
     const sent = await crashing.send({ callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "repair cleanup", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: "repair-cleanup", rawBody: undefined });
     if (!sent.ok) throw new Error("expected local receipt");
     expect(await crashing.complete({ callerSession: "receiver", taskId: sent.taskId, status: "completed", result: { summary: "done", result: undefined, error: undefined, artifacts: undefined }, rawBody: undefined })).toMatchObject({ ok: true });
@@ -1387,7 +1389,7 @@ describe("local task gateway", () => {
     const receiverKey = { role: TASK_LEDGER_ROLE.RECEIVER, sourceMachine: crashing.machineId, taskId: sent.taskId };
     expect((await new TaskStore({ root: taskRoot }).getLedger(receiverKey))?.records.some((record) => record.kind === "cleanup.eligible")).toBe(false);
 
-    const restarted = new TaskGateway({ root: taskRoot });
+    const restarted = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot });
     await restarted.initialize();
     const repaired = await new TaskStore({ root: taskRoot }).getLedger(receiverKey);
     const acknowledged = repaired?.state.events.find((event) => event.type === TASK_EVENT_TYPE.PARENT_ACKNOWLEDGED);
@@ -1405,7 +1407,7 @@ describe("local task gateway", () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-overdue-receipt-${process.pid}-${Date.now()}`);
     const createdAt = new Date("2026-01-01T00:00:00.000Z");
     let receiverLedgerWrites = 0;
-    const crashing = new TaskGateway({
+    const crashing = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: taskRoot,
       now: () => createdAt,
       store: new TaskStore({
@@ -1423,7 +1425,7 @@ describe("local task gateway", () => {
     const store = new TaskStore({ root: taskRoot });
     const canonicalBeforeTimeout = (await store.ledgers()).find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.SENDER);
     if (!canonicalBeforeTimeout) throw new Error("expected canonical ledger");
-    const restarted = new TaskGateway({ root: taskRoot, now: () => new Date("2026-01-01T00:00:01.000Z") });
+    const restarted = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot, now: () => new Date("2026-01-01T00:00:01.000Z") });
     await expect(restarted.initialize()).resolves.toBeUndefined();
 
     const status = await restarted.status("parent", canonicalBeforeTimeout.key.taskId);
@@ -1597,7 +1599,7 @@ describe("local task gateway", () => {
   test("rejects remote absolute context refs before creating a ledger or fetching the peer", async () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-peer-absolute-ref-${process.pid}-${Date.now()}`);
     let peerFetches = 0;
-    const sender = new TaskGateway({
+    const sender = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: taskRoot,
       peerOrigin: "https://sender.example.ts.net",
       peerFetch: async () => {
@@ -1617,7 +1619,7 @@ describe("local task gateway", () => {
 
   test("stores a provisional peer assignment until its sender confirmation makes it visible", async () => {
     const peerRoot = join(tmpdir(), `wolfpack-task-peer-provisional-${process.pid}-${Date.now()}`);
-    const receiver = new TaskGateway({ root: peerRoot, peerOrigin: "https://receiver.example.ts.net" });
+    const receiver = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: peerRoot, peerOrigin: "https://receiver.example.ts.net" });
     const assignment = {
       taskId: "01878a80-0000-7000-8000-000000000001",
       source: { machine: "https://sender.example.ts.net", sessionId: "parent-id" },
@@ -1675,7 +1677,7 @@ describe("local task gateway", () => {
 
   test("rejects peer origins outside its configured tailnet suffix", async () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-peer-origin-${process.pid}-${Date.now()}`);
-    const receiver = new TaskGateway({
+    const receiver = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: taskRoot,
       peerOrigin: "https://receiver.example.ts.net",
     } as never);
@@ -1733,7 +1735,7 @@ describe("local task gateway", () => {
     let peerNowMs = Date.parse("2026-08-03T00:00:00.000Z");
     const now = () => new Date(peerNowMs += 1_000);
     const response = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } });
-    const receiver = new TaskGateway({
+    const receiver = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: receiverRoot,
       peerOrigin: "https://receiver.example.ts.net",
       now,
@@ -1741,7 +1743,7 @@ describe("local task gateway", () => {
       sleep: async () => undefined,
       random: () => 0.5,
     });
-    sender = new TaskGateway({
+    sender = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: senderRoot,
       peerOrigin: "https://sender.example.ts.net",
       now,
@@ -1862,7 +1864,7 @@ describe("local task gateway", () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-peer-initial-unreachable-${process.pid}-${Date.now()}`);
     let peerFetches = 0;
     const delays: number[] = [];
-    const sender = new TaskGateway({
+    const sender = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: taskRoot,
       peerOrigin: "https://sender.example.ts.net",
       peerFetch: async () => {
@@ -2019,7 +2021,7 @@ describe("local task gateway", () => {
     const crashed = (await new TaskStore({ root: receiverRoot }).ledgers()).find((ledger) => ledger.key.role === TASK_LEDGER_ROLE.RECEIVER && ledger.key.taskId === sent.taskId);
     expect(crashed?.records).toContainEqual(expect.objectContaining({ kind: "outbox.intent", event: expect.objectContaining({ type: TASK_EVENT_TYPE.COMPLETED }), projection: { artifacts: undefined, warnings: [] } }));
 
-    const restarted = new TaskGateway({
+    const restarted = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: receiverRoot,
       peerOrigin: "https://receiver.example.ts.net",
       peerFetch: async (_url, init) => peerResponse(await sender.acceptPeerEvent(JSON.parse(String(init?.body)) as Record<string, unknown>)),
@@ -2047,7 +2049,7 @@ describe("local task gateway", () => {
         completion: { summary: "legacy completion", result: undefined, error: undefined, artifacts: undefined },
       });
       const deliveries: string[] = [];
-      const restarted = new TaskGateway({
+      const restarted = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
         root: receiverRoot,
         peerOrigin: "https://receiver.example.ts.net",
         peerFetch: async (_url, init) => {
@@ -2236,7 +2238,7 @@ describe("local task gateway", () => {
     if (!senderBefore.ok) throw new Error("expected sender terminal state");
     const canonicalCompletion = senderBefore.events.find((event) => event.type === TASK_EVENT_TYPE.COMPLETED);
 
-    const restarted = new TaskGateway({
+    const restarted = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: receiverRoot,
       peerOrigin: "https://receiver.example.ts.net",
       peerFetch: async (_url, init) => peerResponse(await pair.sender.acceptPeerEvent(JSON.parse(String(init?.body)))),
@@ -2286,9 +2288,9 @@ describe("local task gateway", () => {
   test("uses four durable attempts then stops peer receipt confirmation delivery", async () => {
     const senderRoot = join(tmpdir(), `wolfpack-task-peer-retry-sender-${process.pid}-${Date.now()}`);
     const receiverRoot = join(tmpdir(), `wolfpack-task-peer-retry-receiver-${process.pid}-${Date.now()}`);
-    const receiver = new TaskGateway({ root: receiverRoot, peerOrigin: "https://receiver.example.ts.net" });
+    const receiver = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: receiverRoot, peerOrigin: "https://receiver.example.ts.net" });
     const delays: number[] = [];
-    const sender = new TaskGateway({
+    const sender = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: senderRoot,
       peerOrigin: "https://sender.example.ts.net",
       peerFetch: async (url, init) => new URL(String(url)).pathname.endsWith("/receive")
@@ -2333,7 +2335,7 @@ describe("local task gateway", () => {
 
   test("identifies semantic invalid send fields before persistence", async () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-send-validation-${process.pid}-${Date.now()}`);
-    const sender = new TaskGateway({
+    const sender = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
       root: taskRoot,
       peerOrigin: "https://sender.example.ts.net",
       peerFetch: async () => peerResponse({ ok: true }),
@@ -2418,7 +2420,7 @@ describe("task gateway → event bus", () => {
     const unsubscribe = subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => seen.push(event as never));
     const taskRoot = join(tmpdir(), `wolfpack-task-events-${process.pid}-${Date.now()}`);
     try {
-      const gateway = new TaskGateway({ root: taskRoot });
+      const gateway = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot });
       const sent = await gateway.send({ callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "emit events", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: undefined, rawBody: undefined });
       if (!sent.ok) throw new Error("expected task send");
       const completed = await gateway.complete({ callerSession: "receiver", taskId: sent.taskId, status: "completed", result: { summary: "done", result: undefined, error: undefined, artifacts: undefined }, rawBody: undefined });
@@ -2455,7 +2457,7 @@ describe("task gateway → event bus", () => {
           afterFsync: undefined,
         },
       });
-      const gateway = new TaskGateway({ root: taskRoot, store });
+      const gateway = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot, store });
       const sent = await gateway.send({ callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "fault events", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: undefined, rawBody: undefined });
       if (!sent.ok) throw new Error("expected task send");
       failNextReplica = true;
@@ -2467,7 +2469,7 @@ describe("task gateway → event bus", () => {
       expect(published).toEqual(canonicalIds);
 
       // Restart recovery repairs projections without replaying committed events.
-      const restarted = new TaskGateway({ root: taskRoot });
+      const restarted = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot });
       await restarted.initialize();
       expect(published).toEqual(canonicalIds);
     } finally {
@@ -2486,7 +2488,7 @@ describe("task gateway → event bus", () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-events-receipt-${process.pid}-${Date.now()}`);
     try {
       let receiverLedgerWrites = 0;
-      const crashing = new TaskGateway({
+      const crashing = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector),
         root: taskRoot,
         store: new TaskStore({
           root: taskRoot,
@@ -2501,7 +2503,7 @@ describe("task gateway → event bus", () => {
       const body = { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "receipt events", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: "receipt-events", rawBody: undefined };
       await expect(crashing.send(body)).rejects.toThrow("could not append task ledger record");
 
-      const restarted = new TaskGateway({ root: taskRoot });
+      const restarted = new TaskGateway({ inspectSession: (selector: string) => getBackend().inspectSession(selector), root: taskRoot });
       const receipt = await restarted.send(body);
       if (!receipt.ok) throw new Error("expected recovered receipt");
       const status = await restarted.status("parent", receipt.taskId);

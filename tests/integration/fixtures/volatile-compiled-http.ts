@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { __setTestBackend } from "../../../src/server/backend.ts";
 import { MockBackend } from "../../../src/server/mock-backend.ts";
 import { createServerInstance } from "../../../src/server/index.ts";
-import { getTaskRelayGateway, __resetTaskRelayGatewayForTests } from "../../../src/task-relay/gateway.ts";
+import { getTaskRelayGateway, __resetTaskRelayGatewayForTests } from "../../../src/server/task-gateways.ts";
 
 const [root, portText, profile, nonce] = process.argv.slice(2);
 if (!root || !nonce || !/^[0-9]+$/.test(portText ?? "") || profile !== "volatile-v1"

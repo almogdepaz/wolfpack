@@ -16,7 +16,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { canonicalJson } from "../canonical-json.ts";
-import { publishEvent } from "../server/event-bus.ts";
+import { publishEvent } from "../event-bus.ts";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.ts";
 import {
   TASK_API_ERROR,

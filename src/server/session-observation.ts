@@ -29,7 +29,7 @@ import {
   programStatusSource,
 } from "./agent-status.js";
 import type { AgentRuntimeState, AgentRuntimeStateStore } from "./agent-status.js";
-import { getBackend, getRouter } from "./backend.js";
+import { defaultServerContext, type ServerContext } from "./context.js";
 import type { SessionBackend, SessionListFact } from "./backend.js";
 import {
   checkSessionTransitions,
@@ -42,7 +42,8 @@ import {
 import { loadSettings } from "./project-settings-routes.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
-import { eventSubscriberCount, publishEvent } from "./event-bus.js";
+import type { EventBus } from "../event-bus.js";
+let notificationContext: ServerContext = defaultServerContext;
 import { onProgramStatusChanged } from "./program-status-signal.js";
 
 const log = createLogger("session-observation");
@@ -333,9 +334,9 @@ function retireRenderedActivitySample(sessionKey: string, sample: RenderedActivi
   }
 }
 
-async function listAvailableSessionFacts(backend: SessionBackend): Promise<SessionListFact[] | undefined> {
-  const router = getRouter();
-  if (backend === router && !router.isBrokerAvailable()) return undefined;
+async function listAvailableSessionFacts(ctx: ServerContext): Promise<SessionListFact[] | undefined> {
+  const backend = ctx.backend;
+  if (ctx.supervisor && !ctx.supervisor.isBrokerAvailable()) return undefined;
   try {
     return await backend.listSessionFacts();
   } catch {
@@ -370,9 +371,10 @@ function publishRuntimeTransition(
   sessionId: string | undefined,
   previousTransitionSequence: number | undefined,
   runtimeState: AgentRuntimeState,
+  events: EventBus,
 ): void {
   if (previousTransitionSequence === undefined || runtimeState.transitionSequence === previousTransitionSequence) return;
-  publishEvent({
+  events.publishEvent({
     kind: WOLFPACK_EVENT_KIND.SESSION_STATE,
     session: name,
     ...(sessionId !== undefined && { sessionId }),
@@ -387,7 +389,7 @@ function publishRuntimeTransition(
   });
 }
 
-function observeUnavailableSessions(policyEpoch: number, observationOwnership: number): SessionObservation {
+function observeUnavailableSessions(policyEpoch: number, observationOwnership: number, events: EventBus): SessionObservation {
   const authority = claimObservationAuthority(observationOwnership, policyEpoch);
   if (authority === undefined) {
     return { sessions: [], unreliableSessionKeys: new Set(), authoritative: false };
@@ -421,7 +423,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
         runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : previous?.runOrder,
       },
     }, { persist: false });
-    publishRuntimeTransition(name, identity?.wolfpackSessionId, previous?.transitionSequence, runtimeState);
+    publishRuntimeTransition(name, identity?.wolfpackSessionId, previous?.transitionSequence, runtimeState, events);
     return {
       name,
       lastLine,
@@ -470,6 +472,7 @@ async function observeSessionFact(
   unreliableSessionKeys: Set<string>,
   authority: ObservationAuthority,
   pass: ObservationPass,
+  events: EventBus,
 ): Promise<PendingSessionObservation | undefined> {
   if (!ownsObservationAuthority(authority)) return undefined;
   const name = fact.name;
@@ -579,7 +582,7 @@ async function observeSessionFact(
       runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
     },
   }, { persist: false });
-  publishRuntimeTransition(name, identity?.wolfpackSessionId, previousTransitionSequence, runtimeState);
+  publishRuntimeTransition(name, identity?.wolfpackSessionId, previousTransitionSequence, runtimeState, events);
   const summary = {
     name,
     lastLine,
@@ -738,10 +741,11 @@ async function collectSessionObservation(
   policyEpoch = quietAlertPolicyEpoch(),
   observationOwnership = beginObservationOwnership(),
   pass: ObservationPass = "full",
+  ctx: ServerContext = notificationContext,
 ): Promise<SessionObservation> {
-  const backend = getBackend();
-  const sessionFacts = await listAvailableSessionFacts(backend);
-  if (!sessionFacts) return observeUnavailableSessions(policyEpoch, observationOwnership);
+  const backend = ctx.backend;
+  const sessionFacts = await listAvailableSessionFacts(ctx);
+  if (!sessionFacts) return observeUnavailableSessions(policyEpoch, observationOwnership, ctx.events);
   const store = getAgentRuntimeStateStore();
   const authority = claimObservationAuthority(observationOwnership, policyEpoch);
   if (authority === undefined) return staleSessionProjection(sessionFacts);
@@ -759,6 +763,7 @@ async function collectSessionObservation(
     unreliableSessionKeys,
     authority,
     pass,
+    ctx.events,
   )));
   if (!ownsObservationAuthority(authority)) return staleSessionProjection(sessionFacts);
 
@@ -770,7 +775,7 @@ async function collectSessionObservation(
   return { sessions, unreliableSessionKeys, authoritative: ownsObservationAuthority(authority) };
 }
 
-export async function observeDashboardSessions(): Promise<readonly ObservedSessionSummary[]> {
+export async function observeDashboardSessions(ctx: ServerContext = defaultServerContext): Promise<readonly ObservedSessionSummary[]> {
   const now = Date.now();
   if (dashboardObservationCache && now < dashboardObservationCache.expiresAt) {
     return dashboardObservationCache.sessions;
@@ -779,7 +784,7 @@ export async function observeDashboardSessions(): Promise<readonly ObservedSessi
   const policyEpoch = quietAlertPolicyEpoch();
   const observationOwnership = beginObservationOwnership();
   const authority = { policyEpoch, id: observationOwnership } as const;
-  dashboardObservationPromise = collectSessionObservation(dashboardFingerprints, policyEpoch, observationOwnership)
+  dashboardObservationPromise = collectSessionObservation(dashboardFingerprints, policyEpoch, observationOwnership, "full", ctx)
     .then((observation) => {
       if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
       if (!observation.authoritative || !ownsObservationAuthority(authority)) {
@@ -814,7 +819,7 @@ function schedulePeerNotificationObservation(): void {
 }
 
 async function runSessionNotificationObservation(pass: ObservationPass = "full"): Promise<readonly ObservedSessionSummary[]> {
-  if (getSubscriptionCount() === 0 && eventSubscriberCount() === 0) return [];
+  if (getSubscriptionCount() === 0 && notificationContext.events.eventSubscriberCount() === 0) return [];
   if (sessionNotificationObservationPromise) {
     if (pass !== "full" || sessionNotificationObservationPass === "full") return sessionNotificationObservationPromise;
     // A program-status pass does not measure output: a full pass asked for
@@ -894,7 +899,8 @@ function cancelProgramStatusRefresh(): void {
   programStatusRefreshTimer = null;
 }
 
-export function startSessionNotificationObserver(): void {
+export function startSessionNotificationObserver(ctx: ServerContext = defaultServerContext): void {
+  notificationContext = ctx;
   if (sessionNotificationObservationTimer) return;
   scheduleSessionNotificationObservation();
   sessionNotificationObservationTimer = setInterval(

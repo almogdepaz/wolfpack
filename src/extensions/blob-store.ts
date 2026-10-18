@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, mkdirSync, opendirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { PRIVATE_FILE_TEMP_SUFFIX_PATTERN, writePrivateFile } from "../server/persistence.ts";
+import { PRIVATE_FILE_TEMP_SUFFIX_PATTERN, writePrivateFile } from "../persistence.ts";
 import { readBoundedRegularFile } from "./bounded-file.ts";
 import { ExtensionDocumentError } from "./document-contract.ts";
 export const EXTENSION_BLOB_LIMITS = { maxBlobBytes: 1048576, maxBlobsPerInstallation: 64, maxBlobBytesPerInstallation: 16 * 1024 * 1024 } as const;

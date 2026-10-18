@@ -46,10 +46,8 @@ process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
 });
 
 const {
-  __resetBackend,
   __resetJwtAuthConfig,
   __setDevDir,
-  __setTestBackend,
   MockBackend,
 } = await import("../../src/test-hooks.ts");
 __resetJwtAuthConfig();
@@ -66,14 +64,19 @@ mockBackend.listIdentities = async () => {
   if (!parent) return identities;
   return { ...identities, "wolf-1": { ...parent, agentKind: "pi" } };
 };
-__setTestBackend(mockBackend);
+let selectedBackend = mockBackend;
+const { createServerContext } = await import("../../src/server/context.ts");
+const context = createServerContext({
+  get backend() { return selectedBackend; },
+  taskRoot: join(TEST_DEV_DIR, "tasks"), taskRelayRoot: join(TEST_DEV_DIR, "relay"),
+});
 
 const {
   createServerInstance,
   __globalRateLimiter,
   __pollRateLimiter,
 } = await import("../../src/server/index.ts") as any;
-const { server } = createServerInstance();
+const { server } = createServerInstance(context);
 
 let base = "";
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")) as JsonObject;
@@ -124,12 +127,12 @@ beforeAll(async () => {
   });
 });
 
-afterAll(() => {
+afterAll(async () => {
   (server as Server).close();
+  await context.taskRelayGateway.close();
   __globalRateLimiter._map.clear();
   __pollRateLimiter._map.clear();
   rmSync(rawTmpDir, { recursive: true, force: true });
-  __resetBackend();
   __setDevDir(PRIOR_CACHED_DEV_DIR);
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
     if (key === "WOLFPACK_TEST") continue;
@@ -182,7 +185,7 @@ describe("control api generated schema against runtime responses", () => {
       cols: 80,
       rows: 24,
     });
-    __setTestBackend(boundedBackend);
+    selectedBackend = boundedBackend;
     try {
       const response = await fetch(`${base}/api/session-control/snapshot?sessionId=${sessionId}`);
       expect(response.status).toBe(503);
@@ -191,7 +194,7 @@ describe("control api generated schema against runtime responses", () => {
       expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(SESSION_SNAPSHOT_MAX_RESPONSE_BYTES);
       expect(JSON.parse(body)).toEqual({ error: "snapshot response unavailable" });
     } finally {
-      __setTestBackend(mockBackend);
+      selectedBackend = mockBackend;
     }
   });
 

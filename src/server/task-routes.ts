@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { json, parseBody } from "./http.ts";
-import { getTaskGateway } from "../tasks/gateway.ts";
+import { defaultServerContext, type ServerContext } from "./context.js";
 import type { TaskApiErrorCode, TaskResultInput } from "../tasks/domain.ts";
 import { TASK_API_ERROR, TASK_LIMITS } from "../tasks/domain.ts";
 
@@ -153,7 +153,8 @@ function taskResult(value: unknown): TaskResultInput | undefined {
   return value as unknown as TaskResultInput;
 }
 
-export const taskRoutes: Record<string, Handler> = {
+export function createTaskRoutes(ctx: ServerContext): Record<string, Handler> {
+return {
   "POST /api/tasks/v1/send": async (req, res) => {
     const body = await taskBody(req, res);
     if (!body) return;
@@ -162,7 +163,7 @@ export const taskRoutes: Record<string, Handler> = {
       return error(res, TASK_API_ERROR.INVALID_REQUEST, validationFailure.message, 400, validationFailure.path);
     }
     const context = body.context as Body | undefined;
-    response(res, await getTaskGateway().send({
+    response(res, await ctx.taskGateway.send({
       callerSession: body.callerSession as string,
       to: body.to as { machine: string; sessionId: string },
       task: body.task as string,
@@ -188,7 +189,7 @@ export const taskRoutes: Record<string, Handler> = {
     const callerSession = url.searchParams.get("callerSession");
     const taskId = url.searchParams.get("taskId");
     if (!callerSession || !taskId || [...url.searchParams.keys()].some((key) => key !== "callerSession" && key !== "taskId")) return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid task status query");
-    response(res, await getTaskGateway().status(callerSession, taskId));
+    response(res, await ctx.taskGateway.status(callerSession, taskId));
   },
   "GET /api/tasks/v1/inbox": async (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -197,14 +198,14 @@ export const taskRoutes: Record<string, Handler> = {
     const acknowledged = url.searchParams.get("includeAcknowledged");
     if (!callerSession || !cursor || (acknowledged !== null && acknowledged !== "true" && acknowledged !== "false")
       || [...url.searchParams.keys()].some((key) => key !== "callerSession" && key !== "cursor" && key !== "includeAcknowledged")) return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid task inbox query");
-    response(res, await getTaskGateway().inbox(callerSession, cursor, acknowledged === "true"));
+    response(res, await ctx.taskGateway.inbox(callerSession, cursor, acknowledged === "true"));
   },
   "POST /api/tasks/v1/message": async (req, res) => {
     const body = await taskBody(req, res);
     if (!body) return;
     if (!hasOnly(body, ["callerSession", "taskId", "type", "message", "replyToMessageId"]) || !requiredString(body, "callerSession")
       || !requiredString(body, "taskId") || !requiredString(body, "type") || !requiredString(body, "message") || !optionalString(body.replyToMessageId)) return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid task message");
-    response(res, await getTaskGateway().message({ callerSession: body.callerSession as string, taskId: body.taskId as string, type: body.type as string, message: body.message as string, replyToMessageId: body.replyToMessageId as string | undefined, rawBody: body }));
+    response(res, await ctx.taskGateway.message({ callerSession: body.callerSession as string, taskId: body.taskId as string, type: body.type as string, message: body.message as string, replyToMessageId: body.replyToMessageId as string | undefined, rawBody: body }));
   },
   "POST /api/tasks/v1/complete": async (req, res) => {
     const body = await taskBody(req, res);
@@ -212,36 +213,38 @@ export const taskRoutes: Record<string, Handler> = {
     const result = taskResult(body.result);
     if (!hasOnly(body, ["callerSession", "taskId", "status", "result"]) || !requiredString(body, "callerSession") || !requiredString(body, "taskId")
       || (body.status !== "completed" && body.status !== "failed" && body.status !== "cancelled") || !result) return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid task completion");
-    response(res, await getTaskGateway().complete({ callerSession: body.callerSession as string, taskId: body.taskId as string, status: body.status, result, rawBody: body }));
+    response(res, await ctx.taskGateway.complete({ callerSession: body.callerSession as string, taskId: body.taskId as string, status: body.status, result, rawBody: body }));
   },
   "POST /api/tasks/v1/cancel": async (req, res) => {
     const body = await taskBody(req, res);
     if (!body) return;
     if (!hasOnly(body, ["callerSession", "taskId"]) || !requiredString(body, "callerSession") || !requiredString(body, "taskId")) return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid task cancellation");
-    response(res, await getTaskGateway().cancel(body.callerSession as string, body.taskId as string));
+    response(res, await ctx.taskGateway.cancel(body.callerSession as string, body.taskId as string));
   },
   "POST /api/tasks/v1/delivered": async (req, res) => {
     const body = await taskBody(req, res);
     if (!body) return;
     if (!hasOnly(body, ["callerSession", "taskId", "eventId"]) || !requiredString(body, "callerSession") || !requiredString(body, "taskId") || !requiredString(body, "eventId")) return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid task delivery acknowledgement");
-    response(res, await getTaskGateway().delivered(body.callerSession as string, body.taskId as string, body.eventId as string));
+    response(res, await ctx.taskGateway.delivered(body.callerSession as string, body.taskId as string, body.eventId as string));
   },
   "POST /api/tasks/v1/ack": async (req, res) => {
     const body = await taskBody(req, res);
     if (!body) return;
     if (!hasOnly(body, ["callerSession", "taskId"]) || !requiredString(body, "callerSession") || !requiredString(body, "taskId")) return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid task acknowledgement");
-    response(res, await getTaskGateway().acknowledge(body.callerSession as string, body.taskId as string));
+    response(res, await ctx.taskGateway.acknowledge(body.callerSession as string, body.taskId as string));
   },
   "POST /api/tasks/v1/peer/receive": async (req, res) => {
     const body = await taskBody(req, res);
     if (!body) return;
     if (!hasOnly(body, ["source", "assignment", "assignmentHash", "createdEventId"])) return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid peer assignment envelope");
-    response(res, await getTaskGateway().receivePeer(body));
+    response(res, await ctx.taskGateway.receivePeer(body));
   },
   "POST /api/tasks/v1/peer/event": async (req, res) => {
     const body = await taskBody(req, res);
     if (!body) return;
     if (!hasOnly(body, ["source", "destination", "event", "projection"])) return error(res, TASK_API_ERROR.INVALID_REQUEST, "invalid peer event envelope");
-    response(res, await getTaskGateway().acceptPeerEvent(body));
+    response(res, await ctx.taskGateway.acceptPeerEvent(body));
   },
 };
+}
+export const taskRoutes = createTaskRoutes(defaultServerContext);

@@ -25,7 +25,8 @@ const token = (() => {
 const { __setTestBackend } = await import("../../src/server/backend.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
-const { getTaskRelayGateway, getTaskRelayProfile, __resetTaskRelayGatewayForTests } = await import("../../src/task-relay/gateway.ts");
+const { getTaskRelayProfile } = await import("../../src/task-relay/gateway.ts");
+const { getTaskRelayGateway, __resetTaskRelayGatewayForTests } = await import("../../src/server/task-gateways.ts");
 const { WorkerRelayGateway } = await import("../../src/task-relay/worker-client.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");
 const { VOLATILE_HTTP_LIMITS } = await import("../../src/server/volatile-relay-routes.ts");

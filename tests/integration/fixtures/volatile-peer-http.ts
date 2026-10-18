@@ -5,7 +5,7 @@ import type { AddressInfo } from "node:net";
 import { __setTestBackend } from "../../../src/server/backend.ts";
 import { MockBackend } from "../../../src/server/mock-backend.ts";
 import { createServerInstance } from "../../../src/server/index.ts";
-import { getTaskRelayGateway, __resetTaskRelayGatewayForTests } from "../../../src/task-relay/gateway.ts";
+import { getTaskRelayGateway, __resetTaskRelayGatewayForTests } from "../../../src/server/task-gateways.ts";
 
 const [root, mapping, nonce] = process.argv.slice(2);
 if (!root || !mapping || !nonce || process.env.WOLFPACK_TEST !== "1" || process.env.HOME !== root) throw new Error("private fixture required");

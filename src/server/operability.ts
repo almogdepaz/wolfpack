@@ -1,4 +1,6 @@
-import { getRouter } from "./backend.js";
+import { defaultServerContext, type ServerContext } from "./context.js";
+import { isLoopbackAddress } from "./client-address.js";
+export { isLoopbackAddress } from "./client-address.js";
 
 export interface RequestClientInput {
   readonly remoteAddress: string | undefined;
@@ -44,8 +46,8 @@ export class BrokerHealthMonitor {
 
 const brokerHealth = new BrokerHealthMonitor();
 
-export function operationalHealth(): Record<string, unknown> {
-  const broker = brokerHealth.observe(getRouter().isBrokerReady());
+export function operationalHealth(ctx: ServerContext = defaultServerContext): Record<string, unknown> {
+  const broker = brokerHealth.observe(ctx.supervisor?.isBrokerReady() ?? true);
   return {
     status: broker === "ready" ? "ready" : "degraded",
     broker: brokerHealth.snapshot(),
@@ -53,9 +55,9 @@ export function operationalHealth(): Record<string, unknown> {
   };
 }
 
-export function boundedMetrics(): Readonly<Record<string, number>> {
+export function boundedMetrics(ctx: ServerContext = defaultServerContext): Readonly<Record<string, number>> {
   const memory = process.memoryUsage();
-  const health = operationalHealth();
+  const health = operationalHealth(ctx);
   return Object.freeze({
     wolfpack_up: 1,
     wolfpack_broker_ready: (health.broker as { state: string }).state === "ready" ? 1 : 0,
@@ -65,13 +67,8 @@ export function boundedMetrics(): Readonly<Record<string, number>> {
   });
 }
 
-export function prometheusMetrics(): string {
-  return Object.entries(boundedMetrics()).map(([name, value]) => `# TYPE ${name} gauge\n${name} ${value}`).join("\n") + "\n";
-}
-
-export function isLoopbackAddress(address: string | undefined): boolean {
-  if (!address) return false;
-  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+export function prometheusMetrics(ctx: ServerContext = defaultServerContext): string {
+  return Object.entries(boundedMetrics(ctx)).map(([name, value]) => `# TYPE ${name} gauge\n${name} ${value}`).join("\n") + "\n";
 }
 
 /**

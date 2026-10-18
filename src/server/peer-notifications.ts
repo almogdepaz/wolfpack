@@ -1,4 +1,4 @@
-import { loadConfig, remoteUrl } from "../cli/config.ts";
+import { loadConfig, remoteUrl } from "../config.ts";
 import { classifyMachineHandshake } from "../tailnet-machine-contract.ts";
 import { stableMachineIdentity } from "../tailnet-peer-registry.ts";
 import { isQuietAlertFact } from "../quiet-alert-policy.ts";

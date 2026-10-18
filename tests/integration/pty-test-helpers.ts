@@ -27,10 +27,7 @@ export interface PtyTestContext {
  * Boot the wolfpack server on a random port for integration tests.
  * Call in beforeAll; call ctx.cleanup() in afterAll.
  *
- * Injects a MockBackend as the session backend singleton so that
- * `isAllowedSession` / `uniqueSessionName` (which go through `getBackend().list()`)
- * work without real tmux. No tmux overrides needed — all backend calls route
- * through MockBackend.
+ * Injects a MockBackend into this server context without changing the default backend.
  */
 export async function bootTestServer(opts: {
   sessions: string[];
@@ -39,7 +36,7 @@ export async function bootTestServer(opts: {
   process.env.WOLFPACK_TEST = "1";
   const { createServerInstance } = await import("../../src/server/index.ts");
   const { __getTestState } = await import("../../src/test-hooks.ts");
-  const { __setTestBackend, __resetBackend } = await import("../../src/server/backend.ts");
+  const { createServerContext } = await import("../../src/server/context.ts");
   const { MockBackend } = await import("../../src/server/mock-backend.ts");
   const { activePtySessions, ptySpawnAttempts } = __getTestState();
 
@@ -48,9 +45,8 @@ export async function bootTestServer(opts: {
     sessions: opts.sessions,
     capturePane: opts.capturePane,
   });
-  __setTestBackend(mock);
-
-  const { server } = createServerInstance();
+  const context = createServerContext({ backend: mock });
+  const { server } = createServerInstance(context);
 
   const realConsoleError = console.error;
   console.error = (...args: any[]) => {
@@ -75,9 +71,7 @@ export async function bootTestServer(opts: {
     cleanup: () => {
       console.error = realConsoleError;
       server.close();
-      // Reset backend singleton so a later test file in the same bun worker
-      // doesn't inherit this MockBackend.
-      __resetBackend();
+      // This server owns an explicit context; no backend singleton was changed.
     },
   };
 }

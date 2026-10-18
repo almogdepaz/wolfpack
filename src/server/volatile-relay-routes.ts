@@ -2,9 +2,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { RELAY_LIMITS, isRelayEndpoint, isLocalRelay } from "../task-relay/domain.ts";
 import { getRelayPeerTransport, trustedRelayClient } from "./relay-peer-transport.ts";
 import { RelayPeerPolicyError } from "../task-relay/peer-transport.ts";
-import { getTaskRelayProfile, getVolatileTaskRelayGateway } from "../task-relay/gateway.ts";
+import { getTaskRelayProfile } from "../task-relay/gateway.ts";
 import { VOLATILE_RELAY_PATH, VOLATILE_PEER_PATH } from "../task-relay/volatile-protocol.ts";
 import { json } from "./http.ts";
+import { defaultServerContext, type ServerContext } from "./context.js";
 
 export const VOLATILE_HTTP_LIMITS = Object.freeze({ requests: 24, bodyMs: 5000, bodyBytes: RELAY_LIMITS.HTTP_BODY_BYTES });
 const operations = new Set(["connect", "resolve", "send", "receive", "acknowledge", "disconnect", "health"]);
@@ -44,13 +45,14 @@ function read(req: IncomingMessage): Promise<string> {
   });
 }
 
+export function createVolatileRelayRoutes(ctx: ServerContext): Record<string, Handler> {
 const handlers: Record<string, Handler> = {
   "GET /api/task-relay/profile": async (req, res) => {
     if (new URL(req.url ?? "/", "http://localhost").search) return reject(res, "INVALID_REQUEST", 400);
     if (active >= VOLATILE_HTTP_LIMITS.requests) return reject(res, "RELAY_CAPACITY", 503);
     active++;
     try {
-      const gateway = getVolatileTaskRelayGateway();
+      const gateway = ctx.taskRelayGateway;
       const epoch = await gateway?.volatileEpoch();
       if (!epoch) return reject(res, "RELAY_UNAVAILABLE", 503);
       if (res.destroyed) return;
@@ -60,7 +62,7 @@ const handlers: Record<string, Handler> = {
     finally { active--; }
   },
   [`POST ${VOLATILE_PEER_PATH}`]: async (req, res) => {
-    const gateway = getVolatileTaskRelayGateway();
+    const gateway = ctx.taskRelayGateway;
     if (!gateway) { discard(req, res); return reject(res, "RELAY_PROFILE_REQUIRED", 409); }
     if (activePeers >= 4) { discard(req, res); return reject(res, "RELAY_CAPACITY", 503); }
     activePeers++;
@@ -77,7 +79,7 @@ const handlers: Record<string, Handler> = {
     } finally { activePeers--; }
   },
   [`POST ${VOLATILE_RELAY_PATH}/resolve-peer`]: async (req, res) => {
-    const gateway = getVolatileTaskRelayGateway();
+    const gateway = ctx.taskRelayGateway;
     if (!gateway) { discard(req, res); return reject(res, "RELAY_PROFILE_REQUIRED", 409); }
     if (active >= VOLATILE_HTTP_LIMITS.requests) { discard(req, res); return reject(res, "RELAY_CAPACITY", 503); }
     active++;
@@ -98,7 +100,7 @@ const handlers: Record<string, Handler> = {
     } finally { active--; }
   },
   [`POST ${VOLATILE_RELAY_PATH}`]: async (req, res) => {
-    const gateway = getVolatileTaskRelayGateway();
+    const gateway = ctx.taskRelayGateway;
     if (!gateway) { discard(req, res); return reject(res, "RELAY_PROFILE_REQUIRED", 409); }
     if (active >= VOLATILE_HTTP_LIMITS.requests) { discard(req, res); return reject(res, "RELAY_CAPACITY", 503); }
     active++;
@@ -128,9 +130,11 @@ const handlers: Record<string, Handler> = {
   },
 };
 
-export const volatileRelayRoutes: Record<string, Handler> = Object.fromEntries(Object.entries(handlers).map(([path, handler]) => [path, async (req: IncomingMessage, res: ServerResponse) => {
+return Object.fromEntries(Object.entries(handlers).map(([path, handler]) => [path, async (req: IncomingMessage, res: ServerResponse) => {
   if (!trustedRelayClient(req.socket.remoteAddress, req.headers["x-forwarded-for"])) {
     discard(req, res); return reject(res, "PEER_POLICY_REQUIRED", 403);
   }
   await handler(req, res);
 }]));
+}
+export const volatileRelayRoutes = createVolatileRelayRoutes(defaultServerContext);

@@ -127,7 +127,9 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   retainInputOutput = false;
   nextOutputSeq = 2n;
 
-  // SessionBackend
+  // SessionBackend — identity inspection must not be reached by attach tests.
+  async listIdentities(): Promise<never> { throw new Error("not implemented in attach tests"); }
+  async inspectSession(): Promise<never> { throw new Error("not implemented in attach tests"); }
   async list(): Promise<string[]> { return [...this.alive]; }
   async listSessionFacts(): Promise<Array<{ name: string; alive: boolean }>> { return [...this.alive].map((name) => ({ name, alive: true })); }
   async createSession(): Promise<never> { throw new Error("not implemented in attach tests"); }

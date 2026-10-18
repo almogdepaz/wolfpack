@@ -3,7 +3,6 @@ import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { types as utilTypes } from "node:util";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { getBackend } from "../server/backend.ts";
 import { createLogger } from "../log.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
@@ -17,6 +16,8 @@ import {
 
 const log = createLogger("task-relay");
 const owners = new Map<string, symbol>();
+/** Ownership is released only after worker termination is confirmed. */
+export function hasRelayWorkerOwners(): boolean { return owners.size > 0; }
 type WorkerGatewayOptions = GatewayOptions & { requestTimeoutMs?: number; profile?: "volatile-v1" };
 const optionNames = new Set(["profile", "root", "peerOrigin", "peerFetch", "inspectSession", "requestTimeoutMs"]);
 
@@ -65,6 +66,7 @@ export class WorkerRelayGateway implements RelayGateway {
   readonly #owner = Symbol("relay worker owner");
   readonly #worker: Worker;
   readonly #options: WorkerGatewayOptions;
+  readonly #inspectSession: NonNullable<GatewayOptions["inspectSession"]>;
   readonly #requestMs: number;
   readonly #pending = new Map<number, Pending>();
   readonly #callbacks = new Set<number>();
@@ -87,6 +89,7 @@ export class WorkerRelayGateway implements RelayGateway {
     this.#requestMs = options.requestTimeoutMs ?? LIMIT.requestMs;
     if (!Number.isInteger(this.#requestMs) || this.#requestMs < 1 || this.#requestMs > LIMIT.requestMs) throw new TypeError("invalid relay worker request timeout");
     this.#options = options;
+    this.#inspectSession = options.inspectSession ?? (async () => { throw new Error("session inspection unavailable"); });
     this.root = resolve(options.root ?? join(homedir(), ".wolfpack", "task-relay"));
     this.#ownedRoot = this.root;
     if (owners.has(this.root)) throw new Error("relay root already has a worker owner; await close before replacement");
@@ -146,11 +149,7 @@ export class WorkerRelayGateway implements RelayGateway {
       let value: unknown;
       if (message.kind === "inspect") {
         if (typeof message.selector !== "string" || message.selector.length > 512) throw new Error("invalid selector");
-        const inspect = this.#options.inspectSession ?? (async (selector: string) => {
-          const backend = getBackend();
-          return backend.inspectSession ? backend.inspectSession(selector) : { ok: false as const, code: "NOT_FOUND" as const };
-        });
-        value = await inspect(message.selector);
+        value = await this.#inspectSession(message.selector);
       } else {
         if (!this.#options.peerFetch || typeof message.body !== "string" || Buffer.byteLength(message.body) > LIMIT.requestBytes) throw new Error("unexpected peer callback");
         const controller = new AbortController();
