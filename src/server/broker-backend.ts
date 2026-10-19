@@ -1353,7 +1353,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     return this.onSessionLifecycleById(id, cb);
   }
 
-  private onSessionLifecycleById(id: string, cb: LifecycleSubscriber): () => void {
+  onSessionLifecycleById(id: string, cb: LifecycleSubscriber): () => void {
     let set = this.lifecycleSubs.get(id);
     if (!set) {
       set = new Set();
@@ -1430,6 +1430,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   }
 
   private publishSessionExited(id: string, cachedName: string | undefined, exitCode: number | undefined, signal: number | undefined): void {
+    clearParentInbox(id);
     const exit: PendingSessionExit = { name: cachedName, exitCode, signal };
     const kill = this.killRequests.get(id);
     if (kill && kill.inFlight > 0) {
@@ -1453,7 +1454,6 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   }
 
   private emitSessionExited(id: string, exit: PendingSessionExit, killed: boolean, killName: string | undefined): void {
-    clearParentInbox(id);
     const name = exit.name ?? killName;
     this.emitEvent({
       kind: WOLFPACK_EVENT_KIND.SESSION_EXITED,

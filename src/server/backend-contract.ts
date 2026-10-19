@@ -76,6 +76,8 @@ export interface SessionBackend {
   listSessionFacts(): Promise<SessionListFact[]>;
   listIdentities(): Promise<Record<string, PublicSessionIdentity>>;
   inspectSession(selector: string): Promise<SessionInspectionResult>;
+  /** Observe raw lifecycle facts for an exact UUID, even before any name cache is populated. */
+  onSessionLifecycleById(sessionId: string, cb: (event: SessionLifecycleEvent) => void): () => void;
   createSession(
     name: string,
     cwd: string,

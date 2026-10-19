@@ -14,6 +14,7 @@ const unavailableBackend: ServerBackend = {
   listSessionFacts: async () => [],
   listIdentities: async () => ({}),
   inspectSession: rejectUnavailable,
+  onSessionLifecycleById: unavailable,
   createSession: rejectUnavailable,
   killSession: rejectUnavailable,
   killSessionById: rejectUnavailable,

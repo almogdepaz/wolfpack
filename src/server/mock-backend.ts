@@ -438,6 +438,10 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
     };
   }
 
+  onSessionLifecycleById(_id: string, _cb: (event: SessionLifecycleEvent) => void): () => void {
+    return () => {};
+  }
+
   onSessionLifecycle(_name: string, _cb: (event: SessionLifecycleEvent) => void): (() => void) | null {
     return () => {};
   }

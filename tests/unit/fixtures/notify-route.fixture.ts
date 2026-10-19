@@ -65,7 +65,7 @@ test("live exact parent target queues a structured entry and publishes an event"
   } finally { unsubscribe(); }
 });
 
-test("coalesced live broker response then exit cannot resurrect the parent inbox", async () => {
+test.each([false, true])("coalesced live broker response then exit cannot resurrect the parent inbox (pending kill: %s)", async pendingKill => {
   const { BrokerClient } = await import("../../../src/broker/client.ts");
   const { BrokerBackend } = await import("../../../src/server/broker-backend.ts");
   const { FrameParser, encodeFrame, FRAME_KIND_CONTROL_REQUEST, FRAME_KIND_CONTROL_RESPONSE, FRAME_KIND_EVENT } = await import("../../../src/broker/codec.ts");
@@ -73,24 +73,43 @@ test("coalesced live broker response then exit cannot resurrect the parent inbox
   const id = "550e8400-e29b-41d4-a716-446655440000";
   const dir = mkdtempSync("/tmp/wpn-inbox-");
   const socketPath = join(dir, "b.sock");
+  let killTask: Promise<void> | undefined;
+  let releaseKillReply = () => {};
+  let respondToList: (() => void) | undefined;
+  const requests: string[] = [];
   const broker = createNetServer(socket => {
     const parser = new FrameParser();
     socket.on("data", (chunk: Buffer) => {
       parser.push(chunk);
       for (const frame of parser.drain()) {
-        if (frame.kind !== FRAME_KIND_CONTROL_REQUEST || frame.value.method !== "list_sessions") throw new Error("unexpected broker request");
+        if (frame.kind !== FRAME_KIND_CONTROL_REQUEST) throw new Error("unexpected broker frame");
+        requests.push(frame.value.method);
+        if (frame.value.method === "kill_session" && respondToList) {
+          const requestId = frame.value.id;
+          releaseKillReply = () => { releaseKillReply = () => {}; socket.write(encodeFrame({ kind: FRAME_KIND_CONTROL_RESPONSE, value: { id: requestId, status: "ok", payload: { kind: "kill_session" } } })); };
+          respondToList();
+          continue;
+        }
+        if (frame.value.method !== "list_sessions") throw new Error("unexpected broker request");
         const session = { id, name: "parent", cwd: "/tmp/project", alive: true, cols: 80, rows: 24, pid: 123, started_at_ms: 1, exit_code: null, command: ["pi"], env: [["WOLFPACK_AGENT_KIND", "pi"]] };
         // Dispatch both valid frames before the inspection promise can resume.
-        socket.write(Buffer.concat([
-          Buffer.from(encodeFrame({ kind: FRAME_KIND_CONTROL_RESPONSE, value: { id: frame.value.id, status: "ok", payload: { kind: "list_sessions", sessions: [session] } } })),
+        const requestId = frame.value.id;
+        respondToList = () => { socket.write(Buffer.concat([
+          Buffer.from(encodeFrame({ kind: FRAME_KIND_CONTROL_RESPONSE, value: { id: requestId, status: "ok", payload: { kind: "list_sessions", sessions: [session] } } })),
           Buffer.from(encodeFrame({ kind: FRAME_KIND_EVENT, value: { event: "session_exited", session_id: id, exit_code: 0, final_seq: "0" } })),
-        ]));
+        ])); };
+        if (pendingKill) killTask = raceBackend.killSessionById(id);
+        else respondToList();
       }
     });
   });
   const raceEvents = new EventBus();
   const seen: string[] = [];
-  const unsubscribe = raceEvents.subscribeEvents({}, event => seen.push(event.kind));
+  const reasons: string[] = [];
+  const unsubscribe = raceEvents.subscribeEvents({}, event => {
+    seen.push(event.kind);
+    if (event.kind === "session.exited") reasons.push(event.reason);
+  });
   let connected: () => void = () => {};
   const ready = new Promise<void>(resolve => { connected = resolve; });
   const client = new BrokerClient({ socketPath, onConnect: () => connected(), onEvent: event => raceBackend.ingestEvent(event) });
@@ -112,10 +131,17 @@ test("coalesced live broker response then exit cannot resurrect the parent inbox
     });
     expect(response.status).toBe(200);
     expect((await response.json()).parentInbox).toEqual({ queued: false, reason: "parent_not_found" });
-    expect(seen).toEqual(["session.exited"]);
+    expect(seen).toEqual(pendingKill ? [] : ["session.exited"]);
     expect(listParentNotifications(id)).toEqual([]);
+    expect(requests).toEqual(pendingKill ? ["list_sessions", "kill_session"] : ["list_sessions"]);
+    if (pendingKill) {
+      releaseKillReply(); await killTask;
+      expect(seen).toEqual(["session.exited"]);
+    }
+    expect(reasons).toEqual([pendingKill ? "killed" : "exit"]);
     expect(raceEvents.eventSubscriberCount()).toBe(1);
   } finally {
+    releaseKillReply(); await killTask?.catch(() => {});
     client.close(); unsubscribe(); clearParentInbox(id);
     await new Promise<void>(resolve => http.close(() => resolve()));
     await new Promise<void>(resolve => broker.close(() => resolve()));
@@ -125,21 +151,27 @@ test("coalesced live broker response then exit cannot resurrect the parent inbox
 
 test("exit fence is exact-id scoped and released on success and inspection failure", async () => {
   const inspect = backend.inspectSession.bind(backend);
+  let activeSubscriptions = 0;
+  const subscribe = spyOn(backend, "onSessionLifecycleById").mockImplementation(id => {
+    expect(id).toBe("mock:parent");
+    activeSubscriptions++;
+    return () => { activeSubscriptions--; };
+  });
   const lookup = spyOn(backend, "inspectSession").mockImplementation(async selector => {
-    expect(events.eventSubscriberCount()).toBe(1);
+    expect(activeSubscriptions).toBe(1);
     events.publishEvent({ kind: "session.exited", sessionId: "other-id", session: "mock:parent", reason: "exit" });
     return inspect(selector);
   });
   try {
     expect((await (await notify({ sessionId: "mock:parent", sessionName: "parent" })).json()).parentInbox).toEqual({ queued: true, seq: 1 });
-    expect(events.eventSubscriberCount()).toBe(0);
+    expect(activeSubscriptions).toBe(0);
     lookup.mockImplementation(async () => {
-      expect(events.eventSubscriberCount()).toBe(1);
+      expect(activeSubscriptions).toBe(1);
       throw new Error("inspection offline");
     });
     expect((await (await notify({ sessionId: "mock:parent", sessionName: "parent" })).json()).parentInbox).toEqual({ queued: false, reason: "parent_not_found" });
-    expect(events.eventSubscriberCount()).toBe(0);
-  } finally { lookup.mockRestore(); }
+    expect(activeSubscriptions).toBe(0);
+  } finally { lookup.mockRestore(); subscribe.mockRestore(); }
 });
 
 test("unknown, dead, and mismatched targets never queue", async () => {

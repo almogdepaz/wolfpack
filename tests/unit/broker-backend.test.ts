@@ -449,6 +449,38 @@ describe("BrokerBackend.list", () => {
   });
 });
 
+test("raw UUID lifecycle facts and inbox cleanup precede deferred public kill classification", async () => {
+  clearParentInbox(SESSION_UUID_1);
+  const publicReasons: string[] = [];
+  const observed: SessionLifecycleEvent[] = [];
+  const exactBackend = new BrokerBackend(client, event => {
+    if (event.kind === "session.exited") publicReasons.push(event.reason);
+  });
+  let settleKill!: (response: ControlResponse) => void;
+  client.setHandler("kill_session", () => new Promise(resolve => { settleKill = resolve; }));
+  const unsubscribe = exactBackend.onSessionLifecycleById(SESSION_UUID_1, event => observed.push(event));
+  const kill = exactBackend.killSessionById(SESSION_UUID_1);
+  try {
+    appendParentNotification(SESSION_UUID_1, { message: "before exit" });
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_2, exit_code: 0 });
+    expect(observed).toEqual([]);
+    publicReasons.length = 0;
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+    expect(listParentNotifications(SESSION_UUID_1)).toEqual([]);
+    expect(observed).toEqual([{ kind: "exited", exitCode: 0, signal: undefined }]);
+    expect(publicReasons).toEqual([]);
+    unsubscribe(); unsubscribe();
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+    expect(observed).toHaveLength(1);
+    settleKill(okResp({ kind: "kill_session" }));
+    await kill;
+    expect(publicReasons).toEqual(["killed"]);
+  } finally {
+    unsubscribe(); settleKill(okResp({ kind: "kill_session" })); await kill.catch(() => {});
+    clearParentInbox(SESSION_UUID_1);
+  }
+});
+
 describe("BrokerBackend.inspectSession", () => {
   test("resolves a dead session from the broker-authoritative table before active-list filtering", async () => {
     client.setHandler("list_sessions", () => okResp({

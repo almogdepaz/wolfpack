@@ -108,12 +108,12 @@ return {
       { queued: false, reason: sessionId === undefined ? "no_parent" : "parent_not_found" };
     if (sessionId !== undefined) {
       let exited = false;
-      // Broker frames can report exit before the live inspection's promise resumes.
-      // Fence only this in-flight delivery; no dead-session tombstones are retained.
-      const unsubscribe = ctx.events.subscribeEvents({ session: sessionId }, event => {
-        if (event.kind === WOLFPACK_EVENT_KIND.SESSION_EXITED && event.sessionId === sessionId) exited = true;
-      });
+      // Raw backend exits are immediate even while public reason classification waits for a kill reply.
+      let unsubscribe: (() => void) | undefined;
       try {
+        unsubscribe = ctx.backend.onSessionLifecycleById(sessionId, event => {
+          if (event.kind === "exited") exited = true;
+        });
         const inspection = await ctx.backend.inspectSession(sessionId);
         // Selectors can also be names; require this exact live incarnation.
         if (!exited && inspection.ok && inspection.alive && inspection.sessionId === sessionId && inspection.session === sessionName) {
@@ -126,7 +126,7 @@ return {
         // Inbox lookup must not change the existing push delivery contract.
         log.warn("parent inbox target inspection failed", { error: errMsg(error) });
       } finally {
-        unsubscribe();
+        unsubscribe?.();
       }
     }
 
