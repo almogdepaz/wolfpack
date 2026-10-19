@@ -1,7 +1,9 @@
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { createServer } from "node:http";
 import { createECDH } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer as createNetServer } from "node:net";
+import { join } from "node:path";
 import { assertNotificationFixtureHome } from "./run-notification-test.ts";
 import { isJsonObject, validateControlApiSchemaValue } from "../../control-api-schema-validator.ts";
 import type { JsonObject } from "../../control-api-schema-validator.ts";
@@ -61,6 +63,83 @@ test("live exact parent target queues a structured entry and publishes an event"
     expect(listParentNotifications("mock:parent")).toEqual([{ seq: 1, at: expect.any(String), message: "child ready for review", from: "child" }]);
     expect(seen).toEqual([expect.objectContaining({ kind: "parent_notified", session: "parent", sessionId: "mock:parent", seq: 1, message: "child ready for review", from: "child" })]);
   } finally { unsubscribe(); }
+});
+
+test("coalesced live broker response then exit cannot resurrect the parent inbox", async () => {
+  const { BrokerClient } = await import("../../../src/broker/client.ts");
+  const { BrokerBackend } = await import("../../../src/server/broker-backend.ts");
+  const { FrameParser, encodeFrame, FRAME_KIND_CONTROL_REQUEST, FRAME_KIND_CONTROL_RESPONSE, FRAME_KIND_EVENT } = await import("../../../src/broker/codec.ts");
+  const { appendParentNotification } = await import("../../../src/server/parent-inbox.ts");
+  const id = "550e8400-e29b-41d4-a716-446655440000";
+  const dir = mkdtempSync("/tmp/wpn-inbox-");
+  const socketPath = join(dir, "b.sock");
+  const broker = createNetServer(socket => {
+    const parser = new FrameParser();
+    socket.on("data", chunk => {
+      parser.push(chunk);
+      for (const frame of parser.drain()) {
+        if (frame.kind !== FRAME_KIND_CONTROL_REQUEST || frame.value.method !== "list_sessions") throw new Error("unexpected broker request");
+        const session = { id, name: "parent", cwd: "/tmp/project", alive: true, cols: 80, rows: 24, pid: 123, started_at_ms: 1, exit_code: null, command: ["pi"], env: [["WOLFPACK_AGENT_KIND", "pi"]] };
+        // Dispatch both valid frames before the inspection promise can resume.
+        socket.write(Buffer.concat([
+          Buffer.from(encodeFrame({ kind: FRAME_KIND_CONTROL_RESPONSE, value: { id: frame.value.id, status: "ok", payload: { kind: "list_sessions", sessions: [session] } } })),
+          Buffer.from(encodeFrame({ kind: FRAME_KIND_EVENT, value: { event: "session_exited", session_id: id, exit_code: 0, final_seq: "0" } })),
+        ]));
+      }
+    });
+  });
+  const raceEvents = new EventBus();
+  const seen: string[] = [];
+  const unsubscribe = raceEvents.subscribeEvents({}, event => seen.push(event.kind));
+  let connected: () => void = () => {};
+  const ready = new Promise<void>(resolve => { connected = resolve; });
+  const client = new BrokerClient({ socketPath, onConnect: () => connected(), onEvent: event => raceBackend.ingestEvent(event) });
+  const raceBackend = new BrokerBackend(client, raceEvents.publishEvent.bind(raceEvents));
+  const route = createPushNotifyRoutes({ backend: raceBackend, events: raceEvents })["POST /api/notify"]!;
+  const http = createServer((req, res) => {
+    void Promise.resolve(route(req, res)).catch(error => { res.writeHead(500); res.end(String(error)); });
+  });
+  try {
+    await new Promise<void>(resolve => broker.listen(socketPath, resolve));
+    client.start(); await ready;
+    await new Promise<void>(resolve => http.listen(0, "127.0.0.1", resolve));
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("missing HTTP address");
+    appendParentNotification(id, { message: "before exit" });
+    const response = await fetcher(`http://127.0.0.1:${address.port}/api/notify`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "late ready", sessionId: id, sessionName: "parent" }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).parentInbox).toEqual({ queued: false, reason: "parent_not_found" });
+    expect(seen).toEqual(["session.exited"]);
+    expect(listParentNotifications(id)).toEqual([]);
+    expect(raceEvents.eventSubscriberCount()).toBe(1);
+  } finally {
+    client.close(); unsubscribe(); clearParentInbox(id);
+    await new Promise<void>(resolve => http.close(() => resolve()));
+    await new Promise<void>(resolve => broker.close(() => resolve()));
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("exit fence is exact-id scoped and released on success and inspection failure", async () => {
+  const inspect = backend.inspectSession.bind(backend);
+  const lookup = spyOn(backend, "inspectSession").mockImplementation(async selector => {
+    expect(events.eventSubscriberCount()).toBe(1);
+    events.publishEvent({ kind: "session.exited", sessionId: "other-id", session: "mock:parent", reason: "exit" });
+    return inspect(selector);
+  });
+  try {
+    expect((await (await notify({ sessionId: "mock:parent", sessionName: "parent" })).json()).parentInbox).toEqual({ queued: true, seq: 1 });
+    expect(events.eventSubscriberCount()).toBe(0);
+    lookup.mockImplementation(async () => {
+      expect(events.eventSubscriberCount()).toBe(1);
+      throw new Error("inspection offline");
+    });
+    expect((await (await notify({ sessionId: "mock:parent", sessionName: "parent" })).json()).parentInbox).toEqual({ queued: false, reason: "parent_not_found" });
+    expect(events.eventSubscriberCount()).toBe(0);
+  } finally { lookup.mockRestore(); }
 });
 
 test("unknown, dead, and mismatched targets never queue", async () => {

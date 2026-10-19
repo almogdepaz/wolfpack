@@ -107,10 +107,16 @@ return {
     let parentInbox: { queued: true; seq: number } | { queued: false; reason: "no_parent" | "parent_not_found" } =
       { queued: false, reason: sessionId === undefined ? "no_parent" : "parent_not_found" };
     if (sessionId !== undefined) {
+      let exited = false;
+      // Broker frames can report exit before the live inspection's promise resumes.
+      // Fence only this in-flight delivery; no dead-session tombstones are retained.
+      const unsubscribe = ctx.events.subscribeEvents({ session: sessionId }, event => {
+        if (event.kind === WOLFPACK_EVENT_KIND.SESSION_EXITED && event.sessionId === sessionId) exited = true;
+      });
       try {
         const inspection = await ctx.backend.inspectSession(sessionId);
         // Selectors can also be names; require this exact live incarnation.
-        if (inspection.ok && inspection.alive && inspection.sessionId === sessionId && inspection.session === sessionName) {
+        if (!exited && inspection.ok && inspection.alive && inspection.sessionId === sessionId && inspection.session === sessionName) {
           const notification = { message, ...(from !== undefined && { from }) };
           const { seq } = appendParentNotification(sessionId, notification);
           parentInbox = { queued: true, seq };
@@ -119,6 +125,8 @@ return {
       } catch (error: unknown) {
         // Inbox lookup must not change the existing push delivery contract.
         log.warn("parent inbox target inspection failed", { error: errMsg(error) });
+      } finally {
+        unsubscribe();
       }
     }
 
