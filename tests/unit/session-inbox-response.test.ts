@@ -12,11 +12,12 @@ function runInbox(body: unknown, family: "session" | "agent", output: "plain" | 
     process.env.WOLFPACK_SESSION_NAME = "parent";
     process.env.WOLFPACK_SESSION_ID = ${JSON.stringify(options.selfId ?? SELF_ID)};
     process.env.WOLFPACK_AGENT_KIND = "pi";
-    globalThis.fetch = async () => Response.json(${JSON.stringify(body)});
+    const body = JSON.parse(await Bun.stdin.text());
+    globalThis.fetch = async () => Response.json(body);
     const { runSessionCommand, runAgentCommand } = await import("./src/cli/session-control.ts");
     process.exit(await ${family === "session" ? "runSessionCommand" : "runAgentCommand"}(${JSON.stringify(args)}));
   `;
-  const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+  const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdin: Buffer.from(JSON.stringify(body)), stdout: "pipe", stderr: "pipe" });
   return { exitCode: child.exitCode, stdout: child.stdout.toString(), stderr: child.stderr.toString() };
 }
 

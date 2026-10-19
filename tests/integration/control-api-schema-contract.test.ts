@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync } from "node:fs";
@@ -76,6 +76,7 @@ const {
   __globalRateLimiter,
   __pollRateLimiter,
 } = await import("../../src/server/index.ts") as any;
+const { _testing: pushTesting } = await import("../../src/server/push.ts");
 const { server } = createServerInstance(context);
 
 let base = "";
@@ -115,6 +116,12 @@ async function postJson(path: string, body: unknown): Promise<unknown> {
   expect(res.status).toBe(200);
   return await res.json();
 }
+
+beforeEach(() => {
+  __globalRateLimiter._map.clear();
+  __pollRateLimiter._map.clear();
+  pushTesting.resetDebounce();
+});
 
 beforeAll(async () => {
   mkdirSync(join(TEST_DEV_DIR, "wolfpack"), { recursive: true });
