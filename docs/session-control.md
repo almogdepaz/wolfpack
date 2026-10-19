@@ -221,6 +221,8 @@ Both inbox commands call `GET /api/session-control/inbox?session=<name-or-id>[&s
 
 The response is `{session, sessionId, notifications:[{seq, at, message, from?}]}`. `seq` starts at 1 per parent, `at` is an ISO timestamp, and `since` is a non-negative safe integer returning only entries with `seq > since`. Reads do not consume entries; retain the last sequence to avoid duplicates. Plain output is `seq at [from] message` per entry (sender omitted when absent); line breaks are replaced with spaces in human inbox/event lines, while JSON preserves the original text.
 
+Malformed inbox success replies exit `1`; JSON output is an `ok:false` error envelope with code `INVALID_INBOX_RESPONSE`, while plain output diagnoses the invalid inbox response on stderr. Both aliases validate identity, entries and limits before reporting success, including the exact stable self ID when known.
+
 The inbox is **memory-only**, retains only the newest **100** entries per parent, and is dropped on parent session exit. A server restart loses every inbox and resets sequences; slow/disconnected pollers may miss overwritten entries. It is not a durable task ledger or an acknowledgement protocol. Verify the child's actual work before cleanup. Pi coordinators keep using Pi Tasks `agent_task_done` / `agent_task_ack` for `--task-worker` endpoint children, which reject `--notify-parent`.
 
 ### Current session identity

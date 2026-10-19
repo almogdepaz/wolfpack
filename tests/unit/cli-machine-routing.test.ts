@@ -25,6 +25,7 @@ describe("remote machine control routing", () => {
   test("routes every planned command family and enriches json once without rewriting session ids", () => {
     const script = `
       process.env.WOLFPACK_SESSION_NAME = "parent";
+      process.env.WOLFPACK_SESSION_ID = "id-parent";
       process.env.WOLFPACK_AGENT_KIND = "pi";
       const target = ${JSON.stringify(TARGET)};
       const calls = [];

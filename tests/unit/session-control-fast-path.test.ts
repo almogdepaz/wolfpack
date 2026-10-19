@@ -483,26 +483,26 @@ describe("session control fast-path requests", () => {
         globalThis.fetch = async (url) => {
           const parsed = new URL(url);
           if (parsed.pathname !== "/api/session-control/inbox" || parsed.searchParams.get("session") !== "self-id" || parsed.searchParams.get("since") !== "4") throw new Error("wrong inbox request");
-          return Response.json({ session: "self", sessionId: "self-id", notifications: [{ seq: 5, at: "t", message: "ready", from: "child" }] });
+          return Response.json({ session: "self", sessionId: "self-id", notifications: [{ seq: 5, at: "2026-10-11T00:00:00.000Z", message: "ready", from: "child" }] });
         };
         const { runSessionCommand, runAgentCommand } = await import("./src/cli/session-control.ts");
         process.exit(await ${family === "session" ? 'runSessionCommand(["inbox", "self-id", "--since", "4", "--json"])' : 'runAgentCommand(["inbox", "--since", "4", "--json"])'});
       `;
       const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
       expect(child.exitCode, child.stderr.toString()).toBe(0);
-      expect(JSON.parse(child.stdout.toString())).toEqual({ session: "self", sessionId: "self-id", notifications: [{ seq: 5, at: "t", message: "ready", from: "child" }] });
+      expect(JSON.parse(child.stdout.toString())).toEqual({ session: "self", sessionId: "self-id", notifications: [{ seq: 5, at: "2026-10-11T00:00:00.000Z", message: "ready", from: "child" }] });
     }
   });
 
   test("inbox plain output is one line per notification", () => {
     const script = `
-      globalThis.fetch = async () => Response.json({ session: "parent", sessionId: "id", notifications: [{ seq: 1, at: "t", message: "ready\\nfor review", from: "child\\nagent" }, { seq: 2, at: "t2", message: "blocked" }] });
+      globalThis.fetch = async () => Response.json({ session: "parent", sessionId: "id", notifications: [{ seq: 1, at: "2026-10-11T00:00:00.000Z", message: "ready\\nfor review", from: "child\\nagent" }, { seq: 2, at: "2026-10-11T00:00:01.000Z", message: "blocked" }] });
       const { runSessionCommand } = await import("./src/cli/session-control.ts");
       process.exit(await runSessionCommand(["inbox", "parent"]));
     `;
     const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
     expect(child.exitCode, child.stderr.toString()).toBe(0);
-    expect(child.stdout.toString()).toBe("1 t [child agent] ready for review\n2 t2 blocked\n");
+    expect(child.stdout.toString()).toBe("1 2026-10-11T00:00:00.000Z [child agent] ready for review\n2 2026-10-11T00:00:01.000Z blocked\n");
   });
 
   test("agent inbox without session context uses spawn's error path without network", () => {

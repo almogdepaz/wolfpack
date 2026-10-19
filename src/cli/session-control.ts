@@ -1329,7 +1329,8 @@ export async function runAgentCommand(
   if (parsed.action === "inbox") {
     const context = resolveSessionOpenContext(process.env);
     if (!context.ok) return writeOpenError(parsed.output, context.code, context.message, SESSION_EXIT.NOT_FOUND);
-    return runTargetSessionCommand({ ...parsed, session: process.env.WOLFPACK_SESSION_ID?.trim() || context.parentSession }, target);
+    const selfId = process.env.WOLFPACK_SESSION_ID?.trim() || undefined;
+    return runTargetSessionCommand({ ...parsed, session: selfId || context.parentSession }, target, selfId);
   }
   return runSessionOpen(parsed, target);
 }
@@ -1382,19 +1383,48 @@ async function runCurrentContext(
   }
 }
 
+interface SessionInboxResponse {
+  readonly session: string;
+  readonly sessionId: string;
+  readonly notifications: ReadonlyArray<{ readonly seq: number; readonly at: string; readonly message: string; readonly from?: string }>;
+}
+
+function isSessionInboxResponse(value: unknown, since: number, expectedSessionId?: string): value is SessionInboxResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const body = value as Record<string, unknown>;
+  if (!isBoundedSessionStatusIdentity(body.session) || !isValidSessionName(body.session)
+    || !isBoundedSessionStatusIdentity(body.sessionId)
+    || (expectedSessionId !== undefined && body.sessionId !== expectedSessionId)
+    || !Array.isArray(body.notifications) || body.notifications.length > 100) return false;
+  let previousSeq = since;
+  for (const value of body.notifications) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const entry = value as Record<string, unknown>;
+    if (typeof entry.seq !== "number" || !Number.isSafeInteger(entry.seq) || entry.seq <= previousSeq
+      || typeof entry.message !== "string" || unicodeCodePointLength(entry.message) > 500
+      || (entry.from !== undefined && (typeof entry.from !== "string" || unicodeCodePointLength(entry.from) > 100))) return false;
+    const timestamp = typeof entry.at === "string" ? Date.parse(entry.at) : NaN;
+    if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString() !== entry.at) return false;
+    previousSeq = entry.seq;
+  }
+  return true;
+}
+
 async function runTargetSessionCommand(
   parsed: Extract<ParsedSessionCommand, { readonly action: TargetSessionAction }>,
   target?: VerifiedMachineTarget,
+  expectedInboxSessionId?: string,
 ): Promise<number> {
   try {
     if (parsed.action === "inbox") {
       const query = new URLSearchParams({ session: parsed.session });
       if (parsed.since !== undefined) query.set("since", String(parsed.since));
-      const data = await call(`/api/session-control/inbox?${query}`, {}, target) as {
-        session: string;
-        sessionId: string;
-        notifications: Array<{ seq: number; at: string; message: string; from?: string }>;
-      };
+      const data = await call(`/api/session-control/inbox?${query}`, {}, target);
+      const selfId = process.env.WOLFPACK_SESSION_ID?.trim();
+      const expectedId = expectedInboxSessionId ?? (selfId === parsed.session ? selfId : undefined);
+      if (!isSessionInboxResponse(data, parsed.since ?? 0, expectedId)) {
+        return writeOpenError(parsed.output, "INVALID_INBOX_RESPONSE", "invalid /api/session-control/inbox response", SESSION_EXIT.GENERAL);
+      }
       if (parsed.output === "json") jsonOut(data, target);
       else for (const entry of data.notifications) print(`${entry.seq} ${entry.at}${entry.from !== undefined ? ` [${entry.from}]` : ""} ${entry.message}`.replace(/[\r\n\u2028\u2029]/g, " "));
       return SESSION_EXIT.OK;
