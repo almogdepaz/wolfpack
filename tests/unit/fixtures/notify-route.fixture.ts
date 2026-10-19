@@ -75,7 +75,7 @@ test("coalesced live broker response then exit cannot resurrect the parent inbox
   const socketPath = join(dir, "b.sock");
   const broker = createNetServer(socket => {
     const parser = new FrameParser();
-    socket.on("data", chunk => {
+    socket.on("data", (chunk: Buffer) => {
       parser.push(chunk);
       for (const frame of parser.drain()) {
         if (frame.kind !== FRAME_KIND_CONTROL_REQUEST || frame.value.method !== "list_sessions") throw new Error("unexpected broker request");
