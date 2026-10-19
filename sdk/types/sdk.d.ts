@@ -1,4 +1,5 @@
 import type { LayoutContext, TerminalLayout } from "./layout-contract.ts";
+import type { ProjectGitDiff } from "./git-diff-contract.ts";
 import type { ProjectGitStatus } from "./git-status-contract.ts";
 /** Public authoring surface. It deliberately exposes no terminal DOM, auth token, or server filesystem. */
 export interface ContextViewController {
@@ -30,9 +31,13 @@ export interface ExtensionViewContext {
         set(key: string, value: string): void;
         remove(key: string): void;
     }>;
-    /** Local live session's server-owned project. No caller-supplied path or command. */
+    /**
+     * Local live session's server-owned project. No caller-supplied path or command.
+     * gitDiff: staged and unstaged unified diffs of tracked files (untracked files are not diffed), each bounded and flagged when truncated.
+     */
     readonly project: Readonly<{
         gitStatus(signal?: AbortSignal): Promise<ProjectGitStatus>;
+        gitDiff(signal?: AbortSignal): Promise<ProjectGitDiff>;
     }>;
     readonly documents: Readonly<{
         /** Resolves the current plain document, or null when this exact scope has none. */

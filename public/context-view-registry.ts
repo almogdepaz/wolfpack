@@ -31,6 +31,7 @@ interface MountedContextView {
 }
 
 const MAX_RETAINED_CONTEXT_VIEWS = 32;
+const unavailableProject = async (): Promise<never> => { throw new Error("project data unavailable"); };
 export function contextScopeHint(): string { return "Select a live terminal with an exact session identity to view extension context."; }
 
 /**
@@ -158,7 +159,7 @@ export class ContextViewRegistry {
         theme: Object.freeze({}),
         storage: Object.freeze({ get: () => null, set: () => {}, remove: () => {} }),
         documents: Object.freeze({ read: async () => null, subscribe: () => () => {} }),
-        project: Object.freeze({ gitStatus: async () => { throw new Error("project data unavailable"); } }),
+        project: Object.freeze({ gitStatus: unavailableProject, gitDiff: unavailableProject }),
       }) as ExtensionViewContext;
       const content = this.options.createContainer?.(entry, element, abort.signal) ?? element;
       const controller = entry.contribution.mount(content, this.options.createContext?.(scope, abort.signal, entry.id) ?? fallbackContext);

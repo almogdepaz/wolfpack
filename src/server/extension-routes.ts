@@ -8,6 +8,7 @@ import { EXTENSION_API_ERROR, type ExtensionApiErrorCode } from "../extensions/r
 import type { SessionBackend } from "./backend-contract.ts";
 import { getDefaultServerContext, getServerContextServiceCache } from "./context.ts";
 import { json, parseObjectBody, readBody, RequestBodyTooLargeError } from "./http.ts";
+import { readProjectGitDiff } from "./project-git-diff.ts";
 import { readProjectGitStatus } from "./project-git-status.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -21,21 +22,22 @@ function documentError(res: ServerResponse, value: unknown) {
 }
 function ids(pathname: string, prefix: string): { extensionId: string; documentId: string } | null { if (!pathname.startsWith(prefix)) return null; const parts = pathname.slice(prefix.length).split("/"); return parts.length === 2 && /^[a-z][a-z0-9-]{0,63}$/.test(parts[0]!) && /^[a-z][a-z0-9-]{0,63}$/.test(parts[1]!) ? { extensionId: parts[0]!, documentId: parts[1]! } : null; }
 
-export interface ExtensionRouteServiceOptions { readonly runtime?: ExtensionRuntime; readonly backend?: Pick<SessionBackend, "listSessionFacts">; readonly safeMode?: () => boolean; readonly readGitStatus?: typeof readProjectGitStatus; readonly peerProxy?: ExtensionPeerProxyOptions; }
+export interface ExtensionRouteServiceOptions { readonly runtime?: ExtensionRuntime; readonly backend?: Pick<SessionBackend, "listSessionFacts">; readonly safeMode?: () => boolean; readonly readGitStatus?: typeof readProjectGitStatus; readonly readGitDiff?: typeof readProjectGitDiff; readonly peerProxy?: ExtensionPeerProxyOptions; }
 /** Server-owned service binds document persistence to installed schemas and broker UUID liveness. */
 export class ExtensionRouteService {
   private readonly runtime: ExtensionRuntime; private readonly backend: Pick<SessionBackend, "listSessionFacts">; private readonly safeMode: () => boolean; private readonly store: ExtensionDocumentStore;
   private readonly peerProxy: ExtensionPeerProxy;
   private gitRequests = 0;
   private readonly readGitStatus: typeof readProjectGitStatus;
-  constructor(options: ExtensionRouteServiceOptions = {}) { this.readGitStatus = options.readGitStatus ?? readProjectGitStatus; this.runtime = options.runtime ?? getExtensionRuntime(); this.backend = options.backend ?? { listSessionFacts: () => getDefaultServerContext().backend.listSessionFacts() }; this.safeMode = options.safeMode ?? (() => false); this.peerProxy = new ExtensionPeerProxy(options.peerProxy, this.safeMode); this.store = new ExtensionDocumentStore({ root: this.runtime.root, assertWritableScope: async (key) => { const facts = await this.backend.listSessionFacts(); const live = facts.some((fact) => fact.alive && fact.identity?.wolfpackSessionId === key.scopeSessionId); if (!live) throw new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "new documents require a live exact scope session UUID"); this.runtime.schema(key); } }); }
+  private readonly readGitDiff: typeof readProjectGitDiff;
+  constructor(options: ExtensionRouteServiceOptions = {}) { this.readGitStatus = options.readGitStatus ?? readProjectGitStatus; this.readGitDiff = options.readGitDiff ?? readProjectGitDiff; this.runtime = options.runtime ?? getExtensionRuntime(); this.backend = options.backend ?? { listSessionFacts: () => getDefaultServerContext().backend.listSessionFacts() }; this.safeMode = options.safeMode ?? (() => false); this.peerProxy = new ExtensionPeerProxy(options.peerProxy, this.safeMode); this.store = new ExtensionDocumentStore({ root: this.runtime.root, assertWritableScope: async (key) => { const facts = await this.backend.listSessionFacts(); const live = facts.some((fact) => fact.alive && fact.identity?.wolfpackSessionId === key.scopeSessionId); if (!live) throw new ExtensionDocumentError("SCOPE_NOT_WRITABLE", "new documents require a live exact scope session UUID"); this.runtime.schema(key); } }); }
   async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
     if (url.pathname.startsWith(EXTENSION_PEER_PREFIX) || req.url?.startsWith(EXTENSION_PEER_PREFIX)) { await this.peerProxy.handle(req, res, url); return true; }
     if (req.method === "GET" && url.pathname === "/api/extensions") { noStore(res); json(res, this.runtime.catalog(this.safeMode())); return true; }
     const assetPrefix = "/api/extensions/assets/";
     if (req.method === "GET" && url.pathname.startsWith(assetPrefix)) { const rest = url.pathname.slice(assetPrefix.length).split("/"); const assetPath = rest.slice(2).join("/"); if (rest.length < 3 || !/^[a-z][a-z0-9-]{0,63}$/.test(rest[0]!) || !/^[a-f0-9]{64}$/.test(rest[1]!) || !assetPath.endsWith(".js")) { error(res, EXTENSION_API_ERROR.ASSET_NOT_FOUND, "extension asset is not allowlisted", 404); return true; } try { if (this.safeMode()) throw new ExtensionRuntimeError("DISABLED", "safe mode prevents extension asset delivery"); const asset = this.runtime.asset(rest[0]!, rest[1]!, assetPath); noStore(res); res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "X-Wolfpack-Extension-Digest": asset.digest }); res.end(asset.bytes); } catch (value) { documentError(res, value); } return true; }
-    const git = /^\/api\/extensions\/project\/git-status\/([a-z][a-z0-9-]{0,63})$/.exec(url.pathname);
-    if (req.method === "GET" && git) { await this.projectGitStatus(res, url, git[1]!); return true; }
+    const git = /^\/api\/extensions\/project\/git-(status|diff)\/([a-z][a-z0-9-]{0,63})$/.exec(url.pathname);
+    if (req.method === "GET" && git) { await this.projectGit(res, url, git[2]!, git[1] === "diff" ? "diff" : "status"); return true; }
     if (url.pathname.startsWith("/api/extensions/blobs/")) { await this.blob(req, res, url); return true; }
     const path = ids(url.pathname, "/api/extensions/documents/"); if (!path) return false;
     const sessionId = req.method === "GET" ? url.searchParams.get("session") : undefined;
@@ -87,7 +89,8 @@ export class ExtensionRouteService {
     } catch (value) { documentError(res, value); }
   }
 
-  private async projectGitStatus(res: ServerResponse, url: URL, extensionId: string): Promise<void> {
+  /** Status and diff share scope checks, the identity envelope and one bound on concurrent Git work. */
+  private async projectGit(res: ServerResponse, url: URL, extensionId: string, kind: "status" | "diff"): Promise<void> {
     const sessionId = url.searchParams.get("session");
     if (!sessionId || !UUID.test(sessionId) || [...url.searchParams.keys()].some(key => key !== "session") || url.searchParams.getAll("session").length !== 1) {
       error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "only an exact session UUID is accepted", 400); return;
@@ -103,15 +106,15 @@ export class ExtensionRouteService {
       };
       const project = await projectForScope();
       if (!project) { error(res, EXTENSION_API_ERROR.SCOPE_UNAVAILABLE, "local live session project unavailable", 404); return; }
-      const status = await this.readGitStatus(project);
+      const value = kind === "status" ? await this.readGitStatus(project) : await this.readGitDiff(project);
       // Recheck after async Git: names, replaced sessions and old package scopes are not authority.
       if (await projectForScope() !== project) { error(res, EXTENSION_API_ERROR.SCOPE_UNAVAILABLE, "session project changed", 404); return; }
       const current = this.runtime.get(extensionId);
       if (this.safeMode() || !current.enabled || current.package.digest !== installed.package.digest) throw new ExtensionRuntimeError("DISABLED", "project data scope changed");
-      noStore(res); json(res, { installationId: installed.installationId, scopeSessionId: sessionId, extensionId, status });
+      noStore(res); json(res, { installationId: installed.installationId, scopeSessionId: sessionId, extensionId, [kind]: value });
     } catch (value) {
       if (value instanceof ExtensionRuntimeError) documentError(res, value);
-      else error(res, EXTENSION_API_ERROR.PROJECT_UNAVAILABLE, "Git status unavailable for this project", 503);
+      else error(res, EXTENSION_API_ERROR.PROJECT_UNAVAILABLE, `Git ${kind} unavailable for this project`, 503);
     } finally { this.gitRequests--; }
   }
 }

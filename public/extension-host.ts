@@ -1,6 +1,7 @@
 import { parseExtensionCatalog } from "../src/extensions/catalog-contract.ts";
 export { parseExtensionCatalog } from "../src/extensions/catalog-contract.ts";
 import { ExtensionContributionGate } from "../src/extensions/contribution-contract.ts";
+import { parseProjectGitDiff } from "../src/extensions/git-diff-contract.ts";
 import { parseProjectGitStatus } from "../src/extensions/git-status-contract.ts";
 import { isExtensionIdentifier } from "../src/extensions/contribution-metadata.ts";
 import type { TerminalLayoutContribution } from "../src/extensions/layout-contract.ts";
@@ -385,20 +386,23 @@ export class ExtensionHost {
       return release;
     };
     signal.addEventListener("abort", () => this.releaseViewDocuments(viewId), { once: true });
-    const project = Object.freeze({ gitStatus: async (requestSignal?: AbortSignal) => {
-      const active = requestSignal ? AbortSignal.any([signal, requestSignal]) : signal;
-      const current = () => this.scopeIsCurrent(scope, active) && this.owners.get(viewId)?.extension === owner;
-      if (!current()) throw new Error("stale extension scope");
-      const url = `/api/extensions/project/git-status/${encodeURIComponent(extensionId)}?session=${encodeURIComponent(scope.sessionId)}`;
-      const response = await this.request(scope, url, { cache: "no-store", signal: active });
-      if (!current()) throw new Error("stale extension scope");
-      if (!response.ok) throw new Error("project Git status unavailable");
-      const value: unknown = await response.json();
-      if (!current()) throw new Error("stale extension scope");
-      if (!record(value) || value.installationId !== scope.installationId || value.scopeSessionId !== scope.sessionId || value.extensionId !== extensionId) throw new Error("project Git status identity mismatch");
-      return parseProjectGitStatus(value.status);
-    } });
     const current = (active = signal) => this.scopeIsCurrent(scope, active) && this.owners.get(viewId)?.extension === owner;
+    const projectRead = async <T>(kind: "status" | "diff", parse: (value: unknown) => T, requestSignal?: AbortSignal): Promise<T> => {
+      const active = requestSignal ? AbortSignal.any([signal, requestSignal]) : signal;
+      if (!current(active)) throw new Error("stale extension scope");
+      const url = `/api/extensions/project/git-${kind}/${encodeURIComponent(extensionId)}?session=${encodeURIComponent(scope.sessionId)}`;
+      const response = await this.request(scope, url, { cache: "no-store", signal: active });
+      if (!current(active)) throw new Error("stale extension scope");
+      if (!response.ok) throw new Error(`project Git ${kind} unavailable`);
+      const value: unknown = await response.json();
+      if (!current(active)) throw new Error("stale extension scope");
+      if (!record(value) || value.installationId !== scope.installationId || value.scopeSessionId !== scope.sessionId || value.extensionId !== extensionId) throw new Error(`project Git ${kind} identity mismatch`);
+      return parse(value[kind]);
+    };
+    const project = Object.freeze({
+      gitStatus: (requestSignal?: AbortSignal) => projectRead("status", parseProjectGitStatus, requestSignal),
+      gitDiff: (requestSignal?: AbortSignal) => projectRead("diff", parseProjectGitDiff, requestSignal),
+    });
     const blobs = owner?.blobs ? Object.freeze({ read: async (digest: string, requestSignal?: AbortSignal): Promise<Uint8Array> => {
       if (typeof digest !== "string" || !SHA256.test(digest)) throw new Error("invalid blob digest");
       const active = requestSignal ? AbortSignal.any([signal, requestSignal]) : signal;

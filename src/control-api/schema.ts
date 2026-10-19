@@ -2,6 +2,7 @@ import { CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
 import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
+import { MAX_GIT_DIFF_SECTION_BYTES } from "../extensions/git-diff-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
 import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
@@ -478,6 +479,11 @@ export const controlApiSource: ControlApiSource = {
       object({ state: { const: "ready" }, branch: { type: ["string", "null"], maxLength: 1024 }, detached: boolean(), truncated: boolean(),
         staged: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES }, unstaged: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES }, untracked: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES },
       }, ["state", "branch", "detached", "truncated", "staged", "unstaged", "untracked"]),
+    ] },
+    // Unified diffs of tracked files only; each section's JSON-serialized form is at most MAX_GIT_DIFF_SECTION_BYTES bytes.
+    ProjectGitDiff: { oneOf: [
+      object({ state: { const: "not-repository" } }, ["state"]),
+      object({ state: { const: "ready" }, staged: { type: "string", maxLength: MAX_GIT_DIFF_SECTION_BYTES }, unstaged: { type: "string", maxLength: MAX_GIT_DIFF_SECTION_BYTES }, truncated: boolean() }, ["state", "staged", "unstaged", "truncated"]),
     ] },
     ExtensionId: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
     ExtensionInstallationId: { type: "string", format: "uuid" },
@@ -1069,6 +1075,12 @@ export const controlApiSource: ControlApiSource = {
       response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), status: ref("ProjectGitStatus") }, ["installationId", "scopeSessionId", "extensionId", "status"]),
       errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
     },
+    "GET /api/extensions/project/git-diff/{extensionId}": {
+      operationId: "readExtensionProjectGitDiff", stable: true, auth: "jwt-when-configured",
+      request: object({ extensionId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["extensionId", "session"]),
+      response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), diff: ref("ProjectGitDiff") }, ["installationId", "scopeSessionId", "extensionId", "diff"]),
+      errors: ["400 ExtensionApiErrorEnvelope", "404 ExtensionApiErrorEnvelope", "409 ExtensionApiErrorEnvelope", "503 ExtensionApiErrorEnvelope"],
+    },
     "GET /api/extensions/blobs/{extensionId}/{digest}": {
       operationId: "readExtensionBlob", stable: true, auth: "jwt-when-configured",
       request: object({ extensionId: ref("ExtensionId"), digest: ref("ExtensionBlobDigest") }, ["extensionId", "digest"]),
@@ -1119,6 +1131,12 @@ export const controlApiSource: ControlApiSource = {
       operationId: "readSelectedPeerExtensionProject", stable: true, auth: "jwt-when-configured",
       request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["machine", "extensionId", "session"]),
       response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), status: ref("ProjectGitStatus") }, ["installationId", "scopeSessionId", "extensionId", "status"]),
+      errors: SELECTED_EXTENSION_ERRORS,
+    },
+    "GET /api/extensions/peer/{machine}/project/git-diff/{extensionId}": {
+      operationId: "readSelectedPeerExtensionProjectGitDiff", stable: true, auth: "jwt-when-configured",
+      request: object({ machine: ref("SelectedExtensionMachine"), extensionId: ref("ExtensionId"), session: { type: "string", format: "uuid" } }, ["machine", "extensionId", "session"]),
+      response: object({ installationId: ref("ExtensionInstallationId"), scopeSessionId: { type: "string", format: "uuid" }, extensionId: ref("ExtensionId"), diff: ref("ProjectGitDiff") }, ["installationId", "scopeSessionId", "extensionId", "diff"]),
       errors: SELECTED_EXTENSION_ERRORS,
     },
     "POST /api/extensions/documents/{extensionId}/{documentId}": {
