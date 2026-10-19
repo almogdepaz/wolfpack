@@ -5244,10 +5244,14 @@ describe("POST /api/push/unsubscribe", () => {
 });
 
 describe("parent inbox", () => {
+  let inboxBackend: InstanceType<typeof MockBackend>;
   beforeEach(async () => {
+    inboxBackend = new MockBackend({ sessions: ["wolf-1", "wolf-2"] });
+    useBackend(inboxBackend);
     const { clearParentInbox } = await import("../../src/server/parent-inbox.ts");
     clearParentInbox("mock:wolf-1");
   });
+  afterEach(() => { useBackend(mockBackend); });
 
   test("notify queues readable entries by parent name or stable id with since", async () => {
     const seen: unknown[] = [];
@@ -5276,7 +5280,7 @@ describe("parent inbox", () => {
 
   test("inbox uses status failure envelopes and rejects invalid cursors", async () => {
     for (const selector of [undefined, "missing", "wolf-2"]) {
-      if (selector === "wolf-2") mockBackend.setSessionAlive("wolf-2", false);
+      if (selector === "wolf-2") inboxBackend.setSessionAlive("wolf-2", false);
       const query = selector ? `?session=${selector}` : "";
       const status = await get(`/api/session-control/status${query}`);
       const inbox = await get(`/api/session-control/inbox${query}`);
@@ -5288,7 +5292,7 @@ describe("parent inbox", () => {
       expect(res.status, since).toBe(400);
       expect((await res.json()).error.code).toBe("INVALID_REQUEST");
     }
-    const inspect = spyOn(mockBackend, "inspectSession").mockRejectedValue(new Error("offline"));
+    const inspect = spyOn(inboxBackend, "inspectSession").mockRejectedValue(new Error("offline"));
     try {
       const status = await get("/api/session-control/status?session=wolf-1");
       const inbox = await get("/api/session-control/inbox?session=wolf-1");
