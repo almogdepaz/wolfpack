@@ -27,6 +27,7 @@ import { renderSnapshotToAnsi } from "../../src/broker/snapshot-render";
 import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event-bus";
 import type { WolfpackEvent } from "../../src/events-contract";
 import { onProgramStatusChanged } from "../../src/server/program-status-signal";
+import { appendParentNotification, clearParentInbox, listParentNotifications } from "../../src/server/parent-inbox";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -404,6 +405,42 @@ describe("BrokerBackend.list", () => {
     expect(names).toEqual([]);
     expect(backend.sessionDir("alpha")).toBeUndefined();
     expect(backend.isSessionAlive("alpha")).toBe(false);
+  });
+
+  test("authoritative lists reconcile inboxes after missed exits and backend replacement", async () => {
+    clearParentInbox(SESSION_UUID_1); clearParentInbox(SESSION_UUID_2);
+    try {
+      client.setHandler("list_sessions", () => okResp({ sessions: [
+        sessionInfo({ name: "parent", id: SESSION_UUID_1 }),
+        sessionInfo({ name: "other", id: SESSION_UUID_2 }),
+      ] }));
+      expect((await backend.inspectSession(SESSION_UUID_1)).ok).toBe(true);
+      appendParentNotification(SESSION_UUID_1, { message: "missed exit" });
+      appendParentNotification(SESSION_UUID_2, { message: "still live" });
+      client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "other", id: SESSION_UUID_2 })] }));
+      // A replacement backend has no old name/id cache and receives no exit frame.
+      const replacement = new BrokerBackend(client);
+      expect(await replacement.list()).toEqual(["other"]);
+      expect(listParentNotifications(SESSION_UUID_1)).toEqual([]);
+      expect(listParentNotifications(SESSION_UUID_2)).toEqual([expect.objectContaining({ message: "still live" })]);
+      client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "other", id: SESSION_UUID_2, alive: false })] }));
+      await replacement.listSessionFacts();
+      expect(listParentNotifications(SESSION_UUID_2)).toEqual([]);
+    } finally { clearParentInbox(SESSION_UUID_1); clearParentInbox(SESSION_UUID_2); }
+  });
+
+  test("failed lists and unavailable inspections preserve parent inboxes", async () => {
+    clearParentInbox(SESSION_UUID_1);
+    try {
+      appendParentNotification(SESSION_UUID_1, { message: "keep while unavailable" });
+      client.setHandler("list_sessions", () => errResp("internal_error", "offline"));
+      await expect(backend.list()).rejects.toThrow(/internal_error/);
+      await expect(backend.inspectSession(SESSION_UUID_1)).rejects.toThrow(/internal_error/);
+      expect(listParentNotifications(SESSION_UUID_1)).toHaveLength(1);
+      client.requestError = new BrokerNotConnectedError();
+      await expect(backend.listSessionFacts()).rejects.toThrow();
+      expect(listParentNotifications(SESSION_UUID_1)).toHaveLength(1);
+    } finally { clearParentInbox(SESSION_UUID_1); }
   });
 
   test("propagates broker errors", async () => {

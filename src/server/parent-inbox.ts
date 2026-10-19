@@ -34,3 +34,10 @@ export function listParentNotifications(parentSessionId: string, sinceSeq = 0): 
 export function clearParentInbox(parentSessionId: string): void {
   inboxes.delete(parentSessionId);
 }
+
+/** Only a successful authoritative table can establish absent/dead owners. */
+export function reconcileParentInboxes(liveSessionIds: ReadonlySet<string>): void {
+  for (const id of inboxes.keys()) {
+    if (!liveSessionIds.has(id)) clearParentInbox(id);
+  }
+}
