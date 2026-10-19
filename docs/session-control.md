@@ -219,6 +219,8 @@ wolfpack events --session <parent-session-id> --kinds parent_notified --json
 
 Both inbox commands call `GET /api/session-control/inbox?session=<name-or-id>[&since=<seq>]`, using the same selector and not-found/dead/ambiguous/unavailable envelopes as `session status`. `agent inbox` resolves the current agent session from its Wolfpack environment, preferring the injected stable ID; it uses the same missing/unsupported-context error path as spawn. Both support the verified `--machine` selector like status; this reads that host's inbox, not a cross-machine relay.
 
+Inbox reads are available to any caller with this host's ordinary API access, the same as `session status`. They are not parent-private and must not be treated as private child/parent messaging.
+
 The response is `{session, sessionId, notifications:[{seq, at, message, from?}]}`. `seq` starts at 1 per parent, `at` is an ISO timestamp, and `since` is a non-negative safe integer returning only entries with `seq > since`. Reads do not consume entries; retain the last sequence to avoid duplicates. Plain output is `seq at [from] message` per entry (sender omitted when absent); line breaks are replaced with spaces in human inbox/event lines, while JSON preserves the original text.
 
 Malformed inbox success replies exit `1`; JSON output is an `ok:false` error envelope with code `INVALID_INBOX_RESPONSE`, while plain output diagnoses the invalid inbox response on stderr. Both aliases validate identity, entries and limits before reporting success, including the exact stable self ID when known.
