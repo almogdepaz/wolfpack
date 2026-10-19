@@ -5243,6 +5243,65 @@ describe("POST /api/push/unsubscribe", () => {
   });
 });
 
+describe("parent inbox", () => {
+  let inboxBackend: InstanceType<typeof MockBackend>;
+  beforeEach(async () => {
+    inboxBackend = new MockBackend({ sessions: ["wolf-1", "wolf-2"] });
+    useBackend(inboxBackend);
+    const { clearParentInbox } = await import("../../src/server/parent-inbox.ts");
+    clearParentInbox("mock:wolf-1");
+  });
+  afterEach(() => { useBackend(mockBackend); });
+
+  test("notify queues readable entries by parent name or stable id with since", async () => {
+    const seen: unknown[] = [];
+    const unsubscribe = testContext.events.subscribeEvents({ session: "mock:wolf-1" }, event => seen.push(event));
+    try {
+      for (const message of ["ready", "blocked"]) {
+        const notify = await post("/api/notify", { message, sessionId: "mock:wolf-1", sessionName: "wolf-1", from: "child" });
+        expect(notify.status).toBe(200);
+        expect((await notify.json()).parentInbox).toEqual({ queued: true, seq: message === "ready" ? 1 : 2 });
+      }
+      for (const selector of ["wolf-1", "mock:wolf-1"]) {
+        const res = await get(`/api/session-control/inbox?session=${encodeURIComponent(selector)}`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get("cache-control")).toBe("no-store");
+        const body = await res.json();
+        expect(body).toEqual({ session: "wolf-1", sessionId: "mock:wolf-1", notifications: [
+          { seq: 1, at: expect.any(String), message: "ready", from: "child" },
+          { seq: 2, at: expect.any(String), message: "blocked", from: "child" },
+        ] });
+      }
+      const since = await get("/api/session-control/inbox?session=wolf-1&since=1");
+      expect((await since.json()).notifications).toEqual([{ seq: 2, at: expect.any(String), message: "blocked", from: "child" }]);
+      expect(seen).toEqual([1, 2].map(seq => expect.objectContaining({ kind: "parent_notified", session: "wolf-1", sessionId: "mock:wolf-1", seq, from: "child" })));
+    } finally { unsubscribe(); }
+  });
+
+  test("inbox uses status failure envelopes and rejects invalid cursors", async () => {
+    for (const selector of [undefined, "missing", "wolf-2"]) {
+      if (selector === "wolf-2") inboxBackend.setSessionAlive("wolf-2", false);
+      const query = selector ? `?session=${selector}` : "";
+      const status = await get(`/api/session-control/status${query}`);
+      const inbox = await get(`/api/session-control/inbox${query}`);
+      expect(inbox.status).toBe(status.status);
+      expect(await inbox.json()).toEqual(await status.json());
+    }
+    for (const since of ["-1", "1.5", "wat", "", "9007199254740992"]) {
+      const res = await get(`/api/session-control/inbox?session=wolf-1&since=${since}`);
+      expect(res.status, since).toBe(400);
+      expect((await res.json()).error.code).toBe("INVALID_REQUEST");
+    }
+    const inspect = spyOn(inboxBackend, "inspectSession").mockRejectedValue(new Error("offline"));
+    try {
+      const status = await get("/api/session-control/status?session=wolf-1");
+      const inbox = await get("/api/session-control/inbox?session=wolf-1");
+      expect(inbox.status).toBe(503);
+      expect(await inbox.json()).toEqual(await status.json());
+    } finally { inspect.mockRestore(); }
+  });
+});
+
 describe("POST /api/notify", () => {
   test("valid notification → 200", async () => {
     const res = await post("/api/notify", { message: "test notification" });

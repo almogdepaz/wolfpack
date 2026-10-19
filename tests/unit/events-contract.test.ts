@@ -26,6 +26,16 @@ const task: WolfpackEvent = {
   sequence: "3",
 };
 
+test("parent notifications filter by parent name or id and render for humans", () => {
+  const event: WolfpackEvent = { id: 8, at: "t", kind: WOLFPACK_EVENT_KIND.PARENT_NOTIFIED, session: "parent", sessionId: "parent-id", seq: 2, message: "ready", from: "child" };
+  expect(parseEventFilter(new URLSearchParams("kinds=parent_notified")).ok).toBe(true);
+  expect(matchesEventFilter(event, { session: "parent" })).toBe(true);
+  expect(matchesEventFilter(event, { session: "parent-id" })).toBe(true);
+  expect(matchesEventFilter(event, { session: "child" })).toBe(false);
+  expect(formatEventLine(event)).toBe("t parent_notified parent seq=2 [child] ready");
+  expect(formatEventLine({ ...event, from: "child\nagent", message: "ready\r\nfor review" })).toBe("t parent_notified parent seq=2 [child agent] ready  for review");
+});
+
 describe("parseEventFilter", () => {
   test("empty params match every kind and session", () => {
     const parsed = parseEventFilter(new URLSearchParams());

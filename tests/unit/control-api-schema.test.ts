@@ -79,6 +79,34 @@ describe("control api schema generation", () => {
 });
 
 describe("control api schema", () => {
+  test("publishes bounded parent inbox reads, notify outcomes, and live parent event", () => {
+    const inbox = httpOperation("getSessionInbox");
+    expect(inbox).toMatchObject({ route: "GET /api/session-control/inbox", stable: true, auth: "jwt-when-configured" });
+    expect(inbox.errors).toEqual(httpOperation("getSessionStatus").errors);
+    expect(validate(httpRequest("getSessionInbox"), { session: "parent-id", since: 0 }, artifact)).toEqual([]);
+    for (const since of [-1, 0.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(validate(httpRequest("getSessionInbox"), { session: "parent", since }, artifact)).not.toEqual([]);
+    }
+    const entry = { seq: 1, at: "2026-10-11T00:00:00.000Z", message: "ready", from: "child" };
+    const body = { session: "parent", sessionId: "parent-id", notifications: [entry] };
+    expect(validate(inbox.response, body, artifact)).toEqual([]);
+    expect(validate(inbox.response, { ...body, notifications: Array(101).fill(entry) }, artifact)).not.toEqual([]);
+    expect(validate(inbox.response, { ...body, notifications: [{ ...entry, seq: 0 }] }, artifact)).not.toEqual([]);
+    const notifyRequest = httpRequest("sendNotification");
+    expect(validate(notifyRequest, { message: "ready", from: "😀".repeat(100) }, artifact)).toEqual([]);
+    expect(validate(notifyRequest, { message: "ready", from: "😀".repeat(101) }, artifact)).not.toEqual([]);
+    const response = httpResponse("sendNotification");
+    for (const parentInbox of [{ queued: true, seq: 1 }, { queued: false, reason: "no_parent" }, { queued: false, reason: "parent_not_found" }]) {
+      expect(validate(response, { ok: true, parentInbox }, artifact)).toEqual([]);
+    }
+    for (const parentInbox of [{ queued: true }, { queued: true, seq: 0 }, { queued: false, reason: "unknown" }]) {
+      expect(validate(response, { ok: true, parentInbox }, artifact)).not.toEqual([]);
+    }
+    const event = { $ref: "#/$defs/ParentNotifiedEvent" };
+    expect(validate(event, { id: 9, kind: "parent_notified", session: "parent", sessionId: "parent-id", ...entry }, artifact)).toEqual([]);
+    expect(validate(event, { id: 9, kind: "parent_notified", ...entry }, artifact)).not.toEqual([]);
+  });
+
   test("documents endpoint-only push test delivery and its distinct failure envelope", () => {
     const operation = httpOperation("sendTestNotification");
     expect(operation).toMatchObject({ route: "POST /api/push/test", stable: true, auth: "jwt-when-configured" });

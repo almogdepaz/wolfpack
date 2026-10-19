@@ -74,6 +74,16 @@ describe("session control fast-path parsing", () => {
     });
   });
 
+  test("parses session and agent inbox with bounded since cursors", () => {
+    expect(parseSessionCommand(["inbox", "parent-id", "--since", "12", "--json"])).toEqual({ ok: true, action: "inbox", session: "parent-id", since: 12, output: "json" });
+    expect(parseAgentCommand(["inbox", "--since", "0", "--json"])).toEqual({ ok: true, action: "inbox", since: 0, output: "json" });
+    expect(parseAgentCommand(["inbox"])).toEqual({ ok: true, action: "inbox", output: "plain" });
+    for (const args of [["--since"], ["--since", "-1"], ["--since", "1.5"], ["--since", "9007199254740992"], ["--since", "wat"], ["--since", ""], ["--since", "1", "--since", "2"], ["--unknown"]]) {
+      expect(parseSessionCommand(["inbox", "parent", ...args]).ok, String(args)).toBe(false);
+      expect(parseAgentCommand(["inbox", ...args]).ok, String(args)).toBe(false);
+    }
+  });
+
   test("parses concise status by opaque selector", () => {
     expect(parseSessionCommand(["status", "broker-session-id", "--json"])).toEqual({
       ok: true,
@@ -464,6 +474,50 @@ describe("session control fast-path requests", () => {
     }
   });
 
+  test("session and agent inbox share the route with stable current identity and since", () => {
+    for (const family of ["session", "agent"] as const) {
+      const script = `
+        process.env.WOLFPACK_SESSION_NAME = "self";
+        process.env.WOLFPACK_SESSION_ID = "self-id";
+        process.env.WOLFPACK_AGENT_KIND = "pi";
+        globalThis.fetch = async (url) => {
+          const parsed = new URL(url);
+          if (parsed.pathname !== "/api/session-control/inbox" || parsed.searchParams.get("session") !== "self-id" || parsed.searchParams.get("since") !== "4") throw new Error("wrong inbox request");
+          return Response.json({ session: "self", sessionId: "self-id", notifications: [{ seq: 5, at: "2026-10-11T00:00:00.000Z", message: "ready", from: "child" }] });
+        };
+        const { runSessionCommand, runAgentCommand } = await import("./src/cli/session-control.ts");
+        process.exit(await ${family === "session" ? 'runSessionCommand(["inbox", "self-id", "--since", "4", "--json"])' : 'runAgentCommand(["inbox", "--since", "4", "--json"])'});
+      `;
+      const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+      expect(child.exitCode, child.stderr.toString()).toBe(0);
+      expect(JSON.parse(child.stdout.toString())).toEqual({ session: "self", sessionId: "self-id", notifications: [{ seq: 5, at: "2026-10-11T00:00:00.000Z", message: "ready", from: "child" }] });
+    }
+  });
+
+  test("inbox plain output is one line per notification", () => {
+    const script = `
+      globalThis.fetch = async () => Response.json({ session: "parent", sessionId: "id", notifications: [{ seq: 1, at: "2026-10-11T00:00:00.000Z", message: "ready\\nfor review", from: "child\\nagent" }, { seq: 2, at: "2026-10-11T00:00:01.000Z", message: "blocked" }] });
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(["inbox", "parent"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode, child.stderr.toString()).toBe(0);
+    expect(child.stdout.toString()).toBe("1 2026-10-11T00:00:00.000Z [child agent] ready for review\n2 2026-10-11T00:00:01.000Z blocked\n");
+  });
+
+  test("agent inbox without session context uses spawn's error path without network", () => {
+    const script = `
+      delete process.env.WOLFPACK_SESSION_NAME;
+      globalThis.fetch = async () => { throw new Error("unexpected request"); };
+      const { runAgentCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runAgentCommand(["inbox", "--json"]));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+    expect(child.exitCode).toBe(SESSION_EXIT.NOT_FOUND);
+    expect(JSON.parse(child.stdout.toString()).error.code).toBe("MISSING_PARENT_SESSION");
+    expect(child.stderr.toString()).toBe("");
+  });
+
   test("agent notify-parent wraps the existing notify endpoint", () => {
     const script = `
       const calls = [];
@@ -471,6 +525,7 @@ describe("session control fast-path requests", () => {
         calls.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
         return Response.json({ ok: true, sent: 1 });
       };
+      process.env.WOLFPACK_SESSION_NAME = "child-agent";
       process.env.WOLFPACK_PARENT_SESSION_ID = "stable-parent-id";
       process.env.WOLFPACK_PARENT_SESSION_NAME = "parent-agent";
       const { runAgentCommand } = await import("./src/cli/session-control.ts");
@@ -480,6 +535,7 @@ describe("session control fast-path requests", () => {
         method: "POST",
         body: {
           message: "ready for review",
+          from: "child-agent",
           sessionId: "stable-parent-id",
           sessionName: "parent-agent",
         },
@@ -512,6 +568,38 @@ describe("session control fast-path requests", () => {
     });
     return { exitCode: child.exitCode, stdout: child.stdout.toString(), stderr: child.stderr.toString() };
   }
+
+  test("queued parent inbox succeeds without subscriptions but warns in plain mode", () => {
+    const body = { ok: true, sent: 0, failed: 0, pruned: 0, delivered: false, reason: "no_subscriptions", parentInbox: { queued: true, seq: 3 } };
+    expect(runNotifyParentAgainst(body, "plain")).toEqual({ exitCode: 0, stdout: "parent inbox queued (seq 3)\n", stderr: "warning: no push subscriptions on this host\n" });
+    const json = runNotifyParentAgainst(body, "json");
+    expect(json.exitCode).toBe(0); expect(JSON.parse(json.stdout)).toEqual(body); expect(json.stderr).toBe("");
+  });
+
+  test("unqueued parent inbox retains push exit codes and reports its reason", () => {
+    const body = { ok: true, sent: 0, failed: 0, delivered: false, reason: "no_subscriptions", parentInbox: { queued: false, reason: "parent_not_found" } };
+    const plain = runNotifyParentAgainst(body, "plain");
+    expect(plain.exitCode).toBe(8);
+    expect(plain.stdout).toBe("parent inbox not queued: parent_not_found\n");
+    expect(plain.stderr).toContain("not delivered: no push subscriptions");
+    expect(runNotifyParentAgainst(body, "json").exitCode).toBe(8);
+  });
+
+  test("queued inbox does not bypass malformed delivery validation", () => {
+    const result = runNotifyParentAgainst({ ok: true, sent: 0, failed: 0, delivered: true, parentInbox: { queued: true, seq: 1 } }, "plain");
+    expect(result.exitCode).toBe(SESSION_EXIT.GENERAL);
+    expect(result.stderr).toContain("invalid /api/notify response");
+  });
+
+  test("malformed inbox claims are protocol errors, not successful delivery", () => {
+    for (const parentInbox of [null, {}, { queued: true, seq: 0 }, { queued: true, seq: "1" }, { queued: false, reason: "wrong" }, { queued: true, seq: 1, reason: "parent_not_found" }, { queued: false, reason: "no_parent", seq: 1 }]) {
+      expect(runNotifyParentAgainst({ ok: true, sent: 1, failed: 0, delivered: true, parentInbox }, "json").exitCode).toBe(SESSION_EXIT.GENERAL);
+    }
+  });
+
+  test("queued inbox still succeeds when push endpoints fail", () => {
+    expect(runNotifyParentAgainst({ ok: true, sent: 0, failed: 2, delivered: false, reason: "delivery_failed", parentInbox: { queued: true, seq: 1 } }, "plain")).toEqual({ exitCode: 0, stdout: "parent inbox queued (seq 1)\n", stderr: "warning: push delivery failed (2 endpoints)\n" });
+  });
 
   test("agent notify-parent reports a delivered push as notified", () => {
     const body = { ok: true, sent: 1, failed: 0, pruned: 0, delivered: true };

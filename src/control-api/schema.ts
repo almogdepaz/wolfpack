@@ -21,6 +21,7 @@ import {
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 import { SESSION_PLAN_MAX_PATH_LENGTH } from "../session-plan-contract.ts";
 import { NOTIFY_UNDELIVERED_REASON } from "../notify-contract.ts";
+import { WOLFPACK_EVENT_KIND } from "../events-contract.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
   QUIET_ALERT_KIND,
@@ -122,6 +123,13 @@ type ControlApiSource = {
     };
   };
   readonly defs: Record<string, JsonSchema>;
+};
+
+const parentNotificationProperties = {
+  seq: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+  at: { type: "string", description: "ISO timestamp" },
+  message: { type: "string", maxLength: 500 },
+  from: { type: "string", maxLength: 100, description: "Unverified, informational sender session name." },
 };
 
 const string = (description?: string): JsonSchema => ({
@@ -446,6 +454,22 @@ export const controlApiSource: ControlApiSource = {
     "relay profile metadata identifies the current RAM lifetime, not broker/worker readiness; restart loses active task state and never replays Pi session history",
   ],
   defs: {
+    ParentNotification: object(parentNotificationProperties, ["seq", "at", "message"]),
+    ParentNotifiedEvent: object({
+      ...parentNotificationProperties,
+      kind: { const: WOLFPACK_EVENT_KIND.PARENT_NOTIFIED },
+      id: { type: "integer", minimum: 1 },
+      session: ref("SessionName"),
+      sessionId: ref("SessionId"),
+    }, ["id", "at", "kind", "session", "sessionId", "seq", "message"], {
+      description: "Live GET /api/events parent notification; session/sessionId identify the parent, not the unverified sender.",
+    }),
+    ParentInboxDelivery: {
+      oneOf: [
+        object({ queued: { const: true }, seq: parentNotificationProperties.seq }, ["queued", "seq"]),
+        object({ queued: { const: false }, reason: { enum: ["no_parent", "parent_not_found"] } }, ["queued", "reason"]),
+      ],
+    },
     ...volatileRelayDefinitions,
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
     GitFileChange: object({ path: { type: "string", minLength: 1, maxLength: 4096 }, previousPath: { type: "string", minLength: 1, maxLength: 4096 }, status: { type: "string", enum: GIT_CHANGE_KINDS } }, ["path", "status"]),
@@ -1497,6 +1521,27 @@ export const controlApiSource: ControlApiSource = {
         "503 SessionStatusFailure",
       ],
     },
+    "GET /api/session-control/inbox": {
+      operationId: "getSessionInbox",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        session: ref("SessionSelector"),
+        since: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+      }, ["session"]),
+      response: object({
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        notifications: { ...arrayOf(ref("ParentNotification")), maxItems: 100 },
+      }, ["session", "sessionId", "notifications"]),
+      errors: [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure",
+      ],
+    },
     "GET /api/session-control/snapshot": {
       operationId: "snapshotSessionVisibleScreen",
       stable: true,
@@ -1686,6 +1731,7 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       request: object({
         message: string(),
+        from: parentNotificationProperties.from,
         sessionId: ref("SessionId"),
         sessionName: ref("SessionName"),
       }, ["message"]),
@@ -1696,6 +1742,7 @@ export const controlApiSource: ControlApiSource = {
         pruned: integer(),
         delivered: boolean(),
         reason: { enum: Object.values(NOTIFY_UNDELIVERED_REASON) },
+        parentInbox: ref("ParentInboxDelivery"),
       }, ["ok"], { additionalProperties: true }),
       errors: ["400 ErrorEnvelope", "429 ErrorEnvelope"],
     },

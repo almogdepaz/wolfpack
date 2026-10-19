@@ -69,6 +69,7 @@ import {
 import { SHELL } from "./shell.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
+import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { PROGRAM_STATUS_STATE, parseBrokerProgramStatusRecord } from "../program-status-contract.js";
@@ -567,6 +568,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     for (const id of this.idToInfo.keys()) {
       if (!liveIds.has(id)) this.idToInfo.delete(id);
     }
+    reconcileParentInboxes(liveIds);
     return facts;
   }
 
@@ -1351,7 +1353,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     return this.onSessionLifecycleById(id, cb);
   }
 
-  private onSessionLifecycleById(id: string, cb: LifecycleSubscriber): () => void {
+  onSessionLifecycleById(id: string, cb: LifecycleSubscriber): () => void {
     let set = this.lifecycleSubs.get(id);
     if (!set) {
       set = new Set();
@@ -1428,6 +1430,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   }
 
   private publishSessionExited(id: string, cachedName: string | undefined, exitCode: number | undefined, signal: number | undefined): void {
+    clearParentInbox(id);
     const exit: PendingSessionExit = { name: cachedName, exitCode, signal };
     const kill = this.killRequests.get(id);
     if (kill && kill.inFlight > 0) {

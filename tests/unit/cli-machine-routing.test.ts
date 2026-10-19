@@ -25,6 +25,7 @@ describe("remote machine control routing", () => {
   test("routes every planned command family and enriches json once without rewriting session ids", () => {
     const script = `
       process.env.WOLFPACK_SESSION_NAME = "parent";
+      process.env.WOLFPACK_SESSION_ID = "id-parent";
       process.env.WOLFPACK_AGENT_KIND = "pi";
       const target = ${JSON.stringify(TARGET)};
       const calls = [];
@@ -35,6 +36,7 @@ describe("remote machine control routing", () => {
         if (url.pathname === "/api/session-create") return Response.json({ ok: true, session: "created", sessionId: "id-create", project: "project", harness: "pi" });
         if (url.pathname === "/api/session-open") return Response.json({ ok: true, session: "child", sessionId: "id-open", project: "project", harness: "pi" });
         if (url.pathname === "/api/session-control/status") return Response.json({ ok: true, selector: "alpha", session: "alpha", sessionId: "id-status", state: "active", project: "project", projectPath: "/tmp/project", projectDir: "/tmp/project", harness: "pi", terminal: { exists: true, alive: true, status: "ready" } });
+        if (url.pathname === "/api/session-control/inbox") return Response.json({ session: "parent", sessionId: "id-parent", notifications: [] });
         if (url.pathname === "/api/session-control/read") return Response.json({ session: "alpha", sessionId: "id-read", output: "ready" });
         if (url.pathname === "/api/session-control/send") return Response.json({ ok: true, session: "alpha", sessionId: "id-send" });
         if (url.pathname === "/api/session-control/wait") return Response.json({ ok: true, session: "alpha", sessionId: "id-wait", matched: true });
@@ -50,6 +52,8 @@ describe("remote machine control routing", () => {
       codes.push(await runSessionCommand(["open", "project", "--json"], target));
       codes.push(await runAgentCommand(["spawn", "project", "--json"], target));
       codes.push(await runSessionCommand(["status", "alpha", "--json"], target));
+      codes.push(await runSessionCommand(["inbox", "id-parent", "--since", "1", "--json"], target));
+      codes.push(await runAgentCommand(["inbox", "--json"], target));
       codes.push(await runSessionCommand(["read", "alpha", "--json"], target));
       codes.push(await runSessionCommand(["send", "alpha", "hello", "--json"], target));
       codes.push(await runSessionCommand(["wait", "alpha", "ready", "--json"], target));
@@ -62,7 +66,7 @@ describe("remote machine control routing", () => {
 
     expect(child.exitCode).toBe(0);
     const calls = JSON.parse(child.stderr.toString()) as Array<{ readonly url: string; readonly method: string }>;
-    expect(calls).toHaveLength(10);
+    expect(calls).toHaveLength(12);
     expect(calls.every(({ url }) => url.startsWith(`${ORIGIN}/api/`))).toBe(true);
     expect(calls.map(({ url }) => new URL(url).pathname)).toEqual([
       "/api/session-control/list",
@@ -70,6 +74,8 @@ describe("remote machine control routing", () => {
       "/api/session-open",
       "/api/session-open",
       "/api/session-control/status",
+      "/api/session-control/inbox",
+      "/api/session-control/inbox",
       "/api/session-control/read",
       "/api/session-control/send",
       "/api/session-control/wait",
@@ -78,7 +84,7 @@ describe("remote machine control routing", () => {
     ]);
 
     const envelopes = child.stdout.toString().trim().split("\n").map((line) => JSON.parse(line));
-    expect(envelopes).toHaveLength(10);
+    expect(envelopes).toHaveLength(12);
     for (const envelope of envelopes) expect(envelope.machine).toEqual(TARGET.machine);
     expect(envelopes.map((envelope) => envelope.sessionId ?? envelope.sessions?.[0]?.sessionId)).toEqual([
       "id-list",
@@ -86,6 +92,8 @@ describe("remote machine control routing", () => {
       "id-open",
       "id-open",
       "id-status",
+      "id-parent",
+      "id-parent",
       "id-read",
       "id-send",
       "id-wait",

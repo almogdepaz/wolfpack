@@ -27,6 +27,7 @@ import { renderSnapshotToAnsi } from "../../src/broker/snapshot-render";
 import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event-bus";
 import type { WolfpackEvent } from "../../src/events-contract";
 import { onProgramStatusChanged } from "../../src/server/program-status-signal";
+import { appendParentNotification, clearParentInbox, listParentNotifications } from "../../src/server/parent-inbox";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -406,10 +407,78 @@ describe("BrokerBackend.list", () => {
     expect(backend.isSessionAlive("alpha")).toBe(false);
   });
 
+  test("authoritative lists reconcile inboxes after missed exits and backend replacement", async () => {
+    clearParentInbox(SESSION_UUID_1); clearParentInbox(SESSION_UUID_2);
+    try {
+      client.setHandler("list_sessions", () => okResp({ sessions: [
+        sessionInfo({ name: "parent", id: SESSION_UUID_1 }),
+        sessionInfo({ name: "other", id: SESSION_UUID_2 }),
+      ] }));
+      expect((await backend.inspectSession(SESSION_UUID_1)).ok).toBe(true);
+      appendParentNotification(SESSION_UUID_1, { message: "missed exit" });
+      appendParentNotification(SESSION_UUID_2, { message: "still live" });
+      client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "other", id: SESSION_UUID_2 })] }));
+      // A replacement backend has no old name/id cache and receives no exit frame.
+      const replacement = new BrokerBackend(client);
+      expect(await replacement.list()).toEqual(["other"]);
+      expect(listParentNotifications(SESSION_UUID_1)).toEqual([]);
+      expect(listParentNotifications(SESSION_UUID_2)).toEqual([expect.objectContaining({ message: "still live" })]);
+      client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "other", id: SESSION_UUID_2, alive: false })] }));
+      await replacement.listSessionFacts();
+      expect(listParentNotifications(SESSION_UUID_2)).toEqual([]);
+    } finally { clearParentInbox(SESSION_UUID_1); clearParentInbox(SESSION_UUID_2); }
+  });
+
+  test("failed lists and unavailable inspections preserve parent inboxes", async () => {
+    clearParentInbox(SESSION_UUID_1);
+    try {
+      appendParentNotification(SESSION_UUID_1, { message: "keep while unavailable" });
+      client.setHandler("list_sessions", () => errResp("internal_error", "offline"));
+      await expect(backend.list()).rejects.toThrow(/internal_error/);
+      await expect(backend.inspectSession(SESSION_UUID_1)).rejects.toThrow(/internal_error/);
+      expect(listParentNotifications(SESSION_UUID_1)).toHaveLength(1);
+      client.requestError = new BrokerNotConnectedError();
+      await expect(backend.listSessionFacts()).rejects.toThrow();
+      expect(listParentNotifications(SESSION_UUID_1)).toHaveLength(1);
+    } finally { clearParentInbox(SESSION_UUID_1); }
+  });
+
   test("propagates broker errors", async () => {
     client.setHandler("list_sessions", () => errResp("internal_error", "broker exploded"));
     await expect(backend.list()).rejects.toThrow(/internal_error/);
   });
+});
+
+test("raw UUID lifecycle facts and inbox cleanup precede deferred public kill classification", async () => {
+  clearParentInbox(SESSION_UUID_1);
+  const publicReasons: string[] = [];
+  const observed: SessionLifecycleEvent[] = [];
+  const exactBackend = new BrokerBackend(client, event => {
+    if (event.kind === "session.exited") publicReasons.push(event.reason);
+  });
+  let settleKill!: (response: ControlResponse) => void;
+  client.setHandler("kill_session", () => new Promise(resolve => { settleKill = resolve; }));
+  const unsubscribe = exactBackend.onSessionLifecycleById(SESSION_UUID_1, event => observed.push(event));
+  const kill = exactBackend.killSessionById(SESSION_UUID_1);
+  try {
+    appendParentNotification(SESSION_UUID_1, { message: "before exit" });
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_2, exit_code: 0 });
+    expect(observed).toEqual([]);
+    publicReasons.length = 0;
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+    expect(listParentNotifications(SESSION_UUID_1)).toEqual([]);
+    expect(observed).toEqual([{ kind: "exited", exitCode: 0, signal: undefined }]);
+    expect(publicReasons).toEqual([]);
+    unsubscribe(); unsubscribe();
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+    expect(observed).toHaveLength(1);
+    settleKill(okResp({ kind: "kill_session" }));
+    await kill;
+    expect(publicReasons).toEqual(["killed"]);
+  } finally {
+    unsubscribe(); settleKill(okResp({ kind: "kill_session" })); await kill.catch(() => {});
+    clearParentInbox(SESSION_UUID_1);
+  }
 });
 
 describe("BrokerBackend.inspectSession", () => {
@@ -2531,6 +2600,17 @@ describe("BrokerBackend lifecycle → event bus", () => {
     backend.ingestEvent({ event: "session_started", session: { id: 7 } });
     backend.ingestEvent({ event: "session_started" });
     expect(seen).toEqual([]);
+  });
+
+  test("session exit clears only that stable parent's inbox", async () => {
+    const { appendParentNotification, listParentNotifications, clearParentInbox } = await import("../../src/server/parent-inbox.ts");
+    clearParentInbox(SESSION_UUID_1); clearParentInbox(SESSION_UUID_2);
+    appendParentNotification(SESSION_UUID_1, { message: "one" });
+    appendParentNotification(SESSION_UUID_2, { message: "two" });
+    backend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 0 });
+    expect(listParentNotifications(SESSION_UUID_1)).toEqual([]);
+    expect(listParentNotifications(SESSION_UUID_2)).toHaveLength(1);
+    clearParentInbox(SESSION_UUID_2);
   });
 
   test("natural exit publishes session.exited with reason exit and the cached name", async () => {
