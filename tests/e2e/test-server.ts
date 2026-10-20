@@ -112,6 +112,18 @@ const mock = new MockBackend({
 });
 __setTestBackend(mock);
 
+// Only the dedicated lifecycle fixture emits a completed mock-backend exit.
+// Keep the real /api/kill, event bus, filtered SSE route and /api/sessions path;
+// ordinary suites retain their existing non-emitting mock behavior.
+if (process.env.WOLFPACK_E2E_LIFECYCLE_EVENTS === "1") {
+  const { publishEvent } = await import("../../src/event-bus.ts");
+  const killSession = mock.killSession.bind(mock);
+  mock.killSession = async name => {
+    await killSession(name);
+    publishEvent({ kind: "session.exited", session: name, sessionId: `mock:${name}`, reason: "exit", exitCode: 0 });
+  };
+}
+
 const { server } = await import("../../src/server/index.ts");
 
 // Suppress expected tmux noise

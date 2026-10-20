@@ -69,6 +69,8 @@ const saved = new Map<string, PropertyDescriptor | undefined>();
 const containers = new Map<string, CellElement>();
 const frames = new Map<number, FrameRequestCallback>();
 const hydrated = new Map<string, () => void>();
+const disconnected = new Map<string, (code: number, reason: string) => void>();
+const invalidatedMachines: string[] = [];
 let nextFrame = 0;
 function frame(): void { const callbacks = [...frames.values()]; frames.clear(); for (const callback of callbacks) callback(0); }
 async function microtasks(): Promise<void> { for (let i = 0; i < 12; i++) await Promise.resolve(); }
@@ -93,11 +95,13 @@ beforeAll(async () => {
   ({ state } = await import(new URL("../../public/app-state.ts", import.meta.url).href));
   originalState = { ...state };
   grid.initGridDeps({
-    createPtyTerminalController(opts: { session: string; onHydrated: () => void }) {
+    createPtyTerminalController(opts: { session: string; onHydrated: () => void; onDisconnected: (code: number, reason: string) => void }) {
       hydrated.set(opts.session, opts.onHydrated);
+      disconnected.set(opts.session, opts.onDisconnected);
       return controller();
     },
     renderSidebar() {}, showNotice() {},
+    invalidateMachineSessions(machine: string) { invalidatedMachines.push(machine); },
   });
 });
 afterEach(async () => {
@@ -114,7 +118,7 @@ afterAll(() => {
   }
 });
 beforeEach(() => {
-  containers.clear(); frames.clear(); hydrated.clear();
+  containers.clear(); frames.clear(); hydrated.clear(); disconnected.clear(); invalidatedMachines.length = 0;
   state.gridSessions = []; state.delegationGridSessions = [];
   state.activeDelegationRoot = null; state.focusedDelegationSession = null; state.currentView = "terminal";
 });
@@ -128,6 +132,14 @@ async function mounted(delegation: boolean): Promise<Session[]> {
   return sessions;
 }
 for (const delegation of [false, true]) {
+  for (const [code, reason] of [[4001, "session unavailable"], [1000, "pty exited"]] as const) {
+    test(`${delegation ? "delegation" : "manual"} grid exit invalidates only its machine (${code})`, async () => {
+      const sessions = await mounted(delegation);
+      sessions[1]!.machine = "n-peer:2af8af29-c4fe-44f9-9a99-9a0e35952d74";
+      disconnected.get("beta")!(code, reason);
+      expect(invalidatedMachines).toEqual([sessions[1]!.machine]);
+    });
+  }
   for (const hydrationFirst of [false, true]) {
     test(`hydration resumes cancelled ${delegation ? "delegation" : "manual"} grid relayout (hydrate before cancellation: ${hydrationFirst})`, async () => {
       const sessions = await mounted(delegation);

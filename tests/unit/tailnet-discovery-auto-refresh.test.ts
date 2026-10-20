@@ -12,10 +12,45 @@ function createVisibleAutoRefresh(
     isVisible: () => true,
     setInterval: () => 1,
     clearInterval: () => undefined,
+    setTimeout: () => 2,
+    clearTimeout: () => undefined,
   });
 }
 
 describe("tailnet discovery auto-refresh", () => {
+  test("uses a fifteen second cadence with bounded recovery and hidden suspension", async () => {
+    expect(TAILNET_DISCOVERY_REFRESH_INTERVAL_MS).toBe(15_000);
+    let visible = true;
+    let calls = 0;
+    let cadence!: () => void;
+    const retries: { callback: () => void; ms: number }[] = [];
+    const cleared: unknown[] = [];
+    const auto = createTailnetDiscoveryAutoRefresh({
+      refresh: async () => { calls++; throw new Error("offline"); },
+      isVisible: () => visible,
+      setInterval: callback => { cadence = callback; return 1; },
+      clearInterval: () => {},
+      setTimeout: (callback, ms) => { const handle = { callback, ms }; retries.push(handle); return handle; },
+      clearTimeout: handle => { cleared.push(handle); },
+    });
+    auto.sync();
+    await expect(auto.requestRefresh()).rejects.toThrow("offline");
+    for (const [index, ms] of [2_000, 5_000, 10_000].entries()) {
+      expect(retries[index]?.ms).toBe(ms);
+      if (index === 2) {
+        cadence(); // The 15s tick must not cancel the pending final recovery.
+        expect(calls).toBe(3);
+      }
+      retries[index]!.callback();
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    expect(calls).toBe(4);
+    expect(retries).toHaveLength(3);
+    visible = false;
+    auto.sync(true);
+    await auto.requestRefresh();
+    expect(calls).toBe(4);
+  });
   test("refreshes on the visible cadence and isolates scheduled failures", async () => {
     const refreshError = new Error("candidate enumeration unavailable");
     const unhandledRejections: unknown[] = [];

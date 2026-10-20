@@ -1,4 +1,4 @@
-export const TAILNET_DISCOVERY_REFRESH_INTERVAL_MS = 60_000;
+export const TAILNET_DISCOVERY_REFRESH_INTERVAL_MS = 15_000;
 
 type TailnetDiscoveryRefresh = () => Promise<void>;
 type TailnetDiscoverySetInterval = (callback: () => void, ms: number) => unknown;
@@ -11,6 +11,8 @@ interface TailnetDiscoveryAutoRefreshOptions {
   readonly clearInterval?: TailnetDiscoveryClearInterval;
   readonly intervalMs?: number;
   readonly onError?: (error: unknown) => void;
+  readonly setTimeout?: TailnetDiscoverySetInterval;
+  readonly clearTimeout?: TailnetDiscoveryClearInterval;
 }
 
 interface TailnetDiscoveryAutoRefresh {
@@ -28,6 +30,15 @@ export function createTailnetDiscoveryAutoRefresh(
   let timer: unknown;
   let inFlight: Promise<void> | undefined;
   let refreshAfterCurrent = false;
+  const setTimeoutFn = options.setTimeout ?? ((callback, ms) => globalThis.setTimeout(callback, ms));
+  const clearTimeoutFn = options.clearTimeout ?? ((handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>));
+  const recoveryDelays = [2_000, 5_000, 10_000];
+  let recoveryAttempt = 0;
+  let recoveryTimer: unknown;
+  const clearRecovery = (): void => {
+    if (recoveryTimer !== undefined) clearTimeoutFn(recoveryTimer);
+    recoveryTimer = undefined;
+  };
 
   const drainRefreshRequests = async (): Promise<void> => {
     let lastRefreshError: unknown;
@@ -51,13 +62,27 @@ export function createTailnetDiscoveryAutoRefresh(
       refreshAfterCurrent = true;
       return inFlight;
     }
-    inFlight = drainRefreshRequests().finally(() => {
+    clearRecovery();
+    inFlight = drainRefreshRequests().then(() => {
+      recoveryAttempt = 0;
+    }, (error: unknown) => {
+      const delay = recoveryDelays[recoveryAttempt];
+      if (delay !== undefined && options.isVisible()) {
+        recoveryAttempt++;
+        recoveryTimer = setTimeoutFn(() => {
+          recoveryTimer = undefined;
+          requestBackgroundRefresh();
+        }, delay);
+      }
+      throw error;
+    }).finally(() => {
       inFlight = undefined;
     });
     return inFlight;
   };
 
   const stop = (): void => {
+    clearRecovery();
     if (timer === undefined) return;
     clearIntervalFn(timer);
     timer = undefined;
@@ -73,7 +98,10 @@ export function createTailnetDiscoveryAutoRefresh(
       stop();
       if (!options.isVisible()) return;
       if (refreshNow) requestBackgroundRefresh();
-      timer = setIntervalFn(requestBackgroundRefresh, intervalMs);
+      timer = setIntervalFn(() => {
+        // Complete the bounded recovery chain before resuming normal cadence.
+        if (recoveryTimer === undefined) requestBackgroundRefresh();
+      }, intervalMs);
     },
     requestRefresh,
     stop,

@@ -49,6 +49,75 @@ function handshake(
 }
 
 describe("browser tailnet peer registry", () => {
+  test("successful summaries renew the shared stale TTL through the exact seven-day boundary", () => {
+    let now = 1_000;
+    const registry = new TailnetPeerRegistry(() => now);
+    const identity = stableMachineIdentity(candidate.tailnetNodeId, installationId);
+    registry.applyProbe({ candidate, status: "ready", handshake: handshake() });
+    now += 6 * 24 * 60 * 60 * 1_000;
+    registry.recordSessionSuccess(identity);
+    const summaryAt = now;
+    now += 24 * 60 * 60 * 1_000 + 1;
+    registry.markCandidateEnumerationUnavailable();
+    expect(registry.entries()).toHaveLength(1);
+    expect(registry.resolveReadyOrigin(identity)).toBeUndefined();
+    now = summaryAt + 7 * 24 * 60 * 60 * 1_000;
+    expect(registry.entries()).toHaveLength(1);
+    now++;
+    expect(registry.entries()).toHaveLength(0);
+  });
+
+  test("summary bookkeeping survives same-identity handshakes but cannot renew revoked or replacement identities", () => {
+    let now = 1_000;
+    const registry = new TailnetPeerRegistry(() => now);
+    const identity = stableMachineIdentity(candidate.tailnetNodeId, installationId);
+    registry.applyProbe({ candidate, status: "ready", handshake: handshake() });
+    registry.recordSessionSuccess(identity);
+    now++;
+    registry.applyProbe({ candidate, status: "ready", handshake: handshake() });
+    expect(registry.entries()[0]?.lastSessionSuccessAt).toBe(1_000);
+    registry.markCandidateEnumerationUnavailable();
+    registry.recordSessionSuccess(identity);
+    expect(registry.entries()[0]?.lastSessionSuccessAt).toBe(1_000);
+    expect(registry.resolveReadyOrigin(identity)).toBeUndefined();
+    registry.applyProbe({ candidate, status: "ready", handshake: handshake(candidate.origin, "replacement", "3af8af29-c4fe-44f9-9a99-9a0e35952d74") });
+    registry.recordSessionSuccess(identity);
+    expect(registry.entries()[0]?.identity).not.toBe(identity);
+    expect(registry.entries()[0]?.lastSessionSuccessAt).toBeUndefined();
+  });
+
+  test("retains at most eight stale verified machines for seven days, never unknown candidates", () => {
+    let now = 1_000;
+    const registry = new TailnetPeerRegistry(() => now);
+    for (let index = 0; index < 12; index++) {
+      const peer = { ...candidate, tailnetNodeId: `n-${index}` };
+      registry.applyProbe({ candidate: peer, status: "ready", handshake: {
+        ...handshake(), machine: { ...handshake().machine, tailnetNodeId: peer.tailnetNodeId },
+      } });
+      now++;
+    }
+    registry.markCandidateEnumerationUnavailable();
+    expect(registry.entries().filter(entry => entry.identity)).toHaveLength(8);
+    expect(registry.entries().every(entry => !registry.resolveReadyOrigin(entry.identity!))).toBe(true);
+    expect(registry.entries().every(entry => (entry.lastVerifiedAt ?? 0) > 0 && entry.staleSince !== undefined)).toBe(true);
+    now += 7 * 24 * 60 * 60 * 1_000 + 1;
+    expect(registry.entries()).toHaveLength(0);
+  });
+  test("cancelling discovery stops queued candidate probes and prevents late publication", async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const settled: unknown[] = [];
+    const promise = probeTailnetCandidates(stalledCandidates(32), async (_input, init) => {
+      calls++;
+      return new Promise<Response>((_resolve, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason), { once: true }));
+    }, { signal: controller.signal, onSettled: probe => { settled.push(probe); } });
+    expect(calls).toBe(8);
+    controller.abort();
+    expect(await promise).toEqual([]);
+    expect(calls).toBe(8);
+    expect(settled).toEqual([]);
+  });
+
   test("allows the server's bounded identity query to settle before the outer probe expires", () => {
     expect(TAILNET_PROBE_TIMEOUT_MS).toBeGreaterThan(TAILSCALE_STATUS_TIMEOUT_MS);
   });

@@ -23,6 +23,9 @@ class MachineHandshakeResponseTooLargeError extends Error {}
 class MachineHandshakeBodyReadError extends Error {}
 
 export const LOCAL_MACHINE_IDENTITY = "local";
+/** Page-lifetime presentation metadata only; never routing authority. */
+export const MAX_STALE_MACHINES = 8;
+export const STALE_MACHINE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export type TailnetPeerStatus = "ready" | "offline" | "non-wolfpack" | "malformed" | "incompatible" | "unavailable";
 
@@ -43,6 +46,16 @@ export interface TailnetPeerEntry {
   readonly displayName: string;
   readonly version: string | undefined;
   readonly diagnostic: string | undefined;
+  readonly lastVerifiedAt?: number;
+  readonly lastSessionSuccessAt?: number;
+  readonly staleSince?: number;
+}
+
+/** One bound for stale registry metadata and session-service presentation rows. */
+export function retainedStaleMachines<T extends Pick<TailnetPeerEntry, "lastVerifiedAt" | "lastSessionSuccessAt">>(machines: readonly T[], now: number): ReadonlySet<T> {
+  const lastSuccess = (machine: T): number => Math.max(machine.lastVerifiedAt ?? 0, machine.lastSessionSuccessAt ?? 0);
+  return new Set([...machines].sort((left, right) => lastSuccess(right) - lastSuccess(left))
+    .filter((machine, index) => index < MAX_STALE_MACHINES && now - lastSuccess(machine) <= STALE_MACHINE_MAX_AGE_MS));
 }
 
 export interface TailnetPeerIdentityReplacement {
@@ -60,6 +73,7 @@ export type TailnetProbeSettledCallback = (probe: TailnetPeerProbe) => void | Pr
 export interface TailnetProbeOptions {
   readonly timeoutMs?: number;
   readonly maxConcurrent?: number;
+  readonly signal?: AbortSignal;
   /** Observes each completed probe without delaying its worker. */
   readonly onSettled?: TailnetProbeSettledCallback;
 }
@@ -167,6 +181,7 @@ async function probeCandidate(
   candidate: TailnetMachineCandidate,
   fetcher: TailnetProbeFetch,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<TailnetPeerProbe> {
   if (!candidate.online) return { candidate, status: "offline", diagnostic: "tailnet reports this peer offline" };
 
@@ -178,7 +193,7 @@ async function probeCandidate(
         redirect: "error",
         credentials: "omit",
         cache: "no-store",
-        signal: timeout.signal,
+        signal: signal ? AbortSignal.any([timeout.signal, signal]) : timeout.signal,
       }),
       timeout.expired,
     ]);
@@ -231,8 +246,9 @@ export async function probeTailnetCandidates(
     for (;;) {
       const index = next++;
       const candidate = candidates[index];
-      if (!candidate) return;
-      const outcome = await probeCandidate(candidate, fetcher, timeoutMs);
+      if (!candidate || options.signal?.aborted) return;
+      const outcome = await probeCandidate(candidate, fetcher, timeoutMs, options.signal);
+      if (options.signal?.aborted) return;
       outcomes[index] = outcome;
       if (options.onSettled) {
         queueMicrotask(() => {
@@ -244,7 +260,7 @@ export async function probeTailnetCandidates(
     }
   };
   await Promise.all(Array.from({ length: Math.min(maxConcurrent, candidates.length) }, () => worker()));
-  return outcomes;
+  return outcomes.filter(Boolean);
 }
 
 interface LegacyMachineDisplayMetadata {
@@ -268,6 +284,19 @@ export class TailnetPeerRegistry {
   private readonly candidateOriginsByNode = new Map<string, string>();
   private readonly legacyNamesByNode = new Map<string, string>();
 
+  constructor(private readonly now: () => number = Date.now) {}
+
+  private pruneStaleEntries(): void {
+    const stale = [...this.stableEntries.values()].filter(entry => entry.status !== "ready");
+    const retained = retainedStaleMachines(stale, this.now());
+    for (const entry of stale) {
+      if (retained.has(entry)) continue;
+      this.stableEntries.delete(entry.identity!);
+      this.candidateOriginsByNode.delete(entry.tailnetNodeId);
+      this.legacyNamesByNode.delete(entry.tailnetNodeId);
+    }
+  }
+
   /** Removes routing authority when current local candidate facts no longer match a verified peer. */
   reconcileCandidates(candidates: readonly TailnetMachineCandidate[]): void {
     const candidatesByNode = new Map(candidates.map((candidate) => [candidate.tailnetNodeId, candidate]));
@@ -285,15 +314,14 @@ export class TailnetPeerRegistry {
         ...entry,
         status: "offline",
         diagnostic,
+        staleSince: entry.staleSince ?? this.now(),
       });
     }
     for (const [nodeId, entry] of this.transientEntries) {
       if (candidatesByNode.has(nodeId)) continue;
-      this.transientEntries.set(nodeId, {
-        ...entry,
-        status: "offline",
-        diagnostic: "candidate is no longer present in local Tailnet status",
-      });
+      this.transientEntries.delete(nodeId);
+      this.candidateOriginsByNode.delete(nodeId);
+      this.legacyNamesByNode.delete(nodeId);
     }
   }
 
@@ -307,6 +335,7 @@ export class TailnetPeerRegistry {
         ...entry,
         status: "unavailable",
         diagnostic: "tailnet candidate enumeration unavailable",
+        staleSince: entry.staleSince ?? this.now(),
       });
     }
     for (const [nodeId, entry] of this.transientEntries) {
@@ -352,6 +381,9 @@ export class TailnetPeerRegistry {
         displayName: probe.handshake.machine.displayName,
         version: probe.handshake.wolfpack.version,
         diagnostic: undefined,
+        lastVerifiedAt: this.now(),
+        lastSessionSuccessAt: this.stableEntries.get(identity)?.lastSessionSuccessAt,
+        staleSince: undefined,
       });
       return replacedEntry
         ? {
@@ -368,7 +400,7 @@ export class TailnetPeerRegistry {
     const existing = [...this.stableEntries.values()].find(entry => entry.tailnetNodeId === candidate.tailnetNodeId);
     const legacyName = this.legacyNamesByNode.get(candidate.tailnetNodeId);
     const entry: TailnetPeerEntry = existing
-      ? { ...existing, status: probe.status, hostname: candidate.hostname, diagnostic: probe.diagnostic }
+      ? { ...existing, status: probe.status, hostname: candidate.hostname, diagnostic: probe.diagnostic, staleSince: existing.staleSince ?? this.now() }
       : {
         identity: undefined,
         tailnetNodeId: candidate.tailnetNodeId,
@@ -384,7 +416,14 @@ export class TailnetPeerRegistry {
     return { kind: "applied" };
   }
 
+  /** A fenced successful summary renews metadata age, never handshake readiness. */
+  recordSessionSuccess(identity: string): void {
+    const entry = this.stableEntries.get(identity);
+    if (entry?.status === "ready") this.stableEntries.set(identity, { ...entry, lastSessionSuccessAt: this.now() });
+  }
+
   entries(): readonly TailnetPeerEntry[] {
+    this.pruneStaleEntries();
     return [...this.stableEntries.values(), ...this.transientEntries.values()]
       .sort((left, right) => left.tailnetNodeId.localeCompare(right.tailnetNodeId));
   }

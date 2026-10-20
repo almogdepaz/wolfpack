@@ -38,6 +38,7 @@ import { showAppDialog } from "./app-dialog";
 import { createSessionInspector } from "./session-inspector";
 import { rankProjectNames } from "./project-picker";
 import { authenticatedFetchWithTimeout, browserAuthFetch, getBrowserAuthToken } from "./browser-auth";
+import { SessionLifecycleStreamError, startSessionLifecycleStream } from "./session-lifecycle-stream";
 import { isRequestTimeout } from "./fetch-timeout";
 import { probeBackendStatus } from "./backend-probe";
 import { createReconnectBanner } from "./reconnect-banner";
@@ -162,6 +163,7 @@ import {
 } from "../src/tailnet-discovery-auto-refresh";
 import {
   LOCAL_MACHINE_IDENTITY,
+  retainedStaleMachines,
   TailnetPeerRegistry,
   isStableMachineIdentity,
   probeTailnetCandidates,
@@ -1007,36 +1009,32 @@ async function showMachineUnavailable(): Promise<void> {
 }
 
 let tailnetPeerRefreshGeneration = 0;
+let discoveryAbort: AbortController | null = null;
 let tailnetPeerSessionRefreshScheduled = false;
-let tailnetPeerSessionRefreshDirty = false;
 let tailnetPeerSessionRefreshGeneration: number | undefined;
+const pendingPeerSessionRefreshes = new Set<string>();
 
-function scheduleTailnetPeerSessionRefresh(generation: number): void {
+function scheduleTailnetPeerSessionRefresh(generation: number, identity: string): void {
+  if (tailnetPeerSessionRefreshGeneration !== generation) pendingPeerSessionRefreshes.clear();
   tailnetPeerSessionRefreshGeneration = generation;
-  if (tailnetPeerSessionRefreshScheduled) {
-    tailnetPeerSessionRefreshDirty = true;
-    return;
-  }
+  pendingPeerSessionRefreshes.add(identity);
+  if (tailnetPeerSessionRefreshScheduled) return;
   tailnetPeerSessionRefreshScheduled = true;
-  queueMicrotask(async () => {
-    const scheduledGeneration = tailnetPeerSessionRefreshGeneration;
-    tailnetPeerSessionRefreshDirty = false;
-    try {
-      if (scheduledGeneration === tailnetPeerRefreshGeneration) await loadSessions(true);
-    } catch (error) {
-      console.warn("[tailnet] session refresh failed:", error);
-    } finally {
-      const refreshAgain = tailnetPeerSessionRefreshDirty;
-      tailnetPeerSessionRefreshScheduled = false;
-      if (refreshAgain && tailnetPeerSessionRefreshGeneration === tailnetPeerRefreshGeneration) {
-        scheduleTailnetPeerSessionRefresh(tailnetPeerRefreshGeneration);
-      }
+  queueMicrotask(() => {
+    tailnetPeerSessionRefreshScheduled = false;
+    const identities = [...pendingPeerSessionRefreshes];
+    pendingPeerSessionRefreshes.clear();
+    if (tailnetPeerSessionRefreshGeneration !== tailnetPeerRefreshGeneration) return;
+    for (const identity of identities) {
+      void refreshMachineSessions(identity, true).catch(error => console.warn("[tailnet] session refresh failed:", error));
     }
   });
 }
 
 function retireReplacedPeerIdentity(replacement: TailnetPeerIdentityReplacement): void {
   const { oldIdentity } = replacement;
+  interactiveMachineAuth.get(oldIdentity)?.abort();
+  interactiveMachineAuth.delete(oldIdentity);
   const manualGridAffected = state.gridSessions.some(session => session.machine === oldIdentity);
   const activeDelegationAffected = state.activeDelegationRoot !== null && (
     state.delegationMachine === oldIdentity
@@ -1074,29 +1072,33 @@ type TailnetPeerRefreshResult = "applied" | "stale";
 
 async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
   const generation = ++tailnetPeerRefreshGeneration;
-  // Only an existing remote authority can make an in-flight session result
-  // unsafe. Local-only startup remains authoritative while an empty Tailnet
-  // enumeration completes, avoiding a redundant rate-limited refresh.
-  if (getWorkspaceMachines().length > 0) {
-    state.loadSessionsEpoch++;
-    scheduleTailnetPeerSessionRefresh(generation);
-  }
-  const isCurrentGeneration = (): boolean => generation === tailnetPeerRefreshGeneration;
+  const owner = new AbortController();
+  discoveryAbort = owner;
+  const isCurrentGeneration = (): boolean => generation === tailnetPeerRefreshGeneration && !owner.signal.aborted;
   try {
-    const response = await api<unknown>("/tailnet/v1/candidates");
+    const response = await api<unknown>("/tailnet/v1/candidates", { signal: owner.signal }, undefined, false);
     if (!isCurrentGeneration()) return "stale";
-    const candidates = candidateEnumerationCandidates(response);
+    const knownNodes = new Set(tailnetPeers.entries().filter(peer => peer.identity).map(peer => peer.tailnetNodeId));
+    const candidates = [...candidateEnumerationCandidates(response)]
+      .sort((left, right) => Number(knownNodes.has(right.tailnetNodeId)) - Number(knownNodes.has(left.tailnetNodeId)));
     tailnetPeers.reconcileCandidates(candidates);
+    reconcileMachineSessionGroups();
+    syncLifecycleStreams();
     void extensionHost?.refresh();
     await probeTailnetCandidates(candidates, fetch, {
+      signal: owner.signal,
       onSettled: (probe) => {
         if (!isCurrentGeneration()) return;
         const affectedReadyPeer = probe.status === "ready"
           || tailnetPeers.entries().some((entry) => entry.tailnetNodeId === probe.candidate.tailnetNodeId && entry.status === "ready");
         const applied = tailnetPeers.applyProbe(probe);
         if (applied.kind === "identity-replaced") retireReplacedPeerIdentity(applied.replacement);
+        reconcileMachineSessionGroups();
+        syncLifecycleStreams();
+        renderMachinesList();
         if (affectedReadyPeer) void extensionHost?.refresh();
-        if (affectedReadyPeer) scheduleTailnetPeerSessionRefresh(generation);
+        const identity = tailnetPeers.entries().find(peer => peer.tailnetNodeId === probe.candidate.tailnetNodeId)?.identity;
+        if (identity && resolveReadyMachineOrigin(identity)) scheduleTailnetPeerSessionRefresh(generation, identity);
       },
     });
     if (!isCurrentGeneration()) return "stale";
@@ -1106,12 +1108,13 @@ async function refreshTailnetPeers(): Promise<TailnetPeerRefreshResult> {
     if (!isCurrentGeneration()) return "stale";
     const retainedEntries = tailnetPeers.entries().length > 0;
     tailnetPeers.markCandidateEnumerationUnavailable();
+    reconcileMachineSessionGroups();
+    syncLifecycleStreams();
     void extensionHost?.refresh();
-    if (retainedEntries) {
-      renderMachinesList();
-      scheduleTailnetPeerSessionRefresh(generation);
-    }
+    if (retainedEntries) renderMachinesList();
     throw error;
+  } finally {
+    if (discoveryAbort === owner) discoveryAbort = null;
   }
 }
 
@@ -1130,16 +1133,30 @@ function renderUpdatedLocalMachineMetadata(): void {
   if (state.drawerOpen) renderDrawerList();
 }
 
+const discoveryHealth: { inProgress: boolean; lastSuccess?: number; lastError?: string } = { inProgress: false };
 const tailnetDiscoveryAutoRefresh = createTailnetDiscoveryAutoRefresh({
   refresh: async () => {
-    await refreshTailnetPeers();
+    discoveryHealth.inProgress = true;
+    renderDiscoveryHealth();
+    try {
+      if (await refreshTailnetPeers() === "applied") {
+        discoveryHealth.lastSuccess = Date.now();
+        discoveryHealth.lastError = undefined;
+      }
+    } catch (error) {
+      discoveryHealth.lastError = errorMessage(error);
+      throw error;
+    } finally {
+      discoveryHealth.inProgress = false;
+      renderDiscoveryHealth();
+    }
   },
   isVisible: () => document.visibilityState === "visible",
 });
 
 void (async (): Promise<void> => {
   try {
-    const info = await api<{ readonly name?: string; readonly version?: string }>("/info");
+    const info = await api<{ readonly name?: string; readonly version?: string }>("/info", undefined, undefined, false);
     state.selfName = info.name || "this machine";
     state.selfVersion = info.version || "";
     updateProjectMachineLabels();
@@ -1152,8 +1169,6 @@ void (async (): Promise<void> => {
     renderUpdatedLocalMachineMetadata();
   }
 })();
-
-tailnetDiscoveryAutoRefresh.sync(true);
 
 function errorMessage(err: unknown): string {
   if (err && typeof err === "object" && "message" in err) {
@@ -1240,11 +1255,11 @@ interface AgentRuntimeStateAcknowledgementResponse {
   readonly runtimeState?: DelegationSessionLike["runtimeState"];
 }
 
-async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineIdentity?: string): Promise<TResponse> {
+async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineIdentity?: string, interactive = true): Promise<TResponse> {
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new Error("selected peer is not ready");
   const base = origin ? new URL("/api" + path, origin).href : "/api" + path;
-  const res = await authenticatedFetchWithTimeout(base, opts);
+  const res = await authenticatedFetchWithTimeout(base, opts, { interactive });
   const body = await res.text();
   let data: unknown = {};
   if (body) {
@@ -1701,7 +1716,7 @@ function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSes
 function renderSessionListFromState(): void {
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
-  const multiMachine = getWorkspaceMachines().length > 0;
+  const multiMachine = state.lastSessionGroups.some(group => group.machine.url);
   const groups = machineGroupsInPresentationOrder(state.lastSessionGroups);
   const canonicalLocalGroup = state.lastSessionGroups.find(group => group.machine.url === "");
   const html = multiMachine
@@ -1816,6 +1831,12 @@ function machineGroupBodyId(surface: MachineGroupSurface, index: number): string
   return `${surface}-machine-group-body-${index}`;
 }
 
+function machineRetryButtonHtml(group): string {
+  if (group.online || group.pending) return "";
+  const label = group.failure === "auth" ? "Authenticate" : "Retry";
+  return `<button type="button" class="machine-retry-btn" data-action="retry-machine" data-machine="${escAttr(group.machine.url || "")}" aria-label="${label} ${escAttr(group.machine.name)}">${label}</button>`;
+}
+
 function machineHeaderHtml(
   group,
   surface: MachineGroupSurface,
@@ -1830,13 +1851,11 @@ function machineHeaderHtml(
   const compactCreateButton = group.online && group.sessions.length === 0 && !collapsed && surface !== "sidebar"
     ? ""
     : machineAddButtonHtml(machineUrl, group.machine.name, !group.online);
-  const retryButton = !group.online && !group.pending
-    ? `<button type="button" class="machine-retry-btn" data-action="retry-machine" aria-label="Retry ${escAttr(group.machine.name)}">Retry</button>`
-    : "";
+  const retryButton = machineRetryButtonHtml(group);
   const status = group.pending
     ? '<span class="machine-header-status">Connecting…</span>'
     : !group.online
-      ? `<span class="machine-header-status">${esc(machineFailureLabel(group.failure || "unknown"))}</span>`
+      ? `<span class="machine-header-status" title="${escAttr(machineHealthDetail(group))}">${esc(machineFailureLabel(group.failure || "unknown"))}</span>`
       : "";
   const action = collapsed ? "Expand" : "Collapse";
   const nameHandle = machineNameHandleHtml(group.machine.name);
@@ -1885,7 +1904,7 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
   const bodyId = machineGroupBodyId(surface, index);
   const collapsed = machineGroupIsCollapsed(g, surface);
   let bodyHtml = "";
-  if (multiMachine && g.pending) {
+  if (g.pending) {
     bodyHtml += '<div class="group-status">Connecting...</div>';
   } else if (g.online) {
     const presentation = sessionCardGroupPresentation(g.sessions, machineKey);
@@ -1899,7 +1918,7 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
       bodyHtml += rows.map((row, rowIndex) => {
         const s = row.session;
         const lastLine = s.lastLine || "";
-        const ui = sessionRuntimeUi(s);
+        const ui = sessionChooserUi(s, machineKey);
         const anim = state.firstLoad ? "animate-in" : "";
         const grouping = delegationCardAttributes(row);
         const ordering = sessionOrderCardHtml(row, machineKey);
@@ -1921,7 +1940,7 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
     }
   } else {
     const failure = machineFailureLabel(g.failure || "unknown");
-    bodyHtml += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect.</div>`;
+    bodyHtml += `<div class="group-status machine-failure" role="status">${esc(failure)}. ${esc(machineHealthDetail(g))}. Live terminal actions require this machine to reconnect.</div>`;
   }
   return `<div class="machine-group${offlineClass}" data-machine="${mUrlAttr}" data-machine-surface="${surface}"${failureAttribute}>${machineHeaderHtml(g, surface, bodyId, multiMachine, collapsed, statusDot, statusTitle, versionWarning)}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
 }
@@ -2075,13 +2094,14 @@ function returnToDelegationGrid(): void {
   openDelegationGrid(state.activeDelegationRoot, state.delegationMachine || "");
 }
 
-type MachineFailureCategory = "auth" | "timeout" | "server" | "network" | "unknown";
+type MachineFailureCategory = "auth" | "timeout" | "server" | "network" | "unknown" | "incompatible" | "broker";
 
 function classifyMachineFailure(error: unknown): MachineFailureCategory {
-  if (error instanceof DOMException && (error.name === "TimeoutError" || error.name === "AbortError")) return "timeout";
+  if (isRequestTimeout(error) || (error instanceof DOMException && error.name === "AbortError")) return "timeout";
   if (error && typeof error === "object" && "status" in error) {
     const status = (error as { readonly status?: unknown }).status;
     if (status === 401 || status === 403) return "auth";
+    if ("data" in error && /^(broker|backend) unavailable$/i.test(String((error.data as { error?: unknown })?.error))) return "broker";
     if (typeof status === "number" && status >= 500) return "server";
   }
   if (error instanceof TypeError) return "network";
@@ -2090,6 +2110,8 @@ function classifyMachineFailure(error: unknown): MachineFailureCategory {
 
 function machineFailureLabel(category: MachineFailureCategory): string {
   if (category === "auth") return "Authentication required";
+  if (category === "incompatible") return "Incompatible installation";
+  if (category === "broker") return "Broker unavailable";
   if (category === "timeout") return "Timed out";
   if (category === "server") return "Server unavailable";
   if (category === "network") return "Unreachable";
@@ -2113,9 +2135,19 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
     ? AbortSignal.any([refreshSignal, AbortSignal.timeout(timeoutMs)])
     : refreshSignal;
   const options = { signal };
-  return api<SessionsResponse>("/sessions", options, machineIdentity || undefined).then((sessions) => {
-    if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordSuccess(state.peerHealth, machineIdentity);
+  return api<SessionsResponse>("/sessions", options, machineIdentity || undefined, false).then(async (sessions) => {
     const sessionRows = sessions.sessions || [];
+    if (sessionRows.some(session => sessionRuntimeState(session) === AGENT_STATUS_STATE.UNKNOWN)) {
+      return { machine: { ...currentMachineMeta(), url: machineIdentity }, sessions: [], online: false, pending: false, failure: "broker" as const };
+    }
+    if (sessionRows.length === 0) {
+      const backendUrl = isRemote ? new URL("/api/backend", resolveReadyMachineOrigin(machineIdentity)).href : "/api/backend";
+      const backend = await probeBackendStatus(backendUrl, (url, init) => browserAuthFetch(url, { signal: AbortSignal.any([signal, init.signal]) }), 1_000);
+      if (backend.kind === "responded" && backend.brokerReady === false) {
+        return { machine: { ...currentMachineMeta(), url: machineIdentity }, sessions: [], online: false, pending: false, failure: "broker" as const };
+      }
+    }
+    if (isRemote && isCurrentLoad()) state.peerHealth = peerHealthRecordSuccess(state.peerHealth, machineIdentity);
     if (isRemote) for (const session of sessionRows) session.activity = undefined;
     return {
       machine: { ...currentMachineMeta(), url: machineIdentity },
@@ -2133,127 +2165,141 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
   });
 }
 
-async function loadSessionsOnce(refreshSignal: AbortSignal) {
-  const myEpoch = ++state.loadSessionsEpoch;
-  const isCurrentLoad = (): boolean => myEpoch === state.loadSessionsEpoch;
-  const el = document.getElementById("session-list");
-  const machines = getWorkspaceMachines();
-  const multiMachine = machines.length > 0;
+interface MachineSessionRefresh {
+  promise: Promise<void> | null;
+  controller: AbortController | null;
+  dirty: boolean;
+}
+const machineSessionRefreshes = new Map<string, MachineSessionRefresh>();
+const interactiveMachineAuth = new Map<string, AbortController>();
 
-  // Single-machine: just fetch and render
-  if (!multiMachine) {
-    const g = await fetchMachine("", { name: state.selfName || "this machine" }, isCurrentLoad, refreshSignal);
-    if (!isCurrentLoad()) return; // stale call, discard
-    state.lastSessionGroups = [g];
-    state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
-    const html = renderMachineGroupHtml(g, false, "main", 0);
-    if (html !== state.lastSessionsHtml) {
-      machineGroupEventController?.cancelForRender();
-      el.innerHTML = html;
-      state.lastSessionsHtml = html;
-    }
-    syncDelegationWorkspace();
-    checkStateTransitions([g]);
-    state.firstLoad = false;
-    await openSessionFromNotificationRoute(myEpoch);
-    return;
+function reconcileMachineSessionGroups(): void {
+  for (const [identity, slot] of machineSessionRefreshes) {
+    if (!identity || resolveReadyMachineOrigin(identity)) continue;
+    slot.dirty = false;
+    slot.controller?.abort();
+    machineSessionRefreshes.delete(identity);
   }
-
-  // Multi-machine
-  const allMachines = [
-    { url: "", meta: { name: state.selfName || "this machine" } },
-    ...machines.map(m => ({ url: m.url, meta: m })),
-  ];
-
-  const groups = new Array(allMachines.length);
-  // Keep a previous successful peer group visible while its next session
-  // request is pending. New peers enter workspace navigation only after that
-  // request succeeds; failures remove their workspace group.
-  const prevByUrl = new Map((state.lastSessionGroups || [])
-    .filter(group => !group.machine.url || group.online)
-    .map(group => [group.machine.url, group]));
-  const localPending = {
-    machine: { ...allMachines[0].meta, url: "", version: "" },
-    sessions: [], online: false, pending: true,
-  };
-  const withCurrentLocalMetadata = (group, machineUrl) => machineUrl
-    ? group
-    : { ...group, machine: { ...group.machine, name: state.selfName || "this machine", version: state.selfVersion } };
-  const visibleGroupsInOrder = () => allMachines.flatMap((machine, index) => {
-    const resolved = groups[index];
-    if (resolved) return !machine.url || resolved.online
-      ? [withCurrentLocalMetadata(resolved, machine.url)]
-      : [];
-    const previous = prevByUrl.get(machine.url);
-    if (previous) return [withCurrentLocalMetadata(previous, machine.url)];
-    return machine.url ? [] : [withCurrentLocalMetadata(localPending, machine.url)];
-  });
-  const renderVisibleGroups = () => {
-    const visible = visibleGroupsInOrder();
-    state.lastSessionGroups = visible;
-    const presentationGroups = machineGroupsInPresentationOrder(visible);
-    const html = presentationGroups.map((group, index) => renderMachineGroupHtml(group, true, "main", index)).join("");
-    if (html !== state.lastSessionsHtml) {
-      machineGroupEventController?.cancelForRender();
-      el.innerHTML = html;
-      state.lastSessionsHtml = html;
-    }
-    renderSidebar();
-  };
-
-  renderVisibleGroups();
-
-  const promises = allMachines.map((m, i) =>
-    fetchMachine(m.url, m.meta, isCurrentLoad, refreshSignal).then(g => {
-      if (!isCurrentLoad()) return; // stale call, discard
-      groups[i] = g;
-      renderVisibleGroups();
-    })
-  );
-
-  await Promise.all(promises);
-  if (!isCurrentLoad()) return; // stale call, discard
-
-  state.firstLoad = false;
-  const visibleGroups = visibleGroupsInOrder();
-  state.lastSessionGroups = visibleGroups;
-  const out = [];
-  for (const g of visibleGroups) {
-    for (const s of g.sessions) out.push({ ...s, machineUrl: g.machine.url, machineName: g.machine.name });
+  for (const [identity, owner] of interactiveMachineAuth) {
+    if (!identity || resolveReadyMachineOrigin(identity)) continue;
+    owner.abort();
+    interactiveMachineAuth.delete(identity);
   }
-  state.allSessions = out;
-  syncDelegationWorkspace();
-  checkStateTransitions(visibleGroups);
-  await openSessionFromNotificationRoute(myEpoch);
+  const peers = tailnetPeers.entries().filter(peer => peer.identity);
+  const byIdentity = new Map(peers.map(peer => [peer.identity, peer]));
+  state.lastSessionGroups = state.lastSessionGroups.filter(group => !group.machine.url || byIdentity.has(group.machine.url));
+  for (const peer of peers) {
+    if (peer.status === "ready") continue;
+    const previous = state.lastSessionGroups.find(group => group.machine.url === peer.identity);
+    const group = {
+      machine: { url: peer.identity, name: peer.displayName, version: peer.version || "" },
+      sessions: [], online: false, pending: false,
+      failure: peer.status === "incompatible" ? "incompatible" : "network",
+      lastSuccessAt: previous?.lastSuccessAt,
+      staleSince: previous?.staleSince ?? peer.staleSince ?? Date.now(),
+    };
+    state.lastSessionGroups = [...state.lastSessionGroups.filter(candidate => candidate.machine.url !== peer.identity), group];
+  }
+  // This is a presentation cache, not a source of route/session authority.
+  const stale = state.lastSessionGroups.filter(group => group.machine.url && !group.online).map(group => ({
+    group,
+    lastVerifiedAt: byIdentity.get(group.machine.url)?.lastVerifiedAt,
+    lastSessionSuccessAt: byIdentity.get(group.machine.url)?.lastSessionSuccessAt,
+  }));
+  const retained = new Set([...retainedStaleMachines(stale, Date.now())].map(entry => entry.group));
+  state.lastSessionGroups = state.lastSessionGroups.filter(group => !group.machine.url || group.online || retained.has(group));
+  publishSessionProjection();
 }
 
-let sessionRefreshPromise: Promise<void> | null = null;
-let sessionRefreshAbort: AbortController | null = null;
-let forceSessionRefreshAfterCurrent = false;
+function publishSessionProjection(): void {
+  state.allSessions = state.lastSessionGroups.flatMap(group => group.online
+    ? group.sessions.map(session => ({ ...session, machineUrl: group.machine.url, machineName: group.machine.name }))
+    : []);
+  renderSessionListFromState();
+  renderSidebar();
+  if (state.drawerOpen) renderDrawerList();
+  syncDelegationWorkspace();
+  checkStateTransitions(state.lastSessionGroups);
+  renderDiscoveryHealth();
+}
 
-function loadSessions(forceAfterCurrent = false): Promise<void> {
-  if (sessionRefreshPromise) {
-    if (forceAfterCurrent) {
-      forceSessionRefreshAfterCurrent = true;
-      // Invalidate immediately so stale catch/render continuations cannot update
-      // peer health or the dashboard while their requests are being aborted.
-      state.loadSessionsEpoch += 1;
-      sessionRefreshAbort?.abort(new DOMException("superseded", "AbortError"));
-    }
-    return sessionRefreshPromise;
+function refreshMachineSessions(machineIdentity: string, force = false): Promise<void> {
+  if (document.visibilityState !== "visible") return Promise.resolve();
+  const origin = resolveReadyMachineOrigin(machineIdentity);
+  if (machineIdentity && !origin) return Promise.resolve();
+  let slot = machineSessionRefreshes.get(machineIdentity);
+  if (!slot) {
+    slot = { promise: null, controller: null, dirty: false };
+    machineSessionRefreshes.set(machineIdentity, slot);
   }
-  sessionRefreshPromise = (async () => {
+  if (slot.promise) {
+    if (force) {
+      slot.dirty = true;
+      slot.controller?.abort(new DOMException("superseded", "AbortError"));
+    }
+    return slot.promise;
+  }
+  const owner = slot;
+  owner.promise = (async () => {
     do {
-      forceSessionRefreshAfterCurrent = false;
-      sessionRefreshAbort = new AbortController();
-      await loadSessionsOnce(sessionRefreshAbort.signal);
-      renderSidebar();
-    } while (forceSessionRefreshAfterCurrent);
+      owner.dirty = false;
+      const loadEpoch = state.loadSessionsEpoch;
+      const controller = new AbortController();
+      owner.controller = controller;
+      const current = () => !controller.signal.aborted
+        && machineSessionRefreshes.get(machineIdentity) === owner
+        && resolveReadyMachineOrigin(machineIdentity) === origin;
+      const meta = machineIdentity
+        ? getWorkspaceMachines().find(machine => machine.url === machineIdentity)
+        : { name: state.selfName || "this machine" };
+      if (!meta) return;
+      const group = await fetchMachine(machineIdentity, meta, current, controller.signal);
+      if (current()) {
+        const previous = state.lastSessionGroups.find(candidate => candidate.machine.url === machineIdentity);
+        const updated = { ...group, lastSuccessAt: group.online ? Date.now() : previous?.lastSuccessAt,
+          staleSince: group.online ? undefined : previous?.staleSince ?? Date.now() };
+        state.lastSessionGroups = [...state.lastSessionGroups.filter(candidate => candidate.machine.url !== machineIdentity), updated];
+        if (group.online) {
+          tailnetPeers.recordSessionSuccess(machineIdentity);
+          reconcileStoppingSessions(machineIdentity, group.sessions);
+        }
+        state.firstLoad = false;
+        reconcileMachineSessionGroups();
+        await openSessionFromNotificationRoute(loadEpoch);
+      }
+    } while (owner.dirty && document.visibilityState === "visible" && (!machineIdentity || resolveReadyMachineOrigin(machineIdentity) === origin));
   })().finally(() => {
-    sessionRefreshAbort = null;
-    sessionRefreshPromise = null;
+    owner.controller = null;
+    owner.promise = null;
   });
-  return sessionRefreshPromise;
+  return owner.promise;
+}
+
+const machineInvalidations = new Map<string, ReturnType<typeof setTimeout>>();
+function invalidateMachineSessions(identity = ""): void {
+  if (document.visibilityState !== "visible" || machineInvalidations.has(identity)) return;
+  machineInvalidations.set(identity, setTimeout(() => {
+    machineInvalidations.delete(identity);
+    if (document.visibilityState === "visible") void refreshMachineSessions(identity, true);
+  }, 100));
+}
+
+function loadSessions(force = false): Promise<void> {
+  if (document.visibilityState !== "visible") return Promise.resolve();
+  state.loadSessionsEpoch++;
+  const machines = ["", ...getWorkspaceMachines().map(machine => machine.url)];
+  reconcileMachineSessionGroups();
+  if (!state.lastSessionGroups.some(group => !group.machine.url)) {
+    state.lastSessionGroups.unshift({
+      machine: { url: "", name: state.selfName || "this machine", version: state.selfVersion },
+      sessions: [], online: false, pending: true,
+    });
+  }
+  publishSessionProjection();
+  syncLifecycleStreams();
+  // Each machine owns its flight: waiting for one caller's aggregate never
+  // prevents a later poll/event from refreshing other machines.
+  return Promise.all(machines.map(identity => refreshMachineSessions(identity, force))).then(() => undefined);
 }
 
 async function openSessionFromNotificationRoute(expectedLoadEpoch: number): Promise<void> {
@@ -2268,32 +2314,91 @@ async function openSessionFromNotificationRoute(expectedLoadEpoch: number): Prom
     console.warn("notification target is unavailable; refresh Tailnet discovery and retry");
     return;
   }
-  if (expectedLoadEpoch !== state.loadSessionsEpoch) return;
+  if (expectedLoadEpoch !== state.loadSessionsEpoch || (machineIdentity && !resolveReadyMachineOrigin(machineIdentity))) return;
 
-  await openSession(session.name, machineIdentity || undefined);
+  // Claim this exact route before an asynchronous terminal switch yields to
+  // another machine's completion. Never clear a newer route after that await.
   const cleanUrl = new URL(location.href);
   cleanUrl.searchParams.delete("sessionId");
   cleanUrl.searchParams.delete("session");
   cleanUrl.searchParams.delete("machine");
   history.replaceState(history.state, "", cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+  await openSession(session.name, machineIdentity || undefined);
 }
 
-function retryMachine(_machineIdentity: string, event?: Event): void {
+async function retryMachine(machineIdentity: string, event?: Event): Promise<void> {
   event?.stopPropagation();
-  void tailnetDiscoveryAutoRefresh.requestRefresh()
-    .then(() => loadSessions(true))
-    .catch(() => undefined);
+  try {
+    const previous = state.lastSessionGroups.find(candidate => candidate.machine.url === machineIdentity);
+    if (previous?.failure !== "auth" || (machineIdentity && !resolveReadyMachineOrigin(machineIdentity))) {
+      await tailnetDiscoveryAutoRefresh.requestRefresh();
+    }
+    const origin = resolveReadyMachineOrigin(machineIdentity);
+    if (machineIdentity && !origin) return;
+    const group = state.lastSessionGroups.find(candidate => candidate.machine.url === machineIdentity);
+    if (group?.failure === "auth") {
+      interactiveMachineAuth.get(machineIdentity)?.abort();
+      const owner = new AbortController();
+      interactiveMachineAuth.set(machineIdentity, owner);
+      try {
+        await api("/sessions", { signal: owner.signal }, machineIdentity || undefined, true);
+        if (owner.signal.aborted || resolveReadyMachineOrigin(machineIdentity) !== origin) return;
+      } finally {
+        if (interactiveMachineAuth.get(machineIdentity) === owner) interactiveMachineAuth.delete(machineIdentity);
+      }
+    }
+    await refreshMachineSessions(machineIdentity, true);
+  } catch (error) {
+    if (!(error instanceof DOMException && error.name === "AbortError")) console.warn("[sessions] explicit retry failed:", error);
+  }
 }
 
 const SESSION_REFRESH_INTERVAL_MS = 5_000;
 
+const lifecycleStreams = new Map<string, { origin: string; stop: () => void }>();
+function syncLifecycleStreams(): void {
+  const targets = new Map<string, string>();
+  if (document.visibilityState === "visible") {
+    targets.set("", location.origin);
+    for (const machine of getWorkspaceMachines()) {
+      const origin = resolveReadyMachineOrigin(machine.url);
+      if (origin) targets.set(machine.url, origin);
+    }
+  }
+  for (const [identity, stream] of lifecycleStreams) {
+    if (targets.get(identity) === stream.origin) continue;
+    stream.stop();
+    lifecycleStreams.delete(identity);
+  }
+  for (const [identity, origin] of targets) {
+    if (lifecycleStreams.has(identity)) continue;
+    const stream = { origin, stop: () => {} };
+    lifecycleStreams.set(identity, stream);
+    stream.stop = startSessionLifecycleStream({
+      origin, fetch: browserAuthFetch,
+      onError: error => {
+        const detail = error instanceof SessionLifecycleStreamError ? error.message
+          : error instanceof SyntaxError ? "invalid event data"
+          : error instanceof DOMException && error.name === "TimeoutError" ? "stream timed out"
+          : "transport failure";
+        console.debug("[sessions] lifecycle stream:", identity || LOCAL_MACHINE_IDENTITY, detail);
+      },
+      reconcile: () => {
+        if (lifecycleStreams.get(identity) === stream && targets.get(identity) === origin
+          && (!identity || resolveReadyMachineOrigin(identity) === origin)) invalidateMachineSessions(identity);
+      },
+    });
+  }
+}
+
 function syncSessionRefreshTimer(refreshNow = false): void {
+  syncLifecycleStreams();
   if (state.sessionRefreshTimer) {
     clearInterval(state.sessionRefreshTimer);
     state.sessionRefreshTimer = null;
   }
   if (document.visibilityState !== "visible") return;
-  if (!isDesktop() && state.currentView !== "sessions") return;
+  if (!isDesktop() && state.currentView !== "sessions" && !state.drawerOpen) return;
   if (refreshNow) void loadSessions(true);
   state.sessionRefreshTimer = setInterval(() => { void loadSessions(); }, SESSION_REFRESH_INTERVAL_MS);
 }
@@ -3502,6 +3607,7 @@ function handleTerminalDisconnected(
   reason: string,
 ): void {
   const action = classifyDisconnect(code, reason || "");
+  if (action === "session-ended" || action === "pty-exited") invalidateMachineSessions(entry.key.machine || "");
   if (!isVisibleSingleTerminal(entry)) {
     // Parked entries reconnect when shown, never in the background.
     handleParkedTerminalEvent(entry, action);
@@ -3973,8 +4079,24 @@ function sendAccessoryKey(key: string): void {
   sendKey(key);
 }
 
+const stoppingSessions = new Set<string>();
+function stoppingSessionKey(machine: string, sessionId: string): string { return `${machine}|${sessionId}`; }
+function reconcileStoppingSessions(machine: string, sessions): void {
+  const live = new Set(sessions.map(session => stoppingSessionKey(machine, sessionIdentityId(session))));
+  for (const key of stoppingSessions) if (key.startsWith(`${machine}|`) && !live.has(key)) stoppingSessions.delete(key);
+}
+function sessionChooserUi(session, machine: string) {
+  const ui = sessionRuntimeUi(session);
+  return stoppingSessions.has(stoppingSessionKey(machine, sessionIdentityId(session)))
+    ? { ...ui, dot: "gray", label: "Stopping…", title: "Stop requested; waiting for authoritative exit", badge: "stopping" }
+    : ui;
+}
+
 async function killSession(name, e, machineUrl) {
   e.stopPropagation();
+  const machine = machineUrl || "";
+  const selected = state.lastSessionGroups.find(group => group.machine.url === machine)?.sessions.find(session => session.name === name);
+  const pinnedId = selected ? sessionIdentityId(selected) : null;
   const delegationReturnTarget = name === state.focusedDelegationSession && state.activeDelegationRoot
     ? { session: state.activeDelegationRoot, machine: state.delegationMachine || "" }
     : null;
@@ -3986,11 +4108,17 @@ async function killSession(name, e, machineUrl) {
   });
   if (!confirmed) return;
   try {
-    await api("/kill", {
+    const result = await api<{ readonly sessionId?: string }>("/kill", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session: name }),
-    }, machineUrl || "");
+      body: JSON.stringify({ session: pinnedId || name }),
+    }, machine);
+    const stoppedId = pinnedId || result.sessionId;
+    if (stoppedId) {
+      if (stoppingSessions.size >= 256) stoppingSessions.delete(stoppingSessions.values().next().value);
+      stoppingSessions.add(stoppingSessionKey(machine, stoppedId));
+      publishSessionProjection();
+    }
   } catch (e) {
     await showAppDialog({
       title: "Could not stop session",
@@ -4027,9 +4155,11 @@ async function killSession(name, e, machineUrl) {
 function renderDrawerList() {
   const groups = state.lastSessionGroups;
   const list = document.getElementById("drawer-list");
-  const multiMachine = getWorkspaceMachines().length > 0;
+  const multiMachine = groups.some(group => group.machine.url);
 
-  const all = groups.flatMap(group => {
+  // Unavailable summaries cannot establish authoritative session disappearance
+  // or prune a machine's manual UUID order while waiting for recovery.
+  const all = groups.filter(group => group.online).flatMap(group => {
     const machineUrl = group.machine.url || "";
     const rows = visibleDelegationRows(sessionOrderRows(group.sessions, machineUrl), machineUrl);
     return rows.map(row => ({
@@ -4042,19 +4172,28 @@ function renderDrawerList() {
 
   let html = "";
   html += all.map(item => drawerItemHtml(item, multiMachine)).join("");
-  if (!all.length) {
+  html += groups.filter(group => !group.online && !group.pending).map(group => `<div class="machine-group offline" data-machine="${escAttr(group.machine.url)}"><div class="group-status" role="status">${esc(group.machine.name)}: ${esc(machineFailureLabel(group.failure || "unknown"))}. ${esc(machineHealthDetail(group))}</div>${machineRetryButtonHtml(group)}</div>`).join("");
+  if (!all.length && groups.every(group => group.online)) {
     html += `<div class="sidebar-empty">No active sessions</div>`;
   }
 
+  const focused = list.contains(document.activeElement) && document.activeElement instanceof HTMLElement
+    ? Object.entries(document.activeElement.dataset) : null;
+  const chipLabel = document.getElementById("chip-label");
+  if (chipLabel) chipLabel.textContent = state.currentSession || "";
+  if (list.innerHTML === html) return;
   list.innerHTML = html;
+  if (focused) {
+    const target = [...list.querySelectorAll<HTMLElement>("button")].find(item =>
+      focused.length > 0 && focused.every(([key, value]) => item.dataset[key] === value));
+    (target || list.querySelector<HTMLElement>("button"))?.focus({ preventScroll: true });
+  }
   list.querySelectorAll(".drawer-item").forEach(el => {
     const item = el as HTMLElement;
     item.onclick = () => {
       switchSession(item.dataset.val); closeDrawer();
     };
   });
-  const chipLabel = document.getElementById("chip-label");
-  if (chipLabel) chipLabel.textContent = state.currentSession || "";
 }
 
 function drawerItemHtml(item, multiMachine) {
@@ -4070,7 +4209,7 @@ function drawerItemHtml(item, multiMachine) {
   return `<div class="drawer-item-row" role="listitem">
     <button type="button" class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}"${isCurrent ? ' aria-current="page"' : ""}>
       <span class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></span>
-      ${harnessIconHtml(session.identity?.agentKind)}<span class="drawer-item-name">${esc(session.name)}</span>
+      ${harnessIconHtml(session.identity?.agentKind)}<span class="drawer-item-name">${esc(session.name)}${stoppingSessions.has(stoppingSessionKey(machineUrl, sessionIdentityId(session))) ? " · Stopping…" : ""}</span>
       ${machineLbl}
     </button>
     ${sidebarDelegationToggleHtml(row, machineUrl)}
@@ -4095,7 +4234,8 @@ function openDrawer() {
   if (isDesktop()) return; // sidebar handles session switching on desktop
   if (state.drawerOpen) return;
   state.drawerOpen = true;
-  loadSessions().then(renderDrawerList); // fresh data on open
+  renderDrawerList();
+  syncSessionRefreshTimer(true);
   const drawer = document.getElementById("session-drawer");
   const backdrop = document.getElementById("drawer-backdrop");
   const chip = document.getElementById("session-chip");
@@ -4121,6 +4261,7 @@ function openDrawer() {
 function closeDrawer(instant?: boolean): void {
   if (!state.drawerOpen) return;
   state.drawerOpen = false;
+  syncSessionRefreshTimer();
   const drawer = document.getElementById("session-drawer");
   const backdrop = document.getElementById("drawer-backdrop");
   const chip = document.getElementById("session-chip");
@@ -4469,6 +4610,13 @@ document.addEventListener("visibilitychange", () => {
     }
   } else {
     _hiddenAt = Date.now();
+    discoveryAbort?.abort();
+    syncLifecycleStreams();
+    for (const slot of machineSessionRefreshes.values()) { slot.dirty = false; slot.controller?.abort(); }
+    for (const owner of interactiveMachineAuth.values()) owner.abort();
+    interactiveMachineAuth.clear();
+    for (const timer of machineInvalidations.values()) clearTimeout(timer);
+    machineInvalidations.clear();
     // Stop browser-side polling when backgrounded.
     if (state.sessionRefreshTimer) {
       clearInterval(state.sessionRefreshTimer);
@@ -4508,9 +4656,17 @@ function _wfRepaintAllTerminals() {
   }
 }
 
-window.addEventListener("focus", _wfRepaintAllTerminals);
+let lastForegroundReconciliation = 0;
+function reconcileForeground(): void {
+  _wfRepaintAllTerminals();
+  if (document.visibilityState !== "visible" || Date.now() - lastForegroundReconciliation < 1_000) return;
+  lastForegroundReconciliation = Date.now();
+  void loadSessions(true);
+  void tailnetDiscoveryAutoRefresh.requestRefresh().catch(() => undefined);
+}
+window.addEventListener("focus", reconcileForeground);
 window.addEventListener("pageshow", (e: PageTransitionEvent) => {
-  if (e.persisted) _wfRepaintAllTerminals();
+  if (e.persisted) reconcileForeground();
 });
 // 30s heartbeat: cheap (one canvas draw call) and only runs while visible.
 // Cleared/recreated by the visibilitychange handler isn't necessary because
@@ -4975,7 +5131,48 @@ async function showSettings() {
   toggleDebugPanel();
 }
 
+function machineHealthDetail(group): string {
+  const last = group.lastSuccessAt ? new Date(group.lastSuccessAt).toLocaleString() : "not yet";
+  return `Last success: ${last}${group.staleSince ? `; stale since ${new Date(group.staleSince).toLocaleString()}` : ""}`;
+}
+
+function discoveryHealthText(): string {
+  const ready = getMachines().filter(machine => machine.ready).length;
+  return [discoveryHealth.inProgress ? "Scanning tailnet..." : "",
+    discoveryHealth.lastSuccess ? (ready ? `Found ${ready} ready Tailnet machine${ready === 1 ? "" : "s"}` : "No ready Wolfpack machines found on Tailnet") : "",
+    discoveryHealth.lastSuccess ? `Last successful discovery: ${new Date(discoveryHealth.lastSuccess).toLocaleString()}` : "No successful discovery yet",
+    discoveryHealth.lastError ? `Last error: ${discoveryHealth.lastError}` : ""].filter(Boolean).join(" · ");
+}
+function renderDiscoveryHealth(): void {
+  renderMachinesList();
+  const text = discoveryHealthText();
+  // Diagnostics are siblings, never part of the chooser's authoritative DOM
+  // projection: a timestamp/progress update must not retire focus or a drag.
+  for (const id of ["session-list", "sidebar-session-list", "drawer-list"]) {
+    const list = document.getElementById(id);
+    if (!list) continue;
+    let status = document.getElementById(`${id}-discovery-health`);
+    if (!status) {
+      status = document.createElement("div");
+      status.id = `${id}-discovery-health`;
+      status.className = "group-status";
+      status.dataset.discoveryHealth = "";
+      // Readable on navigation without announcing every scheduled scan.
+      status.setAttribute("aria-live", "off");
+      list.before(status);
+    }
+    if (status.textContent !== text) status.textContent = text;
+    status.hidden = list.hidden || list.childElementCount === 0;
+  }
+}
+
 function renderMachinesList(): void {
+  const statusEl = document.getElementById("discover-status");
+  if (statusEl) {
+    statusEl.textContent = discoveryHealthText();
+    statusEl.setAttribute("role", "status");
+    statusEl.style.color = discoveryHealth.lastError ? "#cc3333" : "";
+  }
   const machines = getMachines();
   const el = document.getElementById("machines-list");
   if (!machines.length) {
@@ -4984,29 +5181,21 @@ function renderMachinesList(): void {
   }
   el.innerHTML = machines.map((machine) => {
     const dot = machine.ready ? "green" : "red";
-    const status = machine.ready ? "online" : machine.diagnostic || "offline";
+    const group = state.lastSessionGroups.find(candidate => candidate.machine.url === machine.url);
+    const service = group?.pending ? "connecting" : group?.online ? "available" : group ? machineFailureLabel(group.failure || "unknown") : "not checked";
+    const status = machine.ready ? `Handshake verified; sessions: ${service}` : machine.diagnostic || "offline";
     return `<div class="machine-item">
       <div class="dot ${dot}" title="${escAttr(status)}"></div>
-      <span class="machine-item-name">${esc(machine.name)}<span class="machine-item-url">${esc(machine.url)}</span></span>
+      <span class="machine-item-name">${esc(machine.name)}<span class="machine-item-url">${esc(machine.url)}</span><span class="machine-item-url">${esc(status)}${group ? ` · ${esc(machineHealthDetail(group))}` : ""}</span></span>
     </div>`;
   }).join("");
 }
 
 async function discoverMachines(): Promise<void> {
-  const statusEl = document.getElementById("discover-status");
-  statusEl.textContent = "Scanning tailnet...";
-  statusEl.style.color = "#555";
   try {
     await tailnetDiscoveryAutoRefresh.requestRefresh();
-    const machines = getMachines();
-    const ready = machines.filter((machine) => machine.ready).length;
-    renderMachinesList();
-    void loadSessions(true);
-    statusEl.textContent = ready ? `Found ${ready} ready Tailnet machine${ready === 1 ? "" : "s"}` : "No ready Wolfpack machines found on Tailnet";
-    statusEl.style.color = ready ? "#00ff41" : "#555";
-  } catch (error) {
-    statusEl.textContent = errorMessage(error);
-    statusEl.style.color = "#cc3333";
+  } catch {
+    // The shared automatic/manual publisher already exposes the last error.
   }
 }
 
@@ -5183,6 +5372,10 @@ function syncSessionChooserOwnership(): boolean {
   const sidebarControls = document.getElementById("sidebar-session-controls");
   if (sidebarControls) sidebarControls.hidden = !sidebarOwns;
   if (sessionList) sessionList.hidden = sidebarOwns;
+  const mainHealth = document.getElementById("session-list-discovery-health");
+  const sidebarHealth = document.getElementById("sidebar-session-list-discovery-health");
+  if (mainHealth) mainHealth.hidden = sidebarOwns;
+  if (sidebarHealth) sidebarHealth.hidden = !sidebarOwns;
   return sidebarOwns;
 }
 
@@ -5212,8 +5405,7 @@ function _renderSidebarNow() {
   // Don't wipe sidebar with empty content if sessions haven't loaded yet
   if (!groups.length && sidebarInitialRender) return;
   if (groups.length) sidebarInitialRender = true;
-  const machines = getWorkspaceMachines();
-  const multiMachine = machines.length > 0;
+  const multiMachine = groups.some(group => group.machine.url);
 
   let html = "";
   if (!multiMachine) {
@@ -5274,7 +5466,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const s = row.session;
   const machineUrlAttr = escAttr(machineUrl);
   const lastLine = s.lastLine || "";
-  const ui = sessionRuntimeUi(s);
+  const ui = sessionChooserUi(s, machineUrl);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
   const inGrid = isSessionInGrid(s.name, machineUrl);
   const activeClass = isActive ? " sidebar-active" : (inGrid ? " sidebar-grid" : "");
@@ -5827,6 +6019,7 @@ initGridDeps({
   focusDelegationSession,
   leaveDelegationWorkspace: leaveDelegationWorkspaceForManualGrid,
   terminalMachineLabel,
+  invalidateMachineSessions,
 });
 
 const workspaceTerminalLayouts = new TerminalLayoutRegistry();
@@ -5969,6 +6162,7 @@ if (initialSettingsSection) {
   showView("sessions", true, false);
 }
 void loadSessions();
+tailnetDiscoveryAutoRefresh.sync(true);
 scheduleGhosttyPrewarm();
 
 // Unregister stale service workers but keep our push SW
