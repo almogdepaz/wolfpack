@@ -1,6 +1,6 @@
 # ui redesign: attention-first dashboard, apple-style skin
 
-status: fix-1 finished on `ui/apple-reskin`; verified production head `03f8f39b`, starting at `04bd999b`. H1–H5, M1–M6, L1–L10 and visible failed-row Close accounted for below, including explicit partial declines. final full suites remain non-green with baseline-reproduced failures. no push; phase 2 excluded.
+status: fix-2 finished on `ui/apple-reskin`; production `d62f06cd`, starting at `07759f4e`. N1/N2/N3/N5/N6 addressed; optional N4 gear retained. N1 passes 15/15 iphone-14 repetitions with exactly equal computed heights, plus the full Chromium run. full suites remain non-green with baseline failures; native iOS clipboard behavior remains unverified. no push/PR/merge, child sessions, phase 2 or protected-surface edits. current handoff is fix-2 below; review-2 superseded fix-1's no-unexplained-regression conclusion.
 
 fix-1 baseline reconciliation: reviewer logs `10-playwright-head.log`, `12-playwright-base-failing-specs.log`, and `13-playwright-head-regressions-rerun.log` inspected under `/tmp/wolfpack-reskin-review/logs/`. six pre-existing failures: iphone-14 session-switch:253; desktop session-switch:656 and ui-polish:19/:35/:71/:106. six branch regressions: iphone-14 accessibility-navigation:39/:52, delegation-sessions:562 on desktop + iphone-14, iphone-14 ux-navigation:1177 and impeccable-refinement:165. baseline Bun inbox failure also reproduced by reviewer. full Chromium final gate may expose additional failures; isolate those on base before assigning ownership. fix logs: `/tmp/wolfpack-reskin-logs/fix-1/`. commit boundary: logical fix commits and final handoff, no push/PR/merge. independent reviewer remains coordinator-owned; no child sessions launched.
 
@@ -265,3 +265,46 @@ commands ran in `/home/almog/dev/wolfpack` against `03f8f39b`; only handoff/imag
 - skip counts include project-specific/native-environment guards; full logs retain their names. no retries concealed failures. build script remains absent; authorized asset-generation substitute used. no WebKit host libraries installed; WebKit/physical iPhone remain unverified.
 - inspected the final 1440×900 and 390×900 captures and copied them manually into `.plans/screenshots/{dashboard,terminal}-{1440,390}.png`. these remain controlled-fixture evidence, not exact mockup parity or physical-device evidence. known structural deviations in the initial handoff remain except corrected failed Close, status/filter/counts, mobile Settings/Changes and sidebar overflow. no built-in Changes/Plan/Tasks content or missing actions were invented; split/fullscreen/widget controls remain in their established positions rather than re-homed.
 - stop here. coordinator may independently review these commits; no merge recommendation beyond this scoped evidence. unrelated `edc-context/reports/` remains untouched.
+
+## fix-2 handoff — second review remediation
+
+- review: `/tmp/wolfpack-reskin-review/report-2.md`; start `07759f4e`; final production `d62f06cd5c84e5975db1df34b8dea7e68a53e9c2`. reference base remains `909d5150`. local commit only; no push/PR/merge. no worker sessions/tasks created; coordinator owns independent review.
+- changed: `public/{app.ts,index.html,styles.css}`, generated `src/public-assets.ts`, `tests/e2e/{delegation-sessions,reskin-review}.e2e.ts`, this handoff and manually refreshed screenshots. protected-scope diff is empty (`14-protected.diff`). unrelated `edc-context/reports/` remains untouched.
+- review-2 correctly found intermittent N1 despite the passing fix-1 full run. this section supersedes that run's broad conclusion; test counts alone were insufficient to establish an identical failing set.
+
+### findings table
+
+| finding | disposition / regression evidence |
+|---|---|
+| N1 — equal collapsed delegation heights | fixed at the separator rule, not by relaxing tolerance or setting arbitrary row heights. pre-fix probe: parent `76px`, solo `77px`; both content boxes `43.75px`, both name lines `19px`, both preview lines `18.75px`. only the later row had a `1px` top separator. the absolute difference occasionally exceeded 1px in transformed bounding boxes. reserve a transparent top border on the first row too. original bounding-box assertion remains; added exact computed-height equality. 15/15 isolated iphone-14 repetitions, zero retries/flakes, every captured pair `77px`/`77px`; also passes all three projects in the final suite. |
+| N2 — two-line sidebar | hide the badge row again and move the delegation toggle into the name row. move its existing zero-top-margin selector with it, avoiding an Open hit-target overlap from the generic 3px toggle margin. regression checks hidden status row, equal parent/solo CSS heights, exactly 2px between name and preview, expansion/collapse and actual Open click into the delegation grid. final desktop screenshot shows name + preview + status dot. drag-cancel hierarchy assertion now targets `.card-name-text`, because `.card-name` intentionally also contains toggle text; order expectations are unchanged. |
+| N3 — unusable Changes tab | hide the tab-bar control when not in a terminal, including initial markup. keep the existing, usable terminal-header Changes affordance. regression checks absence on initial sessions plus opening the existing context from the header. no last-terminal state or route added. |
+| N4 — duplicate mobile Settings | optional change declined: retain the header gear and navigation link to preserve the established keyboard focus-return contract. original accessibility and mobile scrolling cases pass. the duplicate entry remains an explicit visual deviation. |
+| N5 — clipboard gesture | clipboard read now occurs directly in the trusted `touchend` handler or ordinary `click`, never a synthetic click dispatched inside touchstart. start/mousedown guards retain terminal focus; cancelled touchend suppresses compatibility click. regression observes one trusted touchend read, then one trusted mouse click read, exactly two pasted payloads, and retained focus. original delayed-permission target/session check and error dialog preserved. Chromium emulation is not physical iOS/WebKit clipboard permission evidence; device coverage remains open. |
+| N6 — Close confirmation | failed-session confirmation title, message and confirm button now say Close; normal sessions retain Stop. failed-session terminal chrome and error copy use the same verb. regression covers dashboard/sidebar/chrome confirmation and cancel/focus return; backend kill operation and confirmation gate unchanged. |
+
+### verification
+
+logs/artifacts: `/tmp/wolfpack-reskin-logs/fix-2/`. final checks ran in `/home/almog/dev/wolfpack` at `d62f06cd`; only the handoff was dirty during execution. browser/native checks used the same existing `WOLFPACK_BROKER_BIN=/home/almog/dev/wolfpack/broker/target/release/wolfpack-broker`; no native rebuild/install. full Chromium ran **once** after focused corrections. screenshots were copied manually only after testing.
+
+| check | actual result | artifact |
+|---|---|---|
+| new/strengthened regressions before production edits | exit 1; 6 fail, 1 pass, 3 skip (N1/N2/N3/N5/N6 fail as intended) | `01-red.log`, `red-artifacts/` |
+| pre-fix row decomposition | exit 1; exact-height assertion fails, measured border/content evidence retained | `02-geometry-report.json`, `02-row-geometry.json` |
+| focused initial green | exit 1; 6 pass, 3 skip, one new test locator still expected Expand after expansion | `05-green.log` |
+| sidebar corrections | initial Open interception reproduced; final exit 0, 1 pass | `06-sidebar.log`, `08-sidebar-fixed.log` |
+| N1 iphone-14, `-g 'expanded child cards stay compact' --repeat-each=15 --reporter=json` | exit 0; 15 pass / 0 fail / 0 skip / 0 flaky; 25.46s | `10-n1-repeat.json`, `10-repeat-geometries.json`, `10-result.txt` |
+| affected specs, desktop + iphone-14 | exit 1; 121 pass, 49 skip, 6 fail; five known selected-host baseline failures plus stale drag name selector | `11-affected.log` |
+| corrected drag-cancel assertion | exit 0; 1 pass; same case also passes final suite | `12-drag.log` |
+| `bun run scripts/gen-assets.ts` | exit 0; generated assets current | `15-final-assets.log` |
+| `bun run typecheck` | exit 0 | `16-final-types.log` |
+| full Chromium: `bunx playwright test --project=desktop --project=iphone-14 --project=iphone-se` | exit 1; **763 pass, 444 skip, 32 fail**, 1239 cases / 55 specs, 1239s; zero retries | `17-full-chromium.log`, `17-result.txt`, `final-artifacts/` |
+| `bun test` | exit 1; **3599 pass, 8 skip, 1 fail**, 329.95s | `18-bun-test.log`, `18-result.txt` |
+| base iphone-se widget-manager probe, 10 repetitions | exit 1; 7 pass / 3 fail, exact same x=-31 failure | `22-base-widget-repeat.log`, `base-widget-artifacts/` |
+| `git diff --check`; protected diff | exit 0; protected diff empty | `14-protected.diff`, final git evidence |
+
+- all requested regression cases pass in the final run; the full `reskin-review` file has 17 pass and 13 intentional project skips. N1 also passes desktop and iphone-se, not only its 15 iphone-14 repetitions. existing mobile settings focus-return, scrolling, accessory, order and parent Open cases pass.
+- baseline accounting is by test and failure signature, not just aggregate counts: 29 final failures match the prior full base run and have identical extracted signatures (`19-baseline-comparison.json`, `23-shared-failure-signatures.json`). the other three are worker-readiness cleanup (browser-independent, previously reproduced on base), passive-inspection column race (previously reproduced on base), and **iphone-se** widget-manager x=-31. the last variant was re-probed on unchanged base in this round: 3/10 failures, same assertion/value. baseline app/index/styles hashes match `909d5150` (`20-base-source-check.txt`). the first probe's over-anchored grep selected no tests (`21-base-widget-repeat.log`); it is not counted as execution evidence.
+- final Bun failure is the already baseline-reproduced bounded-inbox JSON truncation. no unrelated CLI/native/extension repair attempted. skips and diagnostics are retained unfiltered. these results do not claim a green full repository gate or rule out all possible flakes.
+- current screenshots are manually copied from `final-artifacts/` into `.plans/screenshots/{dashboard,terminal}-{1440,390}.png`; inspected the two-line desktop sidebar and the mobile bar with no dead Changes entry. tests still write only private Playwright output paths. exact mockup parity, physical iPhone and WebKit remain unclaimed; no missing host libraries installed.
+- stopped at the phase-1 boundary. no remaining product decision for this scoped assignment; coordinator may independently verify the commits. accepted earlier declines remain unchanged.
