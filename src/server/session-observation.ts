@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SessionMeta } from "../../public/session-meta.js";
+import type { SessionMeta } from "../session-meta-contract.js";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { AgentStatusState } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
@@ -205,14 +205,14 @@ const TERMINAL_CHROME = [
 ];
 
 function parsePiFooter(line: string): SessionMeta | undefined {
-  const model = /\([\w-]+\)\s+([\w.-]+)\s+•\s+(\w+)$/.exec(line);
+  const model = /\s{2,}(?:\([\w-]+\)\s+)?([\w.-]+)\s+•\s+([\w]+(?:\s+[\w]+)*)$/.exec(line);
   // CH is cache-hit rate, NOT context. Only the %/limit token is context.
-  const context = /(\d+(?:\.\d+)?)%\/(\d+(?:\.\d+)?)k\b/.exec(line);
+  const context = /(\d+(?:\.\d+)?)%\/(\d+(?:\.\d+)?)([kM])\b/.exec(line);
   const cost = /\$(\d+(?:\.\d+)?)(?:\s+\(([\w-]+)\))?/.exec(line);
   if (!model && !context && !cost) return undefined;
   return {
     ...(model && { model: model[1], reasoning: model[2] }),
-    ...(context && { contextPct: Number(context[1]), contextLimit: Number(context[2]) * 1000 }),
+    ...(context && { contextPct: Number(context[1]), contextLimit: Number(context[2]) * (context[3] === "M" ? 1_000_000 : 1000) }),
     ...(cost && { cost: Number(cost[1]), ...(cost[2] && { costTag: cost[2] }) }),
   };
 }
@@ -222,12 +222,21 @@ export function terminalDisplayProjection(rendered: string | undefined): {
   readonly meta?: SessionMeta;
   readonly footer?: string;
 } {
-  let footer: string | undefined;
-  let meta: SessionMeta | undefined;
+  const lines = (rendered ?? "").split("\n").map(cleanPreviewLine).filter(Boolean);
+  // Pi renders cwd, stats, then optional extension statuses as one footer block.
+  // Anchor only near the bottom; don't mistake earlier stats-like output for it.
+  let piStatsIndex = -1;
+  for (let index = lines.length - 1; index >= Math.max(0, lines.length - 3); index--) {
+    if (/^[↑↓]\d/.test(lines[index]!)) { piStatsIndex = index; break; }
+  }
+  let piFooterStart = piStatsIndex;
+  if (piStatsIndex > 0 && /^(?:~\/|\/|…)/.test(lines[piStatsIndex - 1]!)) piFooterStart--;
+  let footer = piStatsIndex >= 0 ? lines[piStatsIndex] : undefined;
+  let meta = footer ? parsePiFooter(footer) : undefined;
   let lastLine: string | undefined;
-  for (const raw of (rendered ?? "").split("\n").reverse()) {
-    const line = cleanPreviewLine(raw);
-    if (!line) continue;
+  for (let index = lines.length - 1; index >= 0; index--) {
+    if (piFooterStart >= 0 && index >= piFooterStart) continue;
+    const line = lines[index]!;
     if (!TERMINAL_CHROME.some((pattern) => pattern.test(line))) {
       lastLine = Array.from(line).slice(0, 160).join("");
       break;

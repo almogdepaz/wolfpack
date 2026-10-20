@@ -1,14 +1,6 @@
 import { esc } from "../src/html-escape";
 
-/** Display-only footer projection. Never a source of runtime status. */
-export interface SessionMeta {
-  readonly model?: string;
-  readonly reasoning?: string;
-  readonly contextPct?: number;
-  readonly contextLimit?: number;
-  readonly cost?: number;
-  readonly costTag?: string;
-}
+import type { SessionMeta } from "../src/session-meta-contract";
 
 export function sessionMetaHtml(session: { readonly meta?: SessionMeta; readonly footer?: string }): string {
   const { meta, footer } = session;

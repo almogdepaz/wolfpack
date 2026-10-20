@@ -1,4 +1,5 @@
-import { sessionMetaHtml, type SessionMeta } from "./session-meta";
+import { sessionMetaHtml } from "./session-meta";
+import type { SessionMeta } from "../src/session-meta-contract";
 import {
   esc, escAttr, loadStoredJson, isDesktop,
   wpSettings, TERM_PRESETS, toggleSetting,

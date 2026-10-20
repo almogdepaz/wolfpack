@@ -747,6 +747,15 @@ export const controlApiSource: ControlApiSource = {
     SessionSummary: object({
       name: ref("SessionName"),
       lastLine: string(),
+      meta: object({
+        model: string(),
+        reasoning: string(),
+        contextPct: { type: "number" },
+        contextLimit: { type: "number" },
+        cost: { type: "number" },
+        costTag: string(),
+      }, [], { description: "Display-only footer metadata; never runtime status evidence" }),
+      footer: string("Raw display-only footer when structured metadata is unavailable"),
       triage: ref("TriageStatus"),
       outputSequence: ref("BrokerOutputSequence"),
       identity: ref("PublicSessionIdentity"),
