@@ -24,5 +24,9 @@ export function recordSuccess(state: PeerHealthMap, url: string): PeerHealthMap 
 }
 
 export function fetchTimeoutMs(state: PeerHealthMap, url: string): number {
-  return (state[url]?.failures ?? 0) >= FAILURE_THRESHOLD ? FAILING_TIMEOUT_MS : HEALTHY_TIMEOUT_MS;
+  const failures = state[url]?.failures ?? 0;
+  // Every fourth failed attempt gets a full-budget recovery probe (~20s at
+  // the browser repair cadence), so a healthy but slower peer can recover.
+  return failures >= FAILURE_THRESHOLD && (failures - FAILURE_THRESHOLD) % 4 !== 3
+    ? FAILING_TIMEOUT_MS : HEALTHY_TIMEOUT_MS;
 }

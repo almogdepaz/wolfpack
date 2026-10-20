@@ -9,6 +9,8 @@ let server: TestServer;
 // Optional display metadata must never escape to real hosts in peer fixtures.
 test.beforeEach(async ({ page }) => {
   await page.route("https://**/api/info", route => route.fulfill({ status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "optional metadata unavailable" }));
+  await page.route("https://**/api/events?*", route => route.fulfill({ status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "stream unavailable in this grouping fixture" }));
+  await page.route("https://**/api/backend", route => route.fulfill({ status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "backend probe unavailable in this grouping fixture" }));
 });
 
 test.beforeAll(async () => {
@@ -511,17 +513,25 @@ test("revoked ordered peer is never rendered as the local machine", async ({ pag
   await page.evaluate(() => document.getElementById("sidebar-settings-btn")?.click());
   await expect(page.locator(".machine-group-drag-floating")).toBeVisible();
   await page.evaluate(() => document.querySelector<HTMLElement>(".discover-btn")?.click());
+  await expect(sidebarGroup(page)).toHaveClass(/offline/);
+  // Discovery no longer restarts unrelated local captures. Explicit resume
+  // creates the pending local read needed for this projection-fence regression.
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect.poll(() => postRevocationLocalRequests).toBeGreaterThan(0);
   await expect(page.locator(".machine-group-drag-floating")).toHaveCount(0);
   await page.mouse.up();
   const assertCanonicalLocalProjection = async (surface: "#session-list" | "#sidebar-session-list") => {
     const groups = page.locator(`${surface} > .machine-group`);
-    await expect(groups).toHaveCount(1);
-    await expect(groups.first()).toHaveAttribute("data-machine", "");
-    await expect(groups.first()).toContainText("local-session");
-    await expect(groups.first()).not.toContainText("verified peer");
-    await expect(groups.first()).not.toContainText("peer-session");
-    const actionMachines = await groups.locator('[data-action="new-session"], [data-action="open-session"], [data-action="kill-session"], [data-action="toggle-grid"]')
+    await expect(groups).toHaveCount(2);
+    const local = page.locator(`${surface} > .machine-group[data-machine=""]`);
+    const stalePeer = page.locator(`${surface} > .machine-group[data-machine="${peerIdentity}"]`);
+    await expect(stalePeer).toHaveClass(/offline/);
+    await expect(stalePeer.locator('[data-action="new-session"]')).toBeDisabled();
+    await expect(stalePeer.locator('[data-action="open-session"], [data-action="kill-session"], [data-action="toggle-grid"]')).toHaveCount(0);
+    await expect(local).toContainText("local-session");
+    await expect(local).not.toContainText("verified peer");
+    await expect(local).not.toContainText("peer-session");
+    const actionMachines = await local.locator('[data-action="new-session"], [data-action="open-session"], [data-action="kill-session"], [data-action="toggle-grid"]')
       .evaluateAll(actions => actions.map(action => (action as HTMLElement).dataset.machine ?? ""));
     expect(actionMachines.length).toBeGreaterThan(0);
     expect(actionMachines).toEqual(actionMachines.map(() => ""));
@@ -535,6 +545,7 @@ test("revoked ordered peer is never rendered as the local machine", async ({ pag
       if (!expand?.classList.contains("active")) expand?.click();
     });
     await expect(page.locator("#session-list")).not.toHaveAttribute("hidden", "");
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect.poll(() => postRevocationLocalRequests).toBeGreaterThanOrEqual(2);
     await assertCanonicalLocalProjection("#session-list");
     await page.evaluate(() => {
