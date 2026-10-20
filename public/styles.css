@@ -3008,6 +3008,8 @@ body > header { height: 52px; min-height: 52px; }
   #desktop-sidebar .src.sub-session-card .card-name { font-size: 12px; }
   #desktop-sidebar .src.sidebar-active { background: var(--accent-tint); box-shadow: inset 0 0 0 1px rgba(69,237,126,.18); }
   #desktop-sidebar .card-name { font-size: 13px; font-weight: 500; }
+  /* Keep the name first in DOM for reorder announcements, with the tile visually first. */
+  #desktop-sidebar .card-name .harness-icon { order: -1; }
   #desktop-sidebar .card-preview { font: 400 11px/1.4 var(--font-ui); color: var(--text-4); }
   #desktop-sidebar .sidebar-active .card-preview { color: var(--text-2); }
   #desktop-sidebar .harness-icon { width: 22px; height: 22px; border-radius: 6px; font-size: 11.5px; }

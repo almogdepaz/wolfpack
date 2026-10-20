@@ -5432,9 +5432,8 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   return `<div class="card src tier-${sessionTier(s)} ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
-    ${harnessIconHtml(s.identity?.agentKind)}
     <div class="card-info">
-      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span></div>
+      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${harnessIconHtml(s.identity?.agentKind)}</div>
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, machineUrl)}</div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
