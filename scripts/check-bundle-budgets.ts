@@ -9,7 +9,8 @@ const limits: ReadonlyArray<readonly [string, number, number]> = [
   // Selected-machine extensions + current main: approved gzip cap 97000; measured 96008.
   // OSC 7501 program status + current main: approved gzip cap 97500; measured 97087.
   // One-tap notifications + peer relay ui: approved gzip cap 98000; measured 97793.
-  ["public/app.bundle.js", 386_000, 98_000],
+  // Sidebar/session freshness: approved gzip cap 102000; measured 101756.
+  ["public/app.bundle.js", 386_000, 102_000],
   ["public/ghostty-web.bundle.js", 700_000, 210_000],
   // Phase-1 shell controls/full-view recovery: base 96978/17005; measured 100603/17595.
   // Selected-machine extensions + current main: approved raw cap 103000; measured 102177.
