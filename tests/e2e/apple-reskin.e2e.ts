@@ -41,7 +41,8 @@ test("triage filters toggle off, preserve row actions, and capture responsive ch
   });
   await page.goto(server.baseUrl);
   await expect(page.locator("#session-list .card").first()).toBeVisible();
-  await expect(page.locator("#session-list .machine-group")).toHaveCount(2);
+  await expect(page.locator("#session-list .machine-group:not(.needs-you)")).toHaveCount(2);
+  await expect(page.locator("#session-list .needs-you")).toHaveCount(1);
   const tabs = page.locator("#dashboard-session-filter");
   await expect(tabs.getByRole("button")).toHaveCount(4);
   const original = await page.locator("#session-list .card").count();

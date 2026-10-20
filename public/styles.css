@@ -2918,6 +2918,14 @@ body > header { height: 52px; min-height: 52px; }
 .seg .n.r { background: var(--danger); color: #2a0b08; }
 .machine-group-body { background: var(--surface-2); border: 1px solid var(--hairline); border-radius: var(--r-group); box-shadow: var(--gloss); overflow: hidden; }
 .machine-group-body:empty { display: none; }
+#session-list > .needs-you { grid-column: 1 / -1; }
+#session-list > .machine-group.needs-you[hidden] { display: none; }
+.needs-you .machine-group-body { background: var(--attn-fill); border-color: var(--attn-line); }
+.needs-you .needs-you-header { margin: 0; color: var(--attn); font-size: 11px; }
+.needs-you .card-name { flex-wrap: wrap; }
+.needs-you .card-name-text { flex: 0 1 auto; }
+.machine-chip { display: inline-block; max-width: 140px; padding: 2px 7px; border-radius: 6px; background: var(--surface-3); color: var(--text-3); font: 500 11px var(--font-ui); overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.machine-group .card.pinned-duplicate { opacity: .6; }
 .machine-header { background: transparent; border: 0; color: var(--text-4); font: 600 11px var(--font-ui); text-transform: uppercase; letter-spacing: .06em; padding: 12px 4px 8px; }
 .machine-header .dot { width: 7px; height: 7px; }
 /* Reserve separator space on the first row too, so identical row content has equal height. */
@@ -3040,6 +3048,7 @@ body > header { height: 52px; min-height: 52px; }
   .new-session-primary { width: 36px; height: 36px; overflow: hidden; font-size: 0; border-radius: 50%; padding: 0; }
   .new-session-primary::before { content: "+"; font-size: 24px; }
   #session-list { padding: 0 16px 24px; }
+  .needs-you .card-name-text { flex-basis: 100%; }
   .machine-group .card { padding: 12px; gap: 10px; }
   .card > .harness-icon { width: 34px; height: 34px; }
   .card .status { font-size: 11px; margin-left: auto; }
