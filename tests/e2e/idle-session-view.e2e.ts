@@ -143,7 +143,8 @@ function visibleSessionCardNames(page: Page): Promise<string[]> {
 }
 
 function visibleViewButton(page: Page, view: "all" | "idle") {
-  return page.locator(`[data-action="set-session-card-view"][data-session-card-view="${view}"]`).filter({ visible: true });
+  // Selecting the current segment again restores All.
+  return page.locator(`[data-action="set-session-card-view"][data-session-card-view="${view === "all" ? "idle" : view}"]`).filter({ visible: true });
 }
 
 async function selectIdleView(page: Page): Promise<void> {
@@ -162,10 +163,8 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
 
   await collapseInitialSessionMenu(page);
   const idle = visibleViewButton(page, "idle");
-  const all = visibleViewButton(page, "all");
   await expect(idle).toHaveAccessibleName("Idle sessions");
-  await expect(all).toHaveAccessibleName("All sessions");
-  await expect(idle).toHaveAttribute("aria-pressed", "false");
+  await expect(idle).toHaveAttribute("aria-selected", "false");
   await idle.focus();
   await expect(idle).toBeFocused();
   const idleControlStyle = await idle.evaluate((button) => {
@@ -185,26 +184,26 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
     button.click();
     button.remove();
   });
-  await expect(all).toHaveAttribute("aria-pressed", "true");
+  await expect(idle).toHaveAttribute("aria-selected", "false");
   await selectIdleView(page);
-  await expect(idle).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator('[data-session-card-view][aria-pressed="true"]').filter({ visible: true })).toHaveCount(1);
+  await expect(idle).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator('[data-session-card-view][aria-selected="true"]').filter({ visible: true })).toHaveCount(1);
   if (testInfo.project.name === "desktop") {
     await page.locator("#sidebar-expand-btn").click();
     // Both control sets can be CSS-visible during the sidebar transition.
     // Scope the destination and verify the completed viewport geometry.
-    const expandedIdle = page.locator("#session-dashboard-controls").getByRole("button", { name: "Idle sessions", exact: true });
+    const expandedIdle = page.locator("#session-dashboard-controls").getByRole("tab", { name: "Idle sessions", exact: true });
     await expect(expandedIdle).toBeVisible();
-    await expect(expandedIdle).toHaveAttribute("aria-pressed", "true");
+    await expect(expandedIdle).toHaveAttribute("aria-selected", "true");
     await expect(page.locator("#sidebar-session-list")).not.toBeInViewport();
     await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
-    const sidebarIdle = page.locator("#sidebar-session-controls").getByRole("button", { name: "Idle sessions", exact: true });
+    const sidebarIdle = page.locator("#sidebar-session-controls").getByRole("tab", { name: "Idle sessions", exact: true });
     await expect(sidebarIdle).toBeInViewport();
-    await expect(sidebarIdle).toHaveAttribute("aria-pressed", "true");
+    await expect(sidebarIdle).toHaveAttribute("aria-selected", "true");
   }
 });
 
-test("idle uses exact runtime state across local and verified peers and updates live", async ({ page }) => {
+test("idle uses presentation tier across local and verified peers and updates live", async ({ page }) => {
   const parent = { id: "working-parent-id", name: "working-parent" };
   const fixture = await installSessionFixture(page, {
     localSessions: [
@@ -226,6 +225,7 @@ test("idle uses exact runtime state across local and verified peers and updates 
   await selectIdleView(page);
   await expect.poll(() => visibleSessionCardNames(page)).toEqual([
     "quiet-local",
+    "structured-done",
     "idle-child",
     "quiet-peer",
   ]);
@@ -244,6 +244,7 @@ test("idle uses exact runtime state across local and verified peers and updates 
   await expect.poll(() => fixture.sessionRequestCount()).toBeGreaterThan(requestsBeforeRefresh);
   await expect.poll(() => visibleSessionCardNames(page)).toEqual([
     "structured-needs-input",
+    "structured-done",
     "idle-child",
     "quiet-peer",
   ]);

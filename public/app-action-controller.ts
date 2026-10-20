@@ -1,8 +1,11 @@
 export const SESSION_CARD_VIEW = {
   ALL: "all",
+  NEED: "need",
+  WORK: "work",
   IDLE: "idle",
+  FAIL: "fail",
 } as const;
-export const SESSION_CARD_VIEWS = [SESSION_CARD_VIEW.ALL, SESSION_CARD_VIEW.IDLE] as const;
+export const SESSION_CARD_VIEWS = Object.values(SESSION_CARD_VIEW);
 export type SessionCardView = typeof SESSION_CARD_VIEWS[number];
 
 export function isSessionCardView(value: string): value is SessionCardView {

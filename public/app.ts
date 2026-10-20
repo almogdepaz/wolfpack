@@ -99,7 +99,7 @@ import {
   SECURITY_AND_TRUST_URL,
   SESSION_CONTROL_CREATE_URL,
 } from "../src/documentation-links";
-import { sessionRuntimeState, sessionRuntimeUi } from "../src/agent-runtime-ui";
+import { sessionRuntimeState, sessionRuntimeUi, sessionTier } from "../src/agent-runtime-ui";
 import type { SessionInspectorTarget } from "./session-inspector";
 import {
   delegationChildSummaryText,
@@ -1455,7 +1455,7 @@ function applyMobileViewNavigation(viewName: string): void {
   state.kbAccessoryOpen = false;
   chip.style.display = "none";
   closeDrawer(true);
-  back.textContent = "← Back";
+  back.textContent = "‹ Sessions";
   title.style.display = "";
   title.style.cursor = "";
   title.onclick = null;
@@ -1466,7 +1466,7 @@ function applyMobileViewNavigation(viewName: string): void {
     back.style.display = "none";
     back.onclick = null;
     gear.style.display = "";
-    title.textContent = "wolfpack";
+    title.textContent = "Wolfpack";
   } else if (viewName === "projects") {
     back.style.display = "block";
     back.onclick = () => { returnFromProjectPicker(); };
@@ -1595,25 +1595,27 @@ function activityHtml(session: DelegationSessionLike): string {
 }
 
 function sessionCardViewControlsHtml(): string {
-  const selectedView = state.sessionCardView;
-  const button = (view: SessionCardView, label: string, accessibleLabel: string): string => {
-    const selected = selectedView === view;
-    return `<button type="button" class="session-card-view-button${selected ? " selected" : ""}" data-action="set-session-card-view" data-session-card-view="${view}" aria-pressed="${selected}" aria-label="${accessibleLabel}">${label}</button>`;
+  const counts = { need: 0, work: 0, idle: 0, fail: 0 };
+  for (const group of state.lastSessionGroups) {
+    if (group.online) for (const session of group.sessions) counts[sessionTier(session)]++;
+  }
+  const button = (view: Exclude<SessionCardView, "all">, label: string, color = ""): string => {
+    const selected = state.sessionCardView === view;
+    return `<button type="button" role="tab" class="session-card-view-button${selected ? " selected" : ""}" data-action="set-session-card-view" data-session-card-view="${view}" aria-selected="${selected}" aria-label="${label} sessions">${label}<span class="n ${color}">${counts[view]}</span></button>`;
   };
-  return `<div class="session-card-view-filter" role="group" aria-label="Session view">${button(SESSION_CARD_VIEW.ALL, "All", "All sessions")}${button(SESSION_CARD_VIEW.IDLE, "Idle", "Idle sessions")}</div>`;
+  return `<div class="seg session-card-view-filter" role="tablist" aria-label="Session view">${button(SESSION_CARD_VIEW.NEED, "Needs you", "a")}${button(SESSION_CARD_VIEW.WORK, "Working", "g")}${button(SESSION_CARD_VIEW.IDLE, "Idle")}${button(SESSION_CARD_VIEW.FAIL, "Failed", "r")}</div>`;
 }
 
 function syncSessionCardViewControls(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-session-card-view]").forEach((button) => {
     const selected = button.dataset.sessionCardView === state.sessionCardView;
     button.classList.toggle("selected", selected);
-    button.setAttribute("aria-pressed", String(selected));
+    button.setAttribute("aria-selected", String(selected));
   });
 }
 
 function setSessionCardView(view: SessionCardView): void {
-  if (state.sessionCardView === view) return;
-  setState({ sessionCardView: view, lastSessionsHtml: "" });
+  setState({ sessionCardView: state.sessionCardView === view ? SESSION_CARD_VIEW.ALL : view, lastSessionsHtml: "" });
   syncSessionCardViewControls();
   renderSessionListFromState();
   renderSidebar();
@@ -1623,7 +1625,7 @@ function sessionCardRows(
   rows: readonly DelegationSessionRow<DelegationSessionLike>[],
 ): readonly DelegationSessionRow<DelegationSessionLike>[] {
   if (state.sessionCardView === SESSION_CARD_VIEW.ALL) return rows;
-  return rows.filter((row) => sessionRuntimeState(row.session) === AGENT_STATUS_STATE.IDLE);
+  return rows.filter((row) => sessionTier(row.session) === state.sessionCardView);
 }
 
 type SessionCardEmptyKind = "idle" | "source-empty" | null;
@@ -1638,7 +1640,7 @@ function sessionCardGroupPresentation(
   machineUrl: string,
 ): SessionCardGroupPresentation {
   if (sessions.length === 0) {
-    return { rows: [], empty: state.sessionCardView === SESSION_CARD_VIEW.IDLE ? "idle" : "source-empty" };
+    return { rows: [], empty: state.sessionCardView !== SESSION_CARD_VIEW.ALL ? "idle" : "source-empty" };
   }
   const rows = sessionCardRows(sessionOrderRows(sessions, machineUrl));
   return { rows, empty: rows.length === 0 ? "idle" : null };
@@ -1699,6 +1701,22 @@ function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSes
 }
 
 function renderSessionListFromState(): void {
+  for (const id of ["dashboard-session-filter", "sidebar-session-filter"]) {
+    const filter = document.getElementById(id);
+    const html = sessionCardViewControlsHtml();
+    if (filter && filter.innerHTML !== html) {
+      const focusedView = filter.contains(document.activeElement) ? (document.activeElement as HTMLElement).dataset.sessionCardView : undefined;
+      filter.innerHTML = html;
+      if (focusedView) filter.querySelector<HTMLButtonElement>(`[data-session-card-view="${focusedView}"]`)?.focus({ preventScroll: true });
+    }
+  }
+  const online = state.lastSessionGroups.filter(group => group.online);
+  const sessions = online.flatMap(group => group.sessions);
+  const machineCount = document.getElementById("online-machine-count");
+  if (machineCount) machineCount.textContent = `● ${online.length} machines online`;
+  const summary = document.getElementById("session-summary");
+  if (summary) summary.innerHTML = `${sessions.length} across ${online.length} machines · <strong>${sessions.filter(session => sessionTier(session) === "need").length} need you</strong>`;
+  syncSessionChrome();
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
   const multiMachine = getWorkspaceMachines().length > 0;
@@ -1714,6 +1732,7 @@ function renderSessionListFromState(): void {
     el.innerHTML = html;
     state.lastSessionsHtml = html;
   }
+  filterSessionSurface("dashboard");
 }
 
 function toggleSidebarDelegationChildren(key: string, event?: Event): void {
@@ -1838,17 +1857,19 @@ function machineHeaderHtml(
     : !group.online
       ? `<span class="machine-header-status">${esc(machineFailureLabel(group.failure || "unknown"))}</span>`
       : "";
+  const count = group.online ? `<span class="machine-session-count">${group.sessions.length} sessions</span>` : "";
   const action = collapsed ? "Expand" : "Collapse";
   const nameHandle = machineNameHandleHtml(group.machine.name);
   const collapseToggle = `<button type="button" class="machine-collapse-toggle" data-action="machine-collapse" data-machine-surface="${surface}" data-machine-control="collapse" aria-expanded="${collapsed ? "false" : "true"}" aria-controls="${bodyId}" aria-label="${action} ${escAttr(group.machine.name)}" title="${action} ${escAttr(group.machine.name)}"><span class="machine-collapse-chevron" aria-hidden="true"></span></button>`;
   if (collapsed) return `<div class="machine-header">${nameHandle}${collapseToggle}</div>`;
-  return `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${nameHandle}${collapseToggle}${versionWarning}${status}<div class="machine-header-btns">${retryButton}${sessionOrderResetButtonHtml(machineUrl)}${compactCreateButton}</div></div>`;
+  return `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${nameHandle}${count}${collapseToggle}${versionWarning}${status}<div class="machine-header-btns">${retryButton}${sessionOrderResetButtonHtml(machineUrl)}${compactCreateButton}</div></div>`;
 }
 
 function idleSessionEmptyHtml(): string {
-  return `<section class="idle-session-empty" aria-label="No idle sessions">
-    <h2>No sessions are currently idle</h2>
-    <p>Sessions will appear here when their current runtime state becomes idle.</p>
+  const label = { all: "available", idle: "idle", need: "waiting for you", work: "working", fail: "failed" }[state.sessionCardView];
+  return `<section class="idle-session-empty" aria-label="No ${label} sessions">
+    <h2>No sessions are currently ${label}</h2>
+    <p>Sessions will appear here when their runtime status matches this view.</p>
   </section>`;
 }
 
@@ -1903,16 +1924,18 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
         const anim = state.firstLoad ? "animate-in" : "";
         const grouping = delegationCardAttributes(row);
         const ordering = sessionOrderCardHtml(row, machineKey);
-        return `<div class="card card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + rowIndex * 30 + 'ms' : ''}">
+        return `<div class="card tier-${sessionTier(s)} card-stagger ${anim} ${ui.card}${grouping.className}"${grouping.dataAttribute}${ordering.attributes} style="${state.firstLoad ? 'animation-delay:' + rowIndex * 30 + 'ms' : ''}">
           <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
-          <div class="dot ${ui.dot}" title="${ui.title}"></div>
+          ${harnessIconHtml(s.identity?.agentKind)}
           <div class="card-info">
-            <div class="card-name">${harnessIconHtml(s.identity?.agentKind)}<span class="card-name-text">${esc(s.name)}</span><span class="triage-badge ${ui.badge}">${ui.label}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
+            <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${useCollapsibleSessionCards ? sidebarDelegationToggleHtml(row, machineKey) : ""}</div>
             ${useCollapsibleSessionCards ? "" : delegationParentSummaryHtml(row)}
             ${delegationParentMissingHtml(row)}
             <div class="card-preview">${esc(lastLine)}</div>
-            ${activityHtml(s)}
+            <div class="card-meta">${activityHtml(s)}</div>
           </div>
+          <span class="status st-${sessionTier(s)}"><i></i>${esc(ui.label)}</span>
+          <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
           <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
         </div>`;
       }).join("");
@@ -3861,6 +3884,11 @@ function setConnState(connState: string): void {
   const statusEl = document.getElementById("conn-status");
   if (!statusEl) return;
   statusEl.dataset.connState = connState;
+  const footer = document.getElementById("terminal-footer-connection");
+  if (footer) {
+    footer.textContent = connState === "live" ? "● live" : connState.replaceAll("-", " ");
+    footer.classList.toggle("live", connState === "live");
+  }
   if (connState !== "reconnecting") connStatusBanner.stop();
   const active = !!state.terminalController?.term;
   if (state.currentView !== "terminal" || !active || connState === "live") {
@@ -4625,6 +4653,100 @@ function insertMessageInputNewline(): void {
   saveDraft();
 }
 
+function needsInputSession() {
+  if (state.currentView !== "terminal" || isGridActive() || (state.activeDelegationRoot && !state.focusedDelegationSession)) return undefined;
+  const group = state.lastSessionGroups.find(group => (group.machine.url || "") === (state.currentMachine || ""));
+  const session = group?.sessions.find(session => session.name === state.currentSession);
+  return session && sessionRuntimeState(session) === AGENT_STATUS_STATE.NEEDS_INPUT ? session : undefined;
+}
+
+function syncSessionChrome(): void {
+  const group = state.lastSessionGroups.find(group => (group.machine.url || "") === (state.currentMachine || ""));
+  const current = group?.sessions.find(session => session.name === state.currentSession);
+  const title = document.getElementById("terminal-chrome-name");
+  if (title) title.textContent = state.currentSession || "Terminal";
+  const footerSession = document.getElementById("terminal-footer-session");
+  if (footerSession) footerSession.textContent = state.currentSession || "";
+  const icon = document.getElementById("terminal-chrome-icon");
+  if (icon) icon.innerHTML = harnessIconHtml(current?.identity?.agentKind);
+  const path = document.getElementById("terminal-chrome-path");
+  if (path) path.textContent = group?.machine.name || "";
+  const status = document.getElementById("terminal-chrome-status");
+  if (status) {
+    status.textContent = current ? sessionRuntimeUi(current).label : "";
+    status.className = `status st-${current ? sessionTier(current) : "idle"}`;
+  }
+  const changes = document.getElementById("mobile-changes") as HTMLButtonElement | null;
+  if (changes) changes.disabled = state.currentView !== "terminal";
+  const banner = document.getElementById("needs-input-banner");
+  const session = needsInputSession();
+  if (!banner) return;
+  banner.hidden = !session;
+  const prompt = document.getElementById("needs-input-prompt");
+  if (prompt) prompt.textContent = session?.lastLine || "This session needs your input.";
+}
+
+document.querySelectorAll<HTMLButtonElement>("[data-reply-key]").forEach(button => {
+  button.addEventListener("click", () => {
+    if (!needsInputSession()) return;
+    state.terminalController?.focus();
+    sendAccessoryKey(button.dataset.replyKey!);
+  });
+});
+document.getElementById("terminal-inspect")?.addEventListener("click", event => {
+  const target = pinnedSessionInspectionTarget(state.currentSession, state.currentMachine || "");
+  if (target) sessionInspector.open(target, event.currentTarget as HTMLElement);
+});
+document.getElementById("terminal-stop")?.addEventListener("click", event => {
+  if (state.currentSession) void killSession(state.currentSession, event, state.currentMachine);
+});
+function sessionSearchActive(): boolean {
+  const input = document.getElementById(state.sessionsExpanded ? "dashboard-search" : "sidebar-search") as HTMLInputElement | null;
+  return !!input?.value.trim();
+}
+
+function filterSessionSurface(surface: "dashboard" | "sidebar"): void {
+  const input = document.getElementById(`${surface}-search`) as HTMLInputElement | null;
+  const root = document.getElementById(surface === "dashboard" ? "session-list" : "sidebar-session-list");
+  const query = input?.value.trim().toLocaleLowerCase() || "";
+  root?.querySelectorAll<HTMLElement>(".card").forEach(card => { card.hidden = !!query && !card.textContent?.toLocaleLowerCase().includes(query); });
+}
+document.getElementById("mobile-search")?.addEventListener("input", event => {
+  const dashboard = document.getElementById("dashboard-search") as HTMLInputElement;
+  dashboard.value = (event.target as HTMLInputElement).value;
+  filterSessionSurface("dashboard");
+});
+document.getElementById("expanded-notifications")?.addEventListener("click", () => void showSettings().then(() => revealSettingsSection("settings-effects")));
+for (const surface of ["dashboard", "sidebar"] as const) {
+  document.getElementById(`${surface}-search`)?.addEventListener("input", () => filterSessionSurface(surface));
+}
+document.addEventListener("keydown", event => {
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k" && state.currentView === "sessions") {
+    event.preventDefault();
+    document.getElementById(state.sessionsExpanded ? "dashboard-search" : "sidebar-search")?.focus();
+  }
+});
+document.getElementById("reply-in-terminal")?.addEventListener("click", () => {
+  if (isDesktop()) state.terminalController?.focus();
+  else setMobileGhosttyKeyboardOpen(true);
+});
+document.getElementById("kb-paste")?.addEventListener("click", async () => {
+  const target = state.terminalController;
+  try {
+    const text = await navigator.clipboard.readText();
+    // Clipboard permission may outlive navigation; never paste into a different session.
+    if (target && target === state.terminalController && state.currentView === "terminal" && !isGridActive() && !(state.activeDelegationRoot && !state.focusedDelegationSession)) target.term.paste(text);
+  } catch (error) {
+    await showAppDialog({ title: "Could not paste", message: errorMessage(error), confirmLabel: "Close", cancelLabel: null });
+  }
+});
+document.getElementById("mobile-sessions")?.addEventListener("click", backToSessions);
+document.getElementById("mobile-settings")?.addEventListener("click", () => void showSettings());
+document.getElementById("mobile-machines")?.addEventListener("click", () => void showSettings().then(() => revealSettingsSection("settings-machines")));
+document.getElementById("mobile-changes")?.addEventListener("click", () => {
+  if (state.currentView === "terminal") document.getElementById("workspace-restore")?.click();
+});
+
 (function setupKbAccessory() {
   const acc = document.getElementById("kb-accessory");
   if (!acc) return;
@@ -4727,7 +4849,7 @@ function renderedSessionNavigationTargets(): SessionNavigationTarget[] {
   if (!root) return [];
   return Array.from(root.querySelectorAll<HTMLElement>('[data-action="open-session"]')).flatMap((control) => {
     const name = control.dataset.session;
-    return name ? [{ name, machineUrl: control.dataset.machine ?? "" }] : [];
+    return name && !control.closest("[hidden]") ? [{ name, machineUrl: control.dataset.machine ?? "" }] : [];
   });
 }
 
@@ -4764,7 +4886,7 @@ document.addEventListener("keydown", (e) => {
     const renderedTargets = renderedSessionNavigationTargets();
     const targets = renderedTargets.length > 0
       ? renderedTargets
-      : state.sessionCardView === SESSION_CARD_VIEW.IDLE
+      : state.sessionCardView !== SESSION_CARD_VIEW.ALL || sessionSearchActive()
         ? []
         : state.allSessions.map(session => ({ name: session.name, machineUrl: session.machineUrl || "" }));
     if (targets.length === 0) return;
@@ -5187,6 +5309,7 @@ function syncSessionChooserOwnership(): boolean {
 }
 
 function renderSidebar() {
+  syncSessionChrome();
   if (!isDesktop()) return;
   syncSessionChooserOwnership();
   // Coalesce multiple calls per frame
@@ -5268,6 +5391,7 @@ function _renderSidebarNow() {
   machineGroupEventController?.cancelForRender();
   _lastSidebarHtml = html;
   el.innerHTML = html;
+  filterSessionSurface("sidebar");
 }
 
 function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string) {
@@ -5285,7 +5409,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${gridIcon}</button>`;
   const grouping = delegationCardAttributes(row);
   const ordering = sessionOrderCardHtml(row, machineUrl);
-  return `<div class="card ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
+  return `<div class="card src tier-${sessionTier(s)} ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
@@ -5335,7 +5459,7 @@ function renderedSessionOrderSiblingScope(moving: SessionOrderCardReference): Se
     const sessionId = card.dataset.sessionOrderId;
     const machineUrl = card.dataset.sessionOrderMachine;
     const parentId = card.dataset.sessionOrderParent ?? "";
-    return sessionId && machineUrl === moving.machineUrl && parentId === moving.parentId
+    return !card.hidden && sessionId && machineUrl === moving.machineUrl && parentId === moving.parentId
       ? [{ machineUrl, sessionId }]
       : [];
   });
@@ -5432,7 +5556,7 @@ function moveSessionCard(
 function moveSessionCardByOffset(moving: SessionOrderCardReference, offset: -1 | 1): boolean {
   const context = sessionOrderContext(moving.machineUrl);
   if (!context) return false;
-  const siblings = state.sessionCardView === SESSION_CARD_VIEW.IDLE
+  const siblings = state.sessionCardView !== SESSION_CARD_VIEW.ALL || sessionSearchActive()
     ? renderedSessionOrderSiblingScope(moving)
     : sessionOrderSiblingScope(context, moving);
   const index = siblings.findIndex(identity => identity.sessionId === moving.sessionId);

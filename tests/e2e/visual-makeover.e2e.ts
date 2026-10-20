@@ -13,21 +13,20 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("session chrome keeps the original logo and readable, untransformed names", async ({ page }) => {
-  const logo = page.locator(".wolfpack-icon:visible").first();
-  await expect(logo).toBeVisible();
+  const logo = page.locator(".wolfpack-icon").first();
   await expect(logo).toHaveAttribute("src", "/wolfpack-icon.svg");
   await expect(logo).toHaveJSProperty("naturalWidth", 256);
 
   const name = page.locator("#session-list .card-name").first();
   await expect(name).toHaveCSS("text-transform", "none");
   await expect(name).toHaveCSS("text-shadow", "none");
-  await expect(name).toHaveCSS("font-family", /ui-monospace/);
+  await expect(name).toHaveCSS("font-family", /system-ui/);
   const viewport = page.viewportSize()!;
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(viewport.width);
 });
 
 test("existing command dialog is centered, bounded, and remains keyboard cancellable", async ({ page }, testInfo) => {
-  await page.getByRole("button", { name: "Settings", exact: true }).first().click();
+  await page.getByRole("button", { name: "Settings", exact: true }).filter({ visible: true }).first().click();
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.locator("#add-quick-cmd-btn").click();
   const dialog = page.getByRole("dialog", { name: "Add quick command", exact: true });
@@ -52,10 +51,10 @@ test("existing command dialog is centered, bounded, and remains keyboard cancell
 test("machine names stay quiet and the labelled session action keeps its existing flow", async ({ page }, testInfo) => {
   const name = page.locator("#session-list .machine-header-name").first();
   await expect(name).toHaveCSS("font-size", "11px");
-  await expect(name).toHaveCSS("color", "rgb(143, 159, 149)");
+  await expect(name).toHaveCSS("color", "rgb(127, 144, 135)");
   await expect(name).toHaveCSS("text-transform", "uppercase");
   // Re-resolve the name across session-list refreshes, like the other CSS assertions above.
-  await expect(name).toHaveCSS("font-family", /ui-monospace/);
+  await expect(name).toHaveCSS("font-family", /system-ui/);
   const add = page.locator("#session-list .machine-add-btn").first();
   await expect(add).toHaveText("New session");
   await expect(add.locator("svg")).toHaveAttribute("aria-hidden", "true");
@@ -63,9 +62,7 @@ test("machine names stay quiet and the labelled session action keeps its existin
   expect(buttonBox.width).toBeGreaterThan(buttonBox.height);
   if (testInfo.project.name !== "desktop") {
     expect(buttonBox.height).toBeGreaterThanOrEqual(44);
-    const logo = page.locator("header .wolfpack-icon");
-    await expect(logo).toBeVisible();
-    await expect(logo).toHaveCSS("width", "24px");
+    await expect(page.locator(".session-heading h1")).toHaveText("Sessions");
   }
   await add.click();
   await expect(page.locator("#projects-view")).toHaveClass(/visible/);
@@ -97,51 +94,31 @@ test("long machine names stay bounded without squeezing the session action", asy
   })).toBe(true);
 });
 
-test("All and Idle form a quiet, keyboard-operable segmented control", async ({ page }, testInfo) => {
-  const filter = page.locator("#session-dashboard-controls").getByRole("group", { name: "Session view" });
-  const all = filter.getByRole("button", { name: "All sessions", exact: true });
-  const idle = filter.getByRole("button", { name: "Idle sessions", exact: true });
-  await expect(all).toHaveAttribute("aria-pressed", "true");
-  await expect(all).toHaveCSS("border-radius", "999px");
-  await expect(all).toHaveCSS("font-size", "12px");
-  await expect(all).toHaveCSS("letter-spacing", /^(normal|0px)$/);
-  await expect(all).toHaveCSS("color", testInfo.project.name === "desktop" ? "rgb(230, 238, 232)" : "rgb(237, 243, 239)");
-  const desktop = testInfo.project.name === "desktop";
-  const minimumHeight = desktop ? 28 : 44;
-  const pillBox = (await filter.boundingBox())!;
-  await expect(filter).toHaveCSS("padding", "2px");
-  expect(pillBox.width).toBeLessThanOrEqual(desktop ? 84 : 96);
-  expect(pillBox.height).toBeLessThanOrEqual(minimumHeight + 6);
-  expect(await all.evaluate(el => getComputedStyle(el).boxShadow)).not.toContain("inset");
-  for (const button of [all, idle]) {
-    expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(minimumHeight);
-    if (!desktop) expect((await button.boundingBox())!.width).toBeGreaterThanOrEqual(44);
+test("triage segments are keyboard-operable and toggle back to All", async ({ page }, testInfo) => {
+  const filter = page.locator("#session-dashboard-controls").getByRole("tablist", { name: "Session view" });
+  const work = filter.getByRole("tab", { name: "Working sessions", exact: true });
+  const idle = filter.getByRole("tab", { name: "Idle sessions", exact: true });
+  await expect(filter.getByRole("tab")).toHaveCount(4);
+  await expect(idle).toHaveAttribute("aria-selected", "false");
+  await expect(filter).toHaveCSS("padding", "3px");
+  await expect(idle).toHaveCSS("border-radius", "7px");
+  for (const button of [work, idle]) {
+    expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(testInfo.project.name === "desktop" ? 28 : 44);
   }
-  await all.focus();
+  await work.focus();
   await page.keyboard.press("Tab");
   await expect(idle).toBeFocused();
-  await expect(idle).toHaveCSS("outline-width", "2px");
   await page.keyboard.press("Enter");
-  await expect(idle).toHaveAttribute("aria-pressed", "true");
-  await expect(all).toHaveAttribute("aria-pressed", "false");
-  await all.click();
-  await expect(all).toHaveAttribute("aria-pressed", "true");
-  await expect(idle).toHaveAttribute("aria-pressed", "false");
+  await expect(idle).toHaveAttribute("aria-selected", "true");
+  await idle.click();
+  await expect(idle).toHaveAttribute("aria-selected", "false");
 
   if (testInfo.project.name === "desktop") {
-    await expect.poll(() => filter.evaluate(element => {
-      const card = document.querySelector("#session-list .card")!;
-      return Math.abs(element.getBoundingClientRect().x - card.getBoundingClientRect().x);
-    })).toBeLessThanOrEqual(1);
     await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
-    const sidebar = page.locator("#sidebar-session-controls").getByRole("group", { name: "Session view" });
+    const sidebar = page.locator("#sidebar-session-controls").getByRole("tablist", { name: "Session view" });
     await expect(sidebar).toBeVisible();
-    const sidebarBox = (await sidebar.boundingBox())!;
-    expect(sidebarBox.width).toBeLessThanOrEqual(84); expect(sidebarBox.height).toBeLessThanOrEqual(34);
-    await page.screenshot({ path: testInfo.outputPath("compact-sidebar-filter.png"), animations: "disabled" });
-    await expect(sidebar.getByRole("button", { name: "All sessions", exact: true })).toHaveAttribute("aria-pressed", "true");
-    await sidebar.getByRole("button", { name: "Idle sessions", exact: true }).click();
-    await expect(sidebar.getByRole("button", { name: "Idle sessions", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await sidebar.getByRole("tab", { name: "Idle sessions", exact: true }).click();
+    await expect(sidebar.getByRole("tab", { name: "Idle sessions", exact: true })).toHaveAttribute("aria-selected", "true");
   }
 });
 

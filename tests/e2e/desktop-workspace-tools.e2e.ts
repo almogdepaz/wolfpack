@@ -97,7 +97,7 @@ test('widget controls belong to their panel without global toggles or terminal r
  expect(await page.evaluate(()=>({privateView:typeof (window as any).showView,hooks:Object.keys((window as any).__wolfpackTest)}))).toEqual({privateView:'undefined',hooks:['serializeTerminalTail']});
  await expect(page.locator('#workspace-tools, #workspace-settings-dialog, #workspace-session-actions, #terminal-transcript-btn, #workspace-context-collapse, .workspace-terminal-toolbar')).toHaveCount(0);
  await expect(page.locator('#workspace-terminal-region .workspace-context-header:visible')).toHaveCount(0);
- const filter=page.locator('#sidebar-session-controls').getByRole('group',{name:'Session view'});
+ const filter=page.locator('#sidebar-session-controls').getByRole('tablist',{name:'Session view'});
  const collapse=page.getByRole('button',{name:'Collapse Widgets',exact:true});
  await expect(collapse).toBeVisible();
  await expect(page.getByRole('button',{name:'Close Widgets',exact:true})).toHaveCount(0);
@@ -108,8 +108,8 @@ test('widget controls belong to their panel without global toggles or terminal r
  await expect(restore).toBeVisible();await restore.click();
  await page.getByRole('button',{name:'Pin Widgets',exact:true}).click();
  await expect(collapse).toBeVisible();
- await filter.getByRole('button',{name:'Idle sessions'}).click();
- await filter.getByRole('button',{name:'All sessions'}).click();
+ await filter.getByRole('tab',{name:'Idle sessions'}).click();
+ await filter.getByRole('tab',{name:'Idle sessions'}).click();
  expect(await collapse.evaluate(node=>node===(window as any).__widgetCollapse)).toBe(true);
  await page.locator('[data-widget-full]:visible').click();await collapse.click();
  await expect(terminal).toBeVisible();await restore.click();

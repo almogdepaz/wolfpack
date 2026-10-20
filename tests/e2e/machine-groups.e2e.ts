@@ -261,7 +261,7 @@ test("machine collapse controls retain valid hidden bodies on both desktop surfa
   await assertCollapseRelationship(mainGroup(page));
 });
 
-test("expanded desktop machine cards retain the intended adjacent-card gap", async ({ page }, testInfo) => {
+test("expanded desktop machine rows share a contiguous grouped surface", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "expanded desktop layout regression");
   await installMachineFixture(page, true);
   await page.route("**/api/sessions", route => route.fulfill({
@@ -280,7 +280,7 @@ test("expanded desktop machine cards retain the intended adjacent-card gap", asy
   const secondBox = await cards.nth(1).boundingBox();
   expect(firstBox).not.toBeNull();
   expect(secondBox).not.toBeNull();
-  expect(secondBox!.y - (firstBox!.y + firstBox!.height)).toBeGreaterThanOrEqual(10);
+  expect(Math.abs(secondBox!.y - (firstBox!.y + firstBox!.height))).toBeLessThanOrEqual(1);
 });
 
 test("machine drag order is shared while main and sidebar collapse remain independent", async ({ page }, testInfo) => {
@@ -528,8 +528,8 @@ test("revoked ordered peer is never rendered as the local machine", async ({ pag
   };
   try {
     await page.locator("#settings-back-btn").click();
-    await page.getByRole("button", { name: "Idle sessions" }).click();
-    await page.getByRole("button", { name: "All sessions" }).click();
+    await page.getByRole("tab", { name: "Idle sessions" }).click();
+    await page.getByRole("tab", { name: "Idle sessions" }).click();
     await page.evaluate(() => {
       const expand = document.getElementById("sidebar-expand-btn");
       if (!expand?.classList.contains("active")) expand?.click();

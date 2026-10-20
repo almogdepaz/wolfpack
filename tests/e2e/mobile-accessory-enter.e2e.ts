@@ -47,4 +47,10 @@ test("mobile accessory Enter inserts line-feed while native Enter still sends ca
   sentBytes.length = 0;
   await page.locator("#kb-accessory .kb-enter").click();
   await expect.poll(() => sentBytes).toEqual([[10]]);
+
+  for (const [key, bytes] of [["y", [121]], ["n", [110]], ["Tab", [9]], ["BTab", [27, 91, 90]], ["C-c", [3]]] as const) {
+    sentBytes.length = 0;
+    await page.locator(`#kb-accessory [data-key="${key}"]`).click();
+    await expect.poll(() => sentBytes).toEqual([Array.from(bytes)]);
+  }
 });

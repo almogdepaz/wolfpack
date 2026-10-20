@@ -394,7 +394,7 @@ test("shows semantic labels only for source-backed runtime state", async ({ page
   const cardBadge = (name: string) => page
     .getByRole("button", { name: `Open ${name}` })
     .locator("xpath=..")
-    .locator(".triage-badge");
+    .locator(".status");
 
   await expect(cardBadge("unproven")).toHaveText("quiet");
   await expect(cardBadge("structured")).toHaveText("needs input");
@@ -407,7 +407,7 @@ test("shows only review changes in session activity lines", async ({ page }) => 
 
   const card = (name: string) => page.getByRole("button", { name: `Open ${name}` }).locator("xpath=..");
   await expect(card("active-output").locator(".session-activity")).toHaveText("changed since review");
-  await expect(card("active-output").locator(".session-activity")).toHaveCSS("color", "rgb(102, 204, 255)");
+  await expect(card("active-output").locator(".session-activity")).toHaveCSS("color", "rgb(127, 144, 135)");
   await expect(card("structured").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("unproven").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("unobserved").locator(".session-activity")).toHaveText("changed since review");
@@ -572,11 +572,11 @@ test("a delayed acknowledgement cannot clobber a newer runtime transition", asyn
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   }
   await refreshResponse;
-  await expect(card.locator(".triage-badge")).toHaveText("output");
+  await expect(card.locator(".status, .triage-badge")).toHaveText("output");
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
 
   acknowledgeResponseSent?.();
-  await expect(card.locator(".triage-badge")).toHaveText("output");
+  await expect(card.locator(".status, .triage-badge")).toHaveText("output");
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
 
   if (!mobileLayout) {
