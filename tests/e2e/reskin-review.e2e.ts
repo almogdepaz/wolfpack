@@ -130,10 +130,14 @@ test("dashboard search retains a visible tint focus ring without an outline", as
   await search.focus();
   await expect(search).toBeFocused();
   await expect(search).toHaveCSS('outline-style', 'none');
-  await expect(search).toHaveCSS('box-shadow', 'rgba(69, 237, 126, 0.14) 0px 0px 0px 3px');
+  await expect(search).toHaveCSS('box-shadow', 'none');
+  const field = page.locator('.session-search').filter({ has: search });
+  await expect(field).toHaveCSS('border-radius', '9px');
+  await expect(field).toHaveCSS('box-shadow', 'rgba(69, 237, 126, 0.7) 0px 0px 0px 3px');
   await page.emulateMedia({ forcedColors: 'active' });
   await expect(search).toHaveCSS('outline-style', 'solid');
   await expect(search).toHaveCSS('outline-width', '2px');
+  await expect(field).toHaveCSS('box-shadow', 'none');
 });
 
 test("M2 single-terminal destructive chrome is absent in a manual grid", async ({ page }, info) => {

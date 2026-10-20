@@ -2983,7 +2983,8 @@ body > header { height: 52px; min-height: 52px; }
 .session-search input::placeholder { color: var(--text-4); opacity: 1; }
 /* Forced-colors modes suppress shadows; retain the existing outline there. */
 @media (forced-colors: none) {
-  #dashboard-search:focus { outline: none; box-shadow: 0 0 0 3px var(--accent-tint); }
+  .session-search input:focus { outline: none; box-shadow: none; }
+  .session-search:focus-within { box-shadow: 0 0 0 3px rgba(69,237,126,.7); }
 }
 .session-search kbd { font: 500 11px var(--font-ui); }
 .sidebar-search { width: auto; margin: 0 10px 6px; }

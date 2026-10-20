@@ -171,24 +171,24 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect.poll(() => cards.locator(".card-name").evaluateAll((names) =>
     names.map((name) => name.querySelector(".card-name-text")?.textContent),
   )).toEqual([
-    "orphan-child", // working roots precede idle roots; delegation trees stay intact
-    "wolfpack",
+    "wolfpack", // its waiting descendant pulls the whole tree above working roots
     "wolfpack-sub-agent",
     "wolfpack-sub-agent-2",
+    "orphan-child",
     "unrelated",
   ]);
   await expect(cards.locator(".harness-icon[data-harness=\"pi\"][aria-label=\"pi\"]")).toHaveCount(5);
-  await expect(cards.nth(1)).toContainText("2 children");
-  await expect(cards.nth(1)).toHaveClass(/delegation-parent-card/);
+  await expect(cards.nth(0)).toContainText("2 children");
+  await expect(cards.nth(0)).toHaveClass(/delegation-parent-card/);
+  await expect(cards.nth(1)).toHaveClass(/sub-session-card/);
+  await expect(cards.nth(1)).toHaveAttribute("data-parent-session", "wolfpack");
+  await expect(cards.nth(1)).not.toContainText("parent: wolfpack");
+  await expect(cards.nth(1).locator(".delegation-parent-link")).toHaveCount(0);
   await expect(cards.nth(2)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(2)).toHaveAttribute("data-parent-session", "wolfpack");
-  await expect(cards.nth(2)).not.toContainText("parent: wolfpack");
-  await expect(cards.nth(2).locator(".delegation-parent-link")).toHaveCount(0);
-  await expect(cards.nth(3)).toHaveClass(/sub-session-card/);
-  await expect(cards.nth(3)).toHaveAttribute("data-parent-session", "wolfpack");
-  await expect(cards.nth(0)).toHaveClass(/orphan-session-card/);
-  await expect(cards.nth(0)).toContainText("missing parent: gone <parent> & \"quoted\"");
-  await expect(cards.nth(0).locator("script")).toHaveCount(0);
+  await expect(cards.nth(3)).toHaveClass(/orphan-session-card/);
+  await expect(cards.nth(3)).toContainText("missing parent: gone <parent> & \"quoted\"");
+  await expect(cards.nth(3).locator("script")).toHaveCount(0);
 
   await collapseInitialSessionMenu(page);
   const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card").first();

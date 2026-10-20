@@ -27,15 +27,50 @@ export function compareSessionTriage(left: TriageSession, right: TriageSession):
   return tier === "need" ? leftAt - rightAt : rightAt - leftAt;
 }
 
-/** Keep delegation trees intact; order their roots and each set of siblings. */
+/** A subtree follows its most urgent member, including that member's age/recency. */
+export function sessionTriagePriorities<T extends DelegationSessionLike>(
+  rows: readonly DelegationSessionRow<T>[],
+): ReadonlyMap<DelegationSessionRow<T>, TriageSession> {
+  const priorities = new Map<DelegationSessionRow<T>, TriageSession>(rows.map(row => [row, row.session]));
+  const byId = new Map<string, DelegationSessionRow<T>>();
+  for (const row of rows) {
+    const id = sessionIdentityId(row.session);
+    if (id) byId.set(id, row);
+  }
+  for (const row of rows) {
+    const visited = new Set<DelegationSessionRow<T>>([row]);
+    let ancestor = row.role === "child" ? byId.get(row.parent?.wolfpackSessionId ?? "") : undefined;
+    while (ancestor && !visited.has(ancestor)) {
+      visited.add(ancestor);
+      if (compareSessionTriage(row.session, priorities.get(ancestor)!) < 0) priorities.set(ancestor, row.session);
+      ancestor = ancestor.role === "child" ? byId.get(ancestor.parent?.wolfpackSessionId ?? "") : undefined;
+    }
+  }
+  return priorities;
+}
+
+/** Tier stays automatic; explicit manual positions precede unpositioned siblings. */
 export function orderTriageSessionRows<T extends DelegationSessionLike>(
   rows: readonly DelegationSessionRow<T>[],
   manualOrder: readonly SessionOrderIdentity[],
   machineUrl: string,
 ): DelegationSessionRow<T>[] {
   const manualRows = orderDelegationSessionRows(rows, manualOrder, machineUrl);
+  const priorities = sessionTriagePriorities(rows);
+  const ranks = new Map(manualOrder.filter(identity => identity.machineUrl === machineUrl).map((identity, index) => [identity.sessionId, index]));
   const triageOrder = [...manualRows]
-    .sort((left, right) => compareSessionTriage(left.session, right.session))
+    .sort((left, right) => {
+      const leftPriority = priorities.get(left)!;
+      const rightPriority = priorities.get(right)!;
+      const tier = TIER_PRIORITY[sessionTier(leftPriority)] - TIER_PRIORITY[sessionTier(rightPriority)];
+      if (tier) return tier;
+      const leftRank = ranks.get(sessionIdentityId(left.session) ?? "");
+      const rightRank = ranks.get(sessionIdentityId(right.session) ?? "");
+      if (leftRank !== undefined || rightRank !== undefined) {
+        return (leftRank ?? Number.MAX_SAFE_INTEGER) - (rightRank ?? Number.MAX_SAFE_INTEGER);
+      }
+      return compareSessionTriage(leftPriority, rightPriority);
+    })
     .flatMap(row => {
       const sessionId = sessionIdentityId(row.session);
       return sessionId ? [{ machineUrl, sessionId }] : [];

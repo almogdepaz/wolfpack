@@ -116,13 +116,14 @@ import type {
 import {
   loadSessionOrder,
   moveSessionRelative,
+  orderDelegationSessionRows,
   reconcileSessionOrder,
   replaceMachineSessionOrder,
   resetMachineSessionOrder,
   saveSessionOrder,
   type SessionOrderIdentity,
 } from "./session-order";
-import { compareSessionTriage, orderTriageSessionRows } from "./session-triage";
+import { compareSessionTriage, orderTriageSessionRows, sessionTriagePriorities } from "./session-triage";
 import {
   bindSessionOrderEvents,
   type SessionOrderCardReference,
@@ -213,6 +214,8 @@ function safeLocalStorage(): Storage | null {
 }
 
 let sessionOrder = loadSessionOrder(safeLocalStorage());
+// Stable server-order fallback is not a user-authored manual position.
+let automaticSessionOrder: SessionOrderIdentity[] = [];
 const manuallyOrderedMachines = new Set(sessionOrder.map(identity => identity.machineUrl));
 let machineGroupPreferences = loadMachineGroupPreferences(safeLocalStorage());
 let machineGroupEventController: MachineGroupEventController | null = null;
@@ -1777,12 +1780,15 @@ function sessionOrderRows(
     const identity = sessionOrderIdentity(row.session, machineUrl);
     return identity ? [identity] : [];
   });
-  const effectiveOrder = reconcileSessionOrder(
-    sessionOrder.filter(identity => identity.machineUrl === machineUrl),
+  const fallbackOrder = reconcileSessionOrder(
+    automaticSessionOrder.filter(identity => identity.machineUrl === machineUrl),
     visible,
   );
-  sessionOrder = replaceMachineSessionOrder(sessionOrder, machineUrl, effectiveOrder);
-  return orderTriageSessionRows(rows, effectiveOrder, machineUrl);
+  automaticSessionOrder = replaceMachineSessionOrder(automaticSessionOrder, machineUrl, fallbackOrder);
+  const manualOrder = sessionOrder.filter(identity => identity.machineUrl === machineUrl
+    && visible.some(candidate => candidate.sessionId === identity.sessionId));
+  sessionOrder = replaceMachineSessionOrder(sessionOrder, machineUrl, manualOrder);
+  return orderTriageSessionRows(orderDelegationSessionRows(rows, fallbackOrder, machineUrl), manualOrder, machineUrl);
 }
 
 function sessionOrderCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string, pinned = false): {
@@ -4905,7 +4911,7 @@ function renderedSessionNavigationTargets(): SessionNavigationTarget[] {
   if (!root) return [];
   return Array.from(root.querySelectorAll<HTMLElement>('[data-action="open-session"]')).flatMap((control) => {
     const name = control.dataset.session;
-    return name && !control.closest("[hidden]") ? [{ name, machineUrl: control.dataset.machine ?? "" }] : [];
+    return name && !control.closest("[hidden], .needs-you") ? [{ name, machineUrl: control.dataset.machine ?? "" }] : [];
   });
 }
 
@@ -5502,11 +5508,13 @@ function sessionOrderSiblingScope(
 ): SessionOrderIdentity[] {
   const movingRow = context.rows.find(row => sessionIdentityId(row.session) === moving.sessionId);
   if (!movingRow) return [];
+  const priorities = sessionTriagePriorities(context.rows);
+  const movingTier = sessionTier(priorities.get(movingRow)!);
   return context.rows.flatMap(row => {
     const identity = sessionOrderIdentity(row.session, moving.machineUrl);
     if (!identity) return [];
     const parentId = row.role === "child" ? row.parent?.wolfpackSessionId ?? "" : "";
-    return parentId === moving.parentId && compareSessionTriage(row.session, movingRow.session) === 0 ? [identity] : [];
+    return parentId === moving.parentId && sessionTier(priorities.get(row)!) === movingTier ? [identity] : [];
   });
 }
 
