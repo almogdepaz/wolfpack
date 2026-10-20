@@ -33,4 +33,10 @@ test("display-only meta and raw footer fallback preserve Done on y/n text", asyn
     await expect(card).toHaveClass(/tier-idle/);
     await expect(card.locator(".status")).toHaveText("Done");
   }
+  if (test.info().project.name === "desktop") {
+    await cards.first().locator(".card-open").click();
+    await expect(page.locator("#desktop-sidebar .card-preview").first()).toHaveText("Do you want to continue? (y/n)");
+    await expect(page.locator("#desktop-sidebar .session-meta-model")).toHaveCount(0);
+    await expect(page.locator("#desktop-sidebar .session-meta-footer")).toHaveCount(0);
+  }
 });

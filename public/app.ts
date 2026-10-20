@@ -1605,10 +1605,12 @@ function sessionStatusContent(session: DelegationSessionLike): string {
   return `<i aria-hidden="true"></i>${esc(label.charAt(0).toUpperCase() + label.slice(1))}`;
 }
 
+function sessionActivityHtml(session: DelegationSessionLike): string {
+  return session.runtimeState?.unseen ? '<div class="session-activity">changed since review</div>' : "";
+}
+
 function activityHtml(session: DelegationSessionLike): string {
-  const meta = sessionMetaHtml(session);
-  const activity = session.runtimeState?.unseen ? '<div class="session-activity">changed since review</div>' : "";
-  return meta + activity;
+  return sessionMetaHtml(session) + sessionActivityHtml(session);
 }
 
 function sessionCardViewControlsHtml(): string {
@@ -5457,7 +5459,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
-      ${activityHtml(s)}
+      ${sessionActivityHtml(s)}
     </div>
     ${gridBtn}
     <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="${sessionTier(s) === "fail" ? "Close" : "Stop"} ${escAttr(s.name)}" title="${sessionTier(s) === "fail" ? "Close" : "Stop"} session">${sessionTier(s) === "fail" ? "Close" : "&times;"}</button>
