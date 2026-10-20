@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wolfpack iOS — live terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#090c0a}
+a{color:#45ed7e}a:hover{color:#8df5b1}
+.ui{font-family:-apple-system,"SF Pro Text","Geist",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.mono{font-family:ui-monospace,"SF Mono","Geist Mono",Menlo,monospace}
+.glass{background:rgba(13,17,15,.82);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%)}
+.app{width:24px;height:24px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-family:ui-monospace,"SF Mono","Geist Mono",monospace;font-size:12px;font-weight:600;flex:none;background:linear-gradient(180deg,#7a4fa8,#5c3a85);color:#f1e6ff;box-shadow:inset 0 1px 0 rgba(255,255,255,.12)}
+.t{font-family:ui-monospace,"SF Mono","Geist Mono",Menlo,monospace;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;color:#c3cfc8;margin:0}
+.t .h{color:#f6c35c;font-weight:600}.t .p{color:#c792ea}.t .k{color:#7fc8ff}.t .g{color:#45ed7e}.t .d{color:#6f8076}.t .b{color:#f2f6f3;font-weight:600}
+.key{height:42px;min-width:42px;padding:0 12px;border-radius:9px;border:none;background:rgba(255,255,255,.1);color:#e6eee8;font-family:ui-monospace,"SF Mono","Geist Mono",monospace;font-size:14px;font-weight:500;display:inline-flex;align-items:center;justify-content:center;flex:none;box-shadow:0 1px 0 rgba(0,0,0,.5)}
+.key.q{background:rgba(246,195,92,.16);color:#f6c35c;font-weight:600}
+.key.g{color:#e8906a}
+.key.on{background:#45ed7e;color:#06130a;box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}
+.ico{width:18px;height:18px;flex:none}
+</style>
+</head>
+<body style="background:#0b0e0c;display:flex;justify-content:center;padding:24px">
+<div class="ui" style="width: 390px; height: 844px; box-sizing: border-box; background: #090c0a; color: #f2f6f3; display: flex; flex-direction: column; overflow: hidden">
+
+  <header class="glass" style="flex: none; padding: 50px 8px 10px; display: flex; align-items: center; gap: 4px; border-bottom: 1px solid rgba(255,255,255,.07); box-sizing: border-box">
+    <a href="03-mobile-sessions.html" style="height: 36px; padding: 0 6px; display: flex; align-items: center; gap: 2px; color: #45ed7e; font-size: 16px; text-decoration: none"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width: 20px; height: 20px"><path d="m15 5-7 7 7 7"/></svg>Sessions</a>
+    <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; min-width: 0">
+      <button type="button" aria-label="Switch session" style="height: 24px; border: none; background: transparent; color: #f2f6f3; font-family: inherit; display: flex; align-items: center; gap: 6px; padding: 0">
+        <span class="app" aria-hidden="true" style="width: 20px; height: 20px; font-size: 11px; border-radius: 6px">π</span>
+        <span style="font-size: 16px; font-weight: 600; letter-spacing: -.01em">polybot</span>
+        <span style="width: 7px; height: 7px; border-radius: 50%; background: #f6c35c; box-shadow: 0 0 0 3px rgba(246,195,92,.2); display: block"></span>
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="#8a9b91" stroke-width="2.4" stroke-linecap="round" aria-hidden="true" style="width: 12px; height: 12px"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <span style="font-size: 11px; color: #8a9b91">workstation · 2 of 10</span>
+    </div>
+    <button type="button" aria-label="Changes and context" style="width: 36px; height: 36px; border: none; background: transparent; color: #45ed7e; display: flex; align-items: center; justify-content: center; position: relative"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="width: 22px; height: 22px"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7M18 10.5c0 4-12 2-12 5"/></svg><span style="position: absolute; top: 2px; right: 0; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #7fc8ff; color: #06130a; font-size: 10.5px; font-weight: 700; display: flex; align-items: center; justify-content: center">2</span></button>
+    <button type="button" aria-label="More" style="width: 36px; height: 36px; border: none; background: transparent; color: #45ed7e; display: flex; align-items: center; justify-content: center"><svg class="ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="width: 22px; height: 22px"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="16" cy="12" r="1.3"/></svg></button>
+  </header>
+
+  <div style="flex: 1; min-height: 0; padding: 12px 14px; overflow: hidden">
+<pre class="t"><span class="h">checks that are not on this path</span>
+
+<span class="k">crates/execution/src/limits.rs</span> implements:
+
+  if market_exposure / bankroll &gt; <span class="p">self</span>.max_single_market_pct
+  if group_exposure / bankroll &gt; <span class="p">self</span>.max_correlated_group_pct
+  if post_trade_cash / bankroll &lt; <span class="p">self</span>.min_cash_reserve_pct
+
+each has a named unit test: <span class="k">test_single_market_limit</span>, <span class="k">test_correlated_market_limit</span>, <span class="k">test_cash_reserve_limit</span>. <span class="b">the news binary does not call this validator.</span>
+
+other important boundaries:
+- no fresh confidence/EV/liquidity recheck appears between receiving <span class="k">SmartSignal</span> and submitting.
+- terminal-status and fill-amount checks happen <span class="b">after submission</span>.
+
+<span class="b">bottom line:</span> direct tests cover the three entry-limit predicates and the durable-intent barrier. the entry path itself skips the cash-reserve guard.
+
+<span class="d">──────────────────────────────────────</span>
+<span class="g">▲ Edit</span> crates/execution/src/limits.rs <span class="d">(+14 −2)</span>
+<span class="g">+</span> if post_trade_cash / bankroll &lt; self.min_cash_reserve_pct {
+<span class="g">+</span>     return Err(LimitBreach::CashReserve);
+<span class="g">+</span> }</pre>
+  </div>
+
+  <div style="flex: none; margin: 0 12px 10px; padding: 11px 13px; border-radius: 13px; background: rgba(246,195,92,.08); box-shadow: inset 0 0 0 1px rgba(246,195,92,.2); display: flex; flex-direction: column; gap: 6px; backdrop-filter: blur(10px)">
+    <div class="mono" style="font-size: 13px; color: #f6c35c; line-height: 1.4">Allow write to crates/execution/src/limits.rs? [y/n]</div>
+    <div style="font-size: 11px; color: #8a9b91; display: flex; gap: 8px"><span class="mono">~/dev/polybot · main</span><span>·</span><span class="mono">CH 96% · $0.294 · 16%/500k</span></div>
+  </div>
+
+  <div class="glass" style="flex: none; display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 26px; border-top: 1px solid rgba(255,255,255,.07)">
+    <div style="display: flex; gap: 7px; overflow: hidden">
+      <button class="key q" type="button">y</button>
+      <button class="key q" type="button">n</button>
+      <button class="key q" type="button">↵</button>
+      <button class="key" type="button">esc</button>
+      <button class="key" type="button">tab</button>
+      <button class="key" type="button">ctrl</button>
+      <button class="key" type="button">⇧⇥</button>
+      <button class="key" type="button">^C</button>
+    </div>
+    <div style="display: flex; gap: 7px">
+      <button class="key" type="button" aria-label="Up">▲</button>
+      <button class="key" type="button" aria-label="Down">▼</button>
+      <button class="key" type="button" aria-label="Left">◀</button>
+      <button class="key" type="button" aria-label="Right">▶</button>
+      <button class="key g" type="button">git</button>
+      <button class="key" type="button">paste</button>
+      <div style="flex: 1"></div>
+      <button class="key on" type="button" aria-label="Show keyboard"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M7 10h1M11 10h1M15 10h1M7 14h10"/></svg></button>
+    </div>
+  </div>
+</div>
+</body>
+</html>
