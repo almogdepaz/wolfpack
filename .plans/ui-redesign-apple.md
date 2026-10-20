@@ -1,6 +1,8 @@
 # ui redesign: attention-first dashboard, apple-style skin
 
-status: phase 1 implementation committed as `87a6b75c` on `ui/apple-reskin`; verification finished with a reproduced baseline test failure, unavailable WebKit libraries, and visual deviations documented below. phase 2 not started. no push.
+status: fix-1 finished on `ui/apple-reskin`; verified production head `03f8f39b`, starting at `04bd999b`. H1–H5, M1–M6, L1–L10 and visible failed-row Close accounted for below, including explicit partial declines. final full suites remain non-green with baseline-reproduced failures. no push; phase 2 excluded.
+
+fix-1 baseline reconciliation: reviewer logs `10-playwright-head.log`, `12-playwright-base-failing-specs.log`, and `13-playwright-head-regressions-rerun.log` inspected under `/tmp/wolfpack-reskin-review/logs/`. six pre-existing failures: iphone-14 session-switch:253; desktop session-switch:656 and ui-polish:19/:35/:71/:106. six branch regressions: iphone-14 accessibility-navigation:39/:52, delegation-sessions:562 on desktop + iphone-14, iphone-14 ux-navigation:1177 and impeccable-refinement:165. baseline Bun inbox failure also reproduced by reviewer. full Chromium final gate may expose additional failures; isolate those on base before assigning ownership. fix logs: `/tmp/wolfpack-reskin-logs/fix-1/`. commit boundary: logical fix commits and final handoff, no push/PR/merge. independent reviewer remains coordinator-owned; no child sessions launched.
 
 - base: `909d5150c4d004135751da375b880d814543ba69` (main, 2026-10-20)
 - spec: `mockups/*.html` next to this file (open in a browser; they are the design source of truth — read the css, do not eyeball pngs). `06-system-tokens.html` is the token/status reference.
@@ -164,7 +166,7 @@ keep every `data-*` attribute, `card-open` button, `kill-btn`, session-order att
 - keep "All" as an explicit 5th segment or toggle-off? plan says toggle-off; if playwright/a11y prefers an explicit tab, add it.
 - machine groups as 2 columns vs. 1 stacked column of grouped lists on desktop when >2 machines: plan says `repeat(auto-fit, minmax(560px, 1fr))`.
 
-## implementer handoff — phase 1
+## initial implementer handoff — phase 1 (historical; superseded by fix-1 below)
 
 - base: `909d5150c4d004135751da375b880d814543ba69`; implementation: `87a6b75c` (`ui/apple-reskin`). existing checkout changes were discarded only after explicit user authorization. no push, PR, merge, dependency installation, or live-service change.
 - scope clarification: user authorized continuing after the missing native inspector actions/build script were reported. existing extension composition is preserved; unavailable Restart / Mark Reviewed / Open in Editor actions were not invented. browser assets are built with the repository's documented generation command.
@@ -200,3 +202,66 @@ commands ran in `/home/almog/dev/wolfpack` against the source committed as `87a6
 - axe checks passed on covered fixture views; this is not proof of every dynamic extension, reconnect/error state, or physical-device contrast/layout. WebKit and physical iPhone behavior remain unverified. the full Bun suite is not green because the same inbox test fails on the untouched base; no unrelated CLI fix attempted.
 - unrelated/untracked `edc-context/reports/` left untouched. private logs are not committed. plan, supplied mockups, and screenshots are committed separately from production. stop here; phase 2 remains out of scope.
 - `output` state currently maps to work-tier; if users want an "unread" signal, add a small accent dot on the name for `output` with `freshness fresh` — not in scope.
+
+## fix-1 handoff — independent review remediation
+
+- base `909d5150c4d004135751da375b880d814543ba69`; review target/start `04bd999b`; final production `03f8f39b` on `ui/apple-reskin`.
+- commits: `dcbc5305` review fixes/regressions; `a9f5a049` full-suite navigation/reorder compatibility; `03f8f39b` sidebar parent hit-target correction. final handoff/screenshots are documentation-only. no push, PR, merge, new dependencies, or phase 2.
+- this round changes only `public/{app.ts,index.html,styles.css}`, generated `src/public-assets.ts`, tests, and this handoff/screenshots. protected-scope diff is empty (`38-protected-scope.diff`). no broker, websocket, PTY, auth, relay, SDK, observation, or workspace implementation edits.
+- no delegated sessions/tasks were created. independent reviewer lifecycle remains coordinator-owned. all complete logs, traces, failure screenshots and baseline comparisons: `/tmp/wolfpack-reskin-logs/fix-1/`.
+
+### findings and decisions
+
+| finding | disposition and verification |
+|---|---|
+| H1 | fixed: single- and multi-machine load/poll use `renderSessionListFromState`, updating controls, summaries and online counts. `reskin-review` asserts initial values before any filter click and changed values after a refresh. |
+| H2 | fixed at the same render source: dashboard search is reapplied after replacement. regression preserves the query and checks visible rows after a runtime change. |
+| H3 | restored mobile header visibility while retaining its layout space through swipes. original gear focus-return specs and scrolling specs pass. mobile Settings navigation is a native link to the existing destination, avoiding duplicate button-role matches; separate keyboard-return coverage passes. |
+| H4 | restored grouped child indentation/compact sizing and sidebar status rows; the unchanged delegation geometry assertions pass. restoring the original sidebar name-row height also keeps the parent Open hit target clear of the delegation toggle. |
+| H5 | restored solid `--bg-surface`, `--bg-elevated`, and original `--text-primary` for legacy dialogs/settings; new phase-1 surfaces consume the new tokens explicitly. reason: prevent incidental translucent stacking outside the requested surfaces. original stop-dialog/debug expectations pass without weakening their contrast helper. |
+| M1 | fixed accessory overflow and focus guards on ctrl summary/paste. regression checks hit testing, retained terminal focus and the actual control-key byte. no new modifier state. |
+| M2 | single-terminal chrome/footer hidden in manual and delegation grids; Inspect/Stop handlers also guard their context. both grid modes covered. |
+| M3 | existing mobile context restore affordance is now named Changes and remains reachable in the terminal header. test opens its existing region. dashboard Changes remains disabled without a terminal; no new route/view invented. |
+| M4 | restored semantic info-blue via `--info` (`rgb(127, 200, 255)`), including the existing activity assertion. reason: the mockups specify this signal, not muted grey or the previous palette's blue. |
+| M5 | sidebar filter is a bounded two-column grid with nowrap labels/counts, not a squeezed four-column row. width/height and no-overflow checks restored; inspected 1440px capture. |
+| M6 | screenshots use `testInfo.outputPath()`; regression asserts the artifact exists there. tests left tracked screenshots unchanged. final images were copied manually from the verified artifacts after testing, not written by a spec. |
+| L1 | active preview text fixed to `--text-2`, covered by computed-color assertion. partial decline: preserve specified Gemini/shell gradient glyphs. they are labelled `role=img`, meet 3:1 non-text contrast (3.44/3.93 minimum), and are not prose; blanket 4.5:1 glyph parity is not claimed. |
+| L2 | restored visible and accessible `← Back`; it truthfully handles projects/settings/terminal return destinations. matching label and keyboard focus-return test added. |
+| L3 | singular/plural machine and session counts fixed; initial one-machine summary asserted. |
+| L4 | group of native toggle buttons with `aria-pressed`, count descriptions and toggle-off instructions replaces the incomplete tablist. All remains toggle-off. keyboard, count-description and synchronized-control tests pass. |
+| L5 | shared status content supplies dot, tier color and tooltip in dashboard/chrome; terminal Working dot/color/label are asserted. |
+| L6 | dashboard status preserves the source runtime tooltip; exact tooltip asserted. |
+| L7 | app-local wrapper supplies the shell tile for unknown/custom harnesses without changing the shared harness module. fallback accessibility asserted. name remains first in sidebar DOM for the existing reorder announcement contract; CSS orders the tile visually first. |
+| L8 | removed unused sheet radius, overridden session stripe/pill rules and duplicate mobile declarations; uses card radius, info and danger-tint tokens. partial decline: retain aliases still consumed by legacy surfaces and the generic card stripe used outside session rows; deleting/restyling those would exceed phase 1. |
+| L9 | restored visible-logo, 2px focus outline, bounded sidebar size and no-overflow assertions. All clearing now targets the actually pressed button; delayed-ack test explicitly selects the expected surface's status element. old dashboard left-edge alignment assertion deliberately not restored: mockup 01 places filters right of the title; screenshot inspection covers that layout. |
+| L10 | sentence-case dashboard/chrome labels replace CSS title casing. elapsed time remains deferred, not fabricated from absent phase-1 data. |
+| failed-row Close | visible, danger-tinted Close label in dashboard/sidebar, retaining the existing kill confirmation. regression checks no-hover visibility, confirmation and cancel focus restoration. |
+
+### regression evidence and expectation changes
+
+- `01-red.log` observed failures before fixes for H1/H2/H3/M1/M2/M3/M6. reviewer baseline probes additionally established H3/H4/H5 as branch regressions before remediation. `03-counters-search.log`, `08-focused.log` (31 pass), `09-extra.log`, `17-corrections.log`, `18-corrections.log` and `20-widget-expectations.log` preserve subsequent outcomes, including intermediate failures.
+- final `reskin-review.e2e.ts`: 16 pass, 11 intentional project skips. original accessibility/delegation/mobile-scrolling/dialog/debug cases also pass in the full gate.
+- full-suite discoveries were not hidden: `12-full-chromium-head.log` exposed duplicate Settings button matches, fallback-tile reorder naming and stale context-control assertions. tests now expect mobile header Changes and the specified borderless, raised, translucent selected context segment; selection, draft retention, terminal identity and persistence assertions remain intact.
+- `23-full-chromium-final.log` exposed the sidebar parent Open hit-target regression. `25-parent-hit-target-red.log` reproduced it in isolation; `27-parent-hit-target-green.log` passes the same real-broker test plus reorder/manual-grid/delegation-grid checks. final full run also passes it. no native transport code changed.
+
+### final verification and baseline reconciliation
+
+commands ran in `/home/almog/dev/wolfpack` against `03f8f39b`; only handoff/images were dirty. all browser runs used `WOLFPACK_BROKER_BIN=/home/almog/dev/wolfpack/broker/target/release/wolfpack-broker`, existing dependencies, Chromium projects `desktop`, `iphone-14`, `iphone-se`, zero retries. baseline archive `/tmp/wp-reskin-fix-base.EGXjvp` is exact `909d5150` plus generated assets and a shared dependency symlink; path recorded in `base-path`. no baseline production edits.
+
+| check | actual result | private log |
+|---|---|---|
+| `bun run scripts/gen-assets.ts` | exit 0; generated source current | `29-final-assets.log` |
+| `bun run typecheck` | exit 0 | `30-final-typecheck.log` |
+| `bun test` final | exit 1; 3599 pass, 8 skip, 1 fail; 329.06s | `33-verified-bun-test.log`, `33-result.txt` |
+| baseline `bun test` (archive caveat below) | exit 1; 3583 pass, 8 skip, 4 fail; 329.72s | `32-base-bun-test.log`, `32-result.txt` |
+| full Chromium final, all 55 specs / 1236 cases | exit 1; 762 pass, 442 skip, 32 fail; 20.7 min (1252s including generation/typecheck) | `31-full-chromium-verified.log`, `31-result.txt`; artifacts `playwright-verified/` |
+| full Chromium base, 1206 cases | exit 1; 747 pass, 430 skip, 29 fail; 1247s | `15-full-chromium-base.log`, `15-result.txt`; artifacts `playwright-base/` |
+| three variable browser failures, baseline/head repeated probes | base exit 1: 13 pass / 3 skip / 2 fail; head exit 1: 14 pass / 3 skip / 1 fail | `34-base-flake-probe.log`, `35-head-flake-probe.log` |
+| baseline passive-inspection spec, 10 repetitions | exit 1; 32 pass, 10 skip, 8 fail; 1.5 min | `36-base-inspection-race.log` |
+| `git diff --check`; protected scope | exit 0; protected diff empty | `38-protected-scope.diff`, final git evidence |
+
+- final Chromium failures: the same 29 failing cases as base, plus three intermittent failures independently reproduced on base. installed-widget manager: transient settings x=-31; worker-readiness cleanup: session still present (browser-independent test); passive inspection: controller columns change 122→81 before the compared snapshot. baseline passive probe fails the exact same geometry assertion; base rows 47 versus head 42 reflect the deliberate terminal chrome height, not the failing column transition. full failure lists/comparisons are `verified-baseline-comparison.json` and `baseline-failure-signatures.json`. no unexplained branch-only failure remains in these checks; this is not a claim that the repository suite is green.
+- final Bun failure is the same bounded-inbox JSON truncation reproduced on base. intermediate full run `24-final-bun-test.log` was exit 0 (3600 pass / 8 skip), so this is intermittent; that passing run does not replace the final failing result. baseline archive full run also hit two git-metadata checks (archive has no `.git`) and a server-shutdown timing test; do not present those archive failures as production regressions or infer a clean full baseline. reviewer `logs/05-base-inbox.log` independently reproduced the inbox failure in a proper detached worktree (150 pass / 1 fail).
+- skip counts include project-specific/native-environment guards; full logs retain their names. no retries concealed failures. build script remains absent; authorized asset-generation substitute used. no WebKit host libraries installed; WebKit/physical iPhone remain unverified.
+- inspected the final 1440×900 and 390×900 captures and copied them manually into `.plans/screenshots/{dashboard,terminal}-{1440,390}.png`. these remain controlled-fixture evidence, not exact mockup parity or physical-device evidence. known structural deviations in the initial handoff remain except corrected failed Close, status/filter/counts, mobile Settings/Changes and sidebar overflow. no built-in Changes/Plan/Tasks content or missing actions were invented; split/fullscreen/widget controls remain in their established positions rather than re-homed.
+- stop here. coordinator may independently review these commits; no merge recommendation beyond this scoped evidence. unrelated `edc-context/reports/` remains untouched.
