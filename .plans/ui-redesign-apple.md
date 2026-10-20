@@ -331,3 +331,30 @@ verification ran in `/home/almog/dev/wolfpack` on the final fix-3 source diff ag
 
 - no full Bun/full-repository browser rerun in this narrow final punch list; earlier full-suite baseline failures and device limitations remain documented above. no installs or live-service changes. unrelated `edc-context/reports/` left untouched.
 - final commit SHA and normal-push result are recorded in `12-final-git.txt` and `13-push.log`. stop after delivery; no additional work authorized.
+
+## phase 2a/2b handoff
+
+- branch/worktree: `ui/triage-pinned`, `/home/almog/dev/wolfpack-triage-pinned`; base `a3e249544f892f50735ca0fad2fde87e4ab2a888` (`ui/apple-reskin`). implementation `ac61c90cac77c0bf798c74f8cdb6c2f1de222de6`; test-only reconciliation `8e72633a397ad3a3339c3d415fbde4388e11caa4`. logical commits only; no push/PR/merge or child sessions. sibling phase 2c untouched.
+- changed production: `public/app.ts` (shared dashboard row renderer, synthetic pinned group, ordering/focus exclusions), new `public/session-triage.ts` (triage comparator over existing delegation ordering), `public/styles.css` (full-width amber group, machine chips, .6-opacity duplicates), generated `src/public-assets.ts`. reused `src/agent-runtime-ui.ts` unchanged. no server/broker/websocket/auth/wire/dependency/lockfile changes.
+- decisions: need → fail → work → idle; need age uses runtime `changedAt`, work/idle recency uses activity `lastRenderedActivityAt`, never terminal text or client receipt time. unknown/invalid ages follow known ages and retain manual ties. preserve delegation trees: sort roots and sibling sets, not a flat list that separates children from parents. pinned projection independently includes every waiting child, even with a collapsed parent. desktop/mobile share the renderer; pinned rows retain machine routing/Open/Stop but no ordering attributes; group is absent when empty or excluded by tier, hidden when search has no matches.
+- persistence remains v1-compatible. manual ordering is only an equal-priority sibling tiebreak; cross-tier/unequal-timestamp moves are rejected, so persisted identity-array positions cannot override triage. no `session-order.ts` format change. existing delegation/manual-order/drag tests pass. selector updates distinguish synthetic duplicates from real machine rows; navigation expectations now account for working orphan roots preceding idle parent trees, preserving all hierarchy/escaping assertions.
+- tests: all 12 runtime-state mappings retained (broker authority fixture corrected to the contract constant); five new sort tests; four new Playwright tests covering duplication/dimming/counts, empty group, no ordering attributes, multi-machine routing and collapsed waiting children. red: unit 4 fail/14 pass; pinned browser 2 fail/1 pass. green: units 24 pass; affected Chromium 63 pass/23 skip; pinned desktop/390px 8 pass. inspected 1440px/390px captures in `pinned-final-artifacts/`; no screenshots committed.
+
+verification ran in this worktree; logs and command/revision/duration records: `/tmp/wolfpack-2ab-logs/`. full gates used clean `ac61c90c` production inputs. subsequent changes are the one navigation test and this handoff only; final asset/type/unit rechecks ran at `8e72633a`. no repeated full-suite gate after the test-only correction.
+
+| check | actual exit / counts | evidence |
+|---|---|---|
+| frozen install | 0; no lockfile change | `install.log` |
+| gen-assets; typecheck | 0; 0 (final rechecks also 0; typecheck 13s in full gate) | `17-final-assets*`, `18-final-types*`, `28-final-assets.log`, `29-final-types.log` |
+| focused units | 0; 24 pass, 0 fail | `30-final-unit.log` |
+| full `bun test` | 1; 3603 pass, 8 skip, 2 fail; 354s | `19-final-bun.log`, `19-final-bun-result.txt` |
+| full Chromium, desktop/iphone-14/iphone-se, zero retries | 1; 780 pass, 448 skip, 29 fail, 0 flaky; 1491s | `20-full-chromium.{log,json}`, `20-full-chromium-result.txt` |
+| same Chromium gate on exact base archive + same dependencies/broker | 1; 768 pass, 448 skip, 29 fail, 0 flaky; 1474s | `23-base-chromium.{log,json}`, `23-base-chromium-result.txt` |
+| corrected delegation navigation test | 0; 1 pass | `27-ux-corrected.log` |
+| base inbox test | 1; 150 pass, 1 fail (same #461 bounded JSON failure) | `22-base-inbox.log` |
+| isolated server-lifecycle tests, head / base | 0: 4 pass / 1: 3 pass, 1 fail (same temporary-home assertion) | `25-head-lifecycle-isolated.log`, `26-base-lifecycle-isolated.log` |
+| design detector; whitespace/scope | 2: two unchanged legacy CSS warnings; `git diff --check` 0, protected diff empty | `16-design-scan.json`, final git evidence |
+
+- browser reconciliation: 28 failures match base by test and failure mechanism; the only head-only case was the old navigation count including the new pinned duplicate, corrected and passing in isolation. base-only widget-manager x=-31 failure passed on head. complete signatures/comparison: `24-baseline-comparison.json`. full-suite totals are reported as run, not relabeled green after the focused correction.
+- Bun failures are not hidden: #461 is the authorized known failure; the additional server-lifecycle temporary-home assertion also reproduces on unchanged base, while isolated head passes. full Bun ran concurrently with browser fixtures, and the assertion scans global temporary homes; no unrelated fixture cleanup fix attempted. base is a source archive (`base-path`), not a git worktree; only browser and isolated inbox/lifecycle checks ran there, not git-metadata-dependent unit tests.
+- open risks: no green full-repository gate is claimed; baseline failures remain. hierarchy-preserving sibling sorting is deliberate rather than strict flat cross-tree tier order. manual moves cannot outrank timestamps. native broker was the existing approved binary, not rebuilt; WebKit/physical-device behavior is unverified. quick reply, footer/meta, snooze, failed actions and all phase 2c–2e work remain out of scope. stopped after this handoff; no push.
