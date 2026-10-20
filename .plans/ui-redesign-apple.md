@@ -117,6 +117,12 @@ keep every `data-*` attribute, `card-open` button, `kill-btn`, session-order att
 - axe/contrast: every text ≥4.5:1 on its surface.
 - `bun run build` + existing playwright dashboard/mobile specs green; update selectors only where class names changed (list the renames in the pr).
 
+## phase 2c execution status
+
+- assignment: implement 2c only in `/home/almog/dev/wolfpack-last-line-meta`, branch `ui/last-line-meta`; base/start `a3e249544f892f50735ca0fad2fde87e4ab2a888` (`ui/apple-reskin`). local logical commits only, no push/PR/merge. no child sessions or endpoint tasks created.
+- allowed: observation display projection, client metadata rendering/styles, fixtures/tests, generated assets, this handoff. runtime reduction, broker/transport/auth and sibling phase-2a/2b worktree remain untouched.
+- status: implementation complete at `a2d7cb9033d4e1e70096f24819d67a735248fc6f`; final gates and baseline comparison recorded in the phase 2c handoff below. logs `/tmp/wolfpack-2c-logs/`. no open product decisions. codex/gemini/cursor lack live footer captures; conservative synthetic chrome coverage only. stopped after local handoff commit; no push/PR/merge.
+
 ## phase 2 — behavior
 
 ### 2a. tier helper + attention sort — `src/agent-runtime-ui.ts`, `app.ts` `sessionOrderRows`
@@ -331,3 +337,30 @@ verification ran in `/home/almog/dev/wolfpack` on the final fix-3 source diff ag
 
 - no full Bun/full-repository browser rerun in this narrow final punch list; earlier full-suite baseline failures and device limitations remain documented above. no installs or live-service changes. unrelated `edc-context/reports/` left untouched.
 - final commit SHA and normal-push result are recorded in `12-final-git.txt` and `13-push.log`. stop after delivery; no additional work authorized.
+
+## phase 2c handoff
+
+- base: `a3e249544f892f50735ca0fad2fde87e4ab2a888` (`ui/apple-reskin`); source commits `5e2a0b43` (projection/rendering) and `a2d7cb9033d4e1e70096f24819d67a735248fc6f` (preserve two-line sidebar), branch `ui/last-line-meta`. this final handoff is documentation-only. no push, PR, merge, sibling-worktree edits, or child sessions.
+- changed: `src/server/session-observation.ts` walks upward over chrome, truncates the selected line to 160 codepoints, retains the original final-line/240-character fallback, and adds optional display-only `meta` + raw `footer` summary fields. `public/session-meta.ts` owns the shared display type and escaped labeled rendering; `public/app.ts` joins it into dashboard `activityHtml` without adding sidebar lines; `public/styles.css` styles values and ctx ≥85% amber; generated `src/public-assets.ts`. tests: `tests/unit/{session-output-preview,session-meta}.test.ts`, `tests/e2e/session-meta.e2e.ts`.
+- regexes: pi footer `^[↑↓]\d`, cwd `^~\/.*\(.*\)$`; pi model/reasoning from the trailing `(provider) model • reasoning`, cost/tag from `$number (tag)`, context exclusively from `number%/numberk` (expanded contextLimit in tokens). **CH is cache-hit, never contextPct.** Claude skips captured auto-mode and update-installed lines. all harnesses skip 8+ hyphens/rules, box-drawing-only rules, blank lines and empty input/cursor glyphs. Codex/Gemini/Cursor have only synthetic conservative rule/cursor fixtures; metadata remains undefined without a captured parseable footer. unknown pi footer chrome retains raw text for fallback.
+- runtime authority: no prompt detection or changes to tier, ordering, attention, notifications, activity fingerprints or status reduction. the existing runtime preview input remains unfiltered, separate from the display projection. a y/n preview with program status Done remains idle-tier in unit/browser regressions and an actual server-observation probe. git delta/project-git-status remains client-side and untouched. broker/websocket/PTY/auth/lockfile diff is empty.
+
+verification ran in `/home/almog/dev/wolfpack-last-line-meta` on source `a2d7cb90` with only this plan dirty; same installed broker used by both Chromium runs. full evidence, commands/cwd, durations, failure diagnostics and artifacts: `/tmp/wolfpack-2c-logs/verification-summary.md`.
+
+| check | actual exit / counts | log under `/tmp/wolfpack-2c-logs/` |
+| --- | --- | --- |
+| `bun run scripts/gen-assets.ts` | 0 | `20-final-assets.log` |
+| `bun run typecheck` | 0 | `21-final-types.log` |
+| focused unit (projection, render helper, unchanged tier mapping) | 0; 24 pass | `10-focused.log` |
+| focused Chromium render + fallback + amber + Done + compact sidebar, 3 projects | 0; 3 pass | `22-sidebar-green.log` |
+| `bun test` final | 1; 3608 pass, 8 skip, 2 fail; 351s | `16-bun.log`, `16-bun.result` |
+| full Chromium final, zero retries | 1; 771 pass, 448 skip, 29 fail; 1447s | `17-full-chromium.log`, `.json`, `.result` |
+| full Chromium base `ui/apple-reskin` | 1; 764 pass, 448 skip, 33 fail; 1279s | `18-base-chromium.log`, `.json`, `.result` |
+| actual server-observation + tier probe, head/base | head 0; base 1 at intended old-preview assertion; Done/idle-tier agrees on both | `23-observation-probe.log`, `24-base-observation-probe.log` |
+| lifecycle test isolated TMPDIR, head/base | both 0; 4 pass each | `26-head-lifecycle-isolated.log`, `27-base-lifecycle-isolated.log` |
+| `git diff --check`; protected scope | 0; protected diff empty | `diff-check.log`, `protected.diff` |
+
+- red/green: original footer selection/length fail in `04-preview-red.log`; original client has an empty metadata row in `13-client-base-red.log`; pre-correction sidebar leaks metadata in `19-sidebar-red.log`. final focused tests pass. initial missing-export/module errors are not behavioral-red evidence. an early broad run was stopped for the sidebar correction; aborted logs are retained separately, not counted as final checks.
+- Bun failures: known inbox #461 plus a global-temp-directory lifecycle assertion racing concurrent Playwright fixtures. the latter's identical failure was reproduced with a real concurrent fixture on unchanged base (`25-base-lifecycle-race.log`, exit 1); isolated head/base lifecycle tests pass. this extra harness failure is reported, not silently ignored or fixed out of scope. isolated base inbox happened to pass 151 tests (`28-base-inbox.log`); no claim that it reproduced #461 this round.
+- browser reconciliation: **all 29 head failures occur on base, zero head-only failures** (`browser-comparison.json`). differing diagnostics were inspected: randomized fixture paths/tokens, repeated wait counts, the same pointer-intercepting overlays, extra `/api/backend` polling, missing TUI bottom line, 122→81 inspection columns and hydrating-not-live grid cells. four base-only failures remain baseline/flaky observations, not fixes claimed here. full raw/signature evidence: `shared-signatures.json`, `31-different-signatures.txt`, `32-selected-host-signatures.txt`. base archive path in `base-path`, same dependencies/generated base assets, no `.git`; no git-metadata baseline claims.
+- open risks: no live Codex/Gemini/Cursor footer captures/metadata claims; synthetic chrome fallback coverage is explicit. no physical-device/WebKit verification or fresh native build. the repository suites are not green; baseline/harness failures remain outside 2c. no outstanding product decision. stop and wait after committing this handoff.
