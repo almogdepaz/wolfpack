@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { SessionMeta } from "../../public/session-meta.js";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { AgentStatusState } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
@@ -142,6 +143,8 @@ const BUSY_DESCENDANT_STATES: ReadonlySet<AgentStatusState> = new Set([
 interface ObservedSessionSummary {
   readonly name: string;
   readonly lastLine: string;
+  readonly meta?: SessionMeta;
+  readonly footer?: string;
   readonly triage: TriageStatus;
   readonly runtimeState: AgentRuntimeState;
   readonly activity: SessionActivityObservation;
@@ -180,11 +183,69 @@ let latestAuthoritativeObservation = 0;
 
 const SESSION_PREVIEW_MAX_CHARS = 240;
 
-export function lastTerminalPreviewLine(rendered: string | undefined): string {
-  if (!rendered) return "";
-  const lines = rendered.split("\n");
-  const last = (lines.at(-1) ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim();
+function cleanPreviewLine(line: string): string {
+  return line.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+}
+
+function legacyTerminalPreviewLine(rendered: string | undefined): string {
+  const last = cleanPreviewLine(rendered?.split("\n").at(-1) ?? "");
   return Array.from(last).slice(0, SESSION_PREVIEW_MAX_CHARS).join("");
+}
+
+// Only recognizable chrome is skipped. These patterns never classify prompts,
+// activity, or runtime state; unknown harness text remains visible.
+const TERMINAL_CHROME = [
+  /^[↑↓]\d/, // pi token/cost/model footer
+  /^~\/.*\(.*\)$/, // pi cwd/branch
+  /^[-─]{8,}/,
+  /^[\u2500-\u257f\s]+$/, // box-drawing-only rules
+  /^[❯>▏▎▍▌▋▊▉█│┃]+$/, // empty input/cursor only
+  /^⏵⏵ auto mode on \(shift\+tab to cycle\)/, // claude
+  /^✔ Update installed · \/restart to apply$/,
+];
+
+function parsePiFooter(line: string): SessionMeta | undefined {
+  const model = /\([\w-]+\)\s+([\w.-]+)\s+•\s+(\w+)$/.exec(line);
+  // CH is cache-hit rate, NOT context. Only the %/limit token is context.
+  const context = /(\d+(?:\.\d+)?)%\/(\d+(?:\.\d+)?)k\b/.exec(line);
+  const cost = /\$(\d+(?:\.\d+)?)(?:\s+\(([\w-]+)\))?/.exec(line);
+  if (!model && !context && !cost) return undefined;
+  return {
+    ...(model && { model: model[1], reasoning: model[2] }),
+    ...(context && { contextPct: Number(context[1]), contextLimit: Number(context[2]) * 1000 }),
+    ...(cost && { cost: Number(cost[1]), ...(cost[2] && { costTag: cost[2] }) }),
+  };
+}
+
+export function terminalDisplayProjection(rendered: string | undefined): {
+  readonly lastLine: string;
+  readonly meta?: SessionMeta;
+  readonly footer?: string;
+} {
+  let footer: string | undefined;
+  let meta: SessionMeta | undefined;
+  let lastLine: string | undefined;
+  for (const raw of (rendered ?? "").split("\n").reverse()) {
+    const line = cleanPreviewLine(raw);
+    if (!line) continue;
+    if (!TERMINAL_CHROME.some((pattern) => pattern.test(line))) {
+      lastLine = Array.from(line).slice(0, 160).join("");
+      break;
+    }
+    if (/^[↑↓]\d|^⏵⏵ |^✔ Update installed/.test(line)) {
+      footer ??= line;
+      if (/^[↑↓]\d/.test(line)) meta ??= parsePiFooter(line);
+    }
+  }
+  return {
+    lastLine: lastLine ?? legacyTerminalPreviewLine(rendered),
+    ...(footer && { footer }),
+    ...(meta && { meta }),
+  };
+}
+
+export function lastTerminalPreviewLine(rendered: string | undefined): string {
+  return terminalDisplayProjection(rendered).lastLine;
 }
 
 function renderedActivityFingerprint(pane: string): string {
@@ -562,7 +623,8 @@ async function observeSessionFact(
       : undefined;
 
   const triage: TriageStatus = rawOutputChanged ? "running" : "idle";
-  const renderedPreview = lastTerminalPreviewLine(currentRendered);
+  const displayProjection = terminalDisplayProjection(currentRendered);
+  const renderedPreview = displayProjection.lastLine;
   const lastLine = renderedPreview || knownSessionSummaries.get(name)?.lastLine || "";
   const previousTransitionSequence = store.get(sessionKey)?.transitionSequence;
   // The broker reports the root OSC 7501 record for this exact session, so it
@@ -582,7 +644,9 @@ async function observeSessionFact(
         observedAt,
       }) : []),
     ],
-    fallback: { rawOutputChanged: runtimeOutputChanged, observedAt, preview: lastLine },
+    // Keep the unfiltered legacy preview on this existing runtime input;
+    // display-only footer skipping and metadata must not become status evidence.
+    fallback: { rawOutputChanged: runtimeOutputChanged, observedAt, preview: legacyTerminalPreviewLine(currentRendered) },
     currentRun: {
       runId: identity?.wolfpackSessionId,
       runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
@@ -590,6 +654,7 @@ async function observeSessionFact(
   }, { persist: false });
   publishRuntimeTransition(name, identity?.wolfpackSessionId, previousTransitionSequence, runtimeState, events);
   const summary = {
+    ...displayProjection,
     name,
     lastLine,
     triage,

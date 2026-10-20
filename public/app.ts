@@ -1,3 +1,4 @@
+import { sessionMetaHtml, type SessionMeta } from "./session-meta";
 import {
   esc, escAttr, loadStoredJson, isDesktop,
   wpSettings, TERM_PRESETS, toggleSetting,
@@ -110,9 +111,13 @@ import {
 } from "./delegation-sessions";
 import { harnessIconHtml as knownHarnessIconHtml } from "./harness-icon";
 import type {
-  DelegationSessionLike,
+  DelegationSessionLike as BaseDelegationSessionLike,
   DelegationSessionRow,
 } from "./delegation-sessions";
+type DelegationSessionLike = BaseDelegationSessionLike & {
+  readonly meta?: SessionMeta;
+  readonly footer?: string;
+};
 import {
   loadSessionOrder,
   moveSessionRelative,
@@ -1601,7 +1606,9 @@ function sessionStatusContent(session: DelegationSessionLike): string {
 }
 
 function activityHtml(session: DelegationSessionLike): string {
-  return session.runtimeState?.unseen ? '<div class="session-activity">changed since review</div>' : "";
+  const meta = sessionMetaHtml(session);
+  const activity = session.runtimeState?.unseen ? '<div class="session-activity">changed since review</div>' : "";
+  return meta + activity;
 }
 
 function sessionCardViewControlsHtml(): string {
