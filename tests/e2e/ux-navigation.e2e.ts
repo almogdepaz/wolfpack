@@ -165,29 +165,30 @@ test("desktop groups structured sub-agents directly under their parent", async (
 
   await page.goto(srv.baseUrl);
 
-  const cards = page.locator("#session-list .card");
+  const cards = page.locator("#session-list .machine-group:not(.needs-you) .card");
   await expect(cards).toHaveCount(5);
+  await expect(page.locator("#session-list .needs-you .card-name-text")).toHaveText(["wolfpack-sub-agent"]);
   await expect.poll(() => cards.locator(".card-name").evaluateAll((names) =>
     names.map((name) => name.querySelector(".card-name-text")?.textContent),
   )).toEqual([
+    "orphan-child", // working roots precede idle roots; delegation trees stay intact
     "wolfpack",
     "wolfpack-sub-agent",
     "wolfpack-sub-agent-2",
     "unrelated",
-    "orphan-child",
   ]);
   await expect(cards.locator(".harness-icon[data-harness=\"pi\"][aria-label=\"pi\"]")).toHaveCount(5);
-  await expect(cards.nth(0)).toContainText("2 children");
-  await expect(cards.nth(0)).toHaveClass(/delegation-parent-card/);
-  await expect(cards.nth(1)).toHaveClass(/sub-session-card/);
-  await expect(cards.nth(1)).toHaveAttribute("data-parent-session", "wolfpack");
-  await expect(cards.nth(1)).not.toContainText("parent: wolfpack");
-  await expect(cards.nth(1).locator(".delegation-parent-link")).toHaveCount(0);
+  await expect(cards.nth(1)).toContainText("2 children");
+  await expect(cards.nth(1)).toHaveClass(/delegation-parent-card/);
   await expect(cards.nth(2)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(2)).toHaveAttribute("data-parent-session", "wolfpack");
-  await expect(cards.nth(4)).toHaveClass(/orphan-session-card/);
-  await expect(cards.nth(4)).toContainText("missing parent: gone <parent> & \"quoted\"");
-  await expect(cards.nth(4).locator("script")).toHaveCount(0);
+  await expect(cards.nth(2)).not.toContainText("parent: wolfpack");
+  await expect(cards.nth(2).locator(".delegation-parent-link")).toHaveCount(0);
+  await expect(cards.nth(3)).toHaveClass(/sub-session-card/);
+  await expect(cards.nth(3)).toHaveAttribute("data-parent-session", "wolfpack");
+  await expect(cards.nth(0)).toHaveClass(/orphan-session-card/);
+  await expect(cards.nth(0)).toContainText("missing parent: gone <parent> & \"quoted\"");
+  await expect(cards.nth(0).locator("script")).toHaveCount(0);
 
   await collapseInitialSessionMenu(page);
   const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card").first();
