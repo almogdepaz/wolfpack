@@ -1,11 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { mkdir } from "node:fs/promises";
+import { access } from "node:fs/promises";
 import { startTestServer, type TestServer } from "./helpers";
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer(); });
 test.afterAll(() => server?.close());
 
-test("triage tabs toggle off, preserve row actions, and capture responsive chrome", async ({ page }, info) => {
+test("triage filters toggle off, preserve row actions, and capture responsive chrome", async ({ page }, info) => {
   test.skip(!["desktop", "iphone-14"].includes(info.project.name));
   const inputBytes: number[][] = [];
   await page.routeWebSocket(/\/ws\/pty/, socket => {
@@ -43,13 +43,13 @@ test("triage tabs toggle off, preserve row actions, and capture responsive chrom
   await expect(page.locator("#session-list .card").first()).toBeVisible();
   await expect(page.locator("#session-list .machine-group")).toHaveCount(2);
   const tabs = page.locator("#dashboard-session-filter");
-  await expect(tabs.getByRole("tab")).toHaveCount(4);
+  await expect(tabs.getByRole("button")).toHaveCount(4);
   const original = await page.locator("#session-list .card").count();
-  const idle = tabs.getByRole("tab", { name: "Idle sessions", exact: true });
+  const idle = tabs.getByRole("button", { name: "Idle sessions", exact: true });
   await idle.click();
-  await expect(idle).toHaveAttribute("aria-selected", "true");
+  await expect(idle).toHaveAttribute("aria-pressed", "true");
   await idle.click();
-  await expect(idle).toHaveAttribute("aria-selected", "false");
+  await expect(idle).toHaveAttribute("aria-pressed", "false");
   await expect(page.locator("#session-list .card")).toHaveCount(original);
   if (info.project.name === "desktop") {
     await page.locator("#dashboard-search").fill("no-such-session");
@@ -59,12 +59,12 @@ test("triage tabs toggle off, preserve row actions, and capture responsive chrom
     await page.locator("#dashboard-search").fill("");
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
-  await mkdir(".plans/screenshots", { recursive: true });
-  await page.screenshot({ path: `.plans/screenshots/dashboard-${width}.png`, animations: "disabled" });
+  await page.screenshot({ path: info.outputPath(`dashboard-${width}.png`), animations: "disabled" });
+  await expect(access(info.outputPath(`dashboard-${width}.png`))).resolves.toBeUndefined();
   await page.getByRole("button", { name: "Open test-project", exact: true }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
   await expect(page.locator("#needs-input-banner")).toBeVisible();
-  await page.screenshot({ path: `.plans/screenshots/terminal-${width}.png`, animations: "disabled" });
+  await page.screenshot({ path: info.outputPath(`terminal-${width}.png`), animations: "disabled" });
   for (const [key, expected] of [["y", 121], ["n", 110], ["Escape", 27]] as const) {
     inputBytes.length = 0;
     await page.locator(`[data-reply-key="${key}"]`).click();

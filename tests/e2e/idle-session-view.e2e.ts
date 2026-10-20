@@ -142,9 +142,12 @@ function visibleSessionCardNames(page: Page): Promise<string[]> {
   return visibleSessionCards(page).locator(".card-name-text").allTextContents();
 }
 
-function visibleViewButton(page: Page, view: "all" | "idle") {
-  // Selecting the current segment again restores All.
-  return page.locator(`[data-action="set-session-card-view"][data-session-card-view="${view === "all" ? "idle" : view}"]`).filter({ visible: true });
+function visibleViewButton(page: Page, view: "idle") {
+  return page.locator(`[data-action="set-session-card-view"][data-session-card-view="${view}"]`).filter({ visible: true });
+}
+
+async function clearSessionView(page: Page): Promise<void> {
+  await page.locator('[data-session-card-view][aria-pressed="true"]').filter({ visible: true }).click();
 }
 
 async function selectIdleView(page: Page): Promise<void> {
@@ -164,7 +167,7 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
   await collapseInitialSessionMenu(page);
   const idle = visibleViewButton(page, "idle");
   await expect(idle).toHaveAccessibleName("Idle sessions");
-  await expect(idle).toHaveAttribute("aria-selected", "false");
+  await expect(idle).toHaveAttribute("aria-pressed", "false");
   await idle.focus();
   await expect(idle).toBeFocused();
   const idleControlStyle = await idle.evaluate((button) => {
@@ -184,22 +187,22 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
     button.click();
     button.remove();
   });
-  await expect(idle).toHaveAttribute("aria-selected", "false");
+  await expect(idle).toHaveAttribute("aria-pressed", "false");
   await selectIdleView(page);
-  await expect(idle).toHaveAttribute("aria-selected", "true");
-  await expect(page.locator('[data-session-card-view][aria-selected="true"]').filter({ visible: true })).toHaveCount(1);
+  await expect(idle).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('[data-session-card-view][aria-pressed="true"]').filter({ visible: true })).toHaveCount(1);
   if (testInfo.project.name === "desktop") {
     await page.locator("#sidebar-expand-btn").click();
     // Both control sets can be CSS-visible during the sidebar transition.
     // Scope the destination and verify the completed viewport geometry.
-    const expandedIdle = page.locator("#session-dashboard-controls").getByRole("tab", { name: "Idle sessions", exact: true });
+    const expandedIdle = page.locator("#session-dashboard-controls").getByRole("button", { name: "Idle sessions", exact: true });
     await expect(expandedIdle).toBeVisible();
-    await expect(expandedIdle).toHaveAttribute("aria-selected", "true");
+    await expect(expandedIdle).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator("#sidebar-session-list")).not.toBeInViewport();
     await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
-    const sidebarIdle = page.locator("#sidebar-session-controls").getByRole("tab", { name: "Idle sessions", exact: true });
+    const sidebarIdle = page.locator("#sidebar-session-controls").getByRole("button", { name: "Idle sessions", exact: true });
     await expect(sidebarIdle).toBeInViewport();
-    await expect(sidebarIdle).toHaveAttribute("aria-selected", "true");
+    await expect(sidebarIdle).toHaveAttribute("aria-pressed", "true");
   }
 });
 
@@ -259,7 +262,7 @@ test("idle true-zero uses idle copy and All restores onboarding", async ({ page 
   await expect(visibleDashboard(page).getByRole("heading", { name: "No sessions are currently idle" })).toHaveCount(2);
   await expect(visibleDashboard(page).getByRole("button", { name: "Create your first session" })).toHaveCount(0);
 
-  await visibleViewButton(page, "all").click();
+  await clearSessionView(page);
   await expect(visibleDashboard(page).getByRole("heading", { name: "No sessions yet" })).toHaveCount(2);
   await expect(visibleDashboard(page).getByRole("button", { name: "Create your first session" })).toHaveCount(2);
 });
@@ -303,6 +306,6 @@ test("desktop idle reorder stays inside visible cards", async ({ page }, testInf
   await expect(replacementIdleA).toBeFocused();
   await expect(page.locator("#session-order-status")).toHaveText("idle-a moved to position 2");
 
-  await visibleViewButton(page, "all").click();
+  await clearSessionView(page);
   await expect.poll(() => visibleSessionCardNames(page)).toEqual(["working-b", "idle-c", "idle-a"]);
 });

@@ -528,8 +528,8 @@ test("revoked ordered peer is never rendered as the local machine", async ({ pag
   };
   try {
     await page.locator("#settings-back-btn").click();
-    await page.getByRole("tab", { name: "Idle sessions" }).click();
-    await page.getByRole("tab", { name: "Idle sessions" }).click();
+    await page.getByRole("button", { name: "Idle sessions" }).click();
+    await page.getByRole("button", { name: "Idle sessions" }).click();
     await page.evaluate(() => {
       const expand = document.getElementById("sidebar-expand-btn");
       if (!expand?.classList.contains("active")) expand?.click();

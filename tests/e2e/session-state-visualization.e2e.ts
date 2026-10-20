@@ -396,10 +396,10 @@ test("shows semantic labels only for source-backed runtime state", async ({ page
     .locator("xpath=..")
     .locator(".status");
 
-  await expect(cardBadge("unproven")).toHaveText("quiet");
-  await expect(cardBadge("structured")).toHaveText("needs input");
-  await expect(cardBadge("active-output")).toHaveText("output");
-  await expect(cardBadge("program-blocked")).toHaveText("needs input");
+  await expect(cardBadge("unproven")).toHaveText("Quiet");
+  await expect(cardBadge("structured")).toHaveText("Needs input");
+  await expect(cardBadge("active-output")).toHaveText("Output");
+  await expect(cardBadge("program-blocked")).toHaveText("Needs input");
 });
 
 test("shows only review changes in session activity lines", async ({ page }) => {
@@ -407,7 +407,7 @@ test("shows only review changes in session activity lines", async ({ page }) => 
 
   const card = (name: string) => page.getByRole("button", { name: `Open ${name}` }).locator("xpath=..");
   await expect(card("active-output").locator(".session-activity")).toHaveText("changed since review");
-  await expect(card("active-output").locator(".session-activity")).toHaveCSS("color", "rgb(127, 144, 135)");
+  await expect(card("active-output").locator(".session-activity")).toHaveCSS("color", "rgb(127, 200, 255)");
   await expect(card("structured").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("unproven").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("unobserved").locator(".session-activity")).toHaveText("changed since review");
@@ -572,11 +572,13 @@ test("a delayed acknowledgement cannot clobber a newer runtime transition", asyn
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   }
   await refreshResponse;
-  await expect(card.locator(".status, .triage-badge")).toHaveText("output");
+  const badge = card.locator(mobileLayout ? ".status" : ".triage-badge");
+  const outputLabel = mobileLayout ? "Output" : "output";
+  await expect(badge).toHaveText(outputLabel);
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
 
   acknowledgeResponseSent?.();
-  await expect(card.locator(".status, .triage-badge")).toHaveText("output");
+  await expect(badge).toHaveText(outputLabel);
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
 
   if (!mobileLayout) {

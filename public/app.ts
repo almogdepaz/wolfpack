@@ -108,7 +108,7 @@ import {
   projectDelegationSessions,
   sessionIdentityId,
 } from "./delegation-sessions";
-import { harnessIconHtml } from "./harness-icon";
+import { harnessIconHtml as knownHarnessIconHtml } from "./harness-icon";
 import type {
   DelegationSessionLike,
   DelegationSessionRow,
@@ -1455,7 +1455,7 @@ function applyMobileViewNavigation(viewName: string): void {
   state.kbAccessoryOpen = false;
   chip.style.display = "none";
   closeDrawer(true);
-  back.textContent = "‹ Sessions";
+  back.textContent = "← Back";
   title.style.display = "";
   title.style.cursor = "";
   title.onclick = null;
@@ -1590,6 +1590,16 @@ async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdent
   }
 }
 
+function harnessIconHtml(agentKind: unknown): string {
+  // Unknown/custom harnesses still reserve the icon column, without claiming an agent identity.
+  return knownHarnessIconHtml(agentKind) || '<span class="harness-icon" data-harness="shell" role="img" aria-label="Terminal" title="Terminal"></span>';
+}
+
+function sessionStatusContent(session: DelegationSessionLike): string {
+  const label = sessionRuntimeUi(session).label;
+  return `<i aria-hidden="true"></i>${esc(label.charAt(0).toUpperCase() + label.slice(1))}`;
+}
+
 function activityHtml(session: DelegationSessionLike): string {
   return session.runtimeState?.unseen ? '<div class="session-activity">changed since review</div>' : "";
 }
@@ -1601,16 +1611,16 @@ function sessionCardViewControlsHtml(): string {
   }
   const button = (view: Exclude<SessionCardView, "all">, label: string, color = ""): string => {
     const selected = state.sessionCardView === view;
-    return `<button type="button" role="tab" class="session-card-view-button${selected ? " selected" : ""}" data-action="set-session-card-view" data-session-card-view="${view}" aria-selected="${selected}" aria-label="${label} sessions">${label}<span class="n ${color}">${counts[view]}</span></button>`;
+    return `<button type="button" class="session-card-view-button${selected ? " selected" : ""}" data-action="set-session-card-view" data-session-card-view="${view}" aria-pressed="${selected}" aria-label="${label} sessions" aria-description="${counts[view]} sessions">${label}<span class="n ${color}">${counts[view]}</span></button>`;
   };
-  return `<div class="seg session-card-view-filter" role="tablist" aria-label="Session view">${button(SESSION_CARD_VIEW.NEED, "Needs you", "a")}${button(SESSION_CARD_VIEW.WORK, "Working", "g")}${button(SESSION_CARD_VIEW.IDLE, "Idle")}${button(SESSION_CARD_VIEW.FAIL, "Failed", "r")}</div>`;
+  return `<div class="seg session-card-view-filter" role="group" aria-label="Session view" aria-description="Select a status to filter. Press the selected status again to show all sessions.">${button(SESSION_CARD_VIEW.NEED, "Needs you", "a")}${button(SESSION_CARD_VIEW.WORK, "Working", "g")}${button(SESSION_CARD_VIEW.IDLE, "Idle")}${button(SESSION_CARD_VIEW.FAIL, "Failed", "r")}</div>`;
 }
 
 function syncSessionCardViewControls(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-session-card-view]").forEach((button) => {
     const selected = button.dataset.sessionCardView === state.sessionCardView;
     button.classList.toggle("selected", selected);
-    button.setAttribute("aria-selected", String(selected));
+    button.setAttribute("aria-pressed", String(selected));
   });
 }
 
@@ -1713,9 +1723,9 @@ function renderSessionListFromState(): void {
   const online = state.lastSessionGroups.filter(group => group.online);
   const sessions = online.flatMap(group => group.sessions);
   const machineCount = document.getElementById("online-machine-count");
-  if (machineCount) machineCount.textContent = `● ${online.length} machines online`;
+  if (machineCount) machineCount.textContent = `● ${online.length} ${online.length === 1 ? "machine" : "machines"} online`;
   const summary = document.getElementById("session-summary");
-  if (summary) summary.innerHTML = `${sessions.length} across ${online.length} machines · <strong>${sessions.filter(session => sessionTier(session) === "need").length} need you</strong>`;
+  if (summary) summary.innerHTML = `${sessions.length} across ${online.length} ${online.length === 1 ? "machine" : "machines"} · <strong>${sessions.filter(session => sessionTier(session) === "need").length} need you</strong>`;
   syncSessionChrome();
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
@@ -1857,7 +1867,7 @@ function machineHeaderHtml(
     : !group.online
       ? `<span class="machine-header-status">${esc(machineFailureLabel(group.failure || "unknown"))}</span>`
       : "";
-  const count = group.online ? `<span class="machine-session-count">${group.sessions.length} sessions</span>` : "";
+  const count = group.online ? `<span class="machine-session-count">${group.sessions.length} ${group.sessions.length === 1 ? "session" : "sessions"}</span>` : "";
   const action = collapsed ? "Expand" : "Collapse";
   const nameHandle = machineNameHandleHtml(group.machine.name);
   const collapseToggle = `<button type="button" class="machine-collapse-toggle" data-action="machine-collapse" data-machine-surface="${surface}" data-machine-control="collapse" aria-expanded="${collapsed ? "false" : "true"}" aria-controls="${bodyId}" aria-label="${action} ${escAttr(group.machine.name)}" title="${action} ${escAttr(group.machine.name)}"><span class="machine-collapse-chevron" aria-hidden="true"></span></button>`;
@@ -1934,9 +1944,9 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
             <div class="card-preview">${esc(lastLine)}</div>
             <div class="card-meta">${activityHtml(s)}</div>
           </div>
-          <span class="status st-${sessionTier(s)}"><i></i>${esc(ui.label)}</span>
+          <span class="status st-${sessionTier(s)}" title="${escAttr(ui.title)}">${sessionStatusContent(s)}</span>
           <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
-          <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
+          <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${mUrlAttr}" aria-label="${sessionTier(s) === "fail" ? "Close" : "Stop"} ${escAttr(s.name)}" title="${sessionTier(s) === "fail" ? "Close" : "Stop"} session">${sessionTier(s) === "fail" ? "Close" : "&times;"}</button>
         </div>`;
       }).join("");
     } else {
@@ -2159,7 +2169,6 @@ function fetchMachine(machineIdentity, machineMeta, isCurrentLoad, refreshSignal
 async function loadSessionsOnce(refreshSignal: AbortSignal) {
   const myEpoch = ++state.loadSessionsEpoch;
   const isCurrentLoad = (): boolean => myEpoch === state.loadSessionsEpoch;
-  const el = document.getElementById("session-list");
   const machines = getWorkspaceMachines();
   const multiMachine = machines.length > 0;
 
@@ -2169,12 +2178,7 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
     if (!isCurrentLoad()) return; // stale call, discard
     state.lastSessionGroups = [g];
     state.allSessions = g.sessions.map(s => ({ ...s, machineUrl: "", machineName: g.machine.name }));
-    const html = renderMachineGroupHtml(g, false, "main", 0);
-    if (html !== state.lastSessionsHtml) {
-      machineGroupEventController?.cancelForRender();
-      el.innerHTML = html;
-      state.lastSessionsHtml = html;
-    }
+    renderSessionListFromState();
     syncDelegationWorkspace();
     checkStateTransitions([g]);
     state.firstLoad = false;
@@ -2214,13 +2218,7 @@ async function loadSessionsOnce(refreshSignal: AbortSignal) {
   const renderVisibleGroups = () => {
     const visible = visibleGroupsInOrder();
     state.lastSessionGroups = visible;
-    const presentationGroups = machineGroupsInPresentationOrder(visible);
-    const html = presentationGroups.map((group, index) => renderMachineGroupHtml(group, true, "main", index)).join("");
-    if (html !== state.lastSessionsHtml) {
-      machineGroupEventController?.cancelForRender();
-      el.innerHTML = html;
-      state.lastSessionsHtml = html;
-    }
+    renderSessionListFromState();
     renderSidebar();
   };
 
@@ -4653,14 +4651,22 @@ function insertMessageInputNewline(): void {
   saveDraft();
 }
 
+function singleTerminalChromeActive(): boolean {
+  return state.currentView === "terminal" && !isGridActive() && !(state.activeDelegationRoot && !state.focusedDelegationSession);
+}
+
 function needsInputSession() {
-  if (state.currentView !== "terminal" || isGridActive() || (state.activeDelegationRoot && !state.focusedDelegationSession)) return undefined;
+  if (!singleTerminalChromeActive()) return undefined;
   const group = state.lastSessionGroups.find(group => (group.machine.url || "") === (state.currentMachine || ""));
   const session = group?.sessions.find(session => session.name === state.currentSession);
   return session && sessionRuntimeState(session) === AGENT_STATUS_STATE.NEEDS_INPUT ? session : undefined;
 }
 
 function syncSessionChrome(): void {
+  for (const id of ["terminal-chrome", "terminal-footer"]) {
+    const chrome = document.getElementById(id);
+    if (chrome) chrome.hidden = !singleTerminalChromeActive();
+  }
   const group = state.lastSessionGroups.find(group => (group.machine.url || "") === (state.currentMachine || ""));
   const current = group?.sessions.find(session => session.name === state.currentSession);
   const title = document.getElementById("terminal-chrome-name");
@@ -4673,7 +4679,8 @@ function syncSessionChrome(): void {
   if (path) path.textContent = group?.machine.name || "";
   const status = document.getElementById("terminal-chrome-status");
   if (status) {
-    status.textContent = current ? sessionRuntimeUi(current).label : "";
+    status.innerHTML = current ? sessionStatusContent(current) : "";
+    status.title = current ? sessionRuntimeUi(current).title : "";
     status.className = `status st-${current ? sessionTier(current) : "idle"}`;
   }
   const changes = document.getElementById("mobile-changes") as HTMLButtonElement | null;
@@ -4694,11 +4701,12 @@ document.querySelectorAll<HTMLButtonElement>("[data-reply-key]").forEach(button 
   });
 });
 document.getElementById("terminal-inspect")?.addEventListener("click", event => {
+  if (!singleTerminalChromeActive()) return;
   const target = pinnedSessionInspectionTarget(state.currentSession, state.currentMachine || "");
   if (target) sessionInspector.open(target, event.currentTarget as HTMLElement);
 });
 document.getElementById("terminal-stop")?.addEventListener("click", event => {
-  if (state.currentSession) void killSession(state.currentSession, event, state.currentMachine);
+  if (singleTerminalChromeActive() && state.currentSession) void killSession(state.currentSession, event, state.currentMachine);
 });
 function sessionSearchActive(): boolean {
   const input = document.getElementById(state.sessionsExpanded ? "dashboard-search" : "sidebar-search") as HTMLInputElement | null;
@@ -4746,6 +4754,15 @@ document.getElementById("mobile-machines")?.addEventListener("click", () => void
 document.getElementById("mobile-changes")?.addEventListener("click", () => {
   if (state.currentView === "terminal") document.getElementById("workspace-restore")?.click();
 });
+
+// Non-key accessory controls must preserve native terminal keyboard focus too.
+for (const control of document.querySelectorAll<HTMLElement>(".kb-control summary, #kb-paste")) {
+  control.addEventListener("mousedown", event => event.preventDefault());
+  control.addEventListener("touchstart", event => {
+    event.preventDefault();
+    control.click();
+  }, { passive: false });
+}
 
 (function setupKbAccessory() {
   const acc = document.getElementById("kb-accessory");
@@ -5420,7 +5437,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       ${activityHtml(s)}
     </div>
     ${gridBtn}
-    <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Stop ${escAttr(s.name)}" title="Stop session">&times;</button>
+    <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="${sessionTier(s) === "fail" ? "Close" : "Stop"} ${escAttr(s.name)}" title="${sessionTier(s) === "fail" ? "Close" : "Stop"} session">${sessionTier(s) === "fail" ? "Close" : "&times;"}</button>
   </div>`;
 }
 

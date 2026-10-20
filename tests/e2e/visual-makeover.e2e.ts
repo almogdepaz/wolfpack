@@ -13,7 +13,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("session chrome keeps the original logo and readable, untransformed names", async ({ page }) => {
-  const logo = page.locator(".wolfpack-icon").first();
+  const logo = page.locator(".wolfpack-icon:visible").first();
+  await expect(logo).toBeVisible();
   await expect(logo).toHaveAttribute("src", "/wolfpack-icon.svg");
   await expect(logo).toHaveJSProperty("naturalWidth", 256);
 
@@ -95,11 +96,12 @@ test("long machine names stay bounded without squeezing the session action", asy
 });
 
 test("triage segments are keyboard-operable and toggle back to All", async ({ page }, testInfo) => {
-  const filter = page.locator("#session-dashboard-controls").getByRole("tablist", { name: "Session view" });
-  const work = filter.getByRole("tab", { name: "Working sessions", exact: true });
-  const idle = filter.getByRole("tab", { name: "Idle sessions", exact: true });
-  await expect(filter.getByRole("tab")).toHaveCount(4);
-  await expect(idle).toHaveAttribute("aria-selected", "false");
+  const filter = page.locator("#session-dashboard-controls").getByRole("group", { name: "Session view" });
+  const work = filter.getByRole("button", { name: "Working sessions", exact: true });
+  const idle = filter.getByRole("button", { name: "Idle sessions", exact: true });
+  await expect(filter.getByRole("button")).toHaveCount(4);
+  await expect(idle).toHaveAttribute("aria-pressed", "false");
+  await expect(idle).toHaveAccessibleDescription(/\d+ sessions/);
   await expect(filter).toHaveCSS("padding", "3px");
   await expect(idle).toHaveCSS("border-radius", "7px");
   for (const button of [work, idle]) {
@@ -108,17 +110,24 @@ test("triage segments are keyboard-operable and toggle back to All", async ({ pa
   await work.focus();
   await page.keyboard.press("Tab");
   await expect(idle).toBeFocused();
+  await expect(idle).toHaveCSS("outline-width", "2px");
   await page.keyboard.press("Enter");
-  await expect(idle).toHaveAttribute("aria-selected", "true");
+  await expect(idle).toHaveAttribute("aria-pressed", "true");
   await idle.click();
-  await expect(idle).toHaveAttribute("aria-selected", "false");
+  await expect(idle).toHaveAttribute("aria-pressed", "false");
 
   if (testInfo.project.name === "desktop") {
     await page.getByRole("button", { name: "Collapse sessions", exact: true }).click();
-    const sidebar = page.locator("#sidebar-session-controls").getByRole("tablist", { name: "Session view" });
+    const sidebar = page.locator("#sidebar-session-controls").getByRole("group", { name: "Session view" });
     await expect(sidebar).toBeVisible();
-    await sidebar.getByRole("tab", { name: "Idle sessions", exact: true }).click();
-    await expect(sidebar.getByRole("tab", { name: "Idle sessions", exact: true })).toHaveAttribute("aria-selected", "true");
+    const bounds = (await sidebar.boundingBox())!;
+    expect(bounds.width).toBeLessThanOrEqual(256);
+    expect(bounds.height).toBeLessThanOrEqual(80);
+    for (const button of await sidebar.getByRole("button").all()) {
+      expect(await button.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+    await sidebar.getByRole("button", { name: "Idle sessions", exact: true }).click();
+    await expect(sidebar.getByRole("button", { name: "Idle sessions", exact: true })).toHaveAttribute("aria-pressed", "true");
   }
 });
 
