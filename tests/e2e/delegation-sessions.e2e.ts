@@ -525,7 +525,7 @@ test("desktop escape cancels a nested card drag and restores the hierarchy", asy
   await expect(page.locator(".session-order-floating")).toHaveCount(0);
   await expect(page.locator(".session-order-placeholder")).toHaveCount(0);
   await expect(childCard).toBeVisible();
-  await expect(list.locator('.card[data-session-order-machine=""] .card-name')).toHaveText(["parent", "child", "solo"]);
+  await expect(list.locator('.card[data-session-order-machine=""] .card-name-text')).toHaveText(["parent", "child", "solo"]);
 });
 
 test("mobile moved card opens its terminal immediately after touch reorder", async ({ page }, testInfo) => {
@@ -601,6 +601,17 @@ test("expanded child cards stay compact and inside the session list", async ({ p
   const soloBox = await soloCard.boundingBox();
   expect(collapsedParentBox).not.toBeNull();
   expect(soloBox).not.toBeNull();
+  await testInfo.attach("collapsed-row-geometry", {
+    body: JSON.stringify(await list.locator('.delegation-parent-card, [data-session-order-id="solo-id"]').evaluateAll(cards => cards.map(card => ({
+      id: (card as HTMLElement).dataset.sessionOrderId,
+      parts: [card, ...card.querySelectorAll('.card-info, .card-name, .card-preview, .card-status, .delegation-sidebar-toggle')].map(el => {
+        const style = getComputedStyle(el);
+        return { className: el.className, height: style.height, borderTop: style.borderTopWidth, padding: style.padding, lineHeight: style.lineHeight, marginTop: style.marginTop };
+      }),
+    }))), null, 2),
+    contentType: "application/json",
+  });
+  await expect(parentCard).toHaveCSS("height", await soloCard.evaluate(el => getComputedStyle(el).height));
   expect(Math.abs(collapsedParentBox!.height - soloBox!.height)).toBeLessThanOrEqual(1);
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");

@@ -63,7 +63,14 @@ test("M1 control menu is hittable and control/paste preserve terminal focus", as
       socket.send(JSON.stringify({ type: "pty_ready" }));
     });
   });
-  await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", { value: { readText: async () => "paste-fixture" } }));
+  await page.addInitScript(() => {
+    const reads: Array<{ type?: string; trusted?: boolean }> = [];
+    Object.assign(window, { pasteReads: reads });
+    Object.defineProperty(navigator, "clipboard", { value: { readText: async () => {
+      reads.push({ type: window.event?.type, trusted: window.event?.isTrusted });
+      return "paste-fixture";
+    } } });
+  });
   await page.goto(server.baseUrl);
   await page.getByRole('button', { name: 'Open test-project', exact: true }).click();
   const input = page.locator('#desktop-terminal-container textarea');
@@ -80,6 +87,13 @@ test("M1 control menu is hittable and control/paste preserve terminal focus", as
   await page.locator('#kb-paste').tap();
   await expect(input).toBeFocused();
   await expect.poll(() => bytes.flat().map(byte => String.fromCharCode(byte)).join('')).toContain('paste-fixture');
+  expect(await page.evaluate(() => (window as unknown as { pasteReads: unknown[] }).pasteReads)).toEqual([{ type: 'touchend', trusted: true }]);
+  await page.locator('#kb-paste').click();
+  await expect(input).toBeFocused();
+  expect(await page.evaluate(() => (window as unknown as { pasteReads: unknown[] }).pasteReads)).toEqual([
+    { type: 'touchend', trusted: true }, { type: 'click', trusted: true },
+  ]);
+  await expect.poll(() => bytes.flat().map(byte => String.fromCharCode(byte)).join('').match(/paste-fixture/g)?.length).toBe(2);
 });
 
 test("M2 single-terminal destructive chrome is absent in a manual grid", async ({ page }, info) => {
@@ -120,7 +134,7 @@ test("terminal status retains its source tooltip, sentence label, dot and tier c
   await expect(status.locator('i')).toHaveCSS('background-color', 'rgb(69, 237, 126)');
 });
 
-test("failed rows expose Close without hover and retain confirmation", async ({ page }) => {
+test("failed rows expose Close without hover and retain confirmation", async ({ page }, info) => {
   await page.route("**/api/sessions", route => route.fulfill({ json: { sessions: [{ name: "test-project", identity: { wolfpackSessionId: "failed-id", agentKind: "pi" }, runtimeState: { state: "failed", authority: "manifest", source: "local-manifest", freshness: "fresh", stale: false } }] } }));
   await page.goto(server.baseUrl);
   const close = page.locator('#session-list .tier-fail').getByRole('button', { name: 'Close test-project', exact: true });
@@ -128,9 +142,51 @@ test("failed rows expose Close without hover and retain confirmation", async ({ 
   await expect(close).toHaveText('Close');
   await expect(close).toHaveCSS('opacity', '1');
   await close.click();
-  await expect(page.getByRole('dialog', { name: 'Stop session', exact: true })).toContainText('Stop session "test-project"?');
+  const dialog = page.getByRole('dialog', { name: 'Close session', exact: true });
+  await expect(dialog).toContainText('Close session "test-project"?');
+  await expect(dialog.getByRole('button', { name: 'Close session', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(close).toBeFocused();
+  if (info.project.name === 'desktop') {
+    await page.getByRole('button', { name: 'Collapse sessions', exact: true }).click();
+    await page.locator('#sidebar-session-list').getByRole('button', { name: 'Close test-project', exact: true }).click();
+    await expect(dialog).toContainText('Close session "test-project"?');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.locator('#sidebar-session-list').getByRole('button', { name: 'Open test-project', exact: true }).click();
+    await expect(page.locator('#terminal-stop')).toHaveText('Close');
+    await page.locator('#terminal-stop').click();
+    await expect(dialog).toContainText('Close session "test-project"?');
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  }
+});
+
+test("N2 sidebar parents and solo sessions have equal two-line rows", async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop');
+  await page.route('**/api/sessions', route => route.fulfill({ json: { sessions: [
+    { name: 'test-project', lastLine: 'Same preview', identity: { wolfpackSessionId: 'parent-id' }, triage: 'idle' },
+    { name: 'child', identity: { wolfpackSessionId: 'child-id', parentSession: { wolfpackSessionId: 'parent-id', wolfpackSessionName: 'test-project' } }, triage: 'idle' },
+    { name: 'another-project', lastLine: 'Same preview', identity: { wolfpackSessionId: 'solo-id' }, triage: 'idle' },
+  ] } }));
+  await page.goto(server.baseUrl);
+  await page.getByRole('button', { name: 'Collapse sessions', exact: true }).click();
+  const sidebar = page.locator('#sidebar-session-list');
+  const parent = sidebar.locator('[data-session-order-id="parent-id"]');
+  const solo = sidebar.locator('[data-session-order-id="solo-id"]');
+  await expect(parent.locator('.card-status')).toBeHidden();
+  await expect(solo.locator('.card-status')).toBeHidden();
+  await expect(parent).toHaveCSS('height', await solo.evaluate(el => getComputedStyle(el).height));
+  for (const card of [parent, solo]) {
+    const name = await card.locator('.card-name').boundingBox();
+    const preview = await card.locator('.card-preview').boundingBox();
+    expect(preview!.y - (name!.y + name!.height)).toBeCloseTo(2, 2);
+  }
+  const toggle = parent.getByRole('button', { name: 'Expand 1 child agent', exact: true });
+  await toggle.click();
+  await expect(sidebar.locator('[data-session-order-id="child-id"]')).toBeVisible();
+  await parent.getByRole('button', { name: 'Collapse 1 child agent', exact: true }).click();
+  await expect(sidebar.locator('[data-session-order-id="child-id"]')).toHaveCount(0);
+  await parent.getByRole('button', { name: 'Open test-project', exact: true }).click();
+  await expect(page.locator('#delegation-grid-shell')).toBeVisible();
 });
 
 test("M2 single-terminal destructive chrome is absent in a delegation grid", async ({ page }, info) => {
@@ -148,6 +204,8 @@ test("M2 single-terminal destructive chrome is absent in a delegation grid", asy
 test("M3 mobile Changes is reachable and opens existing context", async ({ page }, info) => {
   test.skip(info.project.name === "desktop");
   await page.goto(server.baseUrl);
+  await expect(page.locator('#session-list .card').first()).toBeVisible();
+  await expect(page.locator('#mobile-changes')).toBeHidden();
   await page.getByRole('button', { name: 'Open test-project', exact: true }).click();
   const changes = page.getByRole('button', { name: 'Changes', exact: true }).filter({ visible: true });
   await expect(changes).toBeEnabled();

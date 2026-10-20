@@ -2506,7 +2506,7 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
   .sidebar-sessions .session-order-placeholder.sub-session-placeholder { width: calc(100% - 14px); margin-left: 14px; }
   .sidebar-sessions .session-order-reset { width: 32px; height: 32px; }
   .sidebar-sessions .card-status { min-height: 16px; margin-top: 1px; }
-  .sidebar-sessions .card-status .delegation-sidebar-toggle { margin-top: 0; margin-left: 4px; }
+  .sidebar-sessions .card-name .delegation-sidebar-toggle { margin-top: 0; margin-left: 4px; }
   .sidebar-sessions .delegation-sidebar-toggle { margin-top: 3px; padding: 2px 4px 2px 2px; gap: 8px; font-size: 10px; letter-spacing: 0.3px; }
   .sidebar-sessions .delegation-sidebar-toggle-icon { width: 7px; height: 7px; }
   .sidebar-sessions .card-preview { -webkit-line-clamp: 1; font-size: 11px; margin-top: 4px; }
@@ -2920,7 +2920,8 @@ body > header { height: 52px; min-height: 52px; }
 .machine-group-body:empty { display: none; }
 .machine-header { background: transparent; border: 0; color: var(--text-4); font: 600 11px var(--font-ui); text-transform: uppercase; letter-spacing: .06em; padding: 12px 4px 8px; }
 .machine-header .dot { width: 7px; height: 7px; }
-.machine-group .card { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; min-width: 0; }
+/* Reserve separator space on the first row too, so identical row content has equal height. */
+.machine-group .card { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin: 0; border: 0; border-top: 1px solid transparent; border-radius: 0; background: transparent; box-shadow: none; min-width: 0; }
 .machine-group .card.sub-session-card { width: calc(100% - 18px); margin-left: 18px; padding: 10px 9px; min-height: 52px; }
 .machine-group .card + .card { border-top: 1px solid var(--hairline); }
 .machine-group .card.tier-fail { background: rgba(255,138,128,.05); }
@@ -2997,7 +2998,7 @@ body > header { height: 52px; min-height: 52px; }
 }
 @media (min-width:769px) {
   #desktop-sidebar { background: var(--surface-1); border-right: 1px solid var(--hairline); }
-  #desktop-sidebar .session-activity { display: none; }
+  #desktop-sidebar .card-status, #desktop-sidebar .session-activity { display: none; }
   #desktop-sidebar .src > .dot { order: 2; }
   #desktop-sidebar .src .card-preview { margin-top: 2px; }
   #desktop-sidebar .src .grid-btn { margin-left: auto; }
@@ -3046,7 +3047,7 @@ body > header { height: 52px; min-height: 52px; }
   #session-chip { background: transparent; border: 0; font: 600 16px var(--font-ui); color: var(--text-1); }
   /* Keep both geometry and the existing Settings focus trigger during navigation. */
   .session-search { width: 100%; }
-  #mobile-tab-bar button:disabled { color: var(--text-4); }
+  #mobile-tab-bar [hidden] { display: none; }
   .machine-group .card .chev { display: none; }
   #needs-input-banner { flex-wrap: wrap; margin: 8px 12px; }
   #needs-input-prompt { flex-basis: 100%; }

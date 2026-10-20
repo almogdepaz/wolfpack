@@ -4004,10 +4004,12 @@ async function killSession(name, e, machineUrl) {
   const delegationReturnTarget = name === state.focusedDelegationSession && state.activeDelegationRoot
     ? { session: state.activeDelegationRoot, machine: state.delegationMachine || "" }
     : null;
+  const session = state.lastSessionGroups.find(group => (group.machine.url || "") === (machineUrl || ""))?.sessions.find(session => session.name === name);
+  const action = session && sessionTier(session) === "fail" ? "Close" : "Stop";
   const confirmed = await showAppDialog({
-    title: "Stop session",
-    message: `Stop session "${name}"?`,
-    confirmLabel: "Stop session",
+    title: `${action} session`,
+    message: `${action} session "${name}"?`,
+    confirmLabel: `${action} session`,
     destructive: true,
   });
   if (!confirmed) return;
@@ -4019,7 +4021,7 @@ async function killSession(name, e, machineUrl) {
     }, machineUrl || "");
   } catch (e) {
     await showAppDialog({
-      title: "Could not stop session",
+      title: `Could not ${action.toLowerCase()} session`,
       message: errorMessage(e),
       confirmLabel: "Close",
       cancelLabel: null,
@@ -4683,8 +4685,10 @@ function syncSessionChrome(): void {
     status.title = current ? sessionRuntimeUi(current).title : "";
     status.className = `status st-${current ? sessionTier(current) : "idle"}`;
   }
-  const changes = document.getElementById("mobile-changes") as HTMLButtonElement | null;
-  if (changes) changes.disabled = state.currentView !== "terminal";
+  const stop = document.getElementById("terminal-stop");
+  if (stop) stop.textContent = current && sessionTier(current) === "fail" ? "Close" : "Stop";
+  const changes = document.getElementById("mobile-changes");
+  if (changes) changes.hidden = state.currentView !== "terminal";
   const banner = document.getElementById("needs-input-banner");
   const session = needsInputSession();
   if (!banner) return;
@@ -4738,7 +4742,7 @@ document.getElementById("reply-in-terminal")?.addEventListener("click", () => {
   if (isDesktop()) state.terminalController?.focus();
   else setMobileGhosttyKeyboardOpen(true);
 });
-document.getElementById("kb-paste")?.addEventListener("click", async () => {
+async function pasteFromClipboard(): Promise<void> {
   const target = state.terminalController;
   try {
     const text = await navigator.clipboard.readText();
@@ -4747,7 +4751,16 @@ document.getElementById("kb-paste")?.addEventListener("click", async () => {
   } catch (error) {
     await showAppDialog({ title: "Could not paste", message: errorMessage(error), confirmLabel: "Close", cancelLabel: null });
   }
-});
+}
+const pasteButton = document.getElementById("kb-paste");
+pasteButton?.addEventListener("mousedown", event => event.preventDefault());
+pasteButton?.addEventListener("touchstart", event => event.preventDefault(), { passive: false });
+pasteButton?.addEventListener("touchend", event => {
+  // Read directly in the trusted end gesture; cancel its compatibility click to avoid double paste.
+  event.preventDefault();
+  void pasteFromClipboard();
+}, { passive: false });
+pasteButton?.addEventListener("click", () => void pasteFromClipboard());
 document.getElementById("mobile-sessions")?.addEventListener("click", backToSessions);
 document.getElementById("mobile-settings")?.addEventListener("click", event => {
   event.preventDefault();
@@ -4759,7 +4772,7 @@ document.getElementById("mobile-changes")?.addEventListener("click", () => {
 });
 
 // Non-key accessory controls must preserve native terminal keyboard focus too.
-for (const control of document.querySelectorAll<HTMLElement>(".kb-control summary, #kb-paste")) {
+for (const control of document.querySelectorAll<HTMLElement>(".kb-control summary")) {
   control.addEventListener("mousedown", event => event.preventDefault());
   control.addEventListener("touchstart", event => {
     event.preventDefault();
@@ -5433,8 +5446,8 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
-      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${harnessIconHtml(s.identity?.agentKind)}</div>
-      <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, machineUrl)}</div>
+      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${harnessIconHtml(s.identity?.agentKind)}${sidebarDelegationToggleHtml(row, machineUrl)}</div>
+      <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
       ${activityHtml(s)}
