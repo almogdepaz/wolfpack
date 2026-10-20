@@ -96,6 +96,44 @@ test("M1 control menu is hittable and control/paste preserve terminal focus", as
   await expect.poll(() => bytes.flat().map(byte => String.fromCharCode(byte)).join('').match(/paste-fixture/g)?.length).toBe(2);
 });
 
+test("sidebar grid actions reveal on hover and keyboard focus without leaving the tab order", async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop');
+  await fixture(page);
+  await page.goto(server.baseUrl);
+  await page.getByRole('button', { name: 'Open test-project', exact: true }).click();
+  const row = page.locator('#sidebar-session-list [data-session-order-id="another-id"]');
+  const grid = row.locator('[data-action="toggle-grid"]');
+  await expect(grid).toHaveCount(1);
+  await page.mouse.move(900, 800);
+  await expect(grid).toHaveCSS('opacity', '0');
+  await row.hover();
+  await expect(grid).toHaveCSS('opacity', '1');
+  await page.mouse.move(900, 800);
+  await expect(grid).toHaveCSS('opacity', '0');
+  await row.getByRole('button', { name: 'Open another-project', exact: true }).focus();
+  await page.keyboard.press('Tab');
+  await expect(grid).toBeFocused();
+  await expect(grid).toHaveCSS('opacity', '1');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#desktop-grid-container')).toBeVisible();
+  await expect(grid).toHaveClass(/in-grid/);
+  await page.locator('#sidebar-search').focus();
+  await expect(grid).toHaveCSS('opacity', '0');
+});
+
+test("dashboard search retains a visible tint focus ring without an outline", async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop');
+  await page.goto(server.baseUrl);
+  const search = page.locator('#dashboard-search');
+  await search.focus();
+  await expect(search).toBeFocused();
+  await expect(search).toHaveCSS('outline-style', 'none');
+  await expect(search).toHaveCSS('box-shadow', 'rgba(69, 237, 126, 0.14) 0px 0px 0px 3px');
+  await page.emulateMedia({ forcedColors: 'active' });
+  await expect(search).toHaveCSS('outline-style', 'solid');
+  await expect(search).toHaveCSS('outline-width', '2px');
+});
+
 test("M2 single-terminal destructive chrome is absent in a manual grid", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop");
   await page.goto(server.baseUrl);

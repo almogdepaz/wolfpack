@@ -2973,6 +2973,10 @@ body > header { height: 52px; min-height: 52px; }
 .session-search { display: flex; align-items: center; gap: 8px; width: min(440px,40vw); padding: 7px 10px; border-radius: 9px; background: var(--surface-3); color: var(--text-4); }
 .session-search input { flex: 1; width: 0; min-width: 0; border: 0; background: transparent; color: var(--text-1); font: 400 13px var(--font-ui); }
 .session-search input::placeholder { color: var(--text-4); opacity: 1; }
+/* Forced-colors modes suppress shadows; retain the existing outline there. */
+@media (forced-colors: none) {
+  #dashboard-search:focus { outline: none; box-shadow: 0 0 0 3px var(--accent-tint); }
+}
 .session-search kbd { font: 500 11px var(--font-ui); }
 .sidebar-search { width: auto; margin: 0 10px 6px; }
 #terminal-chrome { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 16px; flex: none; border-bottom: 1px solid var(--hairline); }
@@ -2995,6 +2999,10 @@ body > header { height: 52px; min-height: 52px; }
   .machine-group .card:active { background: rgba(255,255,255,.06); }
   .machine-group .card:not(.tier-fail) .kill-btn { opacity: 0; }
   .machine-group .card:hover .kill-btn, .machine-group .card:focus-within .kill-btn { opacity: 1; }
+}
+@media (min-width:769px) and (hover:hover) {
+  #desktop-sidebar .src .grid-btn { opacity: 0; }
+  #desktop-sidebar .src:hover .grid-btn, #desktop-sidebar .src:focus-within .grid-btn { opacity: 1; }
 }
 @media (min-width:769px) {
   #desktop-sidebar { background: var(--surface-1); border-right: 1px solid var(--hairline); }
