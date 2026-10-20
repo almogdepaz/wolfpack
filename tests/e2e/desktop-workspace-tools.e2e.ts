@@ -173,7 +173,7 @@ test('mobile Widgets entry lives in the app header without a terminal toolbar',a
  await expect(page.getByRole('button',{name:'Collapse Widgets',exact:true})).toBeVisible();
  await page.setViewportSize({width:390,height:844});
  const open=page.locator('body > header #workspace-restore');await expect(open).toBeVisible();
- await expect(open).toHaveAccessibleName('Widgets');await open.click();
+ await expect(open).toHaveAccessibleName('Changes');await open.click();
  await page.getByRole('button',{name:'Back to terminal',exact:true}).click();
  await expect(page.locator('.workspace-terminal-toolbar, #workspace-context-collapse, #terminal-transcript-btn')).toHaveCount(0);
  await page.setViewportSize({width:1280,height:720});

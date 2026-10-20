@@ -95,6 +95,31 @@ test("M2 single-terminal destructive chrome is absent in a manual grid", async (
   await expect(page.locator('#terminal-stop')).toBeHidden();
 });
 
+test("H3 settings navigation link restores focus and uses a matching Back label", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop");
+  await page.goto(server.baseUrl);
+  const settings = page.getByRole('link', { name: 'Settings', exact: true });
+  await settings.focus();
+  await settings.press('Enter');
+  await expect(page.locator('#settings-view')).toHaveClass(/visible/);
+  const back = page.locator('#back-btn');
+  await expect(back).toHaveAccessibleName(await back.innerText());
+  await back.press('Enter');
+  await expect(settings).toBeFocused();
+});
+
+test("terminal status retains its source tooltip, sentence label, dot and tier colour", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop");
+  await fixture(page);
+  await page.goto(server.baseUrl);
+  await page.getByRole('button', { name: 'Open another-project', exact: true }).click();
+  const status = page.locator('#terminal-chrome-status');
+  await expect(status).toHaveText('Working');
+  await expect(status).toHaveAttribute('title', 'working');
+  await expect(status).toHaveCSS('color', 'rgb(69, 237, 126)');
+  await expect(status.locator('i')).toHaveCSS('background-color', 'rgb(69, 237, 126)');
+});
+
 test("failed rows expose Close without hover and retain confirmation", async ({ page }) => {
   await page.route("**/api/sessions", route => route.fulfill({ json: { sessions: [{ name: "test-project", identity: { wolfpackSessionId: "failed-id", agentKind: "pi" }, runtimeState: { state: "failed", authority: "manifest", source: "local-manifest", freshness: "fresh", stale: false } }] } }));
   await page.goto(server.baseUrl);

@@ -4749,7 +4749,10 @@ document.getElementById("kb-paste")?.addEventListener("click", async () => {
   }
 });
 document.getElementById("mobile-sessions")?.addEventListener("click", backToSessions);
-document.getElementById("mobile-settings")?.addEventListener("click", () => void showSettings());
+document.getElementById("mobile-settings")?.addEventListener("click", event => {
+  event.preventDefault();
+  void showSettings();
+});
 document.getElementById("mobile-machines")?.addEventListener("click", () => void showSettings().then(() => revealSettingsSection("settings-machines")));
 document.getElementById("mobile-changes")?.addEventListener("click", () => {
   if (state.currentView === "terminal") document.getElementById("workspace-restore")?.click();
@@ -5429,8 +5432,9 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   return `<div class="card src tier-${sessionTier(s)} ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
+    ${harnessIconHtml(s.identity?.agentKind)}
     <div class="card-info">
-      <div class="card-name">${harnessIconHtml(s.identity?.agentKind)}<span class="card-name-text">${esc(s.name)}</span></div>
+      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span></div>
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span>${sidebarDelegationToggleHtml(row, machineUrl)}</div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
