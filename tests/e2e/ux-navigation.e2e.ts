@@ -1287,7 +1287,7 @@ test("offline Tailnet candidates stay out of workspace navigation but remain in 
     await expect(page.locator('#sidebar-session-list .machine-group[data-machine^="candidate:n-offline-"]')).toHaveCount(0);
   }
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await openSettingsFromUi(page);
   const machines = page.locator("#machines-list .machine-item");
   await expect(machines).toHaveCount(2);
   await expect(machines.nth(0)).toContainText("Offline one");
