@@ -2769,13 +2769,6 @@ body > header { height: 52px; min-height: 52px; }
 }
 .session-search kbd { font: 500 11px var(--font-ui); }
 .sidebar-search { width: auto; margin: 0 10px 6px; }
-#terminal-chrome { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 16px; flex: none; border-bottom: 1px solid var(--hairline); }
-.terminal-chrome-heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-#terminal-chrome-name { font: 600 14px var(--font-ui); color: var(--text-1); }
-#terminal-chrome-path { font: 400 11px var(--font-mono); color: var(--text-4); }
-.terminal-chrome-actions { margin-left: auto; display: flex; padding: 3px; border-radius: 9px; background: var(--surface-3); }
-.terminal-chrome-actions button { border: 0; padding: 6px 10px; background: transparent; color: var(--text-2); font: 500 12px var(--font-ui); }
-.terminal-chrome-actions #terminal-stop { color: var(--danger); }
 .kb-control { position: relative; min-width: 0; }
 .kb-control summary { list-style: none; display: flex; justify-content: center; align-items: center; cursor: pointer; }
 .kb-control summary::-webkit-details-marker { display: none; }
@@ -2836,7 +2829,7 @@ body > header { height: 52px; min-height: 52px; }
   .card > .harness-icon { width: 34px; height: 34px; }
   .card .status { font-size: 11px; margin-left: auto; }
   .card .kill-btn { min-width: 44px; width: 44px; }
-  #terminal-chrome, #terminal-footer { display: none; }
+  #terminal-footer { display: none; }
   .machine-session-count { display: none; }
   .mobile-session-search { display: block; position: relative; }
   .mobile-session-search summary { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; list-style: none; background: var(--surface-3); color: var(--text-2); }

@@ -127,13 +127,13 @@ test("M2 single-terminal destructive chrome is absent in a manual grid", async (
   test.skip(info.project.name !== "desktop");
   await page.goto(server.baseUrl);
   await page.getByRole('button', { name: 'Open test-project', exact: true }).click();
-  await expect(page.locator('#terminal-chrome')).toBeVisible();
-  await expect(page.locator('#terminal-chrome-status i')).toHaveCount(1);
+  await expect(page.locator('#terminal-chrome')).toHaveCount(0);
+  await expect(page.locator('#terminal-footer')).toHaveJSProperty('hidden', false);
   await expect(page.locator('#sidebar-session-list .sidebar-active .card-preview')).toHaveCSS('color', 'rgb(184, 198, 190)');
   await page.locator('#sidebar-session-list [data-action="toggle-grid"][data-session="another-project"]').click();
   await expect(page.locator('#desktop-grid-container')).toBeVisible();
-  await expect(page.locator('#terminal-chrome')).toBeHidden();
-  await expect(page.locator('#terminal-stop')).toBeHidden();
+  await expect(page.locator('#terminal-chrome')).toHaveCount(0);
+  await expect(page.locator('#terminal-footer')).toHaveJSProperty('hidden', true);
 });
 
 test("H3 settings navigation link restores focus and uses a matching Back label", async ({ page }, info) => {
@@ -147,18 +147,6 @@ test("H3 settings navigation link restores focus and uses a matching Back label"
   await expect(back).toHaveAccessibleName(await back.innerText());
   await back.press('Enter');
   await expect(settings).toBeFocused();
-});
-
-test("terminal status retains its source tooltip, sentence label, dot and tier colour", async ({ page }, info) => {
-  test.skip(info.project.name !== "desktop");
-  await fixture(page);
-  await page.goto(server.baseUrl);
-  await page.getByRole('button', { name: 'Open another-project', exact: true }).click();
-  const status = page.locator('#terminal-chrome-status');
-  await expect(status).toHaveText('Working');
-  await expect(status).toHaveAttribute('title', 'working');
-  await expect(status).toHaveCSS('color', 'rgb(69, 237, 126)');
-  await expect(status.locator('i')).toHaveCSS('background-color', 'rgb(69, 237, 126)');
 });
 
 test("failed rows expose Close without hover and retain confirmation", async ({ page }, info) => {
@@ -177,11 +165,6 @@ test("failed rows expose Close without hover and retain confirmation", async ({ 
   if (info.project.name === 'desktop') {
     await page.getByRole('button', { name: 'Collapse sessions', exact: true }).click();
     await page.locator('#sidebar-session-list').getByRole('button', { name: 'Close test-project', exact: true }).click();
-    await expect(dialog).toContainText('Close session "test-project"?');
-    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await page.locator('#sidebar-session-list').getByRole('button', { name: 'Open test-project', exact: true }).click();
-    await expect(page.locator('#terminal-stop')).toHaveText('Close');
-    await page.locator('#terminal-stop').click();
     await expect(dialog).toContainText('Close session "test-project"?');
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   }
@@ -225,7 +208,7 @@ test("M2 single-terminal destructive chrome is absent in a delegation grid", asy
   await page.goto(server.baseUrl);
   await page.getByRole('button', { name: 'Open test-project', exact: true }).click();
   await expect(page.locator('#delegation-grid-shell')).toBeVisible();
-  await expect(page.locator('#terminal-chrome')).toBeHidden();
+  await expect(page.locator('#terminal-chrome')).toHaveCount(0);
 });
 
 test("M3 mobile Changes is reachable and opens existing context", async ({ page }, info) => {

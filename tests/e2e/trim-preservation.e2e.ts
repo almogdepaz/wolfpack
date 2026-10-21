@@ -52,7 +52,7 @@ for (const width of [1440, 390]) {
       if (selector) await page.locator(selector).screenshot({ path, animations: "disabled", caret: "hide" });
       else await page.screenshot({ path, animations: "disabled", caret: "hide" });
       const regions: Array<{ id: string; x: number; y: number; width: number; height: number }> = [];
-      if (!selector) for (const id of ["terminal-chrome", "kb-accessory"]) {
+      if (!selector) for (const id of ["kb-accessory"]) {
         const target = page.locator(`#${id}`);
         const box = await target.isVisible() ? await target.boundingBox() : null;
         if (box) regions.push({ id, ...box });

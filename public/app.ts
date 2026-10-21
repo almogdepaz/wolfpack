@@ -4634,28 +4634,10 @@ function needsInputSession() {
 }
 
 function syncSessionChrome(): void {
-  for (const id of ["terminal-chrome", "terminal-footer"]) {
-    const chrome = document.getElementById(id);
-    if (chrome) chrome.hidden = !singleTerminalChromeActive();
-  }
-  const group = state.lastSessionGroups.find(group => (group.machine.url || "") === (state.currentMachine || ""));
-  const current = group?.sessions.find(session => session.name === state.currentSession);
-  const title = document.getElementById("terminal-chrome-name");
-  if (title) title.textContent = state.currentSession || "Terminal";
+  const footer = document.getElementById("terminal-footer");
+  if (footer) footer.hidden = !singleTerminalChromeActive();
   const footerSession = document.getElementById("terminal-footer-session");
   if (footerSession) footerSession.textContent = state.currentSession || "";
-  const icon = document.getElementById("terminal-chrome-icon");
-  if (icon) icon.innerHTML = harnessIconHtml(current?.identity?.agentKind);
-  const path = document.getElementById("terminal-chrome-path");
-  if (path) path.textContent = group?.machine.name || "";
-  const status = document.getElementById("terminal-chrome-status");
-  if (status) {
-    status.innerHTML = current ? sessionStatusContent(current) : "";
-    status.title = current ? sessionRuntimeUi(current).title : "";
-    status.className = `status st-${current ? sessionTier(current) : "idle"}`;
-  }
-  const stop = document.getElementById("terminal-stop");
-  if (stop) stop.textContent = current && sessionTier(current) === "fail" ? "Close" : "Stop";
   const banner = document.getElementById("needs-input-banner");
   const session = needsInputSession();
   if (!banner) return;
@@ -4670,9 +4652,6 @@ document.querySelectorAll<HTMLButtonElement>("[data-reply-key]").forEach(button 
     state.terminalController?.focus();
     sendAccessoryKey(button.dataset.replyKey!);
   });
-});
-document.getElementById("terminal-stop")?.addEventListener("click", event => {
-  if (singleTerminalChromeActive() && state.currentSession) void killSession(state.currentSession, event, state.currentMachine);
 });
 function sessionSearchActive(): boolean {
   const input = document.getElementById(state.sessionsExpanded ? "dashboard-search" : "sidebar-search") as HTMLInputElement | null;
