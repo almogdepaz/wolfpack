@@ -1,5 +1,5 @@
 import type { ContextViewRegistry, RegisteredContextView } from "./context-view-registry.ts";
-import { WidgetLayout, WIDGET_AREAS, type WidgetArea, isNativePanel } from "./widget-layout.ts";
+import { WidgetLayout, WIDGET_AREAS, TERMINALS_PANEL, type WidgetArea, isNativePanel } from "./widget-layout.ts";
 
 export interface WidgetPresentation {
   readonly visible: boolean;
@@ -156,6 +156,8 @@ export class WidgetPanels {
     const unpin = !this.collapsed(id);
     // Restore the displaced dock before host defaults can reconcile over the new peek.
     if (this.peekArea && this.peekArea !== area) this.hidePeek();
+    // Main must reveal its native workspace, not retain a focus-held preview.
+    if (unpin && area === "main") { this.collapse(area); return; }
     this.clearPeek();
     // Reconcile focus while the explicit target is still pinned, so no peer becomes eligible.
     if (unpin) this.options.onFocus?.(null);
@@ -178,7 +180,8 @@ export class WidgetPanels {
     this.clearPeek();
     if (!this.presentation.desktop) { this.options.onFocus?.(null); return; }
     if (id) this.options.layout.setWidgetState(id, "collapsed");
-    const next = this.panelEntries().find(entry => entry.id !== id && !this.collapsed(entry.id) && this.area(entry.id) === area);
+    const peers = this.panelEntries().filter(entry => entry.id !== id && !this.collapsed(entry.id) && this.area(entry.id) === area);
+    const next = peers.find(entry => entry.id === TERMINALS_PANEL) ?? peers[0];
     this.options.onFocus?.(null);
     if (next) this.select(next.id);
     // The rightmost Collapse button becomes a rail under the stationary pointer.

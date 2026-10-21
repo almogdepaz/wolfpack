@@ -59,7 +59,7 @@ async function tabGeometry(panel: Locator) {
   });
 }
 
-for (const action of ['mouse Collapse', 'mouse selected tab', 'keyboard Collapse'] as const) test(`Main ${action} keeps Terminal grid visible under a stationary pointer`, async ({ page }, info) => {
+for (const action of ['mouse Collapse', 'mouse selected tab', 'keyboard Collapse', 'mouse Unpin'] as const) test(`Main ${action} keeps Terminal grid visible under a stationary pointer`, async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'desktop Main hover regression');
   await openWidgetFixture(page, ['Widgets']);
   await dockPanel(page, 'Widgets', 'main');
@@ -72,6 +72,7 @@ for (const action of ['mouse Collapse', 'mouse selected tab', 'keyboard Collapse
   const collapse = page.getByRole('button', { name: 'Collapse Widgets', exact: true });
   if (action === 'keyboard Collapse') { await page.mouse.move(5, 5); await collapse.press('Enter'); }
   else if (action === 'mouse selected tab') await page.getByRole('tab', { name: 'Widgets', exact: true }).click();
+  else if (action === 'mouse Unpin') await page.getByRole('button', { name: 'Pin Widgets', exact: true, pressed: true }).click();
   else await collapse.click(); // Real mouse; do not move it until all stationary samples finish.
   const samples: object[] = [];
   let previous = 0;
@@ -99,6 +100,29 @@ for (const action of ['mouse Collapse', 'mouse selected tab', 'keyboard Collapse
   await expect(terminal).toHaveAttribute('data-terminal-load-state', 'live');
   await expect(page.getByRole('tab', { name: 'Terminal grid', exact: true })).toHaveAttribute('aria-selected', 'true');
   await writeFile(info.outputPath('main-proof.json'), JSON.stringify({ action, before, after, samples, afterLeave: await terminal.boundingBox() }, null, 2));
+});
+
+for (const fullView of [false, true]) test(`Main unpin prefers Terminal grid over native and throwing peers; fullView=${fullView}`, async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop native selection transaction');
+  await page.addInitScript(() => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ placements: { ':sessions': 'main', 'test-widgets/view': 'main', 'test-widgets/view-1': 'main' }, selected: { main: 'test-widgets/view-1' } })));
+  await openWidgetFixture(page, ['Never selected peer', 'Widgets'], ['Never selected peer']);
+  await page.getByRole('tab', { name: 'Widgets', exact: true }).press('Enter');
+  const content = page.locator('[data-context-view="test-widgets/view-1"]');
+  const node = await content.elementHandle();
+  if (fullView) await page.getByRole('button', { name: 'Context full view', exact: true }).click();
+  await page.getByRole('button', { name: 'Pin Widgets', exact: true, pressed: true }).click();
+  await expect(page.locator('#desktop-terminal-container canvas')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Terminal grid', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Restore workspace', exact: true })).toBeHidden();
+  expect(await content.evaluate((current, previous) => current === previous, node)).toBe(true);
+  expect(await page.evaluate(() => (window as unknown as { __layoutWidgetMountAttempts: Record<string, number> }).__layoutWidgetMountAttempts['Never selected peer'] ?? 0)).toBe(0);
+  // Explicit keyboard selection still provides a temporary Main preview.
+  await page.getByRole('tab', { name: 'Widgets', exact: true }).press('Enter');
+  await expect(content).toBeVisible();
+  await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Pin Widgets', exact: true }).press('Escape');
+  await expect(page.locator('#desktop-terminal-container canvas')).toBeVisible();
 });
 
 for (const area of ['left', 'right', 'bottom'] as const) test(`${area} widget rail fills its dock and preserves expanded and peek behavior`, async ({ page }, info) => {
@@ -572,9 +596,8 @@ test('mixed widget and native areas keep temporary state honest and failed mount
   await page.getByRole('button', { name: 'Pin Widgets', exact: true }).click();
   await dockPanel(page, 'Widgets', 'main');
   await page.getByRole('button', { name: 'Pin Widgets', exact: true, pressed: true }).click();
-  await expect(content).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Pin Widgets', exact: true })).toHaveAttribute('aria-pressed', 'false');
-  await page.getByRole('button', { name: 'Pin Widgets', exact: true }).press('Escape');
+  await expect(content).toBeHidden();
+  await expect(page.getByRole('tab', { name: 'Terminal grid', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(page.locator('#workspace-terminal-region')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Pin Terminal grid' })).toHaveCount(0);
   await page.getByRole('tab', { name: 'Widgets', exact: true }).click();
