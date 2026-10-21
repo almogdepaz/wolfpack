@@ -93,6 +93,7 @@ export class WidgetPanels {
   private expanded(area: WidgetArea): boolean { return this.peeking(area) || this.presentation.focusArea === area; }
   private clearPeekTimer(): void { if (this.peekTimer !== null) clearTimeout(this.peekTimer); this.peekTimer = null; this.intentArea = null; this.intentId = undefined; }
   private intendPeek(area: WidgetArea, id?: string): void {
+    id ??= this.active[area] ?? this.ids().find(id => this.area(id) === area);
     if (!this.canPeek(area, id) || this.suppressPeekArea === area) return;
     this.clearPeekTimer(); this.intentArea = area; this.intentId = id;
     this.peekTimer = setTimeout(() => { this.clearPeekTimer(); this.peek(area, id); }, 150);
@@ -204,8 +205,12 @@ export class WidgetPanels {
     body.append(content); wrapper.append(body);
     this.slots.set(entry.id, wrapper); this.watchPanel(wrapper, signal);
     signal.addEventListener("abort", () => {
-      this.clearPeek();
       if (this.slots.get(entry.id) !== wrapper) return;
+      const ownsPeek = this.peekArea !== null && this.active[this.peekArea] === entry.id;
+      // Rollback owns this wrapper, not another area's healthy preview or intent.
+      if (this.intentId === entry.id || (ownsPeek && this.intentArea === null)) this.clearPeekTimer();
+      if (ownsPeek) this.peekArea = null;
+      if (this.suppressPeekArea && this.active[this.suppressPeekArea] === entry.id) this.suppressPeekArea = null;
       this.slots.delete(entry.id);
       for (const area of WIDGET_AREAS) if (this.active[area] === entry.id) delete this.active[area];
       if (this.mobileSelection === entry.id) this.mobileSelection = null;

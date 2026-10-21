@@ -165,6 +165,41 @@ for (const count of [1, 2]) for (const state of ['pinned', 'peek', 'collapsed'] 
   await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
 });
 
+for (const area of ['bottom', 'right'] as const) test(`failed ${area} candidate mount retains the healthy occupied Preview and lifecycle`, async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop transactional preview mount rollback');
+  await page.addInitScript(area => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view': 'collapsed' }, placements: { 'test-widgets/view-3': area, 'test-widgets/view-4': 'bottom' }, selected: { right: 'test-widgets/view-2', bottom: 'test-widgets/view-4' } })), area);
+  await openWidgetFixture(page, ['Preview', 'First pinned', 'Selected pinned', 'Broken', 'Bottom healthy'], ['Broken']);
+  const selected = page.locator('[data-context-view="test-widgets/view-2"]');
+  const preview = page.locator('[data-context-view="test-widgets/view"]');
+  const bottom = page.locator('[data-context-view="test-widgets/view-4"]');
+  await expect(selected).toBeVisible(); await expect(bottom).toBeVisible();
+  const bottomNode = await bottom.elementHandle();
+  const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
+  await expect(preview).toBeVisible();
+  const previewNode = await preview.elementHandle();
+  const broken = page.getByRole('tab', { name: 'Broken', exact: true });
+  await broken.hover(); await broken.press('Enter');
+  await expect(page.locator(`.widget-panel[data-widget-area="${area}"]:visible`).getByRole('status').filter({ hasText: 'Fixture mount failed: Broken' })).toBeVisible();
+  if (area === 'bottom') await expect(broken).toBeFocused();
+  const after = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  await writeFile(info.outputPath('rollback.json'), JSON.stringify({ saved, after, previewVisible: await preview.isVisible(), selectedVisible: await selected.isVisible(), bottomVisible: await bottom.isVisible(), right: await tabGeometry(page.locator('.widget-panel[data-widget-area="right"]:visible')) }, null, 2));
+  await page.screenshot({ path: info.outputPath('rollback.png'), caret: 'hide' });
+  expect(after).toBe(saved);
+  await expect(bottom).toBeVisible();
+  expect(await bottom.evaluate((node, previous) => node === previous, bottomNode)).toBe(true);
+  // A failed speculative mount must retain the CURRENT preview, not substitute any open sibling.
+  await expect(preview).toBeVisible();
+  await expect(selected).toBeHidden();
+  await expect(page.getByRole('tab', { name: 'Preview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  expect(await preview.evaluate((node, previous) => node === previous, previewNode)).toBe(true);
+  await page.getByRole('button', { name: 'Pin Preview', exact: true }).press('Escape');
+  await expect(page.getByRole('tab', { name: 'Selected pinned', exact: true })).toBeFocused();
+  await expect(selected).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
+});
+
 for (const dismissal of ['Escape', 'leave'] as const) test(`temporary preview restores the selected non-first pinned sibling after ${dismissal}`, async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'desktop sibling retention');
   await page.addInitScript(() => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view': 'collapsed' }, selected: { right: 'test-widgets/view-2' } })));

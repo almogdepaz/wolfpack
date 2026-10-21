@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { WidgetPanels } from "../../public/widget-panels.ts";
-import type { ContextViewRegistry } from "../../public/context-view-registry.ts";
+import { ContextViewRegistry } from "../../public/context-view-registry.ts";
 import { ExtensionHost, type ExtensionHostOptions } from "../../public/extension-host.ts";
 import { TerminalLayoutRegistry } from "../../public/terminal-layout-registry.ts";
 import { equalGridLayout } from "../../src/extensions/layout-contract.ts";
@@ -432,6 +432,84 @@ describe("ExtensionHost", () => {
       panels.update([entry], "", () => null);
       expect(count).toHaveBeenCalledTimes(1);
     } finally { count.mockRestore(); panels.dispose(); }
+  });
+
+  test("removing the actual preview owner restores its saved sibling without cancelling another area's intent", async () => {
+    container = new FakeElement();
+    const saved = JSON.stringify({ widgets: { "widgets/preview": "collapsed", "widgets/other": "collapsed" }, placements: { "widgets/other": "bottom" }, selected: { right: "widgets/selected" } });
+    let preferences = saved;
+    const layout = new WidgetLayout({ getItem: () => preferences, setItem(_key, value) { preferences = value; } });
+    const wrappers = new Map<string, HTMLElement>();
+    let panels!: WidgetPanels;
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement,
+      createContainer(entry, wrapper, signal) { wrappers.set(entry.id, wrapper); return panels.createContainer(entry, wrapper, signal); },
+      onChange() { panels.update(registry.entries(), registry.diagnostic, () => null); },
+    });
+    panels = new WidgetPanels({ container: container as unknown as HTMLElement, registry, layout, onSelect(id) { panels.select(id); } });
+    registry.setScope({ installationId, sessionId: "22222222-2222-4222-8222-222222222222" });
+    const removePreview = registry.register("widgets/preview", { id: "preview", title: "Preview", mount() { return { dispose() {} }; } });
+    registry.register("widgets/first", { id: "first", title: "First", mount() { return { dispose() {} }; } });
+    registry.register("widgets/selected", { id: "selected", title: "Selected", mount() { return { dispose() {} }; } });
+    registry.register("widgets/other", { id: "other", title: "Other", mount() { return { dispose() {} }; } });
+    try {
+      panels.select("widgets/selected", false);
+      panels.select("widgets/preview", false);
+      expect(wrappers.get("widgets/preview")!.dataset.peek).toBe("true");
+      expect(wrappers.get("widgets/selected")!.hidden).toBe(true);
+      const otherRail = container.children.find(child => child.dataset.widgetArea === "bottom")!;
+      otherRail.dispatchEvent(new Event("pointerenter"));
+      removePreview();
+      expect(wrappers.get("widgets/selected")!.hidden).toBe(false);
+      expect(wrappers.get("widgets/selected")!.dataset.peek).toBe("false");
+      await Bun.sleep(180);
+      expect(wrappers.get("widgets/other")?.dataset.peek).toBe("true");
+      expect(wrappers.get("widgets/selected")!.hidden).toBe(false);
+      expect(preferences).toBe(saved);
+    } finally { registry.dispose(); panels.dispose(); }
+  });
+
+  test("obsolete wrapper abort preserves replacement intent while current owner abort cancels it", async () => {
+    container = new FakeElement();
+    const layout = new WidgetLayout({ getItem: () => null, setItem() {} });
+    const entry = { id: "widgets/one", contribution: { id: "one", title: "One", mount() { return { dispose() {} }; } } };
+    layout.setWidgetState(entry.id, "collapsed");
+    let selections = 0;
+    const panels = new WidgetPanels({ container: container as unknown as HTMLElement, layout,
+      registry: { setVisibleIds() {} } as unknown as ContextViewRegistry, onSelect() { selections++; },
+    });
+    const obsolete = new AbortController(), current = new AbortController();
+    const oldWrapper = new FakeElement(), replacement = new FakeElement();
+    panels.createContainer(entry, oldWrapper as unknown as HTMLElement, obsolete.signal);
+    panels.createContainer(entry, replacement as unknown as HTMLElement, current.signal);
+    panels.update([entry], "", () => null);
+    try {
+      replacement.dispatchEvent(new Event("pointerenter")); await Bun.sleep(180);
+      expect(selections).toBe(1); // control: replacement's real hover timer works
+      replacement.dispatchEvent(new Event("pointerenter")); obsolete.abort(); await Bun.sleep(180);
+      expect(selections).toBe(2);
+      replacement.dispatchEvent(new Event("pointerenter")); current.abort(); await Bun.sleep(180);
+      expect(selections).toBe(2);
+    } finally { panels.dispose(); }
+  });
+
+  test("removing an unmounted hover-intent target cannot select its replacement", async () => {
+    container = new FakeElement();
+    const layout = new WidgetLayout({ getItem: () => null, setItem() {} });
+    const entries = ["one", "two"].map(id => ({ id: `widgets/${id}`, contribution: { id, title: id, mount() { return { dispose() {} }; } } }));
+    for (const entry of entries) layout.setWidgetState(entry.id, "collapsed");
+    let selections = 0;
+    const panels = new WidgetPanels({ container: container as unknown as HTMLElement, layout,
+      registry: { setVisibleIds() {} } as unknown as ContextViewRegistry, onSelect() { selections++; },
+    });
+    try {
+      panels.update(entries, "", () => null);
+      const rail = container.children.find(child => child.dataset.widgetArea === "right")!;
+      rail.dispatchEvent(new Event("pointerenter"));
+      panels.update([entries[1]!], "", () => null);
+      await Bun.sleep(180); expect(selections).toBe(0);
+      rail.dispatchEvent(new Event("pointerenter"));
+      await Bun.sleep(180); expect(selections).toBe(1); // surviving target still works
+    } finally { panels.dispose(); }
   });
 
   test("disposing widget panels cancels a pending hover-intent selection", async () => {
