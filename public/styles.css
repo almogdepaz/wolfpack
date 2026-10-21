@@ -2797,6 +2797,7 @@ body > header { height: 52px; min-height: 52px; }
   #desktop-sidebar .src:hover .grid-btn, #desktop-sidebar .src:focus-within .grid-btn { opacity: 1; }
 }
 @media (min-width:769px) {
+  #mobile-discover-status { display: none; }
   #desktop-sidebar { background: var(--surface-1); border-right: 1px solid var(--hairline); }
   #desktop-sidebar .card-status, #desktop-sidebar .session-activity { display: none; }
   #desktop-sidebar .src > .dot { order: 2; }
@@ -2830,7 +2831,9 @@ body > header { height: 52px; min-height: 52px; }
   #dashboard-session-filter { order: 3; width: 100%; }
   #dashboard-session-filter .seg { display: flex; width: 100%; }
   #dashboard-session-filter .seg button { flex: 1; gap: 4px; padding: 7px 4px; font-size: 11px; white-space: nowrap; min-height: 44px; }
-  #gear-btn, .new-session-primary { display: none; }
+  #gear-btn { display: none; }
+  .new-session-primary { width: 36px; height: 36px; font-size: 0; border-radius: 50%; padding: 0; }
+  .new-session-primary::before { content: "+"; font-size: 24px; }
   #session-list { padding: 0 16px 24px; }
   .needs-you .card-name-text { flex-basis: 100%; }
   .machine-group .card { padding: 12px; gap: 10px; }
@@ -2863,6 +2866,6 @@ body > header { height: 52px; min-height: 52px; }
   #mobile-tab-bar { display: flex; height: calc(64px + max(20px,env(safe-area-inset-bottom))); padding-bottom: max(20px,env(safe-area-inset-bottom)); flex: none; background: var(--glass-bg); backdrop-filter: var(--glass-filter); border-top: 1px solid var(--hairline); }
   #mobile-tab-bar :is(button,a) { text-decoration: none; display: flex; flex: 1; flex-direction: column; justify-content: center; align-items: center; gap: 4px; min-height: 44px; border: 0; background: transparent; color: var(--text-4); font: 500 10px var(--font-ui); }
   #mobile-tab-bar svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 1.8; }
-  #mobile-tab-bar #mobile-new, body:has(#sessions-view.visible) #mobile-sessions, body:has(#settings-view.visible) #mobile-settings { color: var(--accent); }
-  body:has(#terminal-view.visible) #mobile-tab-bar { display: none; }
+  body:has(#sessions-view.visible) #mobile-sessions, body:has(#settings-view.visible) #mobile-settings { color: var(--accent); }
+  body:has(#terminal-view.visible) :is(#mobile-tab-bar, #mobile-discover-status) { display: none; }
 }

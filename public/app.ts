@@ -2468,7 +2468,7 @@ function renderProjectNames(projects: readonly string[]): void {
 }
 
 function returnFromProjectPicker(): void {
-  if (!isDesktop()) requestAnimationFrame(() => document.getElementById("mobile-new")?.focus({ preventScroll: true }));
+  if (!isDesktop()) requestAnimationFrame(() => document.querySelector<HTMLElement>(".new-session-primary")?.focus({ preventScroll: true }));
   if (state.viewBeforePicker === "sessions") {
     backToSessions();
     return;
@@ -2485,8 +2485,7 @@ function returnFromProjectPicker(): void {
 
 async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
-  // Persistent mobile New may re-enter the picker; keep its original Back target.
-  if (isDesktop() || !["projects", "agent"].includes(state.currentView)) setState({ viewBeforePicker: state.currentView });
+  setState({ viewBeforePicker: state.currentView });
   showView("projects");
   resetPickerKeyboardSelection();
   const projectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
@@ -5087,10 +5086,14 @@ function renderMachinesList(): void {
   }).join("");
 }
 
-async function discoverMachines(): Promise<void> {
-  const statusEl = document.getElementById("discover-status");
+async function discoverMachines(statusEl = document.getElementById("discover-status")): Promise<void> {
+  const button = document.getElementById("mobile-discover") as HTMLButtonElement;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  statusEl.hidden = false;
+  const settings = statusEl.id === "discover-status";
   statusEl.textContent = "Scanning tailnet...";
-  statusEl.style.color = "#555";
+  if (settings) statusEl.style.color = "#555";
   try {
     await tailnetDiscoveryAutoRefresh.requestRefresh();
     const machines = getMachines();
@@ -5098,10 +5101,13 @@ async function discoverMachines(): Promise<void> {
     renderMachinesList();
     void loadSessions(true);
     statusEl.textContent = ready ? `Found ${ready} ready Tailnet machine${ready === 1 ? "" : "s"}` : "No ready Wolfpack machines found on Tailnet";
-    statusEl.style.color = ready ? "#00ff41" : "#555";
+    if (settings) statusEl.style.color = ready ? "#00ff41" : "#555";
   } catch (error) {
     statusEl.textContent = errorMessage(error);
-    statusEl.style.color = "#cc3333";
+    if (settings) statusEl.style.color = "#cc3333";
+  } finally {
+    button.disabled = false;
+    button.setAttribute("aria-busy", "false");
   }
 }
 
@@ -5851,6 +5857,7 @@ function bindHtmlEventListeners(): void {
   on("settings-back-btn", "click", () => returnFromSettingsWithFocus());
   const discoverBtn = document.querySelector(".discover-btn");
   if (discoverBtn) discoverBtn.addEventListener("click", () => discoverMachines());
+  on("mobile-discover", "click", () => discoverMachines(document.getElementById("mobile-discover-status")));
 
   // Settings toggles
   on("setting-animations", "change", function(this: HTMLInputElement) { toggleSetting("animations", this.checked); });

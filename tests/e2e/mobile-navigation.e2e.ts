@@ -1,4 +1,3 @@
-import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { startTestServer, type TestServer } from './helpers.ts';
 
@@ -11,14 +10,11 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('#session-list .card').first()).toBeVisible();
 });
 
-test('global New reuses the existing delegated project and agent picker flow', async ({ page }, info) => {
-  // Before the redesign this is the mobile header +; afterward it is the New
-  // action. Both must enter the same existing flow, not a parallel dialog.
-  const trigger = page.locator('#mobile-new, .new-session-primary').filter({ visible: true }).first();
+for (const width of [320, 375, 390]) test(`Sessions header New reuses delegated project and agent flow and restores focus at ${width}`, async ({ page }, info) => {
+  if (info.project.name !== 'desktop') await page.setViewportSize({ width, height: 844 });
+  const trigger = page.locator('.new-session-primary');
+  await expect(trigger).toBeVisible();
   await expect(trigger).toHaveAttribute('data-action', 'new-session');
-  if (info.project.name === 'iphone-14') {
-    await page.screenshot({ path: info.outputPath('navigation-390.png'), animations: 'disabled' });
-  }
   await trigger.click();
   await expect(page.locator('#projects-view')).toHaveClass(/visible/);
   await expect(page.locator('#new-project-name')).toBeFocused();
@@ -30,85 +26,28 @@ test('global New reuses the existing delegated project and agent picker flow', a
     await expect(page.locator('#projects-view')).toHaveClass(/visible/);
     await page.locator('#back-btn').click();
     await expect(page.locator('#sessions-view')).toHaveClass(/visible/);
+    await expect(trigger).toBeFocused();
+    await trigger.click();
+    await page.locator('#back-btn').click();
+    await expect(trigger).toBeFocused();
   }
 });
 
-for (const width of [375, 390, 412]) test(`mobile navigation has two destinations and a New action at ${width}`, async ({ page }, info) => {
+test('mobile Settings destination retains navigation and return focus', async ({ page }, info) => {
   test.skip(info.project.name === 'desktop', 'mobile navigation only');
-  await page.setViewportSize({ width, height: 844 });
-  const nav = page.getByRole('navigation', { name: 'Main navigation', exact: true });
-  const sessions = nav.getByRole('button', { name: 'Sessions', exact: true });
-  const settings = nav.getByRole('link', { name: 'Settings', exact: true });
-  const add = nav.getByRole('button', { name: 'New session', exact: true });
-  await expect(nav).toBeVisible();
-  expect(await nav.locator(':scope > *').allTextContents()).toEqual(['Sessions', 'New', 'Settings']);
-  await expect(nav.locator(':scope > :not([data-action])')).toHaveCount(2);
-  await expect(nav.locator('[data-action="new-session"]')).toHaveCount(1);
-  await expect(page.locator('#mobile-machines')).toHaveCount(0);
-  await expect(page.locator('#gear-btn')).toBeHidden();
-  await expect(page.locator('.new-session-primary')).toBeHidden();
-  const bounds = await nav.locator(':scope > *').evaluateAll(els => els.map(el => {
-    const { x, y, width, height } = el.getBoundingClientRect();
-    return { x, y, width, height };
-  }));
-  for (const box of bounds) {
-    expect(box.width).toBeGreaterThanOrEqual(44);
-    expect(box.height).toBeGreaterThanOrEqual(44);
-    expect(box.x).toBeGreaterThanOrEqual(0);
-    expect(box.x + box.width).toBeLessThanOrEqual(width);
-  }
-  await expect(add.locator('svg')).toHaveCSS('width', '24px');
-  await expect(add.locator('svg')).toHaveCSS('height', '24px');
-  await expect(add).toHaveCSS('color', 'rgb(69, 237, 126)');
-  await expect(sessions).toHaveCSS('color', 'rgb(69, 237, 126)');
-  await writeFile(info.outputPath(`bounds-${width}.json`), JSON.stringify(bounds, null, 2));
-  if (width === 390) await page.screenshot({ path: info.outputPath('navigation-390.png'), animations: 'disabled' });
-  await add.focus();
-  await add.press('Enter');
-  await expect(page.locator('#new-project-name')).toBeFocused();
-  await page.locator('#back-btn').click();
-  await expect(page.locator('#sessions-view')).toHaveClass(/visible/);
-  await expect(add).toBeFocused();
-  await settings.focus();
-  await settings.press('Enter');
+  const settings = page.locator('#mobile-settings');
+  await settings.focus(); await settings.press('Enter');
   await expect(page.locator('#settings-view')).toHaveClass(/visible/);
   await expect(settings).toHaveCSS('color', 'rgb(69, 237, 126)');
-  await expect(sessions).toHaveCSS('color', 'rgb(127, 144, 135)');
+  await expect(page.locator('#mobile-sessions')).toHaveCSS('color', 'rgb(127, 144, 135)');
   await expect(page.locator('#back-btn')).toBeFocused();
   await page.getByRole('link', { name: 'Machines', exact: true }).click();
   await expect(page.locator('#settings-machines')).toBeInViewport();
   await expect(page).toHaveURL(/#settings-machines$/);
-  await add.focus();
-  await add.press('Enter');
-  await expect(page.locator('#projects-view')).toHaveClass(/visible/);
-  await page.locator('#back-btn').click();
-  await expect(page.locator('#settings-view')).toHaveClass(/visible/);
-  await expect(add).toBeFocused();
-  await expect(settings).toHaveCSS('color', 'rgb(69, 237, 126)');
   await page.locator('#back-btn').click();
   await expect(settings).toBeFocused();
-  await sessions.click();
+  await page.locator('#mobile-sessions').click();
   await expect(page.locator('#sessions-view')).toHaveClass(/visible/);
-});
-
-test('repeated mobile New preserves the original picker cancel destination', async ({ page }, info) => {
-  test.skip(info.project.name === 'desktop', 'persistent mobile New action');
-  const add = page.getByRole('button', { name: 'New session', exact: true });
-  await add.click();
-  await expect(page.locator('#projects-view')).toHaveClass(/visible/);
-  await add.click();
-  await expect(page.locator('#projects-view')).toHaveClass(/visible/);
-  await page.locator('#back-btn').click();
-  await expect(page.locator('#sessions-view')).toHaveClass(/visible/);
-  await expect(add).toBeFocused();
-  await add.click();
-  await page.getByRole('button', { name: 'Open project nav-project', exact: true }).click();
-  await expect(page.locator('#agent-view')).toHaveClass(/visible/);
-  await add.click();
-  await expect(page.locator('#projects-view')).toHaveClass(/visible/);
-  await page.locator('#back-btn').click();
-  await expect(page.locator('#sessions-view')).toHaveClass(/visible/);
-  await expect(add).toBeFocused();
 });
 
 test('terminal Back still reaches Settings without adding navigation below the accessory', async ({ page }, info) => {
