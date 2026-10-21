@@ -2758,8 +2758,8 @@ body > header { height: 52px; min-height: 52px; }
 [data-extension-tabs] button { flex: 1; margin: 0; padding: 7px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text-3); }
 [data-extension-tabs] button[aria-selected=true] { background: rgba(255,255,255,.12); color: var(--text-1); box-shadow: 0 1px 3px rgba(0,0,0,.4); }
 .widget-panel[data-collapsed=true] .widget-chrome{display:flex;flex:1;min-height:0;overflow:hidden}
-.widget-panel[data-collapsed=true] [data-extension-tabs]{flex:1;min-width:0;min-height:0;margin:0;gap:0;border-radius:0;background:none;overflow:hidden}
-.widget-panel[data-collapsed=true] [role=tab]{min-width:0;min-height:0;border-radius:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-inline-end:1px solid var(--hairline)}
+.widget-panel[data-collapsed=true] [data-extension-tabs]{flex:1;min-width:0;min-height:0;margin:0;gap:0;border-radius:0;background:none;overflow:auto}
+.widget-panel[data-collapsed=true] [role=tab]{flex:1 0 auto;max-inline-size:100%;min-width:0;min-height:0;border-radius:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-inline-end:1px solid var(--hairline)}
 .widget-panel[data-collapsed=true] [role=tab]:hover{background:var(--surface-3);color:var(--text-1)}
 .widget-panel[data-collapsed=true] [role=tab]:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .widget-panel[data-collapsed=true] [role=tab][aria-selected=true]{background:var(--accent-tint);color:var(--accent);box-shadow:inset 2px 0 var(--accent)}
