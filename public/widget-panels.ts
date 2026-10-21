@@ -106,12 +106,13 @@ export class WidgetPanels {
   private hidePeek(focus = false): void {
     const area = this.peekArea;
     if (!area) return;
+    const origin = this.active[area];
     if (focus) this.clearIntentTimer();
     this.endPeek();
     const ids = this.ids(), saved = this.options.layout.selection(area, ids);
     const next = saved && !this.collapsed(saved) ? saved : ids.find(id => this.area(id) === area && !this.collapsed(id));
     if (next) this.selectPanel(next, false); else this.render();
-    if (focus) this.chrome.get(area)?.buttons.get(this.active[area] ?? "")?.focus({ preventScroll: true });
+    if (focus) this.chrome.get(area)?.buttons.get(origin ?? "")?.focus({ preventScroll: true });
   }
   private peek(area: WidgetArea, id?: string): void {
     if (!this.canPeek(area, id) || this.suppressPeekArea === area) return;
@@ -453,7 +454,7 @@ export class WidgetPanels {
         chrome.full.hidden = !this.presentation.desktop || (!!selected && isNativePanel(selected));
         const pinned = !!selected && !this.collapsed(selected);
         chrome.pin.hidden = !this.presentation.desktop || !selected || isNativePanel(selected);
-        chrome.pin.setAttribute("aria-label", chrome.pin.title = `${pinned ? "Unpin" : "Pin"} ${entry?.title ?? "Widgets"}`);
+        chrome.pin.setAttribute("aria-label", chrome.pin.title = `Pin ${entry?.title ?? "Widgets"}`);
         chrome.pin.setAttribute("aria-pressed", String(pinned));
         chrome.pin.querySelector("svg")!.setAttribute("fill", pinned ? "currentColor" : "none");
         chrome.collapse.setAttribute("aria-label", chrome.collapse.title = `Collapse ${entry?.title ?? "Widgets"}`);

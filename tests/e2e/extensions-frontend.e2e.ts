@@ -418,7 +418,7 @@ test("collapsed rails preview the hovered widget and dismiss on scope and breakp
   await page.clock.runFor(400); await expect(page.locator("[data-context-view='alpha/shared']")).toBeVisible();
   await page.mouse.up(); await expect(page.locator(".workspace-dock-targets")).toHaveCount(0);
   await expect(page.locator("[data-context-view='alpha/shared']").locator("..").locator("..")).toHaveAttribute("data-widget-area", "bottom");
-  await expect(page.getByRole("button", { name: "Unpin Alpha", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Pin Alpha", exact: true, pressed: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Collapse Alpha", exact: true }).click();
   const afterMove = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
   await page.getByRole("tab", { name: "Beta", exact: true }).hover();
@@ -939,7 +939,7 @@ test("a sole Delta keeps its desktop collapse tab while mobile opens directly an
     await showWidgets(page);
     if (testInfo.project.name === "desktop") {
       await expect(page.getByRole("tab", { name: "Delta", exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Unpin Delta", exact: true })).toHaveAttribute("aria-pressed", "true");
+      await expect(page.getByRole("button", { name: "Pin Delta", exact: true, pressed: true })).toHaveAttribute("aria-pressed", "true");
     } else {
       await expect(page.locator("[data-extension-tabs]")).toBeHidden();
       await expect(page.getByRole("tab", { name: "Delta", exact: true })).toHaveCount(0);
