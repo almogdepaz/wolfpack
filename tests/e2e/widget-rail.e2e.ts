@@ -165,6 +165,84 @@ for (const count of [1, 2]) for (const state of ['pinned', 'peek', 'collapsed'] 
   await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
 });
 
+for (const dismissal of ['Escape', 'leave'] as const) test(`temporary preview restores the selected non-first pinned sibling after ${dismissal}`, async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop sibling retention');
+  await page.addInitScript(() => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view': 'collapsed' }, selected: { right: 'test-widgets/view-2' } })));
+  await openWidgetFixture(page, ['Preview', 'First pinned', 'Selected pinned']);
+  const selected = page.getByRole('tab', { name: 'Selected pinned', exact: true });
+  const content = page.locator('[data-context-view="test-widgets/view-2"]');
+  await expect(selected).toHaveAttribute('aria-selected', 'true');
+  const retained = await content.elementHandle();
+  const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  await page.mouse.move(700, 400);
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.getByRole('tab', { name: 'Preview', exact: true }).hover();
+  await page.clock.runFor(150);
+  await expect(page.getByRole('button', { name: 'Pin Preview', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  if (dismissal === 'Escape') await page.getByRole('button', { name: 'Pin Preview', exact: true }).press('Escape');
+  else {
+    await page.locator('#desktop-terminal-container canvas').click();
+    await page.clock.runFor(299); await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(1);
+    const focus = await page.evaluateHandle(() => document.activeElement);
+    await page.clock.runFor(1);
+    expect(await focus.evaluate(node => node === document.activeElement)).toBe(true);
+    await focus.dispose();
+  }
+  await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
+  await expect(selected).toHaveAttribute('aria-selected', 'true');
+  await expect(content).toBeVisible();
+  expect(await content.evaluate((node, previous) => node === previous, retained)).toBe(true);
+  if (dismissal === 'Escape') await expect(selected).toBeFocused();
+  expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
+  await writeFile(info.outputPath('restored.json'), JSON.stringify({ saved, after: await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1')), geometry: await tabGeometry(page.locator('.widget-panel[data-widget-area="right"]:visible')) }, null, 2));
+  await page.screenshot({ path: info.outputPath('restored.png'), caret: 'hide' });
+});
+
+for (const savedSelection of ['test-widgets/view', 'test-widgets/unavailable']) test(`preview dismissal falls back to an open sibling when saved selection is ${savedSelection}`, async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop saved-selection fallback');
+  await page.addInitScript(saved => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view': 'collapsed' }, selected: { right: saved } })), savedSelection);
+  await openWidgetFixture(page, ['Preview', 'First pinned', 'Other pinned']);
+  const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  await page.getByRole('tab', { name: 'Preview', exact: true }).hover();
+  await expect(page.getByRole('button', { name: 'Pin Preview', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Pin Preview', exact: true }).press('Escape');
+  await expect(page.getByRole('tab', { name: 'First pinned', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('[data-context-view="test-widgets/view-1"]')).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
+});
+
+for (const action of ['activate', 'pin', 'unpin'] as const) test(`rapid other-area ${action} restores the displaced pinned sibling before the leave deadline`, async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop cross-area retention');
+  await page.addInitScript(action => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ placements: { 'test-widgets/view-3': 'bottom' }, selected: { right: 'test-widgets/view-2', bottom: 'test-widgets/view-3' }, widgets: { 'test-widgets/view': 'collapsed', ...(action === 'pin' ? { 'test-widgets/view-3': 'collapsed' } : {}) } })), action);
+  await openWidgetFixture(page, ['Preview', 'First pinned', 'Selected pinned', 'Other area']);
+  const selected = page.getByRole('tab', { name: 'Selected pinned', exact: true });
+  const content = page.locator('[data-context-view="test-widgets/view-2"]');
+  await expect(selected).toHaveAttribute('aria-selected', 'true');
+  const retained = await content.elementHandle();
+  const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
+  await expect(page.getByRole('button', { name: 'Pin Preview', exact: true })).toBeVisible();
+  if (action === 'activate') {
+    // Move to the real destination before activation, still inside the 300ms leave deadline.
+    // Do not leave the pointer over Preview, which would legitimately re-hover it after restore.
+    const destination = page.getByRole('tab', { name: 'Other area', exact: true });
+    await destination.hover(); await destination.press('Enter');
+    await expect(destination).toBeFocused();
+  } else if (action === 'pin') await page.getByRole('tab', { name: 'Other area', exact: true }).click();
+  else await page.getByRole('button', { name: 'Unpin Other area', exact: true }).click();
+  await expect(selected).toHaveAttribute('aria-selected', 'true');
+  await expect(content).toBeVisible();
+  expect(await content.evaluate((node, previous) => node === previous, retained)).toBe(true);
+  const after = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  if (action === 'activate') expect(after).toBe(saved);
+  else expect(JSON.parse(after!).selected).toEqual(JSON.parse(saved!).selected);
+  await page.clock.runFor(500);
+  await expect(selected).toHaveAttribute('aria-selected', 'true');
+  await writeFile(info.outputPath('restored.json'), JSON.stringify({ saved, after, geometry: await tabGeometry(page.locator('.widget-panel[data-widget-area="right"]:visible')) }, null, 2));
+  await page.screenshot({ path: info.outputPath('restored.png'), caret: 'hide' });
+});
+
 test('mixed widget and native areas keep temporary state honest and failed mounts transactional', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'desktop mixed docks');
   await page.addInitScript(() => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view-2': 'collapsed' } })));

@@ -102,7 +102,8 @@ export class WidgetPanels {
     const area = this.peekArea;
     if (!area) return;
     this.clearPeek();
-    const next = this.ids().find(id => this.area(id) === area && !this.collapsed(id));
+    const ids = this.ids(), saved = this.options.layout.selection(area, ids);
+    const next = saved && !this.collapsed(saved) ? saved : ids.find(id => this.area(id) === area && !this.collapsed(id));
     if (next) this.select(next, false); else this.render();
     if (focus) this.chrome.get(area)?.buttons.get(this.active[area] ?? "")?.focus({ preventScroll: true });
   }
@@ -245,6 +246,8 @@ export class WidgetPanels {
       } finally { this.selecting = false; }
       if (this.options.registry.selectedId !== id) { this.errors[area] = this.options.registry.diagnostic; this.render(); return; }
     }
+    // A successful activation in another area dismisses, rather than strands, its preview.
+    if (this.peekArea && this.peekArea !== area) this.hidePeek();
     const peek = this.collapsed(id) && this.canPeek(area, id);
     this.clearPeek();
     if (peek) this.peekArea = area;
