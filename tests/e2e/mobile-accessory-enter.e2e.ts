@@ -39,14 +39,15 @@ async function openAccessory(page: Page): Promise<number[][]> {
   return sentBytes;
 }
 
-for (const width of [375, 390]) test(`mobile accessory has two even rows of five at ${width}px`, async ({ page }, testInfo) => {
+for (const width of [375, 390]) test(`mobile accessory has nine keys in even five-control and four-arrow rows at ${width}px`, async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only accessory layout");
   await page.setViewportSize({ width, height: 844 });
   const bytes = await openAccessory(page);
   await page.locator('#kb-open-btn').click();
   await expect(page.locator('#desktop-terminal-container textarea')).toBeFocused();
   const keys = page.locator('#kb-accessory > .kb-key, #kb-accessory > .kb-control > summary');
-  await expect(keys).toHaveCount(10);
+  await expect(page.locator('#kb-accessory [data-key="BTab"]')).toHaveCount(0);
+  await expect(keys).toHaveCount(9);
   const geometry = await keys.evaluateAll(nodes => nodes.map(node => {
     const rect = node.getBoundingClientRect();
     return { key: node.getAttribute('data-key') || (node.id === 'kb-open-btn' ? 'keyboard' : 'ctrl'), x: rect.x, y: rect.y, width: rect.width, height: rect.height };
@@ -62,8 +63,14 @@ for (const width of [375, 390]) test(`mobile accessory has two even rows of five
     expect(key.x).toBeGreaterThanOrEqual(bar.x);
     expect(key.x + key.width).toBeLessThanOrEqual(bar.x + bar.width);
   }
-  expect([...rows.values()]).toEqual([['Enter', 'Escape', 'ctrl', 'BTab', 'C-c'], ['Up', 'Down', 'Left', 'Right', 'keyboard']]);
-  expect(Math.max(...geometry.map(key => key.width)) - Math.min(...geometry.map(key => key.width))).toBeLessThan(1);
+  expect([...rows.values()]).toEqual([['Enter', 'Escape', 'ctrl', 'C-c', 'keyboard'], ['Up', 'Down', 'Left', 'Right']]);
+  const rowGeometry = [...rows.keys()].map(y => geometry.filter(key => Math.round(key.y) === y));
+  for (const row of rowGeometry) {
+    expect(Math.max(...row.map(key => key.width)) - Math.min(...row.map(key => key.width))).toBeLessThan(1);
+    expect(row[0]!.x).toBeCloseTo(geometry[0]!.x, 0);
+    const last = row[row.length - 1]!;
+    expect(last.x + last.width).toBeCloseTo(geometry[4]!.x + geometry[4]!.width, 0);
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
   const summary = page.locator('#kb-accessory .kb-control summary');
   await summary.tap();
@@ -83,17 +90,35 @@ for (const width of [375, 390]) test(`mobile accessory has two even rows of five
 test("mobile accessory Enter inserts line-feed while native Enter still sends carriage-return", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only accessory keyboard behavior");
   const sentBytes = await openAccessory(page);
-  await page.locator("#kb-open-btn").click();
-  await expect(page.locator("#desktop-terminal-container textarea")).toBeFocused();
+  const keyboard = page.locator("#kb-open-btn");
+  const input = page.locator("#desktop-terminal-container textarea");
+  await expect(input).toHaveAttribute("inputmode", "none");
+  await keyboard.click();
+  await expect(input).toBeFocused();
+  await expect(input).toHaveAttribute("inputmode", "text");
+  expect(await input.evaluate(el => (el as HTMLTextAreaElement).readOnly)).toBe(false);
+  await expect.poll(() => sentBytes).toEqual([]);
+  await keyboard.click();
+  await expect(input).toHaveAttribute("inputmode", "none");
+  await expect(input).toHaveAttribute("tabindex", "-1");
+  expect(await input.evaluate(el => (el as HTMLTextAreaElement).readOnly)).toBe(true);
+  await expect.poll(() => sentBytes).toEqual([]);
+  await keyboard.click();
+  await expect(input).toBeFocused();
 
   await page.keyboard.press("Enter");
   await expect.poll(() => sentBytes).toEqual([[13]]);
 
   sentBytes.length = 0;
+  await page.keyboard.press("Shift+Tab");
+  // Characterize the existing native mobile path, independently of accessory BTab.
+  await expect.poll(() => sentBytes).toEqual([[9]]);
+
+  sentBytes.length = 0;
   await page.locator("#kb-accessory .kb-enter").click();
   await expect.poll(() => sentBytes).toEqual([[10]]);
 
-  for (const [key, bytes] of [["Escape", [27]], ["BTab", [27, 91, 90]], ["C-c", [3]], ["Up", [27, 91, 65]], ["Down", [27, 91, 66]], ["Left", [27, 91, 68]], ["Right", [27, 91, 67]]] as const) {
+  for (const [key, bytes] of [["Escape", [27]], ["C-c", [3]], ["Up", [27, 91, 65]], ["Down", [27, 91, 66]], ["Left", [27, 91, 68]], ["Right", [27, 91, 67]]] as const) {
     sentBytes.length = 0;
     await page.locator(`#kb-accessory [data-key="${key}"]`).click();
     await expect.poll(() => sentBytes).toEqual([Array.from(bytes)]);

@@ -761,7 +761,7 @@ const KEY_TO_ESCAPE = {
   Enter: "\r", Tab: "\t", Escape: "\x1b",
   Up: "\x1b[A", Down: "\x1b[B", Right: "\x1b[C", Left: "\x1b[D",
   Home: "\x1b[H", End: "\x1b[F", PPage: "\x1b[5~", NPage: "\x1b[6~",
-  BTab: "\x1b[Z", BSpace: "\x7f", DC: "\x1b[3~",
+  BSpace: "\x7f", DC: "\x1b[3~",
   y: "y", n: "n",
   "C-a": "\x01", "C-b": "\x02", "C-c": "\x03", "C-d": "\x04",
   "C-e": "\x05", "C-f": "\x06", "C-g": "\x07", "C-h": "\x08",

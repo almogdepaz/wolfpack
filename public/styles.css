@@ -2852,7 +2852,9 @@ body > header { height: 52px; min-height: 52px; }
   .needs-input-actions { width: 100%; }
   .needs-input-actions button { min-height: 36px; }
   #reply-in-terminal { margin-left: auto; }
-  #kb-accessory { overflow: visible; display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); grid-template-rows: repeat(2,42px); height: 106px; flex-basis: 106px; gap: 5px; padding: 8px; background: var(--glass-bg); }
+  #kb-accessory { overflow: visible; display: grid; grid-template-columns: repeat(20,minmax(0,1fr)); grid-template-rows: repeat(2,42px); height: 106px; flex-basis: 106px; gap: 5px; padding: 8px; background: var(--glass-bg); }
+  #kb-accessory > * { grid-column: span 4; }
+  #kb-accessory > .kb-arrow { grid-column: span 5; }
   #kb-accessory .kb-key { min-height: 42px; border: 0; border-radius: 9px; background: var(--surface-3); color: var(--text-2); box-shadow: 0 1px 0 rgba(0,0,0,.5); font: 500 12px var(--font-mono); }
   #kb-accessory .kb-enter { background: var(--attn-tint); color: var(--attn); }
   #kb-accessory .kb-open { background: var(--accent); color: var(--accent-on); }
