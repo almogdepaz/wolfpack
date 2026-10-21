@@ -51,6 +51,13 @@ for (const width of [1440, 390]) {
       const path = join(output, `${name}-${width}.png`);
       if (selector) await page.locator(selector).screenshot({ path, animations: "disabled", caret: "hide" });
       else await page.screenshot({ path, animations: "disabled", caret: "hide" });
+      const regions: Array<{ id: string; x: number; y: number; width: number; height: number }> = [];
+      if (!selector) for (const id of ["terminal-chrome", "kb-accessory"]) {
+        const target = page.locator(`#${id}`);
+        const box = await target.isVisible() ? await target.boundingBox() : null;
+        if (box) regions.push({ id, ...box });
+      }
+      await writeFile(join(output, `${name}-${width}.regions.json`), JSON.stringify({ viewport: page.viewportSize(), regions }));
       const styles = await page.evaluate(() => {
         const pathFor = (node: Element): string => node.id ? `#${node.id}` : node.parentElement ? `${pathFor(node.parentElement)}>${node.tagName.toLowerCase()}:nth-child(${Array.from(node.parentElement.children).indexOf(node) + 1})` : node.tagName;
         const result: Record<string, Record<string, string>> = {};
