@@ -70,6 +70,14 @@ describe("control api schema generation", () => {
     expect("ralph" in artifact).toBe(false);
   });
 
+  test("footer documentation allows raw text alongside structured metadata", () => {
+    const summary = resolveRef({ $ref: "#/$defs/SessionSummary" }, artifact);
+    const properties = summary.properties as JsonObject;
+    const footer = properties.footer as JsonObject;
+    expect(footer.description).toContain("alongside structured metadata");
+    expect(footer.description).not.toContain("unavailable");
+  });
+
   test("backend status matches the broker-only runtime response", () => {
     const response = httpResponse("getBackendStatus");
 

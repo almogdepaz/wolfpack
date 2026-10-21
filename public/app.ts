@@ -1,3 +1,5 @@
+import { sessionMetaHtml } from "./session-meta";
+import type { SessionMeta } from "../src/session-meta-contract";
 import {
   esc, escAttr, loadStoredJson, isDesktop,
   wpSettings, TERM_PRESETS, toggleSetting,
@@ -110,9 +112,13 @@ import {
 } from "./delegation-sessions";
 import { harnessIconHtml as knownHarnessIconHtml } from "./harness-icon";
 import type {
-  DelegationSessionLike,
+  DelegationSessionLike as BaseDelegationSessionLike,
   DelegationSessionRow,
 } from "./delegation-sessions";
+type DelegationSessionLike = BaseDelegationSessionLike & {
+  readonly meta?: SessionMeta;
+  readonly footer?: string;
+};
 import {
   loadSessionOrder,
   moveSessionRelative,
@@ -1604,8 +1610,12 @@ function sessionStatusContent(session: DelegationSessionLike): string {
   return `<i aria-hidden="true"></i>${esc(label.charAt(0).toUpperCase() + label.slice(1))}`;
 }
 
-function activityHtml(session: DelegationSessionLike): string {
+function sessionActivityHtml(session: DelegationSessionLike): string {
   return session.runtimeState?.unseen ? '<div class="session-activity">changed since review</div>' : "";
+}
+
+function activityHtml(session: DelegationSessionLike): string {
+  return sessionMetaHtml(session) + sessionActivityHtml(session);
 }
 
 function sessionCardViewControlsHtml(): string {
@@ -5484,7 +5494,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
-      ${activityHtml(s)}
+      ${sessionActivityHtml(s)}
     </div>
     ${gridBtn}
     <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="${sessionTier(s) === "fail" ? "Close" : "Stop"} ${escAttr(s.name)}" title="${sessionTier(s) === "fail" ? "Close" : "Stop"} session">${sessionTier(s) === "fail" ? "Close" : "&times;"}</button>

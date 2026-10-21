@@ -2943,6 +2943,9 @@ body > header { height: 52px; min-height: 52px; }
 .card-meta { color: var(--text-4); font: 400 11.5px/1.5 var(--font-ui); }
 .card .session-activity { color: var(--info); font: 400 11.5px/1.5 var(--font-ui); }
 .card-meta:empty { display: none; }
+.session-meta-model, .session-meta-context, .session-meta-cost { color: var(--text-2); font-weight: 500; }
+.session-meta-context.high { color: var(--attn); }
+.session-meta-footer { overflow-wrap: anywhere; }
 .status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font: 500 12px var(--font-ui); color: var(--text-3); }
 .status i { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--text-5); }
 .st-need { color: var(--attn); }
