@@ -18,6 +18,26 @@ describe("display-only terminal projection", () => {
     expect(terminalDisplayProjection("Answer\n↑1k CH99.7%").meta).toBeUndefined();
   });
   test.each([
+    ["$0.000 (sub) 0.0%/272k (auto)                            (openai-codex) gpt-6.1-sol • high", 0, 272000],
+    ["0.0%/272k (auto)                            gpt-6.1-sol • high", 0, 272000],
+    ["?/1.0M (auto)                            gpt-6.1-sol • high", undefined, 1000000],
+    ["0.0%/272 (auto)                            gpt-6.1-sol • high", 0, 272],
+  ] as const)("fresh pi footer without token counters: %s", (footer, contextPct, contextLimit) => {
+    for (const status of ["", "\npi-tasks: idle"]) {
+      const projection = terminalDisplayProjection(`Ready for your request\n~/project\n${footer}${status}`);
+      expect(projection.lastLine).toBe("Ready for your request");
+      expect(projection.footer).toBe(footer);
+      expect(projection.meta?.model).toBe("gpt-6.1-sol");
+      expect(projection.meta?.reasoning).toBe("high");
+      expect(projection.meta?.contextPct).toBe(contextPct);
+      expect(projection.meta?.contextLimit).toBe(contextLimit);
+    }
+  });
+  test.each(["↑3 items moved", "↓3 items moved"])("non-pi arrow output is not a footer: %s", (line) => {
+    expect(terminalDisplayProjection(`line one\n${line}\nprompt>`)).toEqual({ lastLine: "prompt>" });
+    expect(terminalDisplayProjection(`line one\n${line}`)).toEqual({ lastLine: line });
+  });
+  test.each([
     "~/x", "~/x (b) • named-session", "/srv/project (b)", "…/long/project (b)",
   ])("pi footer block skips adjacent cwd: %s", (cwd) => {
     for (const suffix of ["", "\npi-tasks outbox failure", "\nstatus one\nstatus two"]) {
@@ -50,6 +70,18 @@ describe("display-only terminal projection", () => {
     expect(terminalDisplayProjection(`Answer\n${footer}`).meta).toMatchObject({ model: "gpt-6-astra", reasoning });
   });
   test.each([
+    ["gpt-4.1", { model: "gpt-4.1" }],
+    ["(openai) gpt-4.1", { model: "gpt-4.1" }],
+    ["auto → gpt-6.1-sol • high", { model: "gpt-6.1-sol", reasoning: "high" }],
+    ["(router) auto → (openai) gpt-4.1", { model: "gpt-4.1" }],
+    ["auto → fallback → gpt-6.1-sol • thinking off", { model: "gpt-6.1-sol", reasoning: "thinking off" }],
+  ])("pi non-reasoning and routed models: %s", (label, expected) => {
+    const footer = pi.replace("(openai-codex) gpt-6-astra • medium", label);
+    const meta = terminalDisplayProjection(`Answer\n${footer}`).meta;
+    expect(meta?.model).toBe(expected.model);
+    expect(meta?.reasoning).toBe("reasoning" in expected ? expected.reasoning : undefined);
+  });
+  test.each([
     "⏵⏵ auto mode on (shift+tab to cycle) · ← 1 agent",
     "⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← 1 agent",
     "✔ Update installed · /restart to apply",
@@ -62,8 +94,8 @@ describe("display-only terminal projection", () => {
       expect(terminalDisplayProjection(`${harness} answer\n└─────────┘\n> `)).toEqual({ lastLine: `${harness} answer` });
     }
   });
-  test("preserves unknown footer text for fallback rendering", () => {
-    expect(terminalDisplayProjection("Answer\n↑12k ↓3k unknown-footer")).toEqual({ lastLine: "Answer", footer: "↑12k ↓3k unknown-footer" });
+  test("preserves unrecognized counter text as content, not pi chrome", () => {
+    expect(terminalDisplayProjection("Answer\n↑12k ↓3k unknown-footer")).toEqual({ lastLine: "↑12k ↓3k unknown-footer" });
   });
   test("bounds agent line to 160 codepoints and sanitizes controls", () => {
     expect(lastTerminalPreviewLine("first\n final status ")).toBe("final status");

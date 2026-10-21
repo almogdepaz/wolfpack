@@ -194,8 +194,9 @@ function legacyTerminalPreviewLine(rendered: string | undefined): string {
 
 // Only recognizable chrome is skipped. These patterns never classify prompts,
 // activity, or runtime state; unknown harness text remains visible.
+const PI_CONTEXT_TOKEN = /(?:^|\s)(?:(\d+(?:\.\d+)?)%|\?)\/(\d+(?:\.\d+)?)([kM])?(?=\s|$)/;
 const TERMINAL_CHROME = [
-  /^[↑↓]\d/, // pi token/cost/model footer
+  PI_CONTEXT_TOKEN, // pi context exists even before token counters appear
   /^~\/.*\(.*\)$/, // pi cwd/branch
   /^[-─]{8,}/,
   /^[\u2500-\u257f\s]+$/, // box-drawing-only rules
@@ -205,14 +206,19 @@ const TERMINAL_CHROME = [
 ];
 
 function parsePiFooter(line: string): SessionMeta | undefined {
-  const model = /\s{2,}(?:\([\w-]+\)\s+)?([\w.-]+)\s+•\s+([\w]+(?:\s+[\w]+)*)$/.exec(line);
+  // Routed labels show the selected model after the final arrow; some models
+  // have no reasoning suffix at all.
+  const model = /\s{2,}(?:.*→\s*)?(?:\([\w-]+\)\s+)?([\w.-]+)(?:\s+•\s+([\w]+(?:\s+[\w]+)*))?$/.exec(line);
   // CH is cache-hit rate, NOT context. Only the %/limit token is context.
-  const context = /(\d+(?:\.\d+)?)%\/(\d+(?:\.\d+)?)([kM])\b/.exec(line);
+  const context = PI_CONTEXT_TOKEN.exec(line);
   const cost = /\$(\d+(?:\.\d+)?)(?:\s+\(([\w-]+)\))?/.exec(line);
   if (!model && !context && !cost) return undefined;
   return {
-    ...(model && { model: model[1], reasoning: model[2] }),
-    ...(context && { contextPct: Number(context[1]), contextLimit: Number(context[2]) * (context[3] === "M" ? 1_000_000 : 1000) }),
+    ...(model && { model: model[1], ...(model[2] && { reasoning: model[2] }) }),
+    ...(context && {
+      ...(context[1] !== undefined && { contextPct: Number(context[1]) }),
+      contextLimit: Number(context[2]) * (context[3] === "M" ? 1_000_000 : context[3] === "k" ? 1000 : 1),
+    }),
     ...(cost && { cost: Number(cost[1]), ...(cost[2] && { costTag: cost[2] }) }),
   };
 }
@@ -227,7 +233,7 @@ export function terminalDisplayProjection(rendered: string | undefined): {
   // Anchor only near the bottom; don't mistake earlier stats-like output for it.
   let piStatsIndex = -1;
   for (let index = lines.length - 1; index >= Math.max(0, lines.length - 3); index--) {
-    if (/^[↑↓]\d/.test(lines[index]!)) { piStatsIndex = index; break; }
+    if (PI_CONTEXT_TOKEN.test(lines[index]!)) { piStatsIndex = index; break; }
   }
   let piFooterStart = piStatsIndex;
   if (piStatsIndex > 0 && /^(?:~\/|\/|…)/.test(lines[piStatsIndex - 1]!)) piFooterStart--;
@@ -241,9 +247,11 @@ export function terminalDisplayProjection(rendered: string | undefined): {
       lastLine = Array.from(line).slice(0, 160).join("");
       break;
     }
-    if (/^[↑↓]\d|^⏵⏵ |^✔ Update installed/.test(line)) {
+    if (PI_CONTEXT_TOKEN.test(line)) {
       footer ??= line;
-      if (/^[↑↓]\d/.test(line)) meta ??= parsePiFooter(line);
+      meta ??= parsePiFooter(line);
+    } else if (/^⏵⏵ |^✔ Update installed/.test(line)) {
+      footer ??= line;
     }
   }
   return {
