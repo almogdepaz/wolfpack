@@ -153,11 +153,13 @@ export class WidgetPanels {
     const id = this.active[area];
     if (!this.presentation.desktop || !id || isNativePanel(id)) return;
     const unpin = !this.collapsed(id);
+    // Restore the displaced dock before host defaults can reconcile over the new peek.
+    if (this.peekArea && this.peekArea !== area) this.hidePeek();
     this.clearPeek();
     this.options.layout.setWidgetState(id, unpin ? "collapsed" : "open");
-    if (unpin) { this.options.onFocus?.(null); this.peekArea = area; }
-    else this.options.layout.select(id);
-    this.render(); this.chrome.get(area)?.pin.focus({ preventScroll: true });
+    if (unpin) { this.options.onFocus?.(null); this.selectPanel(id, false); }
+    else { this.options.layout.select(id); this.render(); }
+    this.chrome.get(area)?.pin.focus({ preventScroll: true });
   }
   dispose(): void { this.clearPeek(); this.events.abort(); for (const chrome of this.chrome.values()) chrome.rail.remove(); }
   reopen(): void {
