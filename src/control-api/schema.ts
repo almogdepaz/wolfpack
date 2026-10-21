@@ -755,7 +755,7 @@ export const controlApiSource: ControlApiSource = {
         cost: { type: "number" },
         costTag: string(),
       }, [], { description: "Display-only footer metadata; never runtime status evidence" }),
-      footer: string("Raw display-only footer when structured metadata is unavailable"),
+      footer: string("Raw display-only footer, also included alongside structured metadata"),
       triage: ref("TriageStatus"),
       outputSequence: ref("BrokerOutputSequence"),
       identity: ref("PublicSessionIdentity"),

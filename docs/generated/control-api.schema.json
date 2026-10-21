@@ -6194,7 +6194,7 @@
         },
         "footer": {
           "type": "string",
-          "description": "Raw display-only footer when structured metadata is unavailable"
+          "description": "Raw display-only footer, also included alongside structured metadata"
         },
         "triage": {
           "$ref": "#/$defs/TriageStatus"
