@@ -174,6 +174,7 @@ for (const area of ['bottom', 'right'] as const) test(`failed ${area} candidate 
   const bottom = page.locator('[data-context-view="test-widgets/view-4"]');
   await expect(selected).toBeVisible(); await expect(bottom).toBeVisible();
   const bottomNode = await bottom.elementHandle();
+  const selectedNode = await selected.elementHandle();
   const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
   await page.clock.install(); await page.clock.pauseAt(new Date());
   await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
@@ -194,9 +195,28 @@ for (const area of ['bottom', 'right'] as const) test(`failed ${area} candidate 
   await expect(selected).toBeHidden();
   await expect(page.getByRole('tab', { name: 'Preview', exact: true })).toHaveAttribute('aria-selected', 'true');
   expect(await preview.evaluate((node, previous) => node === previous, previewNode)).toBe(true);
-  await page.getByRole('button', { name: 'Pin Preview', exact: true }).press('Escape');
-  await expect(page.getByRole('tab', { name: 'Selected pinned', exact: true })).toBeFocused();
-  await expect(selected).toBeVisible();
+  if (area === 'bottom') {
+    // Pointer and focus are outside Preview. Failure must not consume its armed leave timer.
+    const focus = await page.evaluateHandle(() => document.activeElement);
+    await page.clock.runFor(299); await expect(preview).toBeVisible();
+    const at299 = { previewVisible: await preview.isVisible() };
+    await page.clock.runFor(1); await expect(preview).toBeHidden();
+    await expect(selected).toBeVisible();
+    const at300 = { previewVisible: await preview.isVisible(), selectedVisible: await selected.isVisible() };
+    await page.clock.runFor(200); await expect(selected).toBeVisible();
+    const focusRetained = await focus.evaluate(node => node === document.activeElement);
+    expect(focusRetained).toBe(true);
+    await focus.dispose();
+    await expect(bottom).toBeVisible();
+    expect(await bottom.evaluate((node, previous) => node === previous, bottomNode)).toBe(true);
+    expect(await selected.evaluate((node, previous) => node === previous, selectedNode)).toBe(true);
+    await writeFile(info.outputPath('after-leave.json'), JSON.stringify({ saved, after: await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1')), at299, at300, at500: { previewVisible: await preview.isVisible(), selectedVisible: await selected.isVisible(), bottomVisible: await bottom.isVisible(), focusRetained }, right: await tabGeometry(page.locator('.widget-panel[data-widget-area="right"]:visible')) }, null, 2));
+    await page.screenshot({ path: info.outputPath('after-leave.png'), caret: 'hide' });
+  } else {
+    await page.getByRole('button', { name: 'Pin Preview', exact: true }).press('Escape');
+    await expect(page.getByRole('tab', { name: 'Selected pinned', exact: true })).toBeFocused();
+    await expect(selected).toBeVisible();
+  }
   expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
 });
 

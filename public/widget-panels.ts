@@ -236,7 +236,8 @@ export class WidgetPanels {
   }
   setVisible(visible: boolean): void { this.setPresentation({ ...this.presentation, visible }); }
   select(id: string, persist = true): void {
-    this.clearPeekTimer();
+    // Cancel competing intent now; a failed mount must retain the current peek's leave deadline.
+    if (this.intentArea !== null) this.clearPeekTimer();
     if (!this.ids().includes(id)) {
       if (!isNativePanel(id) && !this.entries.some(entry => entry.id === id)) this.options.registry.select(id);
       return;
