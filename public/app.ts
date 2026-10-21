@@ -4729,8 +4729,6 @@ function syncSessionChrome(): void {
   }
   const stop = document.getElementById("terminal-stop");
   if (stop) stop.textContent = current && sessionTier(current) === "fail" ? "Close" : "Stop";
-  const changes = document.getElementById("mobile-changes");
-  if (changes) changes.hidden = state.currentView !== "terminal";
   const banner = document.getElementById("needs-input-banner");
   const session = needsInputSession();
   if (!banner) return;
@@ -4811,9 +4809,6 @@ document.getElementById("mobile-settings")?.addEventListener("click", event => {
   void showSettings();
 });
 document.getElementById("mobile-machines")?.addEventListener("click", () => void showSettings().then(() => revealSettingsSection("settings-machines")));
-document.getElementById("mobile-changes")?.addEventListener("click", () => {
-  if (state.currentView === "terminal") document.getElementById("workspace-restore")?.click();
-});
 
 // Non-key accessory controls must preserve native terminal keyboard focus too.
 for (const control of document.querySelectorAll<HTMLElement>(".kb-control summary")) {

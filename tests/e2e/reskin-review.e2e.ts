@@ -250,7 +250,6 @@ test("M3 mobile Changes is reachable and opens existing context", async ({ page 
   test.skip(info.project.name === "desktop");
   await page.goto(server.baseUrl);
   await expect(page.locator('#session-list .card').first()).toBeVisible();
-  await expect(page.locator('#mobile-changes')).toBeHidden();
   await page.getByRole('button', { name: 'Open test-project', exact: true }).click();
   const changes = page.getByRole('button', { name: 'Changes', exact: true }).filter({ visible: true });
   await expect(changes).toBeEnabled();
