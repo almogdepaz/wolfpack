@@ -104,7 +104,6 @@ import {
 import { sessionRuntimeState, sessionRuntimeUi, sessionTier } from "../src/agent-runtime-ui";
 import type { SessionInspectorTarget } from "./session-inspector";
 import {
-  delegationChildSummaryText,
   delegationGridMembers,
   delegationRootSession,
   projectDelegationSessions,
@@ -1610,11 +1609,6 @@ function delegationCardAttributes(row: DelegationSessionRow<DelegationSessionLik
   };
 }
 
-function delegationParentSummaryHtml(row: DelegationSessionRow<DelegationSessionLike>): string {
-  if (!row.childSummary) return "";
-  return `<div class="delegation-summary">${esc(delegationChildSummaryText(row.childSummary))}</div>`;
-}
-
 const expandedSidebarDelegationParents = new Set<string>();
 
 function sidebarDelegationParentKey(machineUrl: string, parentSessionId: string): string {
@@ -1875,7 +1869,6 @@ function renderDashboardSessionCardHtml(
     ${harnessIconHtml(s.identity?.agentKind)}
     <div class="card-info">
       <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${chip}${collapsible ? sidebarDelegationToggleHtml(row, machineUrl) : ""}</div>
-      ${collapsible || pinned ? "" : delegationParentSummaryHtml(row)}
       ${pinned ? "" : delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(s.lastLine || "")}</div>
       <div class="card-meta">${activityHtml(s)}</div>

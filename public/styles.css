@@ -438,7 +438,6 @@ body.session-order-pointer-active * {
   border-left-color: var(--warning);
   border-style: dashed;
 }
-.delegation-summary,
 .delegation-parent-missing {
   margin-top: 3px;
   font-size: 10px;
