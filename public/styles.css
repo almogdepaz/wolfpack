@@ -1472,6 +1472,7 @@ body.no-animations, body.no-animations * {
 }
 
 #desktop-terminal-container {
+  caret-color: transparent;
   display: none;
   position: relative;
   flex: 1;
