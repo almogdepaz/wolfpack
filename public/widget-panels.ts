@@ -97,7 +97,7 @@ export class WidgetPanels {
   private intendPeek(area: WidgetArea, id?: string): void {
     this.clearIntentTimer();
     id ??= this.active[area] ?? this.ids().find(id => this.area(id) === area);
-    if (!this.canPeek(area, id) || this.suppressPeekArea === area) return;
+    if (area === "main" || !this.canPeek(area, id) || this.suppressPeekArea === area) return;
     this.intentArea = area; this.intentId = id;
     this.intentTimer = setTimeout(() => { this.clearIntentTimer(); this.peek(area, id); }, 150);
   }

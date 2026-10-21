@@ -59,6 +59,48 @@ async function tabGeometry(panel: Locator) {
   });
 }
 
+for (const action of ['mouse Collapse', 'mouse selected tab', 'keyboard Collapse'] as const) test(`Main ${action} keeps Terminal grid visible under a stationary pointer`, async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop Main hover regression');
+  await openWidgetFixture(page, ['Widgets']);
+  await dockPanel(page, 'Widgets', 'main');
+  const terminal = page.locator('#desktop-terminal-container');
+  const canvas = terminal.locator('canvas');
+  const canvasNode = await canvas.elementHandle();
+  const content = page.locator('[data-context-view="test-widgets/view"]');
+  const contentNode = await content.elementHandle();
+  const before = JSON.parse((await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1')))!);
+  const collapse = page.getByRole('button', { name: 'Collapse Widgets', exact: true });
+  if (action === 'keyboard Collapse') { await page.mouse.move(5, 5); await collapse.press('Enter'); }
+  else if (action === 'mouse selected tab') await page.getByRole('tab', { name: 'Widgets', exact: true }).click();
+  else await collapse.click(); // Real mouse; do not move it until all stationary samples finish.
+  const samples: object[] = [];
+  let previous = 0;
+  for (const elapsed of [0, 150, 250, 300, 800]) {
+    if (elapsed > previous) await page.waitForTimeout(elapsed - previous);
+    previous = elapsed;
+    const geometry = await terminal.boundingBox();
+    samples.push({ elapsed, geometry, peekCount: await page.locator('.widget-panel[data-peek=true]').count(), focus: await page.evaluate(() => document.activeElement?.outerHTML) });
+    expect.soft(geometry?.height ?? 0, `terminal at ${elapsed}ms`).toBeGreaterThan(100);
+    expect.soft(await page.getByRole('tab', { name: 'Terminal grid', exact: true }).getAttribute('aria-selected')).toBe('true');
+    expect.soft(await page.locator('.widget-panel[data-peek=true]').count()).toBe(0);
+  }
+  await page.screenshot({ path: info.outputPath('main-stationary.png'), caret: 'hide' });
+  await page.mouse.move(5, 5); await page.waitForTimeout(800);
+  await writeFile(info.outputPath('main-stationary.json'), JSON.stringify({ action, samples, afterLeave: await terminal.boundingBox() }, null, 2));
+  expect((await terminal.boundingBox())!.height).toBeGreaterThan(100);
+  await expect(canvas).toBeVisible();
+  expect(await canvas.evaluate((node, previous) => node === previous, canvasNode)).toBe(true);
+  expect(await content.evaluate((node, previous) => node === previous, contentNode)).toBe(true);
+  const after = JSON.parse((await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1')))!);
+  expect(after).toEqual({ ...before, selected: { ...before.selected, main: ':terminals' }, widgets: { ...before.widgets, 'test-widgets/view': 'collapsed' } });
+  await canvas.click();
+  await page.locator('#sidebar-settings-btn').click();
+  await page.locator('#settings-back-btn').click();
+  await expect(terminal).toHaveAttribute('data-terminal-load-state', 'live');
+  await expect(page.getByRole('tab', { name: 'Terminal grid', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await writeFile(info.outputPath('main-proof.json'), JSON.stringify({ action, before, after, samples, afterLeave: await terminal.boundingBox() }, null, 2));
+});
+
 for (const area of ['left', 'right', 'bottom'] as const) test(`${area} widget rail fills its dock and preserves expanded and peek behavior`, async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'desktop dock rails; mobile uses its existing Widgets screen');
   await page.setViewportSize({ width: 1440, height: 900 });
