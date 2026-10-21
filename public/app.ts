@@ -3377,7 +3377,10 @@ function setMobileKeyboardInset(insetPx: number): void {
   // Shrink the view rather than translating its canvas above the clipped
   // workspace. This also keeps the first row and accessory in the viewport.
   const view = document.getElementById("terminal-view");
-  if (view) view.style.bottom = insetPx > 0 ? `${insetPx}px` : "";
+  if (view) {
+    view.style.bottom = insetPx > 0 ? `${insetPx}px` : "";
+    view.classList.toggle("keyboard-occluded", insetPx > 0);
+  }
 }
 
 function terminalMayTakeFocus(container: HTMLElement): boolean {

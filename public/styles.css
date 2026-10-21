@@ -2382,6 +2382,8 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
   .project-picker-panel > .list,
   #agent-view > .list { width: 100%; }
   #terminal-view { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  /* The lifted view already ends above the keyboard-covered home indicator. */
+  #terminal-view.keyboard-occluded { padding-bottom: 0; }
 }
 #settings-view > .list,
 .project-picker-panel > .list,
