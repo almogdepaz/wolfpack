@@ -2709,7 +2709,8 @@ body > header { height: 52px; min-height: 52px; }
 .machine-header .dot { width: 7px; height: 7px; }
 /* Reserve separator space on the first row too, so identical row content has equal height. */
 .machine-group .card { display: flex; align-items: center; gap: 12px; padding: 12px 16px; margin: 0; border: 0; border-top: 1px solid transparent; border-radius: 0; background: transparent; box-shadow: none; min-width: 0; }
-.machine-group .card.sub-session-card { width: calc(100% - 18px); margin-left: 18px; padding: 10px 9px; min-height: 52px; }
+#session-list .sub-session-card { width: calc(100% - 48px); margin-left: 48px; padding: 10px 9px; }
+#session-list .sub-session-card::before { border-color: var(--text-4); }
 .machine-group .card + .card { border-top: 1px solid var(--hairline); }
 .machine-group .card.tier-fail { background: rgba(255,138,128,.05); }
 .machine-group .card.tier-fail .card-preview { color: var(--danger); }
