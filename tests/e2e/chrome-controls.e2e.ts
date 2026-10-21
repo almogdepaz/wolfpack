@@ -11,6 +11,7 @@ test("terminal chrome and accessory contain only the requested controls", async 
   await expect(page.locator("#terminal-chrome")).toHaveCount(1);
   await expect(page.locator("#terminal-chrome").getByRole("button", { name: "Inspect", exact: true, includeHidden: true })).toHaveCount(0);
   await expect(page.locator("#terminal-stop")).toHaveCount(1);
+  await expect(page.locator("#terminal-transcript-dialog")).toHaveCount(0);
   expect(await page.locator("#kb-accessory > *").evaluateAll(nodes => nodes.map(node =>
     node.getAttribute("data-key") || (node.matches("details") ? "ctrl" : node.id),
   ))).toEqual(["Enter", "Escape", "ctrl", "BTab", "C-c", "Up", "Down", "Left", "Right", "kb-open-btn"]);

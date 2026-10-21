@@ -535,39 +535,6 @@ function moveQuickCmd(index: number, direction: 1 | -1): void {
   renderCmdPalette();
 }
 
-async function fetchSessionText(session: string, machineIdentity: string): Promise<string> {
-  const origin = resolveReadyMachineOrigin(machineIdentity);
-  if (machineIdentity && !origin) throw new Error("selected peer is not ready");
-  const response = await authenticatedFetchWithTimeout(origin
-    ? new URL("/api/copy-text?session=" + encodeURIComponent(session), origin)
-    : "/api/copy-text?session=" + encodeURIComponent(session));
-  if (!response.ok) throw new Error("HTTP " + response.status);
-  return response.text();
-}
-
-async function showTerminalTranscript(): Promise<void> {
-  if (!state.currentSession) return;
-  const dialog = document.getElementById("terminal-transcript-dialog") as HTMLDialogElement;
-  const status = document.getElementById("terminal-transcript-status");
-  const output = document.getElementById("terminal-transcript-output");
-  status.textContent = "Loading transcript…";
-  output.textContent = "";
-  dialog.showModal();
-  try {
-    const text = await fetchSessionText(state.currentSession, state.currentMachine || "");
-    output.textContent = text || "(no terminal output)";
-    status.textContent = `${text.length} characters`;
-    output.focus({ preventScroll: true });
-  } catch (error) {
-    status.textContent = "Transcript unavailable: " + errorMessage(error);
-  }
-}
-
-function closeTerminalTranscript(): void {
-  const dialog = document.getElementById("terminal-transcript-dialog") as HTMLDialogElement;
-  if (dialog.open) dialog.close();
-}
-
 // ── Session Recents ──
 
 function sessionKey(machine: string | null | undefined, name: string): string {
@@ -1285,7 +1252,6 @@ function stopDebugPanelRefresh(previousView: string, nextView: string): void {
 function teardownTerminalForViewChange(previousView: string, nextView: string): void {
   // Prevents background WS from auto-reconnecting and stealing control from other instances.
   if (previousView !== "terminal" || nextView === "terminal") return;
-  closeTerminalTranscript();
   // The pool serves terminal-to-terminal switches only.
   evictParkedSingleTerminals();
   if (state.activeDelegationRoot) {
@@ -5933,12 +5899,6 @@ function bindHtmlEventListeners(): void {
   // Debug reset
   const debugResetBtn = document.querySelector(".debug-reset-btn");
   if (debugResetBtn) debugResetBtn.addEventListener("click", () => { wpMetrics.reset(); renderDebugPanel(); });
-
-  // Terminal view
-  on("terminal-transcript-close", "click", () => closeTerminalTranscript());
-
-  // Keyboard accessory
-
 
 }
 

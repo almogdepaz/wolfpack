@@ -67,7 +67,6 @@
   --warning-hot: #f0b46b;
   --cmd-accent: #66ccff;
   --cmd-border: rgba(0,170,255,0.3);
-  --git-accent: #f0883e;
   --insert-accent: #ff9900;
   --conflict-accent: #ff9944;
   /* ── Typography ── */
@@ -2428,12 +2427,8 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
 .about-icon { width: 48px; height: 48px; opacity: 0.15; margin-bottom: 8px; }
 .settings-version { font-size: 10px; color: var(--text-dim); padding: 2px 0; }
 .conn-status { display: none; background: var(--danger); color: #fff; text-align: center; padding: 6px; font-size: 11px; font-family: inherit; text-transform: uppercase; letter-spacing: 1px; flex-shrink: 0; }
-.terminal-transcript-btn { flex: 0 0 auto; }
-.terminal-transcript-btn:hover, .terminal-transcript-btn:focus-visible { color: var(--accent); border-color: var(--accent-border); }
-.session-inspector-dialog,
-.terminal-transcript-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(80vh, 720px); margin: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.7); }
-.session-inspector-dialog::backdrop,
-.terminal-transcript-dialog::backdrop { background: rgba(0,0,0,0.75); }
+.session-inspector-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(80vh, 720px); margin: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.7); }
+.session-inspector-dialog::backdrop { background: rgba(0,0,0,0.75); }
 .app-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); margin: auto; overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); padding: 0; background: var(--bg-surface); color: var(--text-primary); font-family: inherit; box-shadow: 0 24px 80px rgba(0,0,0,0.55); }
 .app-dialog::backdrop { background: rgba(0,0,0,0.65); backdrop-filter: blur(4px); }
 .app-dialog form { display: grid; gap: 20px; padding: 24px; }
@@ -2450,22 +2445,16 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
 
 .app-dialog-actions .destructive { border-color: rgba(255,68,68,0.55); background: rgba(204,51,51,0.12); color: var(--danger-hot); }
 .app-dialog-actions .destructive:hover { border-color: var(--danger-hot); background: rgba(204,51,51,0.22); color: #fff; }
-.session-inspector-header,
-.terminal-transcript-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
-.session-inspector-header h2,
-.terminal-transcript-header h2 { margin: 0; color: var(--accent); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
+.session-inspector-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.session-inspector-header h2 { margin: 0; color: var(--accent); font-size: 13px; text-transform: uppercase; letter-spacing: 1px; }
 .session-inspector-header p { margin-top: 4px; color: var(--text-dim); font-size: 10px; }
 .session-inspector-header button,
-.terminal-transcript-header button,
 .session-inspector-actions button { border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 5px 8px; background: var(--bg-elevated); color: var(--text-muted); font: inherit; cursor: pointer; }
-#session-inspector-status,
-#terminal-transcript-status { min-height: 28px; padding: 8px 14px 0; color: var(--text-dim); font-size: 10px; }
+#session-inspector-status { min-height: 28px; padding: 8px 14px 0; color: var(--text-dim); font-size: 10px; }
 #session-inspector-metadata { min-height: 20px; margin: 4px 14px 0; color: var(--text-dim); font: 11px/1.4 var(--font-mono); }
-#session-inspector-output,
-#terminal-transcript-output { max-height: calc(80vh - 86px); margin: 0; padding: 10px 14px 16px; overflow: auto; color: var(--text-primary); font: 12px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; outline: none; }
+#session-inspector-output { max-height: calc(80vh - 86px); margin: 0; padding: 10px 14px 16px; overflow: auto; color: var(--text-primary); font: 12px/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; outline: none; }
 #session-inspector-output { white-space: pre; overflow-wrap: normal; }
-#session-inspector-output:focus-visible,
-#terminal-transcript-output:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-border); }
+#session-inspector-output:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-border); }
 .session-inspector-actions { display: flex; justify-content: flex-end; margin: 0; padding: 0 14px 14px; }
 .settings-description { padding: 4px 0; color: var(--text-dim); }
 .widget-manager-item{padding:12px 0;border-bottom:1px solid var(--accent-border);overflow-wrap:anywhere}.widget-manager-item h3,.widget-manager-item p{margin:0}.widget-manager-item .settings-toggle{min-height:44px}.widget-manager-item input{flex-shrink:0}
@@ -2507,7 +2496,6 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
 .qc-btn.edit { color: var(--text-muted); font-size: 12px; }
 .qc-btn.delete { color: var(--danger); font-size: 14px; }
 .qc-spacer { width: 24px; }
-.error-pre { color: var(--danger); }
 .empty-state { padding: 10px; color: var(--text-dim); font-size: 11px; }
 .version-warning { color: var(--warning-hot); margin-left: 6px; font-size: 11px; padding: 3px 8px; border: 1px solid var(--accent); border-radius: var(--radius-sm); cursor: pointer; -webkit-tap-highlight-color: transparent; letter-spacing: 1px; }
 .group-status { padding: 4px 4px; color: var(--text-dim); font-size: 11px; }
@@ -2614,7 +2602,6 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
 }
 .discover-btn,
 .add-cmd-btn,
-.terminal-transcript-btn,
 .provider-add-btn,
 .provider-refresh-btn,
 .delegation-collapsed-tab,
@@ -2790,7 +2777,7 @@ body > header { height: 52px; min-height: 52px; }
 .kb-control { position: relative; min-width: 0; }
 .kb-control summary { list-style: none; display: flex; justify-content: center; align-items: center; cursor: pointer; }
 .kb-control summary::-webkit-details-marker { display: none; }
-.kb-control-menu { position: absolute; bottom: calc(100% + 8px); left: 0; display: flex; gap: 4px; padding: 6px; border-radius: 9px; background: var(--bg-base); border: 1px solid var(--hairline-strong); z-index: 10; }
+.kb-control-menu { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); display: flex; gap: 4px; padding: 6px; border-radius: 9px; background: var(--bg-base); border: 1px solid var(--hairline-strong); z-index: 10; }
 #kb-accessory .kb-control-menu button { min-width: 42px; }
 .machine-header-name { font-family: var(--font-ui); color: var(--text-4); }
 .machine-add-btn { background: transparent; border-color: transparent; }
@@ -2865,7 +2852,7 @@ body > header { height: 52px; min-height: 52px; }
   .needs-input-actions { width: 100%; }
   .needs-input-actions button { min-height: 36px; }
   #reply-in-terminal { margin-left: auto; }
-  #kb-accessory { overflow: visible; display: grid; grid-template-columns: repeat(8,minmax(0,1fr)); grid-template-rows: repeat(2,42px); height: 106px; flex-basis: 106px; gap: 5px; padding: 8px; background: var(--glass-bg); }
+  #kb-accessory { overflow: visible; display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); grid-template-rows: repeat(2,42px); height: 106px; flex-basis: 106px; gap: 5px; padding: 8px; background: var(--glass-bg); }
   #kb-accessory .kb-key { min-height: 42px; border: 0; border-radius: 9px; background: var(--surface-3); color: var(--text-2); box-shadow: 0 1px 0 rgba(0,0,0,.5); font: 500 12px var(--font-mono); }
   #kb-accessory .kb-enter { background: var(--attn-tint); color: var(--attn); }
   #kb-accessory .kb-open { background: var(--accent); color: var(--accent-on); }
