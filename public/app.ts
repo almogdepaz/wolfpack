@@ -4744,11 +4744,6 @@ document.querySelectorAll<HTMLButtonElement>("[data-reply-key]").forEach(button 
     sendAccessoryKey(button.dataset.replyKey!);
   });
 });
-document.getElementById("terminal-inspect")?.addEventListener("click", event => {
-  if (!singleTerminalChromeActive()) return;
-  const target = pinnedSessionInspectionTarget(state.currentSession, state.currentMachine || "");
-  if (target) sessionInspector.open(target, event.currentTarget as HTMLElement);
-});
 document.getElementById("terminal-stop")?.addEventListener("click", event => {
   if (singleTerminalChromeActive() && state.currentSession) void killSession(state.currentSession, event, state.currentMachine);
 });
