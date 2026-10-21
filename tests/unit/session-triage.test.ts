@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { projectDelegationSessions } from "../../public/delegation-sessions";
 import { orderTriageSessionRows } from "../../public/session-triage";
+import type { SessionOrderIdentity } from "../../public/session-order";
 
 function session(name: string, state: string, at?: string, parent?: string) {
   return {
@@ -44,6 +45,19 @@ test("A1 manual positions outrank recency only within their automatic tier", () 
 test("A1 recency orders only rows without manual positions, including new sessions", () => {
   const sessions = [session("manual", "working", older), session("unpositioned-old", "working", older), session("unpositioned-new", "working", newer)];
   expect(order(sessions, ["manual"])).toEqual(["manual", "unpositioned-new", "unpositioned-old"]);
+});
+test("sparse manual slots preserve drop position while untouched siblings follow activity", () => {
+  const sessions = [session("a", "working", newer), session("b", "working", older), session("c", "working", older), session("need", "needs-input", older)];
+  const stored: SessionOrderIdentity[] = [{ machineUrl: "", sessionId: "a", position: 1 }];
+  const render = () => orderTriageSessionRows(projectDelegationSessions(sessions), stored, "").map(row => row.session.name);
+  expect(render()).toEqual(["need", "b", "a", "c"]);
+  sessions[2] = session("c", "working", newer);
+  expect(render()).toEqual(["need", "c", "a", "b"]);
+});
+test("sparse positions are bounded and deterministic when tier changes collide", () => {
+  const sessions = [session("a", "working", newer), session("b", "working", older), session("c", "working", older)];
+  const stored: SessionOrderIdentity[] = [{ machineUrl: "", sessionId: "a", position: 50 }, { machineUrl: "", sessionId: "b", position: 50 }];
+  expect(orderTriageSessionRows(projectDelegationSessions(sessions), stored, "").map(row => row.session.name)).toEqual(["b", "c", "a"]);
 });
 test("A3 an urgent grandchild ranks the entire tree ahead of work without losing adjacency", () => {
   const sessions = [session("worker", "working", newer), session("parent", "idle", older), session("child", "idle", older, "parent"), session("grandchild", "needs-input", older, "child")];

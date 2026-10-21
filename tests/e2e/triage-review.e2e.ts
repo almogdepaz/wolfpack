@@ -40,6 +40,36 @@ test("A1 unpositioned rows keep sorting by recency after manual rows across refr
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('wolfpack-session-order')!).sessions)).toEqual([{ machineUrl: '', sessionId: 'manual' }]);
 });
 
+test("per-row UI placement leaves untouched work and need rows automatic", async ({ page }) => {
+  const sessions = [
+    session('need-old', 'needs-input', at.old), session('need-new', 'needs-input', at.recent),
+    session('alpha', 'working', at.recent), session('beta', 'working', '2026-10-20T10:59:00Z'),
+    session('gamma', 'working', at.old), session('delta', 'working', '2026-10-20T09:00:00Z'),
+  ];
+  await fixture(page, sessions);
+  await page.goto(server.baseUrl);
+  const names = machineRows(page).locator('.card-name-text');
+  await expect(names).toHaveText(['need-old', 'need-new', 'alpha', 'beta', 'gamma', 'delta']);
+  await machineRows(page).locator('.card-open[data-session="alpha"]').focus();
+  await page.keyboard.press('Alt+ArrowDown');
+  await expect(names).toHaveText(['need-old', 'need-new', 'beta', 'alpha', 'gamma', 'delta']);
+  const stored = () => page.evaluate(() => JSON.parse(localStorage.getItem('wolfpack-session-order')!).sessions);
+  await expect.poll(stored).toEqual([{ machineUrl: '', sessionId: 'alpha', position: 1 }]);
+  sessions[0] = session('need-old', 'needs-input', at.recent);
+  sessions[1] = session('need-new', 'needs-input', at.old);
+  sessions[3] = session('beta', 'working', '2026-10-20T09:00:00Z');
+  sessions[4] = session('gamma', 'working', at.recent);
+  sessions[5] = session('delta', 'working', '2026-10-20T12:00:00Z');
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(names).toHaveText(['need-new', 'need-old', 'delta', 'alpha', 'gamma', 'beta']);
+  await page.reload();
+  await expect(names).toHaveText(['need-new', 'need-old', 'delta', 'alpha', 'gamma', 'beta']);
+  await machineRows(page).locator('.card-open[data-session="beta"]').focus();
+  await page.keyboard.press('Alt+ArrowUp');
+  await expect(names).toHaveText(['need-new', 'need-old', 'delta', 'alpha', 'beta', 'gamma']);
+  await expect.poll(stored).toEqual([{ machineUrl: '', sessionId: 'alpha', position: 1 }, { machineUrl: '', sessionId: 'beta', position: 2 }]);
+});
+
 test("A1 drag visibly reorders rows with distinct output timestamps", async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'desktop pointer; mobile keyboard and existing touch drag specs cover the shared move path');
   await fixture(page, [session('alpha', 'working', at.recent), session('beta', 'working', at.old)]);
@@ -54,6 +84,7 @@ test("A1 drag visibly reorders rows with distinct output timestamps", async ({ p
   await expect(page.locator('.session-order-floating')).toBeVisible();
   await page.mouse.up();
   await expect(machineRows(page).locator('.card-name-text')).toHaveText(['beta', 'alpha']);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('wolfpack-session-order')!).sessions)).toEqual([{ machineUrl: '', sessionId: 'beta', position: 0 }]);
 });
 
 test("A2 dashboard Cmd+Arrow skips pinned duplicates of the current session", async ({ page }, info) => {

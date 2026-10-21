@@ -12,6 +12,7 @@
   --glass-bg: rgba(13,17,15,.78);
   --glass-filter: blur(24px) saturate(180%);
   --accent-tint: rgba(69,237,126,.14);
+  --accent-focus: rgba(69,237,126,.7);
   --accent-on: #06130a;
   --attn: #f6c35c;
   --attn-tint: rgba(246,195,92,.14);
@@ -2984,7 +2985,7 @@ body > header { height: 52px; min-height: 52px; }
 /* Forced-colors modes suppress shadows; retain the existing outline there. */
 @media (forced-colors: none) {
   .session-search input:focus { outline: none; box-shadow: none; }
-  .session-search:focus-within { box-shadow: 0 0 0 3px rgba(69,237,126,.7); }
+  .session-search:focus-within { box-shadow: 0 0 0 3px var(--accent-focus); }
 }
 .session-search kbd { font: 500 11px var(--font-ui); }
 .sidebar-search { width: auto; margin: 0 10px 6px; }

@@ -10,6 +10,8 @@ const SESSION_ORDER_STORAGE_VERSION = 1;
 export interface SessionOrderIdentity {
   readonly machineUrl: string;
   readonly sessionId: string;
+  /** Optional sparse slot within this row's tier and sibling scope; absent in legacy v1 data. */
+  readonly position?: number;
 }
 
 type SessionOrderStorageReader = Pick<Storage, "getItem">;
@@ -22,7 +24,10 @@ function isSessionOrderIdentity(value: unknown): value is SessionOrderIdentity {
 }
 
 function stableIdentity(identity: SessionOrderIdentity): SessionOrderIdentity {
-  return { machineUrl: identity.machineUrl, sessionId: identity.sessionId };
+  return {
+    machineUrl: identity.machineUrl, sessionId: identity.sessionId,
+    ...(typeof identity.position === "number" && Number.isSafeInteger(identity.position) && identity.position >= 0 ? { position: identity.position } : {}),
+  };
 }
 
 function identitiesEqual(left: SessionOrderIdentity, right: SessionOrderIdentity): boolean {
@@ -94,6 +99,23 @@ export function moveSessionRelative(
   const insertionIndex = placement === "before" ? targetIndex : targetIndex + 1;
   withoutMoving.splice(insertionIndex, 0, stableIdentity(moving));
   return withoutMoving;
+}
+
+/** Record only the moved row; shift earlier explicit placements with their visible siblings. */
+export function recordManualSessionMove(
+  manualOrder: readonly SessionOrderIdentity[],
+  nextMachineOrder: readonly SessionOrderIdentity[],
+  siblingScope: readonly SessionOrderIdentity[],
+  moving: SessionOrderIdentity,
+): SessionOrderIdentity[] {
+  const siblings = nextMachineOrder.filter(identity => includesIdentity(siblingScope, identity));
+  const position = siblings.findIndex(identity => identitiesEqual(identity, moving));
+  if (position < 0) return [...manualOrder];
+  const updated = manualOrder.filter(identity => !identitiesEqual(identity, moving)).map(identity => {
+    const nextPosition = siblings.findIndex(sibling => identitiesEqual(sibling, identity));
+    return nextPosition < 0 ? stableIdentity(identity) : { ...stableIdentity(identity), position: nextPosition };
+  });
+  return [...updated, { ...stableIdentity(moving), position }];
 }
 
 export function resetMachineSessionOrder(

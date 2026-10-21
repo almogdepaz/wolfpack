@@ -118,6 +118,7 @@ import {
   moveSessionRelative,
   orderDelegationSessionRows,
   reconcileSessionOrder,
+  recordManualSessionMove,
   replaceMachineSessionOrder,
   resetMachineSessionOrder,
   saveSessionOrder,
@@ -5607,7 +5608,7 @@ function moveSessionCard(
     const previous = context.order[index];
     return previous?.machineUrl === identity.machineUrl && previous.sessionId === identity.sessionId;
   })) return false;
-  sessionOrder = replaceMachineSessionOrder(sessionOrder, moving.machineUrl, nextMachineOrder);
+  sessionOrder = recordManualSessionMove(sessionOrder, nextMachineOrder, siblingScope, moving);
   manuallyOrderedMachines.add(moving.machineUrl);
   const persisted = saveManualSessionOrder();
   renderSessionOrderViews();

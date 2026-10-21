@@ -295,11 +295,7 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["three", "one", "two"]);
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-session-order") ?? "null"))).toEqual({
     version: 1,
-    sessions: [
-      { machineUrl: "", sessionId: "three-id" },
-      { machineUrl: "", sessionId: "one-id" },
-      { machineUrl: "", sessionId: "two-id" },
-    ],
+    sessions: [{ machineUrl: "", sessionId: "three-id", position: 0 }],
   });
 
   sessions = [
@@ -313,7 +309,8 @@ test("manual card order persists by stable identity and resets to server order",
 
   await page.reload();
   await collapseInitialSessionMenu(page);
-  await expect.poll(cardNames).toEqual(["three-renamed", "one-renamed", "two-renamed", "new"]);
+  // Untouched rows use the current server fallback when no activity timestamps exist.
+  await expect.poll(cardNames).toEqual(["three-renamed", "two-renamed", "one-renamed", "new"]);
 
   await list.getByRole("button", { name: "Reset session order" }).click();
   await expect.poll(cardNames).toEqual(["two-renamed", "one-renamed", "three-renamed", "new"]);
