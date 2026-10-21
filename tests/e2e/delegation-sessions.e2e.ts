@@ -682,8 +682,8 @@ test("mobile drawer groups child sessions directly under their parent", async ({
   expect(childBox!.x + childBox!.width).toBeLessThanOrEqual(drawerBox!.x + drawerBox!.width + 0.5);
 });
 
-test("mobile delegation cards collapse and expand child sessions", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "desktop", "mobile session-list behavior only");
+test("dashboard delegation cards hide children until toggled and visibly nest expanded rows", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: testInfo.project.name === "desktop" ? 1440 : 390, height: 900 });
 
   await routeDelegationSessions(page, [
     fakeSession("parent", "parent-id"),
@@ -692,19 +692,54 @@ test("mobile delegation cards collapse and expand child sessions", async ({ page
   ]);
 
   await page.goto(srv.baseUrl);
-  const parentCard = page.locator(".delegation-parent-card", { hasText: "parent" }).first();
+  const dashboard = page.locator("#session-list .machine-group:not(.needs-you)");
+  const parentCard = dashboard.locator('.card[data-session-order-id="parent-id"]');
+  const children = dashboard.locator(".sub-session-card");
   await expect(parentCard).toBeVisible();
 
-  const toggle = parentCard.locator(".delegation-sidebar-toggle");
-  await expect(toggle).toHaveCount(1);
+  const toggle = parentCard.getByRole("button", { name: "Expand 2 child agents", exact: true });
+  await expect(toggle).toHaveText("2 agents");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator(".sub-session-card")).toHaveCount(0);
+  await expect(children).toHaveCount(0);
 
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator(".sub-session-card")).toHaveCount(2);
+  const collapse = parentCard.getByRole("button", { name: "Collapse 2 child agents", exact: true });
+  await expect(collapse).toHaveAttribute("aria-expanded", "true");
+  await expect(children).toHaveCount(2);
+  await expect(page.locator("#sessions-view")).toBeVisible();
+  await expect(page.locator("#terminal-view")).toHaveAttribute("aria-hidden", "true");
+  const parentBox = await parentCard.boundingBox();
+  expect(parentBox).not.toBeNull();
+  for (const child of await children.all()) {
+    await expect(child).toBeVisible();
+    const childBox = await child.boundingBox();
+    expect(childBox).not.toBeNull();
+    expect(childBox!.x).toBeGreaterThan(parentBox!.x);
+    expect(childBox!.x + childBox!.width).toBeLessThanOrEqual(parentBox!.x + parentBox!.width + 1);
+    expect(childBox!.y).toBeGreaterThanOrEqual(parentBox!.y + parentBox!.height);
+    const connector = await child.evaluate(el => {
+      const style = getComputedStyle(el, "::before");
+      return { content: style.content, border: style.borderLeftWidth, left: Number.parseFloat(style.left) };
+    });
+    expect(connector.content).toBe('""');
+    expect(connector.border).toBe("1px");
+    expect(connector.left).toBeLessThan(0);
+  }
 
-  await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator(".sub-session-card")).toHaveCount(0);
+  await collapse.click();
+  await expect(parentCard.getByRole("button", { name: "Expand 2 child agents", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(children).toHaveCount(0);
+  await expect(page.locator("#sessions-view")).toBeVisible();
+  if (testInfo.project.name === "desktop") {
+    await collapseInitialSessionMenu(page);
+    const sidebar = page.locator("#sidebar-session-list");
+    await expect(sidebar.locator(".sub-session-card")).toHaveCount(0);
+    await sidebar.getByRole("button", { name: "Expand 2 child agents", exact: true }).click();
+    await expect(sidebar.locator(".sub-session-card")).toHaveCount(2);
+    await page.locator("#sidebar-expand-btn").click();
+    await expect(collapse).toHaveAttribute("aria-expanded", "true");
+    await expect(children).toHaveCount(2);
+    await collapse.click();
+    await expect(children).toHaveCount(0);
+  }
 });

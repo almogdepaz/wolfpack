@@ -132,9 +132,10 @@ test("A2 dashboard Cmd+Arrow skips pinned duplicates of the current session", as
   await expect.poll(() => attaches).toEqual(['n1', 'w1']);
 });
 
-test("A3 a waiting descendant pulls its idle parent tree ahead of working roots", async ({ page }, info) => {
+test("A3 a waiting descendant pulls its idle parent tree ahead of working roots", async ({ page }) => {
   await fixture(page, [session('worker', 'working', at.recent), session('parent', 'idle', at.old), session('child', 'needs-input', at.old, 'parent')]);
   await page.goto(server.baseUrl);
-  if (info.project.name !== 'desktop') await machineRows(page).getByRole('button', { name: 'Expand 1 child agent', exact: true }).click();
+  await expect(machineRows(page).locator('.card-name-text')).toHaveText(['parent', 'worker']);
+  await machineRows(page).getByRole('button', { name: 'Expand 1 child agent', exact: true }).click();
   await expect(machineRows(page).locator('.card-name-text')).toHaveText(['parent', 'child', 'worker']);
 });

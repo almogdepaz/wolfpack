@@ -1913,11 +1913,8 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
     if (presentation.empty === "idle") {
       bodyHtml += idleSessionEmptyHtml();
     } else if (presentation.rows.length) {
-      const useCollapsibleSessionCards = !isDesktop();
-      const rows = useCollapsibleSessionCards
-        ? visibleDelegationRows(presentation.rows, machineKey)
-        : presentation.rows;
-      bodyHtml += rows.map((row, rowIndex) => renderDashboardSessionCardHtml(row, machineKey, rowIndex, useCollapsibleSessionCards)).join("");
+      const rows = visibleDelegationRows(presentation.rows, machineKey);
+      bodyHtml += rows.map((row, rowIndex) => renderDashboardSessionCardHtml(row, machineKey, rowIndex, true)).join("");
     } else {
       bodyHtml += zeroSessionOnboardingHtml(multiMachine ? g.machine.url || "" : "");
     }

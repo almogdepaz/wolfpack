@@ -166,6 +166,8 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await page.goto(srv.baseUrl);
 
   const cards = page.locator("#session-list .machine-group:not(.needs-you) .card");
+  await expect(cards.locator(".card-name-text")).toHaveText(["wolfpack", "orphan-child", "unrelated"]);
+  await cards.getByRole("button", { name: "Expand 2 child agents", exact: true }).click();
   await expect(cards).toHaveCount(5);
   await expect(page.locator("#session-list .needs-you .card-name-text")).toHaveText(["wolfpack-sub-agent"]);
   await expect.poll(() => cards.locator(".card-name").evaluateAll((names) =>
@@ -178,7 +180,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
     "unrelated",
   ]);
   await expect(cards.locator(".harness-icon[data-harness=\"pi\"][aria-label=\"pi\"]")).toHaveCount(5);
-  await expect(cards.nth(0)).toContainText("2 children");
+  await expect(cards.nth(0)).toContainText("2 agents");
   await expect(cards.nth(0)).toHaveClass(/delegation-parent-card/);
   await expect(cards.nth(1)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(1)).toHaveAttribute("data-parent-session", "wolfpack");
@@ -193,7 +195,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await collapseInitialSessionMenu(page);
   const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card").first();
   const childSidebarCards = page.locator("#sidebar-session-list .sub-session-card");
-  await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
+  await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveAttribute("aria-expanded", "true");
   await expect(childSidebarCards).toHaveCount(2);
   await page.locator("#sidebar-session-list").getByRole("button", {
     name: "Open wolfpack-sub-agent",
