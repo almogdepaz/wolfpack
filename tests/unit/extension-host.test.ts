@@ -7,7 +7,8 @@ import { equalGridLayout } from "../../src/extensions/layout-contract.ts";
 import { WidgetLayout } from "../../public/widget-layout.ts";
 import type { ExtensionRegistration, ExtensionRegistrationHost, ExtensionViewContext } from "../../src/extensions/sdk.ts";
 
-class FakeElement {
+class FakeElement extends EventTarget {
+  constructor(readonly tagName = "div") { super(); }
   readonly dataset: Record<string, string> = {};
   readonly children: FakeElement[] = [];
   parentElement: FakeElement | null = null;
@@ -22,19 +23,27 @@ class FakeElement {
   focus() {}
   remove() { if (!this.parentElement) return; const at = this.parentElement.children.indexOf(this); if (at >= 0) this.parentElement.children.splice(at, 1); this.parentElement = null; }
   replaceChildren() { for (const child of this.children) child.parentElement = null; this.children.length = 0; }
+  // Model the inline SVG roots used by host chrome; browser tests cover their paint.
+  set innerHTML(markup: string) {
+    this.replaceChildren();
+    for (const match of markup.matchAll(/<svg\b([^>]*)>/g)) {
+      const svg = new FakeElement("svg");
+      for (const attribute of match[1]!.matchAll(/([\w-]+)="([^"]*)"/g)) svg.setAttribute(attribute[1]!, attribute[2]!);
+      this.append(svg);
+    }
+  }
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   removeAttribute(name: string) { this.attributes.delete(name); }
-  addEventListener() {}
   querySelector<T extends FakeElement>(selector: string): T | null {
     const name = selector.match(/^\[data-([^\]]+)\]$/)?.[1]?.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
-    return (name ? this.children.find(child => name in child.dataset) ?? this.children.map(child => child.querySelector<T>(selector)).find(Boolean) : undefined) as T ?? null;
+    return (this.children.find(child => name ? name in child.dataset : child.tagName === selector) ?? this.children.map(child => child.querySelector<T>(selector)).find(Boolean)) as T ?? null;
   }
 }
 
 const documentListeners = new Map<string, unknown>();
 (globalThis as Record<string, unknown>).document = {
   visibilityState: "visible",
-  createElement: () => new FakeElement(),
+  createElement: (tagName: string) => new FakeElement(tagName),
   addEventListener: (name: string, listener: unknown) => documentListeners.set(name, listener),
   removeEventListener: (name: string) => documentListeners.delete(name),
 };
@@ -425,6 +434,28 @@ describe("ExtensionHost", () => {
     } finally { count.mockRestore(); panels.dispose(); }
   });
 
+  test("disposing widget panels cancels a pending hover-intent selection", async () => {
+    container = new FakeElement();
+    const layout = new WidgetLayout({ getItem: () => null, setItem() {} });
+    const entry = { id: "widgets/one", contribution: { id: "one", title: "One", mount() { return { dispose() {} }; } } };
+    layout.setWidgetState(entry.id, "collapsed");
+    let selections = 0;
+    const panels = new WidgetPanels({ container: container as unknown as HTMLElement, layout,
+      registry: { setVisibleIds() {} } as unknown as ContextViewRegistry,
+      onSelect() { selections++; },
+    });
+    panels.update([entry], "", () => null);
+    const rail = container.children.find(child => child.dataset.widgetArea === "right")!;
+    rail.dispatchEvent(new Event("pointerenter"));
+    await Bun.sleep(180);
+    expect(selections).toBe(1); // control: the real rail arms a working intent timer
+    rail.dispatchEvent(new Event("pointerenter"));
+    panels.dispose();
+    // Cross the actual 150ms intent deadline; disposal must fence its callback.
+    await Bun.sleep(180);
+    expect(selections).toBe(1);
+  });
+
   test("reconciles a removed focused area before applying same-render visibility", () => {
     container = new FakeElement();
     const terminals = new FakeElement(), sessions = new FakeElement();
@@ -778,7 +809,7 @@ describe("ExtensionHost", () => {
     host.dispose(); expect(disposed).toBe(1); expect(layoutDisposed).toBe(1);
   });
 
-  test("host opt-in opens the sole view without a tab, while multiple views keep their selector", async () => {
+  test("host opt-in opens the sole view while keeping its desktop collapse tab reachable", async () => {
     container = new FakeElement();
     let count = 1; let mounts = 0; let failMount = false;
     const catalog = () => ({ safeMode: false, installations: Array.from({ length: count }, (_, index) => {
@@ -803,20 +834,20 @@ describe("ExtensionHost", () => {
     host.select(); expect(mounts).toBe(0); // no automatic mount in a collapsed panel
     expect(host.setShellVisible(true)).toBe(true);
     host.select();
-    expect(host.selectedId).toBe("view0/context"); expect(mounts).toBe(1); expect(tabs().hidden).toBe(true);
+    expect(host.selectedId).toBe("view0/context"); expect(mounts).toBe(1); expect(tabs().hidden).toBe(false);
     host.select(); expect(mounts).toBe(1);
     count = 2; await host.refresh(); host.select();
     expect(tabs().hidden).toBe(false); expect(host.selectedId).toBe("view0/context");
     host.select("view1/context"); expect(mounts).toBe(2);
     count = 1; await host.refresh(); host.select();
-    expect(host.selectedId).toBe("view0/context"); expect(tabs().hidden).toBe(true);
+    expect(host.selectedId).toBe("view0/context"); expect(tabs().hidden).toBe(false);
     count = 0; await host.refresh(); host.select();
     expect(host.selectedId).toBeNull(); expect(tabs()).toBeUndefined(); // No empty selector/rail.
     count = 1; failMount = true; await host.refresh(); host.select();
     expect(host.selectedId).toBeNull(); expect(tabs().hidden).toBe(false);
     expect(host.diagnostic).toContain("broken view");
     failMount = false; host.select("view0/context");
-    expect(tabs().hidden).toBe(true);
+    expect(tabs().hidden).toBe(false);
     host.dispose();
   });
 

@@ -747,7 +747,7 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect(border).toBeHidden();
   expect(await terminal.boundingBox()).toEqual(collapsedTerminal);
   await page.getByRole("button", { name: "Pin Widgets", exact: true }).click();
-  await expect(expand).toBeHidden();
+  await expect(expand).toBeVisible();
   await expect(border).toBeVisible();
   await page.reload();
   await page.locator(".card", { hasText: name }).first().click();

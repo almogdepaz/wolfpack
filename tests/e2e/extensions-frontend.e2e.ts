@@ -361,7 +361,7 @@ for (const area of ["left", "right", "bottom"] as const) test(`collapsed ${area}
   const peekMetrics = { terminal: await terminal.boundingBox(), resizeFrames: resizes.length - count };
   expect(peekMetrics.terminal).toEqual(box); expect(peekMetrics.resizeFrames).toBe(0); expect(sockets).toBe(attached);
   expect(await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"))).toBe(saved);
-  await rail.click(); await expect(note).toHaveValue("drawer retained edit");
+  await rail.press("Enter"); await expect(note).toHaveValue("drawer retained edit");
   expect(await page.evaluate(() => { const saved = (window as any).__drawerNodes; return [saved.note === document.querySelector("[data-context-view='gamma/shared'] textarea"), saved.canvas === document.querySelector("#desktop-terminal-container canvas")]; })).toEqual([true, true]);
   await page.screenshot({ path: testInfo.outputPath(`${area}-widget-overlay.png`) });
   await page.getByRole("button", { name: "Context full view", exact: true }).click();
@@ -392,7 +392,7 @@ test("collapsed rails preview the hovered widget and dismiss on scope and breakp
   await page.getByRole("tab", { name: "Beta", exact: true }).hover();
   await expect(page.locator("[data-context-view='beta/shared']")).toBeVisible();
   await expect(page.locator(".widget-panel[data-peek=true]")).toHaveCount(1);
-  await page.getByRole("tab", { name: "Alpha", exact: true }).click();
+  await page.getByRole("tab", { name: "Alpha", exact: true }).hover();
   await expect(page.locator("[data-context-view='alpha/shared']")).toBeVisible();
   await page.getByRole("button", { name: "Collapse Alpha", exact: true }).press("Escape");
   await expect(page.getByRole("tab", { name: "Alpha", exact: true })).toBeFocused();
@@ -418,7 +418,7 @@ test("collapsed rails preview the hovered widget and dismiss on scope and breakp
   await page.clock.runFor(400); await expect(page.locator("[data-context-view='alpha/shared']")).toBeVisible();
   await page.mouse.up(); await expect(page.locator(".workspace-dock-targets")).toHaveCount(0);
   await expect(page.locator("[data-context-view='alpha/shared']").locator("..").locator("..")).toHaveAttribute("data-widget-area", "bottom");
-  await expect(page.getByRole("button", { name: "Pin Alpha", exact: true })).toBeHidden();
+  await expect(page.getByRole("button", { name: "Unpin Alpha", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.getByRole("button", { name: "Collapse Alpha", exact: true }).click();
   const afterMove = await page.evaluate(() => localStorage.getItem("wolfpack-widget-layout:v1"));
   await page.getByRole("tab", { name: "Beta", exact: true }).hover();
@@ -547,7 +547,7 @@ test("independent widget areas retain live terminals and drafts while mobile lea
   await page.keyboard.press("Home");
   await expect(right.getByRole("tab").first()).toBeFocused();
   await expect(right.getByRole("tab").first()).toHaveAttribute("aria-selected", "true");
-  await right.getByRole("tab", { name: "Alpha", exact: true }).click();
+  await right.getByRole("tab", { name: "Alpha", exact: true }).press("Enter");
   await page.reload(); await openSession(page, SESSION_A);
   await expect(right.locator("[data-context-view='alpha/shared']")).toBeVisible();
   await expect(bottom.locator("textarea")).toHaveValue("independent retained draft");
@@ -907,7 +907,7 @@ test("mobile widget collapse recovers locally without closing views or rewriting
   expect(await preferences()).toEqual(saved);
 });
 
-test("a sole Delta opens directly without its redundant tab and multiple views retain their tabs", async ({ page }, testInfo) => {
+test("a sole Delta keeps its desktop collapse tab while mobile opens directly and multiple views retain tabs", async ({ page }, testInfo) => {
   test.skip(!["desktop", "iphone-14"].includes(testInfo.project.name), "desktop and responsive touch single-view contract");
   const catalog = JSON.parse(runCli(["extensions", "list", "--json"]));
   const others = catalog.installations.filter((item: { extensionId: string; enabled: boolean }) => item.extensionId !== "delta" && item.enabled).map((item: { extensionId: string }) => item.extensionId);
@@ -937,8 +937,13 @@ test("a sole Delta opens directly without its redundant tab and multiple views r
     await expect(layouts).toHaveValue("equal-grid"); // existing missing-recipe fallback, not a legacy alias
     await selectTerminalLayoutFromUi(page, "lead-stack");
     await showWidgets(page);
-    await expect(page.locator("[data-extension-tabs]")).toBeHidden();
-    await expect(page.getByRole("tab", { name: "Delta", exact: true })).toHaveCount(0);
+    if (testInfo.project.name === "desktop") {
+      await expect(page.getByRole("tab", { name: "Delta", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Unpin Delta", exact: true })).toHaveAttribute("aria-pressed", "true");
+    } else {
+      await expect(page.locator("[data-extension-tabs]")).toBeHidden();
+      await expect(page.getByRole("tab", { name: "Delta", exact: true })).toHaveCount(0);
+    }
     await page.screenshot({ path: testInfo.outputPath("single-context-no-tab.png") });
     runCli(["extensions", "enable", "gamma"]);
     await refreshThroughSessionSwitch(page, testInfo);
@@ -948,7 +953,8 @@ test("a sole Delta opens directly without its redundant tab and multiple views r
     await refreshThroughSessionSwitch(page, testInfo);
     await expect(view.locator("h2")).toHaveText(current.document.goal, { timeout: 5_000 });
     await expect(layouts).toHaveValue("lead-stack");
-    await expect(page.locator("[data-extension-tabs]")).toBeHidden();
+    if (testInfo.project.name === "desktop") await expect(page.getByRole("tab", { name: "Delta", exact: true })).toBeVisible();
+    else await expect(page.locator("[data-extension-tabs]")).toBeHidden();
   } finally {
     for (const id of others) runCli(["extensions", "enable", id]);
   }

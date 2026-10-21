@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { startTestServer, type TestServer } from './helpers';
 import { mockLayoutWidget } from './widget-fixture';
@@ -31,8 +32,8 @@ async function labelGeometry(panel: Locator) {
   }));
 }
 
-async function openWidgetFixture(page: Page, titles: readonly string[]) {
-  await mockLayoutWidget(page, { 'test-project': '11111111-1111-4111-8111-111111111111' }, titles);
+async function openWidgetFixture(page: Page, titles: readonly string[], failingTitles: readonly string[] = []) {
+  await mockLayoutWidget(page, { 'test-project': '11111111-1111-4111-8111-111111111111' }, titles, failingTitles);
   await page.routeWebSocket(/\/ws\/pty/, socket => socket.onMessage(message => {
     if (typeof message !== 'string') return;
     const frame = JSON.parse(message);
@@ -67,14 +68,15 @@ for (const area of ['left', 'right', 'bottom'] as const) test(`${area} widget ra
   await page.getByRole('tab', { name: 'Widgets', exact: true }).click();
   if (area === 'left') await dockPanel(page, 'Sessions', 'right');
   if (area !== 'right') for (const title of titles) await dockPanel(page, title, area);
-  await page.getByRole('tab', { name: 'Widgets', exact: true }).click();
+  await page.getByRole('tab', { name: 'Widgets', exact: true }).press('Enter');
   const panel = () => page.locator(`.widget-panel[data-widget-area="${area}"][data-collapsed="false"]:visible`);
   const rail = () => page.locator(`.widget-panel[data-widget-area="${area}"][data-collapsed="true"]:visible`);
   const neutralPointer = async () => { const box = (await terminal.boundingBox())!; await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); };
   const capture = async (state: string, target: Locator) => {
     await page.screenshot({ path: info.outputPath(`${area}-${state}.png`), animations: 'disabled', caret: 'hide' });
-    const geometry = await tabGeometry(target);
-    await info.attach(`${area}-${state}-geometry`, { body: JSON.stringify(geometry), contentType: 'application/json' });
+    const overlay = page.locator('.widget-panel[data-peek=true]');
+    const geometry = { ...await tabGeometry(target), main: await terminal.boundingBox(), overlay: await overlay.count() ? await overlay.boundingBox() : null };
+    await writeFile(info.outputPath(`${area}-${state}-geometry.json`), JSON.stringify(geometry, null, 2));
     return geometry;
   };
   await neutralPointer();
@@ -83,7 +85,7 @@ for (const area of ['left', 'right', 'bottom'] as const) test(`${area} widget ra
   expect(expanded.bar.padding).toBe('3px');
   expect(expanded.bar.radius).toBe('10px');
   for (const title of titles) {
-    await page.getByRole('tab', { name: title, exact: true }).click();
+    await page.getByRole('tab', { name: title, exact: true }).press('Enter');
     await page.getByRole('button', { name: `Collapse ${title}`, exact: true }).click();
   }
   await neutralPointer();
@@ -140,10 +142,218 @@ for (const area of ['left', 'right', 'bottom'] as const) test(`${area} widget ra
   await page.getByRole('button', { name: 'Pin Widgets', exact: true }).click();
   await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
   await neutralPointer();
-  const pinned = await tabGeometry(panel());
+  const pinned = await capture('pinned', panel());
   expect(pinned.bar).toEqual(expanded.bar);
   expect(pinned.tabs).toEqual(expanded.tabs);
-  await info.attach(`${area}-state-proof`, { body: JSON.stringify({ expanded, collapsed, peek, pinned }), contentType: 'application/json' });
+  await writeFile(info.outputPath(`${area}-state-proof.json`), JSON.stringify({ expanded, collapsed, peek, pinned, collapsedTerminal: terminalBox, pinnedTerminal: await terminal.boundingBox() }, null, 2));
+});
+
+for (const count of [1, 2]) for (const state of ['pinned', 'peek', 'collapsed'] as const) test(`${state} tab click toggles pin or collapse without a second action (${count} widgets)`, async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop tab click regression');
+  await openWidgetFixture(page, count === 1 ? ['Widgets'] : ['Widgets', 'Build output']);
+  const tab = page.getByRole('tab', { name: 'Widgets', exact: true });
+  if (count === 2) await tab.press('Enter');
+  if (state !== 'pinned') await page.getByRole('button', { name: 'Collapse Widgets', exact: true }).click();
+  await page.mouse.move(700, 400);
+  if (state === 'peek') {
+    await tab.hover();
+    await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(1);
+  }
+  await tab.click();
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('wolfpack-widget-layout:v1')!));
+  expect(saved.widgets?.['test-widgets/view']).toBe(state === 'pinned' ? 'collapsed' : undefined);
+  await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
+});
+
+test('mixed widget and native areas keep temporary state honest and failed mounts transactional', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop mixed docks');
+  await page.addInitScript(() => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view-2': 'collapsed' } })));
+  await openWidgetFixture(page, ['Widgets', 'Build output', 'Broken'], ['Broken']);
+  const tab = page.getByRole('tab', { name: 'Widgets', exact: true });
+  const build = page.getByRole('tab', { name: 'Build output', exact: true });
+  const content = page.locator('[data-context-view="test-widgets/view"]');
+  await tab.click();
+  await page.getByRole('button', { name: 'Collapse Widgets', exact: true }).click();
+  await expect(build).toHaveAttribute('aria-selected', 'true');
+  const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  await tab.press('Enter');
+  await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Pin Widgets', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
+  await page.getByRole('button', { name: 'Pin Widgets', exact: true }).press('Escape');
+  await expect(build).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: 'Broken', exact: true }).click();
+  await expect(build).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('[data-context-view="test-widgets/view-1"]')).toBeVisible();
+  await expect(page.getByRole('tab', { name: 'Broken', exact: true })).toBeFocused();
+  await expect(page.getByRole('status').filter({ hasText: 'Fixture mount failed' })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
+  await tab.click();
+  await page.getByRole('button', { name: 'Unpin Widgets', exact: true }).click();
+  await expect(content).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Pin Widgets', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await page.getByRole('button', { name: 'Pin Widgets', exact: true }).click();
+  await dockPanel(page, 'Widgets', 'main');
+  await page.getByRole('button', { name: 'Unpin Widgets', exact: true }).click();
+  await expect(content).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Pin Widgets', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await page.getByRole('button', { name: 'Pin Widgets', exact: true }).press('Escape');
+  await expect(page.locator('#workspace-terminal-region')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^(Unpin|Pin) Terminal grid$/ })).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Widgets', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Unpin Widgets', exact: true })).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('hover intent waits 150ms and cancels when the pointer leaves', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop hover intent');
+  await openWidgetFixture(page, ['Widgets']);
+  await page.getByRole('button', { name: 'Collapse Widgets', exact: true }).click();
+  await page.mouse.move(700, 400);
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.getByRole('tab', { name: 'Widgets', exact: true }).hover();
+  await page.clock.runFor(149);
+  await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
+  await page.mouse.move(700, 400);
+  await page.clock.runFor(500);
+  await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
+});
+
+test('pin toggle and tab clicks preserve persistent and temporary widget states', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop pin and rail behavior');
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openWidgetFixture(page, ['Widgets']);
+  const tab = page.getByRole('tab', { name: 'Widgets', exact: true });
+  const peek = page.locator('.widget-panel[data-peek=true]');
+  const terminal = page.locator('#desktop-terminal-container');
+  const pin = page.getByRole('button', { name: 'Pin Widgets', exact: true });
+  const unpin = page.getByRole('button', { name: 'Unpin Widgets', exact: true });
+  await expect(unpin).toBeVisible();
+  await expect(unpin).toHaveAttribute('aria-pressed', 'true');
+  await expect(unpin.locator('svg')).toHaveAttribute('fill', 'currentColor');
+  await page.screenshot({ path: info.outputPath('desktop-AFTER-pinned.png'), caret: 'hide' });
+  await unpin.click();
+  await expect(peek).toHaveCount(1);
+  await expect(pin).toBeFocused();
+  await expect(pin).toHaveAttribute('aria-pressed', 'false');
+  await expect(pin.locator('svg')).toHaveAttribute('fill', 'none');
+  await expect(peek.getByRole('status')).toHaveText(/click.*pin/i);
+  await expect(peek).not.toHaveCSS('box-shadow', 'none');
+  const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  expect(JSON.parse(saved!).widgets['test-widgets/view']).toBe('collapsed');
+  await page.mouse.move(700, 400);
+  await pin.press('Escape');
+  await expect(peek).toHaveCount(0);
+  await expect(tab).toBeFocused();
+  const collapsedBox = await terminal.boundingBox();
+  await page.screenshot({ path: info.outputPath('desktop-collapsed.png'), caret: 'hide' });
+  await page.clock.install();
+  await page.clock.pauseAt(new Date());
+  await tab.hover();
+  await page.clock.runFor(149);
+  await expect(peek).toHaveCount(0);
+  await page.clock.runFor(1);
+  await expect(peek).toHaveCount(1);
+  expect(await terminal.boundingBox()).toEqual(collapsedBox);
+  expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
+  await page.screenshot({ path: info.outputPath('desktop-peek.png'), caret: 'hide' });
+  const geometry = await peek.evaluate(el => {
+    const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height, shadow: getComputedStyle(el).boxShadow };
+  });
+  // The rail stays stationary while the overlay is visible. Clicking it pins,
+  // rather than merely reselecting the same temporary view.
+  await tab.click();
+  await expect(peek).toHaveCount(0);
+  await expect(unpin).toBeVisible();
+  await page.mouse.move(700, 400);
+  await page.clock.runFor(500);
+  await expect(unpin).toBeVisible();
+  await page.screenshot({ path: info.outputPath('desktop-pinned.png'), caret: 'hide' });
+  await page.getByRole('button', { name: 'Collapse Widgets', exact: true }).click();
+  // Click directly before hover intent fires: touch/no-hover and quick clicks
+  // must not require a separate Pin action.
+  await tab.click();
+  await expect(unpin).toBeVisible();
+  await page.getByRole('button', { name: 'Collapse Widgets', exact: true }).click();
+  await tab.hover();
+  await page.clock.runFor(100);
+  await page.mouse.move(700, 400);
+  await page.clock.runFor(500);
+  await expect(peek).toHaveCount(0);
+  await tab.press('Enter');
+  await expect(pin).toBeVisible(); // keyboard activation retains temporary peek
+  await pin.press('Enter');
+  await expect(unpin).toBeVisible();
+  await page.getByRole('button', { name: 'Context full view', exact: true }).click();
+  await unpin.click();
+  await page.clock.runFor(500);
+  await expect(peek).toHaveCount(1);
+  await expect(pin).toHaveAttribute('aria-pressed', 'false');
+  await pin.click();
+  await writeFile(info.outputPath('desktop-state-geometry.json'), JSON.stringify({ collapsedTerminal: collapsedBox, peek: geometry, pinnedTerminal: await terminal.boundingBox() }, null, 2));
+});
+
+test('hover timers cancel across leave, pin, navigation, scope disposal and breakpoint changes', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop hover lifecycle');
+  await openWidgetFixture(page, ['Widgets']);
+  const tab = page.getByRole('tab', { name: 'Widgets', exact: true });
+  const peek = page.locator('.widget-panel[data-peek=true]');
+  const terminal = page.locator('#desktop-terminal-container');
+  await page.getByRole('button', { name: 'Collapse Widgets', exact: true }).click();
+  await page.mouse.move(700, 400);
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await tab.hover(); await page.clock.runFor(150); await expect(peek).toHaveCount(1);
+  await terminal.locator('canvas').click();
+  await page.clock.runFor(299); await expect(peek).toHaveCount(1);
+  await page.clock.runFor(1); await expect(peek).toHaveCount(0);
+  await tab.hover(); await page.clock.runFor(100);
+  await page.locator('#sidebar-settings-btn').click();
+  await page.clock.runFor(500); await expect(peek).toHaveCount(0);
+  await page.locator('#settings-back-btn').click();
+  await page.clock.runFor(1000);
+  await expect(terminal).toHaveAttribute('data-terminal-load-state', 'live');
+  await expect(peek).toHaveCount(0);
+  await tab.hover(); await page.clock.runFor(100);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.clock.runFor(500); await expect(peek).toHaveCount(0);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await expect(peek).toHaveCount(0);
+  await page.mouse.move(700, 400); await tab.hover(); await page.clock.runFor(100);
+  await page.getByRole('button', { name: 'Open another-project', exact: true }).filter({ visible: true }).first().click();
+  await page.clock.runFor(500); await expect(peek).toHaveCount(0);
+  await page.getByRole('button', { name: 'Open test-project', exact: true }).filter({ visible: true }).first().click();
+  await expect(tab).toBeVisible(); await expect(peek).toHaveCount(0);
+  await tab.click(); await page.clock.runFor(500);
+  await expect(page.getByRole('button', { name: 'Unpin Widgets', exact: true })).toBeVisible();
+});
+
+test('touch contexts pin collapsed desktop tabs and retain the mobile Widgets screen', async ({ browser }, info) => {
+  test.skip(info.project.name !== 'desktop', 'explicit touch-enabled contexts, not mouse emulation');
+  for (const desktop of [true, false]) {
+    const context = await browser.newContext({ hasTouch: true, isMobile: !desktop, viewport: desktop ? { width: 1440, height: 900 } : { width: 390, height: 844 } });
+    try {
+      const page = await context.newPage();
+      await openWidgetFixture(page, ['Widgets']);
+      expect(await page.evaluate(() => matchMedia('(hover: none)').matches)).toBe(true);
+      if (desktop) {
+        await page.getByRole('button', { name: 'Collapse Widgets', exact: true }).tap();
+        await page.getByRole('tab', { name: 'Widgets', exact: true }).tap();
+        await expect(page.getByRole('button', { name: 'Unpin Widgets', exact: true })).toBeVisible();
+        await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
+        await page.getByRole('tab', { name: 'Widgets', exact: true }).tap();
+        await expect(page.getByRole('button', { name: 'Unpin Widgets', exact: true })).toBeHidden();
+        await page.getByRole('tab', { name: 'Widgets', exact: true }).tap();
+        await expect(page.getByRole('button', { name: 'Unpin Widgets', exact: true })).toBeVisible();
+        expect(await page.evaluate(() => JSON.parse(localStorage.getItem('wolfpack-widget-layout:v1')!).widgets?.['test-widgets/view'])).toBeUndefined();
+      } else {
+        await page.locator('#workspace-restore').tap();
+        await expect(page.locator('#workspace-shell')).toHaveAttribute('data-full-view', 'context');
+        await expect(page.getByRole('button', { name: /^(Unpin|Pin) Widgets$/ })).toBeHidden();
+        await page.getByRole('button', { name: 'Back to terminal', exact: true }).tap();
+        await expect(page.locator('#desktop-terminal-container')).toBeVisible();
+      }
+      await page.screenshot({ path: info.outputPath(desktop ? 'desktop-touch-pinned.png' : 'mobile-touch-terminal.png'), caret: 'hide' });
+    } finally { await context.close(); }
+  }
 });
 
 test('short collapsed rail scrolls later widgets into pointer reach', async ({ page }, info) => {
@@ -152,7 +362,7 @@ test('short collapsed rail scrolls later widgets into pointer reach', async ({ p
   const manyTitles = Array.from({ length: 20 }, (_, index) => `Widget ${String(index + 1).padStart(2, '0')}`);
   await openWidgetFixture(page, manyTitles);
   for (const title of manyTitles) {
-    await page.getByRole('tab', { name: title, exact: true }).click();
+    await page.getByRole('tab', { name: title, exact: true }).press('Enter');
     await page.getByRole('button', { name: `Collapse ${title}`, exact: true }).click();
   }
   const rail = page.locator('.widget-panel[data-widget-area="right"][data-collapsed="true"]:visible');
@@ -199,9 +409,7 @@ test('short collapsed rail scrolls later widgets into pointer reach', async ({ p
   expect(scrollTop).toBeGreaterThan(0);
   const target = (await last.boundingBox())!;
   await page.screenshot({ path: info.outputPath('short-many-scrolled.png'), caret: 'hide' });
-  await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
-  await expect(page.getByRole('button', { name: 'Pin Widget 20', exact: true })).toBeVisible();
-  await expect(page.locator('[data-context-view="test-widgets/view-19"]')).toBeVisible();
+  await last.hover();
   await expect(last).toHaveAttribute('aria-selected', 'true');
   await expect(last).toHaveCSS('color', 'rgb(69, 237, 126)');
   const selectedLabel = (await labelGeometry(rail)).find(label => label.title === 'Widget 20')!;
@@ -213,6 +421,9 @@ test('short collapsed rail scrolls later widgets into pointer reach', async ({ p
   expect(selectedLabel.textBounds.bottom).toBeLessThanOrEqual(visibleRail.y + visibleRail.height);
   await info.attach('short-rail-pointer-proof', { body: JSON.stringify({ scrollTop, before, selectedLabel, after: await tabGeometry(rail) }), contentType: 'application/json' });
   await page.screenshot({ path: info.outputPath('short-many-peek.png'), caret: 'hide' });
+  await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
+  await expect(page.getByRole('button', { name: 'Unpin Widget 20', exact: true })).toBeVisible();
+  await expect(page.locator('[data-context-view="test-widgets/view-19"]')).toBeVisible();
 });
 
 for (const area of ['left', 'right', 'bottom'] as const) test(`${area} rail truncates an oversized label within its scroll viewport`, async ({ page }, info) => {
@@ -225,7 +436,7 @@ for (const area of ['left', 'right', 'bottom'] as const) test(`${area} rail trun
   if (area === 'left') await dockPanel(page, 'Sessions', 'right');
   if (area !== 'right') for (const title of longTitles) await dockPanel(page, title, area);
   for (const title of longTitles) {
-    await page.getByRole('tab', { name: title, exact: true }).click();
+    await page.getByRole('tab', { name: title, exact: true }).press('Enter');
     await page.getByRole('button', { name: `Collapse ${title}`, exact: true }).click();
   }
   const rail = page.locator(`.widget-panel[data-widget-area="${area}"][data-collapsed="true"]:visible`);
@@ -251,9 +462,6 @@ for (const area of ['left', 'right', 'bottom'] as const) test(`${area} rail trun
   await expect(last).toHaveCSS('text-overflow', 'ellipsis');
   await info.attach(`${area}-long-label-proof`, { body: JSON.stringify({ label, geometry: await tabGeometry(rail) }), contentType: 'application/json' });
   const target = (await last.boundingBox())!;
-  await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
-  await expect(page.getByRole('button', { name: `Pin ${longTitle}`, exact: true })).toBeVisible();
-  await expect(page.locator('[data-context-view="test-widgets/view-2"]')).toBeVisible();
   const selectedTarget = (await last.boundingBox())!;
   const visibleRail = (await rail.boundingBox())!;
   expect(selectedTarget.x).toBeGreaterThanOrEqual(visibleRail.x);
@@ -261,4 +469,7 @@ for (const area of ['left', 'right', 'bottom'] as const) test(`${area} rail trun
   expect(selectedTarget.y).toBeGreaterThanOrEqual(visibleRail.y);
   expect(selectedTarget.y + selectedTarget.height).toBeLessThanOrEqual(visibleRail.y + visibleRail.height);
   await page.screenshot({ path: info.outputPath(`${area}-long-label-peek.png`), caret: 'hide' });
+  await page.mouse.click(target.x + target.width / 2, target.y + target.height / 2);
+  await expect(page.getByRole('button', { name: `Unpin ${longTitle}`, exact: true })).toBeVisible();
+  await expect(page.locator('[data-context-view="test-widgets/view-2"]')).toBeVisible();
 });
