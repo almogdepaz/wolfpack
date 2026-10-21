@@ -156,8 +156,10 @@ export class WidgetPanels {
     // Restore the displaced dock before host defaults can reconcile over the new peek.
     if (this.peekArea && this.peekArea !== area) this.hidePeek();
     this.clearPeek();
+    // Reconcile focus while the explicit target is still pinned, so no peer becomes eligible.
+    if (unpin) this.options.onFocus?.(null);
     this.options.layout.setWidgetState(id, unpin ? "collapsed" : "open");
-    if (unpin) { this.options.onFocus?.(null); this.selectPanel(id, false); }
+    if (unpin) this.selectPanel(id, false);
     else { this.options.layout.select(id); this.render(); }
     this.chrome.get(area)?.pin.focus({ preventScroll: true });
   }
