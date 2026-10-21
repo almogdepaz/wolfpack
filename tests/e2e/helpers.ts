@@ -267,9 +267,12 @@ export async function collapseInitialSessionMenu(page: Page): Promise<void> {
 
 /** Open settings through whichever real settings control is accessible. */
 export async function openSettingsFromUi(page: Page): Promise<void> {
-  const mobile = page.locator("#mobile-settings");
-  if (await mobile.isVisible()) await mobile.click();
-  else await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const settings = page.getByRole("link", { name: "Settings", exact: true })
+    .or(page.getByRole("button", { name: "Settings", exact: true }))
+    .filter({ visible: true }).first();
+  // Mobile Back finishes its slide before revealing the Settings navigation link.
+  await expect(settings).toBeVisible();
+  await settings.click();
 }
 
 /** Layout uses ordinary Settings navigation, including its viewer suspension/return. */
