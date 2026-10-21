@@ -9,6 +9,12 @@ test.beforeAll(async () => { server = await startTestServer(); });
 test.afterAll(async () => { await server?.close(); });
 const titles = ['Widgets', 'Build output', 'Verification details'];
 
+async function pauseWidgetClock(page: Page) {
+  // A later fixed pause cannot fall behind installation under runner load.
+  await page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
+  await page.clock.pauseAt(new Date('2026-01-01T00:01:00Z'));
+}
+
 async function labelGeometry(panel: Locator) {
   return panel.locator('[role=tab]').evaluateAll(tabs => tabs.map(tab => {
     const style = getComputedStyle(tab);
@@ -306,7 +312,7 @@ for (const [priorPeek, fullView] of [[false, false], [true, false], [false, true
   await expect(right).toBeVisible(); await expect(target).toBeVisible();
   const rightNode = await right.elementHandle(), targetNode = await target.elementHandle();
   const saved = JSON.parse((await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1')))!);
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   if (priorPeek) {
     await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
     await expect(page.locator('[data-context-view="test-widgets/view"]')).toBeVisible();
@@ -348,7 +354,7 @@ for (const [priorPeek, fullView] of [[false, false], [true, false], [false, true
   const peerAttempts = () => page.evaluate(() => (window as unknown as { __layoutWidgetMountAttempts?: Record<string, number> }).__layoutWidgetMountAttempts?.['Never selected peer'] ?? 0);
   const before = await peerAttempts(); expect(before).toBe(0);
   const saved = JSON.parse((await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1')))!);
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   if (priorPeek) {
     await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
     await expect(page.locator('[data-context-view="test-widgets/view"]')).toBeVisible();
@@ -389,7 +395,7 @@ for (const [area, mode] of [['bottom', 'open'], ['bottom', 'collapsed'], ['botto
   const bottomNode = await bottom.elementHandle();
   const selectedNode = await selected.elementHandle();
   const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
   await expect(preview).toBeVisible();
   const previewNode = await preview.elementHandle();
@@ -449,7 +455,7 @@ test('independent leave completes before a later other-area hover intent without
   const other = page.locator('[data-context-view="test-widgets/view-3"]');
   await expect(selected).toBeVisible();
   const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
   await expect(preview).toBeVisible();
   await page.mouse.move(700, 200); // leave starts now
@@ -471,7 +477,7 @@ test('breakpoint changes cancel concurrent intent and leave work before returnin
   await page.addInitScript(() => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view': 'collapsed', 'test-widgets/view-3': 'collapsed' }, placements: { 'test-widgets/view-3': 'bottom', 'test-widgets/view-4': 'bottom' }, selected: { right: 'test-widgets/view-2', bottom: 'test-widgets/view-4' } })));
   await openWidgetFixture(page, ['Preview', 'First pinned', 'Selected pinned', 'Other preview', 'Bottom healthy']);
   const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
   await expect(page.locator('[data-context-view="test-widgets/view"]')).toBeVisible();
   await page.getByRole('tab', { name: 'Other preview', exact: true }).hover();
@@ -498,7 +504,7 @@ for (const dismissal of ['Escape', 'leave'] as const) test(`temporary preview re
   const retained = await content.elementHandle();
   const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
   await page.mouse.move(700, 400);
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   await page.getByRole('tab', { name: 'Preview', exact: true }).hover();
   await page.clock.runFor(150);
   await expect(page.getByRole('button', { name: 'Pin Preview', exact: true })).toHaveAttribute('aria-pressed', 'false');
@@ -543,7 +549,7 @@ for (const action of ['activate', 'pin', 'unpin'] as const) test(`rapid other-ar
   await expect(selected).toHaveAttribute('aria-selected', 'true');
   const retained = await content.elementHandle();
   const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
   await expect(page.getByRole('button', { name: 'Pin Preview', exact: true })).toBeVisible();
   if (action === 'activate') {
@@ -609,7 +615,7 @@ test('hover intent waits 150ms and cancels when the pointer leaves', async ({ pa
   await openWidgetFixture(page, ['Widgets']);
   await page.getByRole('button', { name: 'Collapse Widgets', exact: true }).click();
   await page.mouse.move(700, 400);
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   await page.getByRole('tab', { name: 'Widgets', exact: true }).hover();
   await page.clock.runFor(149);
   await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
@@ -646,8 +652,7 @@ test('pin toggle and tab clicks preserve persistent and temporary widget states'
   await expect(tab).toBeFocused();
   const collapsedBox = await terminal.boundingBox();
   await page.screenshot({ path: info.outputPath('desktop-collapsed.png'), caret: 'hide' });
-  await page.clock.install();
-  await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   await tab.hover();
   await page.clock.runFor(149);
   await expect(peek).toHaveCount(0);
@@ -700,7 +705,7 @@ test('hover timers cancel across leave, pin, navigation, scope disposal and brea
   const terminal = page.locator('#desktop-terminal-container');
   await page.getByRole('button', { name: 'Collapse Widgets', exact: true }).click();
   await page.mouse.move(700, 400);
-  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await pauseWidgetClock(page);
   await tab.hover(); await page.clock.runFor(150); await expect(peek).toHaveCount(1);
   await terminal.locator('canvas').click();
   await page.clock.runFor(299); await expect(peek).toHaveCount(1);
