@@ -41,7 +41,6 @@ describe("app shell accessibility contracts", () => {
 
   test("makes drawers and dialogs available to assistive tech", () => {
     expect(html).toContain('id="session-drawer" aria-label="Switch session" aria-hidden="true" inert');
-    expect(html).toContain('id="git-status-overlay" role="dialog" aria-modal="true"');
     expect(html).toContain('id="app-dialog" class="app-dialog" aria-labelledby="app-dialog-title" aria-describedby="app-dialog-message"');
   });
 });

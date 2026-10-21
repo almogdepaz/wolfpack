@@ -76,7 +76,6 @@
     <script src="/sidebar-bootstrap.js?v=__WOLFPACK_ASSET_VERSION__"></script>
     <div id="sidebar-hover-edge" aria-hidden="true"></div>
     <div id="drawer-backdrop" aria-hidden="true"></div>
-    <div id="git-status-overlay" role="dialog" aria-modal="true" aria-label="Session status" aria-hidden="true" tabindex="-1"></div>
     <nav id="session-drawer" aria-label="Switch session" aria-hidden="true" inert>
       <div id="drawer-list" role="list"></div>
     </nav>
@@ -472,11 +471,8 @@
       <div id="terminal-footer"><span id="terminal-footer-session"></span><span id="terminal-footer-connection"></span></div>
       <div id="cmd-palette"></div>
       <div id="kb-accessory">
-        <button class="kb-key kb-answer" type="button" data-key="y" aria-label="Type y">y</button>
-        <button class="kb-key kb-answer" type="button" data-key="n" aria-label="Type n">n</button>
         <button class="kb-key kb-enter" type="button" data-key="Enter" aria-label="Enter">&#9166;</button>
         <button class="kb-key" type="button" data-key="Escape" aria-label="Escape">Esc</button>
-        <button class="kb-key" type="button" data-key="Tab" aria-label="Tab">tab</button>
         <details class="kb-control"><summary class="kb-key">ctrl</summary><div class="kb-control-menu" aria-label="Control keys"><button type="button" class="kb-key" data-key="C-a">^A</button><button type="button" class="kb-key" data-key="C-d">^D</button><button type="button" class="kb-key" data-key="C-l">^L</button><button type="button" class="kb-key" data-key="C-r">^R</button><button type="button" class="kb-key" data-key="C-z">^Z</button></div></details>
         <button class="kb-key" type="button" data-key="BTab" aria-label="Shift Tab">⇧⇥</button>
         <button class="kb-key" type="button" data-key="C-c" aria-label="Control C">^C</button>
@@ -484,9 +480,6 @@
         <button class="kb-key" type="button" data-key="Down" aria-label="Arrow down">&#9660;</button>
         <button class="kb-key" type="button" data-key="Left" aria-label="Arrow left">&#9664;</button>
         <button class="kb-key" type="button" data-key="Right" aria-label="Arrow right">&#9654;</button>
-        <button class="kb-key kb-git" type="button" aria-label="Show git status">git</button>
-        <button class="kb-key kb-paste" type="button" id="kb-paste" aria-label="Paste into terminal">paste</button>
-        <button class="kb-key kb-copy" type="button" aria-label="Copy session">copy</button>
         <button class="kb-key kb-open" id="kb-open-btn" type="button" aria-label="Show keyboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2.5"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg></button>
       </div>
         </main>

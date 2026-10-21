@@ -53,7 +53,7 @@ test("H2 dashboard query survives runtime refresh", async ({ page }, info) => {
   await expect(page.locator('#session-list .needs-you .card:visible')).toHaveCount(1);
 });
 
-test("M1 control menu is hittable and control/paste preserve terminal focus", async ({ page }, info) => {
+test("M1 control menu is hittable and preserves terminal focus", async ({ page }, info) => {
   test.skip(info.project.name === "desktop");
   const bytes: number[][] = [];
   await page.routeWebSocket(/\/ws\/pty/, socket => {
@@ -64,14 +64,6 @@ test("M1 control menu is hittable and control/paste preserve terminal focus", as
       socket.send(JSON.stringify({ type: "prefill_done" }));
       socket.send(JSON.stringify({ type: "pty_ready" }));
     });
-  });
-  await page.addInitScript(() => {
-    const reads: Array<{ type?: string; trusted?: boolean }> = [];
-    Object.assign(window, { pasteReads: reads });
-    Object.defineProperty(navigator, "clipboard", { value: { readText: async () => {
-      reads.push({ type: window.event?.type, trusted: window.event?.isTrusted });
-      return "paste-fixture";
-    } } });
   });
   await page.goto(server.baseUrl);
   await page.getByRole('button', { name: 'Open test-project', exact: true }).click();
@@ -86,16 +78,6 @@ test("M1 control menu is hittable and control/paste preserve terminal focus", as
   await key.tap();
   await expect.poll(() => bytes).toContainEqual([1]);
   await expect(input).toBeFocused();
-  await page.locator('#kb-paste').tap();
-  await expect(input).toBeFocused();
-  await expect.poll(() => bytes.flat().map(byte => String.fromCharCode(byte)).join('')).toContain('paste-fixture');
-  expect(await page.evaluate(() => (window as unknown as { pasteReads: unknown[] }).pasteReads)).toEqual([{ type: 'touchend', trusted: true }]);
-  await page.locator('#kb-paste').click();
-  await expect(input).toBeFocused();
-  expect(await page.evaluate(() => (window as unknown as { pasteReads: unknown[] }).pasteReads)).toEqual([
-    { type: 'touchend', trusted: true }, { type: 'click', trusted: true },
-  ]);
-  await expect.poll(() => bytes.flat().map(byte => String.fromCharCode(byte)).join('').match(/paste-fixture/g)?.length).toBe(2);
 });
 
 test("sidebar add-to-grid actions reveal on hover and focus while grid members stay visible", async ({ page }, info) => {

@@ -535,28 +535,6 @@ function moveQuickCmd(index: number, direction: 1 | -1): void {
   renderCmdPalette();
 }
 
-async function showGitStatus(): Promise<void> {
-  if (!state.currentSession) return;
-  haptic([30]);
-  const overlay = document.getElementById("git-status-overlay");
-  overlay.innerHTML = '<pre>loading...</pre>';
-  overlay.classList.add("visible");
-  overlay.setAttribute("aria-hidden", "false");
-  overlay.focus({ preventScroll: true });
-  try {
-    const data = await api<{ readonly status?: string }>("/git-status?session=" + encodeURIComponent(state.currentSession), {}, state.currentMachine);
-    overlay.innerHTML = `<div><pre>${esc(data.status || "(clean)")}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
-  } catch (e) {
-    overlay.innerHTML = `<div><pre class="error-pre">${esc(errorMessage(e))}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
-  }
-}
-
-function dismissGitStatus() {
-  const overlay = document.getElementById("git-status-overlay");
-  overlay.classList.remove("visible");
-  overlay.setAttribute("aria-hidden", "true");
-}
-
 async function fetchSessionText(session: string, machineIdentity: string): Promise<string> {
   const origin = resolveReadyMachineOrigin(machineIdentity);
   if (machineIdentity && !origin) throw new Error("selected peer is not ready");
@@ -565,23 +543,6 @@ async function fetchSessionText(session: string, machineIdentity: string): Promi
     : "/api/copy-text?session=" + encodeURIComponent(session));
   if (!response.ok) throw new Error("HTTP " + response.status);
   return response.text();
-}
-
-async function copySessionToClipboard(): Promise<void> {
-  if (!state.currentSession) return;
-  haptic([20]);
-  const overlay = document.getElementById("git-status-overlay");
-  overlay.innerHTML = '<pre>copying...</pre>';
-  overlay.classList.add("visible");
-  overlay.setAttribute("aria-hidden", "false");
-  overlay.focus({ preventScroll: true });
-  try {
-    const text = await fetchSessionText(state.currentSession, state.currentMachine || "");
-    await navigator.clipboard.writeText(text);
-    overlay.innerHTML = `<div><pre>copied ${text.length} chars</pre><div class="overlay-hint">tap to dismiss</div></div>`;
-  } catch (e) {
-    overlay.innerHTML = `<div><pre class="error-pre">copy failed: ${esc(errorMessage(e))}</pre><div class="overlay-hint">tap to dismiss</div></div>`;
-  }
 }
 
 async function showTerminalTranscript(): Promise<void> {
@@ -4779,25 +4740,6 @@ document.getElementById("reply-in-terminal")?.addEventListener("click", () => {
   if (isDesktop()) state.terminalController?.focus();
   else setMobileGhosttyKeyboardOpen(true);
 });
-async function pasteFromClipboard(): Promise<void> {
-  const target = state.terminalController;
-  try {
-    const text = await navigator.clipboard.readText();
-    // Clipboard permission may outlive navigation; never paste into a different session.
-    if (target && target === state.terminalController && state.currentView === "terminal" && !isGridActive() && !(state.activeDelegationRoot && !state.focusedDelegationSession)) target.term.paste(text);
-  } catch (error) {
-    await showAppDialog({ title: "Could not paste", message: errorMessage(error), confirmLabel: "Close", cancelLabel: null });
-  }
-}
-const pasteButton = document.getElementById("kb-paste");
-pasteButton?.addEventListener("mousedown", event => event.preventDefault());
-pasteButton?.addEventListener("touchstart", event => event.preventDefault(), { passive: false });
-pasteButton?.addEventListener("touchend", event => {
-  // Read directly in the trusted end gesture; cancel its compatibility click to avoid double paste.
-  event.preventDefault();
-  void pasteFromClipboard();
-}, { passive: false });
-pasteButton?.addEventListener("click", () => void pasteFromClipboard());
 document.getElementById("mobile-sessions")?.addEventListener("click", backToSessions);
 document.getElementById("mobile-settings")?.addEventListener("click", event => {
   event.preventDefault();
@@ -5903,7 +5845,6 @@ function bindHtmlEventListeners(): void {
 
   // Drawer / overlays
   on("drawer-backdrop", "click", () => closeDrawer());
-  on("git-status-overlay", "click", () => dismissGitStatus());
 
   // Expanded toolbar
   on("expanded-settings-btn", "click", () => showSettings());
@@ -5997,10 +5938,6 @@ function bindHtmlEventListeners(): void {
   on("terminal-transcript-close", "click", () => closeTerminalTranscript());
 
   // Keyboard accessory
-  const gitBtn = document.querySelector(".kb-key.kb-git");
-  if (gitBtn) gitBtn.addEventListener("click", () => showGitStatus());
-  const copyBtn = document.querySelector(".kb-key.kb-copy");
-  if (copyBtn) copyBtn.addEventListener("click", () => copySessionToClipboard());
 
 
 }
