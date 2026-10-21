@@ -98,7 +98,7 @@ test("M1 control menu is hittable and control/paste preserve terminal focus", as
   await expect.poll(() => bytes.flat().map(byte => String.fromCharCode(byte)).join('').match(/paste-fixture/g)?.length).toBe(2);
 });
 
-test("sidebar grid actions reveal on hover and keyboard focus without leaving the tab order", async ({ page }, info) => {
+test("sidebar add-to-grid actions reveal on hover and focus while grid members stay visible", async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop');
   await fixture(page);
   await page.goto(server.baseUrl);
@@ -120,7 +120,8 @@ test("sidebar grid actions reveal on hover and keyboard focus without leaving th
   await expect(page.locator('#desktop-grid-container')).toBeVisible();
   await expect(grid).toHaveClass(/in-grid/);
   await page.locator('#sidebar-search').focus();
-  await expect(grid).toHaveCSS('opacity', '0');
+  await expect(grid).toHaveCSS('opacity', '1');
+  await expect(grid).toHaveCSS('color', 'rgb(69, 237, 126)');
 });
 
 test("dashboard search retains a visible tint focus ring without an outline", async ({ page }, info) => {
