@@ -43,7 +43,7 @@ import { authenticatedFetchWithTimeout, browserAuthFetch, getBrowserAuthToken } 
 import { isRequestTimeout } from "./fetch-timeout";
 import { probeBackendStatus } from "./backend-probe";
 import { createReconnectBanner } from "./reconnect-banner";
-import { keyboardOcclusionHeight } from "./viewport-geometry";
+import { keyboardViewportLayout } from "./viewport-geometry";
 import type { OrderedResizeSettlement } from "./ordered-resize";
 import { RESIZE_SEND_DEBOUNCE_MS } from "./pty-socket-client";
 import {
@@ -3373,13 +3373,16 @@ function removeDesktopConflictOverlay() {
   if (el) el.remove();
 }
 
-function setMobileKeyboardInset(insetPx: number): void {
+function setMobileKeyboardInset(insetPx: number, topPx?: number): void {
   // Shrink the view rather than translating its canvas above the clipped
   // workspace. This also keeps the first row and accessory in the viewport.
   const view = document.getElementById("terminal-view");
   if (view) {
-    view.style.bottom = insetPx > 0 ? `${insetPx}px` : "";
-    view.classList.toggle("keyboard-occluded", insetPx > 0);
+    const open = topPx !== undefined;
+    view.style.position = open ? "fixed" : "";
+    view.style.top = open ? `${topPx}px` : "";
+    view.style.bottom = open ? `${insetPx}px` : "";
+    view.classList.toggle("keyboard-occluded", open);
   }
 }
 
@@ -3632,28 +3635,48 @@ function setupMobileTerminalInput(
 }
 
 function setupMobileTerminalViewport(): void {
-  if (!window.visualViewport) return;
+  const vv = window.visualViewport;
+  const view = document.getElementById("terminal-view");
+  if (!vv || !view) return;
+  state.visualViewportCleanup?.();
+  const debug = new URLSearchParams(location.search).get("kbdebug") === "1" ? document.createElement("pre") : null;
+  let frame = 0;
+  if (debug) {
+    debug.id = "kb-debug";
+    debug.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;pointer-events:none;margin:0;background:#000c;color:white;font:10px monospace;white-space:pre-wrap;word-break:break-all";
+    document.body.append(debug);
+  }
   const vvHandler = (): void => {
-    if (!window.visualViewport) return;
-    const kbHeight = keyboardOcclusionHeight(window.innerHeight, {
-      height: window.visualViewport.height,
-      // Browsers always provide offsetTop; use zero for incomplete viewport
-      // implementations so keyboard resize handling still fails safely.
-      offsetTop: window.visualViewport.offsetTop ?? 0,
-    });
-    const kbOpen = kbHeight > 150;
-    // Keep the view within the visual viewport; offsetTop is already
-    // subtracted by keyboardOcclusionHeight. Normal layout drives terminal
-    // geometry, without moving its first rendered row above the clip.
-    setMobileKeyboardInset(kbOpen ? kbHeight : 0);
-    // Viewport is authoritative for collapse only. Opening remains an
-    // explicit keyboard-button action so layout changes cannot enable stdin.
-    if (!kbOpen && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
+    // Fixed positioning follows the native layout viewport, not a shorter
+    // absolute parent. Never measure the already-inset view (feedback).
+    const cb = view.parentElement!.getBoundingClientRect();
+    const viewport = { height: vv.height, offsetTop: vv.offsetTop ?? 0 };
+    const layout = keyboardViewportLayout(window.innerHeight, { parentTop: cb.top, fixedHeight: document.documentElement.clientHeight }, viewport);
+    setMobileKeyboardInset(layout.inset, layout.open ? layout.top : undefined);
+    // Viewport may close stdin, but only the explicit button can open it.
+    if (!layout.open && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
+    if (debug) {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        debug.style.top = `${viewport.offsetTop}px`;
+        debug.textContent = JSON.stringify({ innerHeight, clientHeight: document.documentElement.clientHeight,
+          vv: viewport, inset: Number.parseFloat(getComputedStyle(view).bottom), scrollY, mode: matchMedia("(display-mode: standalone)").matches ? "standalone" : "tab",
+          accessory: document.getElementById("kb-accessory").getBoundingClientRect(), terminal: view.getBoundingClientRect(), cb });
+      });
+    }
   };
-  window.visualViewport.addEventListener("resize", vvHandler);
-  window.visualViewport.addEventListener("scroll", vvHandler);
-  state.visualViewportHandler = vvHandler;
-  // Fire once to catch keyboard already open from previous session
+  vv.addEventListener("resize", vvHandler);
+  vv.addEventListener("scroll", vvHandler);
+  window.addEventListener("resize", vvHandler);
+  window.addEventListener("scroll", vvHandler, { passive: true });
+  state.visualViewportCleanup = () => {
+    vv.removeEventListener("resize", vvHandler);
+    vv.removeEventListener("scroll", vvHandler);
+    window.removeEventListener("resize", vvHandler);
+    window.removeEventListener("scroll", vvHandler);
+    cancelAnimationFrame(frame);
+    debug?.remove();
+  };
   vvHandler();
 }
 
@@ -3811,12 +3834,8 @@ function releaseSingleTerminalView(preserveTarget: boolean, park: boolean): void
   if (!isDesktop()) setMobileGhosttyKeyboardOpen(false);
   releaseVisibleSingleTerminal(park);
   connStatusBanner.stop();
-  // Clean up visualViewport handler
-  if (state.visualViewportHandler && window.visualViewport) {
-    window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
-    window.visualViewport.removeEventListener("scroll", state.visualViewportHandler);
-    state.visualViewportHandler = null;
-  }
+  state.visualViewportCleanup?.();
+  state.visualViewportCleanup = null;
   // Reset terminal positioning
   const termView = document.getElementById("terminal-view");
   if (termView) { termView.style.bottom = ""; termView.style.transform = ""; }
