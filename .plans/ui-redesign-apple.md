@@ -121,7 +121,7 @@ keep every `data-*` attribute, `card-open` button, `kill-btn`, session-order att
 
 - assignment: implement 2c only in `/home/almog/dev/wolfpack-last-line-meta`, branch `ui/last-line-meta`; base/start `a3e249544f892f50735ca0fad2fde87e4ab2a888` (`ui/apple-reskin`). local logical commits only, no push/PR/merge. no child sessions or endpoint tasks created.
 - allowed: observation display projection, client metadata rendering/styles, fixtures/tests, generated assets, this handoff. runtime reduction, broker/transport/auth and sibling phase-2a/2b worktree remain untouched.
-- status: fix-1 review remediation B1–B5 implemented at `d51cfc0b97448d6d08b45237e91e322d1a9c9763`, from `7a856b4c7e7def67a3bb8347769893477aa21923`. requested checks and full Chromium/base-list comparison recorded in the fix-1 subsection below. optional schema fields and shared `src/` contract were explicitly authorized; no other API/runtime change. logs `/tmp/wolfpack-2c-logs/fix-1/`. no child sessions, push/PR/merge or sibling-worktree changes; stop after local handoff commit.
+- status: fix-2 review remediation N-B1–N-B3 + footer-description nit implemented in `87b0bb4e` and `a40595d8`, from `83e3083321c052c0086cb32bd05d42c3ce98f837`. all requested scoped checks pass; exact exits/counts and regression evidence are in the fix-2 handoff below. logs `/tmp/wolfpack-2c-logs/fix-2/`. no runtime/tier changes, child sessions, push/PR/merge or sibling-worktree changes. stop after local handoff commit.
 
 ## phase 2 — behavior
 
@@ -389,3 +389,23 @@ verification ran in `/home/almog/dev/wolfpack-last-line-meta` on source `a2d7cb9
 - valid contract red evidence is `06-contract-old-schema-red.log`, not the earlier matcher-obscured failure: Bun's asymmetric `toMatchObject` mutated the response in the initial test. test validation now runs before a plain shape assertion; temporary instrumentation is removed. B5 retains passing renderer characterizations and strict typechecks; the tier-independence test remains green.
 - full comparison reuses the saved `ui/apple-reskin` (`a3e24954`) base list: 764 pass / 448 skip / 33 fail in `/tmp/wolfpack-2c-logs/18-base-chromium.json`. **29 exact project/spec/title matches** have matching failure assertions (`browser-comparison.json`, `19-shared-failure-signatures.txt`). the 30th is desktop worker-readiness cleanup at line 116 after kill; the identical browser-independent test/assertion already fails on base iphone-se/iphone-14 (`18-base-worker-failure-signatures.txt`). its unchanged session-control-list route does not call the display projection. exact desktop reproduction on base was **not** obtained in 25 isolated attempts; head also passes 5 isolated attempts. retain that full-run variant as a flaky-risk caveat, not an unreported failure or a claim of a fully green suite. no out-of-scope task/broker fix attempted.
 - complete commands, source provenance, diagnostics and limitations: `/tmp/wolfpack-2c-logs/fix-1/verification-summary.md`. no full Bun rerun in this scoped follow-up; requested focused/contract checks are above. original live-capture/native/device limitations remain. no open product decision; stop after the local handoff commit.
+
+### fix-2 — review N-B1–N-B3 and schema-description nit
+
+- start `83e3083321c052c0086cb32bd05d42c3ce98f837`; parser/fixture commit `87b0bb4ecb51e57175080de7da5934c167bfc534`; schema-description/test/generated-JSON commit `a40595d84e33e828b0f8bd8b9f33a9d75cc7d42f`. verification covered the exact dirty source/test/schema diff subsequently committed unchanged; this handoff is documentation-only. no installs, child sessions, sibling-worktree edits, push/PR/merge.
+- N-B1/N-B2: `src/server/session-observation.ts` now shares the context-token regex between footer-block anchoring, chrome skipping and metadata parsing: numeric usage or `?`, followed by `/number` and optional `k`/`M`. fresh subscription/API-key sessions without ↑ counters are recognized; a non-pi ↑/↓digit line is no longer footer evidence and remains visible content. the bottom-three nonempty-line bound and adjacent cwd/status handling remain. unknown percentage is omitted, not fabricated; CH stays cache-hit only.
+- N-B3: model parsing accepts no `• reasoning` suffix and uses the model after the final `→`, including optional provider labels. absent reasoning stays absent. `tests/unit/session-output-preview.test.ts` adds derived fresh/routed/non-reasoning fixtures and non-pi arrow regressions. the old unknown-counter footer expectation is intentionally replaced with preservation as content: without the pi context marker it is not known footer chrome.
+- nit: `src/control-api/schema.ts` and regenerated `docs/generated/control-api.schema.json` now describe raw footer as also included alongside structured metadata. only the description changes; `tests/unit/control-api-schema.test.ts` covers the correction. no API shape or runtime/tier/attention/sorting changes.
+
+| check | actual exit / counts | `/tmp/wolfpack-2c-logs/fix-2/` evidence |
+| --- | --- | --- |
+| regressions before fixes | 1; 82 pass, 13 intended failures across all findings/nit | `01-red.log` |
+| schema generation | 0 | `02-schema-generation.log` |
+| assets | 0; generated bytes unchanged | `04-assets.log`, `.result` |
+| typecheck | 0; 11s | `05-types.log`, `.result` |
+| focused preview/render/tier units + control-api units/live contracts | 0; 95 pass, 471 expectations | `06-focused-final.log`, `.result` |
+| affected Chromium: session-meta, apple-reskin, reskin-review, session-state-visualization, idle-session-view, delegation-sessions; desktop/iphone-14/iphone-se | 0; 80 pass, 40 project-specific skips; 82s | `07-affected-chromium.log`, `.result` |
+| actual server observation + Done/y-n tier probe | 0 | `08-observation-tier-probe.log` |
+| whitespace / protected scope | 0; protected diff empty | final git evidence, `protected.diff` |
+
+- complete commands/provenance: `/tmp/wolfpack-2c-logs/fix-2/verification-summary.md`. no full Bun/full Chromium rerun in this scoped follow-up; prior broad-gate results and native/device/live-capture limitations remain. no new dependencies or protected-surface edits. no open product decision; stop after committing this handoff.
