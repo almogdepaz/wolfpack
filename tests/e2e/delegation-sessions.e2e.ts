@@ -295,7 +295,7 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["three", "one", "two"]);
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-session-order") ?? "null"))).toEqual({
     version: 1,
-    sessions: [{ machineUrl: "", sessionId: "three-id", position: 0 }],
+    sessions: [{ machineUrl: "", sessionId: "three-id", position: 0, tier: "idle" }],
   });
 
   sessions = [

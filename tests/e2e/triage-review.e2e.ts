@@ -54,7 +54,7 @@ test("per-row UI placement leaves untouched work and need rows automatic", async
   await page.keyboard.press('Alt+ArrowDown');
   await expect(names).toHaveText(['need-old', 'need-new', 'beta', 'alpha', 'gamma', 'delta']);
   const stored = () => page.evaluate(() => JSON.parse(localStorage.getItem('wolfpack-session-order')!).sessions);
-  await expect.poll(stored).toEqual([{ machineUrl: '', sessionId: 'alpha', position: 1 }]);
+  await expect.poll(stored).toEqual([{ machineUrl: '', sessionId: 'alpha', position: 1, tier: 'work' }]);
   sessions[0] = session('need-old', 'needs-input', at.recent);
   sessions[1] = session('need-new', 'needs-input', at.old);
   sessions[3] = session('beta', 'working', '2026-10-20T09:00:00Z');
@@ -67,7 +67,32 @@ test("per-row UI placement leaves untouched work and need rows automatic", async
   await machineRows(page).locator('.card-open[data-session="beta"]').focus();
   await page.keyboard.press('Alt+ArrowUp');
   await expect(names).toHaveText(['need-new', 'need-old', 'delta', 'alpha', 'beta', 'gamma']);
-  await expect.poll(stored).toEqual([{ machineUrl: '', sessionId: 'alpha', position: 1 }, { machineUrl: '', sessionId: 'beta', position: 2 }]);
+  await expect.poll(stored).toEqual([{ machineUrl: '', sessionId: 'alpha', position: 1, tier: 'work' }, { machineUrl: '', sessionId: 'beta', position: 2, tier: 'work' }]);
+});
+
+test("N-A3 a placed work row follows wait age after changing tier, including reload", async ({ page }) => {
+  const sessions = [session('need-old', 'needs-input', at.old), session('need-new', 'needs-input', at.recent), session('placed', 'working', at.recent), session('worker', 'working', at.old)];
+  await fixture(page, sessions);
+  await page.goto(server.baseUrl);
+  await machineRows(page).locator('.card-open[data-session="placed"]').focus();
+  await page.keyboard.press('Alt+ArrowDown');
+  await expect(machineRows(page).locator('.card-name-text')).toHaveText(['need-old', 'need-new', 'worker', 'placed']);
+  sessions[2] = session('placed', 'needs-input', '2026-10-20T12:00:00Z');
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(machineRows(page).locator('.card-name-text')).toHaveText(['need-old', 'need-new', 'placed', 'worker']);
+  await page.reload();
+  await expect(machineRows(page).locator('.card-name-text')).toHaveText(['need-old', 'need-new', 'placed', 'worker']);
+});
+
+for (const legacyPosition of [undefined, 1]) test(`legacy v1 placement (${legacyPosition ?? 'identity-only'}) binds to its first observed tier`, async ({ page }) => {
+  await page.addInitScript(position => localStorage.setItem('wolfpack-session-order', JSON.stringify({ version: 1, sessions: [{ machineUrl: '', sessionId: 'placed', ...(position === undefined ? {} : { position }) }] })), legacyPosition);
+  const sessions = [session('need-old', 'needs-input', at.old), session('need-new', 'needs-input', at.recent), session('placed', 'working', at.old), session('worker', 'working', at.recent)];
+  await fixture(page, sessions);
+  await page.goto(server.baseUrl);
+  await expect(machineRows(page).locator('.card-name-text')).toHaveText(legacyPosition === undefined ? ['need-old', 'need-new', 'placed', 'worker'] : ['need-old', 'need-new', 'worker', 'placed']);
+  sessions[2] = session('placed', 'needs-input', '2026-10-20T12:00:00Z');
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await expect(machineRows(page).locator('.card-name-text')).toHaveText(['need-old', 'need-new', 'placed', 'worker']);
 });
 
 test("A1 drag visibly reorders rows with distinct output timestamps", async ({ page }, info) => {
@@ -84,7 +109,7 @@ test("A1 drag visibly reorders rows with distinct output timestamps", async ({ p
   await expect(page.locator('.session-order-floating')).toBeVisible();
   await page.mouse.up();
   await expect(machineRows(page).locator('.card-name-text')).toHaveText(['beta', 'alpha']);
-  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('wolfpack-session-order')!).sessions)).toEqual([{ machineUrl: '', sessionId: 'beta', position: 0 }]);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('wolfpack-session-order')!).sessions)).toEqual([{ machineUrl: '', sessionId: 'beta', position: 0, tier: 'work' }]);
 });
 
 test("A2 dashboard Cmd+Arrow skips pinned duplicates of the current session", async ({ page }, info) => {

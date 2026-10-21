@@ -59,6 +59,21 @@ test("sparse positions are bounded and deterministic when tier changes collide",
   const stored: SessionOrderIdentity[] = [{ machineUrl: "", sessionId: "a", position: 50 }, { machineUrl: "", sessionId: "b", position: 50 }];
   expect(orderTriageSessionRows(projectDelegationSessions(sessions), stored, "").map(row => row.session.name)).toEqual(["b", "c", "a"]);
 });
+test("N-A2 identityless rows retain tier and age rank alongside identified rows", () => {
+  const { identity: _identity, ...legacy } = session("legacy-need", "needs-input", older);
+  const rows = projectDelegationSessions([session("known-need", "needs-input", newer), session("worker", "working", newer), legacy]);
+  expect(orderTriageSessionRows(rows, [], "").map(row => row.session.name)).toEqual(["legacy-need", "known-need", "worker"]);
+});
+test("N-A3 a work placement is ignored after the row becomes a newer waiter", () => {
+  const placement = { machineUrl: "", sessionId: "placed", position: 1, tier: "work" as const };
+  const sessions = [session("placed", "needs-input", "2026-10-20T12:00:00Z"), session("need-old", "needs-input", older), session("need-new", "needs-input", newer)];
+  expect(orderTriageSessionRows(projectDelegationSessions(sessions), [placement], "").map(row => row.session.name)).toEqual(["need-old", "need-new", "placed"]);
+});
+test("N-A3 a subtree tier change ignores its root's old manual scope", () => {
+  const sessions = [session("root", "working", newer), session("child", "needs-input", newer, "root"), session("older-waiter", "needs-input", older)];
+  const placement: SessionOrderIdentity = { machineUrl: "", sessionId: "root", position: 0, tier: "work" };
+  expect(orderTriageSessionRows(projectDelegationSessions(sessions), [placement], "").map(row => row.session.name)).toEqual(["older-waiter", "root", "child"]);
+});
 test("A3 an urgent grandchild ranks the entire tree ahead of work without losing adjacency", () => {
   const sessions = [session("worker", "working", newer), session("parent", "idle", older), session("child", "idle", older, "parent"), session("grandchild", "needs-input", older, "child")];
   expect(order(sessions)).toEqual(["parent", "child", "grandchild", "worker"]);

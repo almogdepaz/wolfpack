@@ -1,6 +1,6 @@
 import { sessionTier, type SessionRuntimeUiInput, type SessionTier } from "../src/agent-runtime-ui";
 import { sessionIdentityId, type DelegationSessionLike, type DelegationSessionRow } from "./delegation-sessions";
-import { orderDelegationSessionRows, type SessionOrderIdentity } from "./session-order";
+import { orderDelegationSessionRowsByRank, type SessionOrderIdentity } from "./session-order";
 
 interface TriageSession extends SessionRuntimeUiInput {
   readonly runtimeState?: SessionRuntimeUiInput["runtimeState"] & { readonly changedAt?: unknown };
@@ -67,10 +67,11 @@ export function orderTriageSessionRows<T extends DelegationSessionLike>(
     tiers.set(tier, group);
     siblings.set(parentId, tiers);
   }
-  const triageOrder: SessionOrderIdentity[] = [];
-  for (const tiers of siblings.values()) for (const group of tiers.values()) {
+  const triageOrder: DelegationSessionRow<T>[] = [];
+  for (const tiers of siblings.values()) for (const [tier, group] of tiers.entries()) {
     const byId = new Map(group.map(row => [sessionIdentityId(row.session), row]));
-    const manual = manualOrder.filter(identity => identity.machineUrl === machineUrl && byId.has(identity.sessionId));
+    const manual = manualOrder.filter(identity => identity.machineUrl === machineUrl
+      && byId.has(identity.sessionId) && (identity.tier === undefined || identity.tier === tier));
     const slots: Array<DelegationSessionRow<T> | undefined> = Array.from({ length: group.length });
     for (const [legacyRank, identity] of manual.entries()) {
       const desired = Math.min(identity.position ?? legacyRank, slots.length - 1);
@@ -81,10 +82,7 @@ export function orderTriageSessionRows<T extends DelegationSessionLike>(
     const positioned = new Set(manual.map(identity => byId.get(identity.sessionId)!));
     const unpositioned = group.filter(row => !positioned.has(row));
     let next = 0;
-    for (const row of slots.map(row => row ?? unpositioned[next++]!)) {
-      const sessionId = sessionIdentityId(row.session);
-      if (sessionId) triageOrder.push({ machineUrl, sessionId });
-    }
+    triageOrder.push(...slots.map(row => row ?? unpositioned[next++]!));
   }
-  return orderDelegationSessionRows(automatic, triageOrder, machineUrl);
+  return orderDelegationSessionRowsByRank(automatic, new Map(triageOrder.map((row, index) => [row, index])));
 }

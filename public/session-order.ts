@@ -1,3 +1,4 @@
+import type { SessionTier } from "../src/agent-runtime-ui";
 import {
   sessionIdentityId,
   type DelegationSessionLike,
@@ -6,12 +7,15 @@ import {
 
 export const SESSION_ORDER_STORAGE_KEY = "wolfpack-session-order";
 const SESSION_ORDER_STORAGE_VERSION = 1;
+const SESSION_ORDER_TIERS = new Set<SessionTier>(["need", "fail", "work", "idle"]);
 
 export interface SessionOrderIdentity {
   readonly machineUrl: string;
   readonly sessionId: string;
   /** Optional sparse slot within this row's tier and sibling scope; absent in legacy v1 data. */
   readonly position?: number;
+  /** Effective tier when placed; omitted by older v1 writers. */
+  readonly tier?: SessionTier;
 }
 
 type SessionOrderStorageReader = Pick<Storage, "getItem">;
@@ -27,6 +31,7 @@ function stableIdentity(identity: SessionOrderIdentity): SessionOrderIdentity {
   return {
     machineUrl: identity.machineUrl, sessionId: identity.sessionId,
     ...(typeof identity.position === "number" && Number.isSafeInteger(identity.position) && identity.position >= 0 ? { position: identity.position } : {}),
+    ...(typeof identity.tier === "string" && SESSION_ORDER_TIERS.has(identity.tier) ? { tier: identity.tier } : {}),
   };
 }
 
@@ -107,15 +112,18 @@ export function recordManualSessionMove(
   nextMachineOrder: readonly SessionOrderIdentity[],
   siblingScope: readonly SessionOrderIdentity[],
   moving: SessionOrderIdentity,
+  tier: SessionTier,
 ): SessionOrderIdentity[] {
   const siblings = nextMachineOrder.filter(identity => includesIdentity(siblingScope, identity));
   const position = siblings.findIndex(identity => identitiesEqual(identity, moving));
   if (position < 0) return [...manualOrder];
   const updated = manualOrder.filter(identity => !identitiesEqual(identity, moving)).map(identity => {
     const nextPosition = siblings.findIndex(sibling => identitiesEqual(sibling, identity));
-    return nextPosition < 0 ? stableIdentity(identity) : { ...stableIdentity(identity), position: nextPosition };
+    return nextPosition < 0 || (identity.tier !== undefined && identity.tier !== tier)
+      ? stableIdentity(identity)
+      : { ...stableIdentity(identity), position: nextPosition, tier };
   });
-  return [...updated, { ...stableIdentity(moving), position }];
+  return [...updated, { ...stableIdentity(moving), position, tier }];
 }
 
 export function resetMachineSessionOrder(
@@ -141,15 +149,25 @@ export function orderDelegationSessionRows<T extends DelegationSessionLike>(
   order: readonly SessionOrderIdentity[],
   machineUrl: string,
 ): DelegationSessionRow<T>[] {
-  const originalIndex = new Map(rows.map((row, index) => [row, index]));
   const rank = new Map(
     order
       .filter(identity => identity.machineUrl === machineUrl)
       .map((identity, index) => [identity.sessionId, index]),
   );
+  return orderDelegationSessionRowsByRank(rows, new Map(rows.map(row => [
+    row, rank.get(sessionIdentityId(row.session) ?? "") ?? Number.MAX_SAFE_INTEGER,
+  ])));
+}
+
+/** Shared tree traversal; row-keyed ranks also cover sessions without persistent identities. */
+export function orderDelegationSessionRowsByRank<T extends DelegationSessionLike>(
+  rows: readonly DelegationSessionRow<T>[],
+  rank: ReadonlyMap<DelegationSessionRow<T>, number>,
+): DelegationSessionRow<T>[] {
+  const originalIndex = new Map(rows.map((row, index) => [row, index]));
   const compareRows = (left: DelegationSessionRow<T>, right: DelegationSessionRow<T>): number => {
-    const leftRank = rank.get(sessionIdentityId(left.session) ?? "") ?? Number.MAX_SAFE_INTEGER;
-    const rightRank = rank.get(sessionIdentityId(right.session) ?? "") ?? Number.MAX_SAFE_INTEGER;
+    const leftRank = rank.get(left) ?? Number.MAX_SAFE_INTEGER;
+    const rightRank = rank.get(right) ?? Number.MAX_SAFE_INTEGER;
     return leftRank - rightRank || (originalIndex.get(left)! - originalIndex.get(right)!);
   };
 

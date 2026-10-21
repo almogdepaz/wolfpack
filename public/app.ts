@@ -1786,8 +1786,12 @@ function sessionOrderRows(
     visible,
   );
   automaticSessionOrder = replaceMachineSessionOrder(automaticSessionOrder, machineUrl, fallbackOrder);
+  // Older writers had no tier metadata: bind once to the first observed effective tier.
+  const priorities = sessionTriagePriorities(rows);
+  const observedTiers = new Map(rows.map(row => [sessionIdentityId(row.session), sessionTier(priorities.get(row)!)]));
   const manualOrder = sessionOrder.filter(identity => identity.machineUrl === machineUrl
-    && visible.some(candidate => candidate.sessionId === identity.sessionId));
+    && visible.some(candidate => candidate.sessionId === identity.sessionId))
+    .map(identity => identity.tier === undefined ? { ...identity, tier: observedTiers.get(identity.sessionId)! } : identity);
   sessionOrder = replaceMachineSessionOrder(sessionOrder, machineUrl, manualOrder);
   return orderTriageSessionRows(orderDelegationSessionRows(rows, fallbackOrder, machineUrl), manualOrder, machineUrl);
 }
@@ -5608,7 +5612,10 @@ function moveSessionCard(
     const previous = context.order[index];
     return previous?.machineUrl === identity.machineUrl && previous.sessionId === identity.sessionId;
   })) return false;
-  sessionOrder = recordManualSessionMove(sessionOrder, nextMachineOrder, siblingScope, moving);
+  const movingRow = context.rows.find(row => sessionIdentityId(row.session) === moving.sessionId);
+  if (!movingRow) return false;
+  const tier = sessionTier(sessionTriagePriorities(context.rows).get(movingRow)!);
+  sessionOrder = recordManualSessionMove(sessionOrder, nextMachineOrder, siblingScope, moving, tier);
   manuallyOrderedMachines.add(moving.machineUrl);
   const persisted = saveManualSessionOrder();
   renderSessionOrderViews();
