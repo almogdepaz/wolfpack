@@ -185,6 +185,7 @@ import {
   sendMessageDraftAttempt,
   shouldInsertMessageNewlineFromAccessoryKey,
   shouldInterceptCopy,
+  shouldInterceptBacktab,
   shouldSubmitMessageInputOnEnter,
 } from "../src/terminal-input";
 import {
@@ -616,6 +617,11 @@ async function createTerminalInstance({ fontSize, scrollback, cursorBlink = true
   term.attachCustomKeyEventHandler((e) => {
     if (shouldInterceptCopy(e, term.hasSelection())) {
       navigator.clipboard.writeText(term.getSelection()).catch((e) => { console.debug("[clipboard] copy failed:", e); });
+      return true;
+    }
+    // Ghostty's plain/Shift Tab fast path otherwise emits a literal tab.
+    if (shouldInterceptBacktab(e) && !term.options.disableStdin && canAcceptInput()) {
+      term.input("\x1b[Z", true);
       return true;
     }
     return false;

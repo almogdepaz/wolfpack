@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
+import { test, expect, type Page, type WebSocketRoute } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers.ts";
 
 let srv: TestServer;
@@ -11,9 +12,10 @@ test.afterAll(async () => {
   await srv?.close();
 });
 
-async function openAccessory(page: Page): Promise<number[][]> {
+async function openAccessory(page: Page, onSocket?: (socket: WebSocketRoute) => void): Promise<number[][]> {
   const sentBytes: number[][] = [];
   await page.routeWebSocket(/\/ws\/pty/, (ws) => {
+    onSocket?.(ws);
     ws.onMessage((message) => {
       if (typeof message !== "string") {
         sentBytes.push(Array.from(Buffer.from(message)));
@@ -87,6 +89,93 @@ for (const width of [375, 390]) test(`mobile accessory has nine keys in even fiv
   await page.screenshot({ path: testInfo.outputPath(`accessory-${width}.png`) });
 });
 
+test("native hardware Tab and Shift+Tab each encode once while terminal focus stays active", async ({ page }, testInfo) => {
+  const sentBytes = await openAccessory(page);
+  const terminal = page.locator('#desktop-terminal-container');
+  await expect(terminal).toHaveAttribute('data-terminal-load-state', 'live');
+  const input = testInfo.project.name === 'desktop' ? terminal : terminal.locator('textarea');
+  if (testInfo.project.name !== 'desktop') await page.locator('#kb-open-btn').click();
+  else await input.focus();
+  await expect(input).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect.poll(() => sentBytes).toEqual([[9]]);
+  await expect(input).toBeFocused();
+  const tabFrames = sentBytes.map(frame => [...frame]);
+  sentBytes.length = 0;
+  await page.keyboard.down('Shift');
+  await page.keyboard.down('Tab');
+  await page.keyboard.up('Tab');
+  await page.keyboard.up('Shift');
+  await expect.poll(() => sentBytes).toEqual([[27, 91, 90]]);
+  await expect(input).toBeFocused();
+  await page.keyboard.press('Enter'); // ordering barrier also exposes duplicate tab/key-up sends
+  await expect.poll(() => sentBytes).toEqual([[27, 91, 90], [13]]);
+  await expect(input).toBeFocused();
+  await writeFile(testInfo.outputPath('native-key-bytes.json'), JSON.stringify({
+    project: testInfo.project.name, tabFrames, backtabThenEnterFrames: sentBytes,
+    focusedElement: await input.evaluate(el => el === document.activeElement),
+  }, null, 2));
+});
+
+test('native back-tab respects input gates, composition and nonterminal focus', async ({ page }, testInfo) => {
+  const transport: { socket: WebSocketRoute | null; blockReconnect: boolean } = { socket: null, blockReconnect: false };
+  const sentBytes = await openAccessory(page, ws => {
+    transport.socket = ws;
+    if (transport.blockReconnect) ws.close({ code: 1001, reason: 'backtab disconnected fixture' });
+  });
+  const terminal = page.locator('#desktop-terminal-container');
+  await expect(terminal).toHaveAttribute('data-terminal-load-state', 'live');
+  const mobile = testInfo.project.name !== 'desktop';
+  const input = mobile ? terminal.locator('textarea') : terminal;
+  if (mobile) {
+    await expect(input).toHaveAttribute('inputmode', 'none');
+    await input.focus();
+    await page.keyboard.press('Shift+Tab');
+    await expect(input).toHaveAttribute('inputmode', 'none');
+    expect(await input.evaluate(el => (el as HTMLTextAreaElement).readOnly)).toBe(true);
+    expect(sentBytes).toEqual([]);
+    await page.locator('#kb-open-btn').click(); // only this action can enable stdin
+  } else await input.focus();
+  await expect(input).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect.poll(() => sentBytes).toEqual([[9]]); // no latent disabled-stdin backtab
+  sentBytes.length = 0;
+  await input.dispatchEvent('compositionstart', { data: '' });
+  await page.keyboard.press('Shift+Tab');
+  await input.dispatchEvent('compositionend', { data: '' });
+  await input.focus();
+  await page.keyboard.press('Tab');
+  await expect.poll(() => sentBytes).toEqual([[9]]); // composition did not emit backtab
+  sentBytes.length = 0;
+  await page.keyboard.press('Control+c');
+  await expect.poll(() => sentBytes).toEqual([[3]]); // no-selection Ctrl+C stays native
+  sentBytes.length = 0;
+  const control = page.locator(mobile ? '#kb-open-btn' : '#sidebar-expand-btn');
+  const previous = page.locator(mobile ? '#kb-accessory [data-key="C-c"]' : '#sidebar-settings-btn');
+  await control.focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(previous).toBeFocused(); // ordinary browser focus traversal, not terminal bytes
+  expect(sentBytes).toEqual([]);
+  await input.focus();
+  transport.blockReconnect = true;
+  if (!transport.socket) throw new Error('missing connected fixture socket');
+  transport.socket.close({ code: 1001, reason: 'backtab disconnected fixture' });
+  await expect(page.locator('#conn-status')).toHaveAttribute('data-conn-state', 'reconnecting');
+  await page.keyboard.press('Shift+Tab');
+  expect(sentBytes).toEqual([]);
+  transport.blockReconnect = false;
+  await expect(terminal).toHaveAttribute('data-terminal-load-state', 'live');
+  expect(sentBytes).toEqual([]); // no queued input leaks on reconnect
+  await input.focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect.poll(() => sentBytes).toEqual([[27, 91, 90]]);
+  await expect(input).toBeFocused();
+  await writeFile(testInfo.outputPath('native-input-gates.json'), JSON.stringify({
+    project: testInfo.project.name, finalFrames: sentBytes, reconnectHasNoQueuedInput: true,
+    compositionSentNoBacktab: true, nonterminalShiftTabMovedFocus: true,
+  }, null, 2));
+});
+
 test("mobile accessory Enter inserts line-feed while native Enter still sends carriage-return", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only accessory keyboard behavior");
   const sentBytes = await openAccessory(page);
@@ -111,8 +200,9 @@ test("mobile accessory Enter inserts line-feed while native Enter still sends ca
 
   sentBytes.length = 0;
   await page.keyboard.press("Shift+Tab");
-  // Characterize the existing native mobile path, independently of accessory BTab.
-  await expect.poll(() => sentBytes).toEqual([[9]]);
+  // Native hardware back-tab remains available without an accessory BTab key.
+  await expect.poll(() => sentBytes).toEqual([[27, 91, 90]]);
+  await expect(input).toBeFocused();
 
   sentBytes.length = 0;
   await page.locator("#kb-accessory .kb-enter").click();
