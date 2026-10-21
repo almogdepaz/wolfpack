@@ -194,7 +194,9 @@ function legacyTerminalPreviewLine(rendered: string | undefined): string {
 
 // Only recognizable chrome is skipped. These patterns never classify prompts,
 // activity, or runtime state; unknown harness text remains visible.
-const PI_CONTEXT_TOKEN = /(?:^|\s)(?:(\d+(?:\.\d+)?)%|\?)\/(\d+(?:\.\d+)?)([kM])?(?=\s|$)/;
+// Before context, pi emits only optional token/cache/cost stats. Prose such as
+// "lines 85%/90 met" must not acquire display metadata or consume later output.
+const PI_CONTEXT_TOKEN = /^(?:(?:[↑↓RW]\d+(?:\.\d+)?[kM]?|CH\d+(?:\.\d+)?%|\$\d+(?:\.\d+)?|\(sub\))\s+)*(?:(\d+(?:\.\d+)?)%|\?)\/(\d+(?:\.\d+)?)([kM])?(?=\s|$)/;
 const TERMINAL_CHROME = [
   PI_CONTEXT_TOKEN, // pi context exists even before token counters appear
   /^~\/.*\(.*\)$/, // pi cwd/branch

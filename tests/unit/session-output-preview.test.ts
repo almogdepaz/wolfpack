@@ -33,6 +33,23 @@ describe("display-only terminal projection", () => {
       expect(projection.meta?.contextLimit).toBe(contextLimit);
     }
   });
+  test.each([
+    "lines 85%/90 met",
+    "coverage 85%/90",
+    "progress 85%/90k met",
+    "progress 85%/1.0M met",
+    "report ?/272k pending",
+  ])("non-pi context-like prose is not a footer: %s", (line) => {
+    expect(terminalDisplayProjection(`Coverage report\n${line}\n$`)).toEqual({ lastLine: "$" });
+    expect(terminalDisplayProjection(`Coverage report\n${line}`)).toEqual({ lastLine: line });
+  });
+  test("pi stats prefixes include cache writes and zero cost", () => {
+    const footer = "↑1.2k ↓3 R4.0M W5 CH99.7% $0.000 (sub) 0.0%/272k (auto)    gpt-4.1";
+    expect(terminalDisplayProjection(`Agent answer\n~/project\n${footer}\npi-tasks: idle`)).toEqual({
+      lastLine: "Agent answer", footer,
+      meta: { model: "gpt-4.1", contextPct: 0, contextLimit: 272000, cost: 0, costTag: "sub" },
+    });
+  });
   test.each(["↑3 items moved", "↓3 items moved"])("non-pi arrow output is not a footer: %s", (line) => {
     expect(terminalDisplayProjection(`line one\n${line}\nprompt>`)).toEqual({ lastLine: "prompt>" });
     expect(terminalDisplayProjection(`line one\n${line}`)).toEqual({ lastLine: line });
