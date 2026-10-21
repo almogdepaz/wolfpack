@@ -49,7 +49,8 @@ export class WidgetPanels {
   private intentId: string | undefined;
   private peekArea: WidgetArea | null = null;
   private suppressPeekArea: WidgetArea | null = null;
-  private peekTimer: ReturnType<typeof setTimeout> | null = null;
+  private intentTimer: ReturnType<typeof setTimeout> | null = null;
+  private leaveTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly events = new AbortController();
 
   constructor(private readonly options: {
@@ -91,26 +92,30 @@ export class WidgetPanels {
   }
   private peeking(area: WidgetArea): boolean { return this.peekArea === area && this.canPeek(area); }
   private expanded(area: WidgetArea): boolean { return this.peeking(area) || this.presentation.focusArea === area; }
-  private clearPeekTimer(): void { if (this.peekTimer !== null) clearTimeout(this.peekTimer); this.peekTimer = null; this.intentArea = null; this.intentId = undefined; }
+  private clearIntentTimer(): void { if (this.intentTimer !== null) clearTimeout(this.intentTimer); this.intentTimer = null; this.intentArea = null; this.intentId = undefined; }
+  private clearLeaveTimer(): void { if (this.leaveTimer !== null) clearTimeout(this.leaveTimer); this.leaveTimer = null; }
   private intendPeek(area: WidgetArea, id?: string): void {
+    this.clearIntentTimer();
     id ??= this.active[area] ?? this.ids().find(id => this.area(id) === area);
     if (!this.canPeek(area, id) || this.suppressPeekArea === area) return;
-    this.clearPeekTimer(); this.intentArea = area; this.intentId = id;
-    this.peekTimer = setTimeout(() => { this.clearPeekTimer(); this.peek(area, id); }, 150);
+    this.intentArea = area; this.intentId = id;
+    this.intentTimer = setTimeout(() => { this.clearIntentTimer(); this.peek(area, id); }, 150);
   }
-  private clearPeek(): void { this.clearPeekTimer(); this.peekArea = null; this.suppressPeekArea = null; }
+  private endPeek(): void { this.clearLeaveTimer(); this.peekArea = null; this.suppressPeekArea = null; }
+  private clearPeek(): void { this.clearIntentTimer(); this.endPeek(); }
   private hidePeek(focus = false): void {
     const area = this.peekArea;
     if (!area) return;
-    this.clearPeek();
+    if (focus) this.clearIntentTimer();
+    this.endPeek();
     const ids = this.ids(), saved = this.options.layout.selection(area, ids);
     const next = saved && !this.collapsed(saved) ? saved : ids.find(id => this.area(id) === area && !this.collapsed(id));
-    if (next) this.select(next, false); else this.render();
+    if (next) this.selectPanel(next, false); else this.render();
     if (focus) this.chrome.get(area)?.buttons.get(this.active[area] ?? "")?.focus({ preventScroll: true });
   }
   private peek(area: WidgetArea, id?: string): void {
     if (!this.canPeek(area, id) || this.suppressPeekArea === area) return;
-    this.clearPeekTimer();
+    this.clearIntentTimer();
     const selected = id ?? this.active[area] ?? this.ids().find(id => this.area(id) === area);
     if (this.peeking(area) && selected === this.active[area]) return;
     if (selected) this.options.onSelect(selected);
@@ -120,15 +125,15 @@ export class WidgetPanels {
     node.addEventListener("pointerenter", event => {
       if (event.pointerType === "touch") return;
       const area = node.dataset.widgetArea as WidgetArea;
-      if (this.peeking(area)) this.clearPeekTimer();
+      if (this.peeking(area)) this.clearLeaveTimer();
       else if (node.dataset.collapsed === "true") this.intendPeek(area);
     }, { signal });
     const schedule = () => {
-      if (this.intentArea === node.dataset.widgetArea) this.clearPeekTimer();
+      if (this.intentArea === node.dataset.widgetArea) this.clearIntentTimer();
       if (this.peekArea !== node.dataset.widgetArea) return;
-      this.clearPeekTimer();
-      this.peekTimer = setTimeout(() => {
-        this.peekTimer = null;
+      this.clearLeaveTimer();
+      this.leaveTimer = setTimeout(() => {
+        this.leaveTimer = null;
         const area = node.dataset.widgetArea as WidgetArea, chrome = this.chrome.get(area)!;
         const panel = this.slots.get(this.active[area] ?? "") ?? chrome.placeholder;
         if (!panel.matches(":hover, :focus-within") && !chrome.rail.matches(":hover") && !document.querySelector("dialog[open], .workspace-dragging")) this.hidePeek();
@@ -160,7 +165,7 @@ export class WidgetPanels {
     this.render();
   }
   private collapse(area: WidgetArea): void {
-    this.clearPeekTimer();
+    this.clearIntentTimer(); this.clearLeaveTimer();
     const id = this.presentation.desktop ? this.active[area] : this.mobileSelection;
     if (id && isNativePanel(id)) return;
     const hoveredArea = this.chrome.get(area)?.node.parentElement?.matches(":hover") ? area : null;
@@ -186,7 +191,7 @@ export class WidgetPanels {
     const valid = (this.options.nativePanels ?? []).filter(panel => ids.includes(panel.id)).map(panel => panel.id);
     if (valid.join() === this.nativeIds.join()) return;
     // Native membership follows full-view changes asynchronously; retain explicit collapse/unpin intent.
-    this.clearPeekTimer(); this.nativeIds = valid;
+    this.clearIntentTimer(); this.nativeIds = valid;
     this.render();
   }
   createContainer(entry: RegisteredContextView, wrapper: HTMLElement, signal: AbortSignal): HTMLElement {
@@ -208,8 +213,8 @@ export class WidgetPanels {
       if (this.slots.get(entry.id) !== wrapper) return;
       const ownsPeek = this.peekArea !== null && this.active[this.peekArea] === entry.id;
       // Rollback owns this wrapper, not another area's healthy preview or intent.
-      if (this.intentId === entry.id || (ownsPeek && this.intentArea === null)) this.clearPeekTimer();
-      if (ownsPeek) this.peekArea = null;
+      if (this.intentId === entry.id) this.clearIntentTimer();
+      if (ownsPeek) { this.clearLeaveTimer(); this.peekArea = null; }
       if (this.suppressPeekArea && this.active[this.suppressPeekArea] === entry.id) this.suppressPeekArea = null;
       this.slots.delete(entry.id);
       for (const area of WIDGET_AREAS) if (this.active[area] === entry.id) delete this.active[area];
@@ -218,9 +223,9 @@ export class WidgetPanels {
     return content;
   }
   update(entries: readonly RegisteredContextView[], message: string, documentStatus: (id: string) => string | null): void {
-    if (this.intentId && !entries.some(entry => entry.id === this.intentId)) this.clearPeekTimer();
+    if (this.intentId && !entries.some(entry => entry.id === this.intentId)) this.clearIntentTimer();
     const peekId = this.peekArea && this.active[this.peekArea];
-    if (peekId && !entries.some(entry => entry.id === peekId)) this.clearPeek();
+    if (peekId && !entries.some(entry => entry.id === peekId)) this.endPeek();
     this.entries = entries; this.message = message; this.documentStatus = documentStatus;
     if (!entries.some(entry => entry.id === this.mobileSelection)) this.mobileSelection = null;
     this.render();
@@ -236,8 +241,11 @@ export class WidgetPanels {
   }
   setVisible(visible: boolean): void { this.setPresentation({ ...this.presentation, visible }); }
   select(id: string, persist = true): void {
-    // Cancel competing intent now; a failed mount must retain the current peek's leave deadline.
-    if (this.intentArea !== null) this.clearPeekTimer();
+    this.clearIntentTimer();
+    this.selectPanel(id, persist);
+  }
+  // Restoration shares the mount transaction, but does not own another area's pending intent.
+  private selectPanel(id: string, persist: boolean): void {
     if (!this.ids().includes(id)) {
       if (!isNativePanel(id) && !this.entries.some(entry => entry.id === id)) this.options.registry.select(id);
       return;
@@ -255,7 +263,7 @@ export class WidgetPanels {
     // A successful activation in another area dismisses, rather than strands, its preview.
     if (this.peekArea && this.peekArea !== area) this.hidePeek();
     const peek = this.collapsed(id) && this.canPeek(area, id);
-    this.clearPeek();
+    this.endPeek();
     if (peek) this.peekArea = area;
     else if (this.collapsed(id)) this.options.layout.setWidgetState(id, "open");
     if (this.presentation.desktop) this.active[area] = id; else this.mobileSelection = id;
@@ -380,7 +388,7 @@ export class WidgetPanels {
         return members.length > 0 && members.every(id => this.collapsed(id));
       }) : [];
       const canPeek = (area: WidgetArea) => this.canPeek(area);
-      if (this.peekArea && !canPeek(this.peekArea)) this.clearPeek();
+      if (this.peekArea && !canPeek(this.peekArea)) this.endPeek();
       const peeking = (area: WidgetArea) => this.peekArea === area && canPeek(area);
       const expanded = (area: WidgetArea) => peeking(area) || this.presentation.focusArea === area;
       const key = `${areas.join(",")}/${collapsedAreas.join(",")}`;

@@ -165,9 +165,9 @@ for (const count of [1, 2]) for (const state of ['pinned', 'peek', 'collapsed'] 
   await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
 });
 
-for (const area of ['bottom', 'right'] as const) test(`failed ${area} candidate mount retains the healthy occupied Preview and lifecycle`, async ({ page }, info) => {
+for (const [area, mode] of [['bottom', 'open'], ['bottom', 'collapsed'], ['bottom', 'hover-only'], ['right', 'open']] as const) test(`failed ${area} ${mode} candidate mount retains the healthy occupied Preview and lifecycle`, async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'desktop transactional preview mount rollback');
-  await page.addInitScript(area => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view': 'collapsed' }, placements: { 'test-widgets/view-3': area, 'test-widgets/view-4': 'bottom' }, selected: { right: 'test-widgets/view-2', bottom: 'test-widgets/view-4' } })), area);
+  await page.addInitScript(({ area, mode }) => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view': 'collapsed', ...(mode !== 'open' ? { 'test-widgets/view-3': 'collapsed' } : {}) }, placements: { 'test-widgets/view-3': area, 'test-widgets/view-4': 'bottom' }, selected: { right: 'test-widgets/view-2', bottom: 'test-widgets/view-4' } })), { area, mode });
   await openWidgetFixture(page, ['Preview', 'First pinned', 'Selected pinned', 'Broken', 'Bottom healthy'], ['Broken']);
   const selected = page.locator('[data-context-view="test-widgets/view-2"]');
   const preview = page.locator('[data-context-view="test-widgets/view"]');
@@ -181,9 +181,15 @@ for (const area of ['bottom', 'right'] as const) test(`failed ${area} candidate 
   await expect(preview).toBeVisible();
   const previewNode = await preview.elementHandle();
   const broken = page.getByRole('tab', { name: 'Broken', exact: true });
-  await broken.hover(); await broken.press('Enter');
-  await expect(page.locator(`.widget-panel[data-widget-area="${area}"]:visible`).getByRole('status').filter({ hasText: 'Fixture mount failed: Broken' })).toBeVisible();
-  if (area === 'bottom') await expect(broken).toBeFocused();
+  await broken.hover();
+  const diagnostic = page.locator(`.widget-panel[data-widget-area="${area}"]:visible`).getByRole('status').filter({ hasText: 'Fixture mount failed: Broken' });
+  if (mode === 'hover-only') {
+    await page.clock.runFor(149);
+    await expect(diagnostic).toHaveCount(0); await expect(preview).toBeVisible();
+    await page.clock.runFor(1); // competing intent fails at150ms, while the original300ms leave is armed
+  } else await broken.press('Enter');
+  await expect(diagnostic).toBeVisible();
+  if (area === 'bottom' && mode !== 'hover-only') await expect(broken).toBeFocused();
   const after = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
   await writeFile(info.outputPath('rollback.json'), JSON.stringify({ saved, after, previewVisible: await preview.isVisible(), selectedVisible: await selected.isVisible(), bottomVisible: await bottom.isVisible(), right: await tabGeometry(page.locator('.widget-panel[data-widget-area="right"]:visible')) }, null, 2));
   await page.screenshot({ path: info.outputPath('rollback.png'), caret: 'hide' });
@@ -196,9 +202,10 @@ for (const area of ['bottom', 'right'] as const) test(`failed ${area} candidate 
   await expect(page.getByRole('tab', { name: 'Preview', exact: true })).toHaveAttribute('aria-selected', 'true');
   expect(await preview.evaluate((node, previous) => node === previous, previewNode)).toBe(true);
   if (area === 'bottom') {
-    // Pointer and focus are outside Preview. Failure must not consume its armed leave timer.
+    // Pointer and focus are outside Preview. Competing intent must not restart the original deadline.
+    expect(await preview.evaluate(node => !node.closest('.widget-panel')!.contains(document.activeElement))).toBe(true);
     const focus = await page.evaluateHandle(() => document.activeElement);
-    await page.clock.runFor(299); await expect(preview).toBeVisible();
+    await page.clock.runFor(299 - (mode === 'hover-only' ? 150 : 0)); await expect(preview).toBeVisible();
     const at299 = { previewVisible: await preview.isVisible() };
     await page.clock.runFor(1); await expect(preview).toBeHidden();
     await expect(selected).toBeVisible();
@@ -210,13 +217,61 @@ for (const area of ['bottom', 'right'] as const) test(`failed ${area} candidate 
     await expect(bottom).toBeVisible();
     expect(await bottom.evaluate((node, previous) => node === previous, bottomNode)).toBe(true);
     expect(await selected.evaluate((node, previous) => node === previous, selectedNode)).toBe(true);
-    await writeFile(info.outputPath('after-leave.json'), JSON.stringify({ saved, after: await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1')), at299, at300, at500: { previewVisible: await preview.isVisible(), selectedVisible: await selected.isVisible(), bottomVisible: await bottom.isVisible(), focusRetained }, right: await tabGeometry(page.locator('.widget-panel[data-widget-area="right"]:visible')) }, null, 2));
+    await writeFile(info.outputPath('after-leave.json'), JSON.stringify({ mode, saved, after: await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1')), at299, at300, at500: { previewVisible: await preview.isVisible(), selectedVisible: await selected.isVisible(), bottomVisible: await bottom.isVisible(), focusRetained }, right: await tabGeometry(page.locator('.widget-panel[data-widget-area="right"]:visible')) }, null, 2));
     await page.screenshot({ path: info.outputPath('after-leave.png'), caret: 'hide' });
   } else {
     await page.getByRole('button', { name: 'Pin Preview', exact: true }).press('Escape');
     await expect(page.getByRole('tab', { name: 'Selected pinned', exact: true })).toBeFocused();
     await expect(selected).toBeVisible();
   }
+  expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
+});
+
+test('independent leave completes before a later other-area hover intent without consuming that intent', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop concurrent timer lifetimes');
+  await page.addInitScript(() => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view': 'collapsed', 'test-widgets/view-3': 'collapsed' }, placements: { 'test-widgets/view-3': 'bottom', 'test-widgets/view-4': 'bottom' }, selected: { right: 'test-widgets/view-2', bottom: 'test-widgets/view-4' } })));
+  await openWidgetFixture(page, ['Preview', 'First pinned', 'Selected pinned', 'Other preview', 'Bottom healthy']);
+  const preview = page.locator('[data-context-view="test-widgets/view"]');
+  const selected = page.locator('[data-context-view="test-widgets/view-2"]');
+  const other = page.locator('[data-context-view="test-widgets/view-3"]');
+  await expect(selected).toBeVisible();
+  const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
+  await expect(preview).toBeVisible();
+  await page.mouse.move(700, 200); // leave starts now
+  await page.clock.runFor(200);
+  await page.getByRole('tab', { name: 'Other preview', exact: true }).hover(); // intent due at original leave+350ms
+  await page.clock.runFor(99); await expect(preview).toBeVisible();
+  await page.clock.runFor(1); await expect(preview).toBeHidden(); await expect(selected).toBeVisible();
+  await expect(other).toHaveCount(0);
+  await page.clock.runFor(49); await expect(other).toHaveCount(0);
+  await page.clock.runFor(1); await expect(other).toBeVisible();
+  await expect(selected).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Pin Other preview', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
+  await writeFile(info.outputPath('independent-timers.json'), JSON.stringify({ saved, after: await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1')), previewVisible: await preview.isVisible(), selectedVisible: await selected.isVisible(), otherVisible: await other.isVisible() }, null, 2));
+});
+
+test('breakpoint changes cancel concurrent intent and leave work before returning to desktop', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop paired-timer presentation fence');
+  await page.addInitScript(() => localStorage.setItem('wolfpack-widget-layout:v1', JSON.stringify({ widgets: { 'test-widgets/view': 'collapsed', 'test-widgets/view-3': 'collapsed' }, placements: { 'test-widgets/view-3': 'bottom', 'test-widgets/view-4': 'bottom' }, selected: { right: 'test-widgets/view-2', bottom: 'test-widgets/view-4' } })));
+  await openWidgetFixture(page, ['Preview', 'First pinned', 'Selected pinned', 'Other preview', 'Bottom healthy']);
+  const saved = await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'));
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.getByRole('tab', { name: 'Preview', exact: true }).hover(); await page.clock.runFor(150);
+  await expect(page.locator('[data-context-view="test-widgets/view"]')).toBeVisible();
+  await page.getByRole('tab', { name: 'Other preview', exact: true }).hover();
+  await page.clock.runFor(100); // old preview leave and new target intent are both pending
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
+  await page.mouse.move(140, 300); // returning desktop must not create a fresh hover over Other preview
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.clock.runFor(500);
+  await expect(page.locator('[data-context-view="test-widgets/view-2"]')).toBeVisible();
+  await expect(page.locator('[data-context-view="test-widgets/view-4"]')).toBeVisible();
+  await expect(page.locator('[data-context-view="test-widgets/view-3"]')).toHaveCount(0);
+  await expect(page.locator('.widget-panel[data-peek=true]')).toHaveCount(0);
   expect(await page.evaluate(() => localStorage.getItem('wolfpack-widget-layout:v1'))).toBe(saved);
 });
 
