@@ -2469,6 +2469,7 @@ function renderProjectNames(projects: readonly string[]): void {
 }
 
 function returnFromProjectPicker(): void {
+  if (!isDesktop()) requestAnimationFrame(() => document.getElementById("mobile-new")?.focus({ preventScroll: true }));
   if (state.viewBeforePicker === "sessions") {
     backToSessions();
     return;
@@ -2485,7 +2486,8 @@ function returnFromProjectPicker(): void {
 
 async function showProjectPicker(machineUrl?: string): Promise<void> {
   state.projectMachine = machineUrl || "";
-  setState({ viewBeforePicker: state.currentView });
+  // Persistent mobile New may re-enter the picker; keep its original Back target.
+  if (isDesktop() || !["projects", "agent"].includes(state.currentView)) setState({ viewBeforePicker: state.currentView });
   showView("projects");
   resetPickerKeyboardSelection();
   const projectNameInput = document.getElementById("new-project-name") as HTMLInputElement;
@@ -4709,7 +4711,6 @@ document.getElementById("mobile-settings")?.addEventListener("click", event => {
   event.preventDefault();
   void showSettings();
 });
-document.getElementById("mobile-machines")?.addEventListener("click", () => void showSettings().then(() => revealSettingsSection("settings-machines")));
 
 // Non-key accessory controls must preserve native terminal keyboard focus too.
 for (const control of document.querySelectorAll<HTMLElement>(".kb-control summary")) {

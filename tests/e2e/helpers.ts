@@ -267,7 +267,9 @@ export async function collapseInitialSessionMenu(page: Page): Promise<void> {
 
 /** Open settings through whichever real settings control is accessible. */
 export async function openSettingsFromUi(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const mobile = page.locator("#mobile-settings");
+  if (await mobile.isVisible()) await mobile.click();
+  else await page.getByRole("button", { name: "Settings", exact: true }).click();
 }
 
 /** Layout uses ordinary Settings navigation, including its viewer suspension/return. */

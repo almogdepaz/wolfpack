@@ -2830,8 +2830,7 @@ body > header { height: 52px; min-height: 52px; }
   #dashboard-session-filter { order: 3; width: 100%; }
   #dashboard-session-filter .seg { display: flex; width: 100%; }
   #dashboard-session-filter .seg button { flex: 1; gap: 4px; padding: 7px 4px; font-size: 11px; white-space: nowrap; min-height: 44px; }
-  .new-session-primary { width: 36px; height: 36px; overflow: hidden; font-size: 0; border-radius: 50%; padding: 0; }
-  .new-session-primary::before { content: "+"; font-size: 24px; }
+  #gear-btn, .new-session-primary { display: none; }
   #session-list { padding: 0 16px 24px; }
   .needs-you .card-name-text { flex-basis: 100%; }
   .machine-group .card { padding: 12px; gap: 10px; }
@@ -2847,7 +2846,6 @@ body > header { height: 52px; min-height: 52px; }
   .mobile-session-search input { font-size: 16px; }
   #back-btn { background: transparent; border: 0; color: var(--accent); font: 400 16px var(--font-ui); padding: 0 6px; }
   #session-chip { background: transparent; border: 0; font: 600 16px var(--font-ui); color: var(--text-1); }
-  /* Keep both geometry and the existing Settings focus trigger during navigation. */
   .session-search { width: 100%; }
   #mobile-tab-bar [hidden] { display: none; }
   .machine-group .card .chev { display: none; }
@@ -2863,8 +2861,8 @@ body > header { height: 52px; min-height: 52px; }
   #kb-accessory .kb-enter { background: var(--attn-tint); color: var(--attn); }
   #kb-accessory .kb-open { background: var(--accent); color: var(--accent-on); }
   #mobile-tab-bar { display: flex; height: calc(64px + max(20px,env(safe-area-inset-bottom))); padding-bottom: max(20px,env(safe-area-inset-bottom)); flex: none; background: var(--glass-bg); backdrop-filter: var(--glass-filter); border-top: 1px solid var(--hairline); }
-  #mobile-tab-bar :is(button,a) { text-decoration: none; display: flex; flex: 1; flex-direction: column; justify-content: center; align-items: center; gap: 4px; border: 0; background: transparent; color: var(--text-4); font: 500 10px var(--font-ui); }
+  #mobile-tab-bar :is(button,a) { text-decoration: none; display: flex; flex: 1; flex-direction: column; justify-content: center; align-items: center; gap: 4px; min-height: 44px; border: 0; background: transparent; color: var(--text-4); font: 500 10px var(--font-ui); }
   #mobile-tab-bar svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 1.8; }
-  body:has(#sessions-view.visible) #mobile-sessions, body:has(#settings-view.visible) #mobile-settings { color: var(--accent); }
+  #mobile-tab-bar #mobile-new, body:has(#sessions-view.visible) #mobile-sessions, body:has(#settings-view.visible) #mobile-settings { color: var(--accent); }
   body:has(#terminal-view.visible) #mobile-tab-bar { display: none; }
 }

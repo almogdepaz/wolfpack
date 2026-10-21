@@ -1028,7 +1028,7 @@ test("extension safe mode allows manager metadata but never code or documents un
     await page.locator("#back-btn").click();
     await expect(page.locator("#sessions-view")).toBeVisible();
   }
-  await page.locator("#sidebar-settings-btn, #expanded-settings-btn, #gear-btn").filter({ visible: true }).first().click();
+  await page.locator("#sidebar-settings-btn, #expanded-settings-btn, #gear-btn, #mobile-settings").filter({ visible: true }).first().click();
   const safeMode = page.locator("#setting-extensionSafeMode");
   await expect(safeMode).toBeChecked();
   await expect(page.locator("[data-widget-extension]")).toHaveCount(4);
