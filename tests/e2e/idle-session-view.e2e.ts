@@ -227,9 +227,9 @@ test("idle uses presentation tier across local and verified peers and updates li
 
   await selectIdleView(page);
   await expect.poll(() => visibleSessionCardNames(page)).toEqual([
+    "idle-child", // its working parent's tree precedes idle roots before filtering
     "quiet-local",
     "structured-done",
-    "idle-child",
     "quiet-peer",
   ]);
   await expect(visibleSessionCards(page).locator(".delegation-parent-missing")).toHaveCount(0);
@@ -246,9 +246,9 @@ test("idle uses presentation tier across local and verified peers and updates li
   await dispatchVisibleRefresh(page);
   await expect.poll(() => fixture.sessionRequestCount()).toBeGreaterThan(requestsBeforeRefresh);
   await expect.poll(() => visibleSessionCardNames(page)).toEqual([
+    "idle-child",
     "structured-needs-input",
     "structured-done",
-    "idle-child",
     "quiet-peer",
   ]);
 });

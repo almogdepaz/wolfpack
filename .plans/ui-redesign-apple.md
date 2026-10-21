@@ -122,11 +122,12 @@ keep every `data-*` attribute, `card-open` button, `kill-btn`, session-order att
 ### 2a. tier helper + attention sort — `src/agent-runtime-ui.ts`, `app.ts` `sessionOrderRows`
 
 - `sessionTier(session): "need"|"work"|"idle"|"fail"` per decision 2. unit test every `AGENT_STATUS_STATE` value.
-- sort key, applied *within* a machine group before user manual order: need (oldest-waiting first) → fail → work (most recent output first) → idle (most recent first). manual drag order remains the tiebreak within a tier. if this conflicts with `session-order.ts` persistence semantics, keep tier ordering and persist only intra-tier order; document in pr.
+- sort within each machine: automatic need → fail → work → idle tiers; delegation trees rank by their most urgent member and stay adjacent. user-authored per-row slots win within a tier/sibling scope; untouched rows fill the remaining slots by oldest wait age for need and newest output for work/idle. a drag/Alt+Arrow persists only the moved row's target slot plus earlier manual placements, not the whole machine. v1 identity-only and sparse saved orders remain supported; optional `position` records sparse slots and optional `tier` scopes them to the effective tier at placement time. a placement is ignored in other tiers. older untagged entries bind to their first observed effective tier without an automatic migration write.
 
 ### 2b. pinned "Needs you" group — `app.ts` `renderSessionListFromState` (~1701)
 
 - before machine groups, render one synthetic group `machine-group needs-you` containing every `tier==need` session across all online machines, each row carrying its machine chip and `data-machine`. the same session still appears in its machine group (rendered dimmer, `opacity:.6`) so machine counts stay true; clicking either opens the same session.
+- ordering is **age-only**, oldest `runtimeState.changedAt` first across machines; machine-group manual positions are deliberately ignored. this can differ from a session's machine-group order. unknown ages follow known ages. this decision does not change the pinned renderer.
 - the pinned group is not drag-orderable; `sessionOrderCardHtml` returns no ordering attrs for it. hidden when empty.
 - mobile: identical, above machine groups.
 
@@ -331,3 +332,93 @@ verification ran in `/home/almog/dev/wolfpack` on the final fix-3 source diff ag
 
 - no full Bun/full-repository browser rerun in this narrow final punch list; earlier full-suite baseline failures and device limitations remain documented above. no installs or live-service changes. unrelated `edc-context/reports/` left untouched.
 - final commit SHA and normal-push result are recorded in `12-final-git.txt` and `13-push.log`. stop after delivery; no additional work authorized.
+
+## phase 2a/2b handoff
+
+- branch/worktree: `ui/triage-pinned`, `/home/almog/dev/wolfpack-triage-pinned`; base `a3e249544f892f50735ca0fad2fde87e4ab2a888` (`ui/apple-reskin`). implementation `ac61c90cac77c0bf798c74f8cdb6c2f1de222de6`; test-only reconciliation `8e72633a397ad3a3339c3d415fbde4388e11caa4`. logical commits only; no push/PR/merge or child sessions. sibling phase 2c untouched.
+- changed production: `public/app.ts` (shared dashboard row renderer, synthetic pinned group, ordering/focus exclusions), new `public/session-triage.ts` (triage comparator over existing delegation ordering), `public/styles.css` (full-width amber group, machine chips, .6-opacity duplicates), generated `src/public-assets.ts`. reused `src/agent-runtime-ui.ts` unchanged. no server/broker/websocket/auth/wire/dependency/lockfile changes.
+- decisions (updated by fix-1 below): need → fail → work → idle stays automatic. within a tier, explicit manual positions win; age/recency orders only unpositioned rows. need age uses runtime `changedAt`, work/idle recency uses activity `lastRenderedActivityAt`, never terminal text or client receipt time. unknown/invalid ages follow known ages. delegation trees stay contiguous and rank by their most urgent member, including descendant waiting age. pinned projection independently includes every waiting child, even with a collapsed parent. desktop/mobile share the renderer; pinned rows retain machine routing/Open/Stop but no ordering attributes; group is absent when empty or excluded by tier, hidden when search has no matches.
+- persistence remains v1-compatible. automatic fallback positions are separate from explicit manual positions. drag/Alt+Arrow works within the same effective tier regardless of timestamps; cross-tier moves are rejected. fix-2 adds optional sparse `position` slots: only the moved row and earlier manual placements are saved; untouched rows keep automatic age/recency. fix-3 adds optional `tier` scope: tagged placements are ignored in other effective tiers. older identity-only and sparse entries bind to their first observed effective tier in memory, with no automatic migration write or deletion. delegation/manual-order/drag tests pass; updated selectors distinguish synthetic duplicates from real machine rows, and hierarchy/escaping assertions remain intact.
+- tests: all 12 runtime-state mappings retained (broker authority fixture corrected to the contract constant); five new sort tests; four new Playwright tests covering duplication/dimming/counts, empty group, no ordering attributes, multi-machine routing and collapsed waiting children. red: unit 4 fail/14 pass; pinned browser 2 fail/1 pass. green: units 24 pass; affected Chromium 63 pass/23 skip; pinned desktop/390px 8 pass. inspected 1440px/390px captures in `pinned-final-artifacts/`; no screenshots committed.
+
+verification ran in this worktree; logs and command/revision/duration records: `/tmp/wolfpack-2ab-logs/`. full gates used clean `ac61c90c` production inputs. subsequent changes are the one navigation test and this handoff only; final asset/type/unit rechecks ran at `8e72633a`. no repeated full-suite gate after the test-only correction.
+
+| check | actual exit / counts | evidence |
+|---|---|---|
+| frozen install | 0; no lockfile change | `install.log` |
+| gen-assets; typecheck | 0; 0 (final rechecks also 0; typecheck 13s in full gate) | `17-final-assets*`, `18-final-types*`, `28-final-assets.log`, `29-final-types.log` |
+| focused units | 0; 24 pass, 0 fail | `30-final-unit.log` |
+| full `bun test` | 1; 3603 pass, 8 skip, 2 fail; 354s | `19-final-bun.log`, `19-final-bun-result.txt` |
+| full Chromium, desktop/iphone-14/iphone-se, zero retries | 1; 780 pass, 448 skip, 29 fail, 0 flaky; 1491s | `20-full-chromium.{log,json}`, `20-full-chromium-result.txt` |
+| same Chromium gate on exact base archive + same dependencies/broker | 1; 768 pass, 448 skip, 29 fail, 0 flaky; 1474s | `23-base-chromium.{log,json}`, `23-base-chromium-result.txt` |
+| corrected delegation navigation test | 0; 1 pass | `27-ux-corrected.log` |
+| base inbox test | 1; 150 pass, 1 fail (same #461 bounded JSON failure) | `22-base-inbox.log` |
+| isolated server-lifecycle tests, head / base | 0: 4 pass / 1: 3 pass, 1 fail (same temporary-home assertion) | `25-head-lifecycle-isolated.log`, `26-base-lifecycle-isolated.log` |
+| design detector; whitespace/scope | 2: two unchanged legacy CSS warnings; `git diff --check` 0, protected diff empty | `16-design-scan.json`, final git evidence |
+
+- browser reconciliation: 28 failures match base by test and failure mechanism; the only head-only case was the old navigation count including the new pinned duplicate, corrected and passing in isolation. base-only widget-manager x=-31 failure passed on head. complete signatures/comparison: `24-baseline-comparison.json`. full-suite totals are reported as run, not relabeled green after the focused correction.
+- Bun failures are not hidden: #461 is the authorized known failure; the additional server-lifecycle temporary-home assertion also reproduces on unchanged base, while isolated head passes. full Bun ran concurrently with browser fixtures, and the assertion scans global temporary homes; no unrelated fixture cleanup fix attempted. base is a source archive (`base-path`), not a git worktree; only browser and isolated inbox/lifecycle checks ran there, not git-metadata-dependent unit tests.
+- open risks: no green full-repository gate is claimed; baseline failures remain. hierarchy-preserving sibling sorting is deliberate rather than strict flat cross-tree tier order. native broker was the existing approved binary, not rebuilt; WebKit/physical-device behavior is unverified. quick reply, footer/meta, snooze, failed actions and all phase 2c–2e work remain out of scope. the original equal-timestamp-only reorder model is superseded by fix-1 below. no push.
+
+### phase 2a/2b fix-1 — review A1/A2/A3/L-a
+
+- start `3cebe63705e3d52d50309fb1afe47f0944e28481`; final production/tests `4d57c5cd14857ed1ce13252f77e6dcea654423ce`, branch `ui/triage-pinned`. verified findings against source/history before fixing. no child sessions, push, PR, merge, dependency/server/protocol changes, or sibling-worktree edits.
+- **A1:** explicit persisted manual order now precedes recency within each automatic tier. automatic stable server-order fallback is kept separately in memory, never converted into manual positions on refresh. keyboard/drag scope uses effective tier, not timestamp equality. retained v1 full-machine snapshots on a manual gesture; new unpositioned rows continue sorting by recency. `public/index.html:144` now explains the tier boundary and delegation-tree movement.
+- **A2:** `renderedSessionNavigationTargets` excludes controls inside `.needs-you`; dashboard Cmd+ArrowDown from current waiting session attaches the working session instead of reopening the pinned duplicate.
+- **A3:** shared subtree priority calculation promotes the most urgent descendant to its ancestors, preserving adjacency and sibling scopes. the same calculation drives render order and allowed manual moves. nested-grandchild unit coverage included. navigation expectations now put the idle tree with a waiting child above working orphan roots; all hierarchy/escaping assertions retained.
+- **L-a:** rounded `.session-search:focus-within` owns the 3px green ring at .7 alpha; inner input has no square shadow. forced-colors retains its existing 2px outline. computed shape, shadow and forced-colors assertions pass.
+- changed: `public/{app.ts,session-triage.ts,index.html,styles.css}`, generated `src/public-assets.ts`, `tests/unit/session-triage.test.ts`, new `tests/e2e/triage-review.e2e.ts`, existing `reskin-review` and `ux-navigation` expectations. protected diff empty (`18-protected-final.diff`). logs `/tmp/wolfpack-2ab-logs/fix-1/`.
+
+| check | actual outcome | evidence |
+|---|---|---|
+| intended red, before production edits | units exit 1: 4 pass/4 fail; desktop A1 keyboard/drag, A3 and L-a fail; corrected A2 probe fails n1→n1 vs n1→w1 | `01-unit-red.log`, `02-browser-red.log`, `03-a2-red.log` |
+| final gen-assets; typecheck | exit 0; exit 0 | `10-final-assets.log`, `11-final-types.log` |
+| focused tier/triage/order/delegation units | exit 0: 34 pass/0 fail | `12-final-unit.log` |
+| affected Chromium desktop + iphone-14, 8 specs | exit 0: 111 pass/45 intentional skips, 2.0 min | `09-affected.log`, `affected-artifacts/` |
+| full Chromium, 3 projects, once, zero retries | exit 1: 790 pass/452 skip/30 fail/0 flaky, 1321s | `15-full-chromium.{log,json}`, `15-full-chromium-result.txt`, `full-artifacts/` |
+| two extra failures on exact `a3e24954` base, 10 repeats per applicable project | exit 1: 8 pass/20 project skips/12 fail; passive geometry 4/10, collapsed preview 8/10 | `16-base-extra-failures.{log,json}`, `base-extra-artifacts/` |
+| whitespace/protected scope | exit 0; protected diff 0 bytes | `18-protected-final.diff`, final git evidence |
+
+- full gate used clean committed `4d57c5cd` in this worktree and the existing approved broker binary. all new regression cases pass in that full run. 28 failures match the prior exact-base list; two additional cases reproduce on that same base archive with identical assertions: iphone-se passive-inspection columns 122→81 and desktop collapsed widget Beta panel hidden. base-only widget-manager x=-31 passed this run. complete comparison/signatures: `17-baseline-comparison.json`; compact result `17-comparison-summary.txt`. no unexplained branch-only failure remains; full suite is **not green**.
+- evidence corrections retained: the first A2 probe read the attach message instead of its URL and is not valid red evidence; `03-a2-red.log` is the corrected intended failure. the first narrow mobile A3 test needed expanding its already-collapsed parent; fixture corrected, not production mobile collapse behavior. detector exit 2 reports unchanged CSS/markup warnings (`13-design-scan.json`); no unrelated redesign attempted.
+- no full Bun rerun was requested for this scoped fix; prior #461 and global temporary-home lifecycle failures remain recorded above. no WebKit or physical-device claim. only this handoff changed after the full gate. stopped after committing the handoff; no push.
+
+### phase 2a/2b fix-2 — per-row placement and pinned age-only decision
+
+- start `58eca009`; implementation `efb84f22942b373166eaa7178c56c03be2e4c629`, `ui/triage-pinned`. reviewed second-pass section A and verified the whole-machine snapshot in `moveSessionCard` before editing. scope: client persistence/ordering, focus token, tests and plan only. no push/PR/merge, installs, child sessions or sibling edits.
+- **PER-ROW:** v1 entries now optionally carry a nonnegative safe-integer `position` within their effective tier/sibling scope. only the moved row gains a placement; earlier manual placements shift with displaced siblings. untouched rows fill vacant slots by automatic wait age/recency, including after refresh/reload. the numeric slot preserves the actual drop position without marking the target or other rows manual. out-of-range slots are clamped when scopes shrink; collisions resolve deterministically. identity-only v1 entries load unchanged and retain their manual rank; invalid optional metadata is ignored, not the session identity. legacy full-machine orders remain manual until the user resets them. this supersedes fix-1's full-machine gesture snapshot.
+- **N-A1 AGE-ONLY:** documented explicitly in plan 2b. pinned rows remain oldest-waiting-first across machines, ignoring machine-group manual slots; pinned rendering code is unchanged. **token nit:** unchanged rounded .7-alpha ring now consumes `--accent-focus`.
+- changed production: `public/app.ts` records sparse moves through `public/session-order.ts`; that file validates/round-trips optional positions and updates only previous placements plus the mover. `public/session-triage.ts` reserves manual slots per tier/sibling group and fills other slots automatically. `public/styles.css` adds/uses the accent token; generated `src/public-assets.ts`. no server/broker/wire/auth/lockfile changes (`12-protected.diff` is empty).
+- regression evidence: `01-per-row-red.log`, exit 1, two failures before production changes (keyboard saved all six rows; drag saved both rows). green UI coverage uses a real gesture, no seeded store: asserts one saved row, unchanged untouched age/recency sorting, reload, and preservation of earlier placements on a second move. desktop drag also asserts a one-row store. unit coverage includes v1 legacy/sparse round trips, malformed metadata, shifted earlier placements, exact sparse slots and scope shrink collisions. the old delegation spec's whole-machine store/reload expectations were updated to the selected per-row behavior; its first failure and subsequent two passing cases remain in `06-affected.log` / `07-persistence-updated.log`.
+
+final scoped checks ran in `/home/almog/dev/wolfpack-triage-pinned` on the exact source diff subsequently committed as `efb84f22`; only this handoff changed afterwards. complete logs and command/dirty-state/duration records: `/tmp/wolfpack-2ab-logs/fix-2/`.
+
+| check | actual exit / result | evidence |
+|---|---|---|
+| gen-assets | 0; 1s | `08-final-assets.log`, `08-final-assets-result.txt` |
+| typecheck | 0; 11s | `09-final-types.log`, `09-final-types-result.txt` |
+| focused order/triage/tier/delegation units | 0; 38 pass, 0 fail | `10-final-unit.log` |
+| six affected Chromium desktop + iphone-14 specs, zero retries | 0; 95 pass, 45 intentional skips; 95s | `11-final-affected.log`, `11-final-affected-result.txt`, `final-artifacts/` |
+| whitespace/protected scope | 0; protected diff 0 bytes | `12-protected.diff`, final git evidence |
+
+- no full Bun/full Chromium rerun requested for this scoped follow-up; fix-1's full-gate baseline failures/device limitations remain documented, not claimed resolved. all requested scoped checks pass. stopped after the handoff commit; no push.
+
+### phase 2a/2b fix-3 — identityless ranking and tier-scoped placements
+
+- start `c5ff5d76`; implementation `3fcb8ff769178988d66c0b1da06a0ab3ea8632db`, `ui/triage-pinned`. verified third-review section A findings against code and history. client/helpers/tests/generated assets only; no server/protocol/dependency/sibling edits, child sessions, push/PR/merge.
+- **N-A2:** triage now ranks every row, not just persistent ids. the existing delegation traversal is shared by a new row-rank entry point and the unchanged identity-order wrapper; no copied tree algorithm. identityless waiting rows keep their age/tier priority instead of sinking below work, while hierarchy remains adjacent. they still do not gain drag/persistence attributes without an id.
+- **N-A3:** new placements save validated optional `tier` alongside `position` in the same v1 format. scope is the effective subtree tier, so descendant urgency changes also invalidate a placement in the new tier. mismatched scopes are ignored, not deleted or rebound by moving another row. an explicit new move can place the row in its new tier. older v1 identity-only and untagged sparse entries load normally and bind to the first observed effective tier in memory. inferred scopes are saved with the next manual save; there is no automatic migration write. a legacy disk entry has no historical tier to recover and will bind again on reload until such a save; tagged entries retain their scope across reload.
+- changed: `public/{app.ts,session-order.ts,session-triage.ts}`, generated `src/public-assets.ts`; unit order/triage coverage and browser triage/persistence coverage. tests assert both legacy formats still load, new tier metadata round-trips, invalid metadata drops without losing identities, tagged placement ignores tier changes across reload, and old out-of-tier placements are not rebound by another move. updated exact-store expectations include the new tier field. pinned age-only ordering is unchanged.
+- intended red: `01-regression-red.log`, exit 1, **18 pass / 2 fail**, before production edits. N-A2 receives known-need/worker before identityless need; N-A3 carries a work slot into need. existing order tests characterize the shared traversal before extraction. green results below.
+
+final scoped checks ran in `/home/almog/dev/wolfpack-triage-pinned` on the exact source diff committed as `3fcb8ff7`; only this handoff changed afterwards. logs and command/revision/dirty-state records: `/tmp/wolfpack-2ab-logs/fix-3/`.
+
+| check | actual exit / result | evidence |
+|---|---|---|
+| gen-assets | 0 | `06-final-assets.log`, `06-final-assets-result.txt` |
+| typecheck | 0; 11s | `07-final-types.log`, `07-final-types-result.txt` |
+| focused order/triage/tier/delegation units | 0; 42 pass, 0 fail | `08-final-unit.log` |
+| same six affected desktop + iphone-14 specs, zero retries | 0; 101 pass, 45 intentional skips; 99s | `09-final-affected.log`, `09-final-affected-result.txt`, `final-artifacts/` |
+| whitespace/protected scope | 0; protected diff 0 bytes | `10-protected.diff`, final git evidence |
+
+- no full Bun/full Chromium rerun requested for this scoped follow-up; earlier baseline failures and WebKit/device limitations remain documented, not claimed resolved. legacy missing-tier inference is intentionally non-destructive and cannot reconstruct historical facts. all requested scoped checks pass. stopped after the handoff commit; no push.

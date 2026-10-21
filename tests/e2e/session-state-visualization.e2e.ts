@@ -391,7 +391,7 @@ test("removes attention controls and unseen decoration", async ({ page }) => {
 test("shows semantic labels only for source-backed runtime state", async ({ page }) => {
   await page.goto(server.baseUrl);
 
-  const cardBadge = (name: string) => page
+  const cardBadge = (name: string) => page.locator('.card[data-session-order-id]')
     .getByRole("button", { name: `Open ${name}` })
     .locator("xpath=..")
     .locator(".status");
@@ -405,7 +405,7 @@ test("shows semantic labels only for source-backed runtime state", async ({ page
 test("shows only review changes in session activity lines", async ({ page }) => {
   await page.goto(server.baseUrl);
 
-  const card = (name: string) => page.getByRole("button", { name: `Open ${name}` }).locator("xpath=..");
+  const card = (name: string) => page.locator('.card[data-session-order-id]').getByRole("button", { name: `Open ${name}` }).locator("xpath=..");
   await expect(card("active-output").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("active-output").locator(".session-activity")).toHaveCSS("color", "rgb(127, 200, 255)");
   await expect(card("structured").locator(".session-activity")).toHaveText("changed since review");
@@ -476,7 +476,7 @@ test("opening a terminal clears its acknowledged review change after websocket o
   });
   await page.goto(server.baseUrl);
 
-  const card = page.getByRole("button", { name: "Open structured" }).locator("xpath=..");
+  const card = page.locator('.card[data-session-order-id]').getByRole("button", { name: "Open structured" }).locator("xpath=..");
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
   expect(acknowledgements).toEqual([]);
   await card.click();
@@ -552,7 +552,7 @@ test("a delayed acknowledgement cannot clobber a newer runtime transition", asyn
   });
   await page.goto(server.baseUrl);
 
-  const card = page.getByRole("button", { name: "Open structured" }).locator("xpath=..");
+  const card = page.locator('.card[data-session-order-id]').getByRole("button", { name: "Open structured" }).locator("xpath=..");
   expect(acknowledgements).toEqual([]);
   await card.click();
   await websocket.firstSocket;

@@ -165,16 +165,17 @@ test("desktop groups structured sub-agents directly under their parent", async (
 
   await page.goto(srv.baseUrl);
 
-  const cards = page.locator("#session-list .card");
+  const cards = page.locator("#session-list .machine-group:not(.needs-you) .card");
   await expect(cards).toHaveCount(5);
+  await expect(page.locator("#session-list .needs-you .card-name-text")).toHaveText(["wolfpack-sub-agent"]);
   await expect.poll(() => cards.locator(".card-name").evaluateAll((names) =>
     names.map((name) => name.querySelector(".card-name-text")?.textContent),
   )).toEqual([
-    "wolfpack",
+    "wolfpack", // its waiting descendant pulls the whole tree above working roots
     "wolfpack-sub-agent",
     "wolfpack-sub-agent-2",
-    "unrelated",
     "orphan-child",
+    "unrelated",
   ]);
   await expect(cards.locator(".harness-icon[data-harness=\"pi\"][aria-label=\"pi\"]")).toHaveCount(5);
   await expect(cards.nth(0)).toContainText("2 children");
@@ -185,9 +186,9 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(cards.nth(1).locator(".delegation-parent-link")).toHaveCount(0);
   await expect(cards.nth(2)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(2)).toHaveAttribute("data-parent-session", "wolfpack");
-  await expect(cards.nth(4)).toHaveClass(/orphan-session-card/);
-  await expect(cards.nth(4)).toContainText("missing parent: gone <parent> & \"quoted\"");
-  await expect(cards.nth(4).locator("script")).toHaveCount(0);
+  await expect(cards.nth(3)).toHaveClass(/orphan-session-card/);
+  await expect(cards.nth(3)).toContainText("missing parent: gone <parent> & \"quoted\"");
+  await expect(cards.nth(3).locator("script")).toHaveCount(0);
 
   await collapseInitialSessionMenu(page);
   const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card").first();

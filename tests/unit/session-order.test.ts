@@ -5,6 +5,7 @@ import {
   moveSessionRelative,
   orderDelegationSessionRows,
   reconcileSessionOrder,
+  recordManualSessionMove,
   resetMachineSessionOrder,
   saveSessionOrder,
   type SessionOrderIdentity,
@@ -109,6 +110,37 @@ describe("persistent session order", () => {
 
     expect(orderDelegationSessionRows(originalRows, order, "").map(row => row.session.name)).toEqual(["second", "first"]);
     expect(orderDelegationSessionRows(refreshedRows, order, "").map(row => row.session.name)).toEqual(["second-renamed", "first-renamed"]);
+  });
+
+  test("v1 round trips sparse positions and keeps legacy orders, dropping invalid position metadata", () => {
+    const entries: SessionOrderIdentity[] = [local("legacy"), { ...local("moved"), position: 2, tier: "work" }, { ...remote("other"), position: 0 }];
+    let raw = "";
+    expect(saveSessionOrder({ setItem: (_key, value) => { raw = value; } }, entries)).toBe(true);
+    expect(JSON.parse(raw).version).toBe(1);
+    expect(loadSessionOrder({ getItem: () => raw })).toEqual(entries);
+    for (const tier of ["invalid", 3, null]) {
+      expect(loadSessionOrder({ getItem: () => JSON.stringify({ version: 1, sessions: [{ ...local("invalid-tier"), position: 2, tier }] }) })).toEqual([{ ...local("invalid-tier"), position: 2 }]);
+    }
+    for (const position of [-1, 1.5, "2", Number.MAX_SAFE_INTEGER + 1]) {
+      expect(loadSessionOrder({ getItem: () => JSON.stringify({ version: 1, sessions: [{ ...local("invalid"), position }] }) })).toEqual([local("invalid")]);
+    }
+  });
+
+  test("per-row moves persist only the moved slot and update earlier placements in the same scope", () => {
+    const siblings = [local("a"), local("b"), local("c"), local("d")];
+    const next = [local("b"), local("a"), local("c"), local("d")];
+    const first = recordManualSessionMove([remote("untouched")], next, siblings, local("a"), "work");
+    expect(first).toEqual([remote("untouched"), { ...local("a"), position: 1, tier: "work" }]);
+    const second = recordManualSessionMove(first, [local("c"), local("b"), local("a"), local("d")], siblings, local("c"), "work");
+    expect(second).toEqual([remote("untouched"), { ...local("a"), position: 2, tier: "work" }, { ...local("c"), position: 0, tier: "work" }]);
+    expect(recordManualSessionMove(second, next, siblings, local("missing"), "work")).toEqual(second);
+  });
+
+  test("a move in a new tier does not rebind earlier out-of-tier placements", () => {
+    const previous: SessionOrderIdentity[] = [{ ...local("a"), position: 1, tier: "work" }];
+    expect(recordManualSessionMove(previous, [local("b"), local("a")], [local("a"), local("b")], local("b"), "need")).toEqual([
+      ...previous, { ...local("b"), position: 0, tier: "need" },
+    ]);
   });
 
   test("resets one machine without changing another and reports storage write failures", () => {

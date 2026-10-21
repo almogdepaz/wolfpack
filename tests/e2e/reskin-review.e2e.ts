@@ -20,14 +20,14 @@ async function fixture(page: Page) {
     const before = requests;
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect.poll(() => requests).toBeGreaterThan(before);
-    await expect(page.locator('#session-list .tier-need')).toHaveCount(2);
+    await expect(page.locator('#session-list .machine-group:not(.needs-you) .tier-need')).toHaveCount(2);
   } };
 }
 
 test("H1 counters and summary track initial load and refresh without filter interaction", async ({ page }) => {
   const data = await fixture(page);
   await page.goto(server.baseUrl);
-  await expect(page.locator('#session-list .card')).toHaveCount(2);
+  await expect(page.locator('#session-list .machine-group:not(.needs-you) .card')).toHaveCount(2);
   await expect(page.locator('#dashboard-session-filter [data-session-card-view="need"] .n')).toHaveText("1");
   await expect(page.locator('#session-summary')).toContainText("2 across 1 machine · 1 need you");
   await expect(page.locator('#session-list [data-session-order-id="another-id"] .harness-icon')).toHaveAttribute('aria-label', 'Terminal');
@@ -43,12 +43,14 @@ test("H2 dashboard query survives runtime refresh", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop");
   const data = await fixture(page);
   await page.goto(server.baseUrl);
-  await expect(page.locator('#session-list .card')).toHaveCount(2);
+  await expect(page.locator('#session-list .machine-group:not(.needs-you) .card')).toHaveCount(2);
   await page.locator('#dashboard-search').fill("another");
-  await expect(page.locator('#session-list .card:visible')).toHaveCount(1);
+  await expect(page.locator('#session-list .machine-group:not(.needs-you) .card:visible')).toHaveCount(1);
+  await expect(page.locator('#session-list .needs-you')).toBeHidden();
   await data.refresh();
   await expect(page.locator('#dashboard-search')).toHaveValue("another");
-  await expect(page.locator('#session-list .card:visible')).toHaveCount(1);
+  await expect(page.locator('#session-list .machine-group:not(.needs-you) .card:visible')).toHaveCount(1);
+  await expect(page.locator('#session-list .needs-you .card:visible')).toHaveCount(1);
 });
 
 test("M1 control menu is hittable and control/paste preserve terminal focus", async ({ page }, info) => {
@@ -100,7 +102,7 @@ test("sidebar grid actions reveal on hover and keyboard focus without leaving th
   test.skip(info.project.name !== 'desktop');
   await fixture(page);
   await page.goto(server.baseUrl);
-  await page.getByRole('button', { name: 'Open test-project', exact: true }).click();
+  await page.locator('#session-list .needs-you').getByRole('button', { name: 'Open test-project', exact: true }).click();
   const row = page.locator('#sidebar-session-list [data-session-order-id="another-id"]');
   const grid = row.locator('[data-action="toggle-grid"]');
   await expect(grid).toHaveCount(1);
@@ -128,10 +130,14 @@ test("dashboard search retains a visible tint focus ring without an outline", as
   await search.focus();
   await expect(search).toBeFocused();
   await expect(search).toHaveCSS('outline-style', 'none');
-  await expect(search).toHaveCSS('box-shadow', 'rgba(69, 237, 126, 0.14) 0px 0px 0px 3px');
+  await expect(search).toHaveCSS('box-shadow', 'none');
+  const field = page.locator('.session-search').filter({ has: search });
+  await expect(field).toHaveCSS('border-radius', '9px');
+  await expect(field).toHaveCSS('box-shadow', 'rgba(69, 237, 126, 0.7) 0px 0px 0px 3px');
   await page.emulateMedia({ forcedColors: 'active' });
   await expect(search).toHaveCSS('outline-style', 'solid');
   await expect(search).toHaveCSS('outline-width', '2px');
+  await expect(field).toHaveCSS('box-shadow', 'none');
 });
 
 test("M2 single-terminal destructive chrome is absent in a manual grid", async ({ page }, info) => {
