@@ -434,9 +434,9 @@ describe("ExtensionHost", () => {
     } finally { count.mockRestore(); panels.dispose(); }
   });
 
-  test("removing the actual preview owner restores its saved sibling without cancelling another area's intent", async () => {
+  test("removing the actual preview owner retains collapsed siblings without cancelling another area's intent", async () => {
     container = new FakeElement();
-    const saved = JSON.stringify({ widgets: { "widgets/preview": "collapsed", "widgets/other": "collapsed" }, placements: { "widgets/other": "bottom" }, selected: { right: "widgets/selected" } });
+    const saved = JSON.stringify({ widgets: { "widgets/preview": "collapsed", "widgets/first": "collapsed", "widgets/selected": "collapsed", "widgets/other": "collapsed" }, placements: { "widgets/other": "bottom" }, selected: { right: "widgets/selected" } });
     let preferences = saved;
     const layout = new WidgetLayout({ getItem: () => preferences, setItem(_key, value) { preferences = value; } });
     const wrappers = new Map<string, HTMLElement>();
@@ -447,23 +447,27 @@ describe("ExtensionHost", () => {
     });
     panels = new WidgetPanels({ container: container as unknown as HTMLElement, registry, layout, onSelect(id) { panels.select(id); } });
     registry.setScope({ installationId, sessionId: "22222222-2222-4222-8222-222222222222" });
+    let selectedVisible = false;
     const removePreview = registry.register("widgets/preview", { id: "preview", title: "Preview", mount() { return { dispose() {} }; } });
     registry.register("widgets/first", { id: "first", title: "First", mount() { return { dispose() {} }; } });
-    registry.register("widgets/selected", { id: "selected", title: "Selected", mount() { return { dispose() {} }; } });
+    registry.register("widgets/selected", { id: "selected", title: "Selected", mount() { return { dispose() {}, setVisible(value) { selectedVisible = value; } }; } });
     registry.register("widgets/other", { id: "other", title: "Other", mount() { return { dispose() {} }; } });
     try {
       panels.select("widgets/selected", false);
+      expect(selectedVisible).toBe(true);
       panels.select("widgets/preview", false);
       expect(wrappers.get("widgets/preview")!.dataset.peek).toBe("true");
       expect(wrappers.get("widgets/selected")!.hidden).toBe(true);
       const otherRail = container.children.find(child => child.dataset.widgetArea === "bottom")!;
       otherRail.dispatchEvent(new Event("pointerenter"));
       removePreview();
-      expect(wrappers.get("widgets/selected")!.hidden).toBe(false);
+      expect(selectedVisible).toBe(false);
+      expect(wrappers.get("widgets/selected")!.dataset.collapsed).toBe("true");
       expect(wrappers.get("widgets/selected")!.dataset.peek).toBe("false");
       await Bun.sleep(180);
       expect(wrappers.get("widgets/other")?.dataset.peek).toBe("true");
-      expect(wrappers.get("widgets/selected")!.hidden).toBe(false);
+      expect(selectedVisible).toBe(false);
+      expect(wrappers.get("widgets/selected")!.dataset.collapsed).toBe("true");
       expect(preferences).toBe(saved);
     } finally { registry.dispose(); panels.dispose(); }
   });
