@@ -175,9 +175,49 @@ test("compact machine headers make the name the drag handle and reserve the chev
   await expect(group.locator(".machine-group-body")).toHaveAttribute("hidden", "");
   await expect(group.locator(".machine-group-body")).toHaveAttribute("inert", "");
   await expect(group.locator(".machine-header-btns")).toHaveCount(0);
-  await expect(group.locator(".machine-header").getByRole("button")).toHaveCount(1);
-  await expect(group.getByRole("button", { name: "Start a session on verified peer" })).toHaveCount(0);
+  await expect(group.locator(".machine-header").getByRole("button")).toHaveCount(testInfo.project.name === "desktop" ? 1 : 2);
+  await expect(group.getByRole("button", { name: "Start a session on verified peer" })).toHaveCount(testInfo.project.name === "desktop" ? 0 : 1);
 });
+
+for (const withSessions of [false, true]) for (const collapsed of [false, true]) {
+  test(`mobile peer header creation preserves machine binding and collapse (sessions ${withSessions}, collapsed ${collapsed})`, async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === 'desktop', 'mobile per-machine action');
+    const name = 'verified "peer" & <box>';
+    await installMachineFixture(page, withSessions, name);
+    const requests: string[] = [];
+    const headers = { 'Access-Control-Allow-Origin': '*' };
+    await page.route('https://peer.example.ts.net/api/projects', route => {
+      requests.push(route.request().url());
+      return route.fulfill({ headers, json: { projects: ['peer-project'] } });
+    });
+    await page.route('https://peer.example.ts.net/api/settings', route => route.fulfill({ headers, json: { effective: { cmds: ['shell'], agentCmd: 'shell' } } }));
+    await page.route('https://peer.example.ts.net/api/next-session-name**', route => route.fulfill({ headers, json: { name: 'peer-new' } }));
+    await page.goto(server.baseUrl);
+    const group = mainGroup(page);
+    if (collapsed) await group.getByRole('button', { name: `Collapse ${name}`, exact: true }).click();
+    const create = group.locator('.machine-header').getByRole('button', { name: `Start a session on ${name}`, exact: true });
+    await expect(create).toHaveCount(1);
+    await expect(create).toBeVisible();
+    await expect(create).toHaveAttribute('data-machine', peerIdentity);
+    await expect(page.locator('.new-session-primary')).toBeHidden();
+    await page.evaluate(() => window.addEventListener('click', event => {
+      if (event.target instanceof Element && event.target.closest('.machine-add-btn')) document.documentElement.dataset.newClickBubbled = 'yes';
+    }));
+    await create.click();
+    await expect(page.locator('html')).not.toHaveAttribute('data-new-click-bubbled', 'yes');
+    await expect(page.locator('#create-project-action')).toHaveAttribute('aria-label', `Create project on ${name}`);
+    await page.getByRole('button', { name: 'Open project peer-project', exact: true }).click();
+    await expect(page.locator('#session-name-input')).toHaveValue('peer-new');
+    await expect(page.getByRole('button', { name: 'Start shell', exact: true })).toBeVisible();
+    await page.locator('#back-btn').click();
+    await page.locator('#back-btn').click();
+    await expect(create).toBeFocused();
+    await expect(group.locator('.machine-collapse-toggle')).toHaveAttribute('aria-expanded', String(!collapsed));
+    expect(requests).toEqual(['https://peer.example.ts.net/api/projects']);
+    await testInfo.attach('peer-creation-flow', { body: JSON.stringify({ withSessions, collapsed, machine: peerIdentity, requests, name }), contentType: 'application/json' });
+    await page.screenshot({ path: testInfo.outputPath('peer-create-return.png') });
+  });
+}
 
 test("empty sidebar machine groups keep a header create action on their own machine", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop sidebar creation regression");

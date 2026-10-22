@@ -73,7 +73,7 @@ for (const width of [1440, 390]) {
     await capture("pinned", "#session-list .needs-you");
     await page.locator("#session-list .needs-you").getByRole("button", { name: "Open waiting", exact: true }).click();
     await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
-    await expect(page.locator("#needs-input-banner")).toBeVisible();
+    await expect(page.locator("#needs-input-banner")).toHaveJSProperty("hidden", width <= 768);
     await capture("terminal");
     // Grid entry is desktop-only. Seed it through the real desktop controls,
     // then capture its existing responsive state at the requested mobile width.

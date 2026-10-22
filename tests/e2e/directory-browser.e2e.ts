@@ -93,6 +93,25 @@ test.afterAll(async () => {
   await server?.close();
 });
 
+test("catalog session creation preserves common agent/name fields and validation", async ({ page }) => {
+  const requests: unknown[] = [];
+  await routeAgentSelection(page, requests, []);
+  await openProjectPicker(page);
+  await page.getByRole('button', { name: 'Open project catalog-project', exact: true }).click();
+  const input = page.locator('#session-name-input');
+  const start = page.getByRole('button', { name: 'Start shell', exact: true });
+  await expect(input).toHaveValue('directory-session');
+  await input.fill('invalid name');
+  await expect(input).toHaveClass(/invalid/);
+  await expect(page.locator('#session-name-error')).toHaveClass(/visible/);
+  await start.click(); // handler rejects invalid names even though the card stays enabled
+  expect(requests).toEqual([]);
+  await input.fill('catalog-custom');
+  await expect(start).toBeEnabled();
+  await start.click();
+  await expect.poll(() => requests).toEqual([{ project: 'catalog-project', cmd: 'shell', sessionName: 'catalog-custom' }]);
+});
+
 test("opens a canonical server folder from a dedicated host-labelled picker", async ({ page }) => {
   const directoryRequests: Array<string | null> = [];
   const createRequests: unknown[] = [];

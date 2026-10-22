@@ -1,12 +1,18 @@
 import { writeFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
-import { startTestServer, terminalTail, type TestServer } from './helpers.ts';
+import { openSessionFromUi, startTestServer, terminalTail, type TestServer } from './helpers.ts';
+import { installNativeKeyboard, type NativeKeyboardWindow } from './virtual-keyboard-fixture.ts';
 
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer(); });
 test.afterAll(async () => { await server?.close(); });
 
-async function openKeyboardFixture(page: Page, query = ''): Promise<number[]> {
+async function openKeyboardFixture(page: Page, query = '', openKeyboard = true, nativeKeyboard = false): Promise<number[]> {
+  // These vv models represent platforms without VirtualKeyboard (including
+  // Safari). Chromium exposes the API regardless of its emulated user agent.
+  if (!nativeKeyboard) await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'virtualKeyboard', { configurable: true, value: undefined });
+  });
   const typed: number[] = [];
   await page.routeWebSocket(/\/ws\/pty/, socket => socket.onMessage(message => {
     if (typeof message !== 'string') {
@@ -23,8 +29,10 @@ async function openKeyboardFixture(page: Page, query = ''): Promise<number[]> {
   const terminal = page.locator('#desktop-terminal-container');
   await expect(terminal).toHaveAttribute('data-terminal-load-state', 'live');
   await expect.poll(() => terminalTail(terminal, 40)).toContain('probe>');
-  await page.locator('#kb-open-btn').click();
-  await expect(terminal.locator('textarea')).toBeFocused();
+  if (openKeyboard) {
+    await page.locator('#kb-open-btn').click();
+    await expect(terminal.locator('textarea')).toBeFocused();
+  }
   return typed;
 }
 
@@ -48,6 +56,133 @@ async function viewportModel(page: Page, innerHeight: number | null, height: num
   await expect.poll(() => page.evaluate(() => scrollY)).toBe(offsetTop);
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 }
+
+for (const previous of [false, true]) test(`native VK CSS geometry overrides stale vv with prior overlay ${previous}`, async ({ page }, info) => {
+  test.skip(info.project.name === 'desktop', 'mobile native API boundary');
+  await page.setViewportSize({ width: 384, height: 596 });
+  await installNativeKeyboard(page, previous);
+  const typed = await openKeyboardFixture(page, '?kbdebug=1', true, true);
+  await page.evaluate(() => (window as NativeKeyboardWindow).__nativeKeyboard.geometry(437, 159));
+  await viewportModel(page, 596, 340.98, 0);
+  const data = await page.evaluate(() => ({
+    accessory: document.querySelector('#kb-accessory')!.getBoundingClientRect().toJSON(),
+    terminal: document.querySelector('#terminal-view')!.getBoundingClientRect().toJSON(),
+    canvas: document.querySelector('#desktop-terminal-container canvas')!.getBoundingClientRect().toJSON(),
+    clip: document.querySelector('#workspace-terminal-region')!.getBoundingClientRect().toJSON(),
+    debug: JSON.parse(document.querySelector('#kb-debug')!.textContent || '{}'),
+    overlayHistory: (window as NativeKeyboardWindow).__nativeKeyboard.overlayHistory,
+    overlay: (window as NativeKeyboardWindow).__nativeKeyboard.overlaysContent,
+    listeners: (window as NativeKeyboardWindow).__nativeKeyboard.listeners.size,
+  }));
+  await writeFile(info.outputPath('native-geometry.json'), JSON.stringify(data, null, 2));
+  await page.screenshot({ path: info.outputPath('native-437.png'), animations: 'disabled' });
+  expect.soft(data.accessory.bottom).toBeCloseTo(437, 1);
+  expect.soft(data.terminal.bottom).toBeCloseTo(437, 1);
+  expect.soft(data.overlay).toBe(true);
+  expect.soft(data.listeners).toBe(1);
+  expect(data.canvas.top).toBeGreaterThanOrEqual(Math.max(data.terminal.top, data.clip.top));
+  expect(data.canvas.top + 20).toBeLessThanOrEqual(data.clip.bottom);
+  expect(data.debug.path).toBe('vk');
+  expect(data.debug.vk).toMatchObject({ supported: true, overlaysContent: true, boundingRect: { top: 437, height: 159 } });
+  expect(data.debug).toMatchObject({ screenHeight: await page.evaluate(() => screen.height), outerHeight: await page.evaluate(() => outerHeight), devicePixelRatio: await page.evaluate(() => devicePixelRatio) });
+  await page.keyboard.type('native');
+  await expect.poll(() => Buffer.from(typed).toString()).toBe('native');
+  await page.locator('#back-btn').click();
+  expect(await page.evaluate(() => (window as NativeKeyboardWindow).__nativeKeyboard.overlaysContent)).toBe(previous);
+  expect(await page.evaluate(() => (window as NativeKeyboardWindow).__nativeKeyboard.listeners.size)).toBe(0);
+});
+
+test('native VK zero/open pending, close/reopen, repeated mounts and route cleanup never open stdin implicitly', async ({ page }, info) => {
+  test.skip(info.project.name === 'desktop', 'mobile native API lifecycle');
+  await page.setViewportSize({ width: 384, height: 596 });
+  await installNativeKeyboard(page, false);
+  const typed = await openKeyboardFixture(page, '?kbdebug=1', false, true);
+  const input = page.locator('#desktop-terminal-container textarea');
+  const button = page.locator('#kb-open-btn');
+  const emit = async (top: number, height: number) => page.evaluate(({ top, height }) => (window as NativeKeyboardWindow).__nativeKeyboard.geometry(top, height), { top, height });
+  await expect(input).toHaveAttribute('inputmode', 'none');
+  await page.locator('#desktop-terminal-container canvas').tap();
+  await emit(437, 159);
+  await expect(input).toHaveAttribute('inputmode', 'none');
+  await emit(0, 0);
+  await button.click();
+  await emit(0, 0); // initial zero cannot cancel the explicit pending open
+  await viewportModel(page, 596, 596, 0);
+  await expect(input).toBeFocused();
+  await expect(input).toHaveAttribute('inputmode', 'text');
+  await emit(437, 159);
+  await viewportModel(page, 596, 340.98, 0);
+  await expect(input).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => typed).toEqual([13]);
+  await emit(0, 0); // real native close wins even when vv still looks occluded
+  await expect(input).toHaveAttribute('inputmode', 'none');
+  await expect(page.locator('#terminal-view')).not.toHaveClass(/keyboard-occluded/);
+  await button.click();
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  await expect(input).toBeFocused();
+  await emit(437, 159);
+  await expect(input).toHaveAttribute('inputmode', 'text');
+  await button.click();
+  await page.evaluate(() => visualViewport!.dispatchEvent(new Event('resize')));
+  await expect(input).toHaveAttribute('inputmode', 'none');
+  await emit(0, 0);
+  await page.evaluate(() => { (window as NativeKeyboardWindow).__nativeCanvas = document.querySelector('#desktop-terminal-container canvas'); });
+  for (let cycle = 0; cycle < 2; cycle++) {
+    await page.locator('#back-btn').click();
+    await expect(page.locator('#kb-debug')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as NativeKeyboardWindow).__nativeKeyboard.overlaysContent)).toBe(false);
+    expect(await page.evaluate(() => (window as NativeKeyboardWindow).__nativeKeyboard.listeners.size)).toBe(0);
+    await emit(437, 159); // disposed listener cannot affect route or restore stdin
+    await expect(page.locator('#terminal-view')).toHaveCSS('position', 'absolute');
+    await emit(0, 0);
+    await page.getByRole('button', { name: 'Open test-project', exact: true }).first().click();
+    await expect(page.locator('#desktop-terminal-container')).toHaveAttribute('data-terminal-load-state', 'live');
+    expect(await page.evaluate(() => (window as NativeKeyboardWindow).__nativeKeyboard.listeners.size)).toBe(1);
+    expect(await page.evaluate(() => (window as NativeKeyboardWindow).__nativeKeyboard.overlaysContent)).toBe(true);
+    // Back destroys the single-entry mobile terminal, unlike desktop pooling.
+    expect(await page.evaluate(() => (window as NativeKeyboardWindow).__nativeCanvas === document.querySelector('#desktop-terminal-container canvas'))).toBe(false);
+    await expect(input).toHaveAttribute('inputmode', 'none');
+  }
+  await writeFile(info.outputPath('overlay-history.json'), JSON.stringify(await page.evaluate(() => (window as NativeKeyboardWindow).__nativeKeyboard.overlayHistory)));
+});
+
+for (const previous of [false, true]) test(`native VK stays untouched across desktop pooled sessions with prior overlay ${previous}`, async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop owns the retained multi-entry pool');
+  await installNativeKeyboard(page, previous);
+  const typed = await openKeyboardFixture(page, '', false, true);
+  await page.evaluate(() => { window.__nativeCanvas = document.querySelector('#desktop-terminal-container canvas'); });
+  await openSessionFromUi(page, 'another-project', '');
+  await expect(page.locator('#desktop-terminal-container')).toHaveAttribute('data-terminal-load-state', 'live');
+  await openSessionFromUi(page, 'test-project', '');
+  await expect(page.locator('#desktop-terminal-container')).toHaveAttribute('data-terminal-load-state', 'live');
+  expect(await page.evaluate(() => window.__nativeCanvas === document.querySelector('#desktop-terminal-container canvas'))).toBe(true);
+  await page.evaluate(() => window.__nativeKeyboard.geometry(437, 159));
+  expect(await page.evaluate(() => ({ history: window.__nativeKeyboard.overlayHistory, listeners: window.__nativeKeyboard.listeners.size, overlay: window.__nativeKeyboard.overlaysContent })))
+    .toEqual({ history: [], listeners: 0, overlay: previous });
+  await expect(page.locator('#terminal-view')).not.toHaveClass(/keyboard-occluded/);
+  await page.locator('#desktop-terminal-container').click();
+  await page.keyboard.type('pooled');
+  await expect.poll(() => Buffer.from(typed).toString()).toBe('pooled');
+});
+
+for (const policy of ['ignore', 'throw'] as const) test(`native VK policy ${policy} stays honestly on vv fallback`, async ({ page }, info) => {
+  test.skip(info.project.name === 'desktop', 'mobile native API policy');
+  await page.setViewportSize({ width: 384, height: 596 });
+  await installNativeKeyboard(page, false, policy);
+  const warnings: string[] = [];
+  page.on('console', message => { if (message.type() === 'warning') warnings.push(message.text()); });
+  await openKeyboardFixture(page, '?kbdebug=1', true, true);
+  await viewportModel(page, 596, 340.98, 0);
+  const debug = JSON.parse(await page.locator('#kb-debug').textContent() || '{}');
+  expect(debug.path).toBe('vv');
+  expect(debug.vk).toMatchObject({ supported: true, overlaysContent: false });
+  expect(warnings.some(message => /virtual keyboard/i.test(message))).toBe(true);
+  expect(warnings).toHaveLength(1);
+  if (policy === 'throw') expect(warnings[0]).toContain('NotSupportedError: fixture policy refused overlay');
+  else expect(warnings[0]).toBe('Virtual keyboard overlay unavailable; using visual viewport');
+  await writeFile(info.outputPath('policy.json'), JSON.stringify({ debug, warnings }, null, 2));
+});
 
 const cases = [
   { name: 'Android Brave tab', width: 412, actualHeight: 859, innerHeight: 915, height: 520, offsetTop: 0 },

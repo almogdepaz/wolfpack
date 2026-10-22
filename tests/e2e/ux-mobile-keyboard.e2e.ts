@@ -3,6 +3,11 @@ import { startTestServer, terminalTail, type TestServer } from './helpers.ts';
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer(); });
 test.afterAll(async () => { await server?.close(); });
+test.beforeEach(async ({ page }) => {
+  // These visualViewport models represent the no-VK platform (Safari), not
+  // Chromium's API support inherited by its emulated iPhone user agent.
+  await page.addInitScript(() => Object.defineProperty(navigator, 'virtualKeyboard', { configurable: true, value: undefined }));
+});
 
 async function forceTerminalSafeArea(page: Page): Promise<void> {
   const count = await page.evaluate(() => {
@@ -66,7 +71,7 @@ for (const needsInput of [false, true]) test(`accessory is flush with keyboard a
   await forceTerminalSafeArea(page);
   await expect(view).toHaveCSS('padding-bottom', '34px');
   await expect(input).toHaveAttribute('inputmode', 'none');
-  await expect(banner).toHaveJSProperty('hidden', !needsInput);
+  await expect(banner).toHaveJSProperty('hidden', true);
   await expect(page.locator('#input-bar')).toBeHidden();
 
   await emulateKeyboardViewport(page, 524, 0);
@@ -78,7 +83,7 @@ for (const needsInput of [false, true]) test(`accessory is flush with keyboard a
   await expectAccessoryFlush(page);
   await expect(view).toHaveCSS('padding-bottom', '0px');
   await expect(page.locator('#input-bar')).toBeHidden();
-  await expect(banner).toHaveJSProperty('hidden', !needsInput);
+  await expect(banner).toHaveJSProperty('hidden', true);
 
   await emulateKeyboardViewport(page, 484, 40, 'scroll');
   await expect(view).toHaveCSS('bottom', '320px');
@@ -97,7 +102,7 @@ for (const needsInput of [false, true]) test(`accessory is flush with keyboard a
   await expect(input).toHaveAttribute('inputmode', 'none');
   await emulateKeyboardViewport(page, 844, 0);
   await expect(view).toHaveCSS('padding-bottom', '34px');
-  await expect(banner).toHaveJSProperty('hidden', !needsInput);
+  await expect(banner).toHaveJSProperty('hidden', true);
   await expect(page.locator('#input-bar')).toBeHidden();
 });
 test('first input line remains visible above a simulated software keyboard', async ({ page }, info) => {

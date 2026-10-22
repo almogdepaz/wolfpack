@@ -47,7 +47,7 @@ export function bindDelegatedAppActions(root: Document, actions: DelegatedAppAct
     else if (action === "quick-edit" && Number.isInteger(index)) actions.quickEdit(index);
     else if (action === "quick-delete" && Number.isInteger(index)) actions.quickDelete(index);
     else if (action === "delegation-toggle" && button.dataset.delegationKey) actions.delegationToggle(button.dataset.delegationKey, event);
-    else if (action === "new-session") actions.newSession(machine);
+    else if (action === "new-session") { event.stopPropagation(); actions.newSession(machine); }
     else if (action === "open-session" && session) actions.openSession(session, machine);
     else if (action === "kill-session" && session) actions.killSession(session, event, machine);
     else if (action === "retry-machine") actions.retryMachine(machine || "", event);

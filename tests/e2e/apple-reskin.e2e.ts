@@ -64,9 +64,9 @@ test("triage filters toggle off, preserve row actions, and capture responsive ch
   await expect(access(info.outputPath(`dashboard-${width}.png`))).resolves.toBeUndefined();
   await page.getByRole("button", { name: "Open test-project", exact: true }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
-  await expect(page.locator("#needs-input-banner")).toBeVisible();
+  await expect(page.locator("#needs-input-banner")).toHaveJSProperty("hidden", info.project.name !== "desktop");
   await page.screenshot({ path: info.outputPath(`terminal-${width}.png`), animations: "disabled" });
-  for (const [key, expected] of [["y", 121], ["n", 110], ["Escape", 27]] as const) {
+  if (info.project.name === "desktop") for (const [key, expected] of [["y", 121], ["n", 110], ["Escape", 27]] as const) {
     inputBytes.length = 0;
     await page.locator(`[data-reply-key="${key}"]`).click();
     await expect.poll(() => inputBytes).toEqual([[expected]]);

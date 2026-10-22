@@ -43,7 +43,7 @@ import { authenticatedFetchWithTimeout, browserAuthFetch, getBrowserAuthToken } 
 import { isRequestTimeout } from "./fetch-timeout";
 import { probeBackendStatus } from "./backend-probe";
 import { createReconnectBanner } from "./reconnect-banner";
-import { keyboardViewportLayout } from "./viewport-geometry";
+import { keyboardViewportLayout, virtualKeyboardViewportLayout } from "./viewport-geometry";
 import type { OrderedResizeSettlement } from "./ordered-resize";
 import { RESIZE_SEND_DEBOUNCE_MS } from "./pty-socket-client";
 import {
@@ -1680,9 +1680,12 @@ function renderSessionListFromState(): void {
       : "";
   const html = renderNeedsYouGroupHtml(multiMachine ? groups : canonicalLocalGroup ? [canonicalLocalGroup] : []) + machineHtml;
   if (html !== state.lastSessionsHtml) {
+    const focused = document.activeElement;
+    const machine = focused instanceof HTMLElement && el.contains(focused) && focused.matches('.machine-add-btn') ? focused.dataset.machine : undefined;
     machineGroupEventController?.cancelForRender();
     el.innerHTML = html;
     state.lastSessionsHtml = html;
+    if (machine !== undefined) el.querySelector<HTMLElement>(`.machine-add-btn[data-machine="${CSS.escape(machine)}"]`)?.focus({ preventScroll: true });
   }
   filterSessionSurface("dashboard");
 }
@@ -1762,6 +1765,12 @@ function sessionOrderResetButtonHtml(machineUrl: string): string {
   return `<button type="button" class="session-order-reset" data-session-order-machine="${escAttr(machineUrl)}" aria-label="Reset session order" title="Reset session order">↺</button>`;
 }
 
+function sessionKillButtonHtml(name: string, machineUrl: string, tier: ReturnType<typeof sessionTier>): string {
+  const action = tier === "fail" ? "Close" : "Stop";
+  const nameAttr = escAttr(name);
+  return `<button type="button" class="kill-btn" data-action="kill-session" data-session="${nameAttr}" data-machine="${escAttr(machineUrl)}" aria-label="${action} ${nameAttr}" title="${action} session">${tier === "fail" ? "Close" : "&times;"}</button>`;
+}
+
 // Shared visual treatment; actions and machine routing stay on the parent button.
 const NEW_SESSION_CONTENT = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>New<span class="machine-add-label-detail"> session</span></span>';
 
@@ -1805,7 +1814,7 @@ function machineHeaderHtml(
   versionWarning: string,
 ): string {
   const machineUrl = multiMachine ? group.machine.url || "" : "";
-  const compactCreateButton = group.online && group.sessions.length === 0 && !collapsed && surface !== "sidebar"
+  const compactCreateButton = group.online && group.sessions.length === 0 && !collapsed && surface !== "sidebar" && isDesktop()
     ? ""
     : machineAddButtonHtml(machineUrl, group.machine.name, !group.online);
   const retryButton = !group.online && !group.pending
@@ -1820,7 +1829,7 @@ function machineHeaderHtml(
   const action = collapsed ? "Expand" : "Collapse";
   const nameHandle = machineNameHandleHtml(group.machine.name);
   const collapseToggle = `<button type="button" class="machine-collapse-toggle" data-action="machine-collapse" data-machine-surface="${surface}" data-machine-control="collapse" aria-expanded="${collapsed ? "false" : "true"}" aria-controls="${bodyId}" aria-label="${action} ${escAttr(group.machine.name)}" title="${action} ${escAttr(group.machine.name)}"><span class="machine-collapse-chevron" aria-hidden="true"></span></button>`;
-  if (collapsed) return `<div class="machine-header">${nameHandle}${collapseToggle}</div>`;
+  if (collapsed) return `<div class="machine-header">${nameHandle}${isDesktop() ? "" : compactCreateButton}${collapseToggle}</div>`;
   return `<div class="machine-header"><div class="dot ${statusDot}" title="${statusTitle}"></div>${nameHandle}${count}${collapseToggle}${versionWarning}${status}<div class="machine-header-btns">${retryButton}${sessionOrderResetButtonHtml(machineUrl)}${compactCreateButton}</div></div>`;
 }
 
@@ -1875,7 +1884,7 @@ function renderDashboardSessionCardHtml(
     </div>
     <span class="status st-${tier}" title="${escAttr(ui.title)}">${sessionStatusContent(s)}</span>
     <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
-    <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${escAttr(machineUrl)}" aria-label="${tier === "fail" ? "Close" : "Stop"} ${escAttr(s.name)}" title="${tier === "fail" ? "Close" : "Stop"} session">${tier === "fail" ? "Close" : "&times;"}</button>
+    ${sessionKillButtonHtml(s.name, machineUrl, tier)}
   </div>`;
 }
 
@@ -1895,28 +1904,33 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
   const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
   const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
   const statusTitle = g.online ? "online" : (g.pending ? "connecting" : "offline");
-  const outdated = g.online && Boolean(g.machine.version) && state.lastSessionGroups.some(group =>
+  const outdated = surface !== "sidebar" && g.online && Boolean(g.machine.version) && state.lastSessionGroups.some(group =>
     group.online && group.machine.version
     && group.machine.version.localeCompare(g.machine.version, undefined, { numeric: true }) > 0);
   const versionWarning = multiMachine && outdated ? `<span class="version-warning" title="Running v${escAttr(g.machine.version || "?")} — newer version available on another machine">⚠ UPDATE</span>` : "";
   const offlineClass = !g.online && !g.pending ? " offline" : "";
-  const failureAttribute = g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
+  const failureAttribute = surface !== "sidebar" && g.failure ? ` data-failure="${escAttr(g.failure)}"` : "";
   const machineKey = multiMachine ? g.machine.url || "" : "";
   const bodyId = machineGroupBodyId(surface, index);
   const collapsed = machineGroupIsCollapsed(g, surface);
-  let bodyHtml = "";
-  if (multiMachine && g.pending) {
-    bodyHtml += '<div class="group-status">Connecting...</div>';
+  let bodyHtml = surface === "sidebar" && !multiMachine ? '<div class="sidebar-no-sessions">No active sessions</div>' : "";
+  if (surface !== "sidebar" && multiMachine && g.pending) {
+    bodyHtml = '<div class="group-status">Connecting...</div>';
   } else if (g.online) {
     const presentation = sessionCardGroupPresentation(g.sessions, machineKey);
     if (presentation.empty === "idle") {
-      bodyHtml += idleSessionEmptyHtml();
+      bodyHtml = idleSessionEmptyHtml();
     } else if (presentation.rows.length) {
       const rows = visibleDelegationRows(presentation.rows, machineKey);
-      bodyHtml += rows.map((row, rowIndex) => renderDashboardSessionCardHtml(row, machineKey, rowIndex, true)).join("");
-    } else {
-      bodyHtml += zeroSessionOnboardingHtml(multiMachine ? g.machine.url || "" : "");
+      bodyHtml = surface === "sidebar"
+        ? rows.map(row => sidebarCardHtml(row, machineKey)).join("")
+        : rows.map((row, rowIndex) => renderDashboardSessionCardHtml(row, machineKey, rowIndex, true)).join("");
+    } else if (surface !== "sidebar") {
+      bodyHtml = zeroSessionOnboardingHtml(machineKey);
     }
+  } else if (surface === "sidebar") {
+    bodyHtml = g.pending ? '<div class="sidebar-conn-status">Connecting...</div>'
+      : `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))}</div>`;
   } else {
     const failure = machineFailureLabel(g.failure || "unknown");
     bodyHtml += `<div class="group-status machine-failure" role="status">${esc(failure)}. Live terminal actions require this machine to reconnect.</div>`;
@@ -2468,7 +2482,7 @@ function renderProjectNames(projects: readonly string[]): void {
 }
 
 function returnFromProjectPicker(): void {
-  if (!isDesktop()) requestAnimationFrame(() => document.querySelector<HTMLElement>(".new-session-primary")?.focus({ preventScroll: true }));
+  if (!isDesktop()) requestAnimationFrame(() => document.querySelector<HTMLElement>(`#session-list .machine-add-btn[data-machine="${CSS.escape(state.projectMachine)}"]`)?.focus({ preventScroll: true }));
   if (state.viewBeforePicker === "sessions") {
     backToSessions();
     return;
@@ -3160,16 +3174,15 @@ async function createSessionWithAgent(cmd) {
   createError.textContent = "";
   createError.classList.remove("visible");
   try {
-    const body = state.isNewProject
-      ? {
-          newProject: state.selectedProject,
-          ...(state.newProjectParent && { newProjectParent: state.newProjectParent }),
-          cmd,
-          sessionName: sessionName || undefined,
-        }
-      : state.selectedProjectDir
-        ? { projectDir: state.selectedProjectDir, cmd, sessionName: sessionName || undefined }
-        : { project: state.selectedProject, cmd, sessionName: sessionName || undefined };
+    const body = {
+      ...(state.isNewProject
+        ? { newProject: state.selectedProject, ...(state.newProjectParent && { newProjectParent: state.newProjectParent }) }
+        : state.selectedProjectDir
+          ? { projectDir: state.selectedProjectDir }
+          : { project: state.selectedProject }),
+      cmd,
+      sessionName: sessionName || undefined,
+    };
     const data = await api<CreateSessionResponse>("/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3639,6 +3652,20 @@ function setupMobileTerminalViewport(): void {
   const view = document.getElementById("terminal-view");
   if (!vv || !view) return;
   state.visualViewportCleanup?.();
+  const keyboard = navigator.virtualKeyboard;
+  const previousOverlay = keyboard?.overlaysContent ?? false;
+  let native = false;
+  if (keyboard) {
+    let failure: [] | [unknown] = [];
+    try {
+      keyboard.overlaysContent = true;
+      native = keyboard.overlaysContent;
+    } catch (error) {
+      failure = [error];
+    }
+    if (!native) console.warn("Virtual keyboard overlay unavailable; using visual viewport", ...failure);
+  }
+  let wasOpen = false;
   const debug = new URLSearchParams(location.search).get("kbdebug") === "1" ? document.createElement("pre") : null;
   let frame = 0;
   if (debug) {
@@ -3651,25 +3678,35 @@ function setupMobileTerminalViewport(): void {
     // absolute parent. Never measure the already-inset view (feedback).
     const cb = view.parentElement!.getBoundingClientRect();
     const viewport = { height: vv.height, offsetTop: vv.offsetTop ?? 0 };
-    const layout = keyboardViewportLayout(window.innerHeight, { parentTop: cb.top, fixedHeight: document.documentElement.clientHeight }, viewport);
+    const layout = native
+      ? virtualKeyboardViewportLayout({ parentTop: cb.top, fixedHeight: document.documentElement.clientHeight }, keyboard.boundingRect, viewport.offsetTop)
+      : keyboardViewportLayout(window.innerHeight, { parentTop: cb.top, fixedHeight: document.documentElement.clientHeight }, viewport);
     setMobileKeyboardInset(layout.inset, layout.open ? layout.top : undefined);
-    // Viewport may close stdin, but only the explicit button can open it.
-    if (!layout.open && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
+    // Native zero before the first open event must not cancel a button's
+    // pending IME request. Only a native open->closed transition closes stdin.
+    // The existing vv fallback still closes on every closed viewport update.
+    if (!layout.open && (!native || wasOpen) && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
+    wasOpen = layout.open;
     if (debug) {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         debug.style.top = `${viewport.offsetTop}px`;
         debug.textContent = JSON.stringify({ innerHeight, clientHeight: document.documentElement.clientHeight,
+          screenHeight: screen.height, outerHeight, devicePixelRatio, path: native ? "vk" : "vv",
+          vk: { supported: !!keyboard, overlaysContent: keyboard?.overlaysContent ?? false, boundingRect: keyboard?.boundingRect ?? null },
           vv: viewport, inset: Number.parseFloat(getComputedStyle(view).bottom), scrollY, mode: matchMedia("(display-mode: standalone)").matches ? "standalone" : "tab",
           accessory: document.getElementById("kb-accessory").getBoundingClientRect(), terminal: view.getBoundingClientRect(), cb });
       });
     }
   };
+  if (native) keyboard.addEventListener("geometrychange", vvHandler);
   vv.addEventListener("resize", vvHandler);
   vv.addEventListener("scroll", vvHandler);
   window.addEventListener("resize", vvHandler);
   window.addEventListener("scroll", vvHandler, { passive: true });
   state.visualViewportCleanup = () => {
+    if (native) keyboard.removeEventListener("geometrychange", vvHandler);
+    if (keyboard && keyboard.overlaysContent !== previousOverlay) keyboard.overlaysContent = previousOverlay;
     vv.removeEventListener("resize", vvHandler);
     vv.removeEventListener("scroll", vvHandler);
     window.removeEventListener("resize", vvHandler);
@@ -4144,19 +4181,6 @@ function closeDrawer(instant?: boolean): void {
   chip.setAttribute("aria-expanded", "false");
   drawer.setAttribute("aria-hidden", "true");
   drawer.setAttribute("inert", "");
-  if (instant) {
-    drawer.classList.remove("animating", "open");
-    drawer.style.transform = "";
-    backdrop.classList.remove("visible");
-    backdrop.style.opacity = "";
-    backdrop.style.transition = "";
-    return;
-  }
-  drawer.classList.add("animating");
-  drawer.classList.remove("open");
-  drawer.style.transform = "translate3d(0, -100%, 0)";
-  backdrop.style.transition = "opacity 0.25s ease";
-  backdrop.style.opacity = "0";
   const cleanup = () => {
     backdrop.classList.remove("visible");
     backdrop.style.opacity = "";
@@ -4164,6 +4188,16 @@ function closeDrawer(instant?: boolean): void {
     drawer.style.transform = "";
     drawer.classList.remove("animating");
   };
+  if (instant) {
+    drawer.classList.remove("open");
+    cleanup();
+    return;
+  }
+  drawer.classList.add("animating");
+  drawer.classList.remove("open");
+  drawer.style.transform = "translate3d(0, -100%, 0)";
+  backdrop.style.transition = "opacity 0.25s ease";
+  backdrop.style.opacity = "0";
   drawer.addEventListener("transitionend", cleanup, { once: true });
   setTimeout(cleanup, 300);
 }
@@ -4660,7 +4694,7 @@ function syncSessionChrome(): void {
   const banner = document.getElementById("needs-input-banner");
   const session = needsInputSession();
   if (!banner) return;
-  banner.hidden = !session;
+  banner.hidden = !session || !isDesktop();
   const prompt = document.getElementById("needs-input-prompt");
   if (prompt) prompt.textContent = session?.lastLine || "This session needs your input.";
 }
@@ -5314,56 +5348,12 @@ function _renderSidebarNow() {
   // Don't wipe sidebar with empty content if sessions haven't loaded yet
   if (!groups.length && sidebarInitialRender) return;
   if (groups.length) sidebarInitialRender = true;
-  const machines = getWorkspaceMachines();
-  const multiMachine = machines.length > 0;
-
+  const multiMachine = getWorkspaceMachines().length > 0;
+  const local = state.lastSessionGroups.find(group => group.machine.url === "");
+  const sidebarGroups = multiMachine ? groups : local ? [local] : [];
   let html = "";
-  if (!multiMachine) {
-    const g = state.lastSessionGroups.find(group => group.machine.url === "");
-    if (g) {
-      const bodyId = machineGroupBodyId("sidebar", 0);
-      const collapsed = machineGroupIsCollapsed(g, "sidebar");
-      const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
-      const statusTitle = g.online ? "online" : (g.pending ? "connecting" : "offline");
-      const offlineClass = !g.online && !g.pending ? " offline" : "";
-      let bodyHtml = '<div class="sidebar-no-sessions">No active sessions</div>';
-      if (g.online) {
-        const presentation = sessionCardGroupPresentation(g.sessions, "");
-        bodyHtml = presentation.rows.length
-          ? visibleDelegationRows(presentation.rows, "").map(row => sidebarCardHtml(row, "")).join("")
-          : presentation.empty === "idle"
-            ? idleSessionEmptyHtml()
-            : '<div class="sidebar-no-sessions">No active sessions</div>';
-      } else if (g.pending) {
-        bodyHtml = '<div class="sidebar-conn-status">Connecting...</div>';
-      } else {
-        bodyHtml = `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))}</div>`;
-      }
-      html += `<div class="machine-group${offlineClass}" data-machine="" data-machine-surface="sidebar">${machineHeaderHtml(g, "sidebar", bodyId, false, collapsed, statusDot, statusTitle, "")}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
-    }
-  } else {
-    for (const [index, g] of groups.entries()) {
-      const mUrl = escAttr(g.machine.url);
-      const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
-      const statusTitle = g.online ? "online" : (g.pending ? "connecting" : "offline");
-      const offlineClass = !g.online && !g.pending ? " offline" : "";
-      const bodyId = machineGroupBodyId("sidebar", index);
-      const collapsed = machineGroupIsCollapsed(g, "sidebar");
-      let bodyHtml = "";
-      if (g.online) {
-        const presentation = sessionCardGroupPresentation(g.sessions, g.machine.url);
-        if (presentation.rows.length) {
-          bodyHtml = visibleDelegationRows(presentation.rows, g.machine.url).map(row => sidebarCardHtml(row, g.machine.url)).join("");
-        } else if (presentation.empty === "idle") {
-          bodyHtml = idleSessionEmptyHtml();
-        }
-      } else if (g.pending) {
-        bodyHtml = '<div class="sidebar-conn-status">Connecting...</div>';
-      } else {
-        bodyHtml = `<div class="sidebar-conn-status">${esc(machineFailureLabel(g.failure || "unknown"))}</div>`;
-      }
-      html += `<div class="machine-group${offlineClass}" data-machine="${mUrl}" data-machine-surface="sidebar">${machineHeaderHtml(g, "sidebar", bodyId, true, collapsed, statusDot, statusTitle, "")}<div id="${bodyId}" class="machine-group-body"${collapsed ? " hidden inert" : ""}>${bodyHtml}</div></div>`;
-    }
+  for (const [index, g] of sidebarGroups.entries()) {
+    html += renderMachineGroupHtml(g, multiMachine, "sidebar", index);
   }
   // Skip DOM update if nothing changed
   if (html === _lastSidebarHtml) return;
@@ -5377,6 +5367,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const s = row.session;
   const machineUrlAttr = escAttr(machineUrl);
   const lastLine = s.lastLine || "";
+  const tier = sessionTier(s);
   const ui = sessionRuntimeUi(s);
   const isActive = s.name === state.currentSession && machineUrl === state.currentMachine;
   const inGrid = isSessionInGrid(s.name, machineUrl);
@@ -5388,7 +5379,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
   const gridBtn = `<button type="button" class="grid-btn${inGrid ? ' in-grid' : ''}" data-action="toggle-grid" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" title="${gridAction}" aria-label="${gridAction}: ${escAttr(s.name)}" aria-pressed="${inGrid ? "true" : "false"}">${gridIcon}</button>`;
   const grouping = delegationCardAttributes(row);
   const ordering = sessionOrderCardHtml(row, machineUrl);
-  return `<div class="card src tier-${sessionTier(s)} ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
+  return `<div class="card src tier-${tier} ${ui.card}${activeClass}${grouping.className}"${grouping.dataAttribute}${ordering.attributes}>
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
@@ -5399,7 +5390,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       ${sessionActivityHtml(s)}
     </div>
     ${gridBtn}
-    <button type="button" class="kill-btn" data-action="kill-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="${sessionTier(s) === "fail" ? "Close" : "Stop"} ${escAttr(s.name)}" title="${sessionTier(s) === "fail" ? "Close" : "Stop"} session">${sessionTier(s) === "fail" ? "Close" : "&times;"}</button>
+    ${sessionKillButtonHtml(s.name, machineUrl, tier)}
   </div>`;
 }
 
@@ -5942,7 +5933,10 @@ const workspaceShell = createWorkspaceShell({
   onWidgetPresentationChange: presentation => { if (extensionHost?.setPresentation(presentation)) extensionHost.select(); },
   onReset: () => extensionHost?.resetWorkspaceLayout(),
 });
-window.addEventListener("resize", () => scheduleGridStabilizedFit());
+window.addEventListener("resize", () => {
+  scheduleGridStabilizedFit();
+  renderSessionListFromState(); // Refresh viewport-specific headers and attention chrome.
+});
 
 /** Explicit terminal navigation must also select its dock tab; geometry alone cannot reveal it. */
 function revealWorkspaceTerminals(): void {
