@@ -231,9 +231,15 @@ test("authoritative empty sessions render one accessible first-session path that
     SECURITY_AND_TRUST_URL,
   );
 
-  const primary = onboarding.getByRole("button", { name: "Create your first session" });
+  const desktop = (page.viewportSize()?.width ?? 0) > 768;
+  const localGroup = page.locator('#session-list .machine-group[data-machine=""]');
+  const primary = desktop
+    ? onboarding.getByRole("button", { name: "Create your first session" })
+    : localGroup.locator(".machine-header .machine-add-btn");
   await expect(primary).toBeVisible();
-  if ((page.viewportSize()?.width ?? 0) > 768) {
+  await expect(localGroup.locator('[data-action="new-session"]:visible')).toHaveCount(1);
+  if (!desktop) await expect(onboarding.locator(".zero-session-primary")).toBeHidden();
+  if (desktop) {
     await expect(page.getByRole("button", {
       name: /Create your first session|Start a session on this machine/,
     })).toHaveCount(1);
@@ -279,7 +285,8 @@ test("authoritative empty sessions render one accessible first-session path that
   });
   if ((viewport?.width ?? 0) <= 768) {
     expect(responsiveLayout.stepColumns).toBe(1);
-    expect(responsiveLayout.primaryWidth).toBeGreaterThan(responsiveLayout.cardWidth * 0.75);
+    expect(responsiveLayout.primaryWidth).toBe(0);
+    expect(primaryStyle.height).toBe(44);
     expect(responsiveLayout.linksDisplay).toBe("grid");
     const mobileConnectors = await stepItems.evaluateAll((items) => items.slice(0, -1).map((item, index) => {
       const connector = getComputedStyle(item, "::after");
@@ -425,7 +432,7 @@ test("remote empty-state activation preserves the verified machine selector", as
   const desktop = (page.viewportSize()?.width ?? 0) > 768;
   const primary = desktop
     ? sidebarPeerGroup.getByRole("button", { name: "Start a session on onboarding peer" })
-    : peerGroup.getByRole("button", { name: "Create your first session" });
+    : peerGroup.getByRole("button", { name: "Start a session on onboarding peer" });
   if (desktop) {
     await expect(page.getByRole("button", {
       name: /Create your first session|Start a session on onboarding peer/,
@@ -433,7 +440,8 @@ test("remote empty-state activation preserves the verified machine selector", as
     await expect(peerGroup.getByRole("region", { name: "No sessions yet" })).toBeHidden();
   } else {
     await expect(peerGroup.getByRole("region", { name: "No sessions yet" })).toBeVisible();
-    await expect(peerGroup.getByRole("button", { name: "Start a session on onboarding peer" })).toHaveCount(0);
+    await expect(peerGroup.locator(".zero-session-primary")).toBeHidden();
+    await expect(peerGroup.locator('[data-action="new-session"]:visible')).toHaveCount(1);
   }
   await expect(primary).toBeVisible();
 

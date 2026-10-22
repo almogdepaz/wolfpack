@@ -264,7 +264,9 @@ test("idle true-zero uses idle copy and All restores onboarding", async ({ page 
 
   await clearSessionView(page);
   await expect(visibleDashboard(page).getByRole("heading", { name: "No sessions yet" })).toHaveCount(2);
-  await expect(visibleDashboard(page).getByRole("button", { name: "Create your first session" })).toHaveCount(2);
+  const desktop = (page.viewportSize()?.width ?? 0) > 768;
+  await expect(visibleDashboard(page).getByRole("button", { name: "Create your first session" })).toHaveCount(desktop ? 2 : 0);
+  await expect(visibleDashboard(page).locator('.machine-group [data-action="new-session"]:visible')).toHaveCount(2);
 });
 
 test("desktop Cmd navigation does not leave an empty Idle view", async ({ page }, testInfo) => {

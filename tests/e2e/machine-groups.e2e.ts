@@ -19,7 +19,7 @@ test.afterAll(async () => {
   await server?.close();
 });
 
-async function installMachineFixture(page: Page, withSessions = false, displayName = "verified peer"): Promise<void> {
+async function installMachineFixture(page: Page, withSessions = false, displayName = "verified peer", version = "test"): Promise<void> {
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({ candidates: [{
@@ -40,7 +40,7 @@ async function installMachineFixture(page: Page, withSessions = false, displayNa
         displayName,
         origin: "https://peer.example.ts.net",
       },
-      wolfpack: { version: "test" },
+      wolfpack: { version },
       capabilities: ["sessions", "terminal-websocket", "push-subscription"],
     }),
   }));
@@ -60,6 +60,162 @@ function sidebarGroup(page: Page) {
 }
 
 const localInstallationId = "77d7b892-711f-4005-b62e-509d1d09a165";
+
+for (const width of [320, 375, 390, 1280]) {
+  test(`R11 duplicate CSS characterization at ${width}`, async ({ page }, info) => {
+    test.skip(info.project.name !== (width === 1280 ? "desktop" : "iphone-14"), "one capture per viewport");
+    await page.setViewportSize({ width, height: 900 });
+    await installMachineFixture(page, true);
+    await page.goto(server.baseUrl);
+    const header = mainGroup(page).locator(".machine-header");
+    const create = header.locator(".machine-add-btn");
+    await expect(header).toHaveCSS("gap", "7px");
+    await expect(create).toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
+    // Preserve the existing interactive cascade, not just the resting border.
+    if (width === 1280) {
+      await create.hover();
+      await expect(create).not.toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
+      await page.mouse.move(0, 0);
+    }
+    await create.evaluate(button => { (button as HTMLButtonElement).disabled = true; });
+    await expect(create).not.toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
+    await create.evaluate(button => { (button as HTMLButtonElement).disabled = false; });
+    await expect(create).toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
+    await info.attach("characterization", { body: JSON.stringify(await header.evaluate(element => ({
+      html: element.outerHTML, gap: getComputedStyle(element).gap,
+      controls: Array.from(element.querySelectorAll("button")).map(button => ({
+        label: button.getAttribute("aria-label"), rect: button.getBoundingClientRect().toJSON(),
+        border: getComputedStyle(button).borderColor,
+      })),
+    }))), contentType: "application/json" });
+    await page.screenshot({ path: info.outputPath("characterization.png") });
+  });
+}
+
+for (const width of [320, 375, 390]) for (const withSessions of [false, true]) for (const machine of ["", peerIdentity]) {
+  test(`R11 mobile same-spot collapse keeps both controls fixed at ${width} (sessions ${withSessions}, ${machine ? "peer" : "local"})`, async ({ page }, info) => {
+    test.skip(info.project.name !== "iphone-14", "synthesized touch on Chromium");
+    await page.setViewportSize({ width, height: 900 });
+    await installMachineFixture(page, withSessions, "peer with a long machine name");
+    await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ json: { name: "local with a long machine name", version: "test" } }));
+    await page.goto(server.baseUrl);
+    await expect(page.locator("#session-list > .machine-group[data-machine]")).toHaveCount(2);
+    const group = page.locator(`#session-list .machine-group[data-machine="${machine}"]`);
+    const toggle = group.locator(".machine-collapse-toggle");
+    const create = group.locator(".machine-header .machine-add-btn");
+    await toggle.scrollIntoViewIfNeeded();
+    const expanded = { toggle: (await toggle.boundingBox())!, create: (await create.boundingBox())! };
+    expect(expanded.toggle.width).toBe(44); expect(expanded.toggle.height).toBe(44);
+    expect(expanded.create.width).toBe(44); expect(expanded.create.height).toBe(44);
+    await page.screenshot({ path: info.outputPath(`${machine ? "peer" : "local"}-expanded.png`) });
+    const point = { x: expanded.toggle.x + 22, y: expanded.toggle.y + 22 };
+    await page.touchscreen.tap(point.x, point.y);
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(group.locator(".machine-group-body")).toHaveAttribute("hidden", "");
+    await expect(group.locator(".machine-group-body")).toHaveAttribute("inert", "");
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-machine-group-preferences")!).collapsed.main)).toEqual([machine || "local"]);
+    const collapsed = { toggle: (await toggle.boundingBox())!, create: (await create.boundingBox())! };
+    await info.attach(`${machine ? "peer" : "local"}-geometry`, { body: JSON.stringify({ width, withSessions, expanded, collapsed, point }), contentType: "application/json" });
+    await page.screenshot({ path: info.outputPath(`${machine ? "peer" : "local"}-collapsed.png`) });
+    expect.soft(collapsed).toEqual(expanded);
+    // Do not re-target by locator: the exact second tap must expand, not New.
+    await page.touchscreen.tap(point.x, point.y);
+    await expect(page.locator("#projects-view")).not.toHaveClass(/visible/);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(group.locator(".machine-group-body")).not.toHaveAttribute("hidden", "");
+    await expect(group.locator(".machine-header")).toHaveJSProperty("scrollWidth", await group.locator(".machine-header").evaluate(element => element.clientWidth));
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-machine-group-preferences")!).collapsed.main)).toEqual([]);
+  });
+}
+
+for (const width of [320, 375, 390]) {
+  test(`R11 UPDATE badge stays readable without moving controls at ${width}`, async ({ page }, info) => {
+    test.skip(info.project.name !== "iphone-14", "one Chromium touch capture per width");
+    await page.setViewportSize({ width, height: 900 });
+    await installMachineFixture(page, true, "peer with a long machine name", "1.0.0");
+    await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ json: { name: "newer local machine", version: "2.0.0" } }));
+    await page.goto(server.baseUrl);
+    const header = mainGroup(page).locator(".machine-header");
+    const badge = header.locator(".version-warning");
+    await expect(badge).toBeVisible();
+    const name = (await header.locator(".machine-header-name").boundingBox())!;
+    const lines = await badge.evaluate(element => {
+      const range = document.createRange(); range.selectNodeContents(element);
+      return Array.from(range.getClientRects()).map(rect => rect.toJSON());
+    });
+    await info.attach("badge-geometry", { body: JSON.stringify({ name, lines }), contentType: "application/json" });
+    await page.screenshot({ path: info.outputPath("update-badge-expanded.png") });
+    expect.soft(lines).toHaveLength(1);
+    expect.soft(name.width).toBeGreaterThanOrEqual(100);
+    const toggle = header.locator(".machine-collapse-toggle");
+    const create = header.locator(".machine-add-btn");
+    const expanded = { toggle: (await toggle.boundingBox())!, create: (await create.boundingBox())! };
+    expect(expanded.toggle.width).toBe(44); expect(expanded.create.width).toBe(44);
+    await expect(header).toHaveJSProperty("scrollWidth", await header.evaluate(element => element.clientWidth));
+    await page.touchscreen.tap(expanded.toggle.x + 22, expanded.toggle.y + 22);
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect({ toggle: (await toggle.boundingBox())!, create: (await create.boundingBox())! }).toEqual(expanded);
+    await page.screenshot({ path: info.outputPath("update-badge-collapsed.png") });
+    await page.touchscreen.tap(expanded.toggle.x + 22, expanded.toggle.y + 22);
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#projects-view")).not.toHaveClass(/visible/);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+  });
+}
+
+for (const machine of ["", peerIdentity]) {
+  test(`R11 empty machine has one create action and preserves scoped creation (${machine ? "peer" : "local"})`, async ({ page }, info) => {
+    await installMachineFixture(page);
+    await page.route(`${server.baseUrl}/api/info`, route => route.fulfill({ json: { name: "local machine", version: "test" } }));
+    const origin = machine ? "https://peer.example.ts.net" : server.baseUrl;
+    const name = machine ? "verified peer" : "local machine";
+    const headers = { "Access-Control-Allow-Origin": "*" };
+    const requests: Array<{ url: string; body: unknown }> = [];
+    await page.route("**/api/projects", route => route.fulfill({ headers, json: { projects: ["r11-project"] } }));
+    await page.route("**/api/settings", route => route.fulfill({ headers, json: { effective: { cmds: ["shell"], agentCmd: "shell" } } }));
+    await page.route("**/api/next-session-name**", route => route.fulfill({ headers, json: { name: "r11-new" } }));
+    await page.route("**/api/create", route => {
+      requests.push({ url: route.request().url(), body: route.request().postDataJSON() });
+      return route.fulfill({ headers, json: { ok: true, session: "r11-new" } });
+    });
+    await page.goto(server.baseUrl);
+    const group = page.locator(`#session-list .machine-group[data-machine="${machine}"]`);
+    const headerCreate = group.locator(".machine-header .machine-add-btn");
+    const zeroCreate = group.locator(".zero-session-primary");
+    const desktop = info.project.name === "desktop";
+    await expect(group.locator(".zero-session-card")).toBeVisible();
+    await expect(group.getByRole("heading", { name: "No sessions yet", exact: true })).toBeVisible();
+    await expect(group.getByRole("list", { name: "Session creation steps" }).locator("li")).toHaveCount(3);
+    await expect(group.getByRole("link", { name: "First session guide", exact: true })).toBeVisible();
+    await expect.soft(group.locator('[data-action="new-session"]:visible')).toHaveCount(1);
+    await expect.soft(zeroCreate).toBeVisible({ visible: desktop });
+    await expect(headerCreate).toHaveCount(desktop ? 0 : 1);
+    if (!desktop) {
+      await expect(page.locator(".new-session-primary")).toBeHidden();
+      expect(await zeroCreate.evaluate(element => {
+        (element as HTMLElement).focus();
+        return document.activeElement === element;
+      })).toBe(false);
+    }
+    const create = desktop ? zeroCreate : headerCreate;
+    await page.screenshot({ path: info.outputPath("empty-machine.png") });
+    await create.click();
+    await expect(page.locator("#create-project-action")).toHaveAttribute("aria-label", `Create project on ${name}`);
+    await page.getByRole("button", { name: "Open project r11-project", exact: true }).click();
+    if (!desktop) {
+      await page.locator("#back-btn").click();
+      await page.locator("#back-btn").click();
+      await expect(create).toBeFocused();
+      await expect(group.locator(".machine-collapse-toggle")).toHaveAttribute("aria-expanded", "true");
+      await create.click();
+      await page.getByRole("button", { name: "Open project r11-project", exact: true }).click();
+    }
+    await page.getByRole("button", { name: "Start shell", exact: true }).click();
+    await expect.poll(() => requests).toEqual([{ url: `${origin}/api/create`, body: { project: "r11-project", cmd: "shell", sessionName: "r11-new" } }]);
+    await info.attach("scoped-create", { body: JSON.stringify(requests), contentType: "application/json" });
+  });
+}
 
 for (const { hostname, localName, peerName } of [
   { hostname: "oldsgt", localName: "Almog’s MacBook Pro", peerName: "sgt" },

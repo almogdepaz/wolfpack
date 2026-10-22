@@ -622,7 +622,6 @@ body.no-animations, body.no-animations * {
     min-height: auto;
     display: block;
   }
-  .machine-header { gap: 5px; }
   .view::before {
     left: -20px;
     width: 20px;
@@ -2784,7 +2783,7 @@ body > header { height: 52px; min-height: 52px; }
 .kb-control-menu { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); display: flex; gap: 4px; padding: 6px; border-radius: 9px; background: var(--bg-base); border: 1px solid var(--hairline-strong); z-index: 10; }
 #kb-accessory .kb-control-menu button { min-width: 42px; }
 .machine-header-name { font-family: var(--font-ui); color: var(--text-4); }
-.machine-add-btn { background: transparent; border-color: transparent; }
+.machine-add-btn { background: transparent; }
 
 @media (hover:hover) {
   .machine-group .card:hover { background: rgba(255,255,255,.04); }
@@ -2831,8 +2830,10 @@ body > header { height: 52px; min-height: 52px; }
   #dashboard-session-filter { order: 3; width: 100%; }
   #dashboard-session-filter .seg { display: flex; width: 100%; }
   #dashboard-session-filter .seg button { flex: 1; gap: 4px; padding: 7px 4px; font-size: 11px; white-space: nowrap; min-height: 44px; }
-  #gear-btn, .new-session-primary { display: none; }
+  #gear-btn, .new-session-primary, .zero-session-primary { display: none; }
   .machine-header { flex-wrap: nowrap; }
+  .machine-collapse-toggle { order: 1; }
+  .version-warning { white-space: nowrap; letter-spacing: 0; padding: 2px; margin-left: 0; font-size: 10px; }
   .machine-add-btn { width: 44px; padding: 0; flex: none; }
   #session-list { padding: 0 16px 24px; }
   .needs-you .card-name-text { flex-basis: 100%; }
