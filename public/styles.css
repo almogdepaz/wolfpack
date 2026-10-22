@@ -2686,7 +2686,6 @@ body > header { height: 52px; min-height: 52px; }
 .session-heading h1 { color: var(--text-1); font-size: 28px; line-height: 1.1; font-weight: 700; letter-spacing: -.025em; }
 #session-summary { margin-top: 5px; color: var(--text-3); font-size: 13px; }
 #session-summary strong { color: var(--attn); font-weight: 500; }
-.new-session-primary { border: 0; border-radius: var(--r-control); background: var(--accent); color: var(--accent-on); padding: 8px 13px; font: 600 13px var(--font-ui); box-shadow: var(--gloss); }
 .seg.session-card-view-filter { display: inline-flex; gap: 2px; padding: 3px; background: var(--surface-3); border: 0; border-radius: 10px; }
 .seg .session-card-view-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 28px; padding: 5px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text-3); font: 500 13px var(--font-ui); }
 .seg .session-card-view-button.selected { background: rgba(255,255,255,.12); color: var(--text-1); box-shadow: 0 1px 3px rgba(0,0,0,.4); }
@@ -2830,11 +2829,14 @@ body > header { height: 52px; min-height: 52px; }
   #dashboard-session-filter { order: 3; width: 100%; }
   #dashboard-session-filter .seg { display: flex; width: 100%; }
   #dashboard-session-filter .seg button { flex: 1; gap: 4px; padding: 7px 4px; font-size: 11px; white-space: nowrap; min-height: 44px; }
-  #gear-btn, .new-session-primary, .zero-session-primary { display: none; }
-  .machine-header { flex-wrap: nowrap; }
+  #gear-btn, .zero-session-primary { display: none; }
+  .machine-header { flex-wrap: wrap; }
+  .machine-name-handle { flex-basis: 0; }
+  .machine-header-status, .session-order-reset { flex-basis: 100%; order: 2; }
+  .machine-header-btns { display: contents; }
   .machine-collapse-toggle { order: 1; }
   .version-warning { white-space: nowrap; letter-spacing: 0; padding: 2px; margin-left: 0; font-size: 10px; }
-  .machine-add-btn { width: 44px; padding: 0; flex: none; }
+  .machine-add-btn { width: 112px; padding: 0; flex: none; background: var(--accent-tint); }
   #session-list { padding: 0 16px 24px; }
   .needs-you .card-name-text { flex-basis: 100%; }
   .machine-group .card { padding: 12px; gap: 10px; }
@@ -2842,7 +2844,7 @@ body > header { height: 52px; min-height: 52px; }
   .card .status { font-size: 11px; margin-left: auto; }
   .card .kill-btn { min-width: 44px; width: 44px; }
   #terminal-footer { display: none; }
-  .machine-session-count, .machine-add-btn > span { display: none; }
+  .machine-session-count { display: none; }
   .mobile-session-search { display: block; position: relative; }
   .mobile-session-search summary { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; list-style: none; background: var(--surface-3); color: var(--text-2); }
   .mobile-session-search summary::-webkit-details-marker { display: none; }

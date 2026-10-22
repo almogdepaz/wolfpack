@@ -299,15 +299,15 @@ export async function selectTerminalLayoutFromUi(page: Page, value: string): Pro
   await expect(page.locator('.view.swiping')).toHaveCount(0);
 }
 
-/** Open the new-session/project picker through a real visible UI control. */
-export async function openProjectPickerFromUi(page: Page, machine?: string): Promise<void> {
-  const candidates = page.locator('[data-action="new-session"]').filter({ visible: true });
-  const candidate = await findVisibleDatasetControl(
-    candidates,
-    (dataset) => machine === undefined || dataset.machine === machine,
-    `visible new-session control for machine ${JSON.stringify(machine ?? "")}`,
-  );
-  await candidate.click();
+/** Open the project picker through the requested machine's visible create action. */
+export async function openProjectPickerFromUi(page: Page, machine = ""): Promise<void> {
+  const group = page.locator(`.machine-group[data-machine=${cssAttributeValue(machine)}]`).filter({ visible: true });
+  await expect(group).toHaveCount(1);
+  const toggle = group.locator('.machine-collapse-toggle');
+  if (await toggle.getAttribute('aria-expanded') === 'false') await toggle.click();
+  const create = group.locator('[data-action="new-session"]').filter({ visible: true });
+  await expect(create).toHaveCount(1);
+  await create.click();
 }
 
 /** Read grid sessions from rendered grid-cell DOM. */

@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
 
 for (const width of [320, 375, 390]) test(`Sessions New reuses delegated project and agent flow and restores focus at ${width}`, async ({ page }, info) => {
   if (info.project.name !== 'desktop') await page.setViewportSize({ width, height: 844 });
-  const trigger = info.project.name === 'desktop' ? page.locator('.new-session-primary') : page.locator('#session-list .machine-add-btn');
+  const trigger = page.locator('#session-list .machine-group[data-machine=""] .machine-header .machine-add-btn');
   await expect(trigger).toBeVisible();
   await expect(trigger).toHaveAttribute('data-action', 'new-session');
   await trigger.click();
@@ -51,7 +51,7 @@ for (const width of [320, 375, 390]) for (const collapsed of [false, true]) {
     page.on('request', request => {
       if (/^\/api\/(projects|agents)$/.test(new URL(request.url()).pathname)) requests.push(request.url());
     });
-    await expect.soft(page.locator('.new-session-primary')).toBeHidden();
+    await expect.soft(page.locator('#session-dashboard-controls .new-session-primary')).toHaveCount(0);
     if (collapsed) {
       await group.getByRole('button', { name: `Collapse ${machineName}`, exact: true }).click();
       await expect(group.getByRole('button', { name: `Expand ${machineName}`, exact: true })).toBeFocused();
@@ -66,7 +66,7 @@ for (const width of [320, 375, 390]) for (const collapsed of [false, true]) {
         visible: button.checkVisibility(), disabled: button.disabled,
       })),
       focus: document.activeElement?.outerHTML,
-      globalNewVisible: document.querySelector('.new-session-primary')?.checkVisibility(),
+      globalNewCount: document.querySelectorAll('#session-dashboard-controls .new-session-primary').length,
       viewport: { width: innerWidth, height: innerHeight },
     }));
     writeFileSync(info.outputPath('gate.json'), JSON.stringify({ collapsed, machineName, ...snapshot }, null, 2));
@@ -82,7 +82,9 @@ for (const width of [320, 375, 390]) for (const collapsed of [false, true]) {
     expect.soft(add!.y + add!.height / 2).toBeCloseTo(toggle!.y + toggle!.height / 2, 0);
     expect.soft(add!.x).toBeGreaterThanOrEqual(header!.x);
     expect.soft(add!.x + add!.width).toBeLessThanOrEqual(width);
-    await expect.soft(trigger.locator(':scope > span')).toBeHidden();
+    await expect(trigger.locator(':scope > span')).toBeVisible();
+    await expect(trigger.locator('.machine-add-label-detail')).toBeVisible();
+    await expect(trigger).toHaveJSProperty('innerText', 'New session');
     if (width === 375) await trigger.press('Enter'); else await trigger.click();
     await expect(page.locator('#projects-view')).toHaveClass(/visible/);
     await expect(page.locator('#new-project-name')).toBeFocused();
@@ -112,16 +114,44 @@ for (const collapsed of [false, true]) test(`machine header mode changes retain 
   if (collapsed) await group.locator('.machine-collapse-toggle').click();
   const create = group.locator('.machine-header .machine-add-btn');
   await expect(create).toHaveCount(collapsed ? 0 : 1);
-  await expect(page.locator('.new-session-primary')).toBeVisible();
+  await expect(page.locator('#session-dashboard-controls .new-session-primary')).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(create).toHaveCount(1);
   await expect(create).toBeVisible();
-  await expect(page.locator('.new-session-primary')).toBeHidden();
+  await expect(page.locator('#session-dashboard-controls .new-session-primary')).toHaveCount(0);
   await expect(group.locator('.machine-collapse-toggle')).toHaveAttribute('aria-expanded', String(!collapsed));
   await page.setViewportSize({ width: 1280, height: 720 });
   await expect(create).toHaveCount(collapsed ? 0 : 1);
-  await expect(page.locator('.new-session-primary')).toBeVisible();
+  await expect(page.locator('#session-dashboard-controls .new-session-primary')).toHaveCount(0);
   await expect(group.locator('.machine-collapse-toggle')).toHaveAttribute('aria-expanded', String(!collapsed));
+});
+
+test('R13 desktop new-session shortcut retains the local project picker', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop', 'desktop shortcut');
+  const name = await page.locator('#session-list .machine-group[data-machine=""] .machine-header-name').textContent();
+  await page.keyboard.press('Control+t');
+  await expect(page.locator('#projects-view')).toHaveClass(/visible/);
+  await expect(page.locator('#create-project-action')).toHaveAttribute('aria-label', `Create project on ${name}`);
+  await expect(page.locator('#new-project-name')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#sessions-view')).toHaveClass(/visible/);
+});
+
+test('R13 quick command palette still sends its configured command', async ({ page }, info) => {
+  test.skip(info.project.name === 'desktop', 'mobile keyboard palette');
+  await page.addInitScript(() => localStorage.setItem('wp-quick-cmds', JSON.stringify([{ label: 'round13 command', cmd: 'printf round13' }])));
+  const sent: string[] = [];
+  page.on('websocket', socket => socket.on('framesent', ({ payload }) => {
+    if (typeof payload !== 'string') sent.push(Buffer.from(payload).toString('utf8'));
+  }));
+  await page.reload();
+  await page.getByRole('button', { name: 'Open test-project', exact: true }).first().click();
+  await expect(page.locator('#desktop-terminal-container')).toHaveAttribute('data-terminal-load-state', 'live');
+  await page.locator('#kb-open-btn').click();
+  const command = page.locator('#cmd-palette').getByRole('button', { name: 'round13 command', exact: true });
+  await expect(command).toBeVisible();
+  await command.click();
+  await expect.poll(() => sent.join('')).toContain('printf round13\r');
 });
 
 test('mobile Settings destination retains navigation and return focus', async ({ page }, info) => {
@@ -157,14 +187,15 @@ test('terminal Back still reaches Settings without adding navigation below the a
   await expect(page.getByRole('button', { name: 'Extra large 18px' })).toBeVisible();
 });
 
-test('desktop keeps its existing header visibility and expanded New and Settings controls', async ({ page }, info) => {
+test('desktop keeps header visibility, scoped New and Settings controls', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop', 'desktop characterization');
   await expect(page.locator('#mobile-tab-bar')).toBeHidden();
   // The gear's parent header is already hidden on desktop; do not redesign it
   // merely to manufacture a visible #gear-btn assertion.
   await expect(page.locator('body > header')).toBeHidden();
   expect(await page.locator('#gear-btn').evaluate(el => getComputedStyle(el).display)).not.toBe('none');
-  await expect(page.locator('.new-session-primary')).toBeVisible();
+  await expect(page.locator('#session-dashboard-controls .new-session-primary')).toHaveCount(0);
+  await expect(page.locator('#session-list .machine-group[data-machine=""] .machine-header .machine-add-btn')).toBeVisible();
   await page.locator('#expanded-settings-btn').click();
   await expect(page.locator('#settings-view')).toHaveClass(/visible/);
   await page.locator('#settings-back-btn').click();
