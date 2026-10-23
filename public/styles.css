@@ -2372,18 +2372,19 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
   .create-project-submit { width: 100%; justify-self: stretch; }
   header { padding-inline: 8px; }
   .settings-gear { min-width: 44px; min-height: 44px; }
-  #kb-accessory .kb-key { flex: 1 1 0; min-width: 0; padding: 6px 3px; text-align: center; }
-  #kb-accessory .kb-enter { min-width: 0; flex: 1.2 1 0; padding: 6px 4px; }
+  #kb-accessory { display: flex; padding: 6px 4px 4px; gap: 3px; overflow-x: hidden; }
+  #kb-accessory .kb-key { flex: 1 1 0; min-width: 0; padding: 6px 3px; min-height: 36px; font-size: 11px; text-align: center; border-color: var(--border-subtle); }
+  #kb-accessory .kb-enter { min-width: 0; flex: 1.2 1 0; padding: 6px 4px; font-size: 15px; }
   #kb-accessory .kb-open { min-width: 0; flex: 1 1 0; padding: 4px 4px !important; }
-  #kb-accessory .kb-open svg { width: 22px; height: 22px; }
+  #kb-accessory .kb-open svg { width: 24px; height: 24px; }
+  /* Match main's terminal positioning frame without changing dashboard chrome. */
+  body:has(#terminal-view.visible) > header { height: 51px; min-height: 50px; }
   .header-center .wolfpack-icon { display: none; }
   body:has(#sessions-view.visible) .header-center .wolfpack-icon { display: block; width: 24px; height: 24px; flex-shrink: 0; }
   #settings-view > .list,
   .project-picker-panel > .list,
   #agent-view > .list { width: 100%; }
   #terminal-view { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
-  /* The lifted view already ends above the keyboard-covered home indicator. */
-  #terminal-view.keyboard-occluded { padding-bottom: 0; }
 }
 #settings-view > .list,
 .project-picker-panel > .list,
@@ -2776,11 +2777,6 @@ body > header { height: 52px; min-height: 52px; }
 }
 .session-search kbd { font: 500 11px var(--font-ui); }
 .sidebar-search { width: auto; margin: 0 10px 6px; }
-.kb-control { position: relative; min-width: 0; }
-.kb-control summary { list-style: none; display: flex; justify-content: center; align-items: center; cursor: pointer; }
-.kb-control summary::-webkit-details-marker { display: none; }
-.kb-control-menu { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); display: flex; gap: 4px; padding: 6px; border-radius: 9px; background: var(--bg-base); border: 1px solid var(--hairline-strong); z-index: 10; }
-#kb-accessory .kb-control-menu button { min-width: 42px; }
 .machine-header-name { font-family: var(--font-ui); color: var(--text-4); }
 .machine-add-btn { background: transparent; }
 
@@ -2855,12 +2851,6 @@ body > header { height: 52px; min-height: 52px; }
   .session-search { width: 100%; }
   #mobile-tab-bar [hidden] { display: none; }
   .machine-group .card .chev { display: none; }
-  #kb-accessory { overflow: visible; display: grid; grid-template-columns: repeat(20,minmax(0,1fr)); grid-template-rows: repeat(2,35px); height: 88px; flex-basis: 88px; gap: 4px; padding: 6px; background: var(--glass-bg); }
-  #kb-accessory > * { grid-column: span 4; }
-  #kb-accessory > .kb-arrow { grid-column: span 5; }
-  #kb-accessory .kb-key { min-height: 35px; border: 0; border-radius: 9px; background: var(--surface-3); color: var(--text-2); box-shadow: 0 1px 0 rgba(0,0,0,.5); font: 500 11px var(--font-mono); }
-  #kb-accessory .kb-enter { background: var(--attn-tint); color: var(--attn); }
-  #kb-accessory .kb-open { background: var(--accent); color: var(--accent-on); }
   #mobile-tab-bar { display: flex; height: calc(64px + max(20px,env(safe-area-inset-bottom))); padding-bottom: max(20px,env(safe-area-inset-bottom)); flex: none; background: var(--glass-bg); backdrop-filter: var(--glass-filter); border-top: 1px solid var(--hairline); }
   #mobile-tab-bar :is(button,a) { text-decoration: none; display: flex; flex: 1; flex-direction: column; justify-content: center; align-items: center; gap: 4px; min-height: 44px; border: 0; background: transparent; color: var(--text-4); font: 500 10px var(--font-ui); }
   #mobile-tab-bar svg { width: 24px; height: 24px; stroke: currentColor; fill: none; stroke-width: 1.8; }

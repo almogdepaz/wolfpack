@@ -53,7 +53,7 @@ test("H2 dashboard query survives runtime refresh", async ({ page }, info) => {
   await expect(page.locator('#session-list .needs-you .card:visible')).toHaveCount(1);
 });
 
-test("M1 control menu is hittable and preserves terminal focus", async ({ page }, info) => {
+test("M1 Control C is hittable and preserves terminal focus", async ({ page }, info) => {
   test.skip(info.project.name === "desktop");
   const bytes: number[][] = [];
   await page.routeWebSocket(/\/ws\/pty/, socket => {
@@ -70,13 +70,11 @@ test("M1 control menu is hittable and preserves terminal focus", async ({ page }
   const input = page.locator('#desktop-terminal-container textarea');
   await page.locator('#kb-open-btn').click();
   await expect(input).toBeFocused();
-  await page.locator('.kb-control summary').tap();
-  await expect(input).toBeFocused();
-  const key = page.locator('.kb-control-menu [data-key="C-a"]');
+  const key = page.getByRole('button', { name: 'Control C', exact: true });
   await expect(key).toBeVisible();
   expect(await key.evaluate(el => { const r = el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)); })).toBe(true);
   await key.tap();
-  await expect.poll(() => bytes).toContainEqual([1]);
+  await expect.poll(() => bytes).toContainEqual([3]);
   await expect(input).toBeFocused();
 });
 

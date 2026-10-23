@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { start, skipIfNoBroker, type BrokerTestOwnership, type BrokerTestServer } from './broker-helpers.ts';
 import { createOwnedTestServerHome, removeOwnedTestServerHome, type OwnedTestServerHome } from './test-server-home.ts';
 import { terminalTail } from './helpers.ts';
-import { installNativeKeyboard } from './virtual-keyboard-fixture.ts';
 
 test.skip(skipIfNoBroker.condition, skipIfNoBroker.reason);
 let server: BrokerTestServer;
@@ -41,11 +40,10 @@ test.afterAll(async () => {
   }
 });
 
-test('native VK frame resize retains the first native PTY row, exact session and one attach', async ({ page }, info) => {
+test('main visualViewport resize retains the first native PTY row, exact session and one attach', async ({ page }, info) => {
   test.skip(info.project.name === 'desktop', 'mobile native keyboard frame');
   cleanupPath = info.outputPath('owned-broker-cleanup.json');
   await page.setViewportSize({ width: 384, height: 596 });
-  await installNativeKeyboard(page, false);
   await page.addInitScript(() => { localStorage.setItem('wolfpackCursorBlinkDisabled', '1'); });
   const sockets: { session: string | null; origin: string; path: string; closed: boolean }[] = [];
   const resizes: { cols: number; rows: number }[] = [];
@@ -62,7 +60,7 @@ test('native VK frame resize retains the first native PTY row, exact session and
       if (frame.type === 'resize') resizes.push({ cols: frame.cols, rows: frame.rows });
     });
   });
-  await page.goto(server.baseUrl + '?kbdebug=1');
+  await page.goto(server.baseUrl);
   await page.getByRole('button', { name: `Open ${name}`, exact: true }).first().click();
   const terminal = page.locator('#desktop-terminal-container');
   await expect(terminal).toHaveAttribute('data-terminal-load-state', 'live');
@@ -85,29 +83,33 @@ test('native VK frame resize retains the first native PTY row, exact session and
   const initialRows = resizes.at(-1)!.rows;
   await page.evaluate(() => {
     Object.defineProperty(visualViewport!, 'height', { configurable: true, value: 340.98 });
-    window.__nativeKeyboard.geometry(437, 159);
     visualViewport!.dispatchEvent(new Event('resize'));
   });
-  await expect.poll(async () => JSON.parse(await page.locator('#kb-debug').textContent() || '{}').accessory?.bottom).toBe(437);
+  await expect.poll(() => page.locator('#kb-accessory').evaluate(element => element.getBoundingClientRect().bottom)).toBeCloseTo(341, 1);
   await expect.poll(() => resizes.at(-1)!.rows).toBeLessThan(initialRows);
   await expect.poll(() => terminalTail(terminal, 40)).toBe('VKNATIVE_FIRST_ROW');
   expect(await terminal.locator('canvas').evaluate((node, original) => node === original, canvas)).toBe(true);
   const geometry = await page.evaluate(() => ({
-    debug: JSON.parse(document.querySelector('#kb-debug')!.textContent || '{}'),
+    terminal: document.querySelector('#terminal-view')!.getBoundingClientRect().toJSON(),
+    accessory: document.querySelector('#kb-accessory')!.getBoundingClientRect().toJSON(),
     canvas: document.querySelector('#desktop-terminal-container canvas')!.getBoundingClientRect().toJSON(),
     clip: document.querySelector('#workspace-terminal-region')!.getBoundingClientRect().toJSON(),
   }));
-  expect(geometry.debug.path).toBe('vk');
-  expect(geometry.debug.vk.overlaysContent).toBe(true);
-  expect(geometry.debug.vk.boundingRect.top).toBe(437);
-  expect(geometry.debug.terminal.bottom).toBe(437);
+  expect(geometry.terminal.bottom).toBe(341);
+  expect(geometry.accessory.bottom).toBe(341);
   expect(geometry.canvas.top).toBeGreaterThanOrEqual(geometry.clip.top);
   expect(geometry.canvas.top + 20).toBeLessThanOrEqual(geometry.clip.bottom);
-  await page.screenshot({ path: info.outputPath('native-pty-437.png') });
-  await page.evaluate(() => window.__nativeKeyboard.geometry(0, 0));
+  await page.screenshot({ path: info.outputPath('native-pty-341.png') });
+  await page.evaluate(() => {
+    Object.defineProperty(visualViewport!, 'height', { configurable: true, value: innerHeight });
+    visualViewport!.dispatchEvent(new Event('resize'));
+  });
   await expect(input).toHaveAttribute('inputmode', 'none');
-  await expect(page.locator('#terminal-view')).not.toHaveClass(/keyboard-occluded/);
-  await page.evaluate(() => window.__nativeKeyboard.geometry(437, 159));
+  await expect(page.locator('#terminal-view')).toHaveCSS('bottom', '0px');
+  await page.evaluate(() => {
+    Object.defineProperty(visualViewport!, 'height', { configurable: true, value: 340.98 });
+    visualViewport!.dispatchEvent(new Event('resize'));
+  });
   await expect(input).toHaveAttribute('inputmode', 'none'); // native geometry cannot reopen stdin
   await page.locator('#kb-open-btn').click();
   await expect(input).toBeFocused();
@@ -119,7 +121,10 @@ test('native VK frame resize retains the first native PTY row, exact session and
   expect(sockets).toHaveLength(1);
   await page.locator('#back-btn').click();
   await expect.poll(() => sockets[0].closed).toBe(true);
-  expect(await page.evaluate(() => ({ overlay: window.__nativeKeyboard.overlaysContent, listeners: window.__nativeKeyboard.listeners.size }))).toEqual({ overlay: false, listeners: 0 });
-  await expect(page.locator('#kb-debug')).toHaveCount(0);
-  await writeFile(info.outputPath('native-pty-evidence.json'), JSON.stringify({ socketPath: server.socketPath, sessionId, before, after, sockets, resizes, inputFrames, geometry, overlayHistory: await page.evaluate(() => window.__nativeKeyboard.overlayHistory) }, null, 2));
+  await page.evaluate(() => {
+    Object.defineProperty(visualViewport!, 'height', { configurable: true, value: 300 });
+    visualViewport!.dispatchEvent(new Event('resize'));
+  });
+  await expect(page.locator('#terminal-view')).toHaveCSS('bottom', '0px');
+  await writeFile(info.outputPath('native-pty-evidence.json'), JSON.stringify({ socketPath: server.socketPath, sessionId, before, after, sockets, resizes, inputFrames, geometry }, null, 2));
 });

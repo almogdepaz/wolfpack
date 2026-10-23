@@ -43,7 +43,7 @@ import { authenticatedFetchWithTimeout, browserAuthFetch, getBrowserAuthToken } 
 import { isRequestTimeout } from "./fetch-timeout";
 import { probeBackendStatus } from "./backend-probe";
 import { createReconnectBanner } from "./reconnect-banner";
-import { keyboardViewportLayout, virtualKeyboardViewportLayout } from "./viewport-geometry";
+import { keyboardOcclusionHeight } from "./viewport-geometry";
 import type { OrderedResizeSettlement } from "./ordered-resize";
 import { RESIZE_SEND_DEBOUNCE_MS } from "./pty-socket-client";
 import {
@@ -3386,17 +3386,11 @@ function removeDesktopConflictOverlay() {
   if (el) el.remove();
 }
 
-function setMobileKeyboardInset(insetPx: number, topPx?: number): void {
+function setMobileKeyboardInset(insetPx: number): void {
   // Shrink the view rather than translating its canvas above the clipped
   // workspace. This also keeps the first row and accessory in the viewport.
   const view = document.getElementById("terminal-view");
-  if (view) {
-    const open = topPx !== undefined;
-    view.style.position = open ? "fixed" : "";
-    view.style.top = open ? `${topPx}px` : "";
-    view.style.bottom = open ? `${insetPx}px` : "";
-    view.classList.toggle("keyboard-occluded", open);
-  }
+  if (view) view.style.bottom = insetPx > 0 ? `${insetPx}px` : "";
 }
 
 function terminalMayTakeFocus(container: HTMLElement): boolean {
@@ -3648,72 +3642,28 @@ function setupMobileTerminalInput(
 }
 
 function setupMobileTerminalViewport(): void {
-  const vv = window.visualViewport;
-  const view = document.getElementById("terminal-view");
-  if (!vv || !view) return;
-  state.visualViewportCleanup?.();
-  const keyboard = navigator.virtualKeyboard;
-  const previousOverlay = keyboard?.overlaysContent ?? false;
-  let native = false;
-  if (keyboard) {
-    let failure: [] | [unknown] = [];
-    try {
-      keyboard.overlaysContent = true;
-      native = keyboard.overlaysContent;
-    } catch (error) {
-      failure = [error];
-    }
-    if (!native) console.warn("Virtual keyboard overlay unavailable; using visual viewport", ...failure);
-  }
-  let wasOpen = false;
-  const debug = new URLSearchParams(location.search).get("kbdebug") === "1" ? document.createElement("pre") : null;
-  let frame = 0;
-  if (debug) {
-    debug.id = "kb-debug";
-    debug.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:99999;pointer-events:none;margin:0;background:#000c;color:white;font:10px monospace;white-space:pre-wrap;word-break:break-all";
-    document.body.append(debug);
-  }
+  if (!window.visualViewport) return;
   const vvHandler = (): void => {
-    // Fixed positioning follows the native layout viewport, not a shorter
-    // absolute parent. Never measure the already-inset view (feedback).
-    const cb = view.parentElement!.getBoundingClientRect();
-    const viewport = { height: vv.height, offsetTop: vv.offsetTop ?? 0 };
-    const layout = native
-      ? virtualKeyboardViewportLayout({ parentTop: cb.top, fixedHeight: document.documentElement.clientHeight }, keyboard.boundingRect, viewport.offsetTop)
-      : keyboardViewportLayout(window.innerHeight, { parentTop: cb.top, fixedHeight: document.documentElement.clientHeight }, viewport);
-    setMobileKeyboardInset(layout.inset, layout.open ? layout.top : undefined);
-    // Native zero before the first open event must not cancel a button's
-    // pending IME request. Only a native open->closed transition closes stdin.
-    // The existing vv fallback still closes on every closed viewport update.
-    if (!layout.open && (!native || wasOpen) && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
-    wasOpen = layout.open;
-    if (debug) {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        debug.style.top = `${viewport.offsetTop}px`;
-        debug.textContent = JSON.stringify({ innerHeight, clientHeight: document.documentElement.clientHeight,
-          screenHeight: screen.height, outerHeight, devicePixelRatio, path: native ? "vk" : "vv",
-          vk: { supported: !!keyboard, overlaysContent: keyboard?.overlaysContent ?? false, boundingRect: keyboard?.boundingRect ?? null },
-          vv: viewport, inset: Number.parseFloat(getComputedStyle(view).bottom), scrollY, mode: matchMedia("(display-mode: standalone)").matches ? "standalone" : "tab",
-          accessory: document.getElementById("kb-accessory").getBoundingClientRect(), terminal: view.getBoundingClientRect(), cb });
-      });
-    }
+    if (!window.visualViewport) return;
+    const kbHeight = keyboardOcclusionHeight(window.innerHeight, {
+      height: window.visualViewport.height,
+      // Browsers always provide offsetTop; use zero for incomplete viewport
+      // implementations so keyboard resize handling still fails safely.
+      offsetTop: window.visualViewport.offsetTop ?? 0,
+    });
+    const kbOpen = kbHeight > 150;
+    // Keep the view within the visual viewport; offsetTop is already
+    // subtracted by keyboardOcclusionHeight. Normal layout drives terminal
+    // geometry, without moving its first rendered row above the clip.
+    setMobileKeyboardInset(kbOpen ? kbHeight : 0);
+    // Viewport is authoritative for collapse only. Opening remains an
+    // explicit keyboard-button action so layout changes cannot enable stdin.
+    if (!kbOpen && state.kbAccessoryOpen) setMobileGhosttyKeyboardOpen(false);
   };
-  if (native) keyboard.addEventListener("geometrychange", vvHandler);
-  vv.addEventListener("resize", vvHandler);
-  vv.addEventListener("scroll", vvHandler);
-  window.addEventListener("resize", vvHandler);
-  window.addEventListener("scroll", vvHandler, { passive: true });
-  state.visualViewportCleanup = () => {
-    if (native) keyboard.removeEventListener("geometrychange", vvHandler);
-    if (keyboard && keyboard.overlaysContent !== previousOverlay) keyboard.overlaysContent = previousOverlay;
-    vv.removeEventListener("resize", vvHandler);
-    vv.removeEventListener("scroll", vvHandler);
-    window.removeEventListener("resize", vvHandler);
-    window.removeEventListener("scroll", vvHandler);
-    cancelAnimationFrame(frame);
-    debug?.remove();
-  };
+  window.visualViewport.addEventListener("resize", vvHandler);
+  window.visualViewport.addEventListener("scroll", vvHandler);
+  state.visualViewportHandler = vvHandler;
+  // Fire once to catch keyboard already open from previous session
   vvHandler();
 }
 
@@ -3871,8 +3821,12 @@ function releaseSingleTerminalView(preserveTarget: boolean, park: boolean): void
   if (!isDesktop()) setMobileGhosttyKeyboardOpen(false);
   releaseVisibleSingleTerminal(park);
   connStatusBanner.stop();
-  state.visualViewportCleanup?.();
-  state.visualViewportCleanup = null;
+  // Clean up visualViewport handler
+  if (state.visualViewportHandler && window.visualViewport) {
+    window.visualViewport.removeEventListener("resize", state.visualViewportHandler);
+    window.visualViewport.removeEventListener("scroll", state.visualViewportHandler);
+    state.visualViewportHandler = null;
+  }
   // Reset terminal positioning
   const termView = document.getElementById("terminal-view");
   if (termView) { termView.style.bottom = ""; termView.style.transform = ""; }
@@ -4743,15 +4697,6 @@ document.getElementById("mobile-settings")?.addEventListener("click", event => {
   event.preventDefault();
   void showSettings();
 });
-
-// Non-key accessory controls must preserve native terminal keyboard focus too.
-for (const control of document.querySelectorAll<HTMLElement>(".kb-control summary")) {
-  control.addEventListener("mousedown", event => event.preventDefault());
-  control.addEventListener("touchstart", event => {
-    event.preventDefault();
-    control.click();
-  }, { passive: false });
-}
 
 (function setupKbAccessory() {
   const acc = document.getElementById("kb-accessory");

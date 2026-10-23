@@ -490,7 +490,7 @@ export const state = {
   desktopResizeHandler: null,
   desktopResizeTimer: null,
   _touchCleanup: null,
-  visualViewportCleanup: null,
+  visualViewportHandler: null,
   kbResizeTimer: null,
   gridSessions: [],
   gridFocusIndex: 0,

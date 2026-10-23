@@ -13,10 +13,9 @@ test("terminal chrome and accessory contain only the requested controls", async 
   await expect(page.locator("#terminal-transcript-dialog")).toHaveCount(0);
   expect(await page.locator("#kb-accessory > *").evaluateAll(nodes => nodes.map(node =>
     node.getAttribute("data-key") || (node.matches("details") ? "ctrl" : node.id),
-  ))).toEqual(["Enter", "Escape", "ctrl", "C-c", "kb-open-btn", "Up", "Down", "Left", "Right"]);
-  await expect(page.locator("#kb-accessory .kb-control summary")).toHaveText("ctrl");
-  expect(await page.locator("#kb-accessory .kb-control-menu [data-key]").evaluateAll(nodes => nodes.map(node => node.getAttribute("data-key"))))
-    .toEqual(["C-a", "C-d", "C-l", "C-r", "C-z"]);
+  ))).toEqual(["Enter", "Escape", "Up", "Down", "Left", "Right", "C-c", "kb-open-btn"]);
+  await expect(page.getByRole('button', { name: 'Control C', exact: true, includeHidden: true })).toHaveText('^C');
+  await expect(page.locator('#kb-accessory details')).toHaveCount(0);
 });
 
 test("single terminal retains global navigation and confirmed row Stop", async ({ page }, info) => {

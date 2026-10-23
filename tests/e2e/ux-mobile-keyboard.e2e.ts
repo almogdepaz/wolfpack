@@ -3,11 +3,6 @@ import { startTestServer, terminalTail, type TestServer } from './helpers.ts';
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer(); });
 test.afterAll(async () => { await server?.close(); });
-test.beforeEach(async ({ page }) => {
-  // These visualViewport models represent the no-VK platform (Safari), not
-  // Chromium's API support inherited by its emulated iPhone user agent.
-  await page.addInitScript(() => Object.defineProperty(navigator, 'virtualKeyboard', { configurable: true, value: undefined }));
-});
 
 async function forceTerminalSafeArea(page: Page): Promise<void> {
   const count = await page.evaluate(() => {
@@ -38,14 +33,14 @@ async function emulateKeyboardViewport(page: Page, height: number, offsetTop: nu
   }, { height, offsetTop, event });
 }
 
-async function expectAccessoryFlush(page: Page): Promise<void> {
+async function expectMainSafeArea(page: Page): Promise<void> {
   await expect.poll(() => page.locator('#kb-accessory').evaluate(el => {
     const viewport = window.visualViewport!;
     return Math.abs(viewport.height + viewport.offsetTop - el.getBoundingClientRect().bottom);
-  })).toBeLessThanOrEqual(1);
+  })).toBe(34);
 }
 
-for (const needsInput of [false, true]) test(`accessory is flush with keyboard and restores safe area (banner ${needsInput})`, async ({ page }, info) => {
+for (const needsInput of [false, true]) test(`accessory retains main safe-area padding and mobile banner stays hidden (banner ${needsInput})`, async ({ page }, info) => {
   test.skip(info.project.name === 'desktop', 'mobile visual viewport and safe-area contract');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route('**/api/sessions', route => route.fulfill({ json: { sessions: [{
@@ -80,14 +75,14 @@ for (const needsInput of [false, true]) test(`accessory is flush with keyboard a
   await page.locator('#kb-open-btn').click();
   await expect(input).toBeFocused();
   await expect(input).toHaveAttribute('inputmode', 'text');
-  await expectAccessoryFlush(page);
-  await expect(view).toHaveCSS('padding-bottom', '0px');
+  await expectMainSafeArea(page);
+  await expect(view).toHaveCSS('padding-bottom', '34px');
   await expect(page.locator('#input-bar')).toBeHidden();
   await expect(banner).toHaveJSProperty('hidden', true);
 
   await emulateKeyboardViewport(page, 484, 40, 'scroll');
   await expect(view).toHaveCSS('bottom', '320px');
-  await expectAccessoryFlush(page);
+  await expectMainSafeArea(page);
   await expect(input).toHaveAttribute('inputmode', 'text');
 
   await emulateKeyboardViewport(page, 844, 0);
@@ -98,7 +93,7 @@ for (const needsInput of [false, true]) test(`accessory is flush with keyboard a
 
   // A later viewport-only keyboard exposure still cannot reopen stdin.
   await emulateKeyboardViewport(page, 504, 20);
-  await expectAccessoryFlush(page);
+  await expectMainSafeArea(page);
   await expect(input).toHaveAttribute('inputmode', 'none');
   await emulateKeyboardViewport(page, 844, 0);
   await expect(view).toHaveCSS('padding-bottom', '34px');

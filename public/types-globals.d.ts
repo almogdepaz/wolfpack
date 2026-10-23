@@ -12,16 +12,6 @@
  */
 
 declare global {
-  /** Optional VirtualKeyboard API (secure-context Chromium); not in lib.dom. */
-  interface VirtualKeyboard extends EventTarget {
-    overlaysContent: boolean;
-    readonly boundingRect: DOMRect;
-  }
-
-  interface Navigator {
-    readonly virtualKeyboard?: VirtualKeyboard;
-  }
-
   interface GhosttyTerminal {
     readonly cols: number;
     readonly rows: number;

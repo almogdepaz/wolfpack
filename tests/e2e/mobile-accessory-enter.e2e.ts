@@ -41,61 +41,30 @@ async function openAccessory(page: Page, onSocket?: (socket: WebSocketRoute) => 
   return sentBytes;
 }
 
-for (const width of [320, 375, 390]) test(`mobile accessory has nine keys in even five-control and four-arrow rows at ${width}px`, async ({ page }, testInfo) => {
+for (const width of [320, 375, 390]) test(`mobile accessory restores main single-row key order and sizing at ${width}px`, async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === "desktop", "mobile-only accessory layout");
   await page.setViewportSize({ width, height: 844 });
-  const bytes = await openAccessory(page);
-  await page.locator('#kb-open-btn').click();
-  await expect(page.locator('#desktop-terminal-container textarea')).toBeFocused();
-  const keys = page.locator('#kb-accessory > .kb-key, #kb-accessory > .kb-control > summary');
-  await expect(page.locator('#kb-accessory [data-key="BTab"]')).toHaveCount(0);
-  await expect(keys).toHaveCount(9);
-  const geometry = await keys.evaluateAll(nodes => nodes.map(node => {
-    const rect = node.getBoundingClientRect();
-    return { key: node.getAttribute('data-key') || (node.id === 'kb-open-btn' ? 'keyboard' : 'ctrl'), x: rect.x, y: rect.y, width: rect.width, height: rect.height, font: getComputedStyle(node).font, icon: node.querySelector('svg')?.getBoundingClientRect().toJSON() };
-  }));
-  const bar = await page.locator('#kb-accessory').evaluate(element => ({ x: element.getBoundingClientRect().x, width: element.getBoundingClientRect().width, height: element.getBoundingClientRect().height, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth, gap: getComputedStyle(element).gap, padding: getComputedStyle(element).padding }));
+  await openAccessory(page);
+  const keys = page.locator('#kb-accessory > .kb-key');
+  await expect(keys).toHaveCount(8);
+  expect(await keys.evaluateAll(nodes => nodes.map(node => node.getAttribute('data-key') ?? 'keyboard')))
+    .toEqual(['Enter', 'Escape', 'Up', 'Down', 'Left', 'Right', 'C-c', 'keyboard']);
+  await expect(page.getByRole('button', { name: 'Control C', exact: true })).toHaveText('^C');
+  await expect(page.locator('#kb-accessory details, #kb-accessory .kb-git, #kb-accessory .kb-copy')).toHaveCount(0);
+  const geometry = await keys.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().toJSON()));
+  const bar = await page.locator('#kb-accessory').evaluate(element => ({ rect: element.getBoundingClientRect().toJSON(), scrollWidth: element.scrollWidth, clientWidth: element.clientWidth }));
   await writeFile(testInfo.outputPath('accessory-geometry.json'), JSON.stringify({ geometry, bar }, null, 2));
-  await page.screenshot({ path: testInfo.outputPath(`accessory-${width}-rows.png`) });
-  expect(bar.height).toBeGreaterThanOrEqual(84);
-  expect(bar.height).toBeLessThanOrEqual(90);
-  expect(bar.width).toBe(width);
-  expect(bar.scrollWidth).toBeLessThanOrEqual(bar.clientWidth);
-  const rows = new Map<number, string[]>();
-  for (const key of geometry) {
-    const y = Math.round(key.y);
-    rows.set(y, [...(rows.get(y) ?? []), key.key]);
-    expect(key.height).toBeGreaterThanOrEqual(35);
-    expect(key.height).toBeLessThanOrEqual(36);
-    expect(key.x).toBeGreaterThanOrEqual(bar.x);
-    expect(key.x + key.width).toBeLessThanOrEqual(bar.x + bar.width);
-  }
-  expect([...rows.values()]).toEqual([['Enter', 'Escape', 'ctrl', 'C-c', 'keyboard'], ['Up', 'Down', 'Left', 'Right']]);
-  const rowGeometry = [...rows.keys()].map(y => geometry.filter(key => Math.round(key.y) === y));
-  for (const row of rowGeometry) {
-    expect(Math.max(...row.map(key => key.width)) - Math.min(...row.map(key => key.width))).toBeLessThan(1);
-    expect(row[0]!.x).toBeCloseTo(geometry[0]!.x, 0);
-    const last = row[row.length - 1]!;
-    expect(last.x + last.width).toBeCloseTo(geometry[4]!.x + geometry[4]!.width, 0);
-  }
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
-  const summary = page.locator('#kb-accessory .kb-control summary');
-  await summary.tap();
-  const menu = page.locator('#kb-accessory .kb-control-menu');
-  await expect(menu).toBeVisible();
-  const bounds = await menu.boundingBox();
-  expect(bounds).not.toBeNull();
-  expect(bounds!.x).toBeGreaterThanOrEqual(0);
-  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
-  expect(bounds!.y).toBeGreaterThanOrEqual(0);
-  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(844);
-  await writeFile(testInfo.outputPath('control-menu-geometry.json'), JSON.stringify(bounds, null, 2));
-  await page.screenshot({ path: testInfo.outputPath(`accessory-${width}-menu.png`) });
-  await menu.locator('[data-key="C-a"]').tap();
-  await expect.poll(() => bytes).toEqual([[1]]);
-  await expect(page.locator('#desktop-terminal-container textarea')).toBeFocused();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
   await page.screenshot({ path: testInfo.outputPath(`accessory-${width}.png`) });
+  expect(bar.rect.height).toBe(47);
+  expect(bar.rect.width).toBe(width);
+  expect(bar.scrollWidth).toBeLessThanOrEqual(bar.clientWidth);
+  for (const key of geometry) {
+    expect(key.top).toBe(geometry[0]!.top);
+    expect(key.height).toBeGreaterThanOrEqual(36);
+    expect(key.height).toBeLessThanOrEqual(40);
+    expect(key.left).toBeGreaterThanOrEqual(bar.rect.left);
+    expect(key.right).toBeLessThanOrEqual(bar.rect.right);
+  }
 });
 
 test("native hardware Tab and Shift+Tab each encode once while terminal focus stays active", async ({ page }, testInfo) => {
