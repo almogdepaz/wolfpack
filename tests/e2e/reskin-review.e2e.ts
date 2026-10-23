@@ -29,7 +29,7 @@ test("H1 counters and summary track initial load and refresh without filter inte
   await page.goto(server.baseUrl);
   await expect(page.locator('#session-list .machine-group:not(.needs-you) .card')).toHaveCount(2);
   await expect(page.locator('#dashboard-session-filter [data-session-card-view="need"] .n')).toHaveText("1");
-  await expect(page.locator('#session-summary')).toContainText("2 across 1 machine · 1 need you");
+  await expect(page.locator('#session-summary')).toContainText("2 sessions across 1 machine · 1 need you");
   await expect(page.locator('#session-list [data-session-order-id="another-id"] .harness-icon')).toHaveAttribute('aria-label', 'Terminal');
   await expect(page.locator('#session-list [data-session-order-id="test-id"] .status')).toHaveAttribute('title', 'needs input');
   await expect(page.locator('#session-list [data-session-order-id="test-id"] .status')).toHaveText('Needs input');

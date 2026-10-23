@@ -25,7 +25,7 @@ test("need session is pinned and dimmed in its machine group without changing ma
   await expect(machine.locator(".card-name-text")).toHaveText(["waiting", "worker"]);
   await expect(machine.locator('[data-session-order-id="waiting"]')).toHaveCSS("opacity", "0.6");
   await expect(machine.locator(".machine-session-count")).toHaveText("2 sessions");
-  await expect(page.locator("#session-summary")).toContainText("2 across 1 machine · 1 need you");
+  await expect(page.locator("#session-summary")).toContainText("2 sessions across 1 machine · 1 need you");
   expect(await pinned.evaluate(el => el === el.parentElement?.firstElementChild)).toBe(true);
   if (info.project.name === "desktop") await page.setViewportSize({ width: 1440, height: 900 });
   await page.screenshot({ path: info.outputPath("triage-pinned.png"), fullPage: true });

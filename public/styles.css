@@ -2821,7 +2821,8 @@ body > header { height: 52px; min-height: 52px; }
 @media (max-width:768px) {
   #session-dashboard-controls { padding: 4px 16px 12px; gap: 16px; }
   .session-heading { flex: 1; }
-  .session-heading h1 { font-size: 34px; }
+  .session-heading h1 { display: none; }
+  #session-summary { margin-top: 0; }
   #dashboard-session-filter { order: 3; width: 100%; }
   #dashboard-session-filter .seg { display: flex; width: 100%; }
   #dashboard-session-filter .seg button { flex: 1; gap: 4px; padding: 7px 4px; font-size: 11px; white-space: nowrap; min-height: 44px; }

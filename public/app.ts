@@ -1666,7 +1666,7 @@ function renderSessionListFromState(): void {
   const machineCount = document.getElementById("online-machine-count");
   if (machineCount) machineCount.textContent = `● ${online.length} ${online.length === 1 ? "machine" : "machines"} online`;
   const summary = document.getElementById("session-summary");
-  if (summary) summary.innerHTML = `${sessions.length} across ${online.length} ${online.length === 1 ? "machine" : "machines"} · <strong>${sessions.filter(session => sessionTier(session) === "need").length} need you</strong>`;
+  if (summary) summary.innerHTML = `${sessions.length} ${sessions.length === 1 ? "session" : "sessions"} across ${online.length} ${online.length === 1 ? "machine" : "machines"} · <strong>${sessions.filter(session => sessionTier(session) === "need").length} need you</strong>`;
   syncSessionChrome();
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
