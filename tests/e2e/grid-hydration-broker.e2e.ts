@@ -203,6 +203,42 @@ test("grid ready after hydration reveal stays live on initial attach and reconne
   await expectSameSessions();
 });
 
+test("grid late ready after Take Control preserves the granted hydrated cells", async ({ page }) => {
+  const firstViewer = await page.context().newPage();
+  try {
+    await observeLifecycle(firstViewer);
+    await openParent(firstViewer);
+    // Establish real viewer ownership without depending on its visual ready
+    // label: that label is the regression under test on the old app bundle.
+    await expect.poll(() => eventCount(firstViewer, "pty_ready")).toBe(2);
+    await expect.poll(() => eventCount(firstViewer, "hydration.reveal")).toBe(2);
+
+    const gates = await observeAndGate(page);
+    await openParent(page);
+    await expect.poll(() => eventCount(page, "viewer_conflict")).toBe(2);
+    await expect(cells(page).getByRole("button", { name: "Take Control", exact: true })).toHaveCount(2);
+    expect(await eventCount(page, "pty_ready")).toBe(0);
+    const revealsBeforeControl = await eventCount(page, "hydration.reveal");
+    for (const name of names) {
+      await page.locator(`#delegation-grid-container .grid-cell[data-session="${name}"]`)
+        .getByRole("button", { name: "Take Control", exact: true }).click();
+    }
+    await expect.poll(() => eventCount(page, "control_granted")).toBe(2);
+    await expect.poll(() => gates.filter(gate => gate.ready !== null).length).toBe(2);
+    await expect.poll(() => eventCount(page, "hydration.reveal")).toBe(revealsBeforeControl + 2);
+    await expectLive(page);
+    expect(await eventCount(page, "pty_ready")).toBe(0); // both actual ready frames are still held
+
+    await release(gates);
+    await expect.poll(() => eventCount(page, "pty_ready")).toBe(2);
+    await expectLive(page);
+    expect(await eventCount(page, "hydration.reveal")).toBe(revealsBeforeControl + 2);
+    await expectSameSessions();
+  } finally {
+    await firstViewer.close();
+  }
+});
+
 test("grid ready while hydration pending preserves the gate then becomes live", async ({ page }) => {
   const gates = await observeAndGate(page, true);
   await openParent(page);
