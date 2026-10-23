@@ -1,5 +1,39 @@
 # ui redesign: attention-first dashboard, apple-style skin
 
+## round17 — investigation complete; conditional stop, no release regression found
+
+- clean base/local/tracking/actual remote verified `f48e8424495a08cfcbf92ee452c1f2cb48923184`, `ui/redesign`, same worktree. new user physical report supersedes prior main-parity assumption: current mainv1.6.26 also gaps, old cached phone frontend version unknown. no physical no-gap claim from round16.
+- approved phase: identical Android emulation with34px modeled bottom safearea and vv keyboard resize across available release tags v1.6.15..26, then first-bad-range commits. record vvbottom-accessorybottom and owning element/CSS per tag; bounded private /tmp worktrees, no deployments during bisect. prime suspect7c3126ab shift→inset, must confirm/rule out. STOP with no speculative fix if no older tag differs. only if confirmed: red-first minimal source repair preserving inset/first row, restore safearea closed/remove while inset active, update fixed geometry test, keep ^C unchanged. one cherry-pickable source/test commit preferred; no caps/protected/dependency/unrelated changes.
+- implementer session `d1f9774d-aae1-4cba-b391-f5fa13851542`, endpoint `30aa4df3-73a6-47e7-ab32-65480d3ff1c8`, task `187800d1-32de-4013-a6b0-9b4c05cff24d` completed/ACKed once, conditional STOP/no fix. reviewer session `b2616f96-6118-49e7-974f-1504f87956c3`, endpoint `136fe183-2883-47dd-a747-8b6cb893e636`, read-only history/method audit task `940e5efc-55ee-4b40-9d1d-d557e5449e87` completed/ACKed once; conditional STOP, no candidate approval. report `round17/review/history-audit.md`: fresh17revision/68state samples, both probes exit0, stable tags all offset0gap≈34. exact reviewer session closed/verified absent (`after-reviewer-close.json`). separate candidate review is not applicable while release gate unmet. both explicit role model `openai-codex/gpt-6.1-sol:high`; previous round16 role IDs absent, no name reuse assumption.
+- commit boundary: one minimal fix commit after historical proof+red; independent review, final full repository gate once with exact-base failure isolation and focused affected browser checks; docs handoff, ONE server-only deploy with backup/atomic replacement and built=installed=running/served hashes+UUID/broker proof, normal FFpush. no merge/PR/forcepush/installs/broker restart/cap raises. ordinary confirmed safearea class/lifecycle decisions preauthorized; no-tagdiff/prerequisite/cap blocker stops work.
+- evidence root `/tmp/wolfpack-redesign-logs/round17/` private; do not delete round16 evidence or foreign worktrees. current server615787/broker2055. both independent release matrices find no older gap-free endpoint; prime suspect7c3126ab parent/child same gap, canvas clipping494→0 improves. implementation condition unmet: STOP/no production edit/fix/deploy/push. implementer report complete (`implementation/verification-summary.md`), owned `/tmp/wp-round17-bisect-187800d1` removed and exact path absent; no foreign worktrees touched. both exact role IDs closed/verified absent (`after-roles-close.json`), all task ACKs once. no full integration gate needed without source change. record-only local documentation commit is authorized by commit-each-phase/record-round17 instructions; no push under the stop boundary.
+
+### measured release matrix / band ownership
+
+Gap=vvbottom−accessorybottom, px, safearea34; safearea0 offset0 gap≈0 at every ref. producer Chromium156/Pixel5/384×596/vv340.98 and independent reviewer Chromium156/Pixel7/412×839/vv340.98 agree. only actual terminal env consumer replaced with34px, no root/frame/position override. every open band hit-tests to `#terminal-view`, with mobile `padding-bottom:env(safe-area-inset-bottom)` retained. old transforms leave reserved space over that ancestor's background; after inset it is literal bottom padding. same owner/rule applies to EVERY row:
+
+| tag | peeled commit | open offset0 gap | panned offset40 gap |
+|---|---|---:|---:|
+| v1.6.15 | `55490471` | 34.00 | 74.00 |
+| v1.6.16 | `a4c9b97f` | 34.00 | 74.00 |
+| v1.6.17 | `c9ec428b` | 34.00 | 74.00 |
+| v1.6.19 | `03c1a350` | 33.98 | 33.98 |
+| v1.6.20 | `3e3dcb0f` | 33.98 | 33.98 |
+| v1.6.20-rc.1 | `5503e615` | 33.98 | 33.98 |
+| v1.6.21 | `8abc37e1` | 33.98 | 33.98 |
+| v1.6.22 | `270ec065` | 33.98 | 33.98 |
+| v1.6.23 | `ec48da7c` | 33.98 | 33.98 |
+| v1.6.24 | `998fdad7` | 33.98 | 33.98 |
+| v1.6.25 | `d7f02cfe` | 33.98 | 33.98 |
+| v1.6.26 | `909d5150` | 33.98 | 33.98 |
+
+- v1.6.18 absent locally. all12available tags measured, not inferred from version strings. all four app/CSS/workspace-changing commits in24..25 (`7c3126ab`,`4ec4ae08`,`fa2be435`,`c984a799`) and suspect parent `f5bddb72` also gap33.98. v1.6.25 tag is d7f02cfe, not7c3126ab. no first-bad-gap tag/range/commit can be claimed. older15..17 pan74→19+34 is an improvement, not a new band. ±.02 is inset rounding.
+- `7c3126ab` parent/child accessorybottom307 vs vvbottom340.98 identical. parent shifted canvas top−201 in producer model (reviewer taller-frame clip494); inset canvas top55/clipped0. reverting inset would not remove the band and would restore clipping. keep first-row benefit.
+- independent supplementary branch history: `421ecf99` changes its parent gap33.98→≈0, closedpadding34 retained, clippedcanvas0 both, by keyboard-occluded class+mobile paddingbottom0. round16 `0f6b378a` removes suppression to restore main, returning gap34. this is a proven branch-only repair option, NOT a gap-free release/cached-phone identity and does not override user's explicit release-gate stop. needs separate reopened repair authority.
+- actual checks: producer stable34browser captures exit0/51.3s over17refs×safe0/34; all source/generated/served/received hashes bound. early ESM setup failures and pre-swipe-settlement captures preserved separately, not intended red tests. reviewer17freshrevision/68state samples, probes exit0/24s+6s; exact committed embedded assets, no generation. coordinator parent audit exit0 verifies51 git-sourceSHA bindings,34 app+CSS received-binding pairs,102 gap checks and owner. unchanged budgets exit0 app100762/CSS20788gzip; no cap change. source/test/generated diff empty; no red-green/native/types/full-suite/deploy gate reached because implementation condition failed.
+- detailed matrices, per-tag original rules/DOMRects/source hashes/screenshots/probes: `/tmp/wolfpack-redesign-logs/round17/{implementation/verification-summary.md,implementation/matrix/*/safe*.json,review/history-audit.md,review/history-geometry.json,coordinator-verification.md}`. private evidence58MiB; owned comparison worktree removed, reports retained. no physical OS keyboard/PWA/cacheversion claim; rebuild matrix used installed dependencies rather than recreating historical lock environments, corroborated independently by original embedded-map measurements.
+- next decision: identify/preserve the older working cached frontend's exact served asset hashes and physical viewport/safearea facts, or explicitly authorize correcting the reproduced longstanding band independent of a release regression. no hard-refresh of an old known-good cache before preserving its artifacts. stopped with no production fix/cherry-pick commit, no deploy/push; deployed and remote source remains round16f48e8424.
+
 ## round16 — main keyboard parity, independently approved and deployed
 
 - base/remote verified `1b4d6e84225aefe759100f3a25008d1a83521f8c`, `ui/redesign`, initially clean. local main reference `909d5150c4d004135751da375b880d814543ba69`; use `git show main:<path>` for restoration. previous `/tmp` evidence and role sessions are absent after host restart; historical deploy receipts above are not fresh evidence. host optimusprime, current server/broker PIDs 2056/2055 (not historical 2038863/2051).
