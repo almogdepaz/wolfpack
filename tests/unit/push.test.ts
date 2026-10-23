@@ -867,13 +867,45 @@ describe("push: checkSessionTransitions", () => {
     const alert = { sessionId: "broker/session id", episodeId: "e", eligibleAtMs: 0, observedAtMs: 0 };
     expect(_testing.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "quiet" })).toEqual({
       title: "Wolfpack: agent one",
-      body: "Quiet",
+      body: "Idle",
       tag: "session-broker/session id",
       url: "/?sessionId=broker%2Fsession+id&session=agent+one&machine=local",
     });
     const needsInput = _testing.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "needs-input", inputKind: "question" });
     expect(needsInput).toMatchObject({ title: "Wolfpack: agent one", tag: "session-broker/session id", body: "Needs input (question)" });
     expect(_testing.quietAlertPayload({ name: "agent one" }, "broker/session id", { ...alert, kind: "needs-input" }).body).toBe("Needs input");
+  });
+
+  test("relays a new-default needs-input episode through peer validation to push delivery", async () => {
+    const { DEFAULT_QUIET_ALERT_POLICY, reduceQuietAlertPolicy } = await import("../../src/quiet-alert-policy.ts");
+    const { observePeerNotifications } = await import("../../src/server/peer-notifications.ts");
+    const { buildMachineHandshake } = await import("../../src/tailnet-machine-contract.ts");
+    const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
+    expect(DEFAULT_QUIET_ALERT_POLICY.mode).toBe("needs-input-only");
+    const endpoint = `https://fcm.googleapis.com/new-default-peer-${Date.now()}`;
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    const payloads: string[] = [];
+    _testing.sessionPushSender = async payload => { payloads.push(payload.body); return { sent: 1, failed: 0, pruned: 0 }; };
+    try {
+      const now = Date.now();
+      const base = { sessionId: "new-default-peer", continuity: "fresh" as const, policy: undefined };
+      const active = reduceQuietAlertPolicy(undefined, { ...base, observedAtMs: now - 30_000,
+        renderedActivityAt: now - 30_000, episodeId: "new-default-episode" });
+      const due = reduceQuietAlertPolicy(active.state, { ...base, observedAtMs: now,
+        renderedActivityAt: undefined, episodeId: undefined, alert: { kind: "needs-input", inputKind: "permission" } });
+      const origin = "https://peer.test.ts.net";
+      const handshake = buildMachineHandshake({ tailscaleHostname: "peer.test.ts.net", tailscaleNodeId: "n123",
+        installationId: "12345678-1234-4234-8234-123456789abc", displayName: "peer", version: "1.0.0" });
+      const peers = await observePeerNotifications({ topology: async () => ({ origin: "https://home.test.ts.net", nodeId: "home", peers: new Map([[origin, "n123"]]) }),
+        fetch: async input => Response.json(input.endsWith("/api/machine") ? handshake : {
+          sessions: [{ name: "agent", identity: { wolfpackSessionId: base.sessionId }, quietAlert: due.fact }] }) });
+      expect(peers).toHaveLength(1);
+      for (const peer of peers) {
+        await checkSessionTransitions(peer.sessions, undefined, undefined, peer.machine);
+        await checkSessionTransitions(peer.sessions, undefined, undefined, peer.machine);
+      }
+      expect(payloads).toEqual(["Needs input (permission)"]);
+    } finally { _testing.sessionPushSender = null; removeSubscription(endpoint); }
   });
 
   test("delivers a relayed peer needs-input fact with its own text", async () => {
@@ -909,7 +941,7 @@ describe("push: checkSessionTransitions", () => {
       return { sent: 1, failed: 0, pruned: 0 };
     };
     const activityAtMs = Date.now() - 300_000;
-    const base = { sessionId: "peer-released", continuity: "fresh" as const, policy: undefined };
+    const base = { sessionId: "peer-released", continuity: "fresh" as const, policy: { mode: "quiet-after-activity" as const, quietAfterSeconds: 30 } };
     const active = reduceQuietAlertPolicy(undefined, { ...base, observedAtMs: activityAtMs, renderedActivityAt: activityAtMs, episodeId: "released-episode" });
     const withheld = reduceQuietAlertPolicy(active.state, { ...base, observedAtMs: activityAtMs + 30_000, renderedActivityAt: undefined, episodeId: undefined, suppressed: true });
     const released = reduceQuietAlertPolicy(withheld.state, { ...base, observedAtMs: Date.now(), renderedActivityAt: undefined, episodeId: undefined });
@@ -919,7 +951,7 @@ describe("push: checkSessionTransitions", () => {
         identity: { wolfpackSessionId: "peer-released" },
         quietAlert: released.fact,
       }], undefined, undefined, { identity: "n123:12345678-1234-4234-8234-123456789abc", name: "peer" });
-      expect(payloads).toEqual(["Quiet"]);
+      expect(payloads).toEqual(["Idle"]);
     } finally {
       _testing.sessionPushSender = null;
       removeSubscription(endpoint);

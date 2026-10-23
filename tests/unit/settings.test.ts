@@ -143,6 +143,12 @@ describe("loadSettings — defaults", () => {
 });
 
 describe("loadSettings — quiet alerts", () => {
+  test("preserves needs-input-only and its configured interval", () => {
+    const quietAlerts = { mode: "needs-input-only", quietAfterSeconds: 45 } as const;
+    withSettingsFile({ agentCmd: "shell", cmds: [], quietAlerts }, () => {
+      expect(loadSettings().quietAlerts).toEqual(quietAlerts);
+    });
+  });
   test("preserves a strict persisted host-wide quiet-alert policy", () => {
     withSettingsFile({
       agentCmd: "shell",

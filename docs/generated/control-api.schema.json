@@ -5791,6 +5791,7 @@
       "properties": {
         "mode": {
           "enum": [
+            "needs-input-only",
             "quiet-after-activity",
             "disabled"
           ]

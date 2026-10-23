@@ -614,7 +614,7 @@ function sessionNotificationStableId(session: SessionTransitionFact): string | n
 }
 
 function quietAlertBody(alert: QuietAlertFact): string {
-  if (alert.kind !== QUIET_ALERT_KIND.NEEDS_INPUT) return "Quiet";
+  if (alert.kind !== QUIET_ALERT_KIND.NEEDS_INPUT) return "Idle";
   return alert.inputKind ? `Needs input (${alert.inputKind})` : "Needs input";
 }
 

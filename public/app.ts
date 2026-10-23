@@ -4982,9 +4982,9 @@ async function loadQuietAlertSettings(): Promise<void> {
     const response = await api<SettingsResponse>("/settings");
     const policy = response.settings?.quietAlerts;
     if (!isQuietAlertPolicy(policy)) throw new Error("invalid quiet alert settings response");
-    renderQuietAlertSettings(policy, "Host-wide automatic quiet alerts.", "idle");
+    renderQuietAlertSettings(policy, "Host-wide automatic idle alerts.", "idle");
   } catch {
-    renderQuietAlertSettings(DEFAULT_QUIET_ALERT_POLICY, "Could not load host-wide quiet alert settings.", "error");
+    renderQuietAlertSettings(DEFAULT_QUIET_ALERT_POLICY, "Could not load host-wide idle alert settings.", "error");
   }
 }
 
@@ -4996,7 +4996,7 @@ async function saveQuietAlertSettings(): Promise<void> {
     return;
   }
   let renderedPolicy = policy;
-  let message = "Saving host-wide quiet alert settings…";
+  let message = "Saving host-wide idle alert settings…";
   let status: "idle" | "error" | "success" = "idle";
   quietAlertSettingsBusy = true;
   renderQuietAlertSettings(renderedPolicy, message, status);
@@ -5009,10 +5009,10 @@ async function saveQuietAlertSettings(): Promise<void> {
     const saved = response.settings?.quietAlerts;
     if (!isQuietAlertPolicy(saved)) throw new Error("invalid quiet alert settings response");
     renderedPolicy = saved;
-    message = "Host-wide quiet alert settings saved.";
+    message = "Host-wide idle alert settings saved.";
     status = "success";
   } catch {
-    message = "Could not save host-wide quiet alert settings.";
+    message = "Could not save host-wide idle alert settings.";
     status = "error";
   } finally {
     quietAlertSettingsBusy = false;

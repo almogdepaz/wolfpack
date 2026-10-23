@@ -16,17 +16,41 @@ function observation(overrides: Partial<Parameters<typeof reduceQuietAlertPolicy
     continuity: "fresh" as const,
     renderedActivityAt: ACTIVITY_AT_MS,
     episodeId: "episode-one",
-    policy: undefined,
+    policy: { mode: QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY, quietAfterSeconds: 30 },
     ...overrides,
   };
 }
 
 describe("quiet alert policy", () => {
-  test("defaults to a 30-second host-wide rendered-activity policy", () => {
-    expect(DEFAULT_QUIET_ALERT_POLICY).toEqual({
-      mode: QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY,
-      quietAfterSeconds: 30,
-    });
+  test("defaults to needs-input-only with the existing 30-second interval", () => {
+    expect(DEFAULT_QUIET_ALERT_POLICY).toEqual({ mode: "needs-input-only", quietAfterSeconds: 30 });
+  });
+
+  test("the default withholds idle episodes but emits needs-input once, even while suppressed", () => {
+    const active = reduceQuietAlertPolicy(undefined, observation({ policy: undefined }));
+    const idle = reduceQuietAlertPolicy(active.state, observation({ policy: undefined,
+      observedAtMs: ACTIVITY_AT_MS + 30_000, renderedActivityAt: undefined, episodeId: undefined }));
+    expect(idle.event).toBeUndefined();
+    expect(idle.fact).toBeUndefined();
+    const input = reduceQuietAlertPolicy(idle.state, observation({ policy: undefined,
+      observedAtMs: ACTIVITY_AT_MS + 120_000, renderedActivityAt: undefined, episodeId: undefined,
+      alert: { kind: "needs-input", inputKind: "permission" }, suppressed: true }));
+    expect(input.event).toEqual({ kind: "needs-input", inputKind: "permission", episodeId: "episode-one" });
+    expect(input.fact?.eligibleAtMs).toBe(ACTIVITY_AT_MS + 120_000);
+    const repeat = reduceQuietAlertPolicy(input.state, observation({ policy: undefined,
+      observedAtMs: ACTIVITY_AT_MS + 130_000, renderedActivityAt: undefined, episodeId: undefined }));
+    expect(repeat.event).toBeUndefined();
+    expect(repeat.fact?.kind).toBe("needs-input");
+  });
+
+  test("switching from all-idle to the default never repeats an already emitted idle fact", () => {
+    const active = reduceQuietAlertPolicy(undefined, observation());
+    const idle = reduceQuietAlertPolicy(active.state, observation({
+      observedAtMs: ACTIVITY_AT_MS + 30_000, renderedActivityAt: undefined, episodeId: undefined }));
+    expect(idle.fact?.kind).toBe("quiet");
+    const changed = reduceQuietAlertPolicy(idle.state, observation({ policy: undefined,
+      observedAtMs: ACTIVITY_AT_MS + 40_000, renderedActivityAt: undefined, episodeId: undefined }));
+    expect(changed.fact).toBeUndefined();
   });
 
   test("requires a rendered activity episode and continuous quiet at the exact threshold", () => {
