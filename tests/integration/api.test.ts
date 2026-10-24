@@ -786,7 +786,7 @@ describe("GET /api/sessions", () => {
       const released = await tick(1_000, { "tree-child": programStatusRecord("idle") });
       expect(treeSession(released, "tree-parent").quietAlert).toMatchObject({ kind: "quiet", sessionId: "tree-parent-id" });
       expect(treeSession(released, "tree-parent")).not.toHaveProperty("quietSuppressedBy");
-      expect(deliveries).toEqual([{ title: "Wolfpack: tree-parent", body: "Quiet" }]);
+      expect(deliveries).toEqual([{ title: "Wolfpack: tree-parent", body: "Idle" }]);
     });
   });
 
