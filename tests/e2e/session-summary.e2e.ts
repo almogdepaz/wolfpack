@@ -52,28 +52,37 @@ for (const [sessions, machines, expected] of [
   });
 }
 
-for (const width of [320, 390]) {
-  test(`mobile heading reclaims space and summary/search stay aligned at ${width}`, async ({ page }, info) => {
+for (const width of [320, 390]) for (const sessionCount of [0, 2]) {
+  test(`mobile heading reclaims space and summary/search stay aligned at ${width} with ${sessionCount} sessions`, async ({ page }, info) => {
     test.skip(info.project.name !== "iphone-14");
     await page.setViewportSize({ width, height: 844 });
-    await sessionsFixture(page);
+    await sessionsFixture(page, sessionCount);
     await page.goto(server.baseUrl);
-    await expect(page.locator("#session-list .machine-group:not(.needs-you) .card")).toHaveCount(2);
+    await expect(page.locator("#session-summary")).toHaveText(`${sessionCount} sessions across 1 machine · ${sessionCount ? 1 : 0} need you`);
+    await expect(page.locator("#session-list .machine-group:not(.needs-you) .card")).toHaveCount(sessionCount);
     const heading = page.locator(".session-heading h1");
     await expect(heading).toHaveText("Sessions");
     // Role queries exclude display:none: the clipped heading must remain in AX.
     await expect.soft(page.getByRole("heading", { name: "Sessions", exact: true, level: 1 })).toHaveCount(1);
-    expect.soft(await page.locator(".session-heading").ariaSnapshot()).toContain('heading "Sessions" [level=1]');
+    const headingTree = await page.locator(".session-heading").ariaSnapshot();
+    expect.soft(headingTree).toContain('heading "Sessions" [level=1]');
+    await info.attach("heading-accessibility-tree", { body: headingTree, contentType: "text/plain" });
     await expect.soft(heading).toHaveCSS("position", "absolute");
     await expect.soft(heading).toHaveCSS("clip", "rect(0px, 0px, 0px, 0px)");
     await expect.soft(page.locator("#session-summary")).toHaveCSS("margin-top", "0px");
     const geometry = await page.evaluate(() => {
       const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().toJSON();
-      return { heading: rect(".session-heading h1"), group: rect(".session-heading"), summary: rect("#session-summary"), search: rect(".mobile-session-search summary"), controls: rect("#session-dashboard-controls"), filter: rect("#dashboard-session-filter"), scrollWidth: document.documentElement.scrollWidth };
+      const suffix = document.querySelector("#session-summary strong")!;
+      return { heading: rect(".session-heading h1"), group: rect(".session-heading"), summary: rect("#session-summary"), suffix: [...suffix.getClientRects()].map(rect => rect.toJSON()), search: rect(".mobile-session-search summary"), controls: rect("#session-dashboard-controls"), filter: rect("#dashboard-session-filter"), scrollWidth: document.documentElement.scrollWidth };
     });
     // A 1px clipped absolute box contributes zero effective layout height.
     expect.soft(geometry.heading.height).toBe(1);
     expect.soft(geometry.heading.width).toBe(1);
+    expect.soft(geometry.suffix).toHaveLength(1); // The full strong suffix is one unbroken unit.
+    for (const rect of geometry.suffix) {
+      expect.soft(rect.x).toBeGreaterThanOrEqual(geometry.summary.x);
+      expect.soft(rect.right).toBeLessThanOrEqual(geometry.summary.right);
+    }
     expect.soft(geometry.group.height).toBe(geometry.summary.height);
     expect.soft(geometry.summary.y).toBe(geometry.group.y);
     expect.soft(Math.abs(geometry.summary.y + geometry.summary.height / 2 - geometry.search.y - geometry.search.height / 2)).toBeLessThanOrEqual(1);
@@ -93,6 +102,17 @@ for (const width of [320, 390]) {
     const box = (await search.boundingBox())!;
     expect(box.x).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(width);
+    if (sessionCount === 0) {
+      await search.fill("missing");
+      await expect(page.locator("#session-list .card:visible")).toHaveCount(0);
+      await expect(page.locator("#session-summary strong")).toHaveText("0 need you");
+      await toggle.tap();
+      const need = page.locator('#dashboard-session-filter [data-session-card-view="need"]');
+      await need.tap();
+      await expect(need).toHaveAttribute("aria-pressed", "true");
+      await expect(page.locator("#session-list .card:visible")).toHaveCount(0);
+      return;
+    }
     await search.fill("another");
     const cards = page.locator("#session-list .machine-group:not(.needs-you) .card:visible");
     await expect(cards).toHaveCount(1);

@@ -2823,6 +2823,7 @@ body > header { height: 52px; min-height: 52px; }
   #session-dashboard-controls { padding: 4px 16px 12px; gap: 16px; }
   .session-heading { flex: 1; }
   #session-summary { margin-top: 0; }
+  #session-summary strong { white-space: nowrap; }
   #dashboard-session-filter { order: 3; width: 100%; }
   #dashboard-session-filter .seg { display: flex; width: 100%; }
   #dashboard-session-filter .seg button { flex: 1; gap: 4px; padding: 7px 4px; font-size: 11px; white-space: nowrap; min-height: 44px; }
