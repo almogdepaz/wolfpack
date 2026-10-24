@@ -962,8 +962,10 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       if (entry) entry.enabled = target.enabled;
     }
 
-    const invalidatesQuietAlerts = body.quietAlerts?.mode === QUIET_ALERT_MODE.DISABLED
-      && settings.quietAlerts.mode !== QUIET_ALERT_MODE.DISABLED;
+    const invalidatesQuietAlerts = (body.quietAlerts?.mode === QUIET_ALERT_MODE.DISABLED
+      && settings.quietAlerts.mode !== QUIET_ALERT_MODE.DISABLED)
+      || (body.quietAlerts?.mode === QUIET_ALERT_MODE.NEEDS_INPUT_ONLY
+        && settings.quietAlerts.mode === QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY);
     if (body.quietAlerts !== undefined) settings.quietAlerts = body.quietAlerts;
 
     if (body.agentCmd != null) {
