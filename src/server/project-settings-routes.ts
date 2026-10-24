@@ -84,6 +84,7 @@ import {
   DEFAULT_QUIET_ALERT_POLICY,
   isQuietAlertPolicy,
   QUIET_ALERT_MODE,
+  QUIET_ALERT_KIND,
 } from "../quiet-alert-policy.js";
 import { invalidateQuietAlertPolicy } from "../quiet-alert-policy-invalidation.js";
 import type { QuietAlertPolicy } from "../quiet-alert-policy.js";
@@ -977,7 +978,9 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     }
 
     saveSettings(settings);
-    if (invalidatesQuietAlerts) invalidateQuietAlertPolicy();
+    if (invalidatesQuietAlerts) invalidateQuietAlertPolicy(
+      settings.quietAlerts.mode === QUIET_ALERT_MODE.NEEDS_INPUT_ONLY ? QUIET_ALERT_KIND.QUIET : undefined,
+    );
     json(res, {
       ok: true,
       settings,

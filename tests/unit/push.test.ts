@@ -962,7 +962,7 @@ describe("push: checkSessionTransitions", () => {
     const { addSubscription, checkSessionTransitions, removeSubscription, _testing } = await import("../../src/server/push.ts");
     const endpoint = `https://fcm.googleapis.com/prune-quiet-${Date.now()}`;
     addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-    _testing.quietAlertDeliveries.set("removed", { episodeId: "old", attempts: 1, pendingEndpoints: new Set(), nextAttemptAtMs: 0 });
+    _testing.quietAlertDeliveries.set("removed", { kind: "quiet", episodeId: "old", attempts: 1, pendingEndpoints: new Set(), nextAttemptAtMs: 0 });
     _testing.lastSessionPushTime.set("removed", Date.now());
     try {
       await checkSessionTransitions(session());

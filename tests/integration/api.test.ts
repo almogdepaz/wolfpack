@@ -871,6 +871,52 @@ describe("GET /api/sessions", () => {
     });
   });
 
+  test.each(["needs-input-only", "disabled"] as const)("POST %s preserves only eligible needs-input history without new output", async mode => {
+    const name = "policy-input-history";
+    await withQuietTree([{ name, alive: true, identity: testIdentity(name, "policy-input-history-id") }], async ({ arm, tick, deliveries }) => {
+      await arm([name], { [name]: programStatusRecord("blocked", "permission") });
+      expect((await post("/api/settings", { quietAlerts: { mode, quietAfterSeconds: 5 } })).status).toBe(200);
+      const due = treeSession(await tick(5_000), name).quietAlert;
+      if (mode === "disabled") {
+        expect(due).toBeUndefined();
+        expect(deliveries).toHaveLength(0);
+        return;
+      }
+      expect(due).toMatchObject({ kind: "needs-input" });
+      // Re-reading and returning to the broad mode must not create a new
+      // historical episode or enroll another delivery without rendered output.
+      expect((await post("/api/settings", { quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 } })).status).toBe(200);
+      expect(treeSession(await tick(30_000), name).quietAlert).toMatchObject({ episodeId: due!.episodeId, eligibleAtMs: due!.eligibleAtMs });
+      expect(deliveries).toHaveLength(1);
+    });
+  });
+
+  test("restrictive POST keeps emitted needs-input retry and mixed observer delivery ownership", async () => {
+    const names = ["policy-held-idle", "policy-held-input"];
+    await withQuietTree(names.map(name => ({ name, alive: true, identity: testIdentity(name, `${name}-id`) })), async ({ arm, tick }) => {
+      await arm(names, { [names[1]!]: programStatusRecord("blocked", "permission") });
+      const sends: string[] = [];
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      let markStarted!: () => void;
+      const started = new Promise<void>(resolve => { markStarted = resolve; });
+      pushTesting.sessionPushSender = async payload => {
+        sends.push(payload.body);
+        if (sends.length === 1) { markStarted(); await held; }
+        return { sent: 0, failed: 1, pruned: 0 };
+      };
+      const pending = tick(5_000);
+      try {
+        await started;
+        expect((await post("/api/settings", { quietAlerts: { mode: "needs-input-only", quietAfterSeconds: 5 } })).status).toBe(200);
+      } finally { release(); await pending; }
+      expect(sends).toEqual(["Idle", "Needs input (permission)"]);
+      const due = treeSession(await tick(30_000), names[1]!).quietAlert;
+      expect(due).toMatchObject({ kind: "needs-input" });
+      expect(sends).toEqual(["Idle", "Needs input (permission)", "Needs input (permission)"]);
+    });
+  });
+
   test("classifies idle when output sequence is stable despite prompt prose", async () => {
     mockBackend.setCapturePane(async () => "Do you want to continue? (y/n)\n");
     await get("/api/sessions");

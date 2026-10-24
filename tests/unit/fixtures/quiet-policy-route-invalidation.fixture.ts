@@ -82,6 +82,76 @@ test("restrictive POST clears a failed local retry and fences its late transport
   } finally { release(); await pending; Date.now = originalNow; }
 });
 
+test.each([undefined, "needs-input-only", "disabled"] as const)("pending needs-input retry retains original enrollment after POST %s without new output", async mode => {
+  const originalNow = Date.now;
+  let now = 3_000_000;
+  Date.now = () => now;
+  const session = fact("input-retry", "needs-input");
+  recordQuietAlertEmission("input-retry", session.quietAlert.episodeId, session.quietAlert.kind);
+  const capturedEpoch = quietAlertPolicyEpoch();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const targets: string[][] = [];
+  const lateEndpoint = `${endpoint}-late`;
+  _testing.sessionPushSender = async (_payload, endpoints) => {
+    targets.push([...endpoints]);
+    if (targets.length === 1) { await held; return { sent: 0, failed: 1, pruned: 0, failedEndpoints: [endpoint] }; }
+    return { sent: 1, failed: 0, pruned: 0 };
+  };
+  const pending = checkSessionTransitions([session], capturedEpoch);
+  try {
+    expect(targets).toEqual([[endpoint]]);
+    if (mode) await post(mode);
+    addSubscription({ endpoint: lateEndpoint, keys: { p256dh: "key", auth: "auth" } });
+    release(); await pending;
+    now += 30_000;
+    await checkSessionTransitions([session]);
+    expect(targets).toEqual(mode === "disabled" ? [[endpoint]] : [[endpoint], [endpoint]]);
+    now += 30_000;
+    await checkSessionTransitions([session]);
+    expect(targets).toHaveLength(mode === "disabled" ? 1 : 2);
+  } finally { release(); await pending; removeSubscription(lateEndpoint); Date.now = originalNow; }
+});
+
+test.each(["needs-input-only", "disabled"] as const)("completed failed needs-input attempt remains retryable only when eligible after POST %s", async mode => {
+  const originalNow = Date.now;
+  let now = 4_000_000;
+  Date.now = () => now;
+  const session = fact("completed-input", "needs-input");
+  recordQuietAlertEmission(session.name, session.quietAlert.episodeId, session.quietAlert.kind);
+  let sends = 0;
+  _testing.sessionPushSender = async () => { sends++; return { sent: 0, failed: 1, pruned: 0, failedEndpoints: [endpoint] }; };
+  try {
+    await checkSessionTransitions([session]);
+    await post(mode);
+    now += 30_000;
+    await checkSessionTransitions([session]);
+    expect(sends).toBe(mode === "disabled" ? 1 : 2);
+    // A new enrollment at the same endpoint is not the original recipient.
+    removeSubscription(endpoint);
+    addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
+    now += 30_000;
+    await checkSessionTransitions([session]);
+    expect(sends).toBe(mode === "disabled" ? 1 : 2);
+  } finally { Date.now = originalNow; }
+});
+
+test.each(["quiet", "needs-input"] as const)("restrictive POST preserves mixed captured batch with %s first", async firstKind => {
+  const facts = [fact("mixed-first", firstKind), fact("mixed-second", firstKind === "quiet" ? "needs-input" : "quiet")];
+  for (const session of facts) recordQuietAlertEmission(session.name, session.quietAlert.episodeId, session.quietAlert.kind);
+  const capturedEpoch = quietAlertPolicyEpoch();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const sends: string[] = [];
+  _testing.sessionPushSender = async payload => { sends.push(payload.body); if (sends.length === 1) await held; return { sent: 1, failed: 0, pruned: 0 }; };
+  const pending = checkSessionTransitions(facts, capturedEpoch);
+  try { await post("needs-input-only"); } finally { release(); await pending; }
+  expect(sends).toEqual(firstKind === "quiet" ? ["Idle", "Needs input"] : ["Needs input"]);
+  await checkSessionTransitions(facts, capturedEpoch);
+  await checkSessionTransitions(facts);
+  expect(sends).toHaveLength(firstKind === "quiet" ? 2 : 1);
+});
+
 test.each(["needs-input-only", "disabled"] as const)("local POST %s leaves a held peer batch and peer retries source-policy-owned", async mode => {
   const originalNow = Date.now;
   let now = 2_000_000;

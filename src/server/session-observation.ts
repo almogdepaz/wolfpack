@@ -120,8 +120,11 @@ let dashboardObservationCache: {
   readonly sessions: readonly ObservedSessionSummary[];
 } | null = null;
 
-onQuietAlertPolicyInvalidation(() => {
-  quietAlertHistory.clear();
+onQuietAlertPolicyInvalidation((kind) => {
+  // Unemitted episodes can still become needs-input without new rendered output.
+  for (const [key, state] of quietAlertHistory) {
+    if (kind === undefined || state.alert?.kind === kind) quietAlertHistory.delete(key);
+  }
   dashboardObservationCache = null;
 });
 
@@ -324,7 +327,7 @@ function reduceSessionQuietAlert(
   });
   if (reduction.state) quietAlertHistory.set(sessionKey, reduction.state);
   else quietAlertHistory.delete(sessionKey);
-  if (reduction.event) recordQuietAlertEmission(sessionId, reduction.event.episodeId);
+  if (reduction.event) recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
   return reduction.fact;
 }
 
@@ -928,13 +931,15 @@ async function runSessionNotificationObservation(pass: ObservationPass = "full")
     if (!observation.authoritative || !ownsObservationAuthority(authority)) {
       return staleSessionProjection(observation.sessions).sessions;
     }
+    // Captures/reductions above require the global epoch. Once emitted, each
+    // kind has its own policy fence; newer observations still retire this batch.
     await checkSessionTransitions(observation.sessions.map((session) => {
       const sessionKey = session.identity?.wolfpackSessionId ?? session.name;
       return {
         ...session,
         notificationEligible: !observation.unreliableSessionKeys.has(sessionKey),
       };
-    }), policyEpoch, () => ownsObservationAuthority(authority));
+    }), policyEpoch, () => authority.id === latestAuthoritativeObservation);
     if (pass === "full") schedulePeerNotificationObservation();
     if (policyEpoch !== quietAlertPolicyEpoch()) return withoutQuietAlerts(observation.sessions);
     return ownsObservationAuthority(authority)
