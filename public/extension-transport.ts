@@ -69,16 +69,49 @@ async function boundedProxyResponse(authFetch: typeof browserAuthFetch, proxy: s
   }
 }
 
+const CONSENT_STORAGE_KEY = "wp-extension-code-consent:v1";
+const MAX_CONSENTS = 16;
+
 /** Current-origin proxy traffic; remote credentials are never local authorization. */
 export class SelectedHostExtensionTransport {
   private readonly consent = new Map<string, string>();
-  constructor(private readonly options: ExtensionTransportOptions) {}
+  constructor(private readonly options: ExtensionTransportOptions) {
+    try {
+      const raw = localStorage.getItem(CONSENT_STORAGE_KEY);
+      if (!raw || raw.length > MAX_CONSENTS * CATALOG_MAX_BYTES) return;
+      const entries: unknown = JSON.parse(raw);
+      if (!Array.isArray(entries) || entries.length > MAX_CONSENTS) return;
+      const stored = new Map<string, string>();
+      for (const entry of entries) {
+        if (!Array.isArray(entry) || entry.length !== 2 || !isStableMachineIdentity(entry[0])
+          || typeof entry[1] !== "string" || !entry[1].length || entry[1].length > CATALOG_MAX_BYTES || stored.has(entry[0])) return;
+        stored.set(entry[0], entry[1]);
+      }
+      this.consent = stored;
+    } catch { /* Storage denial or malformed data leaves consent memory-only. */ }
+  }
+
+  private persistConsent(): void {
+    try {
+      if (this.consent.size) localStorage.setItem(CONSENT_STORAGE_KEY, JSON.stringify([...this.consent]));
+      else localStorage.removeItem(CONSENT_STORAGE_KEY);
+    } catch {
+      // A failed write must not leave an older inventory grant when removable.
+      try { localStorage.removeItem(CONSENT_STORAGE_KEY); }
+      catch { try { localStorage.setItem(CONSENT_STORAGE_KEY, "[]"); } catch { /* Memory-only if storage is unavailable. */ } }
+    }
+  }
+
+  private forgetConsent(machine: string): void {
+    this.consent.delete(machine);
+    this.persistConsent();
+  }
 
   private peer(machine: string): ExtensionReadyPeer & { readonly origin: string } {
     const peer = this.options.resolvePeer(machine);
     if (!isStableMachineIdentity(machine) || peer?.identity !== machine || peer.status !== "ready" || !peer.origin
       || canonicalTailnetOrigin(peer.origin.slice("https://".length)) !== peer.origin) {
-      this.consent.delete(machine);
+      this.forgetConsent(machine);
       throw new Error("selected extension peer unavailable");
     }
     return { ...peer, origin: peer.origin };
@@ -130,11 +163,12 @@ export class SelectedHostExtensionTransport {
       .map(item => [item.installationId, item.extensionId, item.package.digest, item.ui!.path, item.ui!.digest]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
     const key = `${peer.origin}|${inventory}`;
     if (this.consent.get(machine) === key) return !signal.aborted;
-    this.consent.delete(machine);
+    this.forgetConsent(machine);
     const result = await (this.options.prompt ?? showAppDialog)({ title: "Trust selected machine browser code?", message: `${peer.displayName} (${peer.origin}) offers ${catalog.installations.filter(item => item.enabled && item.ui).map(item => item.package.name).join(", ")}. This code runs in this page with the same browser authority as local extensions; it is NOT sandboxed. Trust only code you control.`, confirmLabel: "Trust this inventory", signal });
     if (signal.aborted || this.peer(machine).origin !== peer.origin || !result) return false;
     this.consent.set(machine, key);
-    while (this.consent.size > 16) this.consent.delete(this.consent.keys().next().value!);
+    while (this.consent.size > MAX_CONSENTS) this.consent.delete(this.consent.keys().next().value!);
+    this.persistConsent();
     return true;
   }
 }

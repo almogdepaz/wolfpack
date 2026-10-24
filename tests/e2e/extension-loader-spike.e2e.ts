@@ -196,6 +196,15 @@ test("selected-host browser component isolates same-UUID remote bundles and reus
     await expect(page.locator("#ready")).toHaveText("local"); await expect(page.getByRole("textbox", { name: "Widget draft" })).toHaveCount(0);
     await page.getByRole("textbox", { name: "Terminal input" }).fill("still usable");
     await expect(page.getByRole("textbox", { name: "Terminal input" })).toHaveValue("still usable");
+    // A real page reload creates a new host/transport; the exact approved
+    // inventory should load without another trust dialog or executable broadening.
+    await page.reload();
+    await page.getByRole("button", { name: "Select A", exact: true }).click();
+    await expect(page.locator("#ready")).toHaveText("a");
+    await expect(page.getByRole("dialog")).not.toBeVisible();
+    await expect(page.locator('[data-document="a"]')).toHaveText("document a");
+    await expect(page.getByRole("textbox", { name: "Widget draft" })).toHaveValue("draft a");
+    expect(assets).toEqual({ a: 2, b: 1 });
     const receipt = test.info().outputPath("component-cold-warm-counts.json");
     writeFileSync(receipt, JSON.stringify({ boundary: "browser host plus gateway fixture, NOT installed-runtime proxy acceptance", assets, catalogs, bytes, measurements: await page.evaluate(() => (window as unknown as { switchMeasurements: unknown }).switchMeasurements) }, null, 2));
     await test.info().attach("component-cold-warm-counts", { path: receipt, contentType: "application/json" });
