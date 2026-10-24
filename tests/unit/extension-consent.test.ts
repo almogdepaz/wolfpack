@@ -126,6 +126,19 @@ describe("remote executable inventory consent", () => {
     expect(f.prompts).toBe(2);
   });
 
+  test("unwritable storage never silently restores an existing grant on reload", async () => {
+    const f = fixture();
+    await f.create().consentRemoteCode(scope, catalog(), signal());
+    f.faults.write = true; f.faults.remove = true;
+    const reload = f.create();
+    await reload.consentRemoteCode(scope, catalog(), signal());
+    expect(f.prompts).toBe(2);
+    await reload.consentRemoteCode(scope, catalog(), signal());
+    expect(f.prompts).toBe(2);
+    await f.create().consentRemoteCode(scope, catalog(), signal());
+    expect(f.prompts).toBe(3);
+  });
+
   test("remove failures never crash or retain same-instance stale trust", async () => {
     const f = fixture(); const transport = f.create();
     await transport.consentRemoteCode(scope, catalog(), signal());

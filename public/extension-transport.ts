@@ -87,6 +87,8 @@ export class SelectedHostExtensionTransport {
           || typeof entry[1] !== "string" || !entry[1].length || entry[1].length > CATALOG_MAX_BYTES || stored.has(entry[0])) return;
         stored.set(entry[0], entry[1]);
       }
+      // If persistence is unavailable, use this instance's memory only.
+      localStorage.setItem(CONSENT_STORAGE_KEY, raw);
       this.consent = stored;
     } catch { /* Storage denial or malformed data leaves consent memory-only. */ }
   }
