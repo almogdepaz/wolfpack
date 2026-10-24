@@ -60,15 +60,20 @@ for (const width of [320, 390]) {
     await page.goto(server.baseUrl);
     await expect(page.locator("#session-list .machine-group:not(.needs-you) .card")).toHaveCount(2);
     const heading = page.locator(".session-heading h1");
-    await expect(heading).toHaveText("Sessions"); // Semantic element stays in the DOM.
-    await expect.soft(heading).toBeHidden();
-    await expect.soft(heading).toHaveCSS("display", "none");
+    await expect(heading).toHaveText("Sessions");
+    // Role queries exclude display:none: the clipped heading must remain in AX.
+    await expect.soft(page.getByRole("heading", { name: "Sessions", exact: true, level: 1 })).toHaveCount(1);
+    expect.soft(await page.locator(".session-heading").ariaSnapshot()).toContain('heading "Sessions" [level=1]');
+    await expect.soft(heading).toHaveCSS("position", "absolute");
+    await expect.soft(heading).toHaveCSS("clip", "rect(0px, 0px, 0px, 0px)");
     await expect.soft(page.locator("#session-summary")).toHaveCSS("margin-top", "0px");
     const geometry = await page.evaluate(() => {
       const rect = (selector: string) => document.querySelector(selector)!.getBoundingClientRect().toJSON();
       return { heading: rect(".session-heading h1"), group: rect(".session-heading"), summary: rect("#session-summary"), search: rect(".mobile-session-search summary"), controls: rect("#session-dashboard-controls"), filter: rect("#dashboard-session-filter"), scrollWidth: document.documentElement.scrollWidth };
     });
-    expect.soft(geometry.heading.height).toBe(0);
+    // A 1px clipped absolute box contributes zero effective layout height.
+    expect.soft(geometry.heading.height).toBe(1);
+    expect.soft(geometry.heading.width).toBe(1);
     expect.soft(geometry.group.height).toBe(geometry.summary.height);
     expect.soft(geometry.summary.y).toBe(geometry.group.y);
     expect.soft(Math.abs(geometry.summary.y + geometry.summary.height / 2 - geometry.search.y - geometry.search.height / 2)).toBeLessThanOrEqual(1);
@@ -117,6 +122,9 @@ test("desktop retains its visible semantic Sessions heading and summary spacing"
   const heading = page.getByRole("heading", { name: "Sessions", exact: true });
   await expect(heading).toBeVisible();
   await expect(heading).toHaveCSS("font-size", "28px");
+  await expect(heading).toHaveCSS("position", "static");
+  await expect(heading).toHaveCSS("clip", "auto");
+  await expect(heading).toHaveCSS("white-space", "normal");
   await expect(page.locator("#session-summary")).toHaveCSS("margin-top", "5px");
   await expect(page.locator("#session-summary")).toHaveText("2 sessions across 1 machine · 1 need you");
   expect((await heading.boundingBox())!.height).toBeGreaterThan(0);

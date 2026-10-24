@@ -2791,6 +2791,7 @@ body > header { height: 52px; min-height: 52px; }
   #desktop-sidebar .src:hover .grid-btn, #desktop-sidebar .src:focus-within .grid-btn { opacity: 1; }
 }
 @media (min-width:769px) {
+  .session-heading h1 { position: static !important; width: auto; height: auto; margin: 0; overflow: visible; clip: auto; white-space: normal; }
   #mobile-discover-status { display: none; }
   #desktop-sidebar { background: var(--surface-1); border-right: 1px solid var(--hairline); }
   #desktop-sidebar .card-status, #desktop-sidebar .session-activity { display: none; }
@@ -2821,7 +2822,6 @@ body > header { height: 52px; min-height: 52px; }
 @media (max-width:768px) {
   #session-dashboard-controls { padding: 4px 16px 12px; gap: 16px; }
   .session-heading { flex: 1; }
-  .session-heading h1 { display: none; }
   #session-summary { margin-top: 0; }
   #dashboard-session-filter { order: 3; width: 100%; }
   #dashboard-session-filter .seg { display: flex; width: 100%; }
