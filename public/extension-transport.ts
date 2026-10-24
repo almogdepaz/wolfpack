@@ -104,7 +104,8 @@ export class SelectedHostExtensionTransport {
     }
   }
 
-  private forgetConsent(machine: string): void {
+  /** Retire grants when the host observes invalidity without making a request. */
+  invalidateConsent(machine: string): void {
     this.consent.delete(machine);
     this.persistConsent();
   }
@@ -113,7 +114,7 @@ export class SelectedHostExtensionTransport {
     const peer = this.options.resolvePeer(machine);
     if (!isStableMachineIdentity(machine) || peer?.identity !== machine || peer.status !== "ready" || !peer.origin
       || canonicalTailnetOrigin(peer.origin.slice("https://".length)) !== peer.origin) {
-      this.forgetConsent(machine);
+      this.invalidateConsent(machine);
       throw new Error("selected extension peer unavailable");
     }
     return { ...peer, origin: peer.origin };
@@ -165,7 +166,7 @@ export class SelectedHostExtensionTransport {
       .map(item => [item.installationId, item.extensionId, item.package.digest, item.ui!.path, item.ui!.digest]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))));
     const key = `${peer.origin}|${inventory}`;
     if (this.consent.get(machine) === key) return !signal.aborted;
-    this.forgetConsent(machine);
+    this.invalidateConsent(machine);
     const result = await (this.options.prompt ?? showAppDialog)({ title: "Trust selected machine browser code?", message: `${peer.displayName} (${peer.origin}) offers ${catalog.installations.filter(item => item.enabled && item.ui).map(item => item.package.name).join(", ")}. This code runs in this page with the same browser authority as local extensions; it is NOT sandboxed. Trust only code you control.`, confirmLabel: "Trust this inventory", signal });
     if (signal.aborted || this.peer(machine).origin !== peer.origin || !result) return false;
     this.consent.set(machine, key);

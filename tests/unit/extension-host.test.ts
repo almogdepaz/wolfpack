@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { WidgetPanels } from "../../public/widget-panels.ts";
 import { ContextViewRegistry } from "../../public/context-view-registry.ts";
-import { ExtensionHost, type ExtensionHostOptions } from "../../public/extension-host.ts";
+import { ExtensionHost, type ExtensionHostOptions, type SelectedExtensionScope } from "../../public/extension-host.ts";
 import { TerminalLayoutRegistry } from "../../public/terminal-layout-registry.ts";
 import { equalGridLayout } from "../../src/extensions/layout-contract.ts";
 import { WidgetLayout } from "../../public/widget-layout.ts";
@@ -73,7 +73,128 @@ function withLoaderLocation() {
   return () => { if (descriptor) Object.defineProperty(globalThis, "location", descriptor); else Reflect.deleteProperty(globalThis, "location"); };
 }
 
+// Only browser storage/HTTP/prompt and executable import are fixture boundaries.
+// The real host, catalog parser, transport and consent lifecycle run unchanged.
+function persistedConsentHost() {
+  const restoreLocation = withLoaderLocation();
+  const saved = new Map(["localStorage", "sessionStorage"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const stored = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => stored.set(key, value), removeItem: (key: string) => stored.delete(key),
+  } });
+  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: () => null } });
+  const root = document.createElement("div");
+  let scope: SelectedExtensionScope = { sessionId: "22222222-2222-4222-8222-222222222222", machine: `node-a:${installationId}` };
+  let status = "ready", inventory: "ui" | "empty" | "disabled" | "no-ui" | "invalid-catalog" = "ui";
+  let prompts = 0, imports = 0, requests = 0;
+  let prompt: () => Promise<Record<string, string> | null> = async () => ({});
+  let nextCatalog: (() => Promise<Response>) | undefined;
+  const options: ExtensionHostOptions = { container: root, scope: () => scope,
+    resolvePeer: machine => ({ identity: machine, status, origin: "https://peer.example.ts.net", displayName: "Peer" }),
+    accessPrompt: async () => { prompts++; return prompt(); },
+    authFetch: async input => {
+      requests++;
+      if (nextCatalog) { const next = nextCatalog; nextCatalog = undefined; return next(); }
+      const catalog = consentCatalog();
+      if (String(input) === "/api/extensions" || inventory === "empty") return Response.json({ safeMode: false, installations: [] });
+      if (inventory === "invalid-catalog") return Response.json({ invalid: true });
+      if (inventory === "disabled") catalog.installations[0]!.enabled = false;
+      if (inventory === "no-ui") return Response.json({ ...catalog, installations: catalog.installations.map(({ ui: _ui, ...item }) => item) });
+      return Response.json(catalog);
+    },
+    // The generic loader's import boundary is injected; no host decision is replaced.
+    bundleLoader: async <T,>() => ({ default() { imports++; } }) as T,
+  };
+  let host = new ExtensionHost(options);
+  return { stored, get host() { return host; }, get scope() { return scope; }, set scope(value: SelectedExtensionScope) { scope = value; },
+    set status(value: string) { status = value; }, set inventory(value: typeof inventory) { inventory = value; },
+    set prompt(value: typeof prompt) { prompt = value; }, set nextCatalog(value: typeof nextCatalog) { nextCatalog = value; },
+    get prompts() { return prompts; }, get imports() { return imports; }, get requests() { return requests; },
+    recreate() { host.dispose(); host = new ExtensionHost(options); },
+    dispose() {
+      host.dispose(); root.remove(); restoreLocation();
+      for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
+    },
+  };
+}
+
 describe("ExtensionHost", () => {
+  test.each((["unavailable", "empty", "disabled", "no-ui", "invalid-catalog"] as const).flatMap(transition =>
+    [false, true].map(recreate => [transition, recreate] as const)))("real host retires consent on %s before recovery (new host: %s)", async (transition, recreate) => {
+    const f = persistedConsentHost();
+    try {
+      await f.host.refresh();
+      expect(f.prompts).toBe(1); expect(f.imports).toBe(1);
+      expect(f.stored.has("wp-extension-code-consent:v1")).toBe(true);
+      if (transition === "unavailable") { f.status = "unavailable"; f.scope = { ...f.scope, unavailable: "Peer unavailable" }; }
+      else f.inventory = transition;
+      await f.host.refresh();
+      expect(f.prompts).toBe(1); // an empty inventory never opens a trust prompt
+      expect(f.requests).toBe(transition === "unavailable" ? 1 : 2);
+      expect(f.stored.has("wp-extension-code-consent:v1")).toBe(false);
+      f.status = "ready"; f.inventory = "ui"; f.scope = { sessionId: f.scope.sessionId, machine: f.scope.machine };
+      if (recreate) f.recreate();
+      await f.host.refresh();
+      expect(f.prompts).toBe(2); expect(f.imports).toBe(2);
+      // Once reapproved, a harmless host recreation still reuses exact consent.
+      f.recreate(); await f.host.refresh();
+      expect(f.prompts).toBe(2); expect(f.imports).toBe(3);
+    } finally { f.dispose(); }
+  });
+
+  test("real host session, empty selection and local scope switches alone retain exact peer consent", async () => {
+    const f = persistedConsentHost();
+    try {
+      await f.host.refresh();
+      f.scope = { ...f.scope, sessionId: "33333333-3333-4333-8333-333333333333" };
+      await f.host.refresh();
+      f.scope = { ...f.scope, sessionId: null }; await f.host.refresh();
+      f.scope = { sessionId: "22222222-2222-4222-8222-222222222222" }; await f.host.refresh();
+      f.scope = { ...f.scope, machine: `node-a:${installationId}` }; await f.host.refresh();
+      expect(f.prompts).toBe(1);
+      f.recreate(); await f.host.refresh();
+      expect(f.prompts).toBe(1);
+    } finally { f.dispose(); }
+  });
+
+  test("real transport cannot persist a late positive host prompt after unavailable invalidation", async () => {
+    const f = persistedConsentHost();
+    let release!: (value: Record<string, string>) => void, began!: () => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    f.prompt = () => { began(); return new Promise(resolve => { release = resolve; }); };
+    const pending = f.host.refresh();
+    try {
+      await started;
+      f.status = "unavailable"; f.scope = { ...f.scope, unavailable: "Peer unavailable" };
+      await f.host.refresh();
+      release({}); await pending;
+      expect(f.stored.has("wp-extension-code-consent:v1")).toBe(false);
+      expect(f.imports).toBe(0);
+      f.status = "ready"; f.scope = { sessionId: f.scope.sessionId, machine: f.scope.machine };
+      f.prompt = async () => ({});
+      await f.host.refresh();
+      expect(f.prompts).toBe(2); expect(f.imports).toBe(1);
+    } finally { release?.({}); await pending; f.dispose(); }
+  });
+
+  test("stale empty catalog completion cannot revoke a newer host scope's approval", async () => {
+    const f = persistedConsentHost();
+    let release!: (value: Response) => void, began!: () => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    try {
+      await f.host.refresh();
+      f.nextCatalog = () => { began(); return new Promise(resolve => { release = resolve; }); };
+      const stale = f.host.refresh(); await started;
+      f.scope = { ...f.scope, sessionId: "33333333-3333-4333-8333-333333333333" };
+      await f.host.refresh();
+      release(Response.json({ safeMode: false, installations: [] })); await stale;
+      expect(f.prompts).toBe(1); expect(f.stored.has("wp-extension-code-consent:v1")).toBe(true);
+      f.recreate(); await f.host.refresh();
+      expect(f.prompts).toBe(1);
+    } finally { release?.(Response.json({ safeMode: false, installations: [] })); f.dispose(); }
+  });
+
   test("same-scope refresh retains pending remote consent until a positive decision", async () => {
     const restore = withLoaderLocation();
     const root = document.createElement("div");
