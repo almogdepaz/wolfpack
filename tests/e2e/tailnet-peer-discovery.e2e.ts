@@ -19,6 +19,8 @@ let server: TestServer;
 // locally rather than querying a real host. Per-test routes can override this.
 test.beforeEach(async ({ page }) => {
   await page.route("https://**/api/info", route => route.fulfill({ status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "optional metadata unavailable" }));
+  await page.route("https://**/api/events?*", route => route.fulfill({ status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "stream unavailable in this routing fixture" }));
+  await page.route("https://**/api/backend", route => route.fulfill({ status: 404, headers: { "Access-Control-Allow-Origin": "*" }, body: "backend probe unavailable in this routing fixture" }));
 });
 let poisonedHome: string;
 let temporaryActionCounter = 0;
@@ -456,7 +458,9 @@ test("peer refresh scheduler recovers after a rejected session render", async ({
 
   await page.goto(server.baseUrl);
 
-  await expect.poll(() => peerSessionRequests, { timeout: 2_000 }).toBeGreaterThanOrEqual(3);
+  // Each peer owns its read; the second publication repairs the failed DOM
+  // projection without requiring an unrelated third session capture.
+  await expect.poll(() => peerSessionRequests, { timeout: 2_000 }).toBeGreaterThanOrEqual(2);
   await expect(visibleMachineGroup(page, peerIdentity)
     .getByRole("button", { name: "Open recovered-peer-session" })).toBeVisible();
   await expect(visibleMachineGroup(page, secondPeerIdentity)
@@ -577,7 +581,7 @@ test("does not route REST or WebSocket traffic to a former origin while its repl
   }
 });
 
-test("removes a ready peer from workspace navigation when its sessions request fails", async ({ page }, testInfo) => {
+test("retains a disabled verified peer with separate handshake and session-service health", async ({ page }, testInfo) => {
   await page.route("**/api/tailnet/v1/candidates", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -609,12 +613,13 @@ test("removes a ready peer from workspace navigation when its sessions request f
 
   await page.goto(server.baseUrl);
 
-  await expect(visibleMachineGroup(page, peerIdentity)).toHaveCount(0);
+  await expect(visibleMachineGroup(page, peerIdentity)).toHaveClass(/offline/);
+  await expect(visibleMachineGroup(page, peerIdentity).getByRole("button", { name: "Start a session on verified peer" })).toBeDisabled();
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.locator("#machines-list .machine-item")).toHaveCount(1);
-  await expect(page.locator("#machines-list .machine-item .dot")).toHaveAttribute("title", "online");
+  await expect(page.locator("#machines-list .machine-item .dot")).toHaveAttribute("title", "Handshake verified; sessions: Server unavailable");
   await page.locator(testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn").click();
-  await expect(visibleSessionGroups(page)).toHaveCount(1);
+  await expect(visibleSessionGroups(page)).toHaveCount(2);
   const localSession = page.getByRole("button", { name: "Open test-project" });
   await expect(localSession).toBeVisible();
   await localSession.click();
@@ -691,16 +696,20 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
     await page.getByRole("button", { name: "Discover Tailnet" }).click();
     await expect(page.locator("#discover-status")).toContainText(failure.status);
     await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "tailnet candidate enumeration unavailable");
-    await expect(peerGroup).toHaveCount(0);
+    await expect(peerGroup).toHaveClass(/offline/);
+    await expect(peerGroup.locator('[data-action="new-session"]')).toBeDisabled();
+    expect(peerSessionRequests).toBeLessThanOrEqual(requestsBeforeFailure + 1);
+    const requestsAfterRevocation = peerSessionRequests;
     await page.waitForTimeout(100);
-    // The generation-start replacement may capture the formerly-ready peer
-    // before the failed enumeration revokes its route; its stale result cannot apply.
-    expect(peerSessionRequests).toBe(requestsBeforeFailure + 1);
+    // Pre-revocation snapshots may already be in flight, but the revoked peer
+    // must not receive another request or regain live controls.
+    expect(peerSessionRequests).toBe(requestsAfterRevocation);
 
     candidateMode = "valid";
     await page.getByRole("button", { name: "Discover Tailnet" }).click();
     await expect(peerGroup).toHaveCount(1);
-    await expect.poll(() => peerSessionRequests).toBeGreaterThan(requestsBeforeFailure);
+    await expect(peerGroup).not.toHaveClass(/offline/);
+    await expect.poll(() => peerSessionRequests).toBeGreaterThan(requestsAfterRevocation);
   }
 });
 
@@ -787,7 +796,7 @@ test("serializes queued manual discovery before revoking a peer", async ({ page 
   releaseOlderHandshake();
   await expect.poll(() => candidateRequests).toBe(candidateRequestsBeforeRefresh + 2);
   await expect(page.locator("#discover-status")).toContainText("newer enumeration failed");
-  await expect(peerGroup).toHaveCount(0);
+  await expect(peerGroup).toHaveClass(/offline/);
   await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "tailnet candidate enumeration unavailable");
   expect(peerPtyRequests).toBe(0);
 });
@@ -866,7 +875,7 @@ test("does not let a stale session response restore a peer revoked by a newer re
   await page.getByRole("button", { name: "Discover Tailnet" }).click();
   await expect(page.locator("#discover-status")).toContainText("newer enumeration failed");
   releaseStaleSessionResponse();
-  await expect(peerGroup).toHaveCount(0);
+  await expect(peerGroup).toHaveClass(/offline/);
   await expect(visibleSessionList(page)).not.toContainText("stale peer session");
   await expect(visibleSessionList(page).locator(`[data-machine="${peerIdentity}"] [aria-label="Open stale peer session"]`)).toHaveCount(0);
 });
@@ -944,8 +953,9 @@ test("coalesces repeated manual discovery after a failed probe", async ({ page }
   await expect.poll(() => candidateRequests).toBe(candidateRequestsBeforeRefresh + 2);
 
   await expect(peerGroup).not.toHaveClass(/offline/);
-  await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "online");
-  await expect(page.locator("#discover-status")).toHaveText("Found 1 ready Tailnet machine");
+  await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "Handshake verified; sessions: available");
+  await expect(page.locator("#discover-status")).toContainText("Found 1 ready Tailnet machine");
+  await expect(page.locator("#discover-status")).toContainText("Last successful discovery");
 });
 
 test("renders local and a verified peer while a malformed candidate stays non-routable", async ({ page }) => {
@@ -1771,7 +1781,7 @@ test("creates a remote session through a ready stable identity and fails closed 
 
   candidateMode = "revoked";
   await clickRetryMachine(page, peerIdentity);
-  await expect(peerGroup).toHaveCount(0);
+  await expect(peerGroup).toHaveClass(/offline/);
   await page.getByRole("button", { name: "Start shell" }).click();
   await expect(page.locator("#agent-create-error")).toContainText("selected peer is not ready");
 
@@ -1921,7 +1931,7 @@ test("routes peer mutation and PTY construction through a ready stable identity"
 
   candidateMode = "revoked";
   await clickRetryMachine(page, peerIdentity);
-  await expect(peerGroup).toHaveCount(0);
+  await expect(peerGroup).toHaveClass(/offline/);
   const intendedTerminal = await terminalSnapshot(page);
   const apiDestinationsAfterRevocation = [...apiDestinations];
   await page.evaluate(() => {
@@ -1931,7 +1941,11 @@ test("routes peer mutation and PTY construction through a ready stable identity"
   });
   await page.waitForTimeout(800);
   expect(await ptyDestinations()).toEqual(["wss://peer.example.ts.net/ws/pty?session=peer-session"]);
-  expect(apiDestinations).toEqual(apiDestinationsAfterRevocation);
+  // Independent local snapshot/backend repair must not be mistaken for a
+  // forbidden request to the revoked peer.
+  expect(apiDestinations.filter(destination => destination.includes(peerOrigin))).toEqual(
+    apiDestinationsAfterRevocation.filter(destination => destination.includes(peerOrigin)),
+  );
   await expect(page.locator("#conn-status")).toContainText(/machine unavailable.*refresh tailnet discovery/i);
   await expect.poll(() => terminalSnapshot(page)).toEqual(intendedTerminal);
   await confirmRejectedStop(peerIdentity);

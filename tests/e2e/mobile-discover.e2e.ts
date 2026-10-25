@@ -47,7 +47,8 @@ test('mobile and repeated Settings scans share the existing queued refresh and b
   releases.get(3)!();
   await expect(discover).toBeEnabled();
   await expect(discover).toHaveAttribute('aria-busy', 'false');
-  await expect(page.locator('#discover-status')).toHaveText('No ready Wolfpack machines found on Tailnet');
+  await expect(page.locator('#discover-status')).toContainText('No ready Wolfpack machines found on Tailnet');
+  await expect(page.locator('#discover-status')).toContainText('Last successful discovery:');
   await expect(page.locator('#mobile-discover-status')).toHaveText('No ready Wolfpack machines found on Tailnet');
   expect(requests).toBe(3);
   await capture(page, info, 'coalesced');

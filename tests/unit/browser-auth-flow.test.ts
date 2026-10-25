@@ -121,6 +121,32 @@ describe("browser authentication flow", () => {
     expect(requests).toEqual(["/api/status", "/api/status"]);
   });
 
+  test("background authentication never opens a credential prompt", async () => {
+    let prompts = 0;
+    const response = await authenticatedFetchWithTimeout("/api/sessions", {}, {
+      interactive: false,
+      timedFetch: async () => new Response(null, { status: 401 }),
+      promptForCredential: async () => { prompts++; return true; },
+    });
+    expect(response.status).toBe(401);
+    expect(prompts).toBe(0);
+  });
+
+  test("owner cancellation releases an interactive credential wait without retry", async () => {
+    const controller = new AbortController();
+    let requests = 0;
+    let prompted!: () => void;
+    const ready = new Promise<void>(resolve => { prompted = resolve; });
+    const pending = authenticatedFetchWithTimeout("/api/sessions", { signal: controller.signal }, {
+      timedFetch: async () => { requests++; return new Response(null, { status: 401 }); },
+      promptForCredential: async () => { prompted(); return new Promise<boolean>(() => {}); },
+    });
+    await ready;
+    controller.abort(new DOMException("owner retired", "AbortError"));
+    await expect(Promise.race([pending, new Promise(resolve => setTimeout(() => resolve("still waiting"), 100))])).rejects.toThrow("owner retired");
+    expect(requests).toBe(1);
+  });
+
   test("does not retry a 401 when the credential prompt is declined", async () => {
     const requests: string[] = [];
     let prompts = 0;

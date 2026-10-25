@@ -4,16 +4,24 @@ Wolfpack's dashboard and desktop session sidebar are a control room for Wolfpack
 
 ## Which machines appear
 
-The local machine is always represented by its local sessions. A remote machine appears in the dashboard and sidebar only while all of these checks succeed:
+The local machine is always represented, including an unavailable state when its session service cannot be read. A remote machine offers live session actions only while all of these checks succeed:
 
 1. the local Tailscale status reports the candidate online;
 2. the candidate answers its own `/api/machine` endpoint with a compatible Wolfpack handshake bound to the expected Tailnet node and canonical origin;
 3. the verified peer remains currently routable; and
 4. its authenticated `/api/sessions` request succeeds.
 
-An offline device, a Tailnet device without Wolfpack, a malformed or incompatible handshake, a failed candidate enumeration, or a failed sessions request does not produce an offline machine card. A peer that loses current authority is removed from both control-room surfaces. Previously loaded peers may remain visible only while a superseding refresh is still in progress; a failed authoritative result removes them.
+Previously verified peers can remain as disabled machine rows after a failure, with last-success/stale-since information and an explicit **Retry** or **Authenticate** action. This presentation cache is memory-only for the current page lifetime: at most 8 stale machines, expiring 7 days after the last successful verification or session summary. Reloading clears it. Retained rows contain machine metadata, not terminal bytes, session previews, or live session controls. Unknown/unverified candidates never become retained chooser rows. Recovery of the same verified identity preserves manual machine and session ordering. A replacement Wolfpack installation does not inherit the old installation's routes or session order.
 
-**Settings → Machines** is the diagnostic surface for Tailnet discovery. It may list candidates that are not eligible for the control room, together with a bounded readiness diagnostic. Discovery by itself never grants routing authority.
+**Settings → Machines** distinguishes handshake verification from session-service health. Authentication required, transport failure, incompatible installation, and broker unavailable are different states. Choosers and settings report discovery progress, last successful discovery, and the last error. Discovery by itself never grants routing authority; retained metadata never authorizes terminal or mutation traffic.
+
+## Freshness and recovery
+
+Visible pages discover candidates every 15 seconds, prioritizing previously verified peers in the existing bounded probe pool. Enumeration errors receive bounded 2/5/10-second recovery attempts before normal cadence resumes. Manual discovery uses the same publication/diagnostic path as automatic discovery.
+
+Each machine independently refreshes session summaries every 5 seconds while a chooser is active, including an open mobile drawer above a terminal. Existing header-authenticated lifecycle events invalidate only the affected machine; reconnect obtains an authoritative snapshot because the event stream has no replay. Polling remains the repair path when streaming is unavailable. Terminal exit evidence also requests reconciliation. Stop acknowledgment is not proof of exit: the exact session UUID remains marked stopping until an authoritative summary removes it, without hiding a replacement using the same name.
+
+Visibility resume, window focus, and persisted page restoration coalesce reconciliation. Hidden pages suspend discovery, session polling, and lifecycle streams. Background reads never open a token dialog; authentication is an explicit user action, and its dialog is cancelled when its machine owner is retired or the page is hidden. These are responsive-environment targets, not guarantees of physical mobile/PWA or Tailnet latency.
 
 ## Display and identity boundary
 

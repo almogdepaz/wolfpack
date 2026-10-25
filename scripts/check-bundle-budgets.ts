@@ -12,7 +12,8 @@ const limits: ReadonlyArray<readonly [string, number, number]> = [
   // UI redesign after final control removals: measured 335835/100662; approved gzip cap 101100.
   // USER APPROVED widget pin follow-up: app gzip cap 101100 → 101600; raw cap unchanged.
   // USER APPROVED round14 authoritative grid hydration fix: app gzip cap 101600 → 101700; all other caps unchanged.
-  ["public/app.bundle.js", 386_000, 101_700],
+  // Sidebar/session freshness: approved gzip cap 102000; measured 101756.
+  ["public/app.bundle.js", 386_000, 102_000],
   ["public/ghostty-web.bundle.js", 700_000, 210_000],
   // Phase-1 shell controls/full-view recovery: base 96978/17005; measured 100603/17595.
   // Selected-machine extensions + current main: approved raw cap 103000; measured 102177.

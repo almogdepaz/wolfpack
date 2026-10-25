@@ -111,6 +111,7 @@ interface GridDeps {
   focusDelegationSession?: (session: string, machine: string) => void;
   leaveDelegationWorkspace?: () => void;
   terminalMachineLabel?: (machine: string | undefined) => string | undefined;
+  invalidateMachineSessions?: (machine: string) => void;
 }
 
 let deps: GridDeps;
@@ -529,6 +530,7 @@ async function mountGridController(gs, cell, idx) {
         setTerminalLoadVisualState(cell, "displaced");
         showGridCellConflictOverlay(gs);
       } else if (action === "session-ended" || action === "pty-exited") {
+        deps.invalidateMachineSessions?.(gs.machine || "");
         gs._slowLoad?.stop();
         if (gs.controller?.term) gs.controller.term.options.disableStdin = true;
         setTerminalLoadVisualState(cell, "ended");

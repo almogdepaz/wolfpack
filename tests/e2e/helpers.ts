@@ -26,6 +26,8 @@ export interface TestServer {
 export interface TestServerOptions {
   readonly home?: string;
   readonly ignoreSigterm?: boolean;
+  /** Emit fixture lifecycle events through the real server's event bus. */
+  readonly lifecycleEvents?: boolean;
 }
 
 // ── Server startup ───────────────────────────────────────────────────────────
@@ -66,6 +68,7 @@ export function startTestServer(options: TestServerOptions = {}): Promise<TestSe
           HOME: options.home ?? isolatedHome.path,
           WOLFPACK_TEST: "1",
           WOLFPACK_E2E_IGNORE_SIGTERM: options.ignoreSigterm ? "1" : undefined,
+          WOLFPACK_E2E_LIFECYCLE_EVENTS: options.lifecycleEvents ? "1" : undefined,
         },
       },
     );
