@@ -1,5 +1,5 @@
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
-import { openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
+import { collapseInitialSessionMenu, openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer(); });
@@ -20,17 +20,35 @@ async function isolate(page: Page) {
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill(json({ candidates: [] })));
 }
 
-test("an unresolved initial local summary is connecting, not a failed or empty machine", async ({ page }) => {
+test("an unresolved initial local summary is connecting, not a failed or empty machine", async ({ page }, testInfo) => {
   await isolate(page);
+  if (testInfo.project.name === "desktop") {
+    // A healthy peer keeps the sidebar chooser available while local is pending.
+    await page.route("**/api/tailnet/v1/candidates", route => route.fulfill(json({ candidates: [candidate] })));
+    await page.route(`${peerOrigin}/api/sessions`, route => route.fulfill(json({ sessions: [{ name: "pending-peer", triage: "idle" }] })));
+  }
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  await page.route("**/api/sessions", async route => { await gate; await route.fulfill(json({ sessions: localRows })); });
+  await page.route(`${server.baseUrl}/api/sessions`, async route => { await gate; await route.fulfill(json({ sessions: localRows })); });
   await page.goto(server.baseUrl);
   const local = page.locator('#session-list > .machine-group[data-machine=""]');
   try {
     await expect(local).toContainText("Connecting");
     await expect(local).not.toContainText("Connection failed");
     await expect(local).not.toContainText("No sessions yet");
+    await expect(local.locator(".group-status")).toHaveText("Connecting...");
+    await expect(local.locator(".sidebar-conn-status")).toHaveCount(0);
+    if (testInfo.project.name === "desktop") {
+      await expect(page.getByRole("button", { name: "Open pending-peer", exact: true })).toBeVisible();
+      await collapseInitialSessionMenu(page);
+      const sidebar = page.locator('#sidebar-session-list > .machine-group[data-machine=""]');
+      await expect(sidebar.locator(".sidebar-conn-status")).toBeVisible();
+      await expect(sidebar.locator(".sidebar-conn-status")).toHaveText("Connecting...");
+      await expect(sidebar.locator(".sidebar-conn-status")).toHaveCSS("font-size", "10px");
+      await expect(sidebar.locator(".group-status")).toHaveCount(0);
+      await expect(sidebar).not.toContainText("Connection failed");
+      await expect(sidebar).not.toContainText("No active sessions");
+    }
   } finally { release(); }
   await expect(page.getByRole("button", { name: "Open test-project", exact: true })).toBeVisible();
 });

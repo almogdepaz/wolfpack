@@ -1934,7 +1934,7 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
   const collapsed = machineGroupIsCollapsed(g, surface);
   let bodyHtml = surface === "sidebar" && !multiMachine ? '<div class="sidebar-no-sessions">No active sessions</div>' : "";
   if (g.pending) {
-    bodyHtml = '<div class="group-status">Connecting...</div>';
+    bodyHtml = `<div class="${surface === "sidebar" ? "sidebar-conn-status" : "group-status"}">Connecting...</div>`;
   } else if (g.online) {
     const presentation = sessionCardGroupPresentation(g.sessions, machineKey);
     if (presentation.empty === "idle") {
