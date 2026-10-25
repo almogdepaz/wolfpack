@@ -5289,11 +5289,10 @@ async function discoverMachines(statusEl = document.getElementById("discover-sta
   if (settings) statusEl.style.color = "#555";
   try {
     await tailnetDiscoveryAutoRefresh.requestRefresh();
-    void loadSessions(true);
-    statusEl.textContent = discoveryResultText();
+    statusEl.textContent = settings ? discoveryHealthText() : discoveryResultText();
     if (settings) statusEl.style.color = getMachines().some(machine => machine.ready) ? "#00ff41" : "#555";
   } catch (error) {
-    statusEl.textContent = errorMessage(error);
+    statusEl.textContent = settings ? discoveryHealthText() : errorMessage(error);
     if (settings) statusEl.style.color = "#cc3333";
   } finally {
     button.disabled = false;

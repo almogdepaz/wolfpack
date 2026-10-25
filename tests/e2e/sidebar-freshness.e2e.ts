@@ -1,5 +1,5 @@
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer(); });
@@ -149,7 +149,7 @@ test("verified unavailable machines remain disabled with truthful service health
   await expect(group).toContainText("Last success");
   await expect(page.getByRole("button", { name: "Authenticate fresh peer", exact: true })).toBeVisible();
   await expect(page.locator("#app-dialog")).not.toBeVisible();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await openSettingsFromUi(page);
   await expect(page.locator("#machines-list")).toContainText("Handshake verified; sessions: Authentication required");
   await expect(page.locator("#discover-status")).toContainText("Last successful discovery");
 });
@@ -299,8 +299,8 @@ test("discovery prioritizes known verified peers ahead of a stalled candidate po
   await page.goto(server.baseUrl);
   await expect(page.getByRole("button", { name: "Open known-peer", exact: true })).toBeVisible();
   includeSlow = true;
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Discover Tailnet", exact: true }).click();
+  await openSettingsFromUi(page);
+  await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet", exact: true }).click();
   try { await expect.poll(() => knownProbes, { timeout: 1_000 }).toBeGreaterThanOrEqual(2); }
   finally { release(); }
 });
@@ -319,8 +319,8 @@ test("peer discovery does not restart unrelated local session reads", async ({ p
   await expect.poll(() => localRequests).toBeGreaterThanOrEqual(2);
   await expect(page.getByRole("button", { name: "Open known-peer", exact: true })).toBeVisible();
   const before = localRequests;
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Discover Tailnet", exact: true }).click();
+  await openSettingsFromUi(page);
+  await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet", exact: true }).click();
   await expect.poll(() => probes).toBeGreaterThanOrEqual(2);
   await page.waitForTimeout(200);
   expect(localRequests).toBe(before);
@@ -410,8 +410,8 @@ test("registry and chooser agree at stale count and session-success TTL boundari
   const lastSummaryAt = await page.evaluate(() => Date.now());
   unavailable = true;
   await page.clock.setSystemTime(new Date(verifiedAt + 7 * day + 2_000));
-  await page.getByRole("button", { name: "Settings", exact: true }).click({ force: true });
-  await page.getByRole("button", { name: "Discover Tailnet", exact: true }).click({ force: true });
+  await openSettingsFromUi(page);
+  await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet", exact: true }).click({ force: true });
   await expect(page.locator("#discover-status")).toContainText("enumeration unavailable");
   await expect(page.locator("#machines-list .machine-item")).toHaveCount(8);
   await expect(remoteGroups).toHaveCount(8);
