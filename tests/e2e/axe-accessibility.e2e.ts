@@ -23,7 +23,13 @@ test("axe scans the active sessions view", async ({ page }) => {
 });
 
 test("axe scans settings and its active modal dialog", async ({ page }) => {
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  // Desktop opens settings with a button; mobile navigates with a hash link.
+  // Require one exposed, on-screen control rather than masking duplicates with first().
+  const settings = page.getByRole("button", { name: "Settings", exact: true })
+    .or(page.getByRole("link", { name: "Settings", exact: true }));
+  await expect(settings).toHaveCount(1);
+  await expect(settings).toBeInViewport();
+  await settings.click();
   await expect(page.locator("#settings-view")).toBeVisible();
   await expectNoSeriousViolations(page);
   await page.getByRole("link", { name: "Agents" }).click();
