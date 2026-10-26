@@ -47,7 +47,8 @@ import { forbiddenStrings, parseForbidList } from "./privacy-gate";
 export const SCENES = ["desktop", "mobile", "cli", "cards", "stills"] as const;
 type SceneName = typeof SCENES[number];
 
-const DESKTOP_VIEWPORT = { width: 1600, height: 1000 } as const;
+/** Same size as the stills so the hero poster (desktop-sessions) matches the loop's first frame. */
+const DESKTOP_VIEWPORT = { width: 1440, height: 900 } as const;
 const MOBILE_VIEWPORT = { width: 390, height: 844 } as const;
 const MOBILE_SCALE = 2;
 const CARD_VIEWPORT = { width: 1920, height: 1080 } as const;

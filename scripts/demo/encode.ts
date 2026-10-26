@@ -68,15 +68,16 @@ const MB = 1024 * 1024;
 const KB = 1024;
 
 export const TARGETS: readonly EncodeTarget[] = [
-  { name: "desktop-source", scene: "desktop", out: "desktop/desktop.mp4", kind: "mp4", width: 1600, fps: 30, crf: 18, holdEnd: 1 },
+  { name: "desktop-source", scene: "desktop", out: "desktop/desktop.mp4", kind: "mp4", width: 1440, fps: 30, crf: 18, holdEnd: 1 },
   { name: "mobile-source", scene: "mobile", out: "mobile/mobile.mp4", kind: "mp4", width: 780, fps: 30, crf: 18, holdEnd: 1 },
   { name: "cli-source", scene: "cli", segment: "frames-cli", out: "cli/cli.mp4", kind: "mp4", width: 1920, fps: 30, crf: 18 },
   ...["title", "privacy", "install", "end"].map((card): EncodeTarget => ({
     name: `card-${card}`, scene: "cards", segment: `frames-${card}`, out: `cards/${card}.mp4`, kind: "mp4", width: 1920, fps: 30, crf: 18,
   })),
   {
+    // Starts before the pointer appears, so the first frame equals the desktop-sessions poster.
     name: "hero", scene: "desktop", out: "site/wolfpack-usage-demo.mp4", kind: "mp4",
-    from: "s1-dashboard", to: "s3-grid", holdEnd: 1.2, speed: 1.15, width: 1280, fps: 30, crf: 26, maxSeconds: 22, maxBytes: 1.5 * MB,
+    to: "s3-grid", holdEnd: 1.2, speed: 1.2, width: 1280, fps: 30, crf: 26, maxSeconds: 22, maxBytes: 1.5 * MB,
     install: ["site/assets/wolfpack-usage-demo.mp4"],
   },
   {
@@ -357,7 +358,7 @@ if (import.meta.main) {
   if (args.get("install") === "true") installOutputs(root, available);
   if (args.get("keep-frames") !== "true") {
     const encoded = new Set(available.map((target) => target.name));
-    const kept = [...new Set(available.map((target) => target.scene))].filter((scene) => !scenesSafeToDelete(encoded).includes(scene));
+    const kept = [...new Set(available.filter(isClip).map((target) => target.scene))].filter((scene) => !scenesSafeToDelete(encoded).includes(scene));
     if (kept.length > 0) console.log(`kept frames for ${kept.join(", ")}: not every target reading them was encoded this run`);
     for (const scene of scenesSafeToDelete(encoded)) {
       for (const entry of readdirSync(join(root, scene))) {
