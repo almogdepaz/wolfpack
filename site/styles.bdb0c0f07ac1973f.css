@@ -129,8 +129,9 @@ kbd{font-size:12px;border:1px solid var(--hairline2);border-bottom-width:2px;bor
 [role=tab]:hover{color:var(--ink);border-color:var(--hairline2)}
 [role=tab][aria-selected="true"]{color:var(--accent-ink);background:var(--accent);border-color:var(--accent)}
 .code-tabs .tab-panel{margin-bottom:20px}
-.code-card{margin:0;padding:18px 20px;border:1px solid var(--hairline2);border-radius:var(--radius);background:var(--bg2);color:var(--ink);font-size:13.5px;line-height:1.7;white-space:pre;overflow-x:auto}
+.code-card{min-width:0;margin:0;padding:18px 20px;border:1px solid var(--hairline2);border-radius:var(--radius);background:var(--bg2);color:var(--ink);font-size:13.5px;line-height:1.7;white-space:pre;overflow-x:auto}
 .code-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.code-card .t{white-space:nowrap}
 .code-card .prompt{color:var(--accent);margin-right:4px}
 .code-card .out{color:var(--muted)}
 .swipe-hint{display:none;color:var(--dim);font:11px var(--mono);margin:0 0 12px}
@@ -138,7 +139,7 @@ kbd{font-size:12px;border:1px solid var(--hairline2);border-bottom-width:2px;bor
 .cli-skills a,.text-link{color:var(--accent);text-decoration:none;font-weight:700}
 
 /* machines */
-.machines{display:grid;grid-template-columns:1fr;gap:34px}
+.machines{display:grid;grid-template-columns:minmax(0,1fr);gap:34px}
 .machines-copy{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px 56px;align-items:end}
 .machines-copy .eyebrow,.machines-copy h2{grid-column:1}
 .machines-copy p{grid-column:2;grid-row:1/3;align-self:end;color:var(--muted);font-size:15px;line-height:1.7;margin:0}
@@ -248,7 +249,7 @@ kbd{font-size:12px;border:1px solid var(--hairline2);border-bottom-width:2px;bor
   .swipe-hint{display:block}
   .machines-copy{display:block}
   .machines-copy p{margin:16px 0 18px}
-  .code-card{font-size:12px;padding:14px}
+  .code-card{font-size:12px;padding:14px;white-space:pre-wrap;overflow-wrap:normal;word-break:normal}
   .agents{padding-bottom:64px}
   .agents-inner{padding:26px 22px}
   .install-section{padding:60px 0 72px}

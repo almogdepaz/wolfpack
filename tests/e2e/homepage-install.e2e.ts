@@ -375,7 +375,7 @@ test("phones get the views as labelled, focusable swipe regions instead of tabs"
 
 test("tablet and wide desktop viewports keep the layout inside the page width", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "viewport sweep runs once");
-  for (const width of [1440, 1024, 768]) {
+  for (const width of [1440, 1024, 768, 320]) {
     await page.setViewportSize({ width, height: 1024 });
     await expect(page.locator(".nav nav").getByRole("link", { name: "Install" })).toBeVisible();
     const viewport = await page.evaluate(() => ({
@@ -383,6 +383,9 @@ test("tablet and wide desktop viewports keep the layout inside the page width", 
       scrollWidth: document.documentElement.scrollWidth,
     }));
     expect(viewport.scrollWidth, `no horizontal scroll at ${width}px`).toBeLessThanOrEqual(viewport.clientWidth);
+    // Only code cards that actually overflow are keyboard-scrollable stops.
+    await expect.poll(() => page.locator(".code-card").evaluateAll((cards) => cards.every((card) =>
+      (card.scrollWidth > card.clientWidth + 1) === card.hasAttribute("tabindex")))).toBe(true);
   }
 });
 

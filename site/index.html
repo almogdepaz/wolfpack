@@ -35,7 +35,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" data-deferred-style>
-  <link rel="stylesheet" href="styles.bcb549731f635afb.css">
+  <link rel="stylesheet" href="styles.bdb0c0f07ac1973f.css">
 </head>
 <body>
   <a class="skip-link" href="#top">Skip to content</a>
@@ -132,7 +132,7 @@
         </figure></div>
         <div class="tab-panel"><figure>
           <img src="assets/desktop-grid.d509e241728ed395.webp" alt="Wolfpack grid with three demo sessions tiled side by side" loading="lazy" width="1440" height="900">
-          <figcaption><h3>Grid</h3><p>Add sessions from the sidebar to tile two to five terminals, drag dividers to resize live, and move focus with ⌘⇧ and the arrow keys.</p></figcaption>
+          <figcaption><h3>Grid</h3><p>Add sessions from the sidebar to tile up to six terminals, drag dividers to resize live, and move focus with ⌘⇧ and the arrow keys.</p></figcaption>
         </figure></div>
         <div class="tab-panel"><figure>
           <img src="assets/desktop-delegation.4850fd6719e5f96c.webp" alt="Wolfpack delegation grid: a parent agent and its two child agents, one reporting back" loading="lazy" width="1440" height="900">
@@ -150,7 +150,7 @@
         <div class="eyebrow">04 / EVERY MACHINE</div>
         <h2 id="machines-title">One dashboard.<br><span>Every machine.</span></h2>
         <p>Wolfpack discovers other machines on your tailnet, verifies each peer before listing it, and groups sessions under their machine names. Offline and unreachable machines say so.</p>
-        <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack --machine macbook list --json</code></pre>
+        <pre class="code-card"><code><span class="prompt">$</span> wolfpack <span class="t">--machine</span> macbook list <span class="t">--json</span></code></pre>
       </div>
       <div class="crop crop-machines framed"><img src="assets/desktop-sessions.0875712393c5b8c6.png" alt="Dashboard machine groups: Workstation with six sessions and MacBook with two" loading="lazy" width="1440" height="900"></div>
     </section>
@@ -163,28 +163,28 @@
       <p class="swipe-hint" aria-hidden="true">Swipe for more commands →</p>
       <div class="tabs code-tabs" data-tabs="CLI examples">
         <div class="tab-panel"><figure>
-          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack session create api-gateway --harness claude --plan .plans/200-review.md --json</code></pre>
+          <pre class="code-card"><code><span class="prompt">$</span> wolfpack session create <span class="t">api-gateway</span> <span class="t">--harness</span> claude <span class="t">--plan</span> <span class="t">.plans/200-review.md</span> <span class="t">--json</span></code></pre>
           <figcaption><h3>create</h3><p>Start a top-level agent session in a project with a plan file.</p></figcaption>
         </figure></div>
         <div class="tab-panel"><figure>
-          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack agent spawn api-gateway --harness claude --name 200-security-review \
-    --plan .plans/200-review.md --notify-parent --json
-<span class="out">{ "ok": true, "session": "200-security-review", "sessionId": "…", "project": "api-gateway", "harness": "claude" }</span></code></pre>
+          <pre class="code-card"><code><span class="prompt">$</span> wolfpack agent spawn <span class="t">api-gateway</span> <span class="t">--harness</span> claude <span class="t">--name</span> <span class="t">200-security-review</span> \
+    <span class="t">--plan</span> <span class="t">.plans/200-review.md</span> <span class="t">--notify-parent</span> <span class="t">--json</span>
+<span class="out">{ "ok": true, "session": <span class="t">"200-security-review",</span> "sessionId": "…", "project": <span class="t">"api-gateway",</span> "harness": "claude" }</span></code></pre>
           <figcaption><h3>spawn</h3><p>Spawn a child of the current agent session; with <code>--notify-parent</code> it reports back when it is done.</p></figcaption>
         </figure></div>
         <div class="tab-panel"><figure>
-          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack session send 200-security-review "focus on token expiry" --ensure-submitted
-<span class="prompt">$</span> wolfpack session wait 200-security-review "Review complete" --timeout-ms 600000 --json</code></pre>
+          <pre class="code-card"><code><span class="prompt">$</span> wolfpack session send <span class="t">200-security-review</span> "focus on token expiry" <span class="t">--ensure-submitted</span>
+<span class="prompt">$</span> wolfpack session wait <span class="t">200-security-review</span> "Review complete" <span class="t">--timeout-ms</span> 600000 <span class="t">--json</span></code></pre>
           <figcaption><h3>send + wait</h3><p>Type into a session, confirm the submit, then block until its output contains a marker.</p></figcaption>
         </figure></div>
         <div class="tab-panel"><figure>
-          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack events --kinds session.state,parent_notified
-<span class="out">2026-10-26T09:04:12.418Z session.state 200-security-review working (program status)
-2026-10-26T09:06:41.077Z parent_notified api-gateway seq=3 [201-load-test] p95 38 ms, 0 errors</span></code></pre>
+          <pre class="code-card"><code><span class="prompt">$</span> wolfpack events <span class="t">--kinds</span> session.state,parent_notified
+<span class="out"><span class="t">2026-10-26T09:04:12.418Z</span> session.state <span class="t">200-security-review</span> working (program status)
+<span class="t">2026-10-26T09:06:41.077Z</span> parent_notified <span class="t">api-gateway</span> seq=3 <span class="t">[201-load-test]</span> p95 38 ms, 0 errors</span></code></pre>
           <figcaption><h3>events</h3><p>Follow session, state, task and parent-notification events as they happen.</p></figcaption>
         </figure></div>
         <div class="tab-panel"><figure>
-          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack agent inbox --since 2 --json</code></pre>
+          <pre class="code-card"><code><span class="prompt">$</span> wolfpack agent inbox <span class="t">--since</span> 2 <span class="t">--json</span></code></pre>
           <figcaption><h3>inbox</h3><p>Read what child agents sent back to the current session.</p></figcaption>
         </figure></div>
       </div>
@@ -293,6 +293,6 @@
     </section>
   </main>
   <footer class="footer wrap"><a class="brand" href="#top"><img src="assets/wolfpack-icon.a7c43b6bdecac5a6.svg" alt="" width="22" height="22"> <span>WOLFPACK</span></a><span class="footer-note">Self-hosted. Open source. Yours.</span><div><a href="https://github.com/almogdepaz/wolfpack">GitHub ↗</a><a href="https://github.com/almogdepaz/wolfpack/blob/main/LICENSE">MIT License</a></div></footer>
-  <script src="homepage.be52d78caa136c83.js"></script>
+  <script src="homepage.02cb4f78f91b2174.js"></script>
 </body>
 </html>

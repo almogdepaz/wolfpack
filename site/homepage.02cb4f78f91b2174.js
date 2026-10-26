@@ -98,3 +98,21 @@ for (const tabs of document.querySelectorAll('[data-tabs]')) {
   wide.addEventListener('change', sync);
   sync();
 }
+
+// Code cards scroll sideways only when a line is wider than the card (desktop
+// keeps whole lines; phones wrap at spaces). Only overflowing cards join the
+// tab order, so keyboard users can scroll exactly the ones that need it.
+const codeCards = [...document.querySelectorAll('.code-card')];
+const syncCodeCardFocus = () => {
+  for (const card of codeCards) {
+    if (card.scrollWidth > card.clientWidth + 1) card.tabIndex = 0;
+    else card.removeAttribute('tabindex');
+  }
+};
+let codeCardFrame = 0;
+window.addEventListener('resize', () => {
+  cancelAnimationFrame(codeCardFrame);
+  codeCardFrame = requestAnimationFrame(syncCodeCardFocus);
+});
+if (document.fonts) document.fonts.ready.then(syncCodeCardFocus);
+syncCodeCardFocus();
