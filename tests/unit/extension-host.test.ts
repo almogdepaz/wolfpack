@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { WidgetPanels } from "../../public/widget-panels.ts";
-import type { ContextViewRegistry } from "../../public/context-view-registry.ts";
-import { ExtensionHost, type ExtensionHostOptions } from "../../public/extension-host.ts";
+import { ContextViewRegistry } from "../../public/context-view-registry.ts";
+import { ExtensionHost, type ExtensionHostOptions, type SelectedExtensionScope } from "../../public/extension-host.ts";
 import { TerminalLayoutRegistry } from "../../public/terminal-layout-registry.ts";
 import { equalGridLayout } from "../../src/extensions/layout-contract.ts";
 import { WidgetLayout } from "../../public/widget-layout.ts";
 import type { ExtensionRegistration, ExtensionRegistrationHost, ExtensionViewContext } from "../../src/extensions/sdk.ts";
 
-class FakeElement {
+class FakeElement extends EventTarget {
+  constructor(readonly tagName = "div") { super(); }
   readonly dataset: Record<string, string> = {};
   readonly children: FakeElement[] = [];
   parentElement: FakeElement | null = null;
@@ -22,19 +23,27 @@ class FakeElement {
   focus() {}
   remove() { if (!this.parentElement) return; const at = this.parentElement.children.indexOf(this); if (at >= 0) this.parentElement.children.splice(at, 1); this.parentElement = null; }
   replaceChildren() { for (const child of this.children) child.parentElement = null; this.children.length = 0; }
+  // Model the inline SVG roots used by host chrome; browser tests cover their paint.
+  set innerHTML(markup: string) {
+    this.replaceChildren();
+    for (const match of markup.matchAll(/<svg\b([^>]*)>/g)) {
+      const svg = new FakeElement("svg");
+      for (const attribute of match[1]!.matchAll(/([\w-]+)="([^"]*)"/g)) svg.setAttribute(attribute[1]!, attribute[2]!);
+      this.append(svg);
+    }
+  }
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   removeAttribute(name: string) { this.attributes.delete(name); }
-  addEventListener() {}
   querySelector<T extends FakeElement>(selector: string): T | null {
     const name = selector.match(/^\[data-([^\]]+)\]$/)?.[1]?.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
-    return (name ? this.children.find(child => name in child.dataset) ?? this.children.map(child => child.querySelector<T>(selector)).find(Boolean) : undefined) as T ?? null;
+    return (this.children.find(child => name ? name in child.dataset : child.tagName === selector) ?? this.children.map(child => child.querySelector<T>(selector)).find(Boolean)) as T ?? null;
   }
 }
 
 const documentListeners = new Map<string, unknown>();
 (globalThis as Record<string, unknown>).document = {
   visibilityState: "visible",
-  createElement: () => new FakeElement(),
+  createElement: (tagName: string) => new FakeElement(tagName),
   addEventListener: (name: string, listener: unknown) => documentListeners.set(name, listener),
   removeEventListener: (name: string) => documentListeners.delete(name),
 };
@@ -64,7 +73,128 @@ function withLoaderLocation() {
   return () => { if (descriptor) Object.defineProperty(globalThis, "location", descriptor); else Reflect.deleteProperty(globalThis, "location"); };
 }
 
+// Only browser storage/HTTP/prompt and executable import are fixture boundaries.
+// The real host, catalog parser, transport and consent lifecycle run unchanged.
+function persistedConsentHost() {
+  const restoreLocation = withLoaderLocation();
+  const saved = new Map(["localStorage", "sessionStorage"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const stored = new Map<string, string>();
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => stored.set(key, value), removeItem: (key: string) => stored.delete(key),
+  } });
+  Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: { getItem: () => null } });
+  const root = document.createElement("div");
+  let scope: SelectedExtensionScope = { sessionId: "22222222-2222-4222-8222-222222222222", machine: `node-a:${installationId}` };
+  let status = "ready", inventory: "ui" | "empty" | "disabled" | "no-ui" | "invalid-catalog" = "ui";
+  let prompts = 0, imports = 0, requests = 0;
+  let prompt: () => Promise<Record<string, string> | null> = async () => ({});
+  let nextCatalog: (() => Promise<Response>) | undefined;
+  const options: ExtensionHostOptions = { container: root, scope: () => scope,
+    resolvePeer: machine => ({ identity: machine, status, origin: "https://peer.example.ts.net", displayName: "Peer" }),
+    accessPrompt: async () => { prompts++; return prompt(); },
+    authFetch: async input => {
+      requests++;
+      if (nextCatalog) { const next = nextCatalog; nextCatalog = undefined; return next(); }
+      const catalog = consentCatalog();
+      if (String(input) === "/api/extensions" || inventory === "empty") return Response.json({ safeMode: false, installations: [] });
+      if (inventory === "invalid-catalog") return Response.json({ invalid: true });
+      if (inventory === "disabled") catalog.installations[0]!.enabled = false;
+      if (inventory === "no-ui") return Response.json({ ...catalog, installations: catalog.installations.map(({ ui: _ui, ...item }) => item) });
+      return Response.json(catalog);
+    },
+    // The generic loader's import boundary is injected; no host decision is replaced.
+    bundleLoader: async <T,>() => ({ default() { imports++; } }) as T,
+  };
+  let host = new ExtensionHost(options);
+  return { stored, get host() { return host; }, get scope() { return scope; }, set scope(value: SelectedExtensionScope) { scope = value; },
+    set status(value: string) { status = value; }, set inventory(value: typeof inventory) { inventory = value; },
+    set prompt(value: typeof prompt) { prompt = value; }, set nextCatalog(value: typeof nextCatalog) { nextCatalog = value; },
+    get prompts() { return prompts; }, get imports() { return imports; }, get requests() { return requests; },
+    recreate() { host.dispose(); host = new ExtensionHost(options); },
+    dispose() {
+      host.dispose(); root.remove(); restoreLocation();
+      for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key); }
+    },
+  };
+}
+
 describe("ExtensionHost", () => {
+  test.each((["unavailable", "empty", "disabled", "no-ui", "invalid-catalog"] as const).flatMap(transition =>
+    [false, true].map(recreate => [transition, recreate] as const)))("real host retires consent on %s before recovery (new host: %s)", async (transition, recreate) => {
+    const f = persistedConsentHost();
+    try {
+      await f.host.refresh();
+      expect(f.prompts).toBe(1); expect(f.imports).toBe(1);
+      expect(f.stored.has("wp-extension-code-consent:v1")).toBe(true);
+      if (transition === "unavailable") { f.status = "unavailable"; f.scope = { ...f.scope, unavailable: "Peer unavailable" }; }
+      else f.inventory = transition;
+      await f.host.refresh();
+      expect(f.prompts).toBe(1); // an empty inventory never opens a trust prompt
+      expect(f.requests).toBe(transition === "unavailable" ? 1 : 2);
+      expect(f.stored.has("wp-extension-code-consent:v1")).toBe(false);
+      f.status = "ready"; f.inventory = "ui"; f.scope = { sessionId: f.scope.sessionId, machine: f.scope.machine };
+      if (recreate) f.recreate();
+      await f.host.refresh();
+      expect(f.prompts).toBe(2); expect(f.imports).toBe(2);
+      // Once reapproved, a harmless host recreation still reuses exact consent.
+      f.recreate(); await f.host.refresh();
+      expect(f.prompts).toBe(2); expect(f.imports).toBe(3);
+    } finally { f.dispose(); }
+  });
+
+  test("real host session, empty selection and local scope switches alone retain exact peer consent", async () => {
+    const f = persistedConsentHost();
+    try {
+      await f.host.refresh();
+      f.scope = { ...f.scope, sessionId: "33333333-3333-4333-8333-333333333333" };
+      await f.host.refresh();
+      f.scope = { ...f.scope, sessionId: null }; await f.host.refresh();
+      f.scope = { sessionId: "22222222-2222-4222-8222-222222222222" }; await f.host.refresh();
+      f.scope = { ...f.scope, machine: `node-a:${installationId}` }; await f.host.refresh();
+      expect(f.prompts).toBe(1);
+      f.recreate(); await f.host.refresh();
+      expect(f.prompts).toBe(1);
+    } finally { f.dispose(); }
+  });
+
+  test("real transport cannot persist a late positive host prompt after unavailable invalidation", async () => {
+    const f = persistedConsentHost();
+    let release!: (value: Record<string, string>) => void, began!: () => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    f.prompt = () => { began(); return new Promise(resolve => { release = resolve; }); };
+    const pending = f.host.refresh();
+    try {
+      await started;
+      f.status = "unavailable"; f.scope = { ...f.scope, unavailable: "Peer unavailable" };
+      await f.host.refresh();
+      release({}); await pending;
+      expect(f.stored.has("wp-extension-code-consent:v1")).toBe(false);
+      expect(f.imports).toBe(0);
+      f.status = "ready"; f.scope = { sessionId: f.scope.sessionId, machine: f.scope.machine };
+      f.prompt = async () => ({});
+      await f.host.refresh();
+      expect(f.prompts).toBe(2); expect(f.imports).toBe(1);
+    } finally { release?.({}); await pending; f.dispose(); }
+  });
+
+  test("stale empty catalog completion cannot revoke a newer host scope's approval", async () => {
+    const f = persistedConsentHost();
+    let release!: (value: Response) => void, began!: () => void;
+    const started = new Promise<void>(resolve => { began = resolve; });
+    try {
+      await f.host.refresh();
+      f.nextCatalog = () => { began(); return new Promise(resolve => { release = resolve; }); };
+      const stale = f.host.refresh(); await started;
+      f.scope = { ...f.scope, sessionId: "33333333-3333-4333-8333-333333333333" };
+      await f.host.refresh();
+      release(Response.json({ safeMode: false, installations: [] })); await stale;
+      expect(f.prompts).toBe(1); expect(f.stored.has("wp-extension-code-consent:v1")).toBe(true);
+      f.recreate(); await f.host.refresh();
+      expect(f.prompts).toBe(1);
+    } finally { release?.(Response.json({ safeMode: false, installations: [] })); f.dispose(); }
+  });
+
   test("same-scope refresh retains pending remote consent until a positive decision", async () => {
     const restore = withLoaderLocation();
     const root = document.createElement("div");
@@ -425,6 +555,110 @@ describe("ExtensionHost", () => {
     } finally { count.mockRestore(); panels.dispose(); }
   });
 
+  test("removing the actual preview owner retains collapsed siblings without cancelling another area's intent", async () => {
+    container = new FakeElement();
+    const saved = JSON.stringify({ widgets: { "widgets/preview": "collapsed", "widgets/first": "collapsed", "widgets/selected": "collapsed", "widgets/other": "collapsed" }, placements: { "widgets/other": "bottom" }, selected: { right: "widgets/selected" } });
+    let preferences = saved;
+    const layout = new WidgetLayout({ getItem: () => preferences, setItem(_key, value) { preferences = value; } });
+    const wrappers = new Map<string, HTMLElement>();
+    let panels!: WidgetPanels;
+    const registry = new ContextViewRegistry({ container: container as unknown as HTMLElement,
+      createContainer(entry, wrapper, signal) { wrappers.set(entry.id, wrapper); return panels.createContainer(entry, wrapper, signal); },
+      onChange() { panels.update(registry.entries(), registry.diagnostic, () => null); },
+    });
+    panels = new WidgetPanels({ container: container as unknown as HTMLElement, registry, layout, onSelect(id) { panels.select(id); } });
+    registry.setScope({ installationId, sessionId: "22222222-2222-4222-8222-222222222222" });
+    let selectedVisible = false;
+    const removePreview = registry.register("widgets/preview", { id: "preview", title: "Preview", mount() { return { dispose() {} }; } });
+    registry.register("widgets/first", { id: "first", title: "First", mount() { return { dispose() {} }; } });
+    registry.register("widgets/selected", { id: "selected", title: "Selected", mount() { return { dispose() {}, setVisible(value) { selectedVisible = value; } }; } });
+    registry.register("widgets/other", { id: "other", title: "Other", mount() { return { dispose() {} }; } });
+    try {
+      panels.select("widgets/selected", false);
+      expect(selectedVisible).toBe(true);
+      panels.select("widgets/preview", false);
+      expect(wrappers.get("widgets/preview")!.dataset.peek).toBe("true");
+      expect(wrappers.get("widgets/selected")!.hidden).toBe(true);
+      const otherRail = container.children.find(child => child.dataset.widgetArea === "bottom")!;
+      otherRail.dispatchEvent(new Event("pointerenter"));
+      removePreview();
+      expect(selectedVisible).toBe(false);
+      expect(wrappers.get("widgets/selected")!.dataset.collapsed).toBe("true");
+      expect(wrappers.get("widgets/selected")!.dataset.peek).toBe("false");
+      await Bun.sleep(180);
+      expect(wrappers.get("widgets/other")?.dataset.peek).toBe("true");
+      expect(selectedVisible).toBe(false);
+      expect(wrappers.get("widgets/selected")!.dataset.collapsed).toBe("true");
+      expect(preferences).toBe(saved);
+    } finally { registry.dispose(); panels.dispose(); }
+  });
+
+  test("obsolete wrapper abort preserves replacement intent while current owner abort cancels it", async () => {
+    container = new FakeElement();
+    const layout = new WidgetLayout({ getItem: () => null, setItem() {} });
+    const entry = { id: "widgets/one", contribution: { id: "one", title: "One", mount() { return { dispose() {} }; } } };
+    layout.setWidgetState(entry.id, "collapsed");
+    let selections = 0;
+    const panels = new WidgetPanels({ container: container as unknown as HTMLElement, layout,
+      registry: { setVisibleIds() {} } as unknown as ContextViewRegistry, onSelect() { selections++; },
+    });
+    const obsolete = new AbortController(), current = new AbortController();
+    const oldWrapper = new FakeElement(), replacement = new FakeElement();
+    panels.createContainer(entry, oldWrapper as unknown as HTMLElement, obsolete.signal);
+    panels.createContainer(entry, replacement as unknown as HTMLElement, current.signal);
+    panels.update([entry], "", () => null);
+    try {
+      replacement.dispatchEvent(new Event("pointerenter")); await Bun.sleep(180);
+      expect(selections).toBe(1); // control: replacement's real hover timer works
+      replacement.dispatchEvent(new Event("pointerenter")); obsolete.abort(); await Bun.sleep(180);
+      expect(selections).toBe(2);
+      replacement.dispatchEvent(new Event("pointerenter")); current.abort(); await Bun.sleep(180);
+      expect(selections).toBe(2);
+    } finally { panels.dispose(); }
+  });
+
+  test("removing an unmounted hover-intent target cannot select its replacement", async () => {
+    container = new FakeElement();
+    const layout = new WidgetLayout({ getItem: () => null, setItem() {} });
+    const entries = ["one", "two"].map(id => ({ id: `widgets/${id}`, contribution: { id, title: id, mount() { return { dispose() {} }; } } }));
+    for (const entry of entries) layout.setWidgetState(entry.id, "collapsed");
+    let selections = 0;
+    const panels = new WidgetPanels({ container: container as unknown as HTMLElement, layout,
+      registry: { setVisibleIds() {} } as unknown as ContextViewRegistry, onSelect() { selections++; },
+    });
+    try {
+      panels.update(entries, "", () => null);
+      const rail = container.children.find(child => child.dataset.widgetArea === "right")!;
+      rail.dispatchEvent(new Event("pointerenter"));
+      panels.update([entries[1]!], "", () => null);
+      await Bun.sleep(180); expect(selections).toBe(0);
+      rail.dispatchEvent(new Event("pointerenter"));
+      await Bun.sleep(180); expect(selections).toBe(1); // surviving target still works
+    } finally { panels.dispose(); }
+  });
+
+  test("disposing widget panels cancels a pending hover-intent selection", async () => {
+    container = new FakeElement();
+    const layout = new WidgetLayout({ getItem: () => null, setItem() {} });
+    const entry = { id: "widgets/one", contribution: { id: "one", title: "One", mount() { return { dispose() {} }; } } };
+    layout.setWidgetState(entry.id, "collapsed");
+    let selections = 0;
+    const panels = new WidgetPanels({ container: container as unknown as HTMLElement, layout,
+      registry: { setVisibleIds() {} } as unknown as ContextViewRegistry,
+      onSelect() { selections++; },
+    });
+    panels.update([entry], "", () => null);
+    const rail = container.children.find(child => child.dataset.widgetArea === "right")!;
+    rail.dispatchEvent(new Event("pointerenter"));
+    await Bun.sleep(180);
+    expect(selections).toBe(1); // control: the real rail arms a working intent timer
+    rail.dispatchEvent(new Event("pointerenter"));
+    panels.dispose();
+    // Cross the actual 150ms intent deadline; disposal must fence its callback.
+    await Bun.sleep(180);
+    expect(selections).toBe(1);
+  });
+
   test("reconciles a removed focused area before applying same-render visibility", () => {
     container = new FakeElement();
     const terminals = new FakeElement(), sessions = new FakeElement();
@@ -778,7 +1012,7 @@ describe("ExtensionHost", () => {
     host.dispose(); expect(disposed).toBe(1); expect(layoutDisposed).toBe(1);
   });
 
-  test("host opt-in opens the sole view without a tab, while multiple views keep their selector", async () => {
+  test("host opt-in opens the sole view while keeping its desktop collapse tab reachable", async () => {
     container = new FakeElement();
     let count = 1; let mounts = 0; let failMount = false;
     const catalog = () => ({ safeMode: false, installations: Array.from({ length: count }, (_, index) => {
@@ -803,20 +1037,20 @@ describe("ExtensionHost", () => {
     host.select(); expect(mounts).toBe(0); // no automatic mount in a collapsed panel
     expect(host.setShellVisible(true)).toBe(true);
     host.select();
-    expect(host.selectedId).toBe("view0/context"); expect(mounts).toBe(1); expect(tabs().hidden).toBe(true);
+    expect(host.selectedId).toBe("view0/context"); expect(mounts).toBe(1); expect(tabs().hidden).toBe(false);
     host.select(); expect(mounts).toBe(1);
     count = 2; await host.refresh(); host.select();
     expect(tabs().hidden).toBe(false); expect(host.selectedId).toBe("view0/context");
     host.select("view1/context"); expect(mounts).toBe(2);
     count = 1; await host.refresh(); host.select();
-    expect(host.selectedId).toBe("view0/context"); expect(tabs().hidden).toBe(true);
+    expect(host.selectedId).toBe("view0/context"); expect(tabs().hidden).toBe(false);
     count = 0; await host.refresh(); host.select();
     expect(host.selectedId).toBeNull(); expect(tabs()).toBeUndefined(); // No empty selector/rail.
     count = 1; failMount = true; await host.refresh(); host.select();
     expect(host.selectedId).toBeNull(); expect(tabs().hidden).toBe(false);
     expect(host.diagnostic).toContain("broken view");
     failMount = false; host.select("view0/context");
-    expect(tabs().hidden).toBe(true);
+    expect(tabs().hidden).toBe(false);
     host.dispose();
   });
 

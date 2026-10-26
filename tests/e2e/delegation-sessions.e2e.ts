@@ -1,3 +1,4 @@
+import { writeFile } from "node:fs/promises";
 import { collapseInitialSessionMenu, selectTerminalLayoutFromUi } from "./helpers.ts";
 import { mockLayoutWidget } from "./widget-fixture.ts";
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
@@ -295,11 +296,7 @@ test("manual card order persists by stable identity and resets to server order",
   await expect.poll(cardNames).toEqual(["three", "one", "two"]);
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-session-order") ?? "null"))).toEqual({
     version: 1,
-    sessions: [
-      { machineUrl: "", sessionId: "three-id" },
-      { machineUrl: "", sessionId: "one-id" },
-      { machineUrl: "", sessionId: "two-id" },
-    ],
+    sessions: [{ machineUrl: "", sessionId: "three-id", position: 0, tier: "idle" }],
   });
 
   sessions = [
@@ -313,7 +310,8 @@ test("manual card order persists by stable identity and resets to server order",
 
   await page.reload();
   await collapseInitialSessionMenu(page);
-  await expect.poll(cardNames).toEqual(["three-renamed", "one-renamed", "two-renamed", "new"]);
+  // Untouched rows use the current server fallback when no activity timestamps exist.
+  await expect.poll(cardNames).toEqual(["three-renamed", "two-renamed", "one-renamed", "new"]);
 
   await list.getByRole("button", { name: "Reset session order" }).click();
   await expect.poll(cardNames).toEqual(["two-renamed", "one-renamed", "three-renamed", "new"]);
@@ -525,7 +523,7 @@ test("desktop escape cancels a nested card drag and restores the hierarchy", asy
   await expect(page.locator(".session-order-floating")).toHaveCount(0);
   await expect(page.locator(".session-order-placeholder")).toHaveCount(0);
   await expect(childCard).toBeVisible();
-  await expect(list.locator('.card[data-session-order-machine=""] .card-name')).toHaveText(["parent", "child", "solo"]);
+  await expect(list.locator('.card[data-session-order-machine=""] .card-name-text')).toHaveText(["parent", "child", "solo"]);
 });
 
 test("mobile moved card opens its terminal immediately after touch reorder", async ({ page }, testInfo) => {
@@ -601,6 +599,17 @@ test("expanded child cards stay compact and inside the session list", async ({ p
   const soloBox = await soloCard.boundingBox();
   expect(collapsedParentBox).not.toBeNull();
   expect(soloBox).not.toBeNull();
+  await testInfo.attach("collapsed-row-geometry", {
+    body: JSON.stringify(await list.locator('.delegation-parent-card, [data-session-order-id="solo-id"]').evaluateAll(cards => cards.map(card => ({
+      id: (card as HTMLElement).dataset.sessionOrderId,
+      parts: [card, ...card.querySelectorAll('.card-info, .card-name, .card-preview, .card-status, .delegation-sidebar-toggle')].map(el => {
+        const style = getComputedStyle(el);
+        return { className: el.className, height: style.height, borderTop: style.borderTopWidth, padding: style.padding, lineHeight: style.lineHeight, marginTop: style.marginTop };
+      }),
+    }))), null, 2),
+    contentType: "application/json",
+  });
+  await expect(parentCard).toHaveCSS("height", await soloCard.evaluate(el => getComputedStyle(el).height));
   expect(Math.abs(collapsedParentBox!.height - soloBox!.height)).toBeLessThanOrEqual(1);
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -674,8 +683,9 @@ test("mobile drawer groups child sessions directly under their parent", async ({
   expect(childBox!.x + childBox!.width).toBeLessThanOrEqual(drawerBox!.x + drawerBox!.width + 0.5);
 });
 
-test("mobile delegation cards collapse and expand child sessions", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "desktop", "mobile session-list behavior only");
+test("dashboard delegation cards hide children until toggled and visibly nest expanded rows", async ({ page }, testInfo) => {
+  const width = testInfo.project.name === "desktop" ? 1440 : testInfo.project.name === "iphone-se" ? 375 : 390;
+  await page.setViewportSize({ width, height: 900 });
 
   await routeDelegationSessions(page, [
     fakeSession("parent", "parent-id"),
@@ -684,19 +694,131 @@ test("mobile delegation cards collapse and expand child sessions", async ({ page
   ]);
 
   await page.goto(srv.baseUrl);
-  const parentCard = page.locator(".delegation-parent-card", { hasText: "parent" }).first();
+  const dashboard = page.locator("#session-list .machine-group:not(.needs-you)");
+  const parentCard = dashboard.locator('.card[data-session-order-id="parent-id"]');
+  const children = dashboard.locator(".sub-session-card");
   await expect(parentCard).toBeVisible();
 
-  const toggle = parentCard.locator(".delegation-sidebar-toggle");
-  await expect(toggle).toHaveCount(1);
+  const toggle = parentCard.getByRole("button", { name: "Expand 2 child agents", exact: true });
+  await expect(toggle).toHaveText("2 agents");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator(".sub-session-card")).toHaveCount(0);
+  await expect(children).toHaveCount(0);
 
   await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", "true");
-  await expect(page.locator(".sub-session-card")).toHaveCount(2);
+  const collapse = parentCard.getByRole("button", { name: "Collapse 2 child agents", exact: true });
+  await expect(collapse).toHaveAttribute("aria-expanded", "true");
+  await expect(children).toHaveCount(2);
+  await expect(page.locator("#sessions-view")).toBeVisible();
+  await expect(page.locator("#terminal-view")).toHaveAttribute("aria-hidden", "true");
+  // A separate existing focus/reparent issue scrolls the shared horizontal
+  // viewport on toggle. Normalize it for nesting captures, not production CSS.
+  await page.locator("#view-container").evaluate(el => { el.scrollLeft = 0; });
+  await expect.poll(() => dashboard.evaluate(el => el.getBoundingClientRect().x)).toBeGreaterThanOrEqual(0);
+  await page.screenshot({ path: testInfo.outputPath(`expanded-${width}.png`), fullPage: true, animations: "disabled" });
+  // Measure actual name/icon content, not merely the row's margin. On the
+  // transparent reskin the old 18px margin was perceptually almost flat.
+  const geometry = await children.evaluateAll(rows => rows.map(row => {
+    const rect = (element: Element) => {
+      const { x, y, width, height } = element.getBoundingClientRect();
+      return { x, y, width, height };
+    };
+    const group = row.closest(".machine-group-body")!;
+    const parent = group.querySelector(".delegation-parent-card")!;
+    const style = getComputedStyle(row, "::before");
+    const box = rect(row);
+    const borderLeft = Number.parseFloat(style.borderLeftWidth);
+    const borderBottom = Number.parseFloat(style.borderBottomWidth);
+    const connector = {
+      content: style.content, position: style.position,
+      x: box.x + Number.parseFloat(style.left),
+      y: box.y + Number.parseFloat(getComputedStyle(row).borderTopWidth) + Number.parseFloat(style.top),
+      width: Number.parseFloat(style.width), height: Number.parseFloat(style.height),
+      borderLeft, borderBottom, color: style.borderLeftColor,
+    };
+    // Composite the translucent group surface over its actual ancestors.
+    const composite = (element: Element | null): number[] => {
+      if (!element) return [0, 0, 0];
+      const rgba = getComputedStyle(element).backgroundColor.match(/[\d.]+/g)!.map(Number);
+      const alpha = rgba[3] ?? 1;
+      const behind = composite(element.parentElement);
+      return rgba.slice(0, 3).map((channel, i) => channel * alpha + behind[i]! * (1 - alpha));
+    };
+    const luminance = (rgb: number[]) => rgb.map(c => c / 255).map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
+      .reduce((sum, c, i) => sum + c * [ .2126, .7152, .0722 ][i]!, 0);
+    const ink = style.borderLeftColor.match(/[\d.]+/g)!.map(Number);
+    const surface = composite(group);
+    const alpha = ink[3] ?? 1;
+    const light = luminance(ink.slice(0, 3).map((channel, i) => channel * alpha + surface[i]! * (1 - alpha)));
+    const dark = luminance(surface);
+    return {
+      box, group: rect(group), parent: rect(parent),
+      name: rect(row.querySelector(".card-name-text")!), parentName: rect(parent.querySelector(".card-name-text")!),
+      icon: rect(row.querySelector(".harness-icon")!), parentIcon: rect(parent.querySelector(".harness-icon")!),
+      fontSize: Number.parseFloat(getComputedStyle(row.querySelector(".card-name")!).fontSize),
+      separator: getComputedStyle(row).borderTopColor, connector, surface,
+      connectorContrast: (Math.max(light, dark) + .05) / (Math.min(light, dark) + .05),
+    };
+  }));
+  const geometryPath = testInfo.outputPath(`expanded-${width}-geometry.json`);
+  await writeFile(geometryPath, JSON.stringify(geometry, null, 2));
+  await testInfo.attach("expanded-nesting-geometry", { path: geometryPath, contentType: "application/json" });
+  for (const row of geometry) {
+    expect(row.name.x - row.parentName.x, "child NAME must visibly nest, not just its box").toBeGreaterThanOrEqual(28);
+    expect(row.icon.x - row.parentName.x, "child icon must start right of the parent name").toBeGreaterThan(0);
+    expect(row.icon.x - row.parentIcon.x).toBeGreaterThanOrEqual(28);
+    expect(row.box.x - row.parent.x, "hairline starts at the child indent").toBeGreaterThanOrEqual(28);
+    expect(row.separator).not.toBe("rgba(0, 0, 0, 0)");
+    expect(row.box.x + row.box.width).toBeLessThanOrEqual(row.group.x + row.group.width);
+    expect(row.name.width).toBeGreaterThanOrEqual(100);
+    expect(row.name.x + row.name.width).toBeLessThanOrEqual(row.box.x + row.box.width);
+    expect(row.group.x).toBeGreaterThanOrEqual(0);
+    expect(row.group.x + row.group.width).toBeLessThanOrEqual(width);
+    expect(row.fontSize).toBeGreaterThanOrEqual(12);
+    expect(row.connector.content).toBe('""');
+    expect(row.connector.position).toBe("absolute");
+    expect(row.connector.width).toBeGreaterThan(0);
+    expect(row.connector.height).toBeGreaterThan(0);
+    expect(row.connector.borderLeft).toBeGreaterThan(0);
+    expect(row.connector.borderBottom).toBeGreaterThan(0);
+    expect(row.connector.color).not.toBe("rgba(0, 0, 0, 0)");
+    expect(row.connectorContrast, "connector must contrast with the composited reskin surface").toBeGreaterThanOrEqual(3);
+    expect(row.connector.x).toBeGreaterThan(row.group.x);
+    expect(row.connector.x + row.connector.width).toBeLessThan(row.box.x);
+    expect(row.connector.y).toBeGreaterThanOrEqual(row.group.y);
+    expect(row.connector.y + row.connector.height).toBeLessThan(row.box.y + row.box.height);
+  }
+  const parentBox = await parentCard.boundingBox();
+  expect(parentBox).not.toBeNull();
+  for (const child of await children.all()) {
+    await expect(child).toBeVisible();
+    const childBox = await child.boundingBox();
+    expect(childBox).not.toBeNull();
+    expect(childBox!.x).toBeGreaterThan(parentBox!.x);
+    expect(childBox!.x + childBox!.width).toBeLessThanOrEqual(parentBox!.x + parentBox!.width + 1);
+    expect(childBox!.y).toBeGreaterThanOrEqual(parentBox!.y + parentBox!.height);
+    const connector = await child.evaluate(el => {
+      const style = getComputedStyle(el, "::before");
+      return { content: style.content, border: style.borderLeftWidth, left: Number.parseFloat(style.left) };
+    });
+    expect(connector.content).toBe('""');
+    expect(connector.border).toBe("1px");
+    expect(connector.left).toBeLessThan(0);
+  }
 
-  await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(page.locator(".sub-session-card")).toHaveCount(0);
+  await collapse.click();
+  await expect(parentCard.getByRole("button", { name: "Expand 2 child agents", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(children).toHaveCount(0);
+  await expect(page.locator("#sessions-view")).toBeVisible();
+  if (testInfo.project.name === "desktop") {
+    await collapseInitialSessionMenu(page);
+    const sidebar = page.locator("#sidebar-session-list");
+    await expect(sidebar.locator(".sub-session-card")).toHaveCount(0);
+    await sidebar.getByRole("button", { name: "Expand 2 child agents", exact: true }).click();
+    await expect(sidebar.locator(".sub-session-card")).toHaveCount(2);
+    await page.locator("#sidebar-expand-btn").click();
+    await expect(collapse).toHaveAttribute("aria-expanded", "true");
+    await expect(children).toHaveCount(2);
+    await collapse.click();
+    await expect(children).toHaveCount(0);
+  }
 });

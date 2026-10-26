@@ -1,5 +1,5 @@
 import { expect, test, type Page, type WebSocketRoute } from "@playwright/test";
-import { startTestServer, type TestServer } from "./helpers.ts";
+import { collapseInitialSessionMenu, openSettingsFromUi, startTestServer, type TestServer } from "./helpers.ts";
 
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer(); });
@@ -20,17 +20,35 @@ async function isolate(page: Page) {
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill(json({ candidates: [] })));
 }
 
-test("an unresolved initial local summary is connecting, not a failed or empty machine", async ({ page }) => {
+test("an unresolved initial local summary is connecting, not a failed or empty machine", async ({ page }, testInfo) => {
   await isolate(page);
+  if (testInfo.project.name === "desktop") {
+    // A healthy peer keeps the sidebar chooser available while local is pending.
+    await page.route("**/api/tailnet/v1/candidates", route => route.fulfill(json({ candidates: [candidate] })));
+    await page.route(`${peerOrigin}/api/sessions`, route => route.fulfill(json({ sessions: [{ name: "pending-peer", triage: "idle" }] })));
+  }
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  await page.route("**/api/sessions", async route => { await gate; await route.fulfill(json({ sessions: localRows })); });
+  await page.route(`${server.baseUrl}/api/sessions`, async route => { await gate; await route.fulfill(json({ sessions: localRows })); });
   await page.goto(server.baseUrl);
   const local = page.locator('#session-list > .machine-group[data-machine=""]');
   try {
     await expect(local).toContainText("Connecting");
     await expect(local).not.toContainText("Connection failed");
     await expect(local).not.toContainText("No sessions yet");
+    await expect(local.locator(".group-status")).toHaveText("Connecting...");
+    await expect(local.locator(".sidebar-conn-status")).toHaveCount(0);
+    if (testInfo.project.name === "desktop") {
+      await expect(page.getByRole("button", { name: "Open pending-peer", exact: true })).toBeVisible();
+      await collapseInitialSessionMenu(page);
+      const sidebar = page.locator('#sidebar-session-list > .machine-group[data-machine=""]');
+      await expect(sidebar.locator(".sidebar-conn-status")).toBeVisible();
+      await expect(sidebar.locator(".sidebar-conn-status")).toHaveText("Connecting...");
+      await expect(sidebar.locator(".sidebar-conn-status")).toHaveCSS("font-size", "10px");
+      await expect(sidebar.locator(".group-status")).toHaveCount(0);
+      await expect(sidebar).not.toContainText("Connection failed");
+      await expect(sidebar).not.toContainText("No active sessions");
+    }
   } finally { release(); }
   await expect(page.getByRole("button", { name: "Open test-project", exact: true })).toBeVisible();
 });
@@ -149,7 +167,7 @@ test("verified unavailable machines remain disabled with truthful service health
   await expect(group).toContainText("Last success");
   await expect(page.getByRole("button", { name: "Authenticate fresh peer", exact: true })).toBeVisible();
   await expect(page.locator("#app-dialog")).not.toBeVisible();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await openSettingsFromUi(page);
   await expect(page.locator("#machines-list")).toContainText("Handshake verified; sessions: Authentication required");
   await expect(page.locator("#discover-status")).toContainText("Last successful discovery");
 });
@@ -299,8 +317,8 @@ test("discovery prioritizes known verified peers ahead of a stalled candidate po
   await page.goto(server.baseUrl);
   await expect(page.getByRole("button", { name: "Open known-peer", exact: true })).toBeVisible();
   includeSlow = true;
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Discover Tailnet", exact: true }).click();
+  await openSettingsFromUi(page);
+  await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet", exact: true }).click();
   try { await expect.poll(() => knownProbes, { timeout: 1_000 }).toBeGreaterThanOrEqual(2); }
   finally { release(); }
 });
@@ -319,8 +337,8 @@ test("peer discovery does not restart unrelated local session reads", async ({ p
   await expect.poll(() => localRequests).toBeGreaterThanOrEqual(2);
   await expect(page.getByRole("button", { name: "Open known-peer", exact: true })).toBeVisible();
   const before = localRequests;
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Discover Tailnet", exact: true }).click();
+  await openSettingsFromUi(page);
+  await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet", exact: true }).click();
   await expect.poll(() => probes).toBeGreaterThanOrEqual(2);
   await page.waitForTimeout(200);
   expect(localRequests).toBe(before);
@@ -410,8 +428,8 @@ test("registry and chooser agree at stale count and session-success TTL boundari
   const lastSummaryAt = await page.evaluate(() => Date.now());
   unavailable = true;
   await page.clock.setSystemTime(new Date(verifiedAt + 7 * day + 2_000));
-  await page.getByRole("button", { name: "Settings", exact: true }).click({ force: true });
-  await page.getByRole("button", { name: "Discover Tailnet", exact: true }).click({ force: true });
+  await openSettingsFromUi(page);
+  await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet", exact: true }).click({ force: true });
   await expect(page.locator("#discover-status")).toContainText("enumeration unavailable");
   await expect(page.locator("#machines-list .machine-item")).toHaveCount(8);
   await expect(remoteGroups).toHaveCount(8);

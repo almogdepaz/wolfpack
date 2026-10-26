@@ -18,7 +18,7 @@ async function returnAndReopenTaskWorkerSettings(page: Page): Promise<void> {
   else await page.locator("#back-btn").click();
   const expandedSettings = page.locator("#expanded-settings-btn");
   if (await expandedSettings.boundingBox()) await expandedSettings.click();
-  else await page.locator("#gear-btn").click();
+  else await openSettingsFromUi(page);
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await expect(page.getByLabel("Task worker extension discovery")).toBeVisible();
 }

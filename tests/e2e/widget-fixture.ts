@@ -3,14 +3,15 @@ import type { Page } from "@playwright/test";
 
 /** Layout tests need a real SDK contribution, not the now-removed empty diagnostic panel.
  * Only catalog/asset transport is mocked; production verification/loading/mounting is used.
+ * The page counter records real mount entry (including throws), never registration.
  */
-export async function mockLayoutWidget(page: Page, sessionIds: Readonly<Record<string, string>> = {}): Promise<void> {
+export async function mockLayoutWidget(page: Page, sessionIds: Readonly<Record<string, string>> = {}, titles: readonly string[] = ["Widgets"], failingTitles: readonly string[] = []): Promise<void> {
   if (Object.keys(sessionIds).length) await page.route("**/api/sessions", async route => {
     const response = await route.fetch(); const body = await response.json();
     for (const session of body.sessions) if (sessionIds[session.name]) session.identity.wolfpackSessionId = sessionIds[session.name];
     await route.fulfill({ response, json: body });
   });
-  const code = `export default host => host.registerContextView({ id: "view", title: "Widgets", mount(container) { container.textContent = "Widget fixture"; return { dispose() {}, setVisible(visible) { container.hidden = !visible; } }; } });`;
+  const code = `export default host => { for (const [index, title] of ${JSON.stringify(titles)}.entries()) host.registerContextView({ id: index ? "view-" + index : "view", title, mount(container) { const attempts = globalThis.__layoutWidgetMountAttempts ??= Object.create(null); attempts[title] = (attempts[title] ?? 0) + 1; if (${JSON.stringify(failingTitles)}.includes(title)) throw new Error("Fixture mount failed: " + title); container.textContent = "Widget fixture"; return { dispose() {}, setVisible(visible) { container.hidden = !visible; } }; } }); };`;
   const digest = createHash("sha256").update(code).digest("hex");
   const url = `/api/extensions/assets/test-widgets/${digest}/ui.js`;
   await page.route("**/api/extensions", route => route.fulfill({ json: { safeMode: false, installations: [{

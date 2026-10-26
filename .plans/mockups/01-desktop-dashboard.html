@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wolfpack dashboard — triage view</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0e0c}
+a{color:#45ed7e}a:hover{color:#8df5b1}
+.ui{font-family:-apple-system,"SF Pro Text","Geist",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.mono{font-family:ui-monospace,"SF Mono","Geist Mono",Menlo,monospace}
+.glass{background:rgba(13,17,15,.78);backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%)}
+.group{background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.07);border-radius:14px;box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 1px 2px rgba(0,0,0,.3);overflow:hidden;display:flex;flex-direction:column}
+.group.amber{background:rgba(246,195,92,.055);border-color:rgba(246,195,92,.18)}
+.rowi{display:flex;align-items:center;gap:12px;padding:12px 16px;border-top:1px solid rgba(255,255,255,.06);min-width:0}
+.rowi:first-child{border-top:none}
+.app{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-family:ui-monospace,"SF Mono","Geist Mono",monospace;font-size:14px;font-weight:600;flex:none;box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 1px 2px rgba(0,0,0,.35)}
+.app.pi{background:linear-gradient(180deg,#7a4fa8,#5c3a85);color:#f1e6ff}
+.app.cl{background:linear-gradient(180deg,#d9825a,#b4603e);color:#fff2ea}
+.name{font-size:14px;font-weight:600;color:#f2f6f3;letter-spacing:-.01em;white-space:nowrap}
+.sub{font-size:12.5px;color:#9fb0a6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sub.q{color:#f6c35c}
+.chip{font-size:11px;font-weight:500;color:#8a9b91;padding:2px 7px;border-radius:6px;background:rgba(255,255,255,.07);white-space:nowrap}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;white-space:nowrap}
+.st i{width:8px;height:8px;border-radius:50%;display:block}
+.st.need{color:#f6c35c}.st.need i{background:#f6c35c;box-shadow:0 0 0 3px rgba(246,195,92,.2)}
+.st.work{color:#45ed7e}.st.work i{background:#45ed7e}
+.st.idle{color:#8a9b91}.st.idle i{background:#58685e}
+.st.fail{color:#ff8a80}.st.fail i{background:#ff8a80}
+.meta{display:flex;gap:12px;font-size:11.5px;color:#7f9087;white-space:nowrap;overflow:hidden}
+.meta b{font-weight:500;color:#b8c6be}
+.btn{height:30px;padding:0 13px;border-radius:9px;border:none;font-family:inherit;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:6px;cursor:pointer;letter-spacing:-.005em}
+.btn.pri{background:#45ed7e;color:#06130a;box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 1px 2px rgba(0,0,0,.4)}
+.btn.tint{background:rgba(69,237,126,.14);color:#45ed7e}
+.btn.gray{background:rgba(255,255,255,.08);color:#f2f6f3}
+.btn.amber{background:rgba(246,195,92,.14);color:#f6c35c;font-family:ui-monospace,"SF Mono","Geist Mono",monospace;font-size:12.5px;padding:0 11px;height:28px}
+.btn.red{background:rgba(255,138,128,.14);color:#ff8a80}
+.btn.plain{background:transparent;color:#9fb0a6;font-weight:500}
+.ico{width:16px;height:16px;flex:none}
+.seg{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.06);gap:2px}
+.seg button{height:28px;padding:0 13px;border-radius:7px;border:none;background:transparent;font-family:inherit;font-size:13px;font-weight:500;color:#9fb0a6;display:inline-flex;align-items:center;gap:7px;cursor:pointer}
+.seg button.on{background:rgba(255,255,255,.12);color:#f2f6f3;box-shadow:0 1px 3px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.06)}
+.seg .n{font-size:11px;font-weight:600;min-width:18px;height:18px;padding:0 5px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;background:rgba(255,255,255,.1);color:#c3cfc8}
+.seg .n.a{background:#f6c35c;color:#1a1300}.seg .n.g{background:#45ed7e;color:#06130a}.seg .n.r{background:#ff8a80;color:#2a0b08}
+.sh{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#7f9087;display:flex;align-items:center;gap:8px;padding:0 4px}
+.field{height:32px;border-radius:9px;background:rgba(255,255,255,.07);display:flex;align-items:center;gap:8px;padding:0 10px;color:#7f9087;font-size:13px;box-sizing:border-box;box-shadow:inset 0 1px 0 rgba(0,0,0,.2)}
+.field input{flex:1;background:transparent;border:none;outline:none;color:#f2f6f3;font-family:inherit;font-size:13px;min-width:0}
+.kbd{font-size:10.5px;font-weight:500;padding:1px 5px;border-radius:5px;background:rgba(255,255,255,.08);color:#8a9b91}
+.chev{color:#58685e;flex:none}
+</style>
+</head>
+<body style="background:#0b0e0c;display:flex;justify-content:center;padding:24px">
+<div class="ui" style="width: 1440px; height: 900px; box-sizing: border-box; background: radial-gradient(1200px 500px at 50% -200px, rgba(69,237,126,.06), transparent 60%), #0b0e0c; color: #f2f6f3; display: flex; flex-direction: column; overflow: hidden">
+
+  <header class="glass" style="height: 52px; flex: none; display: flex; align-items: center; gap: 20px; padding: 0 20px; border-bottom: 1px solid rgba(255,255,255,.07); box-sizing: border-box">
+    <div style="display: flex; align-items: center; gap: 9px; width: 240px; flex: none">
+      <span style="width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(180deg,#2a3a30,#15201a); display: flex; align-items: center; justify-content: center; box-shadow: inset 0 1px 0 rgba(255,255,255,.1), 0 1px 2px rgba(0,0,0,.4)"><svg viewBox="0 0 24 24" fill="none" stroke="#45ed7e" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true" style="width: 17px; height: 17px"><path d="M4 4l4 5 4-2 4 2 4-5-1 9-3 3-1 4-3-2-3 2-1-4-3-3z"/><path d="M9.5 13.5h1M13.5 13.5h1"/></svg></span>
+      <span style="font-size: 14px; font-weight: 600; letter-spacing: -.01em">Wolfpack</span>
+    </div>
+    <div style="flex: 1; display: flex; justify-content: center">
+      <label class="field" style="width: 440px">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" style="width: 14px; height: 14px"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input type="text" placeholder="Search sessions, projects, commands" aria-label="Search">
+        <span class="kbd">⌘K</span>
+      </label>
+    </div>
+    <div style="display: flex; align-items: center; gap: 10px; width: 240px; justify-content: flex-end; flex: none">
+      <span class="st work" style="font-size: 12px; color: #9fb0a6"><i></i>2 machines online</span>
+      <span class="seg" style="padding: 2px">
+        <button type="button" aria-label="Notifications" style="padding: 0 8px; height: 26px"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10 21a2 2 0 0 0 4 0"/></svg></button>
+        <button type="button" aria-label="Settings" style="padding: 0 8px; height: 26px"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
+      </span>
+    </div>
+  </header>
+
+  <div style="flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 22px; padding: 28px 48px 28px; box-sizing: border-box; width: 1296px; align-self: center">
+
+    <div style="display: flex; align-items: flex-end; gap: 16px">
+      <div style="display: flex; flex-direction: column; gap: 3px">
+        <h1 style="margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.025em; line-height: 1.1">Sessions</h1>
+        <span style="font-size: 13px; color: #9fb0a6">10 across 2 machines · <span style="color: #f6c35c; font-weight: 500">2 need you</span></span>
+      </div>
+      <div style="flex: 1"></div>
+      <span class="seg">
+        <button type="button" class="on">Needs you <span class="n a">2</span></button>
+        <button type="button">Working <span class="n g">3</span></button>
+        <button type="button">Idle <span class="n">4</span></button>
+        <button type="button">Failed <span class="n r">1</span></button>
+      </span>
+      <button class="btn pri" type="button"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true" style="width: 13px; height: 13px"><path d="M12 5v14M5 12h14"/></svg>New Session</button>
+    </div>
+
+    <section style="display: flex; flex-direction: column; gap: 8px">
+      <div class="sh" style="color: #f6c35c"><i style="width: 7px; height: 7px; border-radius: 50%; background: #f6c35c; display: block"></i>Needs you</div>
+      <div class="group amber">
+        <div class="rowi">
+          <span class="app pi" aria-hidden="true">π</span>
+          <div style="display: flex; flex-direction: column; gap: 3px; width: 190px; min-width: 0"><span class="name">polybot</span><span class="meta"><span class="chip">workstation</span><span>gpt-6.1-sol</span></span></div>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px">
+            <span class="sub q mono" style="font-size: 12.5px">Allow write to crates/execution/src/limits.rs? [y/n]</span>
+            <span class="meta"><span>ctx <b>16%</b></span><span><b>$0.29</b></span><span style="color: #7fc8ff">2 files changed</span></span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px">
+            <button class="btn amber" type="button">y</button><button class="btn amber" type="button">n</button><button class="btn amber" type="button">esc</button>
+            <label class="field" style="width: 180px; height: 28px; border-radius: 8px"><input type="text" placeholder="Reply…" aria-label="Reply to polybot" style="font-size: 12.5px"></label>
+            <button class="btn tint" type="button" style="height: 28px">Open</button>
+          </div>
+          <span class="st need" style="width: 118px; justify-content: flex-end"><i></i>Waiting 2m</span>
+        </div>
+        <div class="rowi">
+          <span class="app cl" aria-hidden="true">✱</span>
+          <div style="display: flex; flex-direction: column; gap: 3px; width: 190px; min-width: 0"><span class="name">looper-ai</span><span class="meta"><span class="chip">macbook</span><span>claude · auto</span></span></div>
+          <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px">
+            <span class="sub q mono" style="font-size: 12.5px">Run `bun test` before committing 4 files? (y/n)</span>
+            <span class="meta"><span>ctx <b>41%</b></span><span><b>$1.12</b></span><span style="color: #7fc8ff">4 files changed</span></span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 6px">
+            <button class="btn amber" type="button">y</button><button class="btn amber" type="button">n</button><button class="btn amber" type="button">esc</button>
+            <label class="field" style="width: 180px; height: 28px; border-radius: 8px"><input type="text" placeholder="Reply…" aria-label="Reply to looper-ai" style="font-size: 12.5px"></label>
+            <button class="btn tint" type="button" style="height: 28px">Open</button>
+          </div>
+          <span class="st need" style="width: 118px; justify-content: flex-end"><i></i>Waiting 11m</span>
+        </div>
+      </div>
+    </section>
+
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; flex: 1; min-height: 0">
+
+      <section style="display: flex; flex-direction: column; gap: 8px; min-width: 0">
+        <div class="sh"><i style="width: 7px; height: 7px; border-radius: 50%; background: #45ed7e; display: block"></i>Workstation <span style="color: #58685e; text-transform: none; letter-spacing: 0; font-weight: 500">6 sessions</span><div style="flex: 1"></div><button class="btn plain" type="button" aria-label="New session on workstation" style="height: 22px; padding: 0 4px"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true" style="width: 13px; height: 13px"><path d="M12 5v14M5 12h14"/></svg></button></div>
+        <div class="group">
+          <div class="rowi">
+            <span class="app cl" aria-hidden="true">✱</span>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px"><span class="name">wolfpack</span><span class="sub">gh auth login for PR status · reading src/server/routes.ts</span><span class="meta"><span>claude · auto</span><span>ctx <b>62%</b></span><span><b>$2.41</b></span><span style="color: #7fc8ff">3 changed</span></span></div>
+            <span class="st work"><i></i>Working 4m</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width: 12px; height: 12px"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+          <div class="rowi">
+            <span class="app pi" aria-hidden="true">π</span>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px"><span class="name">wolfpack-3</span><span class="sub">edc review-all: 7/12 modules reviewed</span><span class="meta"><span>gpt-6-astra · high</span><span>ctx <b style="color: #f6c35c">88%</b></span><span><b>$7.24</b></span></span></div>
+            <span class="st work"><i></i>Working 13m</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width: 12px; height: 12px"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+          <div class="rowi">
+            <span class="app pi" aria-hidden="true">π</span>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px"><span class="name">warclaws</span><span class="sub">coverage notes written to docs/coverage.md</span><span class="meta"><span>gpt-6.1-sol · medium</span><span>ctx <b>11%</b></span><span><b>$0.20</b></span><span style="color: #7fc8ff">1 since review</span></span></div>
+            <span class="st idle"><i></i>Idle 1h</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width: 12px; height: 12px"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+          <div class="rowi">
+            <span class="app cl" aria-hidden="true">✱</span>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px"><span class="name">wolfpack-2</span><span class="sub">auto mode on · nothing pending</span><span class="meta"><span>claude</span><span>ctx <b>18%</b></span><span><b>$0.55</b></span><span>tree clean</span></span></div>
+            <span class="st idle"><i></i>Done 2h</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width: 12px; height: 12px"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+          <div class="rowi">
+            <span class="app pi" aria-hidden="true">π</span>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px"><span class="name">wolfpack-4</span><span class="sub">waiting for instruction</span><span class="meta"><span>gpt-6.1-sol · medium</span><span>ctx <b>18%</b></span><span><b>$0.32</b></span><span>tree clean</span></span></div>
+            <span class="st idle"><i></i>Idle 3h</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width: 12px; height: 12px"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+        </div>
+      </section>
+
+      <section style="display: flex; flex-direction: column; gap: 8px; min-width: 0">
+        <div class="sh"><i style="width: 7px; height: 7px; border-radius: 50%; background: #45ed7e; display: block"></i>MacBook <span style="color: #58685e; text-transform: none; letter-spacing: 0; font-weight: 500">4 sessions</span><div style="flex: 1"></div><button class="btn plain" type="button" aria-label="New session on macbook" style="height: 22px; padding: 0 4px"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true" style="width: 13px; height: 13px"><path d="M12 5v14M5 12h14"/></svg></button></div>
+        <div class="group">
+          <div class="rowi" style="background: rgba(255,138,128,.05)">
+            <span class="app pi" aria-hidden="true">π</span>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px"><span class="name">wolfpack-3</span><span class="sub" style="color: #ff8a80">bun: command not found — login shell PATH missing ~/.bun/bin</span><span class="meta"><span>exited 1 · 6m ago</span></span></div>
+            <button class="btn gray" type="button" style="height: 26px; font-size: 12px">Restart</button>
+            <button class="btn plain" type="button" style="height: 26px; font-size: 12px">Log</button>
+            <span class="st fail"><i></i>Failed</span>
+          </div>
+          <div class="rowi">
+            <span class="app pi" aria-hidden="true">π</span>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px"><span class="name">wolfpack-2</span><span class="sub">edc review-all: running tests in src/task-relay</span><span class="meta"><span>gpt-6.1-sol · high</span><span>ctx <b>34%</b></span><span><b>$1.80</b></span><span>tree clean</span></span></div>
+            <span class="st work"><i></i>Working 13m</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width: 12px; height: 12px"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+          <div class="rowi">
+            <span class="app cl" aria-hidden="true">✱</span>
+            <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px"><span class="name">wolfpack</span><span class="sub">auto mode on · shift+tab to cycle</span><span class="meta"><span>claude</span><span>ctx <b>9%</b></span><span><b>$0.08</b></span><span>tree clean</span></span></div>
+            <span class="st idle"><i></i>Idle 40m</span><svg class="ico chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width: 12px; height: 12px"><path d="m9 6 6 6-6 6"/></svg>
+          </div>
+        </div>
+        <div style="margin-top: 8px; display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 12px; border: 1px dashed rgba(255,255,255,.1); color: #7f9087; font-size: 12.5px">
+          <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" style="width: 14px; height: 14px"><path d="M12 5v14M5 12h14"/></svg>Drop a session here to move it to MacBook
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+</body>
+</html>

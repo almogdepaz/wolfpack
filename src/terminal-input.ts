@@ -83,6 +83,12 @@ export interface TerminalKeydownDedupeEvent {
   readonly keyCode: number;
 }
 
+/** Native back-tab correction only; leave modifiers/IME and key-up to the browser/library. */
+export function shouldInterceptBacktab(event: TerminalKeydownDedupeEvent & { readonly type: string; readonly shiftKey: boolean }): boolean {
+  return event.type === "keydown" && event.key === "Tab" && event.shiftKey
+    && !event.ctrlKey && !event.altKey && !event.metaKey && !event.isComposing && event.keyCode !== 229;
+}
+
 export function terminalDataFromKeydownForBeforeInputDedupe(event: TerminalKeydownDedupeEvent): string | null {
   if (event.isComposing || event.keyCode === 229) return null;
   if (!(event.ctrlKey && !event.altKey) && !(event.altKey && !event.ctrlKey) && !event.metaKey && event.key.length === 1) {

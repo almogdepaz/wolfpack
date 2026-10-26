@@ -615,7 +615,7 @@ test("retains a disabled verified peer with separate handshake and session-servi
 
   await expect(visibleMachineGroup(page, peerIdentity)).toHaveClass(/offline/);
   await expect(visibleMachineGroup(page, peerIdentity).getByRole("button", { name: "Start a session on verified peer" })).toBeDisabled();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await openSettingsFromUi(page);
   await expect(page.locator("#machines-list .machine-item")).toHaveCount(1);
   await expect(page.locator("#machines-list .machine-item .dot")).toHaveAttribute("title", "Handshake verified; sessions: Server unavailable");
   await page.locator(testInfo.project.name === "desktop" ? "#settings-back-btn" : "#back-btn").click();
@@ -684,7 +684,7 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
   await expect(peerGroup).not.toHaveClass(/offline/);
   await expect.poll(() => peerSessionRequests).toBeGreaterThan(0);
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await openSettingsFromUi(page);
   const enumerationFailures = [
     { mode: "transport-failure", status: /failed/i },
     { mode: "malformed-envelope", status: "tailnet candidate enumeration response is malformed" },
@@ -693,7 +693,7 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
   for (const failure of enumerationFailures) {
     candidateMode = failure.mode;
     const requestsBeforeFailure = peerSessionRequests;
-    await page.getByRole("button", { name: "Discover Tailnet" }).click();
+    await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet" }).click();
     await expect(page.locator("#discover-status")).toContainText(failure.status);
     await expect(page.locator("#machines-list .dot")).toHaveAttribute("title", "tailnet candidate enumeration unavailable");
     await expect(peerGroup).toHaveClass(/offline/);
@@ -706,7 +706,7 @@ test("revokes a stale peer after candidate enumeration failures and recovers its
     expect(peerSessionRequests).toBe(requestsAfterRevocation);
 
     candidateMode = "valid";
-    await page.getByRole("button", { name: "Discover Tailnet" }).click();
+    await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet" }).click();
     await expect(peerGroup).toHaveCount(1);
     await expect(peerGroup).not.toHaveClass(/offline/);
     await expect.poll(() => peerSessionRequests).toBeGreaterThan(requestsAfterRevocation);
@@ -781,8 +781,8 @@ test("serializes queued manual discovery before revoking a peer", async ({ page 
   await expect(peerGroup).not.toHaveClass(/offline/);
   await expect.poll(() => peerSessionRequests).toBeGreaterThan(0);
 
-  await page.getByRole("button", { name: "Settings" }).click();
-  const discoverButton = page.getByRole("button", { name: "Discover Tailnet" });
+  await openSettingsFromUi(page);
+  const discoverButton = page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet" });
   const candidateRequestsBeforeRefresh = candidateRequests;
   holdNextHandshake = true;
   await discoverButton.click();
@@ -866,13 +866,13 @@ test("does not let a stale session response restore a peer revoked by a newer re
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await openSettingsFromUi(page);
   holdSessionResponse = true;
-  await page.getByRole("button", { name: "Discover Tailnet" }).click();
+  await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet" }).click();
   await expect.poll(() => staleSessionRequestStarted).toBe(true);
 
   candidateMode = "error";
-  await page.getByRole("button", { name: "Discover Tailnet" }).click();
+  await page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet" }).click();
   await expect(page.locator("#discover-status")).toContainText("newer enumeration failed");
   releaseStaleSessionResponse();
   await expect(peerGroup).toHaveClass(/offline/);
@@ -937,8 +937,8 @@ test("coalesces repeated manual discovery after a failed probe", async ({ page }
   await expect(peerGroup).toBeVisible();
   await expect(peerGroup).not.toHaveClass(/offline/);
 
-  await page.getByRole("button", { name: "Settings" }).click();
-  const discoverButton = page.getByRole("button", { name: "Discover Tailnet" });
+  await openSettingsFromUi(page);
+  const discoverButton = page.locator("#settings-view").getByRole("button", { name: "Discover Tailnet" });
   const candidateRequestsBeforeRefresh = candidateRequests;
   holdOlderProbe = true;
   await discoverButton.click();
@@ -1128,7 +1128,7 @@ test("enrolls notifications once on the home origin without per-machine setup re
 
   await page.goto(server.baseUrl);
   await expect(visibleMachineGroup(page, peerIdentity)).toBeVisible();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await openSettingsFromUi(page);
 
   await expect(page.getByRole("button", { name: /Set up notifications on/ })).toHaveCount(0);
   const homePushRequests: string[] = [];

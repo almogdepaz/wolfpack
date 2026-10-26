@@ -131,6 +131,7 @@ test("selected-host browser component isolates same-UUID remote bundles and reus
   const script = readFileSync(join(output, "host.js"));
   const ids = { a: "11111111-1111-4111-8111-111111111111", b: "33333333-3333-4333-8333-333333333333" };
   const assets = { a: 0, b: 0 }, catalogs = { a: 0, b: 0 }, bytes = { a: 0, b: 0 };
+  let enabledA = true;
   const bundles = Object.fromEntries((["a", "b"] as const).map(key => [key, Buffer.from(`
     globalThis.bundleEvaluations = (globalThis.bundleEvaluations || 0) + 1;
     export default host => { host.registerContextView({ id: 'view', title: 'Notes', mount(root, context) {
@@ -145,6 +146,7 @@ test("selected-host browser component isolates same-UUID remote bundles and reus
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (url.pathname === "/host.js") { response.writeHead(200, { "Content-Type": "text/javascript" }); response.end(script); return; }
+    if (url.pathname === "/fixture/disable-a" || url.pathname === "/fixture/enable-a") { enabledA = url.pathname.endsWith("/enable-a"); response.end("ok"); return; }
     if (url.pathname.startsWith("/api/extensions")) {
       response.setHeader("Cache-Control", "no-store");
       response.setHeader("Content-Type", "application/json");
@@ -155,18 +157,18 @@ test("selected-host browser component isolates same-UUID remote bundles and reus
       const packageDigest = (key === "a" ? "a" : "c").repeat(64);
       if (parts[5] === "catalog") {
         catalogs[key]++;
-        response.end(JSON.stringify({ safeMode: false, installations: [{ installationId: ids[key], extensionId: "notes", enabled: true, package: { name: `remote-only-notes-${key}`, version: "1.0.0", digest: packageDigest }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/notes/${packageDigest}/dist/ui.js`, digest, mime: "text/javascript" }, documents: [{ id: "context", schemaVersion: 1 }] }] })); return;
+        response.end(JSON.stringify({ safeMode: false, installations: [{ installationId: ids[key], extensionId: "notes", enabled: key !== "a" || enabledA, package: { name: `remote-only-notes-${key}`, version: "1.0.0", digest: packageDigest }, ui: { path: "dist/ui.js", url: `/api/extensions/assets/notes/${packageDigest}/dist/ui.js`, digest, mime: "text/javascript" }, documents: [{ id: "context", schemaVersion: 1 }] }] })); return;
       }
       if (parts[5] === "assets") { assets[key]++; bytes[key] += bundles[key].length; response.setHeader("Content-Type", "text/javascript"); response.setHeader("X-Wolfpack-Extension-Digest", digest); response.end(bundles[key]); return; }
       if (parts[5] === "documents") { response.end(JSON.stringify({ installationId: ids[key], scopeSessionId: url.searchParams.get("session"), extensionId: "notes", documentId: "context", revision: 1, document: `document ${key}` })); return; }
       response.writeHead(404); response.end("{}"); return;
     }
     response.writeHead(200, { "Content-Type": "text/html", "Content-Security-Policy": "default-src 'self'; script-src 'self' 'nonce-host' blob:; connect-src 'self'; object-src 'none'" });
-    response.end(`<body><input aria-label="Terminal input"><button id="a">Select A</button><button id="b">Select B</button><button id="local">Select local</button><output id="ready">local</output><div id="widgets"></div>
+    response.end(`<body><input aria-label="Terminal input"><button id="a">Select A</button><button id="b">Select B</button><button id="local">Select local</button><button id="unavailable">Mark A unavailable</button><output id="ready">local</output><div id="widgets"></div>
       <dialog id="app-dialog"><form id="app-dialog-form"><h2 id="app-dialog-title"></h2><p id="app-dialog-message"></p><div id="app-dialog-fields"></div><button id="app-dialog-cancel" type="button"></button><button id="app-dialog-confirm" type="submit"></button></form></dialog>
-      <script type="module" nonce="host">import { ExtensionHost } from '/host.js'; const ids = ${JSON.stringify(ids)}; let scope = {sessionId:'22222222-2222-4222-8222-222222222222'}; window.switchMeasurements = [];
-      const host = new ExtensionHost({container:document.querySelector('#widgets'), scope:() => scope, resolvePeer:machine => ({identity:machine, status:'ready', origin:'https://' + machine.split(':')[0] + '.example.ts.net', displayName:machine.split(':')[0]})});
-      for (const key of ['a','b','local']) document.querySelector('#' + key).onclick = async () => { const start = performance.now(); scope = key === 'local' ? {sessionId:scope.sessionId} : {sessionId:scope.sessionId, machine:'node-' + key + ':' + ids[key]}; document.querySelector('#ready').textContent='loading'; await host.refresh(); host.select(); window.switchMeasurements.push({target:key, milliseconds:performance.now()-start}); document.querySelector('#ready').textContent=key; }; await host.refresh();</script></body>`);
+      <script type="module" nonce="host">import { ExtensionHost } from '/host.js'; const ids = ${JSON.stringify(ids)}; let scope = {sessionId:'22222222-2222-4222-8222-222222222222'}; let unavailableA = false; window.switchMeasurements = [];
+      const host = new ExtensionHost({container:document.querySelector('#widgets'), scope:() => scope, resolvePeer:machine => ({identity:machine, status:unavailableA && machine.startsWith('node-a:') ? 'unavailable' : 'ready', origin:'https://' + machine.split(':')[0] + '.example.ts.net', displayName:machine.split(':')[0]})});
+      for (const key of ['a','b','local']) document.querySelector('#' + key).onclick = async () => { const start = performance.now(); if (key === 'a') unavailableA = false; scope = key === 'local' ? {sessionId:scope.sessionId} : {sessionId:scope.sessionId, machine:'node-' + key + ':' + ids[key]}; document.querySelector('#ready').textContent='loading'; await host.refresh(); host.select(); window.switchMeasurements.push({target:key, milliseconds:performance.now()-start}); document.querySelector('#ready').textContent=key; }; document.querySelector('#unavailable').onclick = async () => { unavailableA = true; scope = {...scope, unavailable:'Peer unavailable'}; await host.refresh(); document.querySelector('#ready').textContent='unavailable'; }; await host.refresh();</script></body>`);
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
@@ -196,6 +198,35 @@ test("selected-host browser component isolates same-UUID remote bundles and reus
     await expect(page.locator("#ready")).toHaveText("local"); await expect(page.getByRole("textbox", { name: "Widget draft" })).toHaveCount(0);
     await page.getByRole("textbox", { name: "Terminal input" }).fill("still usable");
     await expect(page.getByRole("textbox", { name: "Terminal input" })).toHaveValue("still usable");
+    // A real page reload creates a new host/transport; the exact approved
+    // inventory should load without another trust dialog or executable broadening.
+    await page.reload();
+    await page.getByRole("button", { name: "Select A", exact: true }).click();
+    await expect(page.locator("#ready")).toHaveText("a");
+    await expect(page.getByRole("dialog")).not.toBeVisible();
+    await expect(page.locator('[data-document="a"]')).toHaveText("document a");
+    await expect(page.getByRole("textbox", { name: "Widget draft" })).toHaveValue("draft a");
+    expect(assets).toEqual({ a: 2, b: 1 });
+    const hasAConsent = () => page.evaluate(() => (JSON.parse(localStorage.getItem('wp-extension-code-consent:v1') ?? '[]') as [string, string][]).some(([machine]) => machine.startsWith('node-a:')));
+    await page.request.get(new URL('/fixture/disable-a', page.url()).href);
+    await page.getByRole('button', { name: 'Select A', exact: true }).click();
+    await expect(page.locator('#ready')).toHaveText('a');
+    await expect(page.locator('[data-document="a"]')).toHaveCount(0);
+    await expect(page.getByRole('dialog')).not.toBeVisible();
+    expect(await hasAConsent()).toBe(false);
+    await page.reload(); // No-UI invalidation must survive a new host/transport.
+    await page.request.get(new URL('/fixture/enable-a', page.url()).href);
+    await page.getByRole('button', { name: 'Select A', exact: true }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.getByRole('button', { name: 'Trust this inventory', exact: true }).click();
+    await expect(page.locator('[data-document="a"]')).toHaveText('document a');
+    await page.getByRole('button', { name: 'Mark A unavailable', exact: true }).click();
+    await expect(page.locator('#ready')).toHaveText('unavailable');
+    expect(await hasAConsent()).toBe(false);
+    await page.getByRole('button', { name: 'Select A', exact: true }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.getByRole('button', { name: 'Trust this inventory', exact: true }).click();
+    await expect(page.locator('[data-document="a"]')).toHaveText('document a');
     const receipt = test.info().outputPath("component-cold-warm-counts.json");
     writeFileSync(receipt, JSON.stringify({ boundary: "browser host plus gateway fixture, NOT installed-runtime proxy acceptance", assets, catalogs, bytes, measurements: await page.evaluate(() => (window as unknown as { switchMeasurements: unknown }).switchMeasurements) }, null, 2));
     await test.info().attach("component-cold-warm-counts", { path: receipt, contentType: "application/json" });

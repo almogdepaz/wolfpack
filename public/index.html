@@ -41,7 +41,7 @@
     <script defer src="/app.bundle.js?v=__WOLFPACK_ASSET_VERSION__"></script>
   </head>
   <body>
-    <header>
+    <header class="glass">
       <div class="header-left">
         <button class="back-btn" id="back-btn" type="button">← Back</button>
         <button id="session-chip" type="button" aria-label="Switch session" aria-expanded="false" aria-controls="session-drawer"><span id="chip-label"></span><span class="chip-chevron" aria-hidden="true">&#9660;</span><span class="chip-handle" aria-hidden="true"></span></button>
@@ -49,19 +49,19 @@
       <div class="header-center" id="header-center">
         <div class="flex-row">
           <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
-          <h1 id="header-title">wolfpack</h1>
+          <h1 id="header-title">Wolfpack</h1>
         </div>
       </div>
       <div class="header-right">
         <div id="header-machine-label" class="machine-label"></div>
-        <button id="workspace-restore" class="settings-gear icon-btn" type="button" aria-expanded="false" aria-controls="workspace-context-region" aria-label="Widgets" title="Widgets" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
+        <button id="workspace-restore" class="settings-gear icon-btn" type="button" aria-expanded="false" aria-controls="workspace-context-region" aria-label="Changes" title="Changes and context" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
         <button class="settings-gear icon-btn" id="gear-btn" type="button" aria-label="Settings" title="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
       </div>
     </header>
     <nav id="desktop-sidebar" class="collapsed" aria-label="Sessions" aria-hidden="true" inert>
       <div class="sidebar-header">
         <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
-        <h1>WOLFPACK</h1>
+        <h1>Wolfpack</h1>
         <div class="sidebar-controls">
           <button id="workspace-sessions-drag" data-dock-handle=":sessions" type="button" aria-label="Move Sessions" aria-describedby="workspace-dock-help" title="Drag Sessions to dock" hidden><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18M8 7l4-4 4 4M8 17l4 4 4-4M7 8l-4 4 4 4M17 8l4 4-4 4"/></svg></button>
           <button id="sidebar-settings-btn" type="button" title="Settings" aria-label="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
@@ -69,13 +69,13 @@
           <button id="sidebar-collapse-btn" type="button" title="Pin sidebar" aria-label="Pin sidebar"><span class="pin-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 6 6M14 3l7 7-4 1-4 4-1 4-7-7 4-1 4-4 1-4ZM5 19l4-4"/></svg></span></button>
         </div>
       </div>
+      <label class="session-search sidebar-search"><input id="sidebar-search" type="search" placeholder="Filter sessions" aria-label="Filter sessions"></label>
       <div id="sidebar-session-controls" class="session-chooser-controls" hidden><div id="sidebar-session-filter"></div></div>
       <div id="sidebar-session-list" class="sidebar-sessions"></div>
     </nav>
     <script src="/sidebar-bootstrap.js?v=__WOLFPACK_ASSET_VERSION__"></script>
     <div id="sidebar-hover-edge" aria-hidden="true"></div>
     <div id="drawer-backdrop" aria-hidden="true"></div>
-    <div id="git-status-overlay" role="dialog" aria-modal="true" aria-label="Session status" aria-hidden="true" tabindex="-1"></div>
     <nav id="session-drawer" aria-label="Switch session" aria-hidden="true" inert>
       <div id="drawer-list" role="list"></div>
     </nav>
@@ -122,17 +122,24 @@
       <div id="expanded-toolbar">
         <div class="flex-row">
           <img src="/wolfpack-icon.svg" alt="" class="wolfpack-icon">
-          <h1 class="expanded-title">WOLFPACK</h1>
+          <h1 class="expanded-title">Wolfpack</h1>
         </div>
+        <label class="session-search"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input id="dashboard-search" type="search" placeholder="Search sessions" aria-label="Search sessions"><kbd>⌘K</kbd></label>
         <div class="expanded-controls">
+          <span id="online-machine-count"></span>
+          <button id="expanded-notifications" type="button" title="Notifications" aria-label="Notifications"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10 21h4"/></svg></button>
           <button id="expanded-settings-btn" type="button" title="Settings" aria-label="Settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg></button>
           <button id="expanded-collapse-btn" type="button" title="Collapse sessions" aria-label="Collapse sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 9-5-5M4 9V4h5M15 9l5-5M15 4h5v5M9 15l-5 5M4 15v5h5M15 15l5 5M20 15v5h-5"/></svg></button>
         </div>
       </div>
-      <div id="session-dashboard-controls" class="session-chooser-controls"><div id="dashboard-session-filter"></div></div>
+      <div id="session-dashboard-controls" class="session-chooser-controls">
+        <div class="session-heading"><h1 class="visually-hidden">Sessions</h1><p id="session-summary"></p></div>
+        <div id="dashboard-session-filter"></div>
+        <details class="mobile-session-search"><summary aria-label="Search sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg></summary><label class="session-search"><input type="search" id="mobile-search" aria-label="Search sessions" placeholder="Search sessions"></label></details>
+      </div>
       <div id="session-list" class="list"></div>
     </div>
-    <p id="session-order-instructions" class="visually-hidden">Drag the card to reorder it, or press Alt with an up or down arrow.</p>
+    <p id="session-order-instructions" class="visually-hidden">Drag the card to reorder it within its attention tier, or press Alt with an up or down arrow. Delegation trees move together.</p>
     <div id="session-order-status" class="visually-hidden" role="status" aria-live="polite"></div>
 
     <!-- Project picker view -->
@@ -284,15 +291,16 @@
             <div id="notification-setting-status" class="notification-setting-status" role="status" aria-live="polite"></div>
           </div>
           <div class="quiet-alert-setting">
-            <div class="settings-sub-heading">Automatic quiet alerts</div>
-            <p class="quiet-alert-setting-help">Host-wide. Alerts follow new rendered terminal activity after a continuous quiet interval; they do not signal completion.</p>
+            <div class="settings-sub-heading">Automatic idle alerts</div>
+            <p class="quiet-alert-setting-help">Host-wide. Needs input only alerts when the program waits on you. All modes follow new rendered terminal activity after a continuous idle interval; they do not signal completion.</p>
             <label class="settings-toggle" for="setting-quiet-alert-mode">Mode
               <select id="setting-quiet-alert-mode">
-                <option value="quiet-after-activity">After rendered activity becomes quiet</option>
+                <option value="needs-input-only">Needs input only</option>
+                <option value="quiet-after-activity">After rendered activity becomes idle</option>
                 <option value="disabled">Disabled</option>
               </select>
             </label>
-            <label class="settings-toggle" for="setting-quiet-alert-duration">Quiet duration (seconds)
+            <label class="settings-toggle" for="setting-quiet-alert-duration">Idle duration (seconds)
               <input id="setting-quiet-alert-duration" type="number" min="5" max="3600" step="1" inputmode="numeric" aria-describedby="quiet-alert-setting-status">
             </label>
             <div id="quiet-alert-setting-status" class="notification-setting-status" role="status" aria-live="polite"></div>
@@ -413,14 +421,6 @@
 
     <!-- Terminal view -->
     <div id="terminal-view" class="view" role="region" aria-label="Terminal" aria-hidden="true" inert>
-      <dialog id="terminal-transcript-dialog" class="terminal-transcript-dialog" aria-labelledby="terminal-transcript-title">
-        <div class="terminal-transcript-header">
-          <h2 id="terminal-transcript-title">Session transcript</h2>
-          <button id="terminal-transcript-close" type="button" aria-label="Close transcript">close</button>
-        </div>
-        <div id="terminal-transcript-status" role="status" aria-live="polite"></div>
-        <pre id="terminal-transcript-output" role="log" aria-live="off" tabindex="0"></pre>
-      </dialog>
       <div
         id="conn-status"
         class="conn-status"
@@ -450,8 +450,13 @@
         <div id="delegation-collapsed-strip" class="delegation-collapsed-strip" aria-label="Collapsed sessions"></div>
         <div id="delegation-grid-container"></div>
       </section>
+      <section id="needs-input-banner" aria-label="Session needs input" hidden>
+        <span id="needs-input-prompt"></span>
+        <div class="needs-input-actions"><button type="button" data-reply-key="y">y</button><button type="button" data-reply-key="n">n</button><button type="button" data-reply-key="Escape">esc</button><button type="button" id="reply-in-terminal">Reply in terminal</button></div>
+      </section>
       <div id="desktop-terminal-container"></div>
       <div id="desktop-grid-container"></div>
+      <div id="terminal-footer"><span id="terminal-footer-session"></span><span id="terminal-footer-connection"></span></div>
       <div id="cmd-palette"></div>
       <div id="kb-accessory">
         <button class="kb-key kb-enter" type="button" data-key="Enter" aria-label="Enter">&#9166;</button>
@@ -460,8 +465,7 @@
         <button class="kb-key" type="button" data-key="Down" aria-label="Arrow down">&#9660;</button>
         <button class="kb-key" type="button" data-key="Left" aria-label="Arrow left">&#9664;</button>
         <button class="kb-key" type="button" data-key="Right" aria-label="Arrow right">&#9654;</button>
-        <button class="kb-key kb-git" type="button" aria-label="Show git status">git</button>
-        <button class="kb-key kb-copy" type="button" aria-label="Copy session">copy</button>
+        <button class="kb-key" type="button" data-key="C-c" aria-label="Control C">^C</button>
         <button class="kb-key kb-open" id="kb-open-btn" type="button" aria-label="Show keyboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="14" rx="2.5"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/><line x1="6" y1="12" x2="6.01" y2="12"/><line x1="10" y1="12" x2="10.01" y2="12"/><line x1="14" y1="12" x2="14.01" y2="12"/><line x1="18" y1="12" x2="18.01" y2="12"/><line x1="8" y1="16" x2="16" y2="16"/></svg></button>
       </div>
         </main>
@@ -482,6 +486,12 @@
     </div>
 
     </main><!-- /view-container -->
+    <div id="mobile-discover-status" class="discover-status" role="status" aria-live="polite" hidden></div>
+    <nav id="mobile-tab-bar" aria-label="Main navigation">
+      <button type="button" id="mobile-sessions"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></svg>Sessions</button>
+      <button type="button" id="mobile-discover" aria-label="Discover Tailnet" aria-describedby="mobile-discover-status" aria-busy="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><path d="m12 12 7-7"/></svg>Discover</button>
+      <a id="mobile-settings" href="#settings-terminal"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10m4 0h2M4 17h2m4 0h10M14 4v6M6 14v6"/></svg>Settings</a>
+    </nav>
 
   </body>
 </html>

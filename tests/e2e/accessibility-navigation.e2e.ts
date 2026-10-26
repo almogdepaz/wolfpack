@@ -37,9 +37,9 @@ test("only the active view participates in keyboard focus", async ({ page }) => 
 });
 
 test("mobile settings moves focus into the view and restores its trigger", async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name === "desktop", "mobile header focus contract");
+  test.skip(testInfo.project.name === "desktop", "mobile navigation focus contract");
 
-  const settings = page.locator("#gear-btn");
+  const settings = page.locator("#mobile-settings");
   await settings.focus();
   await settings.press("Enter");
 
@@ -56,7 +56,7 @@ test("mobile magnification and larger terminal type remain available", async ({ 
   expect(viewport).not.toContain("user-scalable=no");
   expect(viewport).not.toContain("maximum-scale=1");
 
-  await page.locator("#gear-btn").click();
+  await page.locator("#mobile-settings").click();
   await expect(page.getByRole("button", { name: "Extra large 18px" })).toBeVisible();
 });
 

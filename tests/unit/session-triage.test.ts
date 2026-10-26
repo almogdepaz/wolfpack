@@ -1,0 +1,80 @@
+import { expect, test } from "bun:test";
+import { projectDelegationSessions } from "../../public/delegation-sessions";
+import { orderTriageSessionRows } from "../../public/session-triage";
+import type { SessionOrderIdentity } from "../../public/session-order";
+
+function session(name: string, state: string, at?: string, parent?: string) {
+  return {
+    name, identity: { wolfpackSessionId: name, ...(parent ? { parentSession: { wolfpackSessionId: parent, wolfpackSessionName: parent } } : {}) },
+    runtimeState: { state, authority: "manifest", source: "local-manifest", freshness: "fresh", stale: false, changedAt: at },
+    activity: { lastRenderedActivityAt: at },
+  };
+}
+const older = "2026-10-20T10:00:00Z";
+const newer = "2026-10-20T11:00:00Z";
+function order(sessions: ReturnType<typeof session>[], manual: string[] = []) {
+  return orderTriageSessionRows(projectDelegationSessions(sessions), manual.map(sessionId => ({ machineUrl: "", sessionId })), "").map(row => row.session.name);
+}
+
+test("automatic need age, fail, work and idle recency order without manual positions", () => {
+  const sessions = [session("idle-old", "idle", older), session("work-old", "working", older), session("need-new", "needs-input", newer), session("fail", "failed"), session("idle-new", "done", newer), session("work-new", "working", newer), session("need-old", "needs-input", older), session("work-tie", "working", newer)];
+  expect(order(sessions)).toEqual(["need-old", "need-new", "fail", "work-new", "work-tie", "work-old", "idle-new", "idle-old"]);
+});
+test("manual order wins within a tier, including absent or invalid timestamps", () => {
+  const sessions = [session("a", "working"), session("b", "working", "invalid"), session("c", "working")];
+  expect(order(sessions, ["c", "a", "b"])).toEqual(["c", "a", "b"]);
+});
+test("waiting age uses runtime transition, not newer output or prompt text", () => {
+  const a = { ...session("a", "needs-input", older), activity: { lastRenderedActivityAt: newer }, lastLine: "working" };
+  const b = { ...session("b", "needs-input", newer), activity: { lastRenderedActivityAt: older }, lastLine: "failed" };
+  expect(order([b, a])).toEqual(["a", "b"]);
+});
+test("delegation stays contiguous, with triage applied to roots and siblings", () => {
+  const sessions = [session("root", "working"), session("child-idle", "idle", undefined, "root"), session("child-need", "needs-input", older, "root"), session("solo", "needs-input", newer)];
+  expect(order(sessions)).toEqual(["root", "child-need", "child-idle", "solo"]);
+});
+test("work recency uses rendered activity rather than runtime state transition", () => {
+  const a = { ...session("a", "working", newer), activity: { lastRenderedActivityAt: older } };
+  const b = { ...session("b", "working", older), activity: { lastRenderedActivityAt: newer } };
+  expect(order([a, b])).toEqual(["b", "a"]);
+});
+test("A1 manual positions outrank recency only within their automatic tier", () => {
+  const sessions = [session("older-work", "working", older), session("newer-work", "working", newer), session("need", "needs-input", newer), session("idle", "idle", newer)];
+  expect(order(sessions, ["idle", "older-work", "newer-work", "need"])).toEqual(["need", "older-work", "newer-work", "idle"]);
+});
+test("A1 recency orders only rows without manual positions, including new sessions", () => {
+  const sessions = [session("manual", "working", older), session("unpositioned-old", "working", older), session("unpositioned-new", "working", newer)];
+  expect(order(sessions, ["manual"])).toEqual(["manual", "unpositioned-new", "unpositioned-old"]);
+});
+test("sparse manual slots preserve drop position while untouched siblings follow activity", () => {
+  const sessions = [session("a", "working", newer), session("b", "working", older), session("c", "working", older), session("need", "needs-input", older)];
+  const stored: SessionOrderIdentity[] = [{ machineUrl: "", sessionId: "a", position: 1 }];
+  const render = () => orderTriageSessionRows(projectDelegationSessions(sessions), stored, "").map(row => row.session.name);
+  expect(render()).toEqual(["need", "b", "a", "c"]);
+  sessions[2] = session("c", "working", newer);
+  expect(render()).toEqual(["need", "c", "a", "b"]);
+});
+test("sparse positions are bounded and deterministic when tier changes collide", () => {
+  const sessions = [session("a", "working", newer), session("b", "working", older), session("c", "working", older)];
+  const stored: SessionOrderIdentity[] = [{ machineUrl: "", sessionId: "a", position: 50 }, { machineUrl: "", sessionId: "b", position: 50 }];
+  expect(orderTriageSessionRows(projectDelegationSessions(sessions), stored, "").map(row => row.session.name)).toEqual(["b", "c", "a"]);
+});
+test("N-A2 identityless rows retain tier and age rank alongside identified rows", () => {
+  const { identity: _identity, ...legacy } = session("legacy-need", "needs-input", older);
+  const rows = projectDelegationSessions([session("known-need", "needs-input", newer), session("worker", "working", newer), legacy]);
+  expect(orderTriageSessionRows(rows, [], "").map(row => row.session.name)).toEqual(["legacy-need", "known-need", "worker"]);
+});
+test("N-A3 a work placement is ignored after the row becomes a newer waiter", () => {
+  const placement = { machineUrl: "", sessionId: "placed", position: 1, tier: "work" as const };
+  const sessions = [session("placed", "needs-input", "2026-10-20T12:00:00Z"), session("need-old", "needs-input", older), session("need-new", "needs-input", newer)];
+  expect(orderTriageSessionRows(projectDelegationSessions(sessions), [placement], "").map(row => row.session.name)).toEqual(["need-old", "need-new", "placed"]);
+});
+test("N-A3 a subtree tier change ignores its root's old manual scope", () => {
+  const sessions = [session("root", "working", newer), session("child", "needs-input", newer, "root"), session("older-waiter", "needs-input", older)];
+  const placement: SessionOrderIdentity = { machineUrl: "", sessionId: "root", position: 0, tier: "work" };
+  expect(orderTriageSessionRows(projectDelegationSessions(sessions), [placement], "").map(row => row.session.name)).toEqual(["older-waiter", "root", "child"]);
+});
+test("A3 an urgent grandchild ranks the entire tree ahead of work without losing adjacency", () => {
+  const sessions = [session("worker", "working", newer), session("parent", "idle", older), session("child", "idle", older, "parent"), session("grandchild", "needs-input", older, "child")];
+  expect(order(sessions)).toEqual(["parent", "child", "grandchild", "worker"]);
+});

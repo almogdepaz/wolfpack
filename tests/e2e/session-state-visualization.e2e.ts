@@ -391,23 +391,23 @@ test("removes attention controls and unseen decoration", async ({ page }) => {
 test("shows semantic labels only for source-backed runtime state", async ({ page }) => {
   await page.goto(server.baseUrl);
 
-  const cardBadge = (name: string) => page
+  const cardBadge = (name: string) => page.locator('.card[data-session-order-id]')
     .getByRole("button", { name: `Open ${name}` })
     .locator("xpath=..")
-    .locator(".triage-badge");
+    .locator(".status");
 
-  await expect(cardBadge("unproven")).toHaveText("quiet");
-  await expect(cardBadge("structured")).toHaveText("needs input");
-  await expect(cardBadge("active-output")).toHaveText("output");
-  await expect(cardBadge("program-blocked")).toHaveText("needs input");
+  await expect(cardBadge("unproven")).toHaveText("Quiet");
+  await expect(cardBadge("structured")).toHaveText("Needs input");
+  await expect(cardBadge("active-output")).toHaveText("Output");
+  await expect(cardBadge("program-blocked")).toHaveText("Needs input");
 });
 
 test("shows only review changes in session activity lines", async ({ page }) => {
   await page.goto(server.baseUrl);
 
-  const card = (name: string) => page.getByRole("button", { name: `Open ${name}` }).locator("xpath=..");
+  const card = (name: string) => page.locator('.card[data-session-order-id]').getByRole("button", { name: `Open ${name}` }).locator("xpath=..");
   await expect(card("active-output").locator(".session-activity")).toHaveText("changed since review");
-  await expect(card("active-output").locator(".session-activity")).toHaveCSS("color", "rgb(102, 204, 255)");
+  await expect(card("active-output").locator(".session-activity")).toHaveCSS("color", "rgb(127, 200, 255)");
   await expect(card("structured").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("unproven").locator(".session-activity")).toHaveText("changed since review");
   await expect(card("unobserved").locator(".session-activity")).toHaveText("changed since review");
@@ -476,7 +476,7 @@ test("opening a terminal clears its acknowledged review change after websocket o
   });
   await page.goto(server.baseUrl);
 
-  const card = page.getByRole("button", { name: "Open structured" }).locator("xpath=..");
+  const card = page.locator('.card[data-session-order-id]').getByRole("button", { name: "Open structured" }).locator("xpath=..");
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
   expect(acknowledgements).toEqual([]);
   await card.click();
@@ -552,7 +552,7 @@ test("a delayed acknowledgement cannot clobber a newer runtime transition", asyn
   });
   await page.goto(server.baseUrl);
 
-  const card = page.getByRole("button", { name: "Open structured" }).locator("xpath=..");
+  const card = page.locator('.card[data-session-order-id]').getByRole("button", { name: "Open structured" }).locator("xpath=..");
   expect(acknowledgements).toEqual([]);
   await card.click();
   await websocket.firstSocket;
@@ -572,11 +572,13 @@ test("a delayed acknowledgement cannot clobber a newer runtime transition", asyn
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   }
   await refreshResponse;
-  await expect(card.locator(".triage-badge")).toHaveText("output");
+  const badge = card.locator(mobileLayout ? ".status" : ".triage-badge");
+  const outputLabel = mobileLayout ? "Output" : "output";
+  await expect(badge).toHaveText(outputLabel);
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
 
   acknowledgeResponseSent?.();
-  await expect(card.locator(".triage-badge")).toHaveText("output");
+  await expect(badge).toHaveText(outputLabel);
   await expect(card.locator(".session-activity")).toHaveText("changed since review");
 
   if (!mobileLayout) {

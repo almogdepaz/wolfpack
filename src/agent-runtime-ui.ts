@@ -81,6 +81,22 @@ export function sessionRuntimeState(input: SessionRuntimeUiInput): AgentStatusSt
   return input.triage === "running" ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE;
 }
 
+export type SessionTier = "need" | "work" | "idle" | "fail";
+
+/** Presentation grouping only; semantic authority remains in sessionRuntimeState. */
+export function sessionTier(input: SessionRuntimeUiInput): SessionTier {
+  switch (sessionRuntimeState(input)) {
+    case AGENT_STATUS_STATE.NEEDS_INPUT: return "need";
+    case AGENT_STATUS_STATE.FAILED: return "fail";
+    case AGENT_STATUS_STATE.RUNNING:
+    case AGENT_STATUS_STATE.WORKING:
+    case AGENT_STATUS_STATE.AUDIT:
+    case AGENT_STATUS_STATE.CLEANUP:
+    case AGENT_STATUS_STATE.OUTPUT: return "work";
+    default: return "idle";
+  }
+}
+
 export function sessionRuntimeUi(input: SessionRuntimeUiInput): SessionRuntimeUi {
   return RUNTIME_UI[sessionRuntimeState(input)];
 }

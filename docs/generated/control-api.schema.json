@@ -5791,6 +5791,7 @@
       "properties": {
         "mode": {
           "enum": [
+            "needs-input-only",
             "quiet-after-activity",
             "disabled"
           ]
@@ -6165,6 +6166,36 @@
         },
         "lastLine": {
           "type": "string"
+        },
+        "meta": {
+          "type": "object",
+          "properties": {
+            "model": {
+              "type": "string"
+            },
+            "reasoning": {
+              "type": "string"
+            },
+            "contextPct": {
+              "type": "number"
+            },
+            "contextLimit": {
+              "type": "number"
+            },
+            "cost": {
+              "type": "number"
+            },
+            "costTag": {
+              "type": "string"
+            }
+          },
+          "required": [],
+          "additionalProperties": false,
+          "description": "Display-only footer metadata; never runtime status evidence"
+        },
+        "footer": {
+          "type": "string",
+          "description": "Raw display-only footer, also included alongside structured metadata"
         },
         "triage": {
           "$ref": "#/$defs/TriageStatus"

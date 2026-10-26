@@ -30,6 +30,7 @@ declare global {
     hasSelection(): boolean;
     getSelection(): string;
     onData(handler: (data: string) => void): void;
+    input(data: string, wasUserInput?: boolean): void;
     onBinary?: (handler: (data: string) => void) => void;
     onResize(handler: (size: { readonly cols: number; readonly rows: number }) => void): void;
     open(element: HTMLElement): void;

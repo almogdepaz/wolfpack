@@ -747,7 +747,7 @@ test("right context panel resizes with real pointer and keyboard input without r
   await expect(border).toBeHidden();
   expect(await terminal.boundingBox()).toEqual(collapsedTerminal);
   await page.getByRole("button", { name: "Pin Widgets", exact: true }).click();
-  await expect(expand).toBeHidden();
+  await expect(expand).toBeVisible();
   await expect(border).toBeVisible();
   await page.reload();
   await page.locator(".card", { hasText: name }).first().click();
@@ -788,7 +788,7 @@ test("widget controls stay local on desktop and open from the mobile app header"
   await expect(page.locator("#terminal-view")).not.toHaveClass(/swiping/);
   const toolbar = page.locator("body > header");
   await expect(page.locator(".workspace-terminal-toolbar, #terminal-transcript-btn")).toHaveCount(0);
-  const expand = page.getByRole("button", { name: "Widgets", exact: true });
+  const expand = page.getByRole("button", { name: "Changes", exact: true });
   await expect(expand).toBeVisible();
   const box = (await expand.boundingBox())!;
   await expect(expand.locator("svg")).toHaveCSS("color", "rgb(69, 237, 126)");

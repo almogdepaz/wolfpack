@@ -142,8 +142,12 @@ function visibleSessionCardNames(page: Page): Promise<string[]> {
   return visibleSessionCards(page).locator(".card-name-text").allTextContents();
 }
 
-function visibleViewButton(page: Page, view: "all" | "idle") {
+function visibleViewButton(page: Page, view: "idle") {
   return page.locator(`[data-action="set-session-card-view"][data-session-card-view="${view}"]`).filter({ visible: true });
+}
+
+async function clearSessionView(page: Page): Promise<void> {
+  await page.locator('[data-session-card-view][aria-pressed="true"]').filter({ visible: true }).click();
 }
 
 async function selectIdleView(page: Page): Promise<void> {
@@ -162,9 +166,7 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
 
   await collapseInitialSessionMenu(page);
   const idle = visibleViewButton(page, "idle");
-  const all = visibleViewButton(page, "all");
   await expect(idle).toHaveAccessibleName("Idle sessions");
-  await expect(all).toHaveAccessibleName("All sessions");
   await expect(idle).toHaveAttribute("aria-pressed", "false");
   await idle.focus();
   await expect(idle).toBeFocused();
@@ -185,7 +187,7 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
     button.click();
     button.remove();
   });
-  await expect(all).toHaveAttribute("aria-pressed", "true");
+  await expect(idle).toHaveAttribute("aria-pressed", "false");
   await selectIdleView(page);
   await expect(idle).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator('[data-session-card-view][aria-pressed="true"]').filter({ visible: true })).toHaveCount(1);
@@ -204,7 +206,7 @@ test("session-card controls are accessible, synchronized, and reject invalid vie
   }
 });
 
-test("idle uses exact runtime state across local and verified peers and updates live", async ({ page }) => {
+test("idle uses presentation tier across local and verified peers and updates live", async ({ page }) => {
   const parent = { id: "working-parent-id", name: "working-parent" };
   const fixture = await installSessionFixture(page, {
     localSessions: [
@@ -225,8 +227,9 @@ test("idle uses exact runtime state across local and verified peers and updates 
 
   await selectIdleView(page);
   await expect.poll(() => visibleSessionCardNames(page)).toEqual([
+    "idle-child", // its working parent's tree precedes idle roots before filtering
     "quiet-local",
-    "idle-child",
+    "structured-done",
     "quiet-peer",
   ]);
   await expect(visibleSessionCards(page).locator(".delegation-parent-missing")).toHaveCount(0);
@@ -243,8 +246,9 @@ test("idle uses exact runtime state across local and verified peers and updates 
   await dispatchVisibleRefresh(page);
   await expect.poll(() => fixture.sessionRequestCount()).toBeGreaterThan(requestsBeforeRefresh);
   await expect.poll(() => visibleSessionCardNames(page)).toEqual([
-    "structured-needs-input",
     "idle-child",
+    "structured-needs-input",
+    "structured-done",
     "quiet-peer",
   ]);
 });
@@ -258,9 +262,11 @@ test("idle true-zero uses idle copy and All restores onboarding", async ({ page 
   await expect(visibleDashboard(page).getByRole("heading", { name: "No sessions are currently idle" })).toHaveCount(2);
   await expect(visibleDashboard(page).getByRole("button", { name: "Create your first session" })).toHaveCount(0);
 
-  await visibleViewButton(page, "all").click();
+  await clearSessionView(page);
   await expect(visibleDashboard(page).getByRole("heading", { name: "No sessions yet" })).toHaveCount(2);
-  await expect(visibleDashboard(page).getByRole("button", { name: "Create your first session" })).toHaveCount(2);
+  const desktop = (page.viewportSize()?.width ?? 0) > 768;
+  await expect(visibleDashboard(page).getByRole("button", { name: "Create your first session" })).toHaveCount(desktop ? 2 : 0);
+  await expect(visibleDashboard(page).locator('.machine-group [data-action="new-session"]:visible')).toHaveCount(2);
 });
 
 test("desktop Cmd navigation does not leave an empty Idle view", async ({ page }, testInfo) => {
@@ -302,6 +308,6 @@ test("desktop idle reorder stays inside visible cards", async ({ page }, testInf
   await expect(replacementIdleA).toBeFocused();
   await expect(page.locator("#session-order-status")).toHaveText("idle-a moved to position 2");
 
-  await visibleViewButton(page, "all").click();
+  await clearSessionView(page);
   await expect.poll(() => visibleSessionCardNames(page)).toEqual(["working-b", "idle-c", "idle-a"]);
 });
