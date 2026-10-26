@@ -1,10 +1,19 @@
 # Wolfpack — agent-readable overview
 
 ## Summary
-Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines. It exposes those terminal sessions through a browser/PWA. The intended network path for remote use is a private Tailscale tailnet.
+Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines. It exposes those terminal sessions through a browser/PWA and a CLI. The intended network path for remote use is a private Tailscale tailnet.
 
 ## Activation use case
-Install Wolfpack on two machines, connect both to the same tailnet, start an agent session on one machine, and open Wolfpack from another machine or phone. The operator can inspect output, send input, and continue long-running work without juggling SSH windows or tmux panes.
+Install Wolfpack on two machines, connect both to the same tailnet, start an agent session on one machine, and open Wolfpack from another machine or phone. The dashboard shows which agent needs you; the operator answers it, inspects output, sends input, and continues long-running work without juggling SSH windows or tmux panes.
+
+## Capabilities
+- Needs-you triage: sessions whose program reports it waits on the user are pinned in a "Needs you" band and sorted first. Filters with counts narrow the dashboard to Needs you, Working, Idle or Failed; pressing a filter again returns to all sessions. Each card shows the agent's last line and its harness icon; Pi sessions also show the model, context and cost from their footer.
+- Answering: on desktop a needs-input banner offers y, n, Esc and Reply in terminal. On a phone there is no banner; the live terminal, the keyboard accessory (Enter, Esc, arrows, Control-C) and the native keyboard are the reply surface.
+- Phone: install the dashboard as a PWA from the tailnet URL. Automatic idle alerts (Settings) default to "Needs input only"; "After rendered activity becomes idle" and "Disabled" are the other modes. An idle alert waits while a child agent of that session is still working; a needs-input alert is never held back. Agents can notify their parent, and one phone enrollment covers every online machine.
+- Desktop workspace: instant switching between recent sessions, live resize with workspace dividers, a grid of two to five terminals, take control or passive inspect when another viewer holds a session, visible reconnect states, ⌘K search and keyboard navigation, and extension widgets docked beside the terminal.
+- Delegation: child sessions carry a parent link. The dashboard nests them under an "N agents" chip, and opening the parent shows the whole tree in a delegation grid.
+- Multiple machines: Wolfpack discovers machines on the tailnet, verifies each peer before listing it, groups sessions by machine name, and marks offline or unreachable machines.
+- CLI for agents and scripts: `wolfpack session create`, `wolfpack agent spawn ... --notify-parent`, `wolfpack session send`, `wolfpack session wait`, `wolfpack session prompt`, `wolfpack events`, `wolfpack agent inbox` and `wolfpack list --json`; the global `--machine <peer>` selector runs supported commands on a verified tailnet peer. The bundled `wolfpack-tailnet-control` skill teaches agents these commands; Pi can opt into `wolfpack-pi-task-delegation`.
 
 ## Supported environments
 - macOS arm64 and x64
@@ -29,5 +38,7 @@ Treat the generated local or tailnet URL as sensitive. Use a trusted tailnet and
 - Homepage: https://almogdepaz.github.io/wolfpack/
 - Repository: https://github.com/almogdepaz/wolfpack
 - First session: https://github.com/almogdepaz/wolfpack/blob/main/docs/first-session.md
+- Session control: https://github.com/almogdepaz/wolfpack/blob/main/docs/session-control.md
+- Phone PWA and notifications: https://github.com/almogdepaz/wolfpack/blob/main/docs/phone-pwa-notifications.md
 - Security model: https://github.com/almogdepaz/wolfpack/blob/main/docs/installation.md#security-and-trust
 - Tester discussion: https://github.com/almogdepaz/wolfpack/discussions/262

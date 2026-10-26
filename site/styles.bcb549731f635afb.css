@@ -114,6 +114,7 @@ kbd{font-size:12px;border:1px solid var(--hairline2);border-bottom-width:2px;bor
 /* tabs: a plain list without JS or on narrow screens; tabs when enhanced */
 .tab-list{display:none}
 .tab-panel{margin:0 0 28px}
+.tab-panel figure{margin:0}
 .tab-panel img{display:block;width:100%;height:auto;aspect-ratio:16/10;border:1px solid var(--hairline2);border-radius:var(--radius);box-shadow:0 24px 70px rgba(0,0,0,.4);background:var(--bg2)}
 .tab-panel figcaption{padding:16px 2px 0}
 .tab-panel figcaption p{color:var(--muted);font-size:14.5px;line-height:1.65;margin:0;max-width:720px}
@@ -122,11 +123,14 @@ kbd{font-size:12px;border:1px solid var(--hairline2);border-bottom-width:2px;bor
 .tabs.tabs-on .tab-panel{grid-area:1/1;margin:0;transition:opacity .25s ease}
 .tabs.tabs-on .tab-panel[data-active="false"]{opacity:0;pointer-events:none}
 .tabs.tabs-on .tab-panel figcaption h3{display:none}
+.code-tabs.tabs-on .tab-panels{display:block}
+.code-tabs.tabs-on .tab-panel[data-active="false"]{display:none}
 [role=tab]{font:600 13px var(--sans);color:var(--muted);background:var(--surface);border:1px solid var(--hairline);border-radius:999px;padding:9px 16px;cursor:pointer}
 [role=tab]:hover{color:var(--ink);border-color:var(--hairline2)}
 [role=tab][aria-selected="true"]{color:var(--accent-ink);background:var(--accent);border-color:var(--accent)}
 .code-tabs .tab-panel{margin-bottom:20px}
-.code-card{margin:0;padding:18px 20px;border:1px solid var(--hairline2);border-radius:var(--radius);background:var(--bg2);color:var(--ink);font-size:13.5px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
+.code-card{margin:0;padding:18px 20px;border:1px solid var(--hairline2);border-radius:var(--radius);background:var(--bg2);color:var(--ink);font-size:13.5px;line-height:1.7;white-space:pre;overflow-x:auto}
+.code-card:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .code-card .prompt{color:var(--accent);margin-right:4px}
 .code-card .out{color:var(--muted)}
 .swipe-hint{display:none;color:var(--dim);font:11px var(--mono);margin:0 0 12px}
@@ -231,6 +235,7 @@ kbd{font-size:12px;border:1px solid var(--hairline2);border-bottom-width:2px;bor
   .section-head>p{margin-top:16px}
   .lede{font-size:16.5px}
   .tiles{grid-template-columns:1fr}
+  .crop-banner{--x:280;--y:0;--w:720;--h:260}
   .tile-copy{padding:16px 18px 18px}
   .phones{gap:10px}
   .phone{width:32%}

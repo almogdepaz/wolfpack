@@ -35,7 +35,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" data-deferred-style>
-  <link rel="stylesheet" href="styles.7b877d8ff32be6a2.css">
+  <link rel="stylesheet" href="styles.bcb549731f635afb.css">
 </head>
 <body>
   <a class="skip-link" href="#top">Skip to content</a>
@@ -82,11 +82,11 @@
         </article>
         <article class="tile">
           <div class="crop crop-working"><img src="assets/desktop-sessions.0875712393c5b8c6.png" alt="Session cards with harness icons and each agent's last line, including a Pi session showing its model, context and cost" loading="lazy" width="1440" height="900"></div>
-          <div class="tile-copy"><span class="state state-working">Working · Done</span><h3>Read the last line</h3><p>Each card shows the agent's latest line and its harness icon. Pi sessions add the model, context and cost from their footer.</p></div>
+          <div class="tile-copy"><span class="state state-working">Working · Idle</span><h3>Read the last line</h3><p>Each card shows the agent's latest line and its harness icon, working or idle. Pi sessions add the model, context and cost from their footer.</p></div>
         </article>
         <article class="tile">
-          <div class="crop crop-failed"><img src="assets/desktop-sessions.0875712393c5b8c6.png" alt="A failed docs-site session with a Close button above a working session" loading="lazy" width="1440" height="900"></div>
-          <div class="tile-copy"><span class="state state-failed">Failed · Idle</span><h3>Clear what is finished</h3><p>Failed sessions offer Close. Idle ones step back until you need them, and every tier keeps the order you give it.</p></div>
+          <div class="crop crop-failed"><img src="assets/desktop-sessions.0875712393c5b8c6.png" alt="A failed docs-site session with a Close button between a session that needs input and a working one" loading="lazy" width="1440" height="900"></div>
+          <div class="tile-copy"><span class="state state-failed">Failed</span><h3>Clear what is finished</h3><p>A failed session says so in red and offers Close. Every tier keeps the order you give it.</p></div>
         </article>
       </div>
     </section>
@@ -122,26 +122,26 @@
       </div>
       <p class="swipe-hint" aria-hidden="true">Swipe for more views →</p>
       <div class="tabs" data-tabs="Control room views">
-        <figure class="tab-panel">
+        <div class="tab-panel"><figure>
           <img src="assets/desktop-sessions.0875712393c5b8c6.png" alt="Wolfpack dashboard: Needs you band, state filters with counts, and sessions grouped by machine" loading="lazy" width="1440" height="900">
           <figcaption><h3>Dashboard</h3><p>Sessions across machines with Needs you pinned first, filters with counts, ⌘K search and ⌘↑/↓ to move between sessions.</p></figcaption>
-        </figure>
-        <figure class="tab-panel">
+        </figure></div>
+        <div class="tab-panel"><figure>
           <img src="assets/desktop-terminal.07b2488372eb8404.png" alt="Wolfpack terminal view with the session sidebar and a needs-input banner" loading="lazy" width="1440" height="900">
           <figcaption><h3>Terminal</h3><p>Instant switching keeps recent terminals mounted. Take control or inspect when another viewer holds a session; reconnects show their state instead of failing silently.</p></figcaption>
-        </figure>
-        <figure class="tab-panel">
+        </figure></div>
+        <div class="tab-panel"><figure>
           <img src="assets/desktop-grid.d509e241728ed395.webp" alt="Wolfpack grid with three demo sessions tiled side by side" loading="lazy" width="1440" height="900">
           <figcaption><h3>Grid</h3><p>Add sessions from the sidebar to tile two to five terminals, drag dividers to resize live, and move focus with ⌘⇧ and the arrow keys.</p></figcaption>
-        </figure>
-        <figure class="tab-panel">
+        </figure></div>
+        <div class="tab-panel"><figure>
           <img src="assets/desktop-delegation.4850fd6719e5f96c.webp" alt="Wolfpack delegation grid: a parent agent and its two child agents, one reporting back" loading="lazy" width="1440" height="900">
           <figcaption><h3>Delegation</h3><p>An "N agents" chip nests child sessions under their parent. Open the parent to see the whole tree, and read child reports as they return.</p></figcaption>
-        </figure>
-        <figure class="tab-panel">
+        </figure></div>
+        <div class="tab-panel"><figure>
           <img src="assets/desktop-widgets.d4746a3ffa2795ad.webp" alt="Wolfpack terminal with an extension widget panel docked beside it showing a review checklist" loading="lazy" width="1440" height="900">
           <figcaption><h3>Widgets</h3><p>Extensions add context views you can dock left, right, bottom or full, pin or collapse, beside the terminal they belong to.</p></figcaption>
-        </figure>
+        </figure></div>
       </div>
     </section>
 
@@ -150,7 +150,7 @@
         <div class="eyebrow">04 / EVERY MACHINE</div>
         <h2 id="machines-title">One dashboard.<br><span>Every machine.</span></h2>
         <p>Wolfpack discovers other machines on your tailnet, verifies each peer before listing it, and groups sessions under their machine names. Offline and unreachable machines say so.</p>
-        <pre class="code-card"><code><span class="prompt">$</span> wolfpack --machine macbook list --json</code></pre>
+        <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack --machine macbook list --json</code></pre>
       </div>
       <div class="crop crop-machines framed"><img src="assets/desktop-sessions.0875712393c5b8c6.png" alt="Dashboard machine groups: Workstation with six sessions and MacBook with two" loading="lazy" width="1440" height="900"></div>
     </section>
@@ -162,31 +162,31 @@
       </div>
       <p class="swipe-hint" aria-hidden="true">Swipe for more commands →</p>
       <div class="tabs code-tabs" data-tabs="CLI examples">
-        <figure class="tab-panel">
-          <pre class="code-card"><code><span class="prompt">$</span> wolfpack session create api-gateway --harness claude --plan .plans/200-review.md --json</code></pre>
+        <div class="tab-panel"><figure>
+          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack session create api-gateway --harness claude --plan .plans/200-review.md --json</code></pre>
           <figcaption><h3>create</h3><p>Start a top-level agent session in a project with a plan file.</p></figcaption>
-        </figure>
-        <figure class="tab-panel">
-          <pre class="code-card"><code><span class="prompt">$</span> wolfpack agent spawn api-gateway --harness claude --name 200-security-review \
+        </figure></div>
+        <div class="tab-panel"><figure>
+          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack agent spawn api-gateway --harness claude --name 200-security-review \
     --plan .plans/200-review.md --notify-parent --json
-<span class="out">{ "ok": true, "session": "200-security-review", "project": "api-gateway", "harness": "claude", … }</span></code></pre>
+<span class="out">{ "ok": true, "session": "200-security-review", "sessionId": "…", "project": "api-gateway", "harness": "claude" }</span></code></pre>
           <figcaption><h3>spawn</h3><p>Spawn a child of the current agent session; with <code>--notify-parent</code> it reports back when it is done.</p></figcaption>
-        </figure>
-        <figure class="tab-panel">
-          <pre class="code-card"><code><span class="prompt">$</span> wolfpack session send 200-security-review "focus on token expiry" --ensure-submitted
+        </figure></div>
+        <div class="tab-panel"><figure>
+          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack session send 200-security-review "focus on token expiry" --ensure-submitted
 <span class="prompt">$</span> wolfpack session wait 200-security-review "Review complete" --timeout-ms 600000 --json</code></pre>
           <figcaption><h3>send + wait</h3><p>Type into a session, confirm the submit, then block until its output contains a marker.</p></figcaption>
-        </figure>
-        <figure class="tab-panel">
-          <pre class="code-card"><code><span class="prompt">$</span> wolfpack events --kinds session.state,parent_notified
+        </figure></div>
+        <div class="tab-panel"><figure>
+          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack events --kinds session.state,parent_notified
 <span class="out">2026-10-26T09:04:12.418Z session.state 200-security-review working (program status)
 2026-10-26T09:06:41.077Z parent_notified api-gateway seq=3 [201-load-test] p95 38 ms, 0 errors</span></code></pre>
           <figcaption><h3>events</h3><p>Follow session, state, task and parent-notification events as they happen.</p></figcaption>
-        </figure>
-        <figure class="tab-panel">
-          <pre class="code-card"><code><span class="prompt">$</span> wolfpack agent inbox --since 2 --json</code></pre>
+        </figure></div>
+        <div class="tab-panel"><figure>
+          <pre class="code-card" tabindex="0"><code><span class="prompt">$</span> wolfpack agent inbox --since 2 --json</code></pre>
           <figcaption><h3>inbox</h3><p>Read what child agents sent back to the current session.</p></figcaption>
-        </figure>
+        </figure></div>
       </div>
       <p class="cli-skills">Agents learn the commands from the bundled <code>wolfpack-tailnet-control</code> skill; Pi can opt into <code>wolfpack-pi-task-delegation</code>. <a href="https://github.com/almogdepaz/wolfpack/blob/main/docs/session-control.md" target="_blank" rel="noopener noreferrer">Session control reference <span aria-hidden="true">↗</span></a></p>
     </section>

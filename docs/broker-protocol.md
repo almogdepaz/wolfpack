@@ -416,7 +416,7 @@ last delivered `seq` safe.
 {
   "id":            "550e8400-e29b-41d4-a716-446655440000",  // UUID v4
   "name":          "agent",
-  "cwd":           "/Users/almog/Dev/wolfpack",
+  "cwd":           "/Users/you/dev/wolfpack",
   "command":       ["bash", "-l"],
   "env":           [["FOO", "bar"]],                        // [] if unused
   "cols":          120,
