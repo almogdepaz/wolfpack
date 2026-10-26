@@ -13,7 +13,7 @@ import {
   validateFixtures,
 } from "../../scripts/demo/fixtures";
 import { FFMPEG_TOOL, fixtureServerEnv, parseArgs, resolveTool, startFixtureServer } from "../../scripts/demo/lib";
-import { TARGETS, scenesSafeToDelete, writeConcatList } from "../../scripts/demo/encode";
+import { TARGETS, frameIndex, scenesSafeToDelete, writeConcatList } from "../../scripts/demo/encode";
 import {
   PrivacyViolation,
   assertClean,
@@ -202,6 +202,17 @@ describe("recorder and encoder helpers", () => {
     expect(scenesSafeToDelete(new Set(["hero"]))).toEqual([]);
     expect(scenesSafeToDelete(new Set(desktopTargets))).toEqual(["desktop"]);
     expect(scenesSafeToDelete(new Set(TARGETS.map((target) => target.name))).sort()).toEqual(["cards", "cli", "desktop", "mobile"]);
+  });
+
+  test("a checkpoint cuts at the frame that was on screen, not the next change", () => {
+    const checkpoints = [
+      { name: "start", segment: "frames", frame: 0 },
+      { name: "dashboard", segment: "frames", frame: 5 },
+      { name: "other", segment: "frames-cli", frame: 2 },
+    ];
+    expect(frameIndex(checkpoints, "dashboard", "frames")).toBe(4);
+    expect(frameIndex(checkpoints, "start", "frames")).toBe(0);
+    expect(() => frameIndex(checkpoints, "other", "frames")).toThrow("no frame in frames");
   });
 
   test("fixture servers get no WOLFPACK_* setting from the operator except WOLFPACK_TEST", () => {

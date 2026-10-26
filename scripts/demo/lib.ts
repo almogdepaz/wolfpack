@@ -333,6 +333,8 @@ export const CURSOR_SCRIPT = `
   const mount = () => { document.documentElement.appendChild(style); document.documentElement.appendChild(cursor); };
   if (document.documentElement) mount(); else document.addEventListener("DOMContentLoaded", mount);
   window.addEventListener("mousemove", (event) => {
+    // Chromium reports a synthetic move to (0,0) before any real input; do not draw it.
+    if (cursor.style.opacity === "0" && event.clientX === 0 && event.clientY === 0) return;
     cursor.style.opacity = "1";
     cursor.style.left = event.clientX + "px";
     cursor.style.top = event.clientY + "px";

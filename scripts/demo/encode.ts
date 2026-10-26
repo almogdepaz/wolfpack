@@ -142,7 +142,7 @@ export function scenesSafeToDelete(encoded: ReadonlySet<string>, targets: readon
   return scenes.filter((scene) => clips.filter((target) => target.scene === scene).every((target) => encoded.has(target.name)));
 }
 
-interface SceneCheckpoint {
+export interface SceneCheckpoint {
   readonly name: string;
   readonly segment?: string;
   readonly frame?: number;
@@ -161,12 +161,17 @@ function readCheckpoints(root: string, scene: string): SceneCheckpoint[] {
   return summary.checkpoints;
 }
 
-function frameIndex(checkpoints: readonly SceneCheckpoint[], name: string, segment: string): number {
+/**
+ * Index of the frame on screen when a checkpoint was taken. The recorder
+ * stores how many frames had arrived; the screencast only emits on change,
+ * so the picture on screen is the last one received, not the next one.
+ */
+export function frameIndex(checkpoints: readonly SceneCheckpoint[], name: string, segment: string): number {
   const checkpoint = checkpoints.find((candidate) => candidate.name === name);
   if (checkpoint?.frame === undefined || checkpoint.segment !== segment) {
     throw new Error(`checkpoint ${name} has no frame in ${segment}`);
   }
-  return checkpoint.frame;
+  return Math.max(0, checkpoint.frame - 1);
 }
 
 /**
