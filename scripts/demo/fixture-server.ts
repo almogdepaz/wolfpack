@@ -16,6 +16,7 @@
  * Typed terminal input that matches a session's `reactions` plays that reaction.
  * Exits when stdin closes or on SIGTERM.
  */
+import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -115,6 +116,12 @@ type SessionPrefillOptions = import("../../src/server/backend.ts").SessionPrefil
 
 const sessions = fixtures.sessions.filter((session) => session.machine === machineId);
 
+/** Deterministic UUID (version 4 layout) for a MockBackend id on this machine. */
+function demoSessionId(mockId: string): string {
+  const hex = createHash("sha256").update(`${machineId}/${mockId}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 /** MockBackend with ANSI screens, fixture timestamps and scripted reactions to typed input. */
 class DemoBackend extends MockBackend {
   private readonly screens = new Map<string, string>();
@@ -134,11 +141,22 @@ class DemoBackend extends MockBackend {
     this.createdAt.set(name, iso);
   }
 
+  /**
+   * Real broker session ids are UUIDs and the app relies on that (extension
+   * scope, snapshots), so MockBackend's `mock:<name>` ids are mapped to stable
+   * UUIDs derived from machine and name; parent links are mapped the same way.
+   */
   override async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
     const identities = await super.listIdentities();
     for (const [name, identity] of Object.entries(identities)) {
       const createdAt = this.createdAt.get(name);
-      if (createdAt) identities[name] = { ...identity, createdAt, updatedAt: createdAt };
+      const parent = identity.parentSession;
+      identities[name] = {
+        ...identity,
+        wolfpackSessionId: demoSessionId(identity.wolfpackSessionId),
+        ...(createdAt && { createdAt, updatedAt: createdAt }),
+        ...(parent && { parentSession: { ...parent, wolfpackSessionId: demoSessionId(parent.wolfpackSessionId) } }),
+      };
     }
     return identities;
   }

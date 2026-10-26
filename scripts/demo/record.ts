@@ -3,7 +3,7 @@
  * Records the site/README/promo demo scenes against fixture servers (synthetic
  * sessions, real app, real websocket relay, real ghostty renderer).
  *
- *   bun run demo:record [--scene desktop|mobile|cli|cards|all] [--dry] [--out .demo-out] [--dpr 1] [--forbid a,b]
+ *   bun run demo:record [--scene desktop|mobile|cli|cards|stills|all] [--dry] [--out .demo-out] [--dpr 1] [--forbid a,b]
  *
  * --dry          checkpoint screenshots only (no screencast frames)
  * --scene        one scene or "all" (default)
@@ -20,6 +20,7 @@
  * screencast start/stop; a hit aborts the run.
  */
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
+import { createHash } from "node:crypto";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -43,13 +44,14 @@ import {
 } from "./lib";
 import { forbiddenStrings, parseForbidList } from "./privacy-gate";
 
-export const SCENES = ["desktop", "mobile", "cli", "cards"] as const;
+export const SCENES = ["desktop", "mobile", "cli", "cards", "stills"] as const;
 type SceneName = typeof SCENES[number];
 
 const DESKTOP_VIEWPORT = { width: 1600, height: 1000 } as const;
 const MOBILE_VIEWPORT = { width: 390, height: 844 } as const;
 const MOBILE_SCALE = 2;
 const CARD_VIEWPORT = { width: 1920, height: 1080 } as const;
+const STILL_VIEWPORT = { width: 1440, height: 900 } as const;
 const IPHONE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
 const CARDS_DIR = join(import.meta.dirname, "cards");
 const CARD_ORDER = ["title", "privacy", "install", "end"] as const;
@@ -137,7 +139,17 @@ interface Stage {
   readonly fixtures: DemoFixtures;
 }
 
-async function openStage(browser: Browser, options: { viewport: { width: number; height: number }; dpr: number; mobile: boolean }): Promise<Stage> {
+interface StageOptions {
+  readonly viewport: { width: number; height: number };
+  readonly dpr: number;
+  readonly mobile: boolean;
+  /** Draw the pointer (recordings); stills leave it out. */
+  readonly cursor?: boolean;
+  /** Runs against the context before the page loads (extra routes). */
+  readonly prepare?: (context: BrowserContext) => Promise<void>;
+}
+
+async function openStage(browser: Browser, options: StageOptions): Promise<Stage> {
   const fixtures = loadFixtures();
   // Sequential on purpose: "Needs you" sorts by when each server first observed the
   // waiting state, so the workstation must be observed before the MacBook every take.
@@ -161,7 +173,8 @@ async function openStage(browser: Browser, options: { viewport: { width: number;
     tailnetNodeId: peerMachine.tailnetNodeId,
     server: peer,
   });
-  if (!options.mobile) await context.addInitScript(CURSOR_SCRIPT);
+  if (options.cursor ?? !options.mobile) await context.addInitScript(CURSOR_SCRIPT);
+  await options.prepare?.(context);
   const page = await context.newPage();
   await page.goto(`${home.baseUrl}/`);
   await page.locator(".card-open").first().waitFor({ timeout: 20_000 });
@@ -352,7 +365,146 @@ async function recordCards(browser: Browser, options: Options): Promise<void> {
 
 /** Device scale each scene renders at; the browser is launched to match (see browserArgs). */
 function sceneScale(scene: SceneName, options: Options): number {
-  return scene === "mobile" ? MOBILE_SCALE : options.dpr;
+  if (scene === "mobile") return MOBILE_SCALE;
+  // Stills are page.screenshot() captures, which are device pixels at any context scale.
+  return scene === "stills" ? 1 : options.dpr;
+}
+
+/**
+ * A demo context view loaded through the real extension loader (only the
+ * catalog and asset transport are fulfilled here, as in tests/e2e/widget-fixture.ts),
+ * so the widgets still shows genuine panel chrome around fictional content.
+ */
+const REVIEW_WIDGET_SOURCE = `export default host => {
+  host.registerContextView({
+    id: "review",
+    title: "Review plan",
+    mount(container) {
+      const items = [
+        ["done", "Token-bucket limiter on /v1/public"],
+        ["done", "429 responses carry Retry-After"],
+        ["done", "Load test: p95 38 ms at 50 rps"],
+        ["open", "Security review: token expiry"],
+        ["open", "Document limits in docs/api.md"],
+      ];
+      container.innerHTML = '<div style="padding:16px 18px;font:14px/1.5 system-ui,sans-serif;color:#e8ece9">'
+        + '<div style="font-weight:700;margin-bottom:4px">.plans/200-review.md</div>'
+        + '<div style="color:#8a938d;margin-bottom:14px">api-gateway · 3 of 5 done</div>'
+        + items.map(([state, text]) => '<div style="display:flex;gap:10px;padding:7px 0;border-top:1px solid rgba(255,255,255,.07)">'
+          + '<span style="color:' + (state === "done" ? "#45ed7e" : "#f6c35c") + '">' + (state === "done" ? "✓" : "○") + '</span>'
+          + '<span style="color:' + (state === "done" ? "#8a938d" : "#e8ece9") + '">' + text + '</span></div>').join("")
+        + '</div>';
+      return { dispose() {}, setVisible(visible) { container.hidden = !visible; } };
+    },
+  });
+};`;
+
+async function installReviewWidget(context: BrowserContext): Promise<void> {
+  const digest = createHash("sha256").update(REVIEW_WIDGET_SOURCE).digest("hex");
+  const url = `/api/extensions/assets/demo-review/${digest}/ui.js`;
+  await context.route("**/api/extensions", (route) => route.fulfill({
+    json: {
+      safeMode: false,
+      installations: [{
+        installationId: "44444444-4444-4444-8444-444444444444",
+        extensionId: "demo-review",
+        enabled: true,
+        package: { name: "demo-review", version: "1.0.0", digest },
+        documents: [],
+        ui: { path: "ui.js", url, digest, mime: "text/javascript" },
+      }],
+    },
+  }));
+  await context.route(`**${url}`, (route) => route.fulfill({ contentType: "text/javascript", body: REVIEW_WIDGET_SOURCE }));
+}
+
+/**
+ * Site, README and docs stills: desktop at 1440×900 @1×, phone at 390×844 @2×,
+ * no pointer. Checkpoint names are the still names demo:encode reads.
+ */
+async function recordStills(browser: Browser, options: Options): Promise<void> {
+  const recorder = new SceneRecorder("stills", options);
+  const desktop = await openStage(browser, { viewport: STILL_VIEWPORT, dpr: 1, mobile: false, cursor: false });
+  try {
+    const { page, home } = desktop;
+    await page.locator("#session-list .needs-you .card").first().waitFor();
+    await page.waitForTimeout(1500);
+    await recorder.checkpoint(page, "desktop-sessions");
+    await localCard(page, "#session-list .needs-you", "api-gateway").click();
+    await waitLive(page);
+    await page.locator("#needs-input-banner:not([hidden])").waitFor();
+    await page.waitForTimeout(1200);
+    await recorder.checkpoint(page, "desktop-terminal");
+    await page.locator('[data-reply-key="y"]').click();
+    await page.locator("#needs-input-banner").waitFor({ state: "hidden", timeout: 10_000 });
+    await page.waitForTimeout(3800);
+    for (const session of ["billing-service", "docs-site"]) {
+      await page.locator(`#sidebar-session-list .grid-btn[data-session="${session}"][data-machine=""]`).click();
+      await page.waitForTimeout(900);
+    }
+    await page.locator("#desktop-grid-container .grid-cell").nth(2).waitFor({ timeout: 10_000 });
+    await page.mouse.move(STILL_VIEWPORT.width - 2, STILL_VIEWPORT.height - 2);
+    await page.waitForTimeout(1500);
+    await recorder.checkpoint(page, "desktop-grid");
+    const toggle = page.locator('#sidebar-session-list [data-action="delegation-toggle"]').first();
+    await toggle.waitFor({ timeout: 15_000 });
+    await toggle.click();
+    await localCard(page, "#sidebar-session-list", "api-gateway").click();
+    await page.locator("#delegation-grid-container .delegation-grid-cell").nth(2).waitFor({ timeout: 15_000 });
+    await Promise.all([
+      home.play("201-load-test", "201-load-test-done.ans"),
+      home.play("api-gateway", "api-gateway-child-report.ans"),
+    ]);
+    await page.locator('#delegation-grid-container .delegation-grid-cell[data-session="201-load-test"] .triage-badge', { hasText: "done" })
+      .waitFor({ timeout: 15_000 });
+    await page.mouse.move(STILL_VIEWPORT.width - 2, STILL_VIEWPORT.height - 2);
+    await page.waitForTimeout(1200);
+    await recorder.checkpoint(page, "desktop-delegation");
+  } finally {
+    await closeStage(desktop);
+  }
+
+  const widgets = await openStage(browser, { viewport: STILL_VIEWPORT, dpr: 1, mobile: false, cursor: false, prepare: installReviewWidget });
+  try {
+    const { page } = widgets;
+    await localCard(page, "#session-list", "billing-service").click();
+    await waitLive(page);
+    await page.getByText(".plans/200-review.md").waitFor({ timeout: 15_000 });
+    await page.waitForTimeout(1500);
+    await recorder.checkpoint(page, "desktop-widgets");
+  } finally {
+    await closeStage(widgets);
+  }
+
+  const phone = await openStage(browser, { viewport: MOBILE_VIEWPORT, dpr: MOBILE_SCALE, mobile: true });
+  try {
+    const { page } = phone;
+    await page.waitForTimeout(1500);
+    await recorder.checkpoint(page, "mobile-sessions");
+    await localCard(page, "#session-list .needs-you", "api-gateway").tap();
+    await waitLive(page);
+    await page.locator("#kb-open-btn").tap();
+    await page.waitForTimeout(400);
+    await page.keyboard.type("y");
+    await page.locator('#kb-accessory .kb-key[data-key="Enter"]').tap();
+    await page.waitForTimeout(4200);
+    await page.locator("#kb-open-btn").tap();
+    await page.waitForTimeout(600);
+    await recorder.checkpoint(page, "mobile-terminal");
+    await page.locator("#session-chip").tap();
+    await page.locator('#session-drawer .drawer-item[data-val="api-gateway"]').waitFor({ timeout: 10_000 });
+    const drawerToggle = page.locator('#session-drawer .delegation-sidebar-toggle').first();
+    await drawerToggle.waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(500);
+    await drawerToggle.tap();
+    await page.locator('#session-drawer .delegation-sidebar-toggle[aria-expanded="true"]').first().waitFor({ timeout: 5000 });
+    await page.locator('#session-drawer .drawer-item[data-val="201-load-test"]').waitFor({ timeout: 5000 });
+    await page.waitForTimeout(700);
+    await recorder.checkpoint(page, "mobile-drawer");
+  } finally {
+    await closeStage(phone);
+  }
+  recorder.finish();
 }
 
 const RECORDERS: Record<SceneName, (browser: Browser, options: Options) => Promise<void>> = {
@@ -360,6 +512,7 @@ const RECORDERS: Record<SceneName, (browser: Browser, options: Options) => Promi
   mobile: recordMobile,
   cli: recordCli,
   cards: recordCards,
+  stills: recordStills,
 };
 
 if (import.meta.main) {
