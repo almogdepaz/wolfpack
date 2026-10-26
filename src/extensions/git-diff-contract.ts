@@ -11,7 +11,7 @@ export type ProjectGitDiff = { readonly state: "not-repository" } | {
   readonly unstaged: string;
   /** `git diff --no-index` of each listed untracked file against /dev/null; absent from older hosts. */
   readonly untracked?: string;
-  /** Any section is a bounded prefix ending at a line boundary or skipped untracked files; never describe a truncated result as complete. */
+  /** A section was cut to a prefix ending at a line boundary, or untracked files were skipped; never describe a truncated result as complete. */
   readonly truncated: boolean;
 };
 
