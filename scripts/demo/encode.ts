@@ -79,7 +79,7 @@ export const TARGETS: readonly EncodeTarget[] = [
   {
     // Starts before the pointer appears, so the first frame equals the desktop-sessions poster.
     name: "hero", scene: "desktop", out: "site/wolfpack-usage-demo.mp4", kind: "mp4",
-    to: "s3-grid", holdEnd: 1.2, speed: 1.2, width: 1280, fps: 30, crf: 26, maxSeconds: 22, maxBytes: 1.5 * MB,
+    to: "s3-grid", holdEnd: 1.2, speed: 1.25, width: 1280, fps: 30, crf: 26, maxSeconds: 22, maxBytes: 1.5 * MB,
     install: ["site/assets/wolfpack-usage-demo.mp4"],
   },
   {
