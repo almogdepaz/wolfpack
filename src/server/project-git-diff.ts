@@ -54,7 +54,7 @@ async function readUntracked(projectPath: string, run: (args: string[]) => Promi
   for (const path of paths.slice(0, MAX_UNTRACKED_FILES)) {
     if (output.length > MAX_GIT_DIFF_UNTRACKED_BYTES) { truncated = true; break; }
     const file = join(base, path), stat = lstatSync(file, { throwIfNoEntry: false });
-    // Regular files only: `--no-index` follows a symlink, and one to a FIFO would block until the shared deadline.
+    // Regular files only: `--no-index` reads through a symlink to a named pipe, which would block until the shared deadline.
     if (!stat?.isFile() || stat.size > MAX_UNTRACKED_FILE_BYTES || !readable(file)) { truncated = true; continue; }
     const diff = await run(["-C", cdup || ".", ...DIFF, "--no-index", "--", "/dev/null", path]);
     // Exit 1 means the file differs from /dev/null; without output it could not be read (e.g. it vanished).
