@@ -52,6 +52,30 @@ const RENDER_ASSET_SPECS = [
   },
   {
     directory: "assets",
+    stem: "desktop-grid",
+    extension: ".webp",
+    compatibilityFileName: undefined,
+  },
+  {
+    directory: "assets",
+    stem: "desktop-delegation",
+    extension: ".webp",
+    compatibilityFileName: undefined,
+  },
+  {
+    directory: "assets",
+    stem: "desktop-widgets",
+    extension: ".webp",
+    compatibilityFileName: undefined,
+  },
+  {
+    directory: "assets",
+    stem: "mobile-drawer",
+    extension: ".webp",
+    compatibilityFileName: undefined,
+  },
+  {
+    directory: "assets",
     stem: "wolfpack-usage-demo",
     extension: ".mp4",
     compatibilityFileName: undefined,

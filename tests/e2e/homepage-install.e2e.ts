@@ -309,3 +309,87 @@ test("rejected and unavailable clipboard paths announce manual selection without
   await expect(persistentStatus).toHaveText("Copy failed. Select the visible command and copy it manually.");
   await expect(persistentStatus).not.toContainText("Copied");
 });
+
+test("desktop navigation reaches the features and CLI sections", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "the wide navigation is desktop-only");
+  const nav = page.locator(".nav nav");
+  for (const name of ["How it works", "Features", "CLI", "Install", "Privacy", "GitHub"]) {
+    await expect(nav.getByRole("link", { name })).toBeVisible();
+  }
+  await nav.getByRole("link", { name: "Features" }).click();
+  await expect(page).toHaveURL(/#features$/);
+  await expect(page.locator("#features")).toBeInViewport();
+  await nav.getByRole("link", { name: "CLI" }).click();
+  await expect(page).toHaveURL(/#cli$/);
+  await expect(page.locator("#cli")).toBeInViewport();
+});
+
+test("control-room and CLI tabs are keyboard operable on wide screens", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "tabs are a swipeable list on phones");
+  const tablist = page.getByRole("tablist", { name: "Control room views" });
+  await expect(tablist).toBeVisible();
+  const tabs = tablist.getByRole("tab");
+  await expect(tabs).toHaveText(["Dashboard", "Terminal", "Grid", "Delegation", "Widgets"]);
+  const selectedPanel = async () => {
+    const id = await tablist.getByRole("tab", { selected: true }).getAttribute("aria-controls");
+    return page.locator(`[id="${id}"]`);
+  };
+  await expect(tabs.first()).toHaveAttribute("aria-selected", "true");
+  await tabs.first().focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(tabs.nth(1)).toBeFocused();
+  await expect(tabs.nth(1)).toHaveAttribute("aria-selected", "true");
+  await expect(tabs.first()).toHaveAttribute("tabindex", "-1");
+  const terminalPanel = await selectedPanel();
+  await expect(terminalPanel).toHaveAttribute("aria-hidden", "false");
+  await expect(terminalPanel.getByRole("img")).toBeVisible();
+  await page.keyboard.press("End");
+  await expect(tabs.last()).toBeFocused();
+  await expect(tabs.last()).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("ArrowRight");
+  await expect(tabs.first()).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Home");
+  await expect(tabs.first()).toBeFocused();
+  expect(await page.locator("#features .tab-panel[aria-hidden=\"true\"]").evaluateAll((panels) =>
+    panels.every((panel) => (panel as HTMLElement).inert))).toBe(true);
+  await tablist.getByRole("tab", { name: "Grid" }).click();
+  await expect(tablist.getByRole("tab", { name: "Grid" })).toHaveAttribute("aria-selected", "true");
+
+  const cli = page.getByRole("tablist", { name: "CLI examples" });
+  await expect(cli.getByRole("tab")).toHaveText(["create", "spawn", "send + wait", "events", "inbox"]);
+  await cli.getByRole("tab", { name: "spawn" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(cli.getByRole("tab", { name: "send + wait" })).toHaveAttribute("aria-selected", "true");
+});
+
+test("phones get the views as labelled, focusable swipe regions instead of tabs", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === "desktop", "phone layout");
+  await expect(page.getByRole("tablist")).toHaveCount(0);
+  for (const name of ["Control room views", "CLI examples"]) {
+    const region = page.getByRole("region", { name });
+    await expect(region).toBeVisible();
+    await expect(region).toHaveAttribute("tabindex", "0");
+    await expect(region.locator(".tab-panel")).toHaveCount(5);
+  }
+});
+
+test("tablet and wide desktop viewports keep the layout inside the page width", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "viewport sweep runs once");
+  for (const width of [1440, 1024, 768]) {
+    await page.setViewportSize({ width, height: 1024 });
+    await expect(page.locator(".nav nav").getByRole("link", { name: "Install" })).toBeVisible();
+    const viewport = await page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+    expect(viewport.scrollWidth, `no horizontal scroll at ${width}px`).toBeLessThanOrEqual(viewport.clientWidth);
+  }
+});
+
+test("reduced motion stops decorative animation and nothing autoplays", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect.poll(() => page.locator(".orbit").first().evaluate((element) => getComputedStyle(element).animationName)).toBe("none");
+  for (const video of await page.locator("video").all()) {
+    expect(await video.evaluate((element) => (element as HTMLVideoElement).autoplay)).toBe(false);
+  }
+});
