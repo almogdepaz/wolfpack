@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -249,24 +249,30 @@ describe("fixture server", () => {
       `import { startFixtureServer } from ${JSON.stringify(join(import.meta.dirname, "..", "..", "scripts", "demo", "lib.ts"))};`,
       "const servers = await Promise.all([startFixtureServer(\"workstation\"), startFixtureServer(\"macbook\")]);",
       "console.log(`PIDS:${servers.map((server) => server.pid).join(\",\")}`);",
+      "console.log(`HOMES:${servers.map((server) => server.home).join(\",\")}`);",
       "setInterval(() => {}, 1000);",
     ].join("\n"));
     const recorder = Bun.spawn(["bun", script], { stdout: "pipe", stderr: "pipe" });
     const reader = recorder.stdout.getReader();
     let output = "";
-    while (!output.includes("\n")) {
+    while (!output.includes("HOMES:") || !output.slice(output.indexOf("HOMES:")).includes("\n")) {
       const { value, done } = await reader.read();
       if (done) break;
       output += new TextDecoder().decode(value);
     }
     const pids = /PIDS:([\d,]+)/.exec(output)?.[1]?.split(",").map(Number) ?? [];
+    const homes = /HOMES:(.+)/.exec(output)?.[1]?.split(",") ?? [];
     expect(pids).toHaveLength(2);
+    expect(homes).toHaveLength(2);
+    for (const home of homes) expect(existsSync(home)).toBe(true);
     for (const pid of pids) expect(processGroupAlive(pid)).toBe(true);
     recorder.kill("SIGINT");
     expect(await recorder.exited).toBe(130);
     const deadline = Date.now() + 5000;
     while (pids.some(processGroupAlive) && Date.now() < deadline) await Bun.sleep(50);
     expect(pids.filter(processGroupAlive)).toEqual([]);
+    // Interruption must still let each server delete its temporary HOME.
+    expect(homes.filter((home) => existsSync(home))).toEqual([]);
   }, 40_000);
 
   test("serves fixture identities and states instead of this machine's name", async () => {

@@ -221,6 +221,8 @@ async function recordDesktop(browser: Browser, options: Options): Promise<void> 
     await pointer.moveTo(rest.x, rest.y, 1);
     await page.waitForTimeout(900);
     await recorder.checkpoint(page, "s1-dashboard");
+    // Hold "Needs you" for about 2.5 s (1.6 s still, then a ~0.9 s glide and settle) before the first click.
+    await page.waitForTimeout(1600);
     await pointer.glide(page.locator("#session-list .needs-you .card").first(), 700);
 
     // S2: open the session that needs input and answer it from the banner.

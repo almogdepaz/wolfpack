@@ -9,7 +9,7 @@
  *
  *   bun scripts/demo/fixture-server.ts [--machine workstation|macbook]
  *
- * Prints `READY:<port>` when listening. Control is JSON lines on stdin:
+ * Prints `HOME:<temp home>` then `READY:<port>` when listening. Control is JSON lines on stdin:
  *   {"play":"<session>","transcript":"<file>.ans","id":"<id>"}  → prints DONE:<id> when finished
  *   {"emit":"<session>","text":"..."}
  *   {"status":"<session>","record":{"state":"blocked",...}|null}
@@ -268,5 +268,6 @@ control.on("line", (line) => {
 control.once("close", shutdown);
 
 server.listen(0, "127.0.0.1", () => {
+  console.log(`HOME:${isolatedHome}`);
   console.log(`READY:${(server.address() as AddressInfo).port}`);
 });

@@ -74,6 +74,8 @@ export function assertFreeDisk(path: string, minimum = MIN_FREE_DISK_BYTES): voi
 
 export interface FixtureServer {
   readonly machine: string;
+  /** Temporary HOME the server owns; removed when it shuts down. */
+  readonly home: string;
   /** Process id (and process group id) of the fixture server. */
   readonly pid: number;
   readonly port: number;
@@ -110,10 +112,24 @@ function signalFixtureGroups(signal: NodeJS.Signals): void {
   }
 }
 
+function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** How long interrupted fixture servers get to remove their temporary HOME before SIGKILL. */
+const FIXTURE_SHUTDOWN_GRACE_MS = 1000;
+
 /**
  * Fixture servers run in their own process groups (so one kill reaches the
  * re-exec'd server too), which also means a terminal Ctrl-C never reaches
- * them. Kill every live group when this process exits or is interrupted.
+ * them. On SIGINT/SIGTERM/SIGHUP the groups get SIGTERM and up to a second to
+ * exit (the bootstrap process deletes its temporary HOME on the way out);
+ * SIGKILL is only the fallback, and the last resort on a plain exit.
  */
 function installFixtureCleanup(): void {
   if (fixtureCleanupInstalled) return;
@@ -122,7 +138,15 @@ function installFixtureCleanup(): void {
   for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
     process.once(signal, () => {
       signalFixtureGroups("SIGTERM");
-      process.exit(code);
+      const deadline = Date.now() + FIXTURE_SHUTDOWN_GRACE_MS;
+      const poll = (): void => {
+        if ([...liveFixtureGroups].some(groupAlive) && Date.now() < deadline) {
+          setTimeout(poll, 20);
+          return;
+        }
+        process.exit(code);
+      };
+      poll();
     });
   }
 }
@@ -157,13 +181,19 @@ export function startFixtureServer(machine: string): Promise<FixtureServer> {
     void exited.then(() => {
       if (groupId !== undefined) liveFixtureGroups.delete(groupId);
     });
+    let home = "";
     lines.on("line", (line) => {
+      if (line.startsWith("HOME:")) {
+        home = line.slice("HOME:".length);
+        return;
+      }
       const ready = /^READY:(\d+)$/.exec(line);
       if (ready) {
         clearTimeout(timeout);
         const port = Number(ready[1]);
         resolveServer({
           machine,
+          home,
           pid: groupId ?? -1,
           port,
           baseUrl: `http://127.0.0.1:${port}`,
