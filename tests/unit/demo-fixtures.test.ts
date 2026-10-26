@@ -14,6 +14,7 @@ import {
 } from "../../scripts/demo/fixtures";
 import { FFMPEG_TOOL, fixtureServerEnv, parseArgs, resolveTool, startFixtureServer } from "../../scripts/demo/lib";
 import { TARGETS, frameIndex, scenesSafeToDelete, writeConcatList } from "../../scripts/demo/encode";
+import { PROMO_SEGMENTS, buildVtt, crossfadeTimeline, formatVttTime, parseCues } from "../../scripts/demo/promo";
 import {
   PrivacyViolation,
   assertClean,
@@ -200,8 +201,10 @@ describe("recorder and encoder helpers", () => {
     const desktopTargets = TARGETS.filter((target) => target.scene === "desktop").map((target) => target.name);
     expect(desktopTargets.length).toBeGreaterThan(1);
     expect(scenesSafeToDelete(new Set(["hero"]))).toEqual([]);
-    expect(scenesSafeToDelete(new Set(desktopTargets))).toEqual(["desktop"]);
-    expect(scenesSafeToDelete(new Set(TARGETS.map((target) => target.name))).sort()).toEqual(["cards", "cli", "desktop", "mobile"]);
+    expect(scenesSafeToDelete(new Set(desktopTargets))).toEqual([]);
+    expect(scenesSafeToDelete(new Set([...desktopTargets, "promo"]))).toEqual(["desktop"]);
+    expect(scenesSafeToDelete(new Set(TARGETS.map((target) => target.name)))).toEqual([]);
+    expect(scenesSafeToDelete(new Set([...TARGETS.map((target) => target.name), "promo"])).sort()).toEqual(["cards", "cli", "desktop", "mobile"]);
   });
 
   test("a checkpoint cuts at the frame that was on screen, not the next change", () => {
@@ -295,4 +298,29 @@ describe("fixture server", () => {
       await server.close();
     }
   }, 30_000);
+});
+
+describe("promo long cut", () => {
+  test("every captioned scene has a cue in captions.vtt, in S0–S8 order", () => {
+    const cues = parseCues(readFileSync(join(import.meta.dirname, "..", "..", "scripts", "demo", "captions.vtt"), "utf8"));
+    expect(cues.map((cue) => cue.id)).toEqual(["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]);
+    expect(PROMO_SEGMENTS.flatMap((segment) => segment.caption ? [segment.caption] : [])).toEqual(cues.map((cue) => cue.id));
+    expect(cues.every((cue) => cue.text.length > 10 && !cue.text.includes("-->"))).toBe(true);
+  });
+
+  test("crossfades overlap neighbours and the sidecar cues never overlap", () => {
+    const durations = [5, 4, 6];
+    const { starts, total } = crossfadeTimeline(durations, 0.5);
+    expect(starts).toEqual([0, 4.5, 8]);
+    expect(total).toBe(14);
+    const segments = [
+      { caption: "a", start: starts[0]!, duration: 5 },
+      { caption: "b", start: starts[1]!, duration: 4 },
+      { caption: null, start: starts[2]!, duration: 6 },
+    ];
+    const vtt = buildVtt(segments, [{ id: "a", text: "First" }, { id: "b", text: "Second" }]);
+    expect(vtt).toBe("WEBVTT\n\na\n00:00:00.250 --> 00:00:04.700\nFirst\n\nb\n00:00:04.750 --> 00:00:08.200\nSecond\n");
+    expect(formatVttTime(3725.5)).toBe("01:02:05.500");
+    expect(() => buildVtt([{ caption: "zz", start: 0, duration: 2 }], [])).toThrow("no cue zz");
+  });
 });

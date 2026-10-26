@@ -96,6 +96,12 @@ class SceneRecorder {
     this.checkpoints.push({ name, atMs: Date.now() - this.started, file, segment: this.capture ? this.segmentDir : undefined, frame });
   }
 
+  /** Records where the screencast is (no screenshot, no pause) so encode can split scenes there. */
+  mark(name: string): void {
+    if (!this.capture) return;
+    this.checkpoints.push({ name, atMs: Date.now() - this.started, file: "", segment: this.segmentDir, frame: this.capture.count() });
+  }
+
   /** Starts a screencast segment (none in --dry). Cards record one segment per card. */
   async startFrames(context: BrowserContext, page: Page, label = ""): Promise<void> {
     if (this.options.dry) return;
@@ -124,7 +130,7 @@ class SceneRecorder {
       durationMs: Date.now() - this.started,
       frameCount: this.frameCounts.reduce((total, count) => total + count, 0),
       segments: this.segment,
-      checkpoints: this.checkpoints.map((checkpoint) => ({ ...checkpoint, file: checkpoint.file.slice(this.dir.length + 1) })),
+      checkpoints: this.checkpoints.map((checkpoint) => ({ ...checkpoint, file: checkpoint.file ? checkpoint.file.slice(this.dir.length + 1) : "" })),
       ...extra,
     };
     writeFileSync(join(this.dir, "scene.json"), `${JSON.stringify(summary, null, 2)}\n`);
@@ -226,6 +232,7 @@ async function recordDesktop(browser: Browser, options: Options): Promise<void> 
     await pointer.glide(page.locator("#session-list .needs-you .card").first(), 700);
 
     // S2: open the session that needs input and answer it from the banner.
+    recorder.mark("s2-start");
     await pointer.click(localCard(page, "#session-list .needs-you", "api-gateway"));
     await waitLive(page);
     await page.locator("#needs-input-banner:not([hidden])").waitFor();
@@ -235,6 +242,7 @@ async function recordDesktop(browser: Browser, options: Options): Promise<void> 
     await page.locator("#needs-input-banner").waitFor({ state: "hidden", timeout: 10_000 });
     await page.waitForTimeout(3600);
     await recorder.checkpoint(page, "s2-answered");
+    recorder.mark("s3-start");
 
     // S3: instant switching through the sidebar, live resize, then a grid.
     for (const session of ["billing-service", "docs-site", "web-dashboard"]) {
@@ -258,6 +266,7 @@ async function recordDesktop(browser: Browser, options: Options): Promise<void> 
     await page.locator("#desktop-grid-container .grid-cell").nth(2).waitFor({ timeout: 10_000 });
     await page.waitForTimeout(1200);
     await recorder.checkpoint(page, "s3-grid");
+    recorder.mark("s4-start");
 
     // S4: the answered agent spawned two children; open its delegation tree.
     const toggle = page.locator('#sidebar-session-list [data-action="delegation-toggle"]').first();
@@ -303,6 +312,8 @@ async function recordMobile(browser: Browser, options: Options): Promise<void> {
     await recorder.startFrames(context, page);
     await page.waitForTimeout(1300);
     await recorder.checkpoint(page, "s5-dashboard");
+    // Hold the dashboard with "Needs you" for about 2.5 s before the tap, like the desktop scene.
+    await page.waitForTimeout(1200);
     await localCard(page, "#session-list .needs-you", "api-gateway").tap();
     await page.locator("canvas").first().waitFor({ timeout: 15_000 });
     await waitLive(page).catch(() => undefined);

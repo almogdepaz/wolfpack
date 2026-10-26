@@ -5,6 +5,7 @@
  * WOLFPACK_FFMPEG (see CONTRIBUTING.md, "Site and demo media").
  *
  *   bun run demo:encode [--target <name>[,<name>]|all] [--in .demo-out] [--keep-frames] [--install] [--list]
+ *                       [--voiceover] [--music <file>] [--keep-work]   (promo options)
  *
  * Clip targets cut a frame range between two recorder checkpoints, hold the
  * last frame and optionally speed up; still targets convert a checkpoint
@@ -18,6 +19,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { checkSiteAssets, normalizeSiteAssets } from "../site-assets";
+import { PIPER_TOOL, PIPER_VOICE_TOOL, PROMO_SCENES, PROMO_SEGMENTS, buildPromo } from "./promo";
 import { DEMO_OUT, FFMPEG_TOOL, REPOSITORY_ROOT, assertFreeDisk, ffprobeFor, parseArgs, resolveTool, type Frame } from "./lib";
 
 interface TargetBase {
@@ -133,14 +135,23 @@ function isClip(target: EncodeTarget): target is ClipTarget {
 
 /**
  * Scenes whose frames may be deleted after a run: every target that reads the
- * scene must have been encoded in that run, so a single `--target hero` never
- * destroys frames the README GIF still needs.
+ * scene must have been encoded in that run (including the promo for the
+ * scenes it reads), so a single `--target hero` never destroys frames the
+ * README GIF or the promo still need.
  */
-export function scenesSafeToDelete(encoded: ReadonlySet<string>, targets: readonly EncodeTarget[] = TARGETS): string[] {
+export function scenesSafeToDelete(
+  encoded: ReadonlySet<string>,
+  targets: readonly EncodeTarget[] = TARGETS,
+  promoScenes: readonly string[] = PROMO_SCENES,
+): string[] {
   const clips = targets.filter(isClip);
   const scenes = [...new Set(clips.map((target) => target.scene))];
-  return scenes.filter((scene) => clips.filter((target) => target.scene === scene).every((target) => encoded.has(target.name)));
+  return scenes.filter((scene) => clips.filter((target) => target.scene === scene).every((target) => encoded.has(target.name))
+    && (!promoScenes.includes(scene) || encoded.has(PROMO_TARGET)));
 }
+
+/** The promo long cut reads several scenes' frames; built by scripts/demo/promo.ts. */
+export const PROMO_TARGET = "promo";
 
 export interface SceneCheckpoint {
   readonly name: string;
@@ -148,12 +159,12 @@ export interface SceneCheckpoint {
   readonly frame?: number;
 }
 
-function sh(command: readonly string[]): void {
+export function sh(command: readonly string[]): void {
   const result = Bun.spawnSync([...command], { stdout: "inherit", stderr: "inherit" });
   if (result.exitCode !== 0) throw new Error(`${command[0]} exited ${result.exitCode}`);
 }
 
-function readCheckpoints(root: string, scene: string): SceneCheckpoint[] {
+export function readCheckpoints(root: string, scene: string): SceneCheckpoint[] {
   const path = join(root, scene, "scene.json");
   if (!existsSync(path)) throw new Error(`${path} missing: run bun run demo:record --scene ${scene} first`);
   const summary = JSON.parse(readFileSync(path, "utf8")) as { dry: boolean; checkpoints: SceneCheckpoint[] };
@@ -209,7 +220,7 @@ export function writeConcatList(
   return total;
 }
 
-interface ProbeResult {
+export interface ProbeResult {
   readonly width: number;
   readonly height: number;
   readonly seconds: number;
@@ -217,7 +228,7 @@ interface ProbeResult {
   readonly pixelFormat: string | undefined;
 }
 
-function probe(ffprobe: string, file: string): ProbeResult {
+export function probe(ffprobe: string, file: string): ProbeResult {
   const result = Bun.spawnSync([ffprobe, "-v", "error", "-print_format", "json", "-show_streams", "-show_format", file]);
   if (result.exitCode !== 0) throw new Error(`ffprobe failed for ${file}`);
   const data = JSON.parse(result.stdout.toString()) as {
@@ -327,15 +338,20 @@ function installOutputs(root: string, encoded: readonly EncodeTarget[]): void {
 if (import.meta.main) {
   const args = parseArgs(process.argv.slice(2));
   for (const key of args.keys()) {
-    if (!["target", "in", "keep-frames", "list", "install"].includes(key)) throw new Error(`unknown flag --${key}`);
+    if (!["target", "in", "keep-frames", "list", "install", "voiceover", "music", "keep-work"].includes(key)) throw new Error(`unknown flag --${key}`);
   }
   if (args.get("list") === "true") {
-    for (const target of TARGETS) console.log(`${target.name.padEnd(20)} ${target.scene.padEnd(8)} ${target.out}`);
+    for (const target of TARGETS) console.log(`${target.name.padEnd(28)} ${target.scene.padEnd(8)} ${target.out}`);
+    console.log(`${PROMO_TARGET.padEnd(28)} ${PROMO_SCENES.join("+")} promo/wolfpack-tour.mp4 (+ .vtt, social, poster; --voiceover, --music <file>)`);
     process.exit(0);
   }
   const root = resolve(args.get("in") ?? DEMO_OUT);
   const requested = args.get("target") ?? "all";
-  const targets = requested === "all" ? [...TARGETS] : requested.split(",").map((name) => {
+  const requestedNames = requested === "all" ? [...TARGETS.map((target) => target.name), PROMO_TARGET] : requested.split(",");
+  const promoInputs = PROMO_SEGMENTS.every((segment) => existsSync(join(root, segment.scene, segment.segment ?? "frames", "frames.json")));
+  const wantPromo = requestedNames.includes(PROMO_TARGET) && (requested !== "all" || promoInputs);
+  if (wantPromo && !promoInputs) throw new Error("inputs missing for promo: record desktop, mobile, cli and cards without --dry");
+  const targets = requested === "all" ? [...TARGETS] : requestedNames.filter((name) => name !== PROMO_TARGET).map((name) => {
     const target = TARGETS.find((candidate) => candidate.name === name);
     if (!target) throw new Error(`unknown target ${name}; see --list`);
     return target;
@@ -357,12 +373,33 @@ if (import.meta.main) {
     results.push(result);
     console.log(JSON.stringify(result));
   }
+  if (wantPromo) {
+    const voiceover = args.get("voiceover") === "true";
+    const music = args.get("music");
+    if (music !== undefined && !existsSync(music)) throw new Error(`--music ${music} does not exist`);
+    const promo = await buildPromo({
+      root,
+      ffmpeg,
+      ffprobe,
+      keepWork: args.get("keep-work") === "true",
+      audio: voiceover || music ? {
+        ...(voiceover && { voice: { piper: resolveTool(PIPER_TOOL), model: resolveTool(PIPER_VOICE_TOOL) } }),
+        ...(music && { music }),
+      } : undefined,
+    });
+    for (const result of promo) {
+      results.push(result);
+      console.log(JSON.stringify({ ...result, timeline: undefined }));
+    }
+  } else if (requested === "all") {
+    skipped.push(PROMO_TARGET);
+  }
   const reportPath = join(root, "encode.json");
   writeFileSync(reportPath, `${JSON.stringify({ results, skipped }, null, 2)}\n`);
   if (skipped.length > 0) console.log(`skipped (no recorded input): ${skipped.join(", ")}`);
   if (args.get("install") === "true") installOutputs(root, available);
   if (args.get("keep-frames") !== "true") {
-    const encoded = new Set(available.map((target) => target.name));
+    const encoded = new Set([...available.map((target) => target.name), ...(wantPromo ? [PROMO_TARGET] : [])]);
     const kept = [...new Set(available.filter(isClip).map((target) => target.scene))].filter((scene) => !scenesSafeToDelete(encoded).includes(scene));
     if (kept.length > 0) console.log(`kept frames for ${kept.join(", ")}: not every target reading them was encoded this run`);
     for (const scene of scenesSafeToDelete(encoded)) {
