@@ -15,18 +15,21 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { KNOWN_AGENT_KINDS } from "../../src/agent-kind";
+import { PROGRAM_STATUS_KINDS, PROGRAM_STATUS_STATE, type ProgramStatusKind, type ProgramStatusState } from "../../src/program-status-contract";
 
 export const DEMO_DIR = import.meta.dirname;
 export const FIXTURES_DIR = join(DEMO_DIR, "fixtures");
 export const TRANSCRIPTS_DIR = join(FIXTURES_DIR, "transcripts");
 
-export const PROGRAM_STATES = ["idle", "working", "done", "blocked", "error"] as const;
-export const PROGRAM_KINDS = ["permission", "question", "auth"] as const;
-export const HARNESSES = ["claude", "codex", "gemini", "cursor", "pi", "custom"] as const;
+/** Program status vocabulary (OSC 7501) and harness kinds come from the product's own contracts. */
+export const PROGRAM_STATES = Object.values(PROGRAM_STATUS_STATE);
+export const PROGRAM_KINDS = PROGRAM_STATUS_KINDS;
+export const HARNESSES = KNOWN_AGENT_KINDS;
 
 export interface DemoStatus {
-  readonly state: typeof PROGRAM_STATES[number];
-  readonly kind?: typeof PROGRAM_KINDS[number];
+  readonly state: ProgramStatusState;
+  readonly kind?: ProgramStatusKind;
   readonly title?: string;
   readonly message?: string;
 }
