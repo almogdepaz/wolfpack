@@ -112,9 +112,20 @@ test("untracked files beyond the count cap or the size cap are skipped and flagg
   expect(serialized(cut.untracked ?? "")).toBeLessThanOrEqual(MAX_GIT_DIFF_UNTRACKED_BYTES);
 });
 
+test("a project reached through a symlink below the repository root diffs the same untracked files", async () => {
+  const root = directory(), repo = join(root, "repo"); mkdirSync(join(repo, "pkg"), { recursive: true }); git(repo, "init", "--initial-branch=main");
+  writeFileSync(join(repo, "top.txt"), "top\n"); writeFileSync(join(repo, "pkg", "in.txt"), "in\n");
+  symlinkSync(join(repo, "pkg"), join(root, "alias"));
+  const direct = await readProjectGitDiff(join(repo, "pkg"));
+  expect(direct).toMatchObject({ state: "ready", truncated: false });
+  expect(direct.state === "ready" ? direct.untracked : undefined).toContain("+++ b/top.txt");
+  expect(await readProjectGitDiff(join(root, "alias"))).toEqual(direct);
+});
+
 test("an untracked file that vanishes after listing is skipped and flagged", async () => {
-  const root = directory();
-  const restore = fakeGit(root, "case \"$*\" in *ls-files*) printf 'gone.txt\\0';; *rev-parse*) echo;; esac");
+  const root = directory(); writeFileSync(join(root, "gone.txt"), "here at lstat\n");
+  // The file passes the lstat/readable checks, then Git reports it gone, as when it is deleted in between.
+  const restore = fakeGit(root, "case \"$*\" in *ls-files*) printf 'gone.txt\\0';; *rev-parse*) echo;; *--no-index*) echo \"error: Could not access 'gone.txt'\" >&2; exit 1;; esac");
   try { expect(await readProjectGitDiff(root)).toEqual({ state: "ready", staged: "", unstaged: "", untracked: "", truncated: true }); }
   finally { restore(); }
 });

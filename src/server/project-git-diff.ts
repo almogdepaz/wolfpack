@@ -1,4 +1,4 @@
-import { accessSync, constants, lstatSync } from "node:fs";
+import { accessSync, constants, lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_GIT_DIFF_SECTION_BYTES, MAX_GIT_DIFF_UNTRACKED_BYTES, parseProjectGitDiff, serializedDiffBytes, type ProjectGitDiff } from "../extensions/git-diff-contract.ts";
 import { openProjectGit, type ProjectGitResult } from "./project-git.ts";
@@ -48,10 +48,13 @@ async function readUntracked(projectPath: string, run: (args: string[]) => Promi
   const top = await run(["rev-parse", "--show-cdup"]);
   const cdup = top.stdout.endsWith("\n") ? top.stdout.slice(0, -1) : "";
   if (top.code !== 0 || top.overflowed || !/^(\.\.\/)*$/.test(cdup)) throw new Error("Git diff unavailable");
+  // Git resolves `cdup` physically; resolve the project too so a symlinked project path checks the files Git reads.
+  const base = join(realpathSync(projectPath), cdup);
   let output = "";
   for (const path of paths.slice(0, MAX_UNTRACKED_FILES)) {
     if (output.length > MAX_GIT_DIFF_UNTRACKED_BYTES) { truncated = true; break; }
-    const file = join(projectPath, cdup, path), stat = lstatSync(file, { throwIfNoEntry: false });
+    const file = join(base, path), stat = lstatSync(file, { throwIfNoEntry: false });
+    // Regular files only: `--no-index` follows a symlink, and one to a FIFO would block until the shared deadline.
     if (!stat?.isFile() || stat.size > MAX_UNTRACKED_FILE_BYTES || !readable(file)) { truncated = true; continue; }
     const diff = await run(["-C", cdup || ".", ...DIFF, "--no-index", "--", "/dev/null", path]);
     // Exit 1 means the file differs from /dev/null; without output it could not be read (e.g. it vanished).
