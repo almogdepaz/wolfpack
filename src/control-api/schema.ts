@@ -2,7 +2,7 @@ import { CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
 import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
-import { MAX_GIT_DIFF_SECTION_BYTES } from "../extensions/git-diff-contract.ts";
+import { MAX_GIT_DIFF_SECTION_BYTES, MAX_GIT_DIFF_UNTRACKED_BYTES } from "../extensions/git-diff-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
 import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
@@ -480,10 +480,11 @@ export const controlApiSource: ControlApiSource = {
         staged: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES }, unstaged: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES }, untracked: { ...arrayOf(ref("GitFileChange")), maxItems: MAX_GIT_STATUS_FILES },
       }, ["state", "branch", "detached", "truncated", "staged", "unstaged", "untracked"]),
     ] },
-    // Unified diffs of tracked files only; each section's JSON-serialized form is at most MAX_GIT_DIFF_SECTION_BYTES bytes.
+    // Unified diffs of tracked files and, as new files, untracked ones; each section's JSON-serialized form is at most
+    // MAX_GIT_DIFF_SECTION_BYTES (untracked: MAX_GIT_DIFF_UNTRACKED_BYTES) bytes. Older hosts omit `untracked`.
     ProjectGitDiff: { oneOf: [
       object({ state: { const: "not-repository" } }, ["state"]),
-      object({ state: { const: "ready" }, staged: { type: "string", maxLength: MAX_GIT_DIFF_SECTION_BYTES }, unstaged: { type: "string", maxLength: MAX_GIT_DIFF_SECTION_BYTES }, truncated: boolean() }, ["state", "staged", "unstaged", "truncated"]),
+      object({ state: { const: "ready" }, staged: { type: "string", maxLength: MAX_GIT_DIFF_SECTION_BYTES }, unstaged: { type: "string", maxLength: MAX_GIT_DIFF_SECTION_BYTES }, untracked: { type: "string", maxLength: MAX_GIT_DIFF_UNTRACKED_BYTES }, truncated: boolean() }, ["state", "staged", "unstaged", "truncated"]),
     ] },
     ExtensionId: { type: "string", pattern: "^[a-z][a-z0-9-]{0,63}$" },
     ExtensionInstallationId: { type: "string", format: "uuid" },
