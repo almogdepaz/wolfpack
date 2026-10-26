@@ -163,7 +163,7 @@ describe("extension HTTP routes", () => {
       __setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, backend }));
     }
   });
-  test("Git diff is authenticated, exact-session scoped, read-only and diffs no untracked files", async () => {
+  test("Git diff is authenticated, exact-session scoped, read-only and diffs untracked files as new files", async () => {
     const route = `${base}/api/extensions/project/git-diff/route-fixture`;
     expect((await fetch(`${route}?session=${scope}`)).status).toBe(401);
     const headers = { Authorization: `Bearer ${token()}` };
@@ -172,7 +172,7 @@ describe("extension HTTP routes", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     const value = await response.json() as any;
     contract("readExtensionProjectGitDiff", value);
-    expect(value).toEqual({ installationId: runtime.get("route-fixture").installationId, scopeSessionId: scope, extensionId: "route-fixture", diff: { state: "ready", staged: "", unstaged: "", truncated: false } });
+    expect(value).toEqual({ installationId: runtime.get("route-fixture").installationId, scopeSessionId: scope, extensionId: "route-fixture", diff: { state: "ready", staged: "", unstaged: "", untracked: "diff --git a/new <file>.ts b/new <file>.ts\nnew file mode 100644\nindex 0000000..ce01362\n--- /dev/null\n+++ b/new <file>.ts\t\n@@ -0,0 +1 @@\n+hello\n", truncated: false } });
     for (const query of ["session=live", `session=${scope}&path=/tmp`, `session=${scope}&session=${scope}`, `session=${scope}&args=--output=/tmp/x`]) {
       expect((await fetch(`${route}?${query}`, { headers })).status).toBe(400);
     }
