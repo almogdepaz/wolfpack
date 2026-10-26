@@ -56,7 +56,11 @@
     "typecheck": "bunx tsc --noEmit -p . && bunx tsc --noEmit -p public/ && bunx tsc --noEmit -p public/tsconfig.strict.json",
     "check:bundle-budgets": "bun run scripts/check-bundle-budgets.ts",
     "check:context": "bun run scripts/check-context-links.ts",
-    "smoke:release": "bun run scripts/smoke-release-artifacts.ts"
+    "smoke:release": "bun run scripts/smoke-release-artifacts.ts",
+    "site:assets": "bun run scripts/site-assets.ts",
+    "site:check": "bun run scripts/site-assets.ts --check",
+    "demo:record": "bun run scripts/demo/record.ts",
+    "demo:encode": "bun run scripts/demo/encode.ts"
   },
   "optionalDependencies": {
     "wolfpack-bridge-darwin-arm64": "1.6.27",
