@@ -1,0 +1,6 @@
+@# A child agent reports back to api-gateway (notify-parent).
+
+{cyan}⏺ 201-load-test reported:{/} p95 38 ms at 50 rps, 0 errors,
+  429s start at 20 rps per client.
+@+700
+{white}⏺{/} Load test passed. Waiting on 200-security-review…

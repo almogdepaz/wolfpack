@@ -1,0 +1,9 @@
+@# Cursor agent generating tokens on the MacBook.
+{bold}Cursor Agent{/} {gray}· design-system{/}
+
+{gray}→{/} Generate dark-mode tokens from the brand palette
+
+  {green}✓{/} Read tokens/brand.json
+  {green}✓{/} Wrote tokens/dark.json (64 tokens)
+  {gray}⋯{/} Checking contrast ratios against WCAG AA…
+@status {"state":"working"}

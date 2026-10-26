@@ -1,0 +1,16 @@
+@# The load test finishes: redraw the whole pi screen so the footer stays at the bottom.
+\e[2J\e[H\c
+{bold}pi{/} {gray}· 201-load-test{/}
+
+{cyan}›{/} Load-test /v1/public at 50 rps for 60 s and report to the parent
+
+{gray}●{/} bash  k6 run load/public.js
+  {green}✓{/} http_req_duration  p95=38ms
+  {green}✓{/} http_req_failed    0.00%
+  {green}✓{/} 429 after 20 rps per client
+
+{green}●{/} Done. Reported back to api-gateway.
+
+{gray}~/src/api-gateway (main){/}
+{gray}↑18k ↓4.2k R210k CH97.9% $0.184 (sub) 12.6%/272k (auto)        (openai-codex) gpt-6-astra • medium{/}
+@status {"state":"done"}

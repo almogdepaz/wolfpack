@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="cards.css">
+<title>Wolfpack — CLI card</title>
+</head>
+<body data-hold="1500">
+<main class="stage">
+  <div class="window" data-step="0">
+    <div class="window-bar"><i></i><i></i><i></i><span>agent shell · api-gateway</span></div>
+<div class="term"><span class="prompt">$ </span><span data-step="300" data-type="22">wolfpack agent spawn api-gateway --harness claude --name 200-security-review --plan .plans/200-review.md --notify-parent --json</span>
+<span data-step="3600">{ <span class="key">"ok"</span>: true, <span class="key">"session"</span>: <span class="str">"200-security-review"</span>, <span class="key">"sessionId"</span>: <span class="str">"6f1c2a9e-3b7d-4e21-9a40-2d8c51f0b7e3"</span>, <span class="key">"project"</span>: <span class="str">"api-gateway"</span>, <span class="key">"harness"</span>: <span class="str">"claude"</span> }</span>
+<span data-step="4400"><span class="prompt">$ </span><span data-step="4400" data-type="40">wolfpack events --kinds session.state,parent_notified</span></span>
+<span class="dim" data-step="6200">2026-10-26T09:04:12.418Z session.state 200-security-review working (program status)</span>
+<span class="dim" data-step="6900">2026-10-26T09:06:40.902Z session.state 201-load-test done (program status)</span>
+<span data-step="7600">2026-10-26T09:06:41.077Z parent_notified api-gateway seq=3 [201-load-test] <span class="ok">p95 38 ms at 50 rps, 0 errors</span></span>
+<span data-step="8600"><span class="prompt">$ </span><span data-step="8600" data-type="40">wolfpack --machine macbook list --json</span></span>
+<span data-step="10400">{ <span class="key">"sessions"</span>: [ { <span class="key">"session"</span>: <span class="str">"design-system"</span>, <span class="key">"harness"</span>: <span class="str">"cursor"</span>, <span class="key">"terminal"</span>: { <span class="key">"status"</span>: <span class="str">"ready"</span> } }, { <span class="key">"session"</span>: <span class="str">"mobile-app"</span>, <span class="key">"harness"</span>: <span class="str">"claude"</span>, <span class="key">"terminal"</span>: { <span class="key">"status"</span>: <span class="str">"ready"</span> } } ], <span class="key">"machine"</span>: { <span class="key">"displayName"</span>: <span class="str">"MacBook"</span>, <span class="key">"origin"</span>: <span class="str">"https://macbook.example.ts.net"</span> } }</span></div>
+  </div>
+</main>
+<script src="cards.js"></script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+/* Shared look for demo cards: the product skin (accent #45ed7e on #0b0e0c), Manrope + DM Mono like the site. */
+:root {
+  --bg: #0b0e0c;
+  --surface: rgba(255, 255, 255, 0.04);
+  --hairline: rgba(255, 255, 255, 0.07);
+  --text: #e8ece9;
+  --muted: #8a938d;
+  --accent: #45ed7e;
+  --attention: #f6c35c;
+  --danger: #ff8a80;
+  --blue: #7aa2f7;
+  --mono: "DM Mono", "DejaVu Sans Mono", monospace;
+  --sans: "Manrope", "DejaVu Sans", system-ui, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; }
+body {
+  background: radial-gradient(1200px 700px at 50% 38%, rgba(69, 237, 126, 0.07), transparent 70%), var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.stage { width: min(1500px, 86vw); display: grid; gap: 40px; justify-items: center; text-align: center; }
+.logo { width: 96px; height: 96px; }
+.wordmark { font-weight: 800; letter-spacing: 0.32em; font-size: 22px; color: var(--muted); }
+h1 { font-size: 92px; line-height: 1.02; font-weight: 800; letter-spacing: -0.03em; }
+h1 em { font-style: normal; color: var(--accent); }
+h2 { font-size: 64px; line-height: 1.08; font-weight: 800; letter-spacing: -0.02em; }
+h2 em { font-style: normal; color: var(--accent); }
+.lede { font-size: 30px; color: var(--muted); max-width: 1100px; line-height: 1.4; }
+.window {
+  width: 100%;
+  text-align: left;
+  background: rgba(16, 20, 18, 0.92);
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.window-bar { display: flex; align-items: center; gap: 8px; padding: 14px 18px; border-bottom: 1px solid var(--hairline); color: var(--muted); font: 500 15px var(--mono); }
+.window-bar i { width: 12px; height: 12px; border-radius: 50%; background: rgba(255, 255, 255, 0.12); display: inline-block; }
+.window-bar span { margin-left: 10px; }
+.term { padding: 26px 30px 30px; font: 400 23px/1.55 var(--mono); white-space: pre-wrap; word-break: break-word; min-height: 200px; }
+.prompt { color: var(--accent); }
+.dim { color: var(--muted); }
+.ok { color: var(--accent); }
+.key { color: var(--blue); }
+.str { color: #c6a0f6; }
+.warn { color: var(--attention); }
+.chip { display: inline-flex; align-items: center; gap: 10px; padding: 12px 20px; border-radius: 999px; border: 1px solid var(--hairline); background: var(--surface); font: 600 22px var(--sans); color: var(--text); }
+.chip b { color: var(--accent); font-weight: 700; }
+.chips { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; }
+[data-step] { opacity: 0; transform: translateY(8px); transition: opacity 0.45s ease, transform 0.45s ease; }
+[data-step].shown { opacity: 1; transform: none; }
+.caret::after { content: "▍"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { [data-step] { transition: none; } .caret::after { animation: none; } }

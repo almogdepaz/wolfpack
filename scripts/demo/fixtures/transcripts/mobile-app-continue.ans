@@ -1,0 +1,8 @@
+@status {"state":"working"}
+{green}✔ Yes{/}
+@+400
+{white}⏺{/} {bold}Update{/}(app/screens/Settings.tsx)
+  {gray}⎿  14 additions, 22 removals{/}
+@+600
+{white}⏺{/} Settings now uses the new stack.
+  Running the app tests…

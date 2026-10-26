@@ -1,0 +1,117 @@
+{
+  "clock": "2026-10-26T09:00:00Z",
+  "machines": {
+    "workstation": {
+      "label": "Workstation",
+      "host": "workstation.example.ts.net",
+      "tailnetNodeId": "n-workstation",
+      "installationId": "d3e00000-0000-4000-8000-000000000001"
+    },
+    "macbook": {
+      "label": "MacBook",
+      "host": "macbook.example.ts.net",
+      "tailnetNodeId": "n-macbook",
+      "installationId": "d3e00000-0000-4000-8000-000000000002"
+    }
+  },
+  "sessions": [
+    {
+      "name": "api-gateway",
+      "machine": "workstation",
+      "harness": "claude",
+      "project": "api-gateway",
+      "screen": "api-gateway.ans",
+      "createdMinutesAgo": 42,
+      "reactions": {
+        "y": {
+          "play": "api-gateway-continue.ans",
+          "spawn": [
+            "200-security-review",
+            "201-load-test"
+          ]
+        }
+      }
+    },
+    {
+      "name": "200-security-review",
+      "machine": "workstation",
+      "harness": "claude",
+      "project": "api-gateway",
+      "parent": "api-gateway",
+      "screen": "200-security-review.ans",
+      "createdMinutesAgo": 0,
+      "deferred": true
+    },
+    {
+      "name": "201-load-test",
+      "machine": "workstation",
+      "harness": "pi",
+      "project": "api-gateway",
+      "parent": "api-gateway",
+      "screen": "201-load-test.ans",
+      "createdMinutesAgo": 0,
+      "deferred": true
+    },
+    {
+      "name": "billing-service",
+      "machine": "workstation",
+      "harness": "codex",
+      "project": "billing-service",
+      "screen": "billing-service.ans",
+      "createdMinutesAgo": 95
+    },
+    {
+      "name": "docs-site",
+      "machine": "workstation",
+      "harness": "gemini",
+      "project": "docs-site",
+      "screen": "docs-site.ans",
+      "createdMinutesAgo": 27
+    },
+    {
+      "name": "search-indexer",
+      "machine": "workstation",
+      "harness": "pi",
+      "project": "search-indexer",
+      "screen": "search-indexer.ans",
+      "createdMinutesAgo": 130
+    },
+    {
+      "name": "web-dashboard",
+      "machine": "workstation",
+      "harness": "codex",
+      "project": "web-dashboard",
+      "screen": "web-dashboard.ans",
+      "createdMinutesAgo": 64
+    },
+    {
+      "name": "ops-shell",
+      "machine": "workstation",
+      "harness": "custom",
+      "project": "infra",
+      "screen": "ops-shell.ans",
+      "createdMinutesAgo": 210
+    },
+    {
+      "name": "mobile-app",
+      "machine": "macbook",
+      "harness": "claude",
+      "project": "mobile-app",
+      "screen": "mobile-app.ans",
+      "createdMinutesAgo": 12,
+      "reactions": {
+        "y": {
+          "play": "mobile-app-continue.ans"
+        }
+      }
+    },
+    {
+      "name": "design-system",
+      "machine": "macbook",
+      "harness": "cursor",
+      "project": "design-system",
+      "screen": "design-system.ans",
+      "createdMinutesAgo": 33
+    }
+  ]
+}
