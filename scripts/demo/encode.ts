@@ -10,8 +10,8 @@
  * last frame, optionally speeds the clip up, and enforces its duration/size
  * budget (a miss fails the run instead of shipping an oversized file).
  * Results and ffprobe metadata go to <in>/encode.json. A scene's screencast
- * frames are deleted once every requested target that reads them succeeded,
- * unless --keep-frames is given.
+ * frames are deleted only when every target that reads that scene was encoded
+ * in this run (see scenesSafeToDelete), and never with --keep-frames.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -65,6 +65,16 @@ export const TARGETS: readonly EncodeTarget[] = [
     from: "s5-dashboard", holdEnd: 1, speed: 1.2, width: 440, fps: 5, maxSeconds: 15, maxBytes: 1.1 * MB,
   },
 ];
+
+/**
+ * Scenes whose frames may be deleted after a run: every target that reads the
+ * scene must have been encoded in that run, so a single `--target hero` never
+ * destroys frames the README GIF still needs.
+ */
+export function scenesSafeToDelete(encoded: ReadonlySet<string>, targets: readonly EncodeTarget[] = TARGETS): string[] {
+  const scenes = [...new Set(targets.map((target) => target.scene))];
+  return scenes.filter((scene) => targets.filter((target) => target.scene === scene).every((target) => encoded.has(target.name)));
+}
 
 interface SceneCheckpoint {
   readonly name: string;
@@ -218,8 +228,10 @@ if (import.meta.main) {
   writeFileSync(reportPath, `${JSON.stringify({ results, skipped }, null, 2)}\n`);
   if (skipped.length > 0) console.log(`skipped (no frames): ${skipped.join(", ")}`);
   if (args.get("keep-frames") !== "true") {
-    const scenes = new Set(available.map((target) => target.scene));
-    for (const scene of scenes) {
+    const encoded = new Set(available.map((target) => target.name));
+    const kept = [...new Set(available.map((target) => target.scene))].filter((scene) => !scenesSafeToDelete(encoded).includes(scene));
+    if (kept.length > 0) console.log(`kept frames for ${kept.join(", ")}: not every target reading them was encoded this run`);
+    for (const scene of scenesSafeToDelete(encoded)) {
       for (const entry of readdirSync(join(root, scene))) {
         if (entry === "frames" || entry.startsWith("frames-")) rmSync(join(root, scene, entry), { recursive: true, force: true });
       }

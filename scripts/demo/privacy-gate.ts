@@ -2,8 +2,10 @@
 /**
  * Privacy gate for demo media and site text. Forbidden strings are computed at
  * run time from this machine (hostname, pretty name, username, home directory,
- * Tailscale DNS names/IPs when the CLI answers) plus `--forbid a,b`, so nothing
- * private is ever written into the repository to be checked against.
+ * network interface addresses, Tailscale DNS names/IPs when the CLI answers)
+ * plus `--forbid a,b`, so nothing private is ever written into the repository
+ * to be checked against. Text is also scanned for credential-shaped strings
+ * (JWTs, GitHub/Tailscale/cloud tokens, private keys).
  *
  *   bun scripts/demo/privacy-gate.ts [--forbid a,b] <file-or-dir>...
  *
@@ -11,7 +13,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir, hostname, userInfo } from "node:os";
+import { homedir, hostname, networkInterfaces, userInfo } from "node:os";
 import { extname, join } from "node:path";
 
 const REPOSITORY_ROOT = join(import.meta.dirname, "..", "..");
@@ -19,6 +21,25 @@ const REPOSITORY_ROOT = join(import.meta.dirname, "..", "..");
 /** Strings shorter than this are too ambiguous to forbid (false positives in prose). */
 const MIN_FORBIDDEN_LENGTH = 3;
 const TEXT_EXTENSIONS = new Set([".html", ".htm", ".vtt", ".json", ".txt", ".md", ".css", ".js", ".ts", ".ans", ".svg", ".xml", ".srt", ".ass"]);
+
+/**
+ * Account names that are shared by convention (containers, CI images); as a
+ * bare word they would match ordinary text such as "node:fs". The home
+ * directory is still forbidden for these accounts.
+ */
+const GENERIC_ACCOUNT_NAMES = new Set(["root", "node", "runner", "user", "admin", "ubuntu", "debian", "app", "docker", "ci", "build"]);
+
+/** Credential shapes that must never appear in committed text or recorded pages. */
+export const SECRET_PATTERNS: ReadonlyArray<{ readonly name: string; readonly pattern: RegExp }> = [
+  { name: "JWT", pattern: /eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
+  { name: "GitHub token", pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})\b/ },
+  { name: "Tailscale key", pattern: /\btskey-[a-z]+-[A-Za-z0-9-]{10,}/ },
+  { name: "API secret key", pattern: /\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{24,}/ },
+  { name: "AWS access key", pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
+  { name: "Google API key", pattern: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  { name: "Slack token", pattern: /\bxox[abposr]-[A-Za-z0-9-]{10,}/ },
+  { name: "private key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+];
 
 export interface PrivacyHit {
   readonly where: string;
@@ -57,14 +78,29 @@ function tailscaleIdentity(): string[] {
   }
 }
 
+/** Non-loopback addresses of this machine's network interfaces (IPv4, IPv6, MAC). */
+export function interfaceAddresses(interfaces = networkInterfaces()): string[] {
+  const addresses: string[] = [];
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries ?? []) {
+      if (entry.internal) continue;
+      addresses.push(entry.address.split("%")[0]!);
+      if (entry.mac && entry.mac !== "00:00:00:00:00:00") addresses.push(entry.mac);
+    }
+  }
+  return addresses;
+}
+
 /** This machine's identifying strings plus any extra ones; de-duplicated, longest first. */
 export function forbiddenStrings(extra: readonly string[] = [], options: { readonly probeSystem?: boolean } = {}): string[] {
+  const username = userInfo().username;
   const system = options.probeSystem === false ? [] : [
     hostname(),
     hostname().split(".")[0],
     commandOutput("hostnamectl", ["--pretty"])?.trim(),
-    userInfo().username,
+    GENERIC_ACCOUNT_NAMES.has(username.toLowerCase()) ? undefined : username,
     homedir(),
+    ...interfaceAddresses(),
     ...tailscaleIdentity(),
   ];
   const values = [...system, ...extra]
@@ -90,10 +126,24 @@ export function publicAllowlist(packageJsonPath = join(REPOSITORY_ROOT, "package
   return [...owners];
 }
 
+/**
+ * Forbidden strings (case-insensitive, outside the allowlist) plus every
+ * credential-shaped match, so one call covers both leak classes.
+ */
 export function findForbidden(text: string, forbidden: readonly string[], allowed: readonly string[] = []): string[] {
   let haystack = text.toLowerCase();
   for (const value of allowed) haystack = haystack.split(value.toLowerCase()).join(" ");
-  return forbidden.filter((value) => haystack.includes(value.toLowerCase()));
+  return [...forbidden.filter((value) => haystack.includes(value.toLowerCase())), ...findSecrets(text)];
+}
+
+/** Credential-shaped substrings of `text`, labelled by kind. */
+export function findSecrets(text: string): string[] {
+  const hits: string[] = [];
+  for (const { pattern } of SECRET_PATTERNS) {
+    const match = new RegExp(pattern.source, `${pattern.flags.replace("g", "")}g`);
+    for (const found of text.matchAll(match)) hits.push(found[0]);
+  }
+  return hits;
 }
 
 /** Throws PrivacyViolation when `text` contains any forbidden string outside the public allowlist. */

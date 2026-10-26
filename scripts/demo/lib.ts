@@ -74,6 +74,8 @@ export function assertFreeDisk(path: string, minimum = MIN_FREE_DISK_BYTES): voi
 
 export interface FixtureServer {
   readonly machine: string;
+  /** Process id (and process group id) of the fixture server. */
+  readonly pid: number;
   readonly port: number;
   readonly baseUrl: string;
   /** Plays a transcript into a session; resolves when it finished. */
@@ -84,14 +86,58 @@ export interface FixtureServer {
 
 let playCounter = 0;
 
+/**
+ * The operator's environment minus every WOLFPACK_* setting (ports, tokens,
+ * binary overrides, config paths), so a fixture server can never pick up the
+ * operator's live configuration. WOLFPACK_TEST=1 is the only one set.
+ */
+export function fixtureServerEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const clean = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("WOLFPACK_")));
+  return { ...clean, WOLFPACK_TEST: "1" };
+}
+
+/** Process groups of fixture servers this process started and has not closed yet. */
+const liveFixtureGroups = new Set<number>();
+let fixtureCleanupInstalled = false;
+
+function signalFixtureGroups(signal: NodeJS.Signals): void {
+  for (const pid of liveFixtureGroups) {
+    try {
+      process.kill(-pid, signal);
+    } catch {
+      // already gone
+    }
+  }
+}
+
+/**
+ * Fixture servers run in their own process groups (so one kill reaches the
+ * re-exec'd server too), which also means a terminal Ctrl-C never reaches
+ * them. Kill every live group when this process exits or is interrupted.
+ */
+function installFixtureCleanup(): void {
+  if (fixtureCleanupInstalled) return;
+  fixtureCleanupInstalled = true;
+  process.on("exit", () => signalFixtureGroups("SIGKILL"));
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143], ["SIGHUP", 129]] as const) {
+    process.once(signal, () => {
+      signalFixtureGroups("SIGTERM");
+      process.exit(code);
+    });
+  }
+}
+
 export function startFixtureServer(machine: string): Promise<FixtureServer> {
+  installFixtureCleanup();
   return new Promise((resolveServer, reject) => {
     const child: ChildProcess = spawn("bun", [join(import.meta.dirname, "fixture-server.ts"), "--machine", machine], {
       cwd: REPOSITORY_ROOT,
       detached: true,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, WOLFPACK_TEST: "1" },
+      env: fixtureServerEnv(),
     });
+    const groupId = child.pid;
+    if (groupId !== undefined) liveFixtureGroups.add(groupId);
     const pending = new Map<string, () => void>();
     const stderr: string[] = [];
     child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk.toString()));
@@ -102,12 +148,15 @@ export function startFixtureServer(machine: string): Promise<FixtureServer> {
     }, 30_000);
     const stopGroup = (): void => {
       try {
-        if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
+        if (groupId !== undefined) process.kill(-groupId, "SIGTERM");
       } catch {
         // already gone
       }
     };
     const exited = new Promise<void>((resolveExit) => child.once("exit", () => resolveExit()));
+    void exited.then(() => {
+      if (groupId !== undefined) liveFixtureGroups.delete(groupId);
+    });
     lines.on("line", (line) => {
       const ready = /^READY:(\d+)$/.exec(line);
       if (ready) {
@@ -115,6 +164,7 @@ export function startFixtureServer(machine: string): Promise<FixtureServer> {
         const port = Number(ready[1]);
         resolveServer({
           machine,
+          pid: groupId ?? -1,
           port,
           baseUrl: `http://127.0.0.1:${port}`,
           play(session, transcript) {
@@ -132,10 +182,11 @@ export function startFixtureServer(machine: string): Promise<FixtureServer> {
             stopGroup();
             await Promise.race([exited, Bun.sleep(3000)]);
             try {
-              if (child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+              if (groupId !== undefined) process.kill(-groupId, "SIGKILL");
             } catch {
               // exited
             }
+            if (groupId !== undefined) liveFixtureGroups.delete(groupId);
           },
         });
         return;

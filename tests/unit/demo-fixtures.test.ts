@@ -12,19 +12,23 @@ import {
   transcriptDurationMs,
   validateFixtures,
 } from "../../scripts/demo/fixtures";
-import { FFMPEG_TOOL, parseArgs, resolveTool, startFixtureServer } from "../../scripts/demo/lib";
-import { writeConcatList } from "../../scripts/demo/encode";
+import { FFMPEG_TOOL, fixtureServerEnv, parseArgs, resolveTool, startFixtureServer } from "../../scripts/demo/lib";
+import { TARGETS, scenesSafeToDelete, writeConcatList } from "../../scripts/demo/encode";
 import {
   PrivacyViolation,
   assertClean,
   findForbidden,
+  findSecrets,
   forbiddenStrings,
+  interfaceAddresses,
   mask,
   publicAllowlist,
   scanPaths,
 } from "../../scripts/demo/privacy-gate";
 
 const ESC = "\x1b";
+/** This machine's identity probes are developer-machine guards; CI runners share generic accounts and hosts. */
+const machineProbe = process.env.CI ? test.skip : test;
 let scratch = "";
 
 afterEach(() => {
@@ -151,7 +155,34 @@ describe("privacy gate", () => {
     expect(hits.map((hit) => hit.where)).toEqual([join(dir, "a.vtt")]);
   });
 
-  test("committed demo sources contain none of this machine's identifying strings", () => {
+  test("catches planted credentials and interface addresses", () => {
+    const planted = [
+      ["gh", "p_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join(""),
+      ["tskey", "-auth-", "kAbCdEf1CNTRL-0123456789abcdef"].join(""),
+      ["ey", "JhbGciOiJIUzI1NiJ9", ".ey", "JzdWIiOiJkZW1vLXVzZXIifQ", ".c2lnbmF0dXJlLXZhbHVl"].join(""),
+      ["sk", "-ant-", "api03-0123456789abcdefghijklmnop"].join(""),
+      ["AK", "IA", "ABCDEFGHIJKLMNOP"].join(""),
+      ["-----BEGIN ", "OPENSSH PRIVATE KEY-----"].join(""),
+    ];
+    for (const secret of planted) expect(findSecrets(`config: ${secret} end`)).toEqual([secret]);
+    expect(findSecrets("session.state eyJ is fine, ghp_short too, tskey-only")).toEqual([]);
+    const dir = tempDir();
+    writeFileSync(join(dir, "page.html"), `<pre>${planted[0]}</pre>`);
+    expect(scanPaths([dir], [], []).hits).toHaveLength(1);
+
+    const addresses = interfaceAddresses({
+      eth0: [
+        { address: "192.0.2.44", netmask: "255.255.255.0", family: "IPv4", mac: "02:42:ac:11:00:02", internal: false, cidr: null },
+        { address: "fe80::42:acff:fe11:2%eth0", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "02:42:ac:11:00:02", internal: false, cidr: null, scopeid: 2 },
+      ],
+      lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: true, cidr: null }],
+    });
+    expect(addresses).toEqual(["192.0.2.44", "02:42:ac:11:00:02", "fe80::42:acff:fe11:2", "02:42:ac:11:00:02"]);
+    expect(findForbidden("peer at 192.0.2.44:18790", addresses)).toEqual(["192.0.2.44"]);
+    for (const address of interfaceAddresses()) expect(forbiddenStrings()).toContain(address);
+  });
+
+  machineProbe("committed demo sources contain none of this machine's identifying strings", () => {
     const { hits } = scanPaths([join(import.meta.dirname, "..", "..", "scripts", "demo")], forbiddenStrings());
     expect(hits).toEqual([]);
   });
@@ -163,6 +194,19 @@ describe("recorder and encoder helpers", () => {
     expect(() => parseArgs(["desktop"])).toThrow("unexpected argument");
     expect(() => resolveTool(FFMPEG_TOOL, {})).toThrow("WOLFPACK_FFMPEG is not set");
     expect(() => resolveTool(FFMPEG_TOOL, { WOLFPACK_FFMPEG: "/nonexistent/ffmpeg" })).toThrow("does not exist");
+  });
+
+  test("frames are deleted only when every target of their scene was encoded in the run", () => {
+    const desktopTargets = TARGETS.filter((target) => target.scene === "desktop").map((target) => target.name);
+    expect(desktopTargets.length).toBeGreaterThan(1);
+    expect(scenesSafeToDelete(new Set(["hero"]))).toEqual([]);
+    expect(scenesSafeToDelete(new Set(desktopTargets))).toEqual(["desktop"]);
+    expect(scenesSafeToDelete(new Set(TARGETS.map((target) => target.name))).sort()).toEqual(["cards", "cli", "desktop", "mobile"]);
+  });
+
+  test("fixture servers get no WOLFPACK_* setting from the operator except WOLFPACK_TEST", () => {
+    const env = fixtureServerEnv({ PATH: "/bin", WOLFPACK_PORT: "18790", WOLFPACK_BROKER_BIN: "/x", WOLFPACK_TEST: "0", HOME: "/h" });
+    expect(env).toEqual({ PATH: "/bin", HOME: "/h", WOLFPACK_TEST: "1" });
   });
 
   test("concat lists hold each frame until the next one, scaled by speed, then hold the last", () => {
@@ -177,7 +221,43 @@ describe("recorder and encoder helpers", () => {
   });
 });
 
+function processGroupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("fixture server", () => {
+  test("an interrupted recorder takes its fixture servers down with it", async () => {
+    const dir = tempDir();
+    const script = join(dir, "interrupted.ts");
+    writeFileSync(script, [
+      `import { startFixtureServer } from ${JSON.stringify(join(import.meta.dirname, "..", "..", "scripts", "demo", "lib.ts"))};`,
+      "const servers = await Promise.all([startFixtureServer(\"workstation\"), startFixtureServer(\"macbook\")]);",
+      "console.log(`PIDS:${servers.map((server) => server.pid).join(\",\")}`);",
+      "setInterval(() => {}, 1000);",
+    ].join("\n"));
+    const recorder = Bun.spawn(["bun", script], { stdout: "pipe", stderr: "pipe" });
+    const reader = recorder.stdout.getReader();
+    let output = "";
+    while (!output.includes("\n")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      output += new TextDecoder().decode(value);
+    }
+    const pids = /PIDS:([\d,]+)/.exec(output)?.[1]?.split(",").map(Number) ?? [];
+    expect(pids).toHaveLength(2);
+    for (const pid of pids) expect(processGroupAlive(pid)).toBe(true);
+    recorder.kill("SIGINT");
+    expect(await recorder.exited).toBe(130);
+    const deadline = Date.now() + 5000;
+    while (pids.some(processGroupAlive) && Date.now() < deadline) await Bun.sleep(50);
+    expect(pids.filter(processGroupAlive)).toEqual([]);
+  }, 40_000);
+
   test("serves fixture identities and states instead of this machine's name", async () => {
     const server = await startFixtureServer("workstation");
     try {
@@ -193,7 +273,7 @@ describe("fixture server", () => {
       expect(gateway?.lastLine).toBe("Allow edit to src/server/routes.ts? (y/n)");
       expect(gateway?.identity?.agentKind).toBe("claude");
       expect(sessions.some((session) => session.name === "200-security-review")).toBe(false);
-      assertClean(JSON.stringify({ info, machine, sessions }), "fixture api", forbiddenStrings());
+      if (!process.env.CI) assertClean(JSON.stringify({ info, machine, sessions }), "fixture api", forbiddenStrings());
     } finally {
       await server.close();
     }
