@@ -64,13 +64,13 @@ export interface PromoSegment {
 
 export const PROMO_SEGMENTS: readonly PromoSegment[] = [
   { id: "s0-title", caption: "s0", layout: "full", scene: "cards", segment: "frames-title", minSeconds: 5.5 },
-  { id: "s1-dashboard", caption: "s1", layout: "desktop", scene: "desktop", to: "s2-start", minSeconds: 5.5 },
+  { id: "s1-dashboard", caption: "s1", layout: "desktop", scene: "desktop", to: "s2-start", minSeconds: 7 },
   { id: "s2-answer", caption: "s2", layout: "desktop", scene: "desktop", from: "s2-start", to: "s3-start", holdEnd: 0.6 },
   { id: "s3-switch-grid", caption: "s3", layout: "desktop", scene: "desktop", from: "s3-start", to: "s4-start", holdEnd: 0.4 },
   { id: "s4-delegation", caption: "s4", layout: "desktop", scene: "desktop", from: "s4-start", holdEnd: 1.5, minSeconds: 7 },
   { id: "s5-phone", caption: "s5", layout: "phone", scene: "mobile", holdEnd: 1, minSeconds: 12 },
   { id: "s6-cli", caption: "s6", layout: "full", scene: "cli", segment: "frames-cli", minSeconds: 13.5 },
-  { id: "s7-privacy", caption: "s7", layout: "full", scene: "cards", segment: "frames-privacy", minSeconds: 8.5 },
+  { id: "s7-privacy", caption: "s7", layout: "full", scene: "cards", segment: "frames-privacy", minSeconds: 9.5 },
   { id: "s8-install", caption: "s8", layout: "full", scene: "cards", segment: "frames-install", minSeconds: 7.5 },
   { id: "end", caption: null, layout: "full", scene: "cards", segment: "frames-end", minSeconds: 5 },
 ];
@@ -160,6 +160,7 @@ async function renderOverlays(root: string, work: string, cues: readonly Cue[], 
     const dashboard = join(root, "stills", "checkpoints", "01-desktop-sessions.png");
     // Relative to cards/, so no local path ends up in the page (the privacy gate checks the DOM).
     const bg = existsSync(dashboard) ? `&bg=${encodeURIComponent(relative(CARDS_DIR, dashboard).split(sep).join("/"))}` : "";
+    if (!bg) console.warn(`promo: ${relative(root, dashboard)} not found (record --scene stills); the phone scene falls back to a flat backdrop`);
     const overlays: Overlays = { base: { desktop: "", phone: "" }, top: { desktop: "", phone: "" }, captions: {} };
     for (const layout of ["desktop", "phone"] as const) {
       overlays.base[layout] = join(work, `canvas-${layout}-base.png`);
