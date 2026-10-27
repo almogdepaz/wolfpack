@@ -180,7 +180,8 @@ test("captures a full-page diagnostic and stays within generous local budgets", 
     )).toBeGreaterThan(0);
   }
   for (const video of await page.locator("video").all()) {
-    await video.scrollIntoViewIfNeeded();
+    // The tour video sits in a closed <dialog> until requested.
+    if (await video.isVisible()) await video.scrollIntoViewIfNeeded();
     const media = await video.evaluate((element) => {
       const htmlVideo = element as HTMLVideoElement;
       return {
@@ -386,6 +387,90 @@ test("tablet and wide desktop viewports keep the layout inside the page width", 
     // Only code cards that actually overflow are keyboard-scrollable stops.
     await expect.poll(() => page.locator(".code-card").evaluateAll((cards) => cards.every((card) =>
       (card.scrollWidth > card.clientWidth + 1) === card.hasAttribute("tabindex")))).toBe(true);
+  }
+});
+
+const TOUR_VIDEO = /\/assets\/wolfpack-tour\.[0-9a-f]{16}\.mp4$/;
+
+test("Watch the demo opens the tour player, loads nothing until play, and closes back to the link", async ({ page }) => {
+  const tourRequests: string[] = [];
+  page.on("request", (request) => {
+    if (TOUR_VIDEO.test(new URL(request.url()).pathname)) tourRequests.push(request.url());
+  });
+  const link = page.locator(".hero").getByRole("link", { name: "Watch the demo" });
+  // Without JS the link is a plain download of the same mp4.
+  await expect(link).toHaveAttribute("href", /^assets\/wolfpack-tour\.[0-9a-f]{16}\.mp4$/);
+  const dialog = page.getByRole("dialog", { name: "Wolfpack tour" });
+  await expect(dialog).toBeHidden();
+
+  await link.click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Close" })).toBeFocused();
+  // By id: a closed dialog leaves the accessibility tree, and the video is checked after closing.
+  const video = page.locator("#tour video");
+  await expect(video).toBeVisible();
+  const media = await video.evaluate((element) => {
+    const htmlVideo = element as HTMLVideoElement;
+    return {
+      controls: htmlVideo.controls,
+      playsInline: htmlVideo.playsInline,
+      autoplay: htmlVideo.autoplay,
+      preload: htmlVideo.preload,
+      poster: htmlVideo.poster,
+      networkState: htmlVideo.networkState,
+      description: document.getElementById(htmlVideo.getAttribute("aria-describedby") ?? "")?.textContent ?? "",
+    };
+  });
+  expect(media).toMatchObject({ controls: true, playsInline: true, autoplay: false, preload: "none" });
+  expect(media.description).toContain("Captions are burned into the video");
+  expect(media.networkState).not.toBe(2); // NETWORK_LOADING
+  const posterPath = new URL(media.poster).pathname;
+  expect(posterPath).toMatch(/\/assets\/wolfpack-tour-poster\.[0-9a-f]{16}\.webp$/);
+  await expect.poll(() => (siteResponses.get(page) ?? [])
+    .some((response) => new URL(response.url()).pathname === posterPath && response.status() === 200)).toBe(true);
+  expect(tourRequests).toEqual([]);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(link).toBeFocused();
+
+  // Playback in Chromium: the first bytes load only once play is requested.
+  await link.click();
+  await expect(dialog).toBeVisible();
+  await video.evaluate((element) => {
+    const htmlVideo = element as HTMLVideoElement;
+    htmlVideo.muted = true;
+    return htmlVideo.play();
+  });
+  await expect.poll(() => tourRequests.length).toBeGreaterThan(0);
+  await expect.poll(() => video.evaluate((element) => (element as HTMLVideoElement).currentTime), { timeout: 15_000 })
+    .toBeGreaterThan(0.5);
+  expect(await video.evaluate((element) => (element as HTMLVideoElement).videoWidth)).toBe(1920);
+
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(link).toBeFocused();
+  expect(await video.evaluate((element) => (element as HTMLVideoElement).paused)).toBe(true);
+  expect(browserErrors.get(page)).toEqual([]);
+});
+
+test("open tour player fits and has no serious accessibility violations at 320, 390, 1024 and 1440", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "viewport sweep runs once");
+  const link = page.locator(".hero").getByRole("link", { name: "Watch the demo" });
+  const dialog = page.getByRole("dialog", { name: "Wolfpack tour" });
+  for (const width of [320, 390, 1024, 1440]) {
+    await page.setViewportSize({ width, height: width < 760 ? 844 : 900 });
+    await link.click();
+    await expect(dialog).toBeVisible();
+    const box = await dialog.boundingBox();
+    expect(box, `dialog box at ${width}px`).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width, `dialog fits at ${width}px`).toBeLessThanOrEqual(width);
+    await expect(dialog.getByRole("button", { name: "Close" })).toBeInViewport();
+    const axe = await new AxeBuilder({ page }).analyze();
+    expect(axe.violations.filter((violation) => ["serious", "critical"].includes(violation.impact || "")), `axe at ${width}px`).toEqual([]);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
   }
 });
 

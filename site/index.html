@@ -35,7 +35,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" data-deferred-style>
-  <link rel="stylesheet" href="styles.bdb0c0f07ac1973f.css">
+  <link rel="stylesheet" href="styles.7edfa72f6231d5e0.css">
 </head>
 <body>
   <a class="skip-link" href="#top">Skip to content</a>
@@ -54,7 +54,7 @@
         <div class="eyebrow"><i aria-hidden="true"></i> SELF-HOSTED CONTROL ROOM FOR CODING AGENTS</div>
         <h1 id="hero-title">Your agents.<br><em>Your machines.</em><br>Your tailnet.</h1>
         <p class="lede">See which agent needs you, answer from anywhere, and keep every session alive. Wolfpack runs on machines you own and reaches them over your Tailscale network.</p>
-        <div class="hero-actions"><a class="button primary install-cta" href="#install">Install Wolfpack</a><a class="button ghost" href="#demo"><span aria-hidden="true">▶</span> Watch the demo</a></div>
+        <div class="hero-actions"><a class="button primary install-cta" href="#install">Install Wolfpack</a><a class="button ghost" href="assets/wolfpack-tour.fd4758e5e701d4dc.mp4" data-tour-open><span aria-hidden="true">▶</span> Watch the demo</a></div>
         <ul class="proof-points" aria-label="Why Wolfpack">
           <li>No account</li><li>No relay</li><li>Tailscale is the trust boundary</li><li>Rust PTY broker outlives the server</li><li>MIT</li>
         </ul>
@@ -292,7 +292,19 @@
       <p class="community-links"><a href="https://github.com/almogdepaz/wolfpack/discussions/262">Become a tester</a> after your first session, or join the <a href="https://github.com/almogdepaz/wolfpack/discussions">community discussions</a>.</p>
     </section>
   </main>
+  <dialog class="tour" id="tour" aria-labelledby="tour-title">
+    <div class="tour-panel">
+      <div class="tour-head">
+        <h2 id="tour-title">Wolfpack tour</h2>
+        <form method="dialog"><button class="tour-close" type="submit">Close <span aria-hidden="true">✕</span></button></form>
+      </div>
+      <video class="tour-video" controls playsinline preload="none" poster="assets/wolfpack-tour-poster.0fd8ad00480aa619.webp" width="1920" height="1080" aria-labelledby="tour-title" aria-describedby="tour-note">
+        <source src="assets/wolfpack-tour.fd4758e5e701d4dc.mp4" type="video/mp4">
+      </video>
+      <p class="tour-note" id="tour-note">An 86-second tour with demo sessions. Captions are burned into the video, and it has no audio.</p>
+    </div>
+  </dialog>
   <footer class="footer wrap"><a class="brand" href="#top"><img src="assets/wolfpack-icon.a7c43b6bdecac5a6.svg" alt="" width="22" height="22"> <span>WOLFPACK</span></a><span class="footer-note">Self-hosted. Open source. Yours.</span><div><a href="https://github.com/almogdepaz/wolfpack">GitHub ↗</a><a href="https://github.com/almogdepaz/wolfpack/blob/main/LICENSE">MIT License</a></div></footer>
-  <script src="homepage.02cb4f78f91b2174.js"></script>
+  <script src="homepage.e0e1fa7560363675.js"></script>
 </body>
 </html>

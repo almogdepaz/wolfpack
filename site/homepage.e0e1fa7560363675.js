@@ -116,3 +116,30 @@ window.addEventListener('resize', () => {
 });
 if (document.fonts) document.fonts.ready.then(syncCodeCardFocus);
 syncCodeCardFocus();
+
+// Tour player. "Watch the demo" links to the tour mp4, which is the no-JS
+// fallback; with JS it opens the modal <dialog> instead. The video keeps
+// preload="none", so nothing but the poster loads until someone presses play.
+// Esc and the Close button close the dialog; closing pauses the video and
+// returns focus to the link that opened it.
+const tour = document.getElementById('tour');
+if (tour && typeof tour.showModal === 'function') {
+  const video = tour.querySelector('video');
+  let opener = null;
+  for (const link of document.querySelectorAll('[data-tour-open]')) {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      opener = link;
+      tour.showModal();
+    });
+  }
+  tour.addEventListener('close', () => {
+    video.pause();
+    opener?.focus();
+  });
+  // A click on the backdrop, outside the panel, also closes.
+  tour.addEventListener('click', (event) => {
+    if (event.target === tour) tour.close();
+  });
+}
+

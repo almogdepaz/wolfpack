@@ -86,6 +86,18 @@ const RENDER_ASSET_SPECS = [
     extension: ".mp4",
     compatibilityFileName: undefined,
   },
+  {
+    directory: "assets",
+    stem: "wolfpack-tour",
+    extension: ".mp4",
+    compatibilityFileName: undefined,
+  },
+  {
+    directory: "assets",
+    stem: "wolfpack-tour-poster",
+    extension: ".webp",
+    compatibilityFileName: undefined,
+  },
 ] as const;
 interface ElementAttributes {
   readonly [name: string]: string;

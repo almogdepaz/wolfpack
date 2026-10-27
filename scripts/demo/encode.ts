@@ -311,11 +311,21 @@ function encodeClip(ffmpeg: string, ffprobe: string, root: string, target: ClipT
 }
 
 /**
+ * Promo outputs `--install` copies when the promo is built in the same run:
+ * the site's tour player gets the captions-only cut and its poster. The
+ * voiceover and social cuts stay in .demo-out/promo/.
+ */
+export const PROMO_INSTALL: readonly Pick<TargetBase, "out" | "install">[] = [
+  { out: "promo/wolfpack-tour.mp4", install: ["site/assets/wolfpack-tour.mp4"] },
+  { out: "promo/poster.webp", install: ["site/assets/wolfpack-tour-poster.webp"] },
+];
+
+/**
  * Copies encoded outputs to their repository paths, then normalises site/
  * (content hashes, stale siblings, index.html references) and fails on any
  * site:check finding, so an install never leaves the site half-renamed.
  */
-function installOutputs(root: string, encoded: readonly EncodeTarget[]): void {
+function installOutputs(root: string, encoded: readonly Pick<TargetBase, "out" | "install">[]): void {
   let site = false;
   for (const target of encoded) {
     for (const destination of target.install ?? []) {
@@ -397,7 +407,7 @@ if (import.meta.main) {
   const reportPath = join(root, "encode.json");
   writeFileSync(reportPath, `${JSON.stringify({ results, skipped }, null, 2)}\n`);
   if (skipped.length > 0) console.log(`skipped (no recorded input): ${skipped.join(", ")}`);
-  if (args.get("install") === "true") installOutputs(root, available);
+  if (args.get("install") === "true") installOutputs(root, [...available, ...(wantPromo ? PROMO_INSTALL : [])]);
   if (args.get("keep-frames") !== "true") {
     const encoded = new Set([...available.map((target) => target.name), ...(wantPromo ? [PROMO_TARGET] : [])]);
     const kept = [...new Set(available.filter(isClip).map((target) => target.scene))].filter((scene) => !scenesSafeToDelete(encoded).includes(scene));

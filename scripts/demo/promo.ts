@@ -239,7 +239,9 @@ function joinSegments(ffmpeg: string, files: readonly string[], durations: reado
   }
   filters.push("[joined]format=yuv420p[out]");
   sh([ffmpeg, "-loglevel", "error", "-y", ...inputs, "-filter_complex", filters.join(";"), "-map", "[out]",
-    "-r", String(FPS), "-c:v", "libx264", "-preset", "slow", "-crf", String(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", out]);
+    // High@L4.0 yuv420p with faststart: the site serves this cut, and Safari/iOS need level <= 4.0.
+    "-r", String(FPS), "-c:v", "libx264", "-preset", "slow", "-crf", String(crf), "-profile:v", "high", "-level:v", "4.0",
+    "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", out]);
   return total;
 }
 

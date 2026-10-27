@@ -13,7 +13,7 @@ import {
   validateFixtures,
 } from "../../scripts/demo/fixtures";
 import { FFMPEG_TOOL, fixtureServerEnv, parseArgs, resolveTool, startFixtureServer } from "../../scripts/demo/lib";
-import { TARGETS, frameIndex, scenesSafeToDelete, writeConcatList } from "../../scripts/demo/encode";
+import { PROMO_INSTALL, TARGETS, frameIndex, scenesSafeToDelete, writeConcatList } from "../../scripts/demo/encode";
 import { PROMO_SEGMENTS, buildVtt, crossfadeTimeline, formatVttTime, parseCues } from "../../scripts/demo/promo";
 import {
   PrivacyViolation,
@@ -205,6 +205,13 @@ describe("recorder and encoder helpers", () => {
     expect(scenesSafeToDelete(new Set([...desktopTargets, "promo"]))).toEqual(["desktop"]);
     expect(scenesSafeToDelete(new Set(TARGETS.map((target) => target.name)))).toEqual([]);
     expect(scenesSafeToDelete(new Set([...TARGETS.map((target) => target.name), "promo"])).sort()).toEqual(["cards", "cli", "desktop", "mobile"]);
+  });
+
+  test("--install puts only the captions-only tour and its poster on the site", () => {
+    expect(PROMO_INSTALL).toEqual([
+      { out: "promo/wolfpack-tour.mp4", install: ["site/assets/wolfpack-tour.mp4"] },
+      { out: "promo/poster.webp", install: ["site/assets/wolfpack-tour-poster.webp"] },
+    ]);
   });
 
   test("a checkpoint cuts at the frame that was on screen, not the next change", () => {
