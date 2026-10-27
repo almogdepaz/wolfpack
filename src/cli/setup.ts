@@ -186,11 +186,13 @@ function reconcileSetupService(
   let serviceRunning = serviceInstalled && isServiceRunning();
   const descriptorSettingsChanged = previousConfig?.devDir !== config.devDir
     || previousConfig?.port !== config.port;
-  const remotePolicyChanged = previousConfig?.tailscaleHostname !== config.tailscaleHostname;
+  // The server reads the remote origin and display name only at startup.
+  const serverStartupSettingsChanged = previousConfig?.tailscaleHostname !== config.tailscaleHostname
+    || previousConfig?.displayName !== config.displayName;
   if (descriptorSettingsChanged && serviceInstalled) {
     refreshInstalledServerService({ reload: !deferServiceRestart });
     if (!deferServiceRestart) serviceRunning = isServiceRunning();
-  } else if (remotePolicyChanged && serviceRunning && !deferServiceRestart) {
+  } else if (serverStartupSettingsChanged && serviceRunning && !deferServiceRestart) {
     if (!serviceRestart({ broker: false, skipBrokerSessionWarning: true })) {
       throw new Error("failed to restart server service after setup changes");
     }
@@ -267,6 +269,8 @@ export interface SetupOptions {
   readonly deferServiceRestart?: boolean;
   readonly devDir?: string;
   readonly port?: number;
+  /** Machine display-name override; empty clears it. */
+  readonly displayName?: string;
   /** Internal package-owner handoff after interactive service-install acceptance. */
   readonly onServiceInstallAccepted?: () => Promise<void>;
 }
@@ -369,12 +373,14 @@ export async function setup(options: SetupOptions = {}) {
     port,
   });
 
+  const displayName = options.displayName ?? previousConfig?.displayName;
   const config: Config = {
     devDir,
     port,
     ...((verifiedRemoteHostname ?? (!interactive ? previousConfig?.tailscaleHostname : undefined)) && {
       tailscaleHostname: verifiedRemoteHostname ?? previousConfig?.tailscaleHostname,
     }),
+    ...(displayName && { displayName }),
   };
   saveConfig(config);
   // The plist/unit embeds config values, while the remote-origin policy is

@@ -1,8 +1,9 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { hostname, platform } from "node:os";
+import { loadConfig } from "./config.js";
 import { isMachineDisplayName } from "./tailnet-machine-contract.js";
 
-/** Display metadata only. A future host setting can supply configuredName here. */
+/** Display metadata only. configuredName is the host config `displayName` override. */
 export function resolveMachineDisplayName(input: {
   readonly configuredName?: unknown;
   readonly computerName?: unknown;
@@ -28,10 +29,15 @@ export function readComputerName(system: NodeJS.Platform = platform(), run: Comp
   } catch { return undefined; }
 }
 
-// Capture the automatic default once at process startup. No request-time probe,
-// cache timers, persistent name file, or dependency on Tailscale availability.
-const defaultDisplayName = resolveMachineDisplayName({ computerName: readComputerName(), hostName: hostname() });
+// Capture the name once at process startup; changing the configured name takes
+// a server restart. No request-time probe, cache timers, separate name file, or
+// dependency on Tailscale availability.
+const startupDisplayName = resolveMachineDisplayName({
+  configuredName: loadConfig()?.displayName,
+  computerName: readComputerName(),
+  hostName: hostname(),
+});
 
 export function getMachineDisplayName(): string {
-  return defaultDisplayName;
+  return startupDisplayName;
 }

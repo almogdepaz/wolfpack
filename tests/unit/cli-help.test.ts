@@ -458,4 +458,18 @@ describe("setup option parsing", () => {
     });
     expect(parseSetupOptions(["--non-interactive", "--port", "80"])).toBeNull();
   });
+
+  test("accepts a validated machine display-name override, or empty to clear it", async () => {
+    const { parseSetupOptions } = await import("../../src/cli/index.ts");
+    expect(parseSetupOptions(["--non-interactive", "--display-name", "  Studio Mac "])).toEqual({
+      nonInteractive: true, deferServiceRestart: false, displayName: "Studio Mac",
+    });
+    expect(parseSetupOptions(["--non-interactive", "--display-name", ""])).toEqual({
+      nonInteractive: true, deferServiceRestart: false, displayName: "",
+    });
+    expect(parseSetupOptions(["--display-name", "Studio Mac"])).toBeNull();
+    expect(parseSetupOptions(["--non-interactive", "--display-name"])).toBeNull();
+    expect(parseSetupOptions(["--non-interactive", "--display-name", "bad\nname"])).toBeNull();
+    expect(parseSetupOptions(["--non-interactive", "--display-name", "x".repeat(129)])).toBeNull();
+  });
 });

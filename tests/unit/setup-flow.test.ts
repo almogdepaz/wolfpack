@@ -26,8 +26,14 @@ interface SetupFlowFixture {
     readonly devDir?: string;
     readonly port?: number;
     readonly deferServiceRestart?: boolean;
+    readonly displayName?: string;
   };
-  readonly existingConfig?: { readonly devDir: string; readonly port: number; readonly tailscaleHostname?: string };
+  readonly existingConfig?: {
+    readonly devDir: string;
+    readonly port: number;
+    readonly tailscaleHostname?: string;
+    readonly displayName?: string;
+  };
 }
 
 interface SetupFlowResult {
@@ -255,6 +261,39 @@ describe("first-run setup", () => {
       port: 24444,
       tailscaleHostname: "preserved.tailnet.ts.net",
     });
+  });
+
+  test("persists a display-name override and restarts only the running server", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const result = runSetupFlow(home, {
+      existingConfig: { devDir: home, port: 18790 },
+      setupOptions: { displayName: "Studio Mac" },
+      serviceInstalled: true,
+      serviceRunning: true,
+    });
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual({
+      devDir: home,
+      port: 18790,
+      displayName: "Studio Mac",
+    });
+    expect(result.stdout).toContain("SERVICE_RESTART={\"broker\":false,\"skipBrokerSessionWarning\":true}");
+    expect(result.stdout).not.toContain("SERVICE_REFRESH=");
+  });
+
+  test("preserves an existing display name and clears it only on an explicit empty override", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const existingConfig = { devDir: home, port: 18790, displayName: "Studio Mac" };
+    const preserved = runSetupFlow(home, { existingConfig, serviceInstalled: true, serviceRunning: true });
+    expectSuccessfulSetup(preserved);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual(existingConfig);
+    expect(preserved.stdout).not.toContain("SERVICE_RESTART=");
+
+    const cleared = runSetupFlow(home, { existingConfig, setupOptions: { displayName: "" } });
+    expectSuccessfulSetup(cleared);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual({ devDir: home, port: 18790 });
   });
 
   test.each([18790, 24444])("persists and presents both URLs below the verified remote QR with local port %p", (port) => {

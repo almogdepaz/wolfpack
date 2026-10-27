@@ -34,6 +34,7 @@ import { applyServiceAuthFile } from "./service-auth.js";
 import { logsCommand } from "./logs.js";
 import { EVENTS_USAGE, eventsCommand } from "./events.js";
 import { issueJwt } from "./api.js";
+import { isMachineDisplayName } from "../tailnet-machine-contract.js";
 import { extensionsCommand } from "./extensions.ts";
 import { extensionDataCommand, extensionDataUsage } from "./extension-data.ts";
 import {
@@ -113,11 +114,14 @@ Help:
 }
 
 export function setupUsage(): string {
-  return `Usage: wolfpack setup [--non-interactive] [--defer-service-restart] [--dev-dir <path>] [--port <1024-65535>]
+  return `Usage: wolfpack setup [--non-interactive] [--defer-service-restart] [--dev-dir <path>] [--port <1024-65535>] [--display-name <name>]
 
 Run the first-run setup wizard. Unattended setup must be explicitly enabled;
 unspecified fields preserve an existing valid configuration. Service-restart deferral
-writes descriptor changes without activation for an installer-managed handoff.`;
+writes descriptor changes without activation for an installer-managed handoff.
+--display-name sets the machine name shown on this and peer dashboards (at most
+128 visible characters); an empty value restores the automatic computer name.
+A running server service restarts to apply it.`;
 }
 
 export interface ParsedSetupOptions {
@@ -125,10 +129,11 @@ export interface ParsedSetupOptions {
   readonly deferServiceRestart: boolean;
   readonly devDir?: string;
   readonly port?: number;
+  readonly displayName?: string;
 }
 
 export function parseSetupOptions(argv: readonly string[]): ParsedSetupOptions | null {
-  const parsed: { nonInteractive: boolean; deferServiceRestart: boolean; devDir?: string; port?: number } = {
+  const parsed: { nonInteractive: boolean; deferServiceRestart: boolean; devDir?: string; port?: number; displayName?: string } = {
     nonInteractive: false,
     deferServiceRestart: false,
   };
@@ -141,9 +146,14 @@ export function parseSetupOptions(argv: readonly string[]): ParsedSetupOptions |
       const port = Number(argv[++i]);
       if (!Number.isInteger(port) || port < 1024 || port > 65535) return null;
       parsed.port = port;
+    } else if (arg === "--display-name" && i + 1 < argv.length) {
+      // Empty clears the override; anything else must satisfy the handshake contract.
+      const displayName = argv[++i]!.trim();
+      if (displayName && !isMachineDisplayName(displayName)) return null;
+      parsed.displayName = displayName;
     } else return null;
   }
-  if ((parsed.devDir !== undefined || parsed.port !== undefined) && !parsed.nonInteractive) return null;
+  if ((parsed.devDir !== undefined || parsed.port !== undefined || parsed.displayName !== undefined) && !parsed.nonInteractive) return null;
   return parsed;
 }
 

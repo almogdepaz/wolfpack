@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { platform } from "node:os";
 import { isValidPort } from "./validation.js";
 import { resolveWolfpackDir } from "./wolfpack-dir.js";
-import { canonicalTailnetOrigin } from "./tailnet-machine-contract.js";
+import { canonicalTailnetOrigin, isMachineDisplayName } from "./tailnet-machine-contract.js";
 
 export const IS_MACOS = platform() === "darwin";
 export const IS_LINUX = platform() === "linux";
@@ -16,6 +16,8 @@ export interface Config {
   devDir: string;
   port: number;
   tailscaleHostname?: string;
+  /** Host-owned machine display name; overrides the OS computer name in every handshake. */
+  displayName?: string;
 }
 
 export function parseConfig(raw: unknown): Config | null {
@@ -29,7 +31,8 @@ export function parseConfig(raw: unknown): Config | null {
     : "";
   const canonicalOrigin = configuredHostname ? canonicalTailnetOrigin(configuredHostname) : null;
   const tailscaleHostname = canonicalOrigin?.slice("https://".length);
-  return { devDir, port, tailscaleHostname };
+  const displayName = typeof candidate.displayName === "string" ? candidate.displayName.trim() : undefined;
+  return { devDir, port, tailscaleHostname, ...(isMachineDisplayName(displayName) && { displayName }) };
 }
 
 export function loadConfigFromText(text: string): Config | null {

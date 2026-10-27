@@ -38,6 +38,22 @@ describe("parseConfig", () => {
     });
   });
 
+  test("keeps a trimmed host display-name override", () => {
+    expect(parseConfig({
+      devDir: "/Users/home/Dev",
+      port: 18790,
+      displayName: "  Studio Mac  ",
+    })).toMatchObject({ displayName: "Studio Mac" });
+  });
+
+  test("clears an invalid display-name override without discarding local config", () => {
+    for (const displayName of [42, "", "   ", "bad\nname", "x".repeat(129)]) {
+      const config = parseConfig({ devDir: "/tmp/x", port: 8787, displayName });
+      expect(config).toMatchObject({ devDir: "/tmp/x", port: 8787 });
+      expect(config?.displayName).toBeUndefined();
+    }
+  });
+
   test("rejects non-number and fractional ports", () => {
     for (const port of ["18790", true, false, 18790.5, NaN, Infinity]) {
       expect(parseConfig({ devDir: "/Users/home/Dev", port })).toBeNull();
