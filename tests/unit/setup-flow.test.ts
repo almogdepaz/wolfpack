@@ -291,9 +291,16 @@ describe("first-run setup", () => {
     expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual(existingConfig);
     expect(preserved.stdout).not.toContain("SERVICE_RESTART=");
 
-    const cleared = runSetupFlow(home, { existingConfig, setupOptions: { displayName: "" } });
+    const cleared = runSetupFlow(home, {
+      existingConfig,
+      setupOptions: { displayName: "" },
+      serviceInstalled: true,
+      serviceRunning: true,
+    });
     expectSuccessfulSetup(cleared);
     expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual({ devDir: home, port: 18790 });
+    expect(cleared.stdout).toContain("SERVICE_RESTART={\"broker\":false,\"skipBrokerSessionWarning\":true}");
+    expect(cleared.stdout).not.toContain("SERVICE_REFRESH=");
   });
 
   test.each([18790, 24444])("persists and presents both URLs below the verified remote QR with local port %p", (port) => {

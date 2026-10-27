@@ -120,7 +120,7 @@ Run the first-run setup wizard. Unattended setup must be explicitly enabled;
 unspecified fields preserve an existing valid configuration. Service-restart deferral
 writes descriptor changes without activation for an installer-managed handoff.
 --display-name sets the machine name shown on this and peer dashboards (at most
-128 visible characters); an empty value restores the automatic computer name.
+128 characters); an empty value restores the automatic computer name.
 A running server service restarts to apply it.`;
 }
 

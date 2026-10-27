@@ -30,12 +30,13 @@ describe("server-owned machine display name", () => {
   });
   test("reads the host config displayName override at process startup", () => {
     const dir = mkdtempSync(join(tmpdir(), "wolfpack-display-name-"));
+    const modulePath = join(import.meta.dir, "../../src/machine-display-name.ts");
     try {
       const run = (config: Record<string, unknown>) => {
         writeFileSync(join(dir, "config.json"), JSON.stringify({ devDir: dir, port: 18790, ...config }));
         const child = Bun.spawnSync([process.execPath, "-e",
-          'const { getMachineDisplayName } = await import("./src/machine-display-name.ts"); console.log(JSON.stringify(getMachineDisplayName()));',
-        ], { cwd: process.cwd(), env: { ...process.env, WOLFPACK_DIR: dir }, stdout: "pipe", stderr: "pipe" });
+          `const { getMachineDisplayName } = await import(${JSON.stringify(modulePath)}); console.log(JSON.stringify(getMachineDisplayName()));`,
+        ], { cwd: dir, env: { ...process.env, WOLFPACK_DIR: dir }, stdout: "pipe", stderr: "pipe" });
         expect(child.stderr.toString()).toBe("");
         return JSON.parse(child.stdout.toString()) as string;
       };
