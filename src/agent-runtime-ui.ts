@@ -45,7 +45,7 @@ const RUNTIME_UI: Record<AgentStatusState, SessionRuntimeUi> = {
   [AGENT_STATUS_STATE.STOPPED]: { dot: "gray", card: "idle-session", label: "stopped", title: "stopped", badge: "stopped" },
   [AGENT_STATUS_STATE.OUTPUT]: { dot: "green", card: "active-session", label: "output", title: "recent output", badge: "output" },
   [AGENT_STATUS_STATE.OFF]: { dot: "gray", card: "idle-session", label: "off", title: "broker reports session stopped", badge: "off" },
-  [AGENT_STATUS_STATE.IDLE]: { dot: "gray", card: "idle-session", label: "quiet", title: "no output observed in the latest sample", badge: "idle" },
+  [AGENT_STATUS_STATE.IDLE]: { dot: "gray", card: "idle-session", label: "idle", title: "no output observed in the latest sample", badge: "idle" },
   [AGENT_STATUS_STATE.UNKNOWN]: { dot: "gray", card: "idle-session", label: "unavailable", title: "broker availability unknown", badge: "unknown" },
 };
 
