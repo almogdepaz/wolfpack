@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,7 +13,7 @@ import {
   validateFixtures,
 } from "../../scripts/demo/fixtures";
 import { FFMPEG_TOOL, fixtureServerEnv, parseArgs, resolveTool, startFixtureServer } from "../../scripts/demo/lib";
-import { PROMO_INSTALL, TARGETS, frameIndex, scenesSafeToDelete, writeConcatList } from "../../scripts/demo/encode";
+import { PROMO_INSTALL, TARGETS, assertInstallBudgets, frameIndex, scenesSafeToDelete, writeConcatList } from "../../scripts/demo/encode";
 import { PROMO_SEGMENTS, buildVtt, crossfadeTimeline, formatVttTime, parseCues } from "../../scripts/demo/promo";
 import {
   PrivacyViolation,
@@ -208,10 +208,23 @@ describe("recorder and encoder helpers", () => {
   });
 
   test("--install puts only the captions-only tour and its poster on the site", () => {
-    expect(PROMO_INSTALL).toEqual([
+    expect(PROMO_INSTALL.map(({ out, install }) => ({ out, install }))).toEqual([
       { out: "promo/wolfpack-tour.mp4", install: ["site/assets/wolfpack-tour.mp4"] },
       { out: "promo/poster.webp", install: ["site/assets/wolfpack-tour-poster.webp"] },
     ]);
+    expect(PROMO_INSTALL.some(({ out }) => /voiceover|social/.test(out))).toBe(false);
+  });
+
+  test("an oversized tour fails the install budget before anything is copied", () => {
+    const tour = PROMO_INSTALL.find(({ out }) => out === "promo/wolfpack-tour.mp4")!;
+    expect(tour.maxBytes).toBe(4 * 1024 * 1024);
+    const root = tempDir();
+    mkdirSync(join(root, "promo"), { recursive: true });
+    writeFileSync(join(root, "promo/poster.webp"), Buffer.alloc(10));
+    writeFileSync(join(root, "promo/wolfpack-tour.mp4"), Buffer.alloc(tour.maxBytes!));
+    expect(() => assertInstallBudgets(root, PROMO_INSTALL)).not.toThrow();
+    writeFileSync(join(root, "promo/wolfpack-tour.mp4"), Buffer.alloc(tour.maxBytes! + 1));
+    expect(() => assertInstallBudgets(root, PROMO_INSTALL)).toThrow("exceeds its 4194304 byte install budget");
   });
 
   test("a checkpoint cuts at the frame that was on screen, not the next change", () => {

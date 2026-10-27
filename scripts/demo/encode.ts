@@ -315,8 +315,9 @@ function encodeClip(ffmpeg: string, ffprobe: string, root: string, target: ClipT
  * the site's tour player gets the captions-only cut and its poster. The
  * voiceover and social cuts stay in .demo-out/promo/.
  */
-export const PROMO_INSTALL: readonly Pick<TargetBase, "out" | "install">[] = [
-  { out: "promo/wolfpack-tour.mp4", install: ["site/assets/wolfpack-tour.mp4"] },
+export const PROMO_INSTALL: readonly Pick<TargetBase, "out" | "install" | "maxBytes">[] = [
+  // Site budget for the tour; PROMO_MAX_BYTES only bounds the uncommitted long cut.
+  { out: "promo/wolfpack-tour.mp4", install: ["site/assets/wolfpack-tour.mp4"], maxBytes: 4 * MB },
   { out: "promo/poster.webp", install: ["site/assets/wolfpack-tour-poster.webp"] },
 ];
 
@@ -325,7 +326,17 @@ export const PROMO_INSTALL: readonly Pick<TargetBase, "out" | "install">[] = [
  * (content hashes, stale siblings, index.html references) and fails on any
  * site:check finding, so an install never leaves the site half-renamed.
  */
-function installOutputs(root: string, encoded: readonly Pick<TargetBase, "out" | "install">[]): void {
+/** Throws before anything is copied when an output to install exceeds its byte budget. */
+export function assertInstallBudgets(root: string, entries: readonly Pick<TargetBase, "out" | "install" | "maxBytes">[]): void {
+  for (const { out, install, maxBytes } of entries) {
+    if (!install?.length || maxBytes === undefined) continue;
+    const bytes = statSync(join(root, out)).size;
+    if (bytes > maxBytes) throw new Error(`${out}: ${bytes} bytes exceeds its ${maxBytes} byte install budget`);
+  }
+}
+
+function installOutputs(root: string, encoded: readonly Pick<TargetBase, "out" | "install" | "maxBytes">[]): void {
+  assertInstallBudgets(root, encoded);
   let site = false;
   for (const target of encoded) {
     for (const destination of target.install ?? []) {

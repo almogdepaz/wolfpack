@@ -277,5 +277,7 @@ kbd{font-size:12px;border:1px solid var(--hairline2);border-bottom-width:2px;bor
 .tour-close{min-height:44px;display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border:1px solid var(--hairline2);border-radius:999px;background:var(--surface);color:var(--ink);font:800 13px var(--sans);cursor:pointer}
 .tour-close:hover{border-color:rgba(69,237,126,.5)}
 .tour-close span{color:var(--accent);font-size:12px}
-.tour-video{display:block;width:100%;height:auto;aspect-ratio:16/9;border-radius:var(--radius-sm);background:#000}
+body:has(#tour[open]){overflow:hidden}
+/* Sized by the viewport height as well as the width, so the burned-in caption band stays on screen on short laptop and landscape-phone viewports (150px = dialog margins, padding, head and note). */
+.tour-video{display:block;width:auto;height:auto;max-width:100%;max-height:calc(100dvh - 150px);aspect-ratio:16/9;margin:0 auto;border-radius:var(--radius-sm);background:#000}
 .tour-note{margin:10px 0 0;color:var(--muted);font-size:13px}

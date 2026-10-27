@@ -406,6 +406,8 @@ test("Watch the demo opens the tour player, loads nothing until play, and closes
   await link.click();
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button", { name: "Close" })).toBeFocused();
+  // The page behind the modal does not scroll.
+  expect(await page.evaluate(() => getComputedStyle(document.body).overflow)).toBe("hidden");
   // By id: a closed dialog leaves the accessibility tree, and the video is checked after closing.
   const video = page.locator("#tour video");
   await expect(video).toBeVisible();
@@ -433,6 +435,7 @@ test("Watch the demo opens the tour player, loads nothing until play, and closes
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(link).toBeFocused();
+  expect(await page.evaluate(() => getComputedStyle(document.body).overflow)).not.toBe("hidden");
 
   // Playback in Chromium: the first bytes load only once play is requested.
   await link.click();
@@ -454,21 +457,28 @@ test("Watch the demo opens the tour player, loads nothing until play, and closes
   expect(browserErrors.get(page)).toEqual([]);
 });
 
-test("open tour player fits and has no serious accessibility violations at 320, 390, 1024 and 1440", async ({ page }, testInfo) => {
+test("open tour player fits, keeps the whole video on screen, and has no serious accessibility violations", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "viewport sweep runs once");
   const link = page.locator(".hero").getByRole("link", { name: "Watch the demo" });
   const dialog = page.getByRole("dialog", { name: "Wolfpack tour" });
-  for (const width of [320, 390, 1024, 1440]) {
-    await page.setViewportSize({ width, height: width < 760 ? 844 : 900 });
+  // Phone portrait, short laptop (1366x768 minus browser chrome), landscape phone, tablet, desktop.
+  for (const [width, height] of [[320, 568], [390, 844], [1366, 650], [844, 390], [1024, 900], [1440, 900]] as const) {
+    await page.setViewportSize({ width, height });
     await link.click();
     await expect(dialog).toBeVisible();
     const box = await dialog.boundingBox();
-    expect(box, `dialog box at ${width}px`).not.toBeNull();
+    expect(box, `dialog box at ${width}x${height}`).not.toBeNull();
     expect(box!.x).toBeGreaterThanOrEqual(0);
-    expect(box!.x + box!.width, `dialog fits at ${width}px`).toBeLessThanOrEqual(width);
+    expect(box!.x + box!.width, `dialog fits at ${width}x${height}`).toBeLessThanOrEqual(width);
     await expect(dialog.getByRole("button", { name: "Close" })).toBeInViewport();
+    // The burned-in captions sit near the bottom of the frame: the whole video must be visible.
+    const videoBox = await page.locator("#tour video").boundingBox();
+    expect(videoBox, `video box at ${width}x${height}`).not.toBeNull();
+    expect(videoBox!.y).toBeGreaterThanOrEqual(0);
+    expect(videoBox!.y + videoBox!.height, `video bottom in view at ${width}x${height}`).toBeLessThanOrEqual(height);
+    expect(videoBox!.x + videoBox!.width).toBeLessThanOrEqual(width);
     const axe = await new AxeBuilder({ page }).analyze();
-    expect(axe.violations.filter((violation) => ["serious", "critical"].includes(violation.impact || "")), `axe at ${width}px`).toEqual([]);
+    expect(axe.violations.filter((violation) => ["serious", "critical"].includes(violation.impact || "")), `axe at ${width}x${height}`).toEqual([]);
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
   }

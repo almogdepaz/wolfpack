@@ -175,7 +175,37 @@ function firstPartyRenderUrls(): URL[] {
     .filter((url) => url.origin === new URL(CANONICAL_HOMEPAGE_URL).origin);
 }
 
+/** Seconds from an mp4's movie header (`moov/mvhd`), read without ffprobe. */
+function mp4DurationSeconds(path: string): number {
+  const bytes = readFileSync(path);
+  const findBox = (type: string, start: number, end: number): number => {
+    for (let offset = start; offset + 8 <= end;) {
+      const size = bytes.readUInt32BE(offset);
+      if (bytes.toString("latin1", offset + 4, offset + 8) === type) return offset;
+      if (size < 8) break;
+      offset += size;
+    }
+    throw new Error(`no ${type} box in ${path}`);
+  };
+  const moov = findBox("moov", 0, bytes.length);
+  const mvhd = findBox("mvhd", moov + 8, moov + bytes.readUInt32BE(moov));
+  const version = bytes[mvhd + 8];
+  return version === 1
+    ? Number(bytes.readBigUInt64BE(mvhd + 32)) / bytes.readUInt32BE(mvhd + 28)
+    : bytes.readUInt32BE(mvhd + 24) / bytes.readUInt32BE(mvhd + 20);
+}
+
 describe("homepage quality contract", () => {
+  test("states the tour's real length in the player note and llms files", () => {
+    const tourPath = renderAssetPaths().find((path) => /^assets\/wolfpack-tour\.[0-9a-f]{16}\.mp4$/.test(path));
+    expect(tourPath).toBeDefined();
+    const seconds = Math.round(mp4DurationSeconds(join(SITE_ROOT, tourPath ?? "")));
+    expect(seconds).toBeGreaterThan(30);
+    for (const text of [HOMEPAGE, readSiteFile("llms.txt").toString("utf8"), readSiteFile("llms-full.txt").toString("utf8")]) {
+      expect(text).toContain(`${seconds}-second tour`);
+    }
+  });
+
   test("derives every unique deployable render filename hash from its file bytes", () => {
     const renderAssets = renderAssetPaths();
     const referencedPaths = new Set<string>();

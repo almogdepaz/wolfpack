@@ -20,6 +20,7 @@
 
 ## Start here
 - Homepage: https://almogdepaz.github.io/wolfpack/
+- Demo: "Watch the demo" on the homepage plays an 86-second tour with burned-in captions and no audio, covering the dashboard, the phone PWA, delegation and the CLI.
 - Source and documentation: https://github.com/almogdepaz/wolfpack
 - Quickstart: https://github.com/almogdepaz/wolfpack#quickstart
 - Full agent-readable summary: https://almogdepaz.github.io/wolfpack/llms-full.txt

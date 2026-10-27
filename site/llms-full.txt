@@ -36,6 +36,7 @@ Treat the generated local or tailnet URL as sensitive. Use a trusted tailnet and
 
 ## Links
 - Homepage: https://almogdepaz.github.io/wolfpack/
+- Demo: "Watch the demo" on the homepage plays an 86-second tour with burned-in captions and no audio, covering the dashboard, the phone PWA, delegation and the CLI.
 - Repository: https://github.com/almogdepaz/wolfpack
 - First session: https://github.com/almogdepaz/wolfpack/blob/main/docs/first-session.md
 - Session control: https://github.com/almogdepaz/wolfpack/blob/main/docs/session-control.md
