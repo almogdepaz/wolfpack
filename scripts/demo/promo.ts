@@ -1,5 +1,5 @@
 /**
- * Promo long cut (scenes S0–S8 of .plans/site-overhaul.md §1): cuts each scene
+ * Promo long cut (scenes S0–S8): cuts each scene
  * from the recorded frames, composes it on a 1920×1080 canvas (desktop window
  * chrome, or a phone bezel over a blurred dashboard), overlays the scene's
  * caption from captions.vtt as a browser-rendered PNG, joins the scenes with
