@@ -7,15 +7,15 @@
  *
  * Outputs in <root>/promo/: wolfpack-tour.mp4 (captions burned in, no audio),
  * wolfpack-tour.vtt, wolfpack-tour-social.mp4 (1280×720), poster.webp and
- * contact-sheet.png; with a voiceover or music, wolfpack-tour-voiceover.mp4
- * mixed to −18 LUFS. Nothing here is committed.
+ * contact-sheet.png; with a music file, wolfpack-tour-music.mp4 mixed to
+ * −18 LUFS. Nothing here is committed.
  */
 import { chromium, type Browser } from "@playwright/test";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { frameIndex, probe, readCheckpoints, sh, writeConcatList } from "./encode";
-import type { Frame, ToolSpec } from "./lib";
+import type { Frame } from "./lib";
 import { assertClean, forbiddenStrings } from "./privacy-gate";
 
 const WIDTH = 1920;
@@ -33,17 +33,6 @@ export const TARGET_LUFS = -18;
 /** Geometry shared with cards/canvas.html. */
 const DESKTOP_RECT = { x: 240, y: 58, width: 1440, height: 900 } as const;
 const PHONE_RECT = { x: 756, y: 40, width: 408, height: 884 } as const;
-
-export const PIPER_TOOL: ToolSpec = {
-  env: "WOLFPACK_PIPER",
-  name: "the piper TTS binary (upstream standalone release)",
-  hint: "unpack https://github.com/rhasspy/piper/releases under ~/.local/opt/ and export WOLFPACK_PIPER=~/.local/opt/piper/piper",
-};
-export const PIPER_VOICE_TOOL: ToolSpec = {
-  env: "WOLFPACK_PIPER_VOICE",
-  name: "a piper voice model (.onnx with its .onnx.json beside it)",
-  hint: "download one from https://huggingface.co/rhasspy/piper-voices and export WOLFPACK_PIPER_VOICE=<path>.onnx",
-};
 
 type Layout = "full" | "desktop" | "phone";
 
@@ -77,12 +66,6 @@ export const PROMO_SEGMENTS: readonly PromoSegment[] = [
 
 /** Scenes whose screencast frames the promo reads. */
 export const PROMO_SCENES = [...new Set(PROMO_SEGMENTS.map((segment) => segment.scene))];
-
-/** Spoken lines for the optional voiceover; captions are the default and stay burned in. */
-const NARRATION: Readonly<Record<string, string>> = {
-  s0: "Wolfpack. A self-hosted control room for coding agents.",
-  s8: "Install it with one command, then open it on your phone.",
-};
 
 export interface Cue {
   readonly id: string;
@@ -254,57 +237,15 @@ export function integratedLoudness(ffmpeg: string, file: string): number {
   return Number(match[1]);
 }
 
-function audioSeconds(ffprobe: string, file: string): number {
-  const result = Bun.spawnSync([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file]);
-  return Number(result.stdout.toString().trim());
-}
-
-interface AudioOptions {
-  readonly voice?: { readonly piper: string; readonly model: string };
-  readonly music?: string;
-}
-
 /**
- * Builds the optional soundtrack (voiceover lines placed at their scene
- * starts, optional music bed underneath) normalised to TARGET_LUFS, and muxes
- * it onto the captioned master. Fails if a spoken line is longer than its scene.
+ * Lays the optional music bed under the captioned master (faded in and out,
+ * normalised to TARGET_LUFS) and muxes it into a separate file.
  */
-function buildSoundtrack(ffmpeg: string, ffprobe: string, work: string, master: string, total: number,
-  timeline: readonly { caption: string | null; start: number; duration: number }[], cues: readonly Cue[], audio: AudioOptions, out: string): Record<string, unknown> {
-  const inputs: string[] = [];
-  const filters: string[] = [];
-  const voiceLabels: string[] = [];
-  if (audio.voice) {
-    for (const segment of timeline) {
-      if (!segment.caption) continue;
-      const text = NARRATION[segment.caption] ?? cues.find((cue) => cue.id === segment.caption)!.text.replace(/\s+—\s+/g, ", ");
-      const wav = join(work, `voice-${segment.caption}.wav`);
-      const piper = Bun.spawnSync([audio.voice.piper, "--model", audio.voice.model, "--output_file", wav, "--sentence_silence", "0.3"], { stdin: Buffer.from(text) });
-      if (piper.exitCode !== 0 || !existsSync(wav)) throw new Error(`piper failed for ${segment.caption}: ${piper.stderr.toString().slice(-400)}`);
-      const spoken = audioSeconds(ffprobe, wav);
-      if (spoken > segment.duration - 0.6) {
-        throw new Error(`voiceover ${segment.caption} is ${spoken.toFixed(1)} s but its scene is ${segment.duration.toFixed(1)} s; raise minSeconds`);
-      }
-      const delay = Math.round((segment.start + 0.35) * 1000);
-      const index = inputs.filter((value) => value === "-i").length;
-      inputs.push("-i", wav);
-      filters.push(`[${index}:a]aresample=48000,aformat=channel_layouts=stereo,adelay=${delay}|${delay}[v${index}]`);
-      voiceLabels.push(`[v${index}]`);
-    }
-  }
-  let bed = "";
-  if (audio.music) {
-    const index = inputs.filter((value) => value === "-i").length;
-    inputs.push("-stream_loop", "-1", "-i", audio.music);
-    const level = voiceLabels.length ? "volume=-16dB," : "";
-    filters.push(`[${index}:a]aresample=48000,aformat=channel_layouts=stereo,atrim=0:${total.toFixed(3)},${level}afade=t=in:d=1.5,afade=t=out:st=${(total - 2.5).toFixed(3)}:d=2.5[bed]`);
-    bed = "[bed]";
-  }
-  const sources = [...voiceLabels, bed].filter(Boolean);
-  if (sources.length === 0) throw new Error("soundtrack requested without voiceover or music");
-  filters.push(`${sources.join("")}amix=inputs=${sources.length}:normalize=0:duration=longest,apad,atrim=0:${total.toFixed(3)}[mix]`);
+function buildSoundtrack(ffmpeg: string, work: string, master: string, total: number, music: string, out: string): Record<string, unknown> {
   const mix = join(work, "mix.wav");
-  sh([ffmpeg, "-loglevel", "error", "-y", ...inputs, "-filter_complex", filters.join(";"), "-map", "[mix]", "-ar", "48000", mix]);
+  sh([ffmpeg, "-loglevel", "error", "-y", "-stream_loop", "-1", "-i", music, "-af",
+    `aresample=48000,aformat=channel_layouts=stereo,atrim=0:${total.toFixed(3)},afade=t=in:d=1.5,afade=t=out:st=${(total - 2.5).toFixed(3)}:d=2.5`,
+    "-ar", "48000", mix]);
   // Two-pass loudnorm: measure, then apply linear gain to TARGET_LUFS.
   const measure = Bun.spawnSync([ffmpeg, "-hide_banner", "-nostats", "-i", mix, "-af", `loudnorm=I=${TARGET_LUFS}:TP=-1.5:LRA=11:print_format=json`, "-f", "null", "-"]);
   const stats = JSON.parse(/\{[\s\S]*\}/.exec(measure.stderr.toString())![0]) as Record<string, string>;
@@ -314,14 +255,15 @@ function buildSoundtrack(ffmpeg: string, ffprobe: string, work: string, master: 
     "-ar", "48000", normalised]);
   sh([ffmpeg, "-loglevel", "error", "-y", "-i", master, "-i", normalised, "-map", "0:v", "-map", "1:a", "-c:v", "copy",
     "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", out]);
-  return { loudnessLufs: integratedLoudness(ffmpeg, out), voiceover: Boolean(audio.voice), music: audio.music ? "supplied" : "none" };
+  return { loudnessLufs: integratedLoudness(ffmpeg, out), music: "supplied" };
 }
 
 export interface PromoOptions {
   readonly root: string;
   readonly ffmpeg: string;
   readonly ffprobe: string;
-  readonly audio?: AudioOptions;
+  /** Optional music bed for a separate soundtracked cut. */
+  readonly music?: string;
   readonly keepWork?: boolean;
   readonly contactSheet?: string;
 }
@@ -370,10 +312,9 @@ export async function buildPromo(options: PromoOptions): Promise<Record<string, 
   };
   describe("promo", master, PROMO_MAX_BYTES, { plannedSeconds: Number(total.toFixed(2)), timeline: timeline.map((entry) => ({ ...entry, start: Number(entry.start.toFixed(2)), duration: Number(entry.duration.toFixed(2)) })) });
   describe("promo-social", social, SOCIAL_MAX_BYTES);
-  if (options.audio && (options.audio.voice || options.audio.music)) {
-    const voiced = join(outDir, "wolfpack-tour-voiceover.mp4");
-    const soundtrack = buildSoundtrack(ffmpeg, ffprobe, work, master, total, timeline, cues, options.audio, voiced);
-    describe("promo-voiceover", voiced, PROMO_MAX_BYTES, soundtrack);
+  if (options.music) {
+    const scored = join(outDir, "wolfpack-tour-music.mp4");
+    describe("promo-music", scored, PROMO_MAX_BYTES, buildSoundtrack(ffmpeg, work, master, total, options.music, scored));
   }
   if (!options.keepWork) rmSync(work, { recursive: true, force: true });
   return results;

@@ -212,7 +212,7 @@ describe("recorder and encoder helpers", () => {
       { out: "promo/wolfpack-tour.mp4", install: ["site/assets/wolfpack-tour.mp4"] },
       { out: "promo/poster.webp", install: ["site/assets/wolfpack-tour-poster.webp"] },
     ]);
-    expect(PROMO_INSTALL.some(({ out }) => /voiceover|social/.test(out))).toBe(false);
+    expect(PROMO_INSTALL.some(({ out }) => /social|music/.test(out))).toBe(false);
   });
 
   test("an oversized tour fails the install budget before anything is copied", () => {

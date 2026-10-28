@@ -5,7 +5,7 @@
  * WOLFPACK_FFMPEG (see CONTRIBUTING.md, "Site and demo media").
  *
  *   bun run demo:encode [--target <name>[,<name>]|all] [--in .demo-out] [--keep-frames] [--install] [--list]
- *                       [--voiceover] [--music <file>] [--keep-work]   (promo options)
+ *                       [--music <file>] [--keep-work]   (promo options)
  *
  * Clip targets cut a frame range between two recorder checkpoints, hold the
  * last frame and optionally speed up; still targets convert a checkpoint
@@ -19,7 +19,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { checkSiteAssets, normalizeSiteAssets } from "../site-assets";
-import { PIPER_TOOL, PIPER_VOICE_TOOL, PROMO_SCENES, PROMO_SEGMENTS, buildPromo } from "./promo";
+import { PROMO_SCENES, PROMO_SEGMENTS, buildPromo } from "./promo";
 import { DEMO_OUT, FFMPEG_TOOL, REPOSITORY_ROOT, assertFreeDisk, ffprobeFor, parseArgs, resolveTool, type Frame } from "./lib";
 
 interface TargetBase {
@@ -313,7 +313,7 @@ function encodeClip(ffmpeg: string, ffprobe: string, root: string, target: ClipT
 /**
  * Promo outputs `--install` copies when the promo is built in the same run:
  * the site's tour player gets the captions-only cut and its poster. The
- * voiceover and social cuts stay in .demo-out/promo/.
+ * social and music cuts stay in .demo-out/promo/.
  */
 export const PROMO_INSTALL: readonly Pick<TargetBase, "out" | "install" | "maxBytes">[] = [
   // Site budget for the tour; PROMO_MAX_BYTES only bounds the uncommitted long cut.
@@ -359,11 +359,11 @@ function installOutputs(root: string, encoded: readonly Pick<TargetBase, "out" |
 if (import.meta.main) {
   const args = parseArgs(process.argv.slice(2));
   for (const key of args.keys()) {
-    if (!["target", "in", "keep-frames", "list", "install", "voiceover", "music", "keep-work"].includes(key)) throw new Error(`unknown flag --${key}`);
+    if (!["target", "in", "keep-frames", "list", "install", "music", "keep-work"].includes(key)) throw new Error(`unknown flag --${key}`);
   }
   if (args.get("list") === "true") {
     for (const target of TARGETS) console.log(`${target.name.padEnd(28)} ${target.scene.padEnd(8)} ${target.out}`);
-    console.log(`${PROMO_TARGET.padEnd(28)} ${PROMO_SCENES.join("+")} promo/wolfpack-tour.mp4 (+ .vtt, social, poster; --voiceover, --music <file>)`);
+    console.log(`${PROMO_TARGET.padEnd(28)} ${PROMO_SCENES.join("+")} promo/wolfpack-tour.mp4 (+ .vtt, social, poster; --music <file>)`);
     process.exit(0);
   }
   const root = resolve(args.get("in") ?? DEMO_OUT);
@@ -395,7 +395,6 @@ if (import.meta.main) {
     console.log(JSON.stringify(result));
   }
   if (wantPromo) {
-    const voiceover = args.get("voiceover") === "true";
     const music = args.get("music");
     if (music !== undefined && !existsSync(music)) throw new Error(`--music ${music} does not exist`);
     const promo = await buildPromo({
@@ -403,10 +402,7 @@ if (import.meta.main) {
       ffmpeg,
       ffprobe,
       keepWork: args.get("keep-work") === "true",
-      audio: voiceover || music ? {
-        ...(voiceover && { voice: { piper: resolveTool(PIPER_TOOL), model: resolveTool(PIPER_VOICE_TOOL) } }),
-        ...(music && { music }),
-      } : undefined,
+      music,
     });
     for (const result of promo) {
       results.push(result);
