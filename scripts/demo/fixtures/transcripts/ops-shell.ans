@@ -1,0 +1,8 @@
+@# A plain shell session (Shell fallback / custom command).
+{green}ops@workstation{/}:{blue}~/infra{/}$ terraform plan -out plan.tfout
+{gray}Refreshing state... [id=api-gateway-prod]{/}
+
+Plan: {green}2 to add{/}, {yellow}1 to change{/}, {red}0 to destroy{/}.
+
+Saved the plan to: plan.tfout
+{green}ops@workstation{/}:{blue}~/infra{/}$ \c

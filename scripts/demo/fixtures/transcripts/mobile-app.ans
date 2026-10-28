@@ -1,0 +1,13 @@
+@# MacBook session waiting on a question (the phone scene answers it).
+{orange}✻{/} {bold}Claude Code{/} {gray}· mobile-app{/}
+
+{gray}>{/} Move the settings screen to the new
+  navigation stack
+
+{white}⏺{/} {bold}Read{/}(app/navigation/stack.tsx)
+  {gray}⎿  Read 88 lines{/}
+
+{white}⏺{/} Settings still uses the legacy drawer.
+
+{yellow}Switch Settings to the new stack? (y/n){/}
+@status {"state":"blocked","kind":"question","title":"Question","message":"Switch Settings to the new stack?"}

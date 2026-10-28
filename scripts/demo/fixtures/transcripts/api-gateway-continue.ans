@@ -1,0 +1,23 @@
+@# Reaction to "y" on api-gateway: the edit is applied and the agent continues.
+@status {"state":"working"}
+{green}✔ Allowed{/}
+@+350
+  {gray}⎿  Updated routes.ts with 3 additions{/}
+
+@+550
+{white}⏺{/} {bold}Write{/}(src/server/rate-limit.ts)
+  {gray}⎿  Wrote 41 lines{/}
+
+@+600
+{white}⏺{/} {bold}Bash{/}(bun test tests/rate-limit.test.ts)
+@+900
+  {gray}⎿{/}  {green}✓{/} allows 20 requests per second
+     {green}✓{/} rejects the 21st request with 429
+     {green}✓{/} refills the bucket after one second
+@+400
+     {green}3 pass{/}  {gray}0 fail{/}
+
+@+500
+{white}⏺{/} Rate limiting is live on /v1/public.
+  Spawning 200-security-review and
+  201-load-test to check it.

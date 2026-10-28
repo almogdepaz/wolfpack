@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wolfpack — promo caption</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@600;700&display=swap" rel="stylesheet">
+<style>
+/* One burned-in caption, rendered transparent at 1920×120 (bottom band of the 1080p frame).
+   ?text=<caption>. 34px Manrope on a dark pill stays readable at 1080p and at 50 % scale. */
+html, body { margin: 0; width: 1920px; height: 120px; background: transparent; overflow: hidden; }
+body { display: grid; place-items: center; }
+p { margin: 0; max-width: 1640px; padding: 12px 28px; border-radius: 18px; background: rgba(8, 11, 9, .82); border: 1px solid rgba(255,255,255,.08);
+    color: #f1f4f2; font: 600 34px/1.3 "Manrope", "DejaVu Sans", sans-serif; letter-spacing: -.01em; text-align: center; }
+</style>
+</head>
+<body>
+<p id="caption"></p>
+<script>
+  document.getElementById("caption").textContent = new URLSearchParams(location.search).get("text") || "";
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => { document.body.dataset.done = "1"; });
+</script>
+</body>
+</html>

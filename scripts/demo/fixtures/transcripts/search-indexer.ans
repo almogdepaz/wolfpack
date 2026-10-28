@@ -1,0 +1,13 @@
+@# Idle pi session with its footer (model and cost are display-only).
+{bold}pi{/} {gray}· search-indexer{/}
+
+{cyan}›{/} Reindex the product catalog and report the timings
+
+{gray}●{/} bash  bun run reindex --all
+  {green}✓{/} 48,210 documents in 3m12s
+
+{green}●{/} Reindex complete. Ready for the next task.
+
+{gray}~/src/search-indexer (main){/}
+{gray}↑41k ↓9.8k R1.2M CH98.4% $0.612 (sub) 22.1%/272k (auto)        (openai-codex) gpt-6-astra • high{/}
+@status {"state":"idle"}

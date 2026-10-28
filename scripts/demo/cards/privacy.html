@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="cards.css">
+<title>Wolfpack — privacy card</title>
+<style>
+.radar { position: relative; width: 520px; height: 520px; }
+.orbit { position: absolute; inset: 0; border-radius: 50%; border: 1px solid rgba(69, 237, 126, 0.22); }
+.orbit.two { inset: 90px; border-color: rgba(69, 237, 126, 0.32); }
+.orbit.three { inset: 180px; border-color: rgba(69, 237, 126, 0.45); }
+.center { position: absolute; inset: 225px; border-radius: 50%; background: var(--accent); color: #0b0e0c; display: grid; place-items: center; font: 800 28px var(--sans); }
+.node { position: absolute; padding: 10px 18px; border-radius: 999px; border: 1px solid var(--hairline); background: rgba(16, 20, 18, 0.95); font: 500 20px var(--mono); }
+.node.a { left: 300px; top: 30px; } .node.b { left: -40px; top: 230px; } .node.c { left: 320px; top: 430px; }
+.split { display: grid; grid-template-columns: 560px 1fr; gap: 90px; align-items: center; text-align: left; width: min(1500px, 88vw); }
+.split .lede { font-size: 28px; }
+</style>
+</head>
+<body data-hold="1500">
+<main class="split">
+  <div class="radar" data-step="0"><span class="orbit"></span><span class="orbit two"></span><span class="orbit three"></span><span class="center">W</span><span class="node a">your phone</span><span class="node b">macbook</span><span class="node c">workstation</span></div>
+  <div style="display:grid;gap:34px">
+    <h2 data-step="300">Private by<br><em>construction.</em></h2>
+    <p class="lede" data-step="900">No account. No relay. Your Tailscale network is the trust boundary.</p>
+    <p class="lede" data-step="1700">Sessions live in a Rust broker on your machine and survive server restarts.</p>
+  </div>
+</main>
+<script src="cards.js"></script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+@# Claude Code session waiting on a permission prompt (S1/S2 hero).
+{orange}✻{/} {bold}Claude Code{/} {gray}· api-gateway{/}
+
+{gray}>{/} Add rate limiting to the public routes
+  and cover it with tests
+
+{white}⏺{/} I'll put a token-bucket limiter in
+  front of /v1/public.
+
+{white}⏺{/} {bold}Read{/}(src/server/routes.ts)
+  {gray}⎿  Read 214 lines{/}
+
+{white}⏺{/} {bold}Read{/}(src/server/mw.ts)
+  {gray}⎿  Read 58 lines{/}
+
+{white}⏺{/} {bold}Update{/}(src/server/routes.ts)
+  {gray}12{/}  import { auth } from "./mw";
+  {gray}13{/} {green}+import { rateLimit } from "./mw";{/}
+  {gray}41{/} {green}+router.use("/v1/public",{/}
+  {gray}42{/} {green}+  rateLimit({ rps: 20 }));{/}
+
+{yellow}Allow edit to src/server/routes.ts? (y/n){/}
+@status {"state":"blocked","kind":"permission","title":"Allow edit","message":"Allow edit to src/server/routes.ts?"}
