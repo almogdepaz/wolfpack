@@ -215,6 +215,12 @@ describe("recorder and encoder helpers", () => {
     expect(PROMO_INSTALL.some(({ out }) => /social|music/.test(out))).toBe(false);
   });
 
+  test("every site output installs into site/assets, so --install leaves no stale homepage media", () => {
+    const site = TARGETS.filter(({ out }) => out.startsWith("site/"));
+    expect(site.length).toBeGreaterThan(0);
+    for (const { out, install } of site) expect(install ?? [], out).toContain(`site/assets/${out.split("/").at(-1)}`);
+  });
+
   test("an oversized tour fails the install budget before anything is copied", () => {
     const tour = PROMO_INSTALL.find(({ out }) => out === "promo/wolfpack-tour.mp4")!;
     expect(tour.maxBytes).toBe(4 * 1024 * 1024);

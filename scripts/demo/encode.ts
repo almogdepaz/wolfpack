@@ -122,11 +122,14 @@ export const TARGETS: readonly EncodeTarget[] = [
     name: "still-docs-mobile-terminal", scene: "stills", checkpoint: "mobile-terminal", kind: "png", palette: true, out: "docs/mobile-ghostty.png",
     maxBytes: 300 * KB, install: ["docs/mobile-ghostty.png"],
   },
-  // New stems land in phase 3 with the HTML and registry entries that reference them; staged only.
   ...(["desktop-grid", "desktop-delegation", "desktop-widgets"] as const).map((stem): EncodeTarget => ({
-    name: `staged-${stem}`, scene: "stills", checkpoint: stem, kind: "webp", quality: 80, out: `site/staging/${stem}.webp`, maxBytes: 150 * KB,
+    name: `still-${stem}`, scene: "stills", checkpoint: stem, kind: "webp", quality: 80, out: `site/${stem}.webp`, maxBytes: 150 * KB,
+    install: [`site/assets/${stem}.webp`],
   })),
-  { name: "staged-mobile-drawer", scene: "stills", checkpoint: "mobile-drawer", kind: "webp", quality: 78, out: "site/staging/mobile-drawer.webp", maxBytes: 90 * KB },
+  {
+    name: "still-mobile-drawer", scene: "stills", checkpoint: "mobile-drawer", kind: "webp", quality: 78, out: "site/mobile-drawer.webp",
+    maxBytes: 90 * KB, install: ["site/assets/mobile-drawer.webp"],
+  },
 ];
 
 function isClip(target: EncodeTarget): target is ClipTarget {
