@@ -5231,9 +5231,14 @@ function discoveryHealthText(): string {
     discoveryHealth.lastSuccess ? `Last successful discovery: ${new Date(discoveryHealth.lastSuccess).toLocaleString()}` : "No successful discovery yet",
     discoveryHealth.lastError ? `Last error: ${discoveryHealth.lastError}` : ""].filter(Boolean).join(" · ");
 }
+// Next to the session lists, healthy discovery shows nothing; the line appears
+// only while discovery is unproven or failing. Settings keeps the full detail.
+function discoveryListHealthText(): string {
+  return discoveryHealth.lastSuccess && !discoveryHealth.lastError ? "" : discoveryHealthText();
+}
 function renderDiscoveryHealth(): void {
   renderMachinesList();
-  const text = discoveryHealthText();
+  const text = discoveryListHealthText();
   // Diagnostics are siblings, never part of the chooser's authoritative DOM
   // projection: a timestamp/progress update must not retire focus or a drag.
   for (const id of ["session-list", "sidebar-session-list", "drawer-list"]) {
@@ -5245,12 +5250,13 @@ function renderDiscoveryHealth(): void {
       status.id = `${id}-discovery-health`;
       status.className = "group-status";
       status.dataset.discoveryHealth = "";
+      status.setAttribute("role", "status");
       // Readable on navigation without announcing every scheduled scan.
       status.setAttribute("aria-live", "off");
       list.before(status);
     }
     if (status.textContent !== text) status.textContent = text;
-    status.hidden = list.hidden || list.childElementCount === 0;
+    status.hidden = list.hidden || list.childElementCount === 0 || !text;
   }
 }
 
@@ -5475,8 +5481,8 @@ function syncSessionChooserOwnership(): boolean {
   if (sessionList) sessionList.hidden = sidebarOwns;
   const mainHealth = document.getElementById("session-list-discovery-health");
   const sidebarHealth = document.getElementById("sidebar-session-list-discovery-health");
-  if (mainHealth) mainHealth.hidden = sidebarOwns;
-  if (sidebarHealth) sidebarHealth.hidden = !sidebarOwns;
+  if (mainHealth) mainHealth.hidden = sidebarOwns || !mainHealth.textContent;
+  if (sidebarHealth) sidebarHealth.hidden = !sidebarOwns || !sidebarHealth.textContent;
   return sidebarOwns;
 }
 

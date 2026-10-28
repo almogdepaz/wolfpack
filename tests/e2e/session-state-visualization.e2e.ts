@@ -396,7 +396,7 @@ test("shows semantic labels only for source-backed runtime state", async ({ page
     .locator("xpath=..")
     .locator(".status");
 
-  await expect(cardBadge("unproven")).toHaveText("Quiet");
+  await expect(cardBadge("unproven")).toHaveText("Idle");
   await expect(cardBadge("structured")).toHaveText("Needs input");
   await expect(cardBadge("active-output")).toHaveText("Output");
   await expect(cardBadge("program-blocked")).toHaveText("Needs input");
