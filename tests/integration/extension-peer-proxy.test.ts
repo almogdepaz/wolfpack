@@ -86,14 +86,17 @@ describe("authenticated installed selected-peer extension proxy", () => {
       const peer = fixture.peers[index]!;
       const diff = await fetch(route(index, `project/git-diff/notes?session=${SELECTED_HOST_SESSION}`), { headers: headers(index) });
       expect(diff.status).toBe(200);
-      // The fixture repositories hold only untracked files, which are never diffed.
-      expect(await diff.json()).toEqual({ installationId: peer.runtime.installationId, scopeSessionId: SELECTED_HOST_SESSION, extensionId: "notes", diff: { state: "ready", staged: "", unstaged: "", truncated: false } });
+      // The fixture repositories hold only untracked files, diffed as new files.
+      const body = await diff.json();
+      expect(body).toMatchObject({ installationId: peer.runtime.installationId, scopeSessionId: SELECTED_HOST_SESSION, extensionId: "notes", diff: { state: "ready", staged: "", unstaged: "", truncated: false } });
+      expect(body.diff.untracked).toStartWith(`diff --git a/only-${peer.key}.txt b/only-${peer.key}.txt\nnew file mode 100644\n`);
     }
     const peer = fixture.peers[0]!, envelope = { installationId: peer.runtime.installationId, scopeSessionId: SELECTED_HOST_SESSION, extensionId: "notes" };
     const forged = [
-      { ...envelope, diff: { state: "ready", staged: "diff --git a/x b/x\n", unstaged: "", truncated: false, extra: "dropped" } },
+      { ...envelope, diff: { state: "ready", staged: "diff --git a/x b/x\n", unstaged: "", untracked: "diff --git a/n b/n\n", truncated: false, extra: "dropped" } },
       { ...envelope, status: { state: "not-repository" } },
       { ...envelope, diff: { state: "ready", staged: 1, unstaged: "", truncated: false } },
+      { ...envelope, diff: { state: "ready", staged: "", unstaged: "", untracked: 7, truncated: false } },
       { ...envelope, diff: { state: "ready", staged: "\u0001".repeat(20_000), unstaged: "", truncated: false } },
       { ...envelope, installationId: "33333333-3333-4333-8333-333333333333", diff: { state: "not-repository" } },
       { ...envelope, diff: { state: "ready", staged: "x".repeat(140_000), unstaged: "y".repeat(140_000), truncated: true } },
@@ -105,7 +108,7 @@ describe("authenticated installed selected-peer extension proxy", () => {
       };
       try {
         const response = await fetch(route(0, `project/git-diff/notes?session=${SELECTED_HOST_SESSION}`), { headers: headers(0) });
-        if (index === 0) { expect(response.status).toBe(200); expect(await response.json()).toEqual({ ...envelope, diff: { state: "ready", staged: "diff --git a/x b/x\n", unstaged: "", truncated: false } }); continue; }
+        if (index === 0) { expect(response.status).toBe(200); expect(await response.json()).toEqual({ ...envelope, diff: { state: "ready", staged: "diff --git a/x b/x\n", unstaged: "", untracked: "diff --git a/n b/n\n", truncated: false } }); continue; }
         expect(response.status).toBe(503); expect(await response.json()).toMatchObject({ error: { code: "PEER_RESPONSE_INVALID" } });
       } finally { peer.handleRequest = undefined; }
     }

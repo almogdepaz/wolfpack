@@ -4896,6 +4896,10 @@
               "type": "string",
               "maxLength": 98304
             },
+            "untracked": {
+              "type": "string",
+              "maxLength": 49152
+            },
             "truncated": {
               "type": "boolean"
             }

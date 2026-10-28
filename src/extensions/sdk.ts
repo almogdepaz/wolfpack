@@ -26,7 +26,7 @@ export interface ExtensionViewContext {
   }>;
   /**
    * Local live session's server-owned project. No caller-supplied path or command.
-   * gitDiff: staged and unstaged unified diffs of tracked files (untracked files are not diffed), each bounded and flagged when truncated.
+   * gitDiff: staged and unstaged unified diffs of tracked files plus untracked files as new files (`untracked`, absent from older hosts), each bounded and flagged when truncated.
    */
   readonly project: Readonly<{ gitStatus(signal?: AbortSignal): Promise<ProjectGitStatus>; gitDiff(signal?: AbortSignal): Promise<ProjectGitDiff> }>;
   readonly documents: Readonly<{
