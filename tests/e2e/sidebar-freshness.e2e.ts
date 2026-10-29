@@ -162,7 +162,7 @@ test("verified unavailable machines remain disabled with truthful service health
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   const group = page.locator(`#session-list [data-machine="n-fresh:${installationId}"]`).first();
   await expect(group).toHaveClass(/offline/);
-  await expect(group.getByRole("button", { name: "Start a session on fresh peer" })).toBeDisabled();
+  await expect(group.getByRole("button", { name: "New session on fresh peer" })).toBeDisabled();
   await expect(group).not.toContainText("private preview");
   await expect(group).toContainText("Last success");
   await expect(page.getByRole("button", { name: "Authenticate fresh peer", exact: true })).toBeVisible();

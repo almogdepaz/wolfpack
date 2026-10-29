@@ -24,7 +24,7 @@ test("desktop session shell uses named controls and bounded content", async ({ p
   await expect(page.getByRole("button", { name: "Collapse sessions" })).toBeVisible();
   await expect(page.locator("body")).toHaveClass(/sessions-expanded/);
   await expect(page.locator("#desktop-sidebar")).toHaveClass(/collapsed/);
-  await expect(page.getByRole("button", { name: /Start a session on/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /New session on/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop another-project" })).toBeVisible();
 
   const sessionGroup = page.locator("#session-list .machine-group").first();
@@ -45,7 +45,7 @@ test("desktop first load shows the sessions overview beside a default-pinned sid
   await expect(page.getByRole("button", { name: "Unpin sidebar" })).toBeVisible();
   await expect(sessionsView).toBeVisible();
   await expect(page.getByRole("button", { name: "Open another-project" })).toHaveCount(1);
-  await expect(page.getByRole("button", { name: /Start a session on/ })).toHaveCount(1);
+  await expect(page.getByRole("button", { name: /New session on/ })).toHaveCount(1);
   await expect(page.locator("#session-list .card").first()).toBeHidden();
   await expect(page.locator("#sidebar-session-list .card").first()).toBeVisible();
 
@@ -106,7 +106,7 @@ test("desktop sidebar restores saved unpin and pin choices after reload", async 
 test("desktop session creation and grid controls are visually distinct", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop grid contract");
 
-  const newSessionButton = page.getByRole("button", { name: "Start a session on this machine" });
+  const newSessionButton = page.getByRole("button", { name: "New session on this machine" });
   const newSessionBox = await newSessionButton.boundingBox();
   expect(newSessionBox?.height).toBeLessThanOrEqual(28);
 
@@ -125,7 +125,7 @@ test("mobile session and terminal controls fit and expose intent", async ({ page
   test.skip(testInfo.project.name === "desktop", "mobile shell contract");
 
   await expect(page.getByRole("button", { name: "Settings" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Start a session on/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /New session on/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop another-project" })).toBeVisible();
 
   const settingsBox = await page.getByRole("button", { name: "Settings" }).boundingBox();

@@ -241,10 +241,10 @@ test("authoritative empty sessions render one accessible first-session path that
   if (!desktop) await expect(onboarding.locator(".zero-session-primary")).toBeHidden();
   if (desktop) {
     await expect(page.getByRole("button", {
-      name: /Create your first session|Start a session on this machine/,
+      name: /Create your first session|New session on this machine/,
     })).toHaveCount(1);
     await expect(page.locator("#sidebar-session-list").getByRole("button", {
-      name: "Start a session on this machine",
+      name: "New session on this machine",
     })).toHaveCount(0);
   }
   await primary.focus();
@@ -342,7 +342,7 @@ test("authoritative empty sessions render one accessible first-session path that
   await expect(onboarding).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create your first session" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Open first-created-session" }).filter({ visible: true }).first()).toBeEnabled();
-  await expect(page.getByRole("button", { name: /Start a session on/ }).filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /New session on/ }).filter({ visible: true }).first()).toBeVisible();
 });
 
 test("remote empty-state activation preserves the verified machine selector", async ({ page }) => {
@@ -431,11 +431,11 @@ test("remote empty-state activation preserves the verified machine selector", as
   );
   const desktop = (page.viewportSize()?.width ?? 0) > 768;
   const primary = desktop
-    ? sidebarPeerGroup.getByRole("button", { name: "Start a session on onboarding peer" })
-    : peerGroup.getByRole("button", { name: "Start a session on onboarding peer" });
+    ? sidebarPeerGroup.getByRole("button", { name: "New session on onboarding peer" })
+    : peerGroup.getByRole("button", { name: "New session on onboarding peer" });
   if (desktop) {
     await expect(page.getByRole("button", {
-      name: /Create your first session|Start a session on onboarding peer/,
+      name: /Create your first session|New session on onboarding peer/,
     })).toHaveCount(1);
     await expect(peerGroup.getByRole("region", { name: "No sessions yet" })).toBeHidden();
   } else {

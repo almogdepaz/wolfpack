@@ -71,7 +71,7 @@ for (const width of [320, 375, 390]) for (const collapsed of [false, true]) {
     }));
     writeFileSync(info.outputPath('gate.json'), JSON.stringify({ collapsed, machineName, ...snapshot }, null, 2));
     await page.screenshot({ path: info.outputPath('machine.png') });
-    const trigger = group.getByRole('button', { name: `Start a session on ${machineName}`, exact: true });
+    const trigger = group.getByRole('button', { name: `New session on ${machineName}`, exact: true });
     await expect(trigger, 'required per-machine creation must remain visible without expanding or using global New').toBeVisible();
     await expect(trigger).toBeEnabled();
     await expect(group.locator('.machine-header .machine-add-btn:visible')).toHaveCount(1);

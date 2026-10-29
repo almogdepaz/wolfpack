@@ -1572,7 +1572,7 @@ function sessionCardViewControlsHtml(): string {
   }
   const button = (view: Exclude<SessionCardView, "all">, label: string, color = ""): string => {
     const selected = state.sessionCardView === view;
-    return `<button type="button" class="session-card-view-button${selected ? " selected" : ""}" data-action="set-session-card-view" data-session-card-view="${view}" aria-pressed="${selected}" aria-label="${label} sessions" aria-description="${counts[view]} sessions">${label}<span class="n ${color}">${counts[view]}</span></button>`;
+    return `<button type="button" class="session-card-view-button${selected ? " selected" : ""}" data-action="set-session-card-view" data-session-card-view="${view}" aria-pressed="${selected}" aria-label="${label} sessions" aria-description="${counts[view]} sessions">${label}<span class="n ${color}" data-count="${counts[view]}"></span></button>`;
   };
   return `<div class="seg session-card-view-filter" role="group" aria-label="Session view" aria-description="Select a status to filter. Press the selected status again to show all sessions.">${button(SESSION_CARD_VIEW.NEED, "Needs you", "a")}${button(SESSION_CARD_VIEW.WORK, "Working", "g")}${button(SESSION_CARD_VIEW.IDLE, "Idle")}${button(SESSION_CARD_VIEW.FAIL, "Failed", "r")}</div>`;
 }
@@ -1794,7 +1794,7 @@ function machineNameHandleHtml(name: string): string {
 }
 
 function machineAddButtonHtml(machineUrl: string, machineName: string, disabled: boolean): string {
-  return `<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(machineUrl)}" aria-label="Start a session on ${escAttr(machineName)}" title="New session"${disabled ? " disabled" : ""}>${NEW_SESSION_CONTENT}</button>`;
+  return `<button type="button" class="machine-add-btn" data-action="new-session" data-machine="${escAttr(machineUrl)}" aria-label="New session on ${escAttr(machineName)}" title="New session"${disabled ? " disabled" : ""}>${NEW_SESSION_CONTENT}</button>`;
 }
 
 function machineGroupIdentity(group): string {
