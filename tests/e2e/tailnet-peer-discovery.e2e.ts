@@ -614,7 +614,7 @@ test("retains a disabled verified peer with separate handshake and session-servi
   await page.goto(server.baseUrl);
 
   await expect(visibleMachineGroup(page, peerIdentity)).toHaveClass(/offline/);
-  await expect(visibleMachineGroup(page, peerIdentity).getByRole("button", { name: "Start a session on verified peer" })).toBeDisabled();
+  await expect(visibleMachineGroup(page, peerIdentity).getByRole("button", { name: "New session on verified peer" })).toBeDisabled();
   await openSettingsFromUi(page);
   await expect(page.locator("#machines-list .machine-item")).toHaveCount(1);
   await expect(page.locator("#machines-list .machine-item .dot")).toHaveAttribute("title", "Handshake verified; sessions: Server unavailable");

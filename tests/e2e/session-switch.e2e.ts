@@ -880,7 +880,7 @@ test("mobile created solo session requests full prefill despite legacy fast sett
   await page.reload();
   await page.waitForSelector(".card", { timeout: 5000 });
 
-  await page.getByRole("button", { name: /Start a session on/ }).filter({ visible: true }).first().click();
+  await page.getByRole("button", { name: /New session on/ }).filter({ visible: true }).first().click();
   await expect(page.locator("#projects-view")).toHaveClass(/visible/);
   await page.getByRole("button", { name: "Open project test-project" }).click();
   await expect(page.locator("#agent-view")).toHaveClass(/visible/);

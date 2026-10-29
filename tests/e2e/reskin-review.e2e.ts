@@ -28,14 +28,14 @@ test("H1 counters and summary track initial load and refresh without filter inte
   const data = await fixture(page);
   await page.goto(server.baseUrl);
   await expect(page.locator('#session-list .machine-group:not(.needs-you) .card')).toHaveCount(2);
-  await expect(page.locator('#dashboard-session-filter [data-session-card-view="need"] .n')).toHaveText("1");
+  await expect(page.locator('#dashboard-session-filter [data-session-card-view="need"] .n')).toHaveAttribute("data-count", "1");
   await expect(page.locator('#session-summary')).toContainText("2 sessions across 1 machine · 1 need you");
   await expect(page.locator('#session-list [data-session-order-id="another-id"] .harness-icon')).toHaveAttribute('aria-label', 'Terminal');
   await expect(page.locator('#session-list [data-session-order-id="test-id"] .status')).toHaveAttribute('title', 'needs input');
   await expect(page.locator('#session-list [data-session-order-id="test-id"] .status')).toHaveText('Needs input');
   await expect(page.locator('#online-machine-count')).toContainText("1 machine online");
   await data.refresh();
-  await expect(page.locator('#dashboard-session-filter [data-session-card-view="need"] .n')).toHaveText("2");
+  await expect(page.locator('#dashboard-session-filter [data-session-card-view="need"] .n')).toHaveAttribute("data-count", "2");
   await expect(page.locator('#session-summary')).toContainText("2 need you");
 });
 

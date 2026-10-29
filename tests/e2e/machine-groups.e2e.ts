@@ -136,7 +136,7 @@ for (const unscrolled of [false, true]) for (const width of [320, 375, 390]) for
     const expanded = { toggle: (await toggle.boundingBox())!, create: (await create.boundingBox())! };
     expect(expanded.toggle.width).toBe(44); expect(expanded.toggle.height).toBe(44);
     expect.soft(expanded.create.width).toBeGreaterThan(100); expect(expanded.create.height).toBe(44);
-    await expect(create).toHaveAttribute("aria-label", `Start a session on ${machine ? "peer" : "local"} with a long machine name`);
+    await expect(create).toHaveAttribute("aria-label", `New session on ${machine ? "peer" : "local"} with a long machine name`);
     await expect.soft(create).toHaveJSProperty("innerText", "New session");
     await expect.soft(create.locator(":scope > span")).toBeVisible();
     await expect.soft(create.locator(".machine-add-label-detail")).toBeVisible();
@@ -317,7 +317,7 @@ for (const withSessions of [false, true]) for (const collapsed of [false, true])
 test("R13 machine create keeps focus, disabled and hover feedback", async ({ page }, info) => {
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
-  const create = mainGroup(page).getByRole("button", { name: "Start a session on verified peer", exact: true });
+  const create = mainGroup(page).getByRole("button", { name: "New session on verified peer", exact: true });
   const resting = await create.evaluate(element => ({ background: getComputedStyle(element).backgroundColor, color: getComputedStyle(element).color }));
   await create.focus();
   await expect(create).toBeFocused();
@@ -347,7 +347,7 @@ test("R13 removes the desktop global New DOM, retaining scoped machine actions",
   await installMachineFixture(page, true);
   await page.goto(server.baseUrl);
   await expect(page.locator("#session-dashboard-controls .new-session-primary")).toHaveCount(0);
-  await expect(mainGroup(page).getByRole("button", { name: "Start a session on verified peer", exact: true })).toBeVisible();
+  await expect(mainGroup(page).getByRole("button", { name: "New session on verified peer", exact: true })).toBeVisible();
   await expect(page.locator("#session-summary")).toBeVisible();
   await expect(page.locator("#dashboard-session-filter")).toBeVisible();
   await page.screenshot({ path: info.outputPath("desktop-scoped-new.png") });
@@ -468,7 +468,7 @@ test("compact machine headers make the name the drag handle and reserve the chev
   await expect(group.locator(".machine-group-body")).toHaveAttribute("inert", "");
   await expect(group.locator(".machine-header-btns")).toHaveCount(0);
   await expect(group.locator(".machine-header").getByRole("button")).toHaveCount(testInfo.project.name === "desktop" ? 1 : 2);
-  await expect(group.getByRole("button", { name: "Start a session on verified peer" })).toHaveCount(testInfo.project.name === "desktop" ? 0 : 1);
+  await expect(group.getByRole("button", { name: "New session on verified peer" })).toHaveCount(testInfo.project.name === "desktop" ? 0 : 1);
 });
 
 for (const withSessions of [false, true]) for (const collapsed of [false, true]) {
@@ -487,7 +487,7 @@ for (const withSessions of [false, true]) for (const collapsed of [false, true])
     await page.goto(server.baseUrl);
     const group = mainGroup(page);
     if (collapsed) await group.getByRole('button', { name: `Collapse ${name}`, exact: true }).click();
-    const create = group.locator('.machine-header').getByRole('button', { name: `Start a session on ${name}`, exact: true });
+    const create = group.locator('.machine-header').getByRole('button', { name: `New session on ${name}`, exact: true });
     await expect(create).toHaveCount(1);
     await expect(create).toBeVisible();
     await expect(create).toHaveAttribute('data-machine', peerIdentity);
@@ -535,7 +535,7 @@ test("empty sidebar machine groups keep a header create action on their own mach
 
   await collapseInitialSessionMenu(page);
   const group = sidebarGroup(page);
-  const expandedCreate = group.getByRole("button", { name: "Start a session on verified peer" });
+  const expandedCreate = group.getByRole("button", { name: "New session on verified peer" });
   await expect(expandedCreate).toBeVisible();
   await expandedCreate.click();
   await expect(page.locator("#create-project-action")).toHaveAttribute("aria-label", "Create project on verified peer");
@@ -544,9 +544,9 @@ test("empty sidebar machine groups keep a header create action on their own mach
   await collapseInitialSessionMenu(page);
   const reloadedGroup = sidebarGroup(page);
   await reloadedGroup.getByRole("button", { name: "Collapse verified peer" }).click();
-  await expect(reloadedGroup.getByRole("button", { name: "Start a session on verified peer" })).toHaveCount(0);
+  await expect(reloadedGroup.getByRole("button", { name: "New session on verified peer" })).toHaveCount(0);
   await reloadedGroup.getByRole("button", { name: "Expand verified peer" }).click();
-  await reloadedGroup.getByRole("button", { name: "Start a session on verified peer" }).click();
+  await reloadedGroup.getByRole("button", { name: "New session on verified peer" }).click();
   await expect(page.locator("#create-project-action")).toHaveAttribute("aria-label", "Create project on verified peer");
   expect(projectRequests).toEqual([
     "https://peer.example.ts.net/api/projects",

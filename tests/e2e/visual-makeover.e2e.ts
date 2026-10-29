@@ -84,7 +84,7 @@ test("long machine names stay bounded without squeezing the session action", asy
   await expect(name).toHaveText(machineName);
   await expect(name).toHaveAttribute("title", machineName);
   await expect(name).toHaveCSS("text-overflow", "ellipsis");
-  const add = page.getByRole("button", { name: `Start a session on ${machineName}`, exact: true });
+  const add = page.getByRole("button", { name: `New session on ${machineName}`, exact: true });
   await expect(add).toBeVisible();
   // Measure both controls in the same frame while the expanded view settles.
   await expect.poll(() => name.evaluate(element => {

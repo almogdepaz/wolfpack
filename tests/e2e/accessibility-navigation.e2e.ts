@@ -28,7 +28,7 @@ test("only the active view participates in keyboard focus", async ({ page }) => 
   await page.route("**/api/projects", async (route) => {
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ projects: ["accessibility-project"] }) });
   });
-  await page.getByRole("button", { name: /Start a session on/ }).first().click();
+  await page.getByRole("button", { name: /New session on/ }).first().click();
 
   await expect(page.locator("#projects-view")).not.toHaveAttribute("inert", "");
   await expect(page.locator("#sessions-view")).toHaveAttribute("inert", "");
