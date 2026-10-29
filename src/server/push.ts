@@ -12,7 +12,7 @@ import {
   quietAlertPolicyEpoch,
 } from "../quiet-alert-policy-invalidation.js";
 import { isQuietAlertFact, QUIET_ALERT_KIND } from "../quiet-alert-policy.js";
-import type { QuietAlertFact } from "../quiet-alert-policy.js";
+import type { QuietAlertFact, QuietAlertKind } from "../quiet-alert-policy.js";
 import { readValidatedJsonFile } from "./persistence.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
 
@@ -586,6 +586,7 @@ interface SessionTransitionFact {
 }
 
 interface QuietAlertDeliveryState {
+  readonly kind: QuietAlertKind;
   readonly episodeId: string;
   readonly attempts: number;
   readonly pendingEndpoints: ReadonlySet<string>;
@@ -593,6 +594,7 @@ interface QuietAlertDeliveryState {
 }
 
 interface QuietAlertRecipientSnapshot {
+  readonly kind: QuietAlertKind;
   readonly policyEpoch: number;
   readonly endpointGenerations: ReadonlyMap<string, number>;
 }
@@ -614,7 +616,7 @@ function sessionNotificationStableId(session: SessionTransitionFact): string | n
 }
 
 function quietAlertBody(alert: QuietAlertFact): string {
-  if (alert.kind !== QUIET_ALERT_KIND.NEEDS_INPUT) return "Quiet";
+  if (alert.kind !== QUIET_ALERT_KIND.NEEDS_INPUT) return "Idle";
   return alert.inputKind ? `Needs input (${alert.inputKind})` : "Needs input";
 }
 
@@ -655,7 +657,7 @@ function inMachineScope(key: string, machine?: NotificationMachine): boolean {
 }
 
 /** Records the recipients entitled to an episode when canonical policy first emits it. */
-export function recordQuietAlertEmission(sessionId: string, episodeId: string): void {
+export function recordQuietAlertEmission(sessionId: string, episodeId: string, kind: QuietAlertKind = QUIET_ALERT_KIND.QUIET): void {
   let episodes = quietAlertRecipientSnapshots.get(sessionId);
   if (episodes === undefined) {
     episodes = new Map();
@@ -664,6 +666,7 @@ export function recordQuietAlertEmission(sessionId: string, episodeId: string): 
   if (episodes.has(episodeId)) return;
   episodes.clear();
   episodes.set(episodeId, {
+    kind,
     policyEpoch: quietAlertPolicyEpoch(),
     endpointGenerations: registeredSubscriptionGenerations(),
   });
@@ -671,7 +674,7 @@ export function recordQuietAlertEmission(sessionId: string, episodeId: string): 
 
 function recipientSnapshot(sessionId: string, episodeId: string): ReadonlyMap<string, number> | undefined {
   const snapshot = quietAlertRecipientSnapshots.get(sessionId)?.get(episodeId);
-  return snapshot && (!inMachineScope(sessionId) || snapshot.policyEpoch === quietAlertPolicyEpoch()) ? snapshot.endpointGenerations : undefined;
+  return snapshot && (!inMachineScope(sessionId) || snapshot.policyEpoch >= quietAlertPolicyEpoch(snapshot.kind)) ? snapshot.endpointGenerations : undefined;
 }
 
 export function pruneQuietAlertRecipientSnapshots(
@@ -679,7 +682,7 @@ export function pruneQuietAlertRecipientSnapshots(
   policyEpoch = quietAlertPolicyEpoch(),
   machine?: NotificationMachine,
 ): void {
-  if (policyEpoch !== quietAlertPolicyEpoch()) return;
+  if (!machine && policyEpoch !== quietAlertPolicyEpoch()) return;
   for (const sessionId of quietAlertRecipientSnapshots.keys()) {
     if (inMachineScope(sessionId, machine) && !activeSessionIds.has(sessionId)) quietAlertRecipientSnapshots.delete(sessionId);
   }
@@ -710,7 +713,7 @@ async function deliverQuietAlert(
   policyEpoch: number,
   canInitiate: SessionTransitionPermission,
 ): Promise<void> {
-  if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
+  if ((!session.notificationMachine && policyEpoch < quietAlertPolicyEpoch(alert.kind)) || !canInitiate()) return;
   const key = deliveryKey(sessionId, session.notificationMachine);
   const existing = quietAlertDeliveries.get(key);
   if (existing?.episodeId === alert.episodeId && existing.pendingEndpoints.size === 0) return;
@@ -730,6 +733,7 @@ async function deliverQuietAlert(
   if (now - last < PUSH_DEBOUNCE_MS) {
     if (!matchingEpisode) {
       quietAlertDeliveries.set(key, {
+        kind: alert.kind,
         episodeId: alert.episodeId,
         attempts: 0,
         pendingEndpoints: targetEndpoints,
@@ -740,6 +744,7 @@ async function deliverQuietAlert(
   }
   if (targetEndpoints.size === 0) {
     quietAlertDeliveries.set(key, {
+      kind: alert.kind,
       episodeId: alert.episodeId,
       attempts: existing?.episodeId === alert.episodeId ? existing.attempts : 1,
       pendingEndpoints: new Set(),
@@ -750,18 +755,19 @@ async function deliverQuietAlert(
 
   const attempt = (existing?.episodeId === alert.episodeId ? existing.attempts : 0) + 1;
   const ownership = {
+    kind: alert.kind,
     episodeId: alert.episodeId,
     attempts: attempt,
     pendingEndpoints: targetEndpoints,
     nextAttemptAtMs: now,
   } as const;
-  if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
+  if ((!session.notificationMachine && policyEpoch < quietAlertPolicyEpoch(alert.kind)) || !canInitiate()) return;
   quietAlertDeliveries.set(key, ownership);
   const delivery = await sendSessionPush(quietAlertPayload(session, sessionId, alert), targetEndpoints);
-  // A new activity episode, continuity loss, disable, or removal can retire
+  // A new activity episode, continuity loss, restrictive policy change, or removal can retire
   // this entry while the transport is in flight. Never let stale completion
   // consume or clear the newer episode.
-  if ((!session.notificationMachine && policyEpoch !== quietAlertPolicyEpoch()) || quietAlertDeliveries.get(key) !== ownership) return;
+  if ((!session.notificationMachine && policyEpoch < quietAlertPolicyEpoch(alert.kind)) || quietAlertDeliveries.get(key) !== ownership) return;
 
   if (delivery.sent > 0) lastSessionPushTime.set(key, now);
   const failedEndpoints = delivery.failedEndpoints === undefined
@@ -770,6 +776,7 @@ async function deliverQuietAlert(
       registeredSubscriptionGenerations().get(endpoint) === recipients.get(endpoint)
     )));
   quietAlertDeliveries.set(key, {
+    kind: alert.kind,
     episodeId: alert.episodeId,
     attempts: attempt,
     pendingEndpoints: attempt < QUIET_ALERT_MAX_DELIVERY_ATTEMPTS ? failedEndpoints : new Set(),
@@ -777,24 +784,26 @@ async function deliverQuietAlert(
   });
 }
 
-/** Deliver each observed quiet episode once per subscription, with bounded retries. */
+/** Deliver each observed quiet episode once per subscription, with bounded retries.
+ * Local policy epochs fence only local captures; peers own their facts and policy. */
 export async function checkSessionTransitions(
   sessions: readonly SessionTransitionFact[],
   policyEpoch = quietAlertPolicyEpoch(),
   canInitiate: SessionTransitionPermission = () => true,
   machine?: NotificationMachine,
 ): Promise<void> {
-  if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate() || getSubscriptionCount() === 0) return;
+  if (!canInitiate() || getSubscriptionCount() === 0) return;
   const now = Date.now();
   const activeSessionIds = new Set<string>();
   for (const session of sessions) {
-    if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
+    if (!canInitiate()) return;
     const sessionId = sessionNotificationStableId(session);
     if (!sessionId) continue;
     const key = deliveryKey(sessionId, machine);
     activeSessionIds.add(key);
     const alert = validQuietAlert(session, sessionId);
     if (!alert) {
+      if (!machine && policyEpoch !== quietAlertPolicyEpoch()) continue;
       quietAlertDeliveries.delete(key);
       if (machine) quietAlertRecipientSnapshots.delete(key);
       continue;
@@ -804,12 +813,11 @@ export async function checkSessionTransitions(
     // that became eligible recently on the peer's own clock; an older one
     // first seen after a restart or first enrollment is a baseline.
     if (machine && alert.observedAtMs - alert.eligibleAtMs <= PEER_QUIET_ALERT_MAX_AGE_MS) {
-      recordQuietAlertEmission(key, alert.episodeId);
+      recordQuietAlertEmission(key, alert.episodeId, alert.kind);
     }
     await deliverQuietAlert({ ...session, notificationMachine: machine }, sessionId, alert, now, policyEpoch, canInitiate);
-    if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
   }
-  if (policyEpoch !== quietAlertPolicyEpoch() || !canInitiate()) return;
+  if ((!machine && policyEpoch !== quietAlertPolicyEpoch()) || !canInitiate()) return;
   for (const sessionId of quietAlertDeliveries.keys()) {
     if (inMachineScope(sessionId, machine) && !activeSessionIds.has(sessionId)) quietAlertDeliveries.delete(sessionId);
   }
@@ -824,15 +832,27 @@ export function resetSessionTransitionTracking(): void {
   lastSessionPushTime.clear();
 }
 
-function invalidateQuietAlertDeliveryOwnership(): void {
+function invalidateQuietAlertDeliveryOwnership(kind?: QuietAlertKind): void {
+  // Keep eligible ownership objects intact, including in-flight completions.
   // A local policy change must not restart episodes owned by another machine.
-  for (const key of quietAlertDeliveries.keys()) {
-    if (inMachineScope(key)) quietAlertDeliveries.delete(key);
+  for (const [key, delivery] of quietAlertDeliveries) {
+    if (inMachineScope(key) && (kind === undefined || delivery.kind === kind)) {
+      quietAlertDeliveries.delete(key);
+      lastSessionPushTime.delete(key);
+    }
   }
-  for (const key of lastSessionPushTime.keys()) {
-    if (inMachineScope(key)) lastSessionPushTime.delete(key);
+  for (const [key, episodes] of quietAlertRecipientSnapshots) {
+    if (!inMachineScope(key)) continue;
+    for (const [id, snapshot] of episodes) {
+      if (kind === undefined || snapshot.kind === kind) episodes.delete(id);
+    }
+    if (episodes.size === 0) quietAlertRecipientSnapshots.delete(key);
   }
-  clearQuietAlertRecipientSnapshots();
+  if (kind === undefined) {
+    for (const key of lastSessionPushTime.keys()) {
+      if (inMachineScope(key)) lastSessionPushTime.delete(key);
+    }
+  }
 }
 
 onQuietAlertPolicyInvalidation(invalidateQuietAlertDeliveryOwnership);

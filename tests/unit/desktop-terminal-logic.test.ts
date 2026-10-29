@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   shouldInterceptCopy,
+  shouldInterceptBacktab,
   encodeTerminalBinary,
   splitTerminalInputBytes,
   shouldInsertMessageNewlineFromAccessoryKey,
@@ -13,6 +14,19 @@ import {
   terminalDataFromBeforeInput,
   terminalDataFromKeydownForBeforeInputDedupe,
 } from "../../src/terminal-input";
+
+describe("native hardware back-tab interception", () => {
+  const backtab = { type: "keydown", key: "Tab", code: "Tab", shiftKey: true, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, keyCode: 9 };
+  test("only unmodified Shift+Tab keydown is corrected", () => {
+    expect(shouldInterceptBacktab(backtab)).toBe(true);
+  });
+  for (const override of [
+    { shiftKey: false }, { type: "keyup" }, { key: "Enter" }, { ctrlKey: true },
+    { altKey: true }, { metaKey: true }, { isComposing: true }, { keyCode: 229 },
+  ]) test(`passes through ${JSON.stringify(override)}`, () => {
+    expect(shouldInterceptBacktab({ ...backtab, ...override })).toBe(false);
+  });
+});
 
 // ── Copy handler tests (shouldInterceptCopy) ──
 

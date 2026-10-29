@@ -165,19 +165,22 @@ test("desktop groups structured sub-agents directly under their parent", async (
 
   await page.goto(srv.baseUrl);
 
-  const cards = page.locator("#session-list .card");
+  const cards = page.locator("#session-list .machine-group:not(.needs-you) .card");
+  await expect(cards.locator(".card-name-text")).toHaveText(["wolfpack", "orphan-child", "unrelated"]);
+  await cards.getByRole("button", { name: "Expand 2 child agents", exact: true }).click();
   await expect(cards).toHaveCount(5);
+  await expect(page.locator("#session-list .needs-you .card-name-text")).toHaveText(["wolfpack-sub-agent"]);
   await expect.poll(() => cards.locator(".card-name").evaluateAll((names) =>
     names.map((name) => name.querySelector(".card-name-text")?.textContent),
   )).toEqual([
-    "wolfpack",
+    "wolfpack", // its waiting descendant pulls the whole tree above working roots
     "wolfpack-sub-agent",
     "wolfpack-sub-agent-2",
-    "unrelated",
     "orphan-child",
+    "unrelated",
   ]);
   await expect(cards.locator(".harness-icon[data-harness=\"pi\"][aria-label=\"pi\"]")).toHaveCount(5);
-  await expect(cards.nth(0)).toContainText("2 children");
+  await expect(cards.nth(0)).toContainText("2 agents");
   await expect(cards.nth(0)).toHaveClass(/delegation-parent-card/);
   await expect(cards.nth(1)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(1)).toHaveAttribute("data-parent-session", "wolfpack");
@@ -185,14 +188,14 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await expect(cards.nth(1).locator(".delegation-parent-link")).toHaveCount(0);
   await expect(cards.nth(2)).toHaveClass(/sub-session-card/);
   await expect(cards.nth(2)).toHaveAttribute("data-parent-session", "wolfpack");
-  await expect(cards.nth(4)).toHaveClass(/orphan-session-card/);
-  await expect(cards.nth(4)).toContainText("missing parent: gone <parent> & \"quoted\"");
-  await expect(cards.nth(4).locator("script")).toHaveCount(0);
+  await expect(cards.nth(3)).toHaveClass(/orphan-session-card/);
+  await expect(cards.nth(3)).toContainText("missing parent: gone <parent> & \"quoted\"");
+  await expect(cards.nth(3).locator("script")).toHaveCount(0);
 
   await collapseInitialSessionMenu(page);
   const parentSidebarCard = page.locator("#sidebar-session-list .delegation-parent-card").first();
   const childSidebarCards = page.locator("#sidebar-session-list .sub-session-card");
-  await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
+  await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveAttribute("aria-expanded", "true");
   await expect(childSidebarCards).toHaveCount(2);
   await page.locator("#sidebar-session-list").getByRole("button", {
     name: "Open wolfpack-sub-agent",
@@ -1284,7 +1287,7 @@ test("offline Tailnet candidates stay out of workspace navigation but remain in 
     await expect(page.locator('#sidebar-session-list .machine-group[data-machine^="candidate:n-offline-"]')).toHaveCount(0);
   }
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await openSettingsFromUi(page);
   const machines = page.locator("#machines-list .machine-item");
   await expect(machines).toHaveCount(2);
   await expect(machines.nth(0)).toContainText("Offline one");

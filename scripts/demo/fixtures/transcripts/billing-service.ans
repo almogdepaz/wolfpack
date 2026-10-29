@@ -1,0 +1,17 @@
+@# Codex session in the middle of a long migration.
+{bold}>_ Codex{/} {gray}(billing-service){/}
+
+{gray}user{/}
+Migrate invoices to the Money type and keep the tests green
+
+{magenta}codex{/}
+Updating 9 files under src/invoices/.
+
+{gray}•{/} Edited src/invoices/total.ts {green}+18{/} {red}-11{/}
+{gray}•{/} Edited src/invoices/format.ts {green}+6{/} {red}-4{/}
+{gray}•{/} Edited src/invoices/tax.ts {green}+9{/} {red}-9{/}
+{gray}•{/} Ran bun test src/invoices
+  {green}142 passed{/}, 0 failed
+
+Running integration tests (142 passed)…
+@status {"state":"working"}

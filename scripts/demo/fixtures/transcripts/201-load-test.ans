@@ -1,0 +1,11 @@
+@# Child agent (pi) spawned by api-gateway, still running its load test.
+{bold}pi{/} {gray}· 201-load-test{/}
+
+{cyan}›{/} Load-test /v1/public at 50 rps for 60 s and report to the parent
+
+{gray}●{/} bash  k6 run load/public.js
+  {gray}running  50 rps · 34 s elapsed{/}
+
+{gray}~/src/api-gateway (main){/}
+{gray}↑6.1k ↓1.3k R74k CH96.8% $0.061 (sub) 4.2%/272k (auto)        (openai-codex) gpt-6-astra • medium{/}
+@status {"state":"working"}

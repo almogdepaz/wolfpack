@@ -44,7 +44,7 @@ import type { TerminalLayout } from "../src/extensions/layout-contract";
 
 interface GridTerminalController {
   readonly isConnected: boolean;
-  readonly hydration?: { cancel(): void };
+  readonly hydration?: { readonly pending: boolean; cancel(): void } | null;
   readonly term?: { options: { disableStdin: boolean; cursorBlink: boolean } };
   mount(cell: HTMLElement): Promise<void>;
   connect(opts?: { readonly takeControl?: boolean }): void;
@@ -487,11 +487,13 @@ async function mountGridController(gs, cell, idx) {
       // so post-sleep / long-background recovery also gets a fresh repaint.
       if (gs.controller) gs.controller.forceRepaint();
       // pty_ready is sent after prefill_done + broker subscribe. From here the
-      // cell may still be hidden by hydration, but it is no longer waiting for
-      // prefill. Keep the loading UI honest so stale slow-path badges don't sit
-      // on top of an otherwise usable terminal.
-      setTerminalLoadVisualState(cell, "hydrating");
-      gs._slowLoad?.start("hydrating grid cell");
+      // cell may still be hidden by hydration, or onHydrated may have already
+      // fired with no further cycle to follow. Derive loading UI from the
+      // controller's pending state rather than regressing a live cell.
+      const hydrating = !!controller.hydration?.pending;
+      setTerminalLoadVisualState(cell, hydrating ? "hydrating" : "live");
+      if (hydrating) gs._slowLoad?.start("hydrating grid cell");
+      else gs._slowLoad?.stop();
     },
     onViewerConflict: () => {
 

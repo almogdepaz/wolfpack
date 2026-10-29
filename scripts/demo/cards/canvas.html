@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wolfpack — promo canvas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* Promo backdrop layers rendered at 1920×1080. ?layout=desktop|phone&layer=base|top[&bg=<image url>]
+   base = backdrop + chrome (the video is composited on top of it);
+   top  = transparent except rounded-corner masks and borders drawn over the video.
+   Geometry must match scripts/demo/promo.ts (DESKTOP_RECT, PHONE_RECT). */
+:root { --bg: #0b0e0c; --hairline: rgba(255,255,255,.12); --accent: #45ed7e; --mono: "DM Mono", monospace; }
+html, body { margin: 0; width: 1920px; height: 1080px; overflow: hidden; }
+body.base { background: radial-gradient(1100px 650px at 50% 42%, rgba(69,237,126,.08), transparent 70%), var(--bg); }
+body.top { background: transparent; }
+.bg { position: absolute; inset: -40px; background-size: cover; background-position: center; filter: blur(22px) brightness(.38) saturate(.9); }
+.desktop .chrome { position: absolute; left: 230px; top: 22px; width: 1460px; height: 946px; box-sizing: border-box; border-radius: 16px; background: #111513; border: 1px solid var(--hairline); box-shadow: 0 30px 90px rgba(0,0,0,.55); }
+.desktop .bar { position: absolute; left: 0; right: 0; top: 0; height: 35px; display: flex; align-items: center; gap: 8px; padding: 0 16px; color: #7d8781; font: 13px var(--mono); border-bottom: 1px solid rgba(255,255,255,.07); }
+.desktop .bar i { width: 11px; height: 11px; border-radius: 50%; background: rgba(255,255,255,.14); }
+.desktop .bar span { margin-left: 12px; flex: 1; }
+.desktop .bar b { color: var(--accent); font-weight: 500; }
+.phone .label { position: absolute; left: 1216px; top: 52px; color: rgba(232,236,233,.55); font: 15px/1.6 var(--mono); letter-spacing: .04em; }
+.phone .bezel { position: absolute; left: 744px; top: 28px; width: 432px; height: 908px; border-radius: 58px; background: #121614; border: 1px solid var(--hairline); box-shadow: 0 30px 90px rgba(0,0,0,.6); }
+/* top layer: corner masks (backdrop colour) and borders over the composited video */
+.top .mask { position: absolute; border: 1px solid var(--hairline); pointer-events: none; }
+.top.desktop .mask { left: 240px; top: 58px; width: 1440px; height: 900px; box-sizing: border-box; border-radius: 0 0 12px 12px; box-shadow: 0 0 0 9px #111513; border-top: 0; clip-path: inset(0 -10px -10px -10px); }
+.top.phone .mask { left: 756px; top: 40px; width: 408px; height: 884px; box-sizing: border-box; border-radius: 46px; box-shadow: 0 0 0 12px #121614; border-color: rgba(255,255,255,.06); }
+</style>
+</head>
+<body>
+<script>
+  const params = new URLSearchParams(location.search);
+  const layout = params.get("layout") || "desktop";
+  const layer = params.get("layer") || "base";
+  document.body.className = `${layer} ${layout}`;
+  if (layer === "base") {
+    if (layout === "phone" && params.get("bg")) {
+      const bg = document.createElement("div");
+      bg.className = "bg";
+      bg.style.backgroundImage = `url("${params.get("bg")}")`;
+      document.body.append(bg);
+    }
+    if (layout === "desktop") {
+      document.body.insertAdjacentHTML("beforeend", '<div class="chrome"><div class="bar"><i></i><i></i><i></i><span>wolfpack · sessions · demo data</span><b>● LIVE</b></div></div>');
+    } else {
+      document.body.insertAdjacentHTML("beforeend", '<div class="bezel"></div><div class="label">mobile browser emulation<br>demo sessions</div>');
+    }
+  } else {
+    document.body.insertAdjacentHTML("beforeend", '<div class="mask"></div>');
+  }
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(() => { document.body.dataset.done = "1"; });
+</script>
+</body>
+</html>

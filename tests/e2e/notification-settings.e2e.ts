@@ -13,7 +13,7 @@ test.afterAll(async () => {
 
 test("serves the canonical phone and notification help link in Settings", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
 
   const helpLink = page.getByRole("link", {
     name: "Phone, PWA, and notification help",
@@ -46,7 +46,7 @@ test("unsupported push does not leave the notification preference enabled", asyn
     Reflect.deleteProperty(window, "PushManager");
   });
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
 
   const toggle = page.locator("#setting-notifications");
   await toggle.click();
@@ -67,7 +67,7 @@ test("blocked browser permission explains how to unblock notifications", async (
     });
   });
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
 
   const toggle = page.locator("#setting-notifications");
   await toggle.click();
@@ -88,7 +88,7 @@ test("notification setup exposes progress while the permission request is pendin
     });
   });
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
 
   const toggle = page.locator("#setting-notifications");
   await toggle.click();
@@ -99,31 +99,42 @@ test("notification setup exposes progress while the permission request is pendin
 
 test("persists host-wide quiet-alert settings from the notification controls", async ({ page }) => {
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
 
   const mode = page.locator("#setting-quiet-alert-mode");
   const duration = page.locator("#setting-quiet-alert-duration");
   const status = page.locator("#quiet-alert-setting-status");
-  await expect(mode).toHaveValue("quiet-after-activity");
+  await expect.soft(mode).toHaveValue("needs-input-only");
+  await expect.soft(page.getByText("Automatic idle alerts", { exact: true })).toBeVisible();
+  await expect.soft(mode.locator('option[value="needs-input-only"]')).toHaveText("Needs input only");
+  await expect.soft(mode.locator('option[value="quiet-after-activity"]')).toHaveText("After rendered activity becomes idle");
+  await expect.soft(page.getByText("Idle duration (seconds)", { exact: false })).toBeVisible();
+  await expect.soft(page.locator(".quiet-alert-setting-help")).toContainText("Needs input only");
+  await expect.soft(status).toHaveText("Host-wide automatic idle alerts.");
   await expect(duration).toHaveValue("30");
 
   await duration.fill("45");
   await duration.press("Tab");
-  await expect(status).toHaveText("Host-wide quiet alert settings saved.");
+  await expect(status).toHaveText("Host-wide idle alert settings saved.");
   await expect.poll(async () => page.evaluate(async () => {
     const response = await fetch("/api/settings");
     return (await response.json()).settings.quietAlerts;
-  })).toEqual({ mode: "quiet-after-activity", quietAfterSeconds: 45 });
+  })).toEqual({ mode: "needs-input-only", quietAfterSeconds: 45 });
 
   await mode.selectOption("disabled");
-  await expect(status).toHaveText("Host-wide quiet alert settings saved.");
+  await expect(status).toHaveText("Host-wide idle alert settings saved.");
   await expect(duration).toBeDisabled();
 
   await mode.selectOption("quiet-after-activity");
   await expect(duration).toBeEnabled();
   await duration.fill("30");
   await duration.press("Tab");
-  await expect(status).toHaveText("Host-wide quiet alert settings saved.");
+  await expect(status).toHaveText("Host-wide idle alert settings saved.");
+  await page.reload();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
+  await expect(mode).toHaveValue("quiet-after-activity");
+  await mode.selectOption("needs-input-only");
+  await expect(status).toHaveText("Host-wide idle alert settings saved.");
 });
 
 test("reports a quiet-alert settings save failure without leaving controls disabled", async ({ page }) => {
@@ -135,13 +146,13 @@ test("reports a quiet-alert settings save failure without leaving controls disab
     await route.continue();
   });
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
 
   const duration = page.locator("#setting-quiet-alert-duration");
   await duration.fill("46");
   await duration.press("Tab");
 
-  await expect(page.locator("#quiet-alert-setting-status")).toHaveText("Could not save host-wide quiet alert settings.");
+  await expect(page.locator("#quiet-alert-setting-status")).toHaveText("Could not save host-wide idle alert settings.");
   await expect(duration).toBeEnabled();
 });
 
@@ -157,7 +168,7 @@ test("focus refresh removes stale blocked guidance after permission changes", as
     });
   });
   await page.goto(server.baseUrl);
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
 
   const status = page.locator("#notification-setting-status");
   await expect(status).toContainText(testInfo.project.name.startsWith("iphone") ? "Settings app → Notifications → Wolfpack" : "site settings for this origin");
@@ -195,7 +206,7 @@ test("ios safari tab explains home-screen installation in the card and settings"
   await expect(page.locator("#notification-prompt")).toBeVisible();
   await expect(page.locator("#notification-prompt-message")).toContainText("home screen");
   await expect(page.locator("#notification-prompt-enable")).toBeHidden();
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
   await expect(page.locator("#notification-setting-status")).toContainText("home screen");
 });
 
@@ -226,7 +237,7 @@ test("one-tap enrollment preserves the click gesture and the test button reports
   await page.goto(server.baseUrl);
   await page.getByRole("button", { name: "Enable notifications", exact: true }).click();
   await expect(page.locator("#notification-prompt")).toBeHidden();
-  await page.getByRole("button", { name: "Settings" }).first().click();
+  await page.locator('#expanded-settings-btn:visible, #mobile-settings:visible').first().click();
   await expect(page.locator("#setting-notifications")).toBeChecked();
   await page.getByRole("button", { name: "Send test notification" }).click();
   await expect(page.locator("#notification-setting-status")).toHaveText("Test notification sent.");

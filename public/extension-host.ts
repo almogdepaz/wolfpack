@@ -134,7 +134,10 @@ export class ExtensionHost {
     }
     this.currentScope = scope;
     if (!scope?.sessionId || scope.unavailable) {
-      if (scope?.machine) { this.cleanupAll(true); this.dropMachineModules(scope.machine); }
+      if (scope?.machine) {
+        if (scope.unavailable) this.transport.invalidateConsent(scope.machine);
+        this.cleanupAll(true); this.dropMachineModules(scope.machine);
+      }
       this.render(scope?.unavailable ?? contextScopeHint());
       return;
     }
@@ -177,10 +180,12 @@ export class ExtensionHost {
       if (!response.ok) throw new Error(`catalog request failed (${response.status})`);
       const catalog = parseExtensionCatalog(await response.json());
       if (this.disposed || controller.signal.aborted || generation !== this.generation || this.currentScope?.sessionId !== scope.sessionId || this.currentScope?.machine !== scope.machine || this.currentScope?.unavailable !== scope.unavailable) return;
+      const hasBrowserCode = catalog.installations.some(item => item.enabled && item.ui);
+      if (scope.machine && !hasBrowserCode) this.transport.invalidateConsent(scope.machine);
       if (catalog.safeMode) { this.registry.setScope(null); this.cleanupAll(); this.render("Safe mode prevents extension loading."); return; }
       const installationId = catalog.installations[0]?.installationId ?? null;
       if (scope.machine && installationId && !scope.machine.endsWith(`:${installationId}`)) throw new Error("selected machine installation mismatch");
-      if (scope.machine && catalog.installations.some(item => item.enabled && item.ui)) {
+      if (scope.machine && hasBrowserCode) {
         const consent = await (this.options.consentRemoteCode ?? this.transport.consentRemoteCode.bind(this.transport))(scope, catalog, controller.signal);
         if (controller.signal.aborted || generation !== this.generation || this.options.safeMode?.()) return;
         if (!consent) { this.registry.setScope(null); this.cleanupAll(); this.render("Local trust is required before running this machine's browser extensions."); return; }
@@ -208,7 +213,7 @@ export class ExtensionHost {
     } catch {
       if (!controller.signal.aborted && generation === this.generation && this.currentScope?.sessionId === scope.sessionId && this.currentScope?.machine === scope.machine && this.currentScope?.unavailable === scope.unavailable) {
         this.registry.setScope(null);
-        if (scope.machine) { this.cleanupAll(true); this.dropMachineModules(scope.machine); }
+        if (scope.machine) { this.transport.invalidateConsent(scope.machine); this.cleanupAll(true); this.dropMachineModules(scope.machine); }
         else this.cleanupScopeResources();
         this.render("Extension catalog unavailable for the selected scope.");
       }

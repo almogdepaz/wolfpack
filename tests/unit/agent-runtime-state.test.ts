@@ -427,7 +427,7 @@ describe("agent runtime state persistence and acknowledgement", () => {
 describe("agent runtime state ui", () => {
   test("requires valid provenance before showing a semantic state", () => {
     for (const state of AGENT_STATUS_STATES) {
-      expect(sessionRuntimeUi({ runtimeState: { state }, triage: "idle" }).label).toBe("quiet");
+      expect(sessionRuntimeUi({ runtimeState: { state }, triage: "idle" }).label).toBe("idle");
     }
     expect(sessionRuntimeUi({
       runtimeState: {
@@ -461,9 +461,9 @@ describe("agent runtime state ui", () => {
         stale: false,
       },
       triage: "running",
-    }).label).toBe("quiet");
+    }).label).toBe("idle");
     expect(sessionRuntimeUi({ triage: "running" }).label).toBe("output");
-    expect(sessionRuntimeUi({ triage: "idle" }).label).toBe("quiet");
+    expect(sessionRuntimeUi({ triage: "idle" }).label).toBe("idle");
   });
 
   test("rejects a state that is inconsistent with its claimed source", () => {
@@ -476,7 +476,7 @@ describe("agent runtime state ui", () => {
         stale: false,
       },
       triage: "idle",
-    }).label).toBe("quiet");
+    }).label).toBe("idle");
   });
 
   test("shows every program status (OSC 7501) state with its own label", () => {
@@ -494,7 +494,7 @@ describe("agent runtime state ui", () => {
     expect(program(AGENT_STATUS_STATE.WORKING).label).toBe("working");
     expect(program(AGENT_STATUS_STATE.DONE).label).toBe("done");
     expect(program(AGENT_STATUS_STATE.FAILED).label).toBe("failed");
-    expect(program(AGENT_STATUS_STATE.IDLE).label).toBe("quiet");
+    expect(program(AGENT_STATUS_STATE.IDLE).label).toBe("idle");
     // States a program report can never map to stay rejected.
     expect(program(AGENT_STATUS_STATE.OFF).label).toBe("output");
     expect(program(AGENT_STATUS_STATE.AUDIT).label).toBe("output");
@@ -508,7 +508,7 @@ describe("agent runtime state ui", () => {
         stale: false,
       },
       triage: "idle",
-    }).label).toBe("quiet");
+    }).label).toBe("idle");
   });
 
   test("uses broker-backed availability labels", () => {

@@ -106,14 +106,14 @@ test('widget controls belong to their panel without global toggles or terminal r
  const attached=sockets.length;
  await collapse.click();const restore=page.getByRole('tab',{name:'Widgets',exact:true});
  await expect(restore).toBeVisible();await restore.click();
- await page.getByRole('button',{name:'Pin Widgets',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Pin Widgets',exact:true,pressed:true})).toHaveAttribute('aria-pressed','true');
  await expect(collapse).toBeVisible();
  await filter.getByRole('button',{name:'Idle sessions'}).click();
- await filter.getByRole('button',{name:'All sessions'}).click();
+ await filter.getByRole('button',{name:'Idle sessions'}).click();
  expect(await collapse.evaluate(node=>node===(window as any).__widgetCollapse)).toBe(true);
  await page.locator('[data-widget-full]:visible').click();await collapse.click();
  await expect(terminal).toBeVisible();await restore.click();
- await page.getByRole('button',{name:'Pin Widgets',exact:true}).click();
+ await expect(page.getByRole('button',{name:'Pin Widgets',exact:true,pressed:true})).toHaveAttribute('aria-pressed','true');
  expect(await canvas.evaluate(node=>node===(window as any).__toolsCanvas)).toBe(true);expect(sockets).toHaveLength(attached);
  await page.getByRole('button',{name:'Expand sessions',exact:true}).click();
  await expect(page.locator('#session-dashboard-controls')).toBeVisible();
@@ -173,7 +173,7 @@ test('mobile Widgets entry lives in the app header without a terminal toolbar',a
  await expect(page.getByRole('button',{name:'Collapse Widgets',exact:true})).toBeVisible();
  await page.setViewportSize({width:390,height:844});
  const open=page.locator('body > header #workspace-restore');await expect(open).toBeVisible();
- await expect(open).toHaveAccessibleName('Widgets');await open.click();
+ await expect(open).toHaveAccessibleName('Changes');await open.click();
  await page.getByRole('button',{name:'Back to terminal',exact:true}).click();
  await expect(page.locator('.workspace-terminal-toolbar, #workspace-context-collapse, #terminal-transcript-btn')).toHaveCount(0);
  await page.setViewportSize({width:1280,height:720});

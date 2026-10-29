@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, realpathSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CONTROL_API_SCHEMA_ARTIFACT } from "../../src/control-api/schema.ts";
+import { PI_FOOTER } from "../fixtures/pi-footer.ts";
 import { SESSION_SNAPSHOT_MAX_RESPONSE_BYTES, SESSION_SNAPSHOT_MAX_TEXT_BYTES } from "../../src/server/session-snapshot.ts";
 import {
   isJsonObject as isObject,
@@ -178,6 +179,27 @@ describe("control api generated schema against runtime responses", () => {
 
     for (const [operationId, payload] of samples) {
       expect(validate(httpResponse(operationId), payload, artifact), operationId).toEqual([]);
+    }
+  });
+
+  test("validates real pi footer metadata as optional listSessions fields", async () => {
+    const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+    __resetSessionObservationForTests();
+    mockBackend.setCapturePane(async () => `Agent answer\n~/dev/wolfpack (ui/last-line-meta)\n${PI_FOOTER}`);
+    try {
+      const response = await getJson("/api/sessions");
+      expect(validate(httpResponse("listSessions"), response, artifact)).toEqual([]);
+      if (!isObject(response) || !Array.isArray(response.sessions)) throw new Error("missing session summaries");
+      const session = response.sessions.find(value => isObject(value) && value.name === "wolf-1");
+      expect(session).toMatchObject({
+        name: "wolf-1", lastLine: "Agent answer", footer: PI_FOOTER,
+        meta: { model: "gpt-6-astra", reasoning: "medium", contextPct: 40.3, contextLimit: 272000, cost: 42.822, costTag: "sub" },
+      });
+      expect(validate(httpResponse("listSessions"), { sessions: [{ name: "old-peer", lastLine: "", triage: "idle" }] }, artifact)).toEqual([]);
+      expect(validate(httpResponse("listSessions"), { sessions: [{ name: "bad-meta", lastLine: "", triage: "idle", meta: { contextPct: "85" } }] }, artifact)).not.toEqual([]);
+    } finally {
+      mockBackend.setCapturePane(async () => "ready\n");
+      __resetSessionObservationForTests();
     }
   });
 

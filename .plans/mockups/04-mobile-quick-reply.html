@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wolfpack iOS — quick reply sheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0e0c}
+a{color:#45ed7e}a:hover{color:#8df5b1}
+.ui{font-family:-apple-system,"SF Pro Text","Geist",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.mono{font-family:ui-monospace,"SF Mono","Geist Mono",Menlo,monospace}
+.group{background:rgba(255,255,255,.05);border-radius:14px;overflow:hidden}
+.app{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-family:ui-monospace,"SF Mono","Geist Mono",monospace;font-size:16px;font-weight:600;flex:none;box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 1px 2px rgba(0,0,0,.35)}
+.app.pi{background:linear-gradient(180deg,#7a4fa8,#5c3a85);color:#f1e6ff}
+.app.cl{background:linear-gradient(180deg,#d9825a,#b4603e);color:#fff2ea}
+.name{font-size:16px;font-weight:600;color:#f2f6f3;letter-spacing:-.01em}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500}
+.st i{width:8px;height:8px;border-radius:50%;display:block}
+.st.need{color:#f6c35c}.st.need i{background:#f6c35c;box-shadow:0 0 0 3px rgba(246,195,92,.2)}
+.st.work{color:#45ed7e}.st.work i{background:#45ed7e}
+.qb{height:50px;flex:1;border-radius:12px;border:none;background:rgba(246,195,92,.14);color:#f6c35c;font-family:ui-monospace,"SF Mono","Geist Mono",monospace;font-size:17px;font-weight:600;display:inline-flex;align-items:center;justify-content:center}
+.qb.sub{font-size:14px;background:rgba(255,255,255,.08);color:#c3cfc8}
+.t{font-family:ui-monospace,"SF Mono","Geist Mono",monospace;font-size:11.5px;line-height:1.5;white-space:pre;color:#8a9b91;margin:0;overflow:hidden}
+.t .k{color:#7fc8ff}.t .g{color:#45ed7e}.t .b{color:#c3cfc8}
+.ico{width:18px;height:18px;flex:none}
+.lbl{font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#7f9087}
+</style>
+</head>
+<body style="background:#0b0e0c;display:flex;justify-content:center;padding:24px">
+<div class="ui" style="width: 390px; height: 844px; box-sizing: border-box; background: #0b0e0c; color: #f2f6f3; display: flex; flex-direction: column; overflow: hidden; position: relative">
+
+  <div style="position: absolute; inset: 0; padding: 56px 16px 0; display: flex; flex-direction: column; gap: 12px; transform: scale(.94); transform-origin: 50% 0; opacity: .5; border-radius: 24px; overflow: hidden">
+    <h1 style="margin: 0; font-size: 34px; font-weight: 700; letter-spacing: -.03em">Sessions</h1>
+    <div style="height: 36px; border-radius: 10px; background: rgba(255,255,255,.07)"></div>
+    <div class="group" style="padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: rgba(246,195,92,.07)"><div style="display: flex; align-items: center; gap: 11px"><span class="app pi" aria-hidden="true">π</span><span class="name">polybot</span><div style="flex: 1"></div><span class="st need"><i></i>2m</span></div><div style="height: 18px"></div><div style="height: 44px"></div></div>
+    <div class="group" style="padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: rgba(246,195,92,.07)"><div style="display: flex; align-items: center; gap: 11px"><span class="app cl" aria-hidden="true">✱</span><span class="name">looper-ai</span><div style="flex: 1"></div><span class="st need"><i></i>11m</span></div><div style="height: 18px"></div><div style="height: 44px"></div></div>
+    <div class="group" style="padding: 12px 14px; display: flex; align-items: center; gap: 11px"><span class="app cl" aria-hidden="true">✱</span><span class="name">wolfpack</span><div style="flex: 1"></div><span class="st work"><i></i>4m</span></div>
+    <div class="group" style="padding: 12px 14px; display: flex; align-items: center; gap: 11px"><span class="app pi" aria-hidden="true">π</span><span class="name">wolfpack-3</span><div style="flex: 1"></div><span class="st work"><i></i>13m</span></div>
+  </div>
+  <div style="position: absolute; inset: 0; background: rgba(0,0,0,.45)"></div>
+
+  <section aria-label="Reply to polybot" style="position: absolute; left: 0; right: 0; bottom: 0; background: rgba(24,30,27,.92); backdrop-filter: blur(30px) saturate(180%); -webkit-backdrop-filter: blur(30px) saturate(180%); border-radius: 26px 26px 0 0; padding: 8px 16px 28px; display: flex; flex-direction: column; gap: 16px; box-sizing: border-box; box-shadow: 0 -1px 0 rgba(255,255,255,.1), 0 -20px 60px rgba(0,0,0,.6)">
+    <div style="width: 36px; height: 5px; border-radius: 3px; background: rgba(255,255,255,.22); align-self: center"></div>
+
+    <div style="display: flex; align-items: center; gap: 12px">
+      <span class="app pi" aria-hidden="true" style="width: 40px; height: 40px; border-radius: 10px; font-size: 18px">π</span>
+      <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+        <span class="name" style="font-size: 17px">polybot</span>
+        <span style="font-size: 12px; color: #8a9b91">workstation · ~/dev/polybot · main</span>
+      </div>
+      <div style="flex: 1"></div>
+      <span class="st need"><i></i>Waiting 2m</span>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <span class="lbl">Last output</span>
+      <div class="group" style="background: #090c0a; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.06)">
+<pre class="t">the news binary does <span class="b">not</span> call this validator.
+adding a guard in <span class="k">crates/execution/src/limits.rs</span>
+so the entry path enforces min_cash_reserve_pct.
+
+<span class="g">+</span> if post_trade_cash / bankroll &lt; self.min_cash_reserve_pct {
+<span class="g">+</span>     return Err(LimitBreach::CashReserve);
+<span class="g">+</span> }</pre>
+        <div class="mono" style="font-size: 13.5px; color: #f6c35c; line-height: 1.4; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.07)">Allow write to crates/execution/src/limits.rs? [y/n]</div>
+      </div>
+    </div>
+
+    <div style="display: flex; gap: 8px">
+      <button class="qb" type="button">y</button>
+      <button class="qb" type="button">n</button>
+      <button class="qb sub" type="button">esc</button>
+      <button class="qb sub" type="button">↵</button>
+    </div>
+
+    <label style="display: flex; align-items: center; gap: 8px; height: 48px; border-radius: 12px; background: rgba(255,255,255,.08); padding: 0 6px 0 14px; box-sizing: border-box">
+      <span style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">Custom reply</span>
+      <input class="mono" type="text" placeholder="Type a reply" style="flex: 1; background: transparent; border: none; color: #f2f6f3; font-size: 14px; outline: none; min-width: 0">
+      <button type="button" aria-label="Send" style="width: 36px; height: 36px; border-radius: 18px; border: none; background: #45ed7e; color: #06130a; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 1px 0 rgba(255,255,255,.35)"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width: 16px; height: 16px"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+    </label>
+
+    <div style="display: flex; align-items: center; gap: 8px">
+      <a href="05-mobile-terminal.html" style="flex: 1; height: 46px; border-radius: 12px; background: rgba(69,237,126,.14); color: #45ed7e; font-size: 15px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 6px; text-decoration: none">Open Terminal</a>
+      <button type="button" style="height: 46px; padding: 0 16px; border-radius: 12px; border: none; background: rgba(255,255,255,.08); color: #c3cfc8; font-family: inherit; font-size: 14px; font-weight: 500">Snooze 10m</button>
+    </div>
+    <div style="font-size: 12px; color: #6f8076; text-align: center">Next waiting: looper-ai on MacBook · swipe left</div>
+  </section>
+</div>
+</body>
+</html>

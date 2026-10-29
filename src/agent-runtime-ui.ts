@@ -45,7 +45,7 @@ const RUNTIME_UI: Record<AgentStatusState, SessionRuntimeUi> = {
   [AGENT_STATUS_STATE.STOPPED]: { dot: "gray", card: "idle-session", label: "stopped", title: "stopped", badge: "stopped" },
   [AGENT_STATUS_STATE.OUTPUT]: { dot: "green", card: "active-session", label: "output", title: "recent output", badge: "output" },
   [AGENT_STATUS_STATE.OFF]: { dot: "gray", card: "idle-session", label: "off", title: "broker reports session stopped", badge: "off" },
-  [AGENT_STATUS_STATE.IDLE]: { dot: "gray", card: "idle-session", label: "quiet", title: "no output observed in the latest sample", badge: "idle" },
+  [AGENT_STATUS_STATE.IDLE]: { dot: "gray", card: "idle-session", label: "idle", title: "no output observed in the latest sample", badge: "idle" },
   [AGENT_STATUS_STATE.UNKNOWN]: { dot: "gray", card: "idle-session", label: "unavailable", title: "broker availability unknown", badge: "unknown" },
 };
 
@@ -79,6 +79,22 @@ export function sessionRuntimeState(input: SessionRuntimeUiInput): AgentStatusSt
     ) return state;
   }
   return input.triage === "running" ? AGENT_STATUS_STATE.OUTPUT : AGENT_STATUS_STATE.IDLE;
+}
+
+export type SessionTier = "need" | "work" | "idle" | "fail";
+
+/** Presentation grouping only; semantic authority remains in sessionRuntimeState. */
+export function sessionTier(input: SessionRuntimeUiInput): SessionTier {
+  switch (sessionRuntimeState(input)) {
+    case AGENT_STATUS_STATE.NEEDS_INPUT: return "need";
+    case AGENT_STATUS_STATE.FAILED: return "fail";
+    case AGENT_STATUS_STATE.RUNNING:
+    case AGENT_STATUS_STATE.WORKING:
+    case AGENT_STATUS_STATE.AUDIT:
+    case AGENT_STATUS_STATE.CLEANUP:
+    case AGENT_STATUS_STATE.OUTPUT: return "work";
+    default: return "idle";
+  }
 }
 
 export function sessionRuntimeUi(input: SessionRuntimeUiInput): SessionRuntimeUi {

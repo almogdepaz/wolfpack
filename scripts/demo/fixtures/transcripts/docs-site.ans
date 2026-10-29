@@ -1,0 +1,12 @@
+@# Gemini CLI session whose build failed.
+{blue}✦{/} {bold}Gemini CLI{/} {gray}· docs-site{/}
+
+{gray}>{/} Rebuild the docs site and fix any broken links
+
+{blue}✦{/} Running {bold}npm run build{/}
+  {red}✗{/} 2 broken links
+    {gray}guides/install.md  → /reference/cli#spawn{/}
+    {gray}guides/phone.md    → /setup/pwa{/}
+
+{red}Error: build failed with 2 broken links{/}
+@status {"state":"error","message":"build failed"}

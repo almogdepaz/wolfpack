@@ -1,0 +1,298 @@
+{
+  "closed": {
+    "html": {
+      "top": 0,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 844,
+      "width": 390
+    },
+    "body": {
+      "top": 0,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 844,
+      "width": 390
+    },
+    "body > header": {
+      "top": 0,
+      "bottom": 51,
+      "left": 0,
+      "right": 390,
+      "height": 51,
+      "width": 390
+    },
+    "#view-container": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#terminal-view": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#workspace-shell": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#workspace-terminal-region": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#desktop-terminal-container": {
+      "top": 51,
+      "bottom": 797,
+      "left": 0,
+      "right": 390,
+      "height": 746,
+      "width": 390
+    },
+    "#kb-accessory": {
+      "top": 797,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 47,
+      "width": 390
+    }
+  },
+  "open": {
+    "html": {
+      "top": 0,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 844,
+      "width": 390
+    },
+    "body": {
+      "top": 0,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 844,
+      "width": 390
+    },
+    "body > header": {
+      "top": 0,
+      "bottom": 51,
+      "left": 0,
+      "right": 390,
+      "height": 51,
+      "width": 390
+    },
+    "#view-container": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#terminal-view": {
+      "top": 51,
+      "bottom": 500,
+      "left": 0,
+      "right": 390,
+      "height": 449,
+      "width": 390
+    },
+    "#workspace-shell": {
+      "top": 51,
+      "bottom": 500,
+      "left": 0,
+      "right": 390,
+      "height": 449,
+      "width": 390
+    },
+    "#workspace-terminal-region": {
+      "top": 51,
+      "bottom": 500,
+      "left": 0,
+      "right": 390,
+      "height": 449,
+      "width": 390
+    },
+    "#desktop-terminal-container": {
+      "top": 51,
+      "bottom": 453,
+      "left": 0,
+      "right": 390,
+      "height": 402,
+      "width": 390
+    },
+    "#kb-accessory": {
+      "top": 453,
+      "bottom": 500,
+      "left": 0,
+      "right": 390,
+      "height": 47,
+      "width": 390
+    }
+  },
+  "panned": {
+    "html": {
+      "top": 0,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 844,
+      "width": 390
+    },
+    "body": {
+      "top": 0,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 844,
+      "width": 390
+    },
+    "body > header": {
+      "top": 0,
+      "bottom": 51,
+      "left": 0,
+      "right": 390,
+      "height": 51,
+      "width": 390
+    },
+    "#view-container": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#terminal-view": {
+      "top": 51,
+      "bottom": 540,
+      "left": 0,
+      "right": 390,
+      "height": 489,
+      "width": 390
+    },
+    "#workspace-shell": {
+      "top": 51,
+      "bottom": 540,
+      "left": 0,
+      "right": 390,
+      "height": 489,
+      "width": 390
+    },
+    "#workspace-terminal-region": {
+      "top": 51,
+      "bottom": 540,
+      "left": 0,
+      "right": 390,
+      "height": 489,
+      "width": 390
+    },
+    "#desktop-terminal-container": {
+      "top": 51,
+      "bottom": 493,
+      "left": 0,
+      "right": 390,
+      "height": 442,
+      "width": 390
+    },
+    "#kb-accessory": {
+      "top": 493,
+      "bottom": 540,
+      "left": 0,
+      "right": 390,
+      "height": 47,
+      "width": 390
+    }
+  },
+  "closed-again": {
+    "html": {
+      "top": 0,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 844,
+      "width": 390
+    },
+    "body": {
+      "top": 0,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 844,
+      "width": 390
+    },
+    "body > header": {
+      "top": 0,
+      "bottom": 51,
+      "left": 0,
+      "right": 390,
+      "height": 51,
+      "width": 390
+    },
+    "#view-container": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#terminal-view": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#workspace-shell": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#workspace-terminal-region": {
+      "top": 51,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 793,
+      "width": 390
+    },
+    "#desktop-terminal-container": {
+      "top": 51,
+      "bottom": 797,
+      "left": 0,
+      "right": 390,
+      "height": 746,
+      "width": 390
+    },
+    "#kb-accessory": {
+      "top": 797,
+      "bottom": 844,
+      "left": 0,
+      "right": 390,
+      "height": 47,
+      "width": 390
+    }
+  }
+}

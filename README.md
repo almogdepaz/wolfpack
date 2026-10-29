@@ -18,15 +18,15 @@ Sessions live in a Rust PTY broker, not the web server, so closing the browser o
 ### desktop demo
 
 <p align="center">
-  <img src="docs/assets/wolfpack-usage-demo.gif" width="700" alt="Wolfpack usage demo showing real broker-backed terminal sessions" />
+  <img src="docs/assets/wolfpack-usage-demo.gif" width="700" alt="Wolfpack desktop demo with demo sessions on two machines: the Needs you list, answering a permission prompt from the banner, then switching sessions" />
 </p>
 
 ### mobile views
 
 <p align="center">
-  <img src="docs/assets/wolfpack-mobile-demo.gif" width="220" alt="Wolfpack phone demo opening sessions from the dashboard and switching between live terminals on two machines" />
-  <img src="docs/mobile-sessions.png" width="220" alt="Wolfpack mobile sessions dashboard showing real broker-backed sessions" />
-  <img src="docs/mobile-ghostty.png" width="220" alt="Wolfpack mobile Ghostty terminal showing colorized coding-agent output and touch controls" />
+  <img src="docs/assets/wolfpack-mobile-demo.gif" width="220" alt="Wolfpack phone demo with demo sessions: open a session that needs input, answer it with the keyboard, then open a session on a second machine" />
+  <img src="docs/mobile-sessions.png" width="220" alt="Wolfpack mobile Sessions dashboard with demo sessions on two machines and a Needs you section" />
+  <img src="docs/mobile-ghostty.png" width="220" alt="Wolfpack mobile Ghostty terminal showing colorized coding-agent output and the keyboard accessory" />
 </p>
 
 Monitor your sessions, spot agents waiting for input, and take over a live terminal from the phone PWA.

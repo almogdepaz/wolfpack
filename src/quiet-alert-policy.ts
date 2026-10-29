@@ -2,6 +2,7 @@ import { PROGRAM_STATUS_KINDS } from "./program-status-contract.js";
 import type { ProgramStatusKind } from "./program-status-contract.js";
 
 export const QUIET_ALERT_MODE = {
+  NEEDS_INPUT_ONLY: "needs-input-only",
   QUIET_AFTER_ACTIVITY: "quiet-after-activity",
   DISABLED: "disabled",
 } as const;
@@ -17,7 +18,7 @@ export interface QuietAlertPolicy {
 }
 
 export const DEFAULT_QUIET_ALERT_POLICY: QuietAlertPolicy = {
-  mode: QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY,
+  mode: QUIET_ALERT_MODE.NEEDS_INPUT_ONLY,
   quietAfterSeconds: 30,
 };
 
@@ -111,7 +112,7 @@ export function isQuietAlertPolicy(value: unknown): value is QuietAlertPolicy {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
   return Object.keys(candidate).length === 2
-    && (candidate.mode === QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY || candidate.mode === QUIET_ALERT_MODE.DISABLED)
+    && (candidate.mode === QUIET_ALERT_MODE.NEEDS_INPUT_ONLY || candidate.mode === QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY || candidate.mode === QUIET_ALERT_MODE.DISABLED)
     && Number.isInteger(candidate.quietAfterSeconds)
     && (candidate.quietAfterSeconds as number) >= QUIET_ALERT_MIN_SECONDS
     && (candidate.quietAfterSeconds as number) <= QUIET_ALERT_MAX_SECONDS;
@@ -193,7 +194,9 @@ export function reduceQuietAlertPolicy(
 
   if (!previous) return { state: undefined, event: undefined, fact: undefined };
   if (previous.emitted) {
-    return { state: previous, event: undefined, fact: factFor(observation.sessionId, previous, observation.observedAtMs) };
+    return { state: previous, event: undefined,
+      fact: policy.mode === QUIET_ALERT_MODE.NEEDS_INPUT_ONLY && previous.alert?.kind !== QUIET_ALERT_KIND.NEEDS_INPUT
+        ? undefined : factFor(observation.sessionId, previous, observation.observedAtMs) };
   }
 
   const state = {
@@ -203,7 +206,7 @@ export function reduceQuietAlertPolicy(
   const alert = alertKindFields(observation.alert);
   if (
     observation.observedAtMs < state.eligibleAtMs
-    || (observation.suppressed === true && alert.kind === QUIET_ALERT_KIND.QUIET)
+    || (alert.kind === QUIET_ALERT_KIND.QUIET && (observation.suppressed === true || policy.mode === QUIET_ALERT_MODE.NEEDS_INPUT_ONLY))
   ) {
     if (observation.observedAtMs < state.eligibleAtMs) return { state, event: undefined, fact: undefined };
     return { state: { ...state, withheld: true }, event: undefined, fact: undefined };

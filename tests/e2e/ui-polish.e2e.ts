@@ -138,7 +138,6 @@ test("mobile session and terminal controls fit and expose intent", async ({ page
   await expect(page.getByRole("button", { name: "Enter" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Escape" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Arrow up" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Copy session" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Show keyboard" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(await page.evaluate(() => window.innerWidth));
 });

@@ -1,0 +1,39 @@
+WEBVTT
+
+NOTE Captions for the promo long cut (scenes S0–S8). Timings are the planned scene windows; demo:encode's promo target aligns them to the assembled cut.
+
+s0
+00:00:00.000 --> 00:00:05.000
+Wolfpack — a self-hosted control room for coding agents.
+
+s1
+00:00:05.000 --> 00:00:15.000
+Every agent on every machine. The ones waiting for you float to the top.
+
+s2
+00:00:15.000 --> 00:00:27.000
+Answer in one click — the banner replies for you.
+
+s3
+00:00:27.000 --> 00:00:37.000
+Switch instantly. Resize live. Tile sessions side by side.
+
+s4
+00:00:37.000 --> 00:00:45.000
+Agents spawn agents. See the whole tree.
+
+s5
+00:00:45.000 --> 00:00:57.000
+From your phone, over your tailnet. Install the PWA; get notified when an agent needs you.
+
+s6
+00:00:57.000 --> 00:01:10.000
+Scriptable from any agent: spawn, send, wait, follow events — on any machine.
+
+s7
+00:01:10.000 --> 00:01:18.000
+No account. No relay. Your Tailscale network. Sessions live in a Rust broker and survive server restarts.
+
+s8
+00:01:18.000 --> 00:01:26.000
+curl … | bash — then open it on your phone.

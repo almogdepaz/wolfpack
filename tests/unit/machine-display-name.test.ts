@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getMachineDisplayName, readComputerName, resolveMachineDisplayName } from "../../src/machine-display-name.ts";
 import { isMachineDisplayName } from "../../src/tailnet-machine-contract.ts";
 
 describe("server-owned machine display name", () => {
-  test("resolves a future configured name before computer name and hostname", () => {
+  test("resolves a configured name before computer name and hostname", () => {
     expect(resolveMachineDisplayName({ configuredName: "  Studio  ", computerName: "Computer", hostName: "host.local" })).toBe("Studio");
   });
   test("uses the friendly computer name without hostname rewriting", () => {
@@ -25,6 +28,27 @@ describe("server-owned machine display name", () => {
     expect(resolveMachineDisplayName({ hostName: "bad\u0000host" })).toBe("this machine");
     expect(resolveMachineDisplayName({ hostName: "x".repeat(129) })).toBe("this machine");
   });
+  test("reads the host config displayName override at process startup", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wolfpack-display-name-"));
+    const modulePath = join(import.meta.dir, "../../src/machine-display-name.ts");
+    try {
+      const run = (config: Record<string, unknown>) => {
+        writeFileSync(join(dir, "config.json"), JSON.stringify({ devDir: dir, port: 18790, ...config }));
+        const child = Bun.spawnSync([process.execPath, "-e",
+          `const { getMachineDisplayName } = await import(${JSON.stringify(modulePath)}); console.log(JSON.stringify(getMachineDisplayName()));`,
+        ], { cwd: dir, env: { ...process.env, WOLFPACK_DIR: dir }, stdout: "pipe", stderr: "pipe" });
+        expect(child.stderr.toString()).toBe("");
+        return JSON.parse(child.stdout.toString()) as string;
+      };
+      expect(run({ displayName: "  Studio Mac " })).toBe("Studio Mac");
+      const automatic = run({});
+      expect(automatic).not.toBe("Studio Mac");
+      expect(run({ displayName: "bad\nname" })).toBe(automatic);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test("exposes one valid process-startup default", () => {
     const name = getMachineDisplayName();
     expect(isMachineDisplayName(name)).toBe(true);

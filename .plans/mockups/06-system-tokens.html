@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wolfpack design system — status, card anatomy, tokens</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0b0e0c}
+a{color:#45ed7e}a:hover{color:#8df5b1}
+.ui{font-family:"IBM Plex Sans",system-ui,sans-serif}
+.mono{font-family:"JetBrains Mono",ui-monospace,Menlo,monospace}
+.h{font-family:"JetBrains Mono",monospace;font-size:11px;letter-spacing:.12em;color:#8a9b91;text-transform:uppercase;margin:0 0 12px}
+.pill{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px 0 7px;border-radius:999px;font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:500;white-space:nowrap}
+.pill i{width:7px;height:7px;border-radius:50%;display:block}
+.pill.need{background:rgba(246,195,92,.14);color:#f6c35c}.pill.need i{background:#f6c35c;box-shadow:0 0 0 3px rgba(246,195,92,.22)}
+.pill.work{background:rgba(69,237,126,.12);color:#45ed7e}.pill.work i{background:#45ed7e}
+.pill.idle{background:rgba(138,155,145,.12);color:#9fb0a6}.pill.idle i{background:#6f8076}
+.pill.fail{background:rgba(255,138,128,.12);color:#ff8a80}.pill.fail i{background:#ff8a80}
+.sr{display:grid;grid-template-columns:120px 1fr;gap:10px;align-items:start;padding:9px 0;border-top:1px solid #1c2420}
+.sr .from{font-family:"JetBrains Mono",monospace;font-size:11px;color:#8a9b91;line-height:1.6}
+.sr .why{font-size:12px;color:#b8c6be;line-height:1.5}
+.card{background:#121715;border:1px solid #243029;border-radius:10px;padding:14px 16px;display:flex;flex-direction:column;gap:10px;box-sizing:border-box;position:relative}
+.card.need{border-color:#5a4a1f;background:#15150f}
+.name{font-size:14px;font-weight:600;color:#e9f0ec}
+.mach{font-family:"JetBrains Mono",monospace;font-size:10.5px;letter-spacing:.08em;color:#8a9b91;text-transform:uppercase}
+.last{font-family:"JetBrains Mono",monospace;font-size:12.5px;color:#f6c35c}
+.meta{display:flex;gap:14px;font-family:"JetBrains Mono",monospace;font-size:11px;color:#8a9b91}
+.meta b{font-weight:500;color:#b8c6be}
+.hx{width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-family:"JetBrains Mono",monospace;font-size:12px;font-weight:600;flex:none;background:rgba(199,146,234,.16);color:#c792ea}
+.btn{height:28px;padding:0 11px;border-radius:7px;border:1px solid #5a4a1f;background:#1c1a12;color:#f6c35c;font-family:"JetBrains Mono",monospace;font-size:12px;display:inline-flex;align-items:center}
+.n{position:absolute;width:20px;height:20px;border-radius:50%;background:#7fc8ff;color:#07140b;font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center}
+.cl{display:flex;gap:10px;font-size:12px;color:#b8c6be;line-height:1.5}
+.cl b{font-family:"JetBrains Mono",monospace;font-size:11px;font-weight:600;color:#7fc8ff;flex:none;width:16px}
+.sw{display:flex;align-items:center;gap:10px;font-family:"JetBrains Mono",monospace;font-size:11px;color:#b8c6be}
+.sw i{width:28px;height:28px;border-radius:7px;display:block;flex:none;border:1px solid #243029}
+.sw small{color:#6f8076;font-size:10.5px}
+.old{font-family:"JetBrains Mono",monospace;font-size:11.5px;color:#9fb0a6;line-height:1.5;background:#0f1311;border:1px solid #1c2420;border-radius:8px;padding:10px 12px}
+</style>
+</head>
+<body style="background:#0b0e0c;display:flex;justify-content:center;padding:24px">
+<div class="ui" style="width: 1120px; height: 844px; box-sizing: border-box; background: #0b0e0c; color: #e9f0ec; padding: 32px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; overflow: hidden">
+
+  <section style="display: flex; flex-direction: column; min-width: 0">
+    <h2 class="h">1 · Status: 12 agent states → 4 tiers</h2>
+    <p style="margin: 0 0 14px; font-size: 12.5px; color: #b8c6be; line-height: 1.5">The broker already emits a rich state machine. The UI collapses it into four tiers that answer one question: <b style="color: #e9f0ec">do I need to act?</b> Hue + lightness differ, so it survives color-blindness.</p>
+
+    <div class="sr" style="border-top: none">
+      <span class="pill need"><i></i>needs you · 2m</span>
+      <div><div class="from">needs-input</div><div class="why">Amber. Pinned above machine groups. Halo on the dot. Card gets quick-reply row. Only tier that pushes a notification.</div></div>
+    </div>
+    <div class="sr">
+      <span class="pill work"><i></i>working · 4m</span>
+      <div><div class="from">running · working<br>audit · cleanup · output</div><div class="why">Green, no halo. "output" (fresh text, no state change) shows as working with a subtle unread dot on the name.</div></div>
+    </div>
+    <div class="sr">
+      <span class="pill idle"><i></i>idle · 1h</span>
+      <div><div class="from">idle · done · stopped<br>off · unknown</div><div class="why">Grey. Label says which: done / idle / stopped. Sorted last, dimmed after 2h. "unknown" adds a tooltip with authority + freshness.</div></div>
+    </div>
+    <div class="sr">
+      <span class="pill fail"><i></i>exited 1 · 6m</span>
+      <div><div class="from">failed</div><div class="why">Red. Card shows the exit reason line and Restart / View log / Close. Never auto-hidden.</div></div>
+    </div>
+
+    <div style="margin-top: 18px; padding: 12px 14px; border: 1px solid #243029; border-radius: 10px; background: #0f1311">
+      <div class="mono" style="font-size: 10.5px; letter-spacing: .1em; color: #8a9b91; text-transform: uppercase; margin-bottom: 8px">sort: attention</div>
+      <div class="mono" style="font-size: 11.5px; color: #b8c6be; line-height: 1.7">needs-you (oldest first)<br>→ failed<br>→ working (most recent output first)<br>→ idle (most recent first)<br><span style="color: #6f8076">stable within a tier; drag still works inside a machine</span></div>
+    </div>
+  </section>
+
+  <section style="display: flex; flex-direction: column; min-width: 0">
+    <h2 class="h">2 · Session card anatomy</h2>
+
+    <article class="card need" style="margin-top: 6px">
+      <span class="n" style="top: -10px; left: -10px">1</span>
+      <span class="n" style="top: -10px; right: -10px">3</span>
+      <span class="n" style="top: 52px; left: -10px">4</span>
+      <span class="n" style="top: 84px; left: -10px">5</span>
+      <span class="n" style="bottom: -10px; left: -10px">6</span>
+      <div style="display: flex; align-items: center; gap: 10px">
+        <span class="hx" aria-hidden="true">π</span>
+        <span class="name">polybot</span>
+        <span class="mach">workstation</span><span class="n" style="position: static; width: 16px; height: 16px; font-size: 9.5px">2</span>
+        <div style="flex: 1"></div>
+        <span class="pill need"><i></i>needs you · 2m</span>
+      </div>
+      <div class="last">Allow write to crates/execution/src/limits.rs? [y/n]</div>
+      <div style="display: flex; gap: 8px; align-items: center">
+        <span class="btn">y</span><span class="btn">n</span><span class="btn">esc</span>
+        <span class="mono" style="flex: 1; height: 28px; border: 1px solid #243029; border-radius: 7px; background: #0f1311; color: #6f8076; font-size: 12px; display: flex; align-items: center; padding: 0 10px; box-sizing: border-box">reply…</span>
+      </div>
+      <div class="meta"><span>gpt-6.1-sol · <b>high</b></span><span>ctx <b>16%</b></span><span><b>$0.29</b></span><span style="color: #7fc8ff">2 files changed</span></div>
+    </article>
+
+    <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 20px">
+      <div class="cl"><b>1</b><span>Harness glyph, colored per provider (π pi, ✱ claude, › codex, ◆ gemini). Same colors as today.</span></div>
+      <div class="cl"><b>2</b><span>Machine shown on every card so the pinned "needs you" group can mix machines.</span></div>
+      <div class="cl"><b>3</b><span>Status pill with tier color + elapsed time. Replaces the tiny grey "quiet / done" chips.</span></div>
+      <div class="cl"><b>4</b><span>Last agent line — the prompt it's waiting on, or the last thing it said. Taken from the snapshot the inspector already has. This is what you actually read.</span></div>
+      <div class="cl"><b>5</b><span>Quick reply (only on needs-you): sends keystrokes via the existing session-send route. No terminal attach needed.</span></div>
+      <div class="cl"><b>6</b><span>Meta row: model · reasoning · context % · cost · git delta. Same data as the old status-line blob, split into labeled fields; ctx turns amber above 85%.</span></div>
+    </div>
+
+    <div style="margin-top: 18px">
+      <div class="mono" style="font-size: 10.5px; letter-spacing: .1em; color: #8a9b91; text-transform: uppercase; margin-bottom: 8px">what it replaces</div>
+      <div class="old">↑80k ↓7.2k R625k CH96.0% $0.294 (sub) 16.0%/500k (auto) (openai-codex) gpt-6.1-sol • medium<br><span style="color: #6f8076">one unlabeled string, truncated on mobile, duplicating the terminal's own status line.</span></div>
+    </div>
+  </section>
+
+  <section style="display: flex; flex-direction: column; min-width: 0">
+    <h2 class="h">3 · Tokens</h2>
+
+    <div class="mono" style="font-size: 10.5px; letter-spacing: .1em; color: #8a9b91; text-transform: uppercase; margin-bottom: 8px">color</div>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px">
+      <div class="sw"><i style="background: #0b0e0c"></i><span>bg<br><small>#0b0e0c</small></span></div>
+      <div class="sw"><i style="background: #121715"></i><span>surface<br><small>#121715</small></span></div>
+      <div class="sw"><i style="background: #181e1b"></i><span>raised<br><small>#181e1b</small></span></div>
+      <div class="sw"><i style="background: #243029"></i><span>line<br><small>#243029</small></span></div>
+      <div class="sw"><i style="background: #45ed7e"></i><span>accent / working<br><small>#45ed7e (kept)</small></span></div>
+      <div class="sw"><i style="background: #f6c35c"></i><span>attention<br><small>#f6c35c · new</small></span></div>
+      <div class="sw"><i style="background: #ff8a80"></i><span>failed<br><small>#ff8a80</small></span></div>
+      <div class="sw"><i style="background: #7fc8ff"></i><span>git / info<br><small>#7fc8ff</small></span></div>
+      <div class="sw"><i style="background: #e9f0ec"></i><span>text<br><small>#e9f0ec</small></span></div>
+      <div class="sw"><i style="background: #8a9b91"></i><span>text-dim<br><small>#8a9b91 · 5.1:1</small></span></div>
+    </div>
+
+    <div class="mono" style="font-size: 10.5px; letter-spacing: .1em; color: #8a9b91; text-transform: uppercase; margin: 20px 0 8px">type</div>
+    <div style="display: flex; flex-direction: column; gap: 6px">
+      <div style="font-family: -apple-system, 'SF Pro Display', 'Geist', system-ui, sans-serif; font-size: 22px; font-weight: 700; letter-spacing: -.025em">SF Pro 700 · 28/34 — large titles</div>
+      <div style="font-family: -apple-system, 'SF Pro Text', 'Geist', system-ui, sans-serif; font-size: 14px; font-weight: 600; letter-spacing: -.01em">SF Pro 600 · 14/16 — names, buttons</div>
+      <div style="font-family: -apple-system, 'SF Pro Text', 'Geist', system-ui, sans-serif; font-size: 12.5px; color: #b8c6be">SF Pro 400 · 12.5/13 — body, last line</div>
+      <div style="font-family: ui-monospace, 'SF Mono', 'Geist Mono', monospace; font-size: 12.5px; color: #c3cfc8">SF Mono 400 · 12.5 — terminal, prompts, paths</div>
+      <div style="font-family: -apple-system, 'SF Pro Text', 'Geist', system-ui, sans-serif; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: #7f9087; text-transform: uppercase">SF Pro 600 · 11 · tracked — section headers</div>
+    </div>
+    <p style="margin: 10px 0 0; font-size: 11.5px; color: #8a9b91; line-height: 1.5">System font stack (<span class="mono">-apple-system</span>, Geist fallback). Mono only for agent text, paths and numbers. Surfaces are white at 4.5% with 7% hairlines, not solid greens; corners 9 / 12 / 14 / 26 (control / card / group / sheet). Toolbars are translucent.</p>
+
+    <div class="mono" style="font-size: 10.5px; letter-spacing: .1em; color: #8a9b91; text-transform: uppercase; margin: 20px 0 8px">shape &amp; motion</div>
+    <div class="mono" style="font-size: 11.5px; color: #b8c6be; line-height: 1.7">radius 7 / 10 / 12 (btn / card / sheet)<br>touch target ≥ 44 px on mobile<br>needs-you halo: 1.6s ease pulse, stops on hover<br>no gradients, no left-border stripes</div>
+  </section>
+</div>
+</body>
+</html>
