@@ -1,5 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SESSION_EXIT } from "../../src/cli/session-control.ts";
+
+const home = mkdtempSync(join(tmpdir(), "wolfpack-cli-output-"));
+afterAll(() => rmSync(home, { recursive: true, force: true }));
 
 const SELF_ID = "11111111-1111-4111-8111-111111111111";
 const AT = "2026-10-11T00:00:00.000Z";
@@ -8,16 +14,27 @@ const inbox = { session: "parent", sessionId: SELF_ID, notifications: [entry] };
 
 function runInbox(body: unknown, family: "session" | "agent", output: "plain" | "json", options: { selfId?: string; selector?: string; since?: number } = {}) {
   const args = ["inbox", ...(family === "session" ? [options.selector ?? SELF_ID] : []), ...(options.since !== undefined ? ["--since", String(options.since)] : []), ...(output === "json" ? ["--json"] : [])];
-  const script = `
-    process.env.WOLFPACK_SESSION_NAME = "parent";
-    process.env.WOLFPACK_SESSION_ID = ${JSON.stringify(options.selfId ?? SELF_ID)};
-    process.env.WOLFPACK_AGENT_KIND = "pi";
-    const body = JSON.parse(await Bun.stdin.text());
-    globalThis.fetch = async () => Response.json(body);
-    const { runSessionCommand, runAgentCommand } = await import("./src/cli/session-control.ts");
-    process.exit(await ${family === "session" ? "runSessionCommand" : "runAgentCommand"}(${JSON.stringify(args)}));
-  `;
-  const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdin: Buffer.from(JSON.stringify(body)), stdout: "pipe", stderr: "pipe" });
+  return runCli(body, [family, ...args], { WOLFPACK_SESSION_ID: options.selfId ?? SELF_ID });
+}
+
+function cliArgs(args: string[]) {
+  return [process.execPath, "--preload", "./tests/fixtures/cli-output-preload.ts", "./src/cli/index.ts", ...args];
+}
+
+function cliEnv(env: Record<string, string> = {}) {
+  return {
+    ...process.env, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), NO_COLOR: "1",
+    WOLFPACK_SESSION_NAME: "parent", WOLFPACK_SESSION_ID: SELF_ID, WOLFPACK_AGENT_KIND: "pi",
+    ...env,
+  };
+}
+
+function runCli(body: unknown, args: string[], env: Record<string, string> = {}) {
+  const child = Bun.spawnSync(cliArgs(args), {
+    cwd: process.cwd(),
+    env: cliEnv(env),
+    stdin: Buffer.from(JSON.stringify(body)), stdout: "pipe", stderr: "pipe", timeout: 5000,
+  });
   return { exitCode: child.exitCode, stdout: child.stdout.toString(), stderr: child.stderr.toString() };
 }
 
@@ -93,6 +110,66 @@ describe("inbox response boundary", () => {
         if (output === "json") expect(JSON.parse(result.stdout)).toEqual(body);
       }
     }
+  });
+
+  test.each(["session", "agent"] as const)("drains maximum Unicode output through the real %s entrypoint", family => {
+    const body = { ...inbox, notifications: Array.from({ length: 100 }, (_, i) => ({ seq: i + 1, at: AT, message: "😀".repeat(500), from: "😀".repeat(100) })) };
+    const json = runCli(body, [family, "inbox", ...(family === "session" ? [SELF_ID] : []), "--json"], { CLI_OUTPUT_KEEP_ALIVE: "1" });
+    expect(json.exitCode).toBe(SESSION_EXIT.OK);
+    expect(json.stderr).toBe("");
+    expect(Buffer.byteLength(json.stdout)).toBe(Buffer.byteLength(JSON.stringify(body)) + 1);
+    expect(json.stdout).toBe(`${JSON.stringify(body)}\n`);
+    expect(JSON.parse(json.stdout)).toEqual(body);
+    const plain = runInbox(body, family, "plain");
+    expect(plain.exitCode).toBe(SESSION_EXIT.OK);
+    expect(plain.stderr).toBe("");
+    expect(plain.stdout).toBe(body.notifications.map(entry => `${entry.seq} ${AT} [${entry.from}] ${entry.message}\n`).join(""));
+  });
+
+  test("drains stdout and large stderr before a nonzero exit despite a referenced resource", () => {
+    const message = "backend unavailable 😀\n".repeat(20_000);
+    const body = { session: "parent", sessionId: SELF_ID, state: "active", harness: "pi", projectPath: "/project", taskEndpointError: { code: "TASK_ENDPOINT_UNAVAILABLE", message } };
+    const result = runCli(body, ["session", "status", SELF_ID], { CLI_OUTPUT_KEEP_ALIVE: "1" });
+    expect(result.exitCode).toBe(SESSION_EXIT.BACKEND_UNAVAILABLE);
+    expect(result.stdout).toBe(`parent (${SELF_ID})\nactive pi /project\n`);
+    expect(result.stderr.length).toBe(message.length + 1);
+    expect(result.stderr).toBe(`${message}\n`);
+    const json = runCli(body, ["session", "status", SELF_ID, "--json"]);
+    expect(json.exitCode).toBe(SESSION_EXIT.BACKEND_UNAVAILABLE);
+    expect(json.stderr).toBe("");
+    expect(json.stdout.length).toBe(JSON.stringify(body).length + 1);
+    expect(JSON.parse(json.stdout)).toEqual(body);
+  });
+
+  test.each(["session", "agent"] as const)("preserves %s API error codes and stderr separation", family => {
+    for (const [status, code] of [[400, SESSION_EXIT.GENERAL], [401, SESSION_EXIT.AUTH], [404, SESSION_EXIT.NOT_FOUND], [408, SESSION_EXIT.TIMEOUT], [503, SESSION_EXIT.BACKEND_UNAVAILABLE]] as const) {
+      for (const json of [false, true]) {
+        const result = runCli({}, [family, "inbox", ...(family === "session" ? [SELF_ID] : []), ...(json ? ["--json"] : [])], { CLI_OUTPUT_STATUS: String(status) });
+        expect(result.exitCode).toBe(code);
+        if (json) {
+          expect(result.stderr).toBe("");
+          expect(JSON.parse(result.stdout).ok).toBe(false);
+        } else {
+          expect(result.stdout).toBe("");
+          expect(result.stderr.length).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+
+  test.each(["stdout", "stderr"] as const)("fails promptly when the %s consumer closes", async stream => {
+    const body = { session: "parent", sessionId: SELF_ID, state: "active", harness: "pi", projectPath: "/project", taskEndpointError: { code: "TASK_ENDPOINT_UNAVAILABLE", message: "😀".repeat(100_000) } };
+    const args = ["session", "status", SELF_ID, ...(stream === "stdout" ? ["--json"] : [])];
+    const child = Bun.spawn(cliArgs(args), {
+      cwd: process.cwd(), env: cliEnv(), stdin: Buffer.from(JSON.stringify(body)),
+      stdout: "pipe", stderr: "pipe", timeout: 5000,
+    });
+    await child[stream].cancel();
+    const remaining = new Response(child[stream === "stdout" ? "stderr" : "stdout"]).text();
+    const [exitCode, output] = await Promise.all([child.exited, remaining]);
+    expect(child.signalCode).toBeNull();
+    expect(exitCode).toBe(SESSION_EXIT.GENERAL);
+    if (stream === "stdout") expect(output).toContain("EPIPE");
   });
 
   test("retains name selectors and the agent name fallback when stable self identity is absent", () => {
