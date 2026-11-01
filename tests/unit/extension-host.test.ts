@@ -120,18 +120,17 @@ function persistedConsentHost() {
 }
 
 describe("ExtensionHost", () => {
-  test.each((["unavailable", "empty", "disabled", "no-ui", "invalid-catalog"] as const).flatMap(transition =>
+  test.each((["empty", "disabled", "no-ui"] as const).flatMap(transition =>
     [false, true].map(recreate => [transition, recreate] as const)))("real host retires consent on %s before recovery (new host: %s)", async (transition, recreate) => {
     const f = persistedConsentHost();
     try {
       await f.host.refresh();
       expect(f.prompts).toBe(1); expect(f.imports).toBe(1);
       expect(f.stored.has("wp-extension-code-consent:v1")).toBe(true);
-      if (transition === "unavailable") { f.status = "unavailable"; f.scope = { ...f.scope, unavailable: "Peer unavailable" }; }
-      else f.inventory = transition;
+      f.inventory = transition;
       await f.host.refresh();
       expect(f.prompts).toBe(1); // an empty inventory never opens a trust prompt
-      expect(f.requests).toBe(transition === "unavailable" ? 1 : 2);
+      expect(f.requests).toBe(2);
       expect(f.stored.has("wp-extension-code-consent:v1")).toBe(false);
       f.status = "ready"; f.inventory = "ui"; f.scope = { sessionId: f.scope.sessionId, machine: f.scope.machine };
       if (recreate) f.recreate();
@@ -140,6 +139,25 @@ describe("ExtensionHost", () => {
       // Once reapproved, a harmless host recreation still reuses exact consent.
       f.recreate(); await f.host.refresh();
       expect(f.prompts).toBe(2); expect(f.imports).toBe(3);
+    } finally { f.dispose(); }
+  });
+
+  test.each((["unavailable", "offline", "invalid-catalog"] as const).flatMap(transition =>
+    [false, true].map(recreate => [transition, recreate] as const)))("real host keeps exact consent across %s and reconnects without a prompt (new host: %s)", async (transition, recreate) => {
+    const f = persistedConsentHost();
+    try {
+      await f.host.refresh();
+      expect(f.prompts).toBe(1); expect(f.imports).toBe(1);
+      if (transition === "unavailable") { f.status = "unavailable"; f.scope = { ...f.scope, unavailable: "Peer unavailable" }; }
+      else if (transition === "offline") f.status = "offline";
+      else f.inventory = transition;
+      await f.host.refresh();
+      expect(f.imports).toBe(1);
+      expect(f.stored.has("wp-extension-code-consent:v1")).toBe(true);
+      f.status = "ready"; f.inventory = "ui"; f.scope = { sessionId: f.scope.sessionId, machine: f.scope.machine };
+      if (recreate) f.recreate();
+      await f.host.refresh();
+      expect(f.prompts).toBe(1); expect(f.imports).toBe(2);
     } finally { f.dispose(); }
   });
 
@@ -158,7 +176,7 @@ describe("ExtensionHost", () => {
     } finally { f.dispose(); }
   });
 
-  test("real transport cannot persist a late positive host prompt after unavailable invalidation", async () => {
+  test("real transport cannot persist a late positive host prompt after the peer becomes unavailable", async () => {
     const f = persistedConsentHost();
     let release!: (value: Record<string, string>) => void, began!: () => void;
     const started = new Promise<void>(resolve => { began = resolve; });

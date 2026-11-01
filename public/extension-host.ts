@@ -134,10 +134,8 @@ export class ExtensionHost {
     }
     this.currentScope = scope;
     if (!scope?.sessionId || scope.unavailable) {
-      if (scope?.machine) {
-        if (scope.unavailable) this.transport.invalidateConsent(scope.machine);
-        this.cleanupAll(true); this.dropMachineModules(scope.machine);
-      }
+      // Unavailability unloads code but keeps the exact grant; only inventory/origin changes retire it.
+      if (scope?.machine) { this.cleanupAll(true); this.dropMachineModules(scope.machine); }
       this.render(scope?.unavailable ?? contextScopeHint());
       return;
     }
@@ -213,7 +211,7 @@ export class ExtensionHost {
     } catch {
       if (!controller.signal.aborted && generation === this.generation && this.currentScope?.sessionId === scope.sessionId && this.currentScope?.machine === scope.machine && this.currentScope?.unavailable === scope.unavailable) {
         this.registry.setScope(null);
-        if (scope.machine) { this.transport.invalidateConsent(scope.machine); this.cleanupAll(true); this.dropMachineModules(scope.machine); }
+        if (scope.machine) { this.cleanupAll(true); this.dropMachineModules(scope.machine); }
         else this.cleanupScopeResources();
         this.render("Extension catalog unavailable for the selected scope.");
       }
