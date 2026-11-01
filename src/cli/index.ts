@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { printAccessUrls } from "./access-output.js";
+import { exitAfterOutput } from "./exit.js";
 import { requireManagedCurl, waitForApplicationReady } from "./readiness.js";
 import { print, printError, printJson, bold, dim, red, WOLF } from "./formatting.js";
 import pkg from "../../package.json";
@@ -415,8 +416,8 @@ async function dispatchCommand(
     return;
   }
   if (cmd === "ls" || cmd === "list") process.exit(await lsSessions(argv.slice(1), target));
-  if (cmd === "session") process.exit(await runSessionCommand(argv.slice(1), target));
-  if (cmd === "agent") process.exit(await runAgentCommand(argv.slice(1), target));
+  if (cmd === "session") return exitAfterOutput(await runSessionCommand(argv.slice(1), target));
+  if (cmd === "agent") return exitAfterOutput(await runAgentCommand(argv.slice(1), target));
   if (cmd === "kill") process.exit(await killSession(argv.slice(1), target));
   if (cmd === "extensions") process.exit(await extensionsCommand(argv.slice(1)));
   if (cmd === "extension-data") {
