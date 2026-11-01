@@ -1,3 +1,4 @@
+import { createSessionOrganizationRoutes } from "./session-organization-routes.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename } from "node:path";
 import { createLogger, errMsg } from "../log.js";
@@ -196,6 +197,7 @@ function sessionStatusPayload(name: string, identity: PublicSessionIdentity, tas
     selector,
     session: name,
     sessionId: identity.wolfpackSessionId,
+    organization: ctx.sessionOrganization.project(identity.wolfpackSessionId),
     state: "active" as const,
     project: basename(identity.projectPath),
     projectPath: identity.projectPath,
@@ -226,6 +228,7 @@ function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulS
     selector,
     session: inspection.session,
     sessionId: inspection.sessionId,
+    organization: ctx.sessionOrganization.project(inspection.sessionId),
     state: "active" as const,
     project: basename(inspection.projectPath),
     projectPath: inspection.projectPath,
@@ -360,6 +363,7 @@ async function inspectSessionRoute(req: IncomingMessage, res: ServerResponse, in
 }
 
 return {
+  ...createSessionOrganizationRoutes(ctx),
   "GET /api/session-control/list": async (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     try {

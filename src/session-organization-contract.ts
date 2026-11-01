@@ -39,6 +39,16 @@ export function normalizeOrganizationUpdate(value: unknown): SessionOrganization
   return result;
 }
 
+export function isSessionOrganization(value: unknown): value is SessionOrganization {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const v = value as SessionOrganization;
+  try {
+    if (Object.keys(v).sort().join(",") !== "group,revision,tags") return false;
+    const canonical = normalizeOrganizationUpdate({ expectedRevision: v.revision, group: v.group, tags: v.tags });
+    return canonical.group === v.group && JSON.stringify(canonical.tags) === JSON.stringify(v.tags);
+  } catch { return false; }
+}
+
 export interface SessionOrganizationUpdate {
   readonly expectedRevision: number;
   readonly group?: string | null;

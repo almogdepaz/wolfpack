@@ -105,7 +105,10 @@ return {
   },
 
   "GET /api/sessions": async (_req, res) => {
-    json(res, { sessions: await observeDashboardSessions(ctx) });
+    const sessions = await observeDashboardSessions(ctx);
+    json(res, { sessions: sessions.map(session => ({ ...session,
+      organization: session.identity ? ctx.sessionOrganization.project(session.identity.wolfpackSessionId) : { status: "unavailable" },
+    })) });
   },
 
   "POST /api/agent-runtime-state/ack": async (req, res) => {
