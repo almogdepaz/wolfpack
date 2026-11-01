@@ -1,4 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
 import { collapseInitialSessionMenu, startTestServer, type TestServer } from "./helpers.ts";
 let server: TestServer;
@@ -82,6 +84,49 @@ test("organization touch editor bounds Unicode safely and reveals overflow witho
   const search = page.getByRole("searchbox", { name: "Search sessions" }).filter({ visible: true });
   await search.fill("one");
   await expect(page.getByRole("button", { name: "Open test-project", exact: true }).filter({ visible: true })).toHaveCount(1);
+});
+
+test("maximum valid session name keeps organization actions inside the dialog", async ({ page, request }, info) => {
+  const name = "x".repeat(100);
+  const projectDir = join(server.home, name);
+  mkdirSync(projectDir);
+  const created = await request.post(`${server.baseUrl}/api/session-create`, { data: { projectDir, harness: "shell" } });
+  expect(created.ok()).toBe(true);
+  expect((await created.json()).session).toBe(name);
+  await page.goto(server.baseUrl);
+  const invoker = page.getByRole("button", { name: `Organize ${name}`, exact: true }).filter({ visible: true }).first();
+  await invoker.click();
+  const dialog = page.getByRole("dialog", { name: `Organize ${name}`, exact: true });
+  await expect(dialog.getByRole("heading")).toHaveText(`Organize ${name}`);
+  console.log("long-name-dialog", await dialog.evaluate(element => ({ clientWidth: element.clientWidth, scrollWidth: element.scrollWidth })));
+  await expect.poll(() => dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  for (const label of ["Save", "Cancel"]) {
+    const action = dialog.getByRole("button", { name: label, exact: true });
+    await action.scrollIntoViewIfNeeded();
+    const bounds = await action.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const parent = element.closest("dialog")!.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, parentLeft: parent.left, parentRight: parent.right, parentTop: parent.top, parentBottom: parent.bottom };
+    });
+    expect(bounds.left).toBeGreaterThanOrEqual(bounds.parentLeft);
+    expect(bounds.right).toBeLessThanOrEqual(bounds.parentRight);
+    expect(bounds.top).toBeGreaterThanOrEqual(bounds.parentTop);
+    expect(bounds.bottom).toBeLessThanOrEqual(bounds.parentBottom);
+  }
+  await page.screenshot({ path: info.outputPath("organization-long-session-name.png") });
+  await page.getByLabel("Group", { exact: true }).fill("long title saved");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(invoker).toBeFocused();
+  await invoker.click();
+  await expect(page.getByLabel("Group", { exact: true })).toHaveValue("long title saved");
+  await page.getByLabel("Group", { exact: true }).fill("cancelled edit");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(invoker).toBeFocused();
+  await invoker.click();
+  await expect(page.getByLabel("Group", { exact: true })).toHaveValue("long title saved");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
 test("organization sidebar save keeps its labels and restores the exact action focus", async ({ page }, info) => {

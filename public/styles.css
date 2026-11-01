@@ -2454,6 +2454,7 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
 .organization-tag button:hover, .organization-secondary:hover { color: var(--accent); border-color: var(--accent-border); }
 .organization-add-row { display: flex; align-items: end; gap: 8px; min-width: 0; }
 .organization-add-row label { flex: 1; min-width: 0; }
+.organization-dialog h2 { overflow-wrap: anywhere; }
 .organization-dialog .organization-error { color: var(--danger-hot); }
 .organization-dialog .organization-status { overflow-wrap: anywhere; }
 .organization-dialog .organization-save { background: var(--accent); color: var(--bg-base); border-color: var(--accent); }
