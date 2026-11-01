@@ -17,6 +17,7 @@ import type { SessionOpenErrorCode } from "../session-open-contract.ts";
 import {
   SESSION_STATUS_ERROR,
   SESSION_STATUS_ERROR_MESSAGE_MAX_CODE_POINTS,
+  SESSION_TASK_RELAY_UNAVAILABLE,
   SESSION_TERMINAL_STATUSES,
 } from "../session-status-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
@@ -799,6 +800,10 @@ export const controlApiSource: ControlApiSource = {
       truncated: boolean(),
       freshness: { enum: Object.values(SESSION_SNAPSHOT_FRESHNESS) },
     }, ["session", "sessionId", "text", "capturedAt", "cols", "rows", "truncated", "freshness"]),
+    SessionTaskRelayUnavailable: object({
+      status: { const: SESSION_TASK_RELAY_UNAVAILABLE.status },
+      recovery: string("Explicit server restart/rebind guidance; interrupted mutations are not safe to replay"),
+    }, ["status", "recovery"], { description: "Optional registration lookup failed, not terminal/backend failure. Absence of this field is not proof of task readiness." }),
     SessionStatus: object({
       ok: { const: true },
       selector: ref("SessionSelector"),
@@ -813,6 +818,7 @@ export const controlApiSource: ControlApiSource = {
       parentSession: ref("SessionControlIdentity"),
       taskEndpoint: ref("RelayEndpoint"),
       taskTransport: ref("TaskRelayRegistration"),
+      taskRelay: ref("SessionTaskRelayUnavailable"),
     }, [
       "ok",
       "selector",
