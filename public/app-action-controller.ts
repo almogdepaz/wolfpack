@@ -21,6 +21,7 @@ export interface DelegatedAppActions {
   newSession(machine?: string): void;
   openSession(session: string, machine?: string): void;
   killSession(session: string, event: MouseEvent, machine?: string): void;
+  organizeSession(sessionId: string, machine: string, invoker: HTMLElement): void;
   retryMachine(machine: string, event: MouseEvent): void;
   selectProject(project: string): void;
   agentRemove(command: string): void;
@@ -50,6 +51,7 @@ export function bindDelegatedAppActions(root: Document, actions: DelegatedAppAct
     else if (action === "new-session") { event.stopPropagation(); actions.newSession(machine); }
     else if (action === "open-session" && session) actions.openSession(session, machine);
     else if (action === "kill-session" && session) actions.killSession(session, event, machine);
+    else if (action === "organize-session" && button.dataset.sessionId) { event.stopPropagation(); actions.organizeSession(button.dataset.sessionId, machine || "", button); }
     else if (action === "retry-machine") actions.retryMachine(machine || "", event);
     else if (action === "select-project" && button.dataset.project) actions.selectProject(button.dataset.project);
     else if (action === "agent-remove" && button.dataset.command) actions.agentRemove(button.dataset.command);

@@ -1,3 +1,5 @@
+import type { SessionOrganizationProjection } from "../src/session-organization-contract";
+
 export interface DelegationParentReference {
   readonly wolfpackSessionId: string;
   readonly wolfpackSessionName: string;
@@ -37,6 +39,7 @@ export interface DelegationQuietAlert {
 
 export interface DelegationSessionLike {
   readonly name: string;
+  readonly organization?: SessionOrganizationProjection;
   readonly lastLine?: string;
   readonly identity?: DelegationSessionIdentity;
   readonly runtimeState?: DelegationRuntimeState;

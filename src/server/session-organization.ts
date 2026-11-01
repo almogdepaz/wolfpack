@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { readValidatedJsonFile, writePrivateJsonFile } from "../persistence.ts";
 import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import { createLogger, errMsg } from "../log.ts";
-import { normalizeOrganizationUpdate, SESSION_ORGANIZATION_ID, SessionOrganizationError } from "../session-organization-contract.ts";
+import { isSessionOrganization, normalizeOrganizationUpdate, SESSION_ORGANIZATION_ID, SessionOrganizationError } from "../session-organization-contract.ts";
 import type { SessionOrganization, SessionOrganizationProjection } from "../session-organization-contract.ts";
 
 const log = createLogger("server");
@@ -12,10 +12,7 @@ function validRecord(value: unknown): value is RecordV1 {
     if (!value || typeof value !== "object" || Array.isArray(value)) return false;
     const record = value as RecordV1;
     if (record.version !== 1 || Object.keys(record).sort().join(",") !== "organization,version") return false;
-    const org = record.organization;
-    if (!org || Object.keys(org).sort().join(",") !== "group,revision,tags") return false;
-    const canonical = normalizeOrganizationUpdate({ expectedRevision: org.revision, group: org.group, tags: org.tags });
-    return canonical.group === org.group && JSON.stringify(canonical.tags) === JSON.stringify(org.tags);
+    return isSessionOrganization(record.organization);
   } catch { return false; }
 }
 

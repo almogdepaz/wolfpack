@@ -28,6 +28,8 @@ export interface TestServerOptions {
   readonly ignoreSigterm?: boolean;
   /** Emit fixture lifecycle events through the real server's event bus. */
   readonly lifecycleEvents?: boolean;
+  /** Exact-UUID metadata routes require real-shaped identities rather than legacy mock:name IDs. */
+  readonly canonicalSessionIds?: boolean;
 }
 
 // ── Server startup ───────────────────────────────────────────────────────────
@@ -69,6 +71,7 @@ export function startTestServer(options: TestServerOptions = {}): Promise<TestSe
           WOLFPACK_TEST: "1",
           WOLFPACK_E2E_IGNORE_SIGTERM: options.ignoreSigterm ? "1" : undefined,
           WOLFPACK_E2E_LIFECYCLE_EVENTS: options.lifecycleEvents ? "1" : undefined,
+          WOLFPACK_E2E_CANONICAL_SESSION_IDS: options.canonicalSessionIds ? "1" : undefined,
         },
       },
     );

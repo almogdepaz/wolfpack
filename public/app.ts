@@ -37,6 +37,9 @@ import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-control
 import type { SessionCardView } from "./app-action-controller";
 import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
+import { showOrganizationEditor } from "./session-organization";
+import { isSessionOrganization } from "../src/session-organization-contract";
+import type { SessionOrganization } from "../src/session-organization-contract";
 import { createSessionInspector } from "./session-inspector";
 import { rankProjectNames } from "./project-picker";
 import { authenticatedFetchWithTimeout, browserAuthFetch, getBrowserAuthToken } from "./browser-auth";
@@ -1236,6 +1239,54 @@ function inspectSession(session: string, sessionId: string, machine: string | un
   sessionInspector.open({ session, sessionId, machine }, invoker);
 }
 
+function organizeSession(sessionId: string, machine: string, invoker: HTMLElement): void {
+  const findGroup = () => state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === machine);
+  const findSession = () => findGroup()?.sessions.find(candidate => sessionIdentityId(candidate) === sessionId);
+  const session = findSession();
+  const origin = resolveReadyMachineOrigin(machine);
+  if (!session || !isSessionOrganization(session.organization) || !findGroup()?.online) return;
+  const isCurrent = () => Boolean(findGroup()?.online && isSessionOrganization(findSession()?.organization) && (!machine || resolveReadyMachineOrigin(machine) === origin && origin !== undefined));
+  const request = async (opts?: RequestInit): Promise<SessionOrganization> => {
+    if (!isCurrent()) throw new Error("session scope unavailable");
+    const response = await api<{ sessionId: string; organization: SessionOrganization }>("/session-control/organization" + (opts?.method === "POST" ? "" : `?sessionId=${encodeURIComponent(sessionId)}`), opts, machine || undefined, false);
+    if (!isCurrent() || response.sessionId !== sessionId || !isSessionOrganization(response.organization)) throw new Error("organization scope or response changed");
+    return response.organization;
+  };
+  showOrganizationEditor({
+    session: session.name, initial: session.organization,
+    suggestions: findGroup()!.sessions.flatMap(candidate => isSessionOrganization(candidate.organization) ? [candidate.organization] : []),
+    isCurrent,
+    read: signal => request({ signal }),
+    save: (update, signal) => request({ method: "POST", signal, body: JSON.stringify({ sessionId, ...update }) }),
+    saved: organization => {
+      if (!isCurrent()) return;
+      const group = findGroup()!;
+      group.sessions = group.sessions.map(candidate => sessionIdentityId(candidate) === sessionId ? { ...candidate, organization } : candidate);
+      publishSessionProjection();
+      void refreshMachineSessions(machine, true);
+    },
+    returnFocus: () => {
+      if (invoker.isConnected) invoker.focus({ preventScroll: true });
+      else document.querySelector<HTMLElement>(`[data-action="organize-session"][data-session-id="${CSS.escape(sessionId)}"][data-machine="${CSS.escape(machine)}"]`)?.focus({ preventScroll: true });
+    },
+  });
+}
+
+function organizationHtml(session: DelegationSessionLike, machine: string): string {
+  const id = sessionIdentityId(session);
+  if (!id) return "";
+  const organization = session.organization;
+  const attributes = `data-action="organize-session" data-session-id="${escAttr(id)}" data-machine="${escAttr(machine)}"`;
+  const ready = isSessionOrganization(organization);
+  const explanation = organization === undefined ? "Organization unsupported on this host" : "Organization unavailable";
+  const labels = ready ? [
+    ...(organization.group ? [`<span class="organization-label" title="${escAttr(organization.group)}">Group: ${esc(organization.group)}</span>`] : []),
+    ...organization.tags.slice(0, 2).map(tag => `<span class="organization-label" title="${escAttr(tag)}">${esc(tag)}</span>`),
+    ...(organization.tags.length > 2 ? [`<button type="button" class="organization-more" ${attributes} aria-label="Show all labels for ${escAttr(session.name)}">+${organization.tags.length - 2} more</button>`] : []),
+  ].join("") : `<span class="organization-unavailable">${explanation}</span>`;
+  return `<div class="session-organization">${labels}<button type="button" class="organize-btn" ${attributes} aria-label="Organize ${escAttr(session.name)}"${ready ? "" : ` disabled title="${explanation}"`}>Organize</button></div>`;
+}
+
 function pinnedSessionInspectionTarget(session: string, machine: string): SessionInspectorTarget | null {
   const group = state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === machine);
   const selected = group?.sessions.find(candidate => candidate.name === session);
@@ -1900,6 +1951,7 @@ function renderDashboardSessionCardHtml(
       ${pinned ? "" : delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(s.lastLine || "")}</div>
       <div class="card-meta">${activityHtml(s)}</div>
+      ${organizationHtml(s, machineUrl)}
     </div>
     <span class="status st-${tier}" title="${escAttr(ui.title)}">${sessionStatusContent(s, machineUrl)}</span>
     <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
@@ -4231,6 +4283,7 @@ function drawerItemHtml(item, multiMachine) {
       ${machineLbl}
     </button>
     ${sidebarDelegationToggleHtml(row, machineUrl)}
+    ${organizationHtml(session, machineUrl)}
   </div>`;
 }
 
@@ -5553,6 +5606,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>
       ${sessionActivityHtml(s)}
+      ${organizationHtml(s, machineUrl)}
     </div>
     ${gridBtn}
     ${sessionKillButtonHtml(s.name, machineUrl, tier)}
@@ -5926,6 +5980,7 @@ function bindHtmlEventListeners(): void {
   };
 
   bindDelegatedAppActions(document, {
+    organizeSession,
     quickSend: sendQuickCmd,
     quickMove: moveQuickCmd,
     quickEdit: index => { void editQuickCmd(index); },
