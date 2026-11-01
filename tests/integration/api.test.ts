@@ -2607,7 +2607,16 @@ describe("session-control relay lookup batching", () => {
       expect(updated.sessions.find((s: any) => s.sessionId === first.sessionId)).not.toHaveProperty("taskEndpoint");
       expect(lookup).toHaveBeenCalledTimes(1);
       await gateway.close(); lookup.mockClear();
-      expect((await get("/api/session-control/list")).status).toBe(503);
+      const degraded = await get("/api/session-control/list");
+      expect(degraded.status).toBe(200);
+      const degradedBody = await degraded.json();
+      expect(degradedBody.sessions).toHaveLength(names.length);
+      for (const session of degradedBody.sessions) {
+        expect(session.terminal).toEqual({ exists: true, alive: true, status: "ready" });
+        expect(session.taskRelay).toMatchObject({ status: "unavailable" });
+        expect(session).not.toHaveProperty("taskEndpoint");
+        expect(session).not.toHaveProperty("taskTransport");
+      }
       expect(lookup).toHaveBeenCalledTimes(1);
       backend.setSessions([]); lookup.mockClear();
       const empty = await get("/api/session-control/list");

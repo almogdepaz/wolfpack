@@ -18,6 +18,14 @@ export interface SessionTerminalLiveness {
   readonly status: SessionTerminalStatus;
 }
 
+/** Optional relay enrichment failed; this says nothing about broker liveness or task delivery. */
+export const SESSION_TASK_RELAY_UNAVAILABLE = {
+  status: "unavailable",
+  recovery: "If persistent, restart the server (managed service: wolfpack service restart --server-only; foreground: restart the server process), then explicitly rebind endpoints. Restart loses volatile relay state. Interrupted mutations may have committed; do not automatically replay tasks.",
+} as const;
+
+export type SessionTaskRelayUnavailable = typeof SESSION_TASK_RELAY_UNAVAILABLE;
+
 export type SessionInspectionResult =
   | {
     readonly ok: true;

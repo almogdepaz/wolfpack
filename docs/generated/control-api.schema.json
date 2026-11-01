@@ -6368,6 +6368,24 @@
       ],
       "additionalProperties": false
     },
+    "SessionTaskRelayUnavailable": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "const": "unavailable"
+        },
+        "recovery": {
+          "type": "string",
+          "description": "Explicit server restart/rebind guidance; interrupted mutations are not safe to replay"
+        }
+      },
+      "required": [
+        "status",
+        "recovery"
+      ],
+      "additionalProperties": false,
+      "description": "Optional registration lookup failed, not terminal/backend failure. Absence of this field is not proof of task readiness."
+    },
     "SessionStatus": {
       "type": "object",
       "properties": {
@@ -6409,6 +6427,9 @@
         },
         "taskTransport": {
           "$ref": "#/$defs/TaskRelayRegistration"
+        },
+        "taskRelay": {
+          "$ref": "#/$defs/SessionTaskRelayUnavailable"
         }
       },
       "required": [

@@ -23,11 +23,13 @@ import {
   isBoundedSessionStatusIdentity,
   SESSION_STATUS_ERROR,
   SESSION_STATUS_ERROR_MESSAGE,
+  SESSION_TASK_RELAY_UNAVAILABLE,
   SESSION_TERMINAL_STATUS,
 } from "../session-status-contract.js";
 import type {
   SessionInspectionResult,
   SessionStatusErrorCode,
+  SessionTaskRelayUnavailable,
   SessionTerminalLiveness,
 } from "../session-status-contract.js";
 import { defaultServerContext, type ServerContext } from "./context.js";
@@ -173,7 +175,21 @@ function sessionTerminalLiveness(name: string): SessionTerminalLiveness {
   };
 }
 
-function sessionStatusPayload(name: string, identity: PublicSessionIdentity, taskTransport: TaskRelayRegistration | undefined, selector: string = name) {
+// Registration is optional enrichment, never authority for terminal identity/liveness.
+// Keep the worker's existing bounded admission and timeout/close behavior intact.
+async function sessionRegistrations(sessionIds: readonly string[]): Promise<{
+  registrations: ReadonlyMap<string, TaskRelayRegistration>;
+  taskRelay?: SessionTaskRelayUnavailable;
+}> {
+  try {
+    return { registrations: await ctx.taskRelayGateway.registrationsForSessions(sessionIds) };
+  } catch (error: unknown) {
+    log.warn("session task relay enrichment unavailable", { error: errMsg(error), recovery: SESSION_TASK_RELAY_UNAVAILABLE.recovery });
+    return { registrations: new Map(), taskRelay: SESSION_TASK_RELAY_UNAVAILABLE };
+  }
+}
+
+function sessionStatusPayload(name: string, identity: PublicSessionIdentity, taskTransport: TaskRelayRegistration | undefined, taskRelay?: SessionTaskRelayUnavailable, selector: string = name) {
   const terminal = sessionTerminalLiveness(name);
   return {
     ok: true as const,
@@ -186,6 +202,7 @@ function sessionStatusPayload(name: string, identity: PublicSessionIdentity, tas
     projectDir: identity.projectPath,
     harness: identity.agentKind,
     terminal,
+    ...(taskRelay && { taskRelay }),
     ...(identity.parentSession && {
       parentSession: {
         session: identity.parentSession.wolfpackSessionName,
@@ -198,7 +215,7 @@ function sessionStatusPayload(name: string, identity: PublicSessionIdentity, tas
 
 type SuccessfulSessionInspection = Extract<SessionInspectionResult, { readonly ok: true }>;
 
-function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulSessionInspection, taskTransport: TaskRelayRegistration | undefined) {
+function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulSessionInspection, taskTransport: TaskRelayRegistration | undefined, taskRelay?: SessionTaskRelayUnavailable) {
   const terminal: SessionTerminalLiveness = {
     exists: true,
     alive: inspection.alive,
@@ -215,6 +232,7 @@ function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulS
     projectDir: inspection.projectPath,
     harness: inspection.harness,
     terminal,
+    ...(taskRelay && { taskRelay }),
     ...(inspection.parentSession && { parentSession: inspection.parentSession }),
     ...(terminal.alive && taskTransport && isLiveTaskRelayRegistration(taskTransport, getTaskRelayProfile()) && { taskEndpoint: taskTransport.endpoint, taskTransport }),
   };
@@ -310,15 +328,14 @@ async function inspectSessionRoute(req: IncomingMessage, res: ServerResponse, in
           ambiguous ? 409 : 404,
         );
       }
-      const status = inspectedSessionStatusPayload(selector, inspection, inbox ? undefined : (await ctx.taskRelayGateway.registrationsForSessions([inspection.sessionId])).get(inspection.sessionId));
       if (!inspection.alive) {
         return json(
           res,
           sessionStatusFailure(
             selector,
             SESSION_STATUS_ERROR.DEAD,
-            status.terminal,
-            { session: status.session, sessionId: status.sessionId },
+            { exists: true, alive: false, status: SESSION_TERMINAL_STATUS.DEAD },
+            { session: inspection.session, sessionId: inspection.sessionId },
           ),
           410,
         );
@@ -326,7 +343,8 @@ async function inspectSessionRoute(req: IncomingMessage, res: ServerResponse, in
       if (inbox) {
         return json(res, { session: inspection.session, sessionId: inspection.sessionId, notifications: listParentNotifications(inspection.sessionId, since) });
       }
-      return json(res, status);
+      const relay = await sessionRegistrations([inspection.sessionId]);
+      return json(res, inspectedSessionStatusPayload(selector, inspection, relay.registrations.get(inspection.sessionId), relay.taskRelay));
     } catch (error: unknown) {
       log.warn("session status inspection failed", { error: errMsg(error) });
       return json(
@@ -352,10 +370,10 @@ return {
         return json(res, { error: "session identity unavailable" }, 503);
       }
       if (names.length === 0) return json(res, { sessions: [] });
-      const endpoints = await ctx.taskRelayGateway.registrationsForSessions(names.map(name => identities[name]!.wolfpackSessionId));
+      const relay = await sessionRegistrations(names.map(name => identities[name]!.wolfpackSessionId));
       const sessions = names.map((name) => {
         const identity = identities[name]!;
-        return sessionStatusPayload(name, identity, endpoints.get(identity.wolfpackSessionId));
+        return sessionStatusPayload(name, identity, relay.registrations.get(identity.wolfpackSessionId), relay.taskRelay);
       }).sort((left, right) => left.session.localeCompare(right.session));
       json(res, { sessions });
     } catch (error: unknown) {
