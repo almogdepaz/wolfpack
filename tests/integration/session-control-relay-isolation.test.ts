@@ -88,6 +88,12 @@ function assertDegraded(body: any) {
     terminal: { exists: true, alive: true, status: "ready" }, taskRelay: { status: "unavailable" } });
   expect(body.taskRelay.recovery).toContain("wolfpack service restart --server-only");
   expect(body.taskRelay.recovery).toContain("explicitly rebind");
+  // Recovery must not turn optional relay failure into accidental terminal loss.
+  expect(body.taskRelay.recovery).toMatch(/preserves sessions only with a verified independently owned broker/);
+  expect(body.taskRelay.recovery).toMatch(/server child terminates an invocation-owned broker and its sessions/);
+  expect(body.taskRelay.recovery).toMatch(/unknown ownership, do not restart unless you explicitly accept session loss/);
+  expect(body.taskRelay.recovery).toContain("Interrupted mutations may have committed");
+  expect(body.taskRelay.recovery).toContain("do not automatically replay tasks");
   expect(body).not.toHaveProperty("taskEndpoint");
   expect(body).not.toHaveProperty("taskTransport");
   expect(validate({ $ref: "#/$defs/SessionStatus" }, body, schema)).toEqual([]);

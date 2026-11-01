@@ -21,7 +21,7 @@ export interface SessionTerminalLiveness {
 /** Optional relay enrichment failed; this says nothing about broker liveness or task delivery. */
 export const SESSION_TASK_RELAY_UNAVAILABLE = {
   status: "unavailable",
-  recovery: "If persistent, restart the server (managed service: wolfpack service restart --server-only; foreground: restart the server process), then explicitly rebind endpoints. Restart loses volatile relay state. Interrupted mutations may have committed; do not automatically replay tasks.",
+  recovery: "If persistent, managed service: wolfpack service restart --server-only. Foreground restart preserves sessions only with a verified independently owned broker. Stopping a foreground invocation or its server child terminates an invocation-owned broker and its sessions. For an invocation-owned broker or unknown ownership, do not restart unless you explicitly accept session loss. After restart, explicitly rebind endpoints. Restart loses volatile relay state. Interrupted mutations may have committed; do not automatically replay tasks.",
 } as const;
 
 export type SessionTaskRelayUnavailable = typeof SESSION_TASK_RELAY_UNAVAILABLE;
