@@ -2641,9 +2641,7 @@
           "group": {
             "anyOf": [
               {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 64
+                "$ref": "#/$defs/SessionOrganizationRequestLabel"
               },
               {
                 "type": "null"
@@ -2654,9 +2652,7 @@
             "type": "array",
             "maxItems": 16,
             "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 64
+              "$ref": "#/$defs/SessionOrganizationRequestLabel"
             }
           }
         },
@@ -2665,7 +2661,29 @@
           "expectedRevision"
         ],
         "additionalProperties": false,
-        "description": "At least group or tags required; NFC, trimmed, no control characters. 256 UTF-8 bytes per label; 8192-byte body."
+        "description": "At least group or tags required; both are allowed. Label limits apply after runtime NFC normalization and trimming; the complete request body is limited to 8192 UTF-8 bytes.",
+        "allOf": [
+          {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "group"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "tags"
+                ],
+                "additionalProperties": true
+              }
+            ]
+          }
+        ]
       },
       "response": {
         "$id": "wolfpack:control-api:http:updateSessionOrganization:response",
@@ -6508,6 +6526,12 @@
       ],
       "additionalProperties": false,
       "description": "Optional registration lookup failed, not terminal/backend failure. Absence of this field is not proof of task readiness."
+    },
+    "SessionOrganizationRequestLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192,
+      "description": "Raw label; this conservative character ceiling follows the whole-request UTF-8 byte bound. Runtime rejects controls and applies NFC normalization and outer whitespace trimming before enforcing 1–64 Unicode code points and 256 UTF-8 bytes. JSON Schema does not perform that normalization."
     },
     "SessionOrganization": {
       "type": "object",
