@@ -100,18 +100,30 @@ describe("remote executable inventory consent", () => {
     expect(f.prompts).toBe(3);
   });
 
-  test.each(["offline", "identity", "origin", "missing"])("%s peer invalidation clears both stores even through request", async failure => {
+  test.each(["identity", "origin"])("%s peer invalidation clears both stores even through request", async failure => {
     const f = fixture(); const transport = f.create();
     await transport.consentRemoteCode(scope, catalog(), signal());
     expect(f.stored.has(storageKey)).toBe(true);
-    f.peer = failure === "missing" ? undefined : { identity: failure === "identity" ? other : machine,
-      status: failure === "offline" ? "offline" : "ready", origin: failure === "origin" ? "http://evil.test" : origin, displayName: "Peer" };
+    f.peer = { identity: failure === "identity" ? other : machine, status: "ready", origin: failure === "origin" ? "http://evil.test" : origin, displayName: "Peer" };
     await expect(transport.request(scope, "/api/extensions", {})).rejects.toThrow("unavailable");
     expect(f.stored.has(storageKey)).toBe(false);
     f.peer = { identity: machine, status: "ready", origin, displayName: "Peer" };
     await transport.consentRemoteCode(scope, catalog(), signal());
     await f.create().consentRemoteCode(scope, catalog(), signal());
     expect(f.prompts).toBe(2);
+  });
+
+  test.each(["offline", "missing"])("%s peer refuses requests but keeps the exact grant for reconnection", async failure => {
+    const f = fixture(); const transport = f.create();
+    await transport.consentRemoteCode(scope, catalog(), signal());
+    f.peer = failure === "missing" ? undefined : { identity: machine, status: "offline", origin, displayName: "Peer" };
+    await expect(transport.request(scope, "/api/extensions", {})).rejects.toThrow("unavailable");
+    await expect(transport.consentRemoteCode(scope, catalog(), signal())).rejects.toThrow("unavailable");
+    expect(f.stored.has(storageKey)).toBe(true);
+    f.peer = { identity: machine, status: "ready", origin, displayName: "Peer" };
+    expect(await transport.consentRemoteCode(scope, catalog(), signal())).toBe(true);
+    expect(await f.create().consentRemoteCode(scope, catalog(), signal())).toBe(true);
+    expect(f.prompts).toBe(1);
   });
 
   test.each(["read", "write", "getter"])("%s storage denial falls back to same-instance memory, reload prompts", async failure => {
@@ -152,16 +164,16 @@ describe("remote executable inventory consent", () => {
     expect(f.prompts).toBe(4);
   });
 
-  test("revoking one unavailable peer preserves other identities without broadening their grants", async () => {
-    const f = fixture(); let offline = false;
-    const resolvePeer = (identity: string) => ({ identity, status: offline && identity === machine ? "offline" : "ready", origin, displayName: "Peer" });
+  test("revoking one invalid peer preserves other identities without broadening their grants", async () => {
+    const f = fixture(); let invalid = false;
+    const resolvePeer = (identity: string) => ({ identity, status: "ready", origin: invalid && identity === machine ? "http://evil.test" : origin, displayName: "Peer" });
     const transport = f.create(resolvePeer);
     await transport.consentRemoteCode(scope, catalog(), signal());
     await transport.consentRemoteCode({ ...scope, machine: other }, catalog(), signal());
-    offline = true;
+    invalid = true;
     await expect(transport.consentRemoteCode(scope, catalog(), signal())).rejects.toThrow("unavailable");
     expect(JSON.parse(f.stored.get(storageKey)!).map((entry: [string, string]) => entry[0])).toEqual([other]);
-    offline = false;
+    invalid = false;
     const reload = f.create(resolvePeer);
     await reload.consentRemoteCode({ ...scope, machine: other }, catalog(), signal());
     expect(f.prompts).toBe(2);

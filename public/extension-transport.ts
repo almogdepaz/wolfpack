@@ -112,7 +112,10 @@ export class SelectedHostExtensionTransport {
 
   private peer(machine: string): ExtensionReadyPeer & { readonly origin: string } {
     const peer = this.options.resolvePeer(machine);
-    if (!isStableMachineIdentity(machine) || peer?.identity !== machine || peer.status !== "ready" || !peer.origin
+    // A missing or not-yet-ready peer is a routing gap, not evidence about the trusted
+    // code; the exact origin|inventory grant must survive reconnection.
+    if (isStableMachineIdentity(machine) && peer?.status !== "ready") throw new Error("selected extension peer unavailable");
+    if (!isStableMachineIdentity(machine) || peer?.identity !== machine || !peer.origin
       || canonicalTailnetOrigin(peer.origin.slice("https://".length)) !== peer.origin) {
       this.invalidateConsent(machine);
       throw new Error("selected extension peer unavailable");
