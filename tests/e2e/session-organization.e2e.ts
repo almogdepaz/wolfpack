@@ -129,17 +129,26 @@ test("maximum valid session name keeps organization actions inside the dialog", 
   await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 });
 
-test("organization sidebar save keeps its labels and restores the exact action focus", async ({ page }, info) => {
+test("organization sidebar save keeps its labels and restores the exact action focus", async ({ page, request }, info) => {
   test.skip(info.project.name !== "desktop", "desktop sidebar ownership only");
+  const sessions = await (await request.get(`${server.baseUrl}/api/session-control/list`)).json();
+  const session = sessions.sessions.find((s: any) => s.session === "test-project");
+  expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group: "before sidebar save", tags: ["one", "two", "three"] } })).ok()).toBe(true);
   await page.goto(server.baseUrl);
   await collapseInitialSessionMenu(page);
-  const button = page.locator('#sidebar-session-list').getByRole("button", { name: "Organize test-project", exact: true });
-  await button.click();
-  await page.getByLabel("Group", { exact: true }).fill("sidebar saved");
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  await expect(page.getByRole("dialog")).not.toBeVisible();
-  await expect(button).toBeFocused();
-  await expect(page.locator('#sidebar-session-list .card').filter({ has: page.getByRole("button", { name: "Organize test-project", exact: true }) })).toContainText("sidebar saved");
+  for (const action of ["Organize", "Show all labels for"]) {
+    const button = page.locator('#sidebar-session-list').getByRole("button", { name: `${action} test-project`, exact: true });
+    const original = await button.elementHandle();
+    expect(original).not.toBeNull();
+    await button.click();
+    await page.getByLabel("Group", { exact: true }).fill(`sidebar saved ${action}`);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("dialog")).not.toBeVisible();
+    // Saving must exercise real chooser replacement, not a no-op render.
+    await expect.poll(() => original!.evaluate(element => element.isConnected)).toBe(false);
+    await expect(button).toBeFocused();
+    await expect(page.locator('#sidebar-session-list .card').filter({ has: page.getByRole("button", { name: "Organize test-project", exact: true }) })).toContainText(`sidebar saved ${action}`);
+  }
 });
 
 test("organization failure retains input, cancels safely, and returns keyboard focus", async ({ page }) => {

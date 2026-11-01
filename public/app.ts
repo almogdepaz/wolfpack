@@ -37,7 +37,7 @@ import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-control
 import type { SessionCardView } from "./app-action-controller";
 import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
-import { showOrganizationEditor } from "./session-organization";
+import { captureOrganizationFocus, showOrganizationEditor } from "./session-organization";
 import { isSessionOrganization } from "../src/session-organization-contract";
 import type { SessionOrganization } from "../src/session-organization-contract";
 import { createSessionInspector } from "./session-inspector";
@@ -1252,6 +1252,7 @@ function organizeSession(sessionId: string, machine: string, invoker: HTMLElemen
     if (!isCurrent() || response.sessionId !== sessionId || !isSessionOrganization(response.organization)) throw new Error("organization scope or response changed");
     return response.organization;
   };
+  const restoreFocus = captureOrganizationFocus(invoker);
   showOrganizationEditor({
     session: session.name, initial: session.organization,
     suggestions: findGroup()!.sessions.flatMap(candidate => isSessionOrganization(candidate.organization) ? [candidate.organization] : []),
@@ -1265,10 +1266,7 @@ function organizeSession(sessionId: string, machine: string, invoker: HTMLElemen
       publishSessionProjection();
       void refreshMachineSessions(machine, true);
     },
-    returnFocus: () => {
-      if (invoker.isConnected) invoker.focus({ preventScroll: true });
-      else document.querySelector<HTMLElement>(`[data-action="organize-session"][data-session-id="${CSS.escape(sessionId)}"][data-machine="${CSS.escape(machine)}"]`)?.focus({ preventScroll: true });
-    },
+    returnFocus: () => { if (isCurrent()) restoreFocus?.(); },
   });
 }
 
@@ -1745,6 +1743,7 @@ function renderSessionListFromState(): void {
       ? renderMachineGroupHtml(canonicalLocalGroup, false, "main", 0)
       : "";
   const html = renderNeedsYouGroupHtml(multiMachine ? groups : canonicalLocalGroup ? [canonicalLocalGroup] : []) + machineHtml;
+  const restoreOrganizationFocus = el.contains(document.activeElement) ? captureOrganizationFocus(document.activeElement) : undefined;
   if (html !== state.lastSessionsHtml) {
     const focused = document.activeElement;
     const machine = focused instanceof HTMLElement && el.contains(focused) && focused.matches('.machine-add-btn') ? focused.dataset.machine : undefined;
@@ -1754,6 +1753,7 @@ function renderSessionListFromState(): void {
     if (machine !== undefined) el.querySelector<HTMLElement>(`.machine-add-btn[data-machine="${CSS.escape(machine)}"]`)?.focus({ preventScroll: true });
   }
   filterSessionSurface("dashboard");
+  restoreOrganizationFocus?.();
 }
 
 function toggleSidebarDelegationChildren(key: string, event?: Event): void {
@@ -4247,13 +4247,15 @@ function renderDrawerList() {
     html += `<div class="sidebar-empty">No active sessions</div>`;
   }
 
+  const restoreOrganizationFocus = list.contains(document.activeElement) ? captureOrganizationFocus(document.activeElement) : undefined;
   const focused = list.contains(document.activeElement) && document.activeElement instanceof HTMLElement
     ? Object.entries(document.activeElement.dataset) : null;
   const chipLabel = document.getElementById("chip-label");
   if (chipLabel) chipLabel.textContent = state.currentSession || "";
   if (list.innerHTML === html) return;
   list.innerHTML = html;
-  if (focused) {
+  if (restoreOrganizationFocus) restoreOrganizationFocus();
+  else if (focused) {
     const target = [...list.querySelectorAll<HTMLElement>("button")].find(item =>
       focused.length > 0 && focused.every(([key, value]) => item.dataset[key] === value));
     (target || list.querySelector<HTMLElement>("button"))?.focus({ preventScroll: true });
@@ -5575,10 +5577,12 @@ function _renderSidebarNow() {
   }
   // Skip DOM update if nothing changed
   if (html === _lastSidebarHtml) return;
+  const restoreOrganizationFocus = el.contains(document.activeElement) ? captureOrganizationFocus(document.activeElement) : undefined;
   machineGroupEventController?.cancelForRender();
   _lastSidebarHtml = html;
   el.innerHTML = html;
   filterSessionSurface("sidebar");
+  restoreOrganizationFocus?.();
 }
 
 function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string) {

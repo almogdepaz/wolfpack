@@ -50,6 +50,9 @@ for (const transition of ["offline", "replacement"] as const) test(`organization
   await expect(page.getByRole("dialog", { name: "Organize test-project" })).toBeVisible();
   const local = page.locator('.machine-group[data-machine=""]').filter({ visible: true }).first();
   await expect(local).not.toContainText("remote draft");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  expect(await page.evaluate(() => document.activeElement?.matches('[data-action="organize-session"]'))).toBe(false);
 });
 
 test("older and unreadable organization projections disable editing without disabling terminals", async ({ page }) => {
@@ -83,11 +86,34 @@ test("metadata refresh updates needs-you duplicates without moving canonical ses
   const order = await page.locator('#session-list .machine-group:not(.needs-you) .card-name-text').allTextContents();
   const sessions = await (await request.get(`${server.baseUrl}/api/session-control/list`)).json();
   const session = sessions.sessions.find((s: any) => s.session === "test-project");
-  expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group: "external update" } })).ok()).toBe(true);
+  expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group: "external update", tags: ["one", "two", "three"] } })).ok()).toBe(true);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   const cards = page.locator('.card').filter({ has: page.getByRole("button", { name: "Organize test-project", exact: true }) }).filter({ visible: true });
   await expect(cards).toHaveCount(2);
   for (const card of await cards.all()) await expect(card).toContainText("external update");
+  for (const owner of [".machine-group:not(.needs-you)", ".needs-you"]) {
+    for (const action of ["Organize", "Show all labels for"]) {
+      const button = page.locator(`#session-list ${owner}`).getByRole("button", { name: `${action} test-project`, exact: true });
+      const original = await button.elementHandle();
+      expect(original).not.toBeNull();
+      await button.click();
+      await page.getByLabel("Group", { exact: true }).fill(`saved ${owner} ${action}`);
+      await page.getByRole("button", { name: "Save", exact: true }).click();
+      await expect(page.getByRole("dialog")).not.toBeVisible();
+      await expect.poll(() => original!.evaluate(element => element.isConnected)).toBe(false);
+      await expect(button).toBeFocused();
+      // A real external update can replace the opener while its dialog is still open.
+      const opener = await button.elementHandle();
+      await button.click();
+      const latest = await (await request.get(`${server.baseUrl}/api/session-control/organization?sessionId=${session.sessionId}`)).json();
+      expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: latest.organization.revision, group: `external ${owner} ${action}` } })).ok()).toBe(true);
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+      await expect.poll(() => opener!.evaluate(element => element.isConnected)).toBe(false);
+      await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(page.getByRole("dialog")).not.toBeVisible();
+      await expect(button).toBeFocused();
+    }
+  }
   expect(await page.locator('#session-list .machine-group:not(.needs-you) .card-name-text').allTextContents()).toEqual(order);
 });
 
@@ -95,7 +121,7 @@ test("mobile drawer shares saved organization and its touch editor", async ({ pa
   test.skip(info.project.name === "desktop", "mobile drawer ownership only");
   const sessions = await (await request.get(`${server.baseUrl}/api/session-control/list`)).json();
   const session = sessions.sessions.find((s: any) => s.session === "test-project");
-  expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group: "drawer group" } })).ok()).toBe(true);
+  expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group: "drawer group", tags: ["one", "two", "three"] } })).ok()).toBe(true);
   await page.goto(server.baseUrl);
   await page.getByRole("button", { name: "Open test-project", exact: true }).filter({ visible: true }).first().click();
   await page.locator('#session-chip').click();
@@ -105,6 +131,25 @@ test("mobile drawer shares saved organization and its touch editor", async ({ pa
   await drawer.getByRole("button", { name: "Organize test-project", exact: true }).tap();
   await expect(page.getByLabel("Group", { exact: true })).toHaveValue("drawer group");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(drawer.getByRole("button", { name: "Organize test-project", exact: true })).toBeFocused();
+  for (const action of ["Organize", "Show all labels for"]) {
+    const button = drawer.getByRole("button", { name: `${action} test-project`, exact: true });
+    const original = await button.elementHandle();
+    expect(original).not.toBeNull();
+    await button.tap();
+    await page.getByLabel("Group", { exact: true }).fill(`drawer saved ${action}`);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("dialog")).not.toBeVisible();
+    await expect.poll(() => original!.evaluate(element => element.isConnected)).toBe(false);
+    await expect(button).toBeFocused();
+    // Poll-driven redraws must not confuse these two buttons' identical action datasets.
+    const focused = await button.elementHandle();
+    const latest = await (await request.get(`${server.baseUrl}/api/session-control/organization?sessionId=${session.sessionId}`)).json();
+    expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: latest.organization.revision, group: `drawer refresh ${action}` } })).ok()).toBe(true);
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect.poll(() => focused!.evaluate(element => element.isConnected)).toBe(false);
+    await expect(button).toBeFocused();
+  }
 });
 
 test("an open organization draft disables saving when refreshed storage becomes unreadable", async ({ page, request }) => {

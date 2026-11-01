@@ -12,6 +12,24 @@ export interface OrganizationEditorOptions {
   readonly returnFocus: () => void;
 }
 
+/** Pin the exact action and chooser, including the dashboard's Needs you duplicate. */
+export function captureOrganizationFocus(invoker: Element | null): (() => void) | undefined {
+  if (!(invoker instanceof HTMLButtonElement) || !invoker.matches('[data-action="organize-session"]')) return;
+  const chooser = invoker.closest<HTMLElement>('#session-list, #sidebar-session-list, #drawer-list');
+  const { sessionId, machine } = invoker.dataset;
+  if (!chooser || sessionId === undefined || machine === undefined) return;
+  const action = invoker.classList.contains("organization-more") ? ".organization-more" : ".organize-btn";
+  const pinned = Boolean(invoker.closest(".needs-you"));
+  const selector = `${action}[data-session-id="${CSS.escape(sessionId)}"][data-machine="${CSS.escape(machine)}"]`;
+  return () => {
+    const target = invoker.isConnected ? invoker : [...chooser.querySelectorAll<HTMLButtonElement>(selector)]
+      .find(candidate => Boolean(candidate.closest(".needs-you")) === pinned);
+    // A removed/hidden owner is not permission to focus another session surface.
+    if (target && chooser.isConnected && !target.disabled && !target.closest('[inert], [hidden]')
+      && target.getClientRects().length && getComputedStyle(target).visibility === "visible") target.focus({ preventScroll: true });
+  };
+}
+
 let active: HTMLDialogElement | null = null;
 /** Native modal, matching app-dialog focus/cancel conventions. Drafts live until explicit close. */
 export function showOrganizationEditor(options: OrganizationEditorOptions): void {
