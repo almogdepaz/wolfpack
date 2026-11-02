@@ -92,6 +92,7 @@ export function delegationChildSummaryText(summary: DelegationChildSummary): str
 export function delegationRootSession<TSession extends DelegationSessionLike>(
   sessions: readonly TSession[],
   target: TSession,
+  allowOrphan = false,
 ): TSession | null {
   const targetId = sessionIdentityId(target);
   const sessionsById = new Map(
@@ -110,7 +111,10 @@ export function delegationRootSession<TSession extends DelegationSessionLike>(
     }
     const parent = sessionParentReference(current);
     if (!parent) return current;
-    current = sessionsById.get(parent.wolfpackSessionId);
+    const ancestor = sessionsById.get(parent.wolfpackSessionId);
+    // Grouping uses the highest present ancestor; workspace ownership still rejects orphans.
+    if (!ancestor && allowOrphan) return current;
+    current = ancestor;
   }
   return null;
 }

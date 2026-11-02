@@ -24,7 +24,13 @@ wolfpack session organization <session-or-id> --group ops --add-tag urgent
 wolfpack session organization <session-or-id> --clear-group --remove-tag waiting --revision 3
 ```
 
-Organization is host-owned classification: multiple tags and one optional flat group label. It does not change ordering, parents, runtime state, names or machine ownership, and adds no filters. The CLI resolves a live selector once, then pins all organization requests to its UUID. Normal `--machine` routing applies.
+Organization is host-owned classification: multiple stored tags and one optional flat group label. It does not change parents, runtime state, names or machine ownership, and adds no filters. The CLI resolves a live selector once, then pins all organization requests to its UUID. Normal `--machine` routing applies.
+
+The dashboard, sidebar and mobile drawer show collapsible groups within each machine, followed by Ungrouped. Group labels sort deterministically; urgency and manual sibling order remain intact within each group. The highest present ancestor's group governs its whole tree, resolved from the full machine inventory even during search/status filtering. An orphaned tree uses its highest surviving ancestor's group. Needs-you attention remains visible independently of group collapse.
+
+Use a session's ellipsis **Move to group** action to choose an existing group, **New group**, or **Ungrouped**. A child-invoked move identifies the whole tree it will move. Desktop mouse dragging onto another group is an optional shortcut using the same guarded operation; touch and keyboard always have the menu path. Moving a tree writes only its authoritative root with one UUID/revision compare-and-swap; child annotations are not rewritten. Collapse preferences are local, not replicated. Groups exist only while sessions carry their labels; there is no empty-group registry or cross-machine move.
+
+The UI neither displays nor edits tags. Existing stored tags and API/CLI tag support are unchanged; UI group writes omit tags, including after explicit conflict review. Unknown or unsupported metadata is distinct from Ungrouped and cannot be edited.
 
 `GET /api/session-control/organization?sessionId=<uuid>` returns `{ sessionId, organization: { group, tags, revision } }`. `POST` to the same path accepts `{ sessionId, expectedRevision, group?, tags? }` with at least one changed field. `group: null` clears the group; `tags: []` clears all tags. UI/CLI use this shared service; a stale revision returns `409 ORGANIZATION_CONFLICT`. Convenience CLI edits read the revision first; `--revision` supplies an explicit automation precondition. There is no automatic retry of an uncertain save.
 

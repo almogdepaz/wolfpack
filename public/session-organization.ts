@@ -1,11 +1,14 @@
-import { isSessionOrganization, normalizeOrganizationUpdate } from "../src/session-organization-contract";
+import { normalizeOrganizationUpdate } from "../src/session-organization-contract";
 import type { SessionOrganization, SessionOrganizationUpdate } from "../src/session-organization-contract";
 
 export interface OrganizationEditorOptions {
   readonly session: string;
+  readonly tree?: string;
   readonly initial: SessionOrganization;
-  readonly suggestions: readonly SessionOrganization[];
+  readonly groups: readonly string[];
+  readonly destination?: string | null;
   readonly isCurrent: () => boolean;
+  /** The owning request path validates canonical metadata and the pinned response UUID. */
   readonly read: (signal: AbortSignal) => Promise<SessionOrganization>;
   readonly save: (update: SessionOrganizationUpdate, signal: AbortSignal) => Promise<SessionOrganization>;
   readonly saved: (value: SessionOrganization) => void;
@@ -14,13 +17,13 @@ export interface OrganizationEditorOptions {
 
 /** Pin the exact action and chooser, including the dashboard's Needs you duplicate. */
 export function captureOrganizationFocus(invoker: Element | null): (() => void) | undefined {
-  if (!(invoker instanceof HTMLButtonElement) || !invoker.matches('[data-action="organize-session"]')) return;
+  if (!(invoker instanceof HTMLButtonElement) || !invoker.matches('[data-action="organize-session"], .session-group-toggle')) return;
   const chooser = invoker.closest<HTMLElement>('#session-list, #sidebar-session-list, #drawer-list');
-  const { sessionId, machine } = invoker.dataset;
-  if (!chooser || sessionId === undefined || machine === undefined) return;
-  const action = invoker.classList.contains("organization-more") ? ".organization-more" : ".organize-btn";
+  if (!chooser) return;
+  const { sessionId, machine, groupKey } = invoker.dataset;
+  const selector = groupKey !== undefined ? `.session-group-toggle[data-group-key="${CSS.escape(groupKey)}"]`
+    : `.organize-btn[data-session-id="${CSS.escape(sessionId ?? "")}"][data-machine="${CSS.escape(machine ?? "")}"]`;
   const pinned = Boolean(invoker.closest(".needs-you"));
-  const selector = `${action}[data-session-id="${CSS.escape(sessionId)}"][data-machine="${CSS.escape(machine)}"]`;
   return () => {
     const target = invoker.isConnected ? invoker : [...chooser.querySelectorAll<HTMLButtonElement>(selector)]
       .find(candidate => Boolean(candidate.closest(".needs-you")) === pinned);
@@ -33,30 +36,28 @@ export function captureOrganizationFocus(invoker: Element | null): (() => void) 
 let active: HTMLDialogElement | null = null;
 /** Native modal, matching app-dialog focus/cancel conventions. Drafts live until explicit close. */
 export function showOrganizationEditor(options: OrganizationEditorOptions): void {
-  if (active?.open || document.querySelector("dialog[open]")) return;
+  if (document.querySelector("dialog[open]")) return;
   const dialog = document.createElement("dialog");
   dialog.className = "app-dialog organization-dialog";
   dialog.setAttribute("aria-labelledby", "organization-title");
   dialog.innerHTML = `<form>
     <h2 id="organization-title"></h2>
-    <p>Labels only — session order and parent relationships stay unchanged.</p>
-    <label class="app-dialog-field">Group<input name="group" list="organization-groups" autocomplete="off"></label>
-    <button type="button" class="organization-secondary" data-editor="clear">Clear group</button>
-    <datalist id="organization-groups"></datalist>
-    <div class="organization-tags" aria-label="Tags"></div>
-    <div class="organization-add-row"><label class="app-dialog-field">New tag<input name="tag" list="organization-suggestions" autocomplete="off"></label><button type="button" class="organization-secondary" data-editor="add">Add tag</button></div>
-    <datalist id="organization-suggestions"></datalist>
-    <p class="organization-help">Up to 16 tags. Each label: 64 characters, no control characters.</p>
+    <p></p>
+    <div class="app-dialog-field"><label for="organization-destination">Move to group</label><select id="organization-destination" name="destination"></select></div>
+    <button type="button" class="organization-secondary" data-editor="new">New group</button>
+    <label class="app-dialog-field">Group<input name="group" autocomplete="off"></label>
     <p class="organization-error" role="alert"></p>
-    <p class="organization-status" role="status" aria-live="polite"></p>
+    <p class="organization-status" role="status"></p>
     <div class="organization-review" hidden><button type="button" class="organization-secondary" data-editor="review">Review latest</button><button type="button" class="organization-secondary" data-editor="use" hidden>Use latest</button></div>
-    <div class="app-dialog-actions"><button type="button" data-editor="cancel">Cancel</button><button type="submit" class="organization-save">Save</button></div>
+    <div class="app-dialog-actions"><button type="button" data-editor="cancel">Cancel</button><button type="submit" class="organization-save">Move</button></div>
   </form>`;
-  dialog.querySelector("h2")!.textContent = `Organize ${options.session}`;
+  dialog.querySelector("h2")!.textContent = `Move ${options.session} to group`;
+  dialog.querySelector("p")!.textContent = options.tree
+    ? `Moves the whole ${options.tree} tree, including all child agents.` : "";
   const form = dialog.querySelector("form")!;
   const group = dialog.querySelector<HTMLInputElement>('[name="group"]')!;
-  const tag = dialog.querySelector<HTMLInputElement>('[name="tag"]')!;
-  const tagsElement = dialog.querySelector<HTMLElement>(".organization-tags")!;
+  const field = group.parentElement!;
+  const destination = dialog.querySelector<HTMLSelectElement>('[name="destination"]')!;
   const error = dialog.querySelector<HTMLElement>(".organization-error")!;
   const status = dialog.querySelector<HTMLElement>(".organization-status")!;
   const reviewArea = dialog.querySelector<HTMLElement>(".organization-review")!;
@@ -64,68 +65,51 @@ export function showOrganizationEditor(options: OrganizationEditorOptions): void
   const save = dialog.querySelector<HTMLButtonElement>('[type="submit"]')!;
   const controller = new AbortController();
   let revision = options.initial.revision;
-  let tags = [...options.initial.tags];
+  let savedGroup = options.initial.group;
   let pending = false;
   let needsReview = false;
   let latest: SessionOrganization | null = null;
-  group.value = options.initial.group ?? "";
-  for (const [selector, values] of [
-    ["#organization-groups", options.suggestions.flatMap(value => value.group ? [value.group] : [])],
-    ["#organization-suggestions", options.suggestions.flatMap(value => [...value.tags])],
-  ] as const) {
-    for (const value of new Set(values)) { const option = document.createElement("option"); option.value = value; dialog.querySelector(selector)!.append(option); }
+  const values: (string | null)[] = [null, ...[...new Set(options.groups)].sort()];
+  values.forEach((value, index) => destination.add(new Option(value ?? "Ungrouped", String(index))));
+  destination.add(new Option("New group…", "new"));
+  function setGroup(value: string | null | undefined): void {
+    group.value = value ?? "";
+    const index = value === undefined ? -1 : values.indexOf(value);
+    destination.value = index < 0 ? "new" : String(index);
+    field.hidden = index >= 0;
+    if (index < 0) group.focus();
   }
+  setGroup(options.destination === undefined ? options.initial.group : options.destination);
   function scopeCurrent(): boolean { return active === dialog && dialog.open && !controller.signal.aborted && options.isCurrent(); }
   function syncDisabled(): void {
     const current = scopeCurrent();
     save.disabled = pending || needsReview || !current;
-    for (const control of dialog.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, .organization-secondary')) control.disabled = pending || !current;
-    if (!current && dialog.open) error.textContent = "This session or machine is no longer available. Your draft is retained; cancel and reopen on a ready machine.";
+    for (const control of dialog.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLSelectElement>('input, select, .organization-secondary')) control.disabled = pending || !current;
+    if (!current && dialog.open) error.textContent = "Session or machine no longer available. Cancel and reopen when ready.";
     form.setAttribute("aria-busy", String(pending));
-  }
-  function renderTags(): void {
-    tagsElement.replaceChildren();
-    for (const [index, value] of tags.entries()) {
-      const chip = document.createElement("span"); chip.className = "organization-tag";
-      const text = document.createElement("span"); text.textContent = value;
-      const remove = document.createElement("button"); remove.type = "button"; remove.textContent = "Remove";
-      remove.setAttribute("aria-label", `Remove tag ${value}`);
-      remove.addEventListener("click", () => { if (pending || !scopeCurrent()) return; tags.splice(index, 1); renderTags(); tag.focus(); });
-      chip.append(text, remove); tagsElement.append(chip);
-    }
-  }
-  function addTag(): boolean {
-    if (!tag.value) return true;
-    try {
-      tags = [...normalizeOrganizationUpdate({ expectedRevision: revision, tags: [...tags, tag.value] }).tags!];
-      tag.value = ""; error.textContent = ""; renderTags(); tag.focus(); return true;
-    } catch (failure) { error.textContent = failure instanceof Error ? failure.message : "Invalid tag"; return false; }
   }
   function failureMessage(failure: unknown): void {
     const response = failure as { status?: number; data?: { code?: string } };
     if (response.status === 409) {
-      error.textContent = "Labels changed elsewhere. Your draft is retained. Review latest before saving.";
-      needsReview = true;
+      error.textContent = "Group changed elsewhere. Draft retained; review latest.";
     } else if (response.status === 404 && response.data?.code !== "SESSION_NOT_FOUND") {
-      error.textContent = "This host does not support session organization. Your draft is retained.";
-      needsReview = true;
+      error.textContent = "Grouping unsupported on this host. Draft retained.";
     } else {
-      error.textContent = "Could not save labels. Your draft is retained; read the latest saved values before retrying an uncertain save.";
-      needsReview = true;
+      error.textContent = "Move failed or uncertain; read latest before retrying. Draft retained.";
     }
-    reviewArea.hidden = false;
+    needsReview = true; reviewArea.hidden = false;
   }
   form.addEventListener("submit", async event => {
     event.preventDefault();
-    if (pending || needsReview || !scopeCurrent() || !addTag()) return;
+    if (pending || needsReview || !scopeCurrent()) return;
     let update: SessionOrganizationUpdate;
-    try { update = normalizeOrganizationUpdate({ expectedRevision: revision, group: group.value.trim() ? group.value : null, tags }); }
-    catch (failure) { error.textContent = failure instanceof Error ? failure.message : "Invalid labels"; return; }
-    pending = true; error.textContent = ""; status.textContent = "Saving…"; syncDisabled();
+    try { update = normalizeOrganizationUpdate({ expectedRevision: revision, group: destination.value === "0" ? null : group.value }); }
+    catch (failure) { error.textContent = failure instanceof Error ? failure.message : "Invalid group"; return; }
+    if (update.group === savedGroup) { dialog.close(); return; }
+    pending = true; error.textContent = ""; status.textContent = "Moving…"; syncDisabled();
     try {
       const canonical = await options.save(update, controller.signal);
       if (!scopeCurrent()) return;
-      if (!isSessionOrganization(canonical)) throw new Error("invalid save response");
       options.saved(canonical);
       dialog.close();
     } catch (failure) { if (scopeCurrent()) failureMessage(failure); }
@@ -133,26 +117,24 @@ export function showOrganizationEditor(options: OrganizationEditorOptions): void
   });
   dialog.querySelector('[data-editor="review"]')!.addEventListener("click", async () => {
     if (pending || !scopeCurrent()) return;
-    pending = true; syncDisabled(); status.textContent = "Reading latest saved labels…";
+    pending = true; syncDisabled(); status.textContent = "Reading latest…";
     try {
       const value = await options.read(controller.signal);
       if (!scopeCurrent()) return;
-      if (!isSessionOrganization(value)) throw new Error("invalid read response");
       latest = value;
-      status.textContent = `Latest saved — group: ${value.group ?? "none"}; tags: ${value.tags.join(", ") || "none"}. Your draft has not changed.`;
+      status.textContent = `Latest saved — group: ${value.group ?? "Ungrouped"}. Your draft has not changed.`;
       useLatest.hidden = false;
-    } catch { if (scopeCurrent()) status.textContent = "Could not read saved labels. Your draft has not changed."; }
+    } catch { if (scopeCurrent()) status.textContent = "Could not read latest. Draft unchanged."; }
     finally { pending = false; syncDisabled(); }
   });
   useLatest.addEventListener("click", () => {
     if (!latest || pending || !scopeCurrent()) return;
-    group.value = latest.group ?? ""; tags = [...latest.tags]; tag.value = ""; revision = latest.revision;
-    needsReview = false; error.textContent = ""; status.textContent = "Latest saved labels loaded. Review and edit before saving.";
-    reviewArea.hidden = true; renderTags(); syncDisabled(); group.focus();
+    setGroup(latest.group); revision = latest.revision; savedGroup = latest.group;
+    needsReview = false; error.textContent = ""; status.textContent = "Latest loaded. Review before moving.";
+    reviewArea.hidden = true; syncDisabled(); destination.focus();
   });
-  dialog.querySelector('[data-editor="clear"]')!.addEventListener("click", () => { group.value = ""; group.focus(); });
-  dialog.querySelector('[data-editor="add"]')!.addEventListener("click", addTag);
-  tag.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); addTag(); } });
+  destination.addEventListener("change", () => setGroup(values[Number(destination.value)]));
+  dialog.querySelector('[data-editor="new"]')!.addEventListener("click", () => setGroup(undefined));
   dialog.querySelector('[data-editor="cancel"]')!.addEventListener("click", () => dialog.close());
   dialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
   const timer = setInterval(syncDisabled, 500);
@@ -161,5 +143,6 @@ export function showOrganizationEditor(options: OrganizationEditorOptions): void
     if (active === dialog) active = null;
     dialog.remove(); options.returnFocus();
   }, { once: true });
-  renderTags(); document.body.append(dialog); active = dialog; dialog.showModal(); syncDisabled(); group.focus();
+  document.body.append(dialog); active = dialog; dialog.showModal(); syncDisabled(); destination.focus();
+  if (options.destination !== undefined) form.requestSubmit();
 }
