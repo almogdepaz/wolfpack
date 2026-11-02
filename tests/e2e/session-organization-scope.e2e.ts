@@ -60,7 +60,8 @@ test("older and unreadable organization projections disable editing without disa
   await page.goto(server.baseUrl);
   const unsupported = page.getByRole("button", { name: "Move test-project to group", exact: true }).filter({ visible: true }).first();
   await expect(unsupported).toBeDisabled(); await expect(unsupported).toHaveAttribute("title", "Organization unsupported on this host");
-  await expect(page.getByRole("button", { name: "Collapse Grouping unsupported", exact: true }).filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByText("Grouping unsupported", { exact: true }).filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Collapse Grouping unsupported", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Move another-project to group", exact: true }).filter({ visible: true }).first()).toBeDisabled();
   await expect(page.getByRole("button", { name: "Open test-project", exact: true }).filter({ visible: true }).first()).toBeEnabled();
 });

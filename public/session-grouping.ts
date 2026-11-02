@@ -34,7 +34,7 @@ export function projectSessionGroups<T extends DelegationSessionLike>(inventory:
 
 /** Presentation only: canonical labels never collide with built-in buckets or actions. */
 export function sessionGroupLabel(group: string | null): string {
-  return group === null ? "Ungrouped" : `Group “${group}”`;
+  return group === null ? "No group" : `Group “${group}”`;
 }
 
 const COLLAPSE_KEY = "wolfpack-session-group-collapse";

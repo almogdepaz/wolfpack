@@ -75,7 +75,7 @@ export function showOrganizationEditor(options: OrganizationEditorOptions): void
   let needsReview = false;
   let latest: SessionOrganization | null = null;
   const values: (string | null)[] = [null, ...[...new Set(options.groups)].sort()];
-  values.forEach((value, index) => destination.add(new Option(sessionGroupLabel(value), String(index))));
+  values.forEach((value, index) => destination.add(new Option(value === null ? "Remove from group" : sessionGroupLabel(value), String(index))));
   destination.add(new Option("New group…", "new"));
   function setGroup(value: string | null | undefined): void {
     group.value = value ?? "";

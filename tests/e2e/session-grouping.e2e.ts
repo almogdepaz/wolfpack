@@ -7,6 +7,101 @@ test.beforeAll(async () => { server = await startTestServer({ canonicalSessionId
 test.afterAll(async () => { await server?.close(); });
 
 for (const surface of ["dashboard", "sidebar", "drawer"] as const) {
+  for (const mixed of [false, true]) {
+    test(`headerless free rows ignore obsolete collapse on ${surface} ${mixed ? "mixed" : "all-free"}`, async ({ page, request }, info) => {
+      test.skip(surface === "sidebar" ? info.project.name !== "desktop" : surface === "drawer" && info.project.name === "desktop", "chooser viewport ownership");
+      const { sessions } = await (await request.get(`${server.baseUrl}/api/session-control/list`)).json();
+      for (const session of sessions) {
+        expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group: mixed && session.session === "another-project" ? "Named" : null } })).ok()).toBe(true);
+      }
+      await page.addInitScript(() => localStorage.setItem("wolfpack-session-group-collapse", JSON.stringify([JSON.stringify(["", "group", null])])));
+      await page.goto(server.baseUrl);
+      if (surface === "sidebar") await collapseInitialSessionMenu(page);
+      if (surface === "drawer") {
+        await page.getByRole("button", { name: "Open test-project", exact: true }).filter({ visible: true }).first().click();
+        await page.locator('#session-chip').click();
+      }
+      const chooser = page.locator(surface === "dashboard" ? '#session-list' : surface === "sidebar" ? '#sidebar-session-list' : '#drawer-list');
+      const free = chooser.locator('.session-label-group[data-group-kind="group"][data-group=""]');
+      const action = free.getByRole("button", { name: "Move test-project to group", exact: true });
+      await expect(action).toBeVisible();
+      await expect(free.locator('.session-group-toggle, .session-group-name, small')).toHaveCount(0);
+      await expect(free.getByText(/^(Ungrouped|General)$/)).toHaveCount(0);
+      const body = free.locator('.session-label-body');
+      const firstRow = body.locator(surface === "drawer" ? '.drawer-item-row' : '.card').first();
+      expect(await firstRow.evaluate(element => element.getBoundingClientRect().top - element.parentElement!.getBoundingClientRect().top)).toBe(0);
+      await expect(chooser.locator('.session-group-toggle')).toHaveCount(mixed ? 1 : 0);
+      if (mixed) {
+        await chooser.getByRole("button", { name: "Collapse Group “Named”", exact: true }).click();
+        await expect(chooser.getByRole("button", { name: "Move another-project to group", exact: true })).not.toBeVisible();
+        await expect(action).toBeVisible();
+        await chooser.getByRole("button", { name: "Expand Group “Named”", exact: true }).click();
+      }
+      await page.screenshot({ path: info.outputPath(`free-${surface}-${mixed ? "mixed" : "all"}.png`) });
+      if (surface === "drawer") {
+        await expect(body).toHaveAttribute("role", "list");
+        expect((await new AxeBuilder({ page }).include('#drawer-list').analyze()).violations).toEqual([]);
+      } else {
+        const machine = chooser.locator('.machine-group[data-machine=""]');
+        const toggle = machine.locator('.machine-collapse-toggle');
+        await toggle.click();
+        await expect(action).not.toBeVisible();
+        if (mixed) await expect(machine.locator('.session-group-toggle')).not.toBeVisible();
+        await toggle.click(); await expect(action).toBeVisible();
+      }
+    });
+  }
+  for (const external of [false, true]) {
+    test(`removal to headerless rows retains exact ${surface} focus ${external ? "after external refresh and cancel" : "after save without a free bucket"}`, async ({ page, request }, info) => {
+      test.skip(surface === "sidebar" ? info.project.name !== "desktop" : surface === "drawer" && info.project.name === "desktop", "chooser viewport ownership");
+      const { sessions } = await (await request.get(`${server.baseUrl}/api/session-control/list`)).json();
+      const source = sessions.find((s: any) => s.session === "test-project");
+      for (const session of sessions) {
+        const response = await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group: "Named" } });
+        expect(response.ok()).toBe(true); session.organization = (await response.json()).organization;
+      }
+      await page.addInitScript(() => localStorage.setItem("wolfpack-session-group-collapse", JSON.stringify([JSON.stringify(["", "group", null])])));
+      await page.goto(server.baseUrl);
+      if (surface === "sidebar") await collapseInitialSessionMenu(page);
+      if (surface === "drawer") {
+        await page.getByRole("button", { name: "Open test-project", exact: true }).filter({ visible: true }).first().click();
+        await page.locator('#session-chip').click();
+      }
+      const chooser = page.locator(surface === "dashboard" ? '#session-list' : surface === "sidebar" ? '#sidebar-session-list' : '#drawer-list');
+      await expect(chooser.locator('.session-label-group[data-group=""]')).toHaveCount(0);
+      const action = chooser.getByRole("button", { name: "Move test-project to group", exact: true });
+      await action.click();
+      const select = page.getByLabel("Move to group", { exact: true });
+      await select.selectOption({ label: "Remove from group" });
+      if (external) {
+        expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: source.sessionId, expectedRevision: source.organization.revision, group: null } })).ok()).toBe(true);
+        await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+        await expect(chooser.locator('.session-label-group[data-group=""] .organize-btn')).toHaveCount(1);
+        await expect(select).toBeFocused();
+        await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      } else await page.getByRole("button", { name: "Move", exact: true }).click();
+      await expect(page.getByRole("dialog")).not.toBeVisible();
+      await expect(action).toBeFocused(); await expect(action).toBeVisible();
+      await expect(chooser.locator('.session-label-group[data-group=""] .session-group-toggle')).toHaveCount(0);
+      expect((await (await request.get(`${server.baseUrl}/api/session-control/organization?sessionId=${source.sessionId}`)).json()).organization).toMatchObject({ group: null, tags: source.organization.tags });
+      const writes: unknown[] = [];
+      page.on("request", request => { if (request.url().includes("/session-control/organization") && request.method() === "POST") writes.push(request.postDataJSON()); });
+      await action.click(); await page.getByRole("button", { name: "Move", exact: true }).click();
+      await expect(page.getByRole("dialog")).not.toBeVisible();
+      await expect(action).toBeFocused(); expect(writes).toEqual([]);
+      await action.click(); await page.getByRole("button", { name: "Cancel", exact: true }).click();
+      await expect(action).toBeFocused(); expect(writes).toEqual([]);
+      if (external) {
+        for (const group of ["Named", null]) {
+          const current = (await (await request.get(`${server.baseUrl}/api/session-control/organization?sessionId=${source.sessionId}`)).json()).organization;
+          expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: source.sessionId, expectedRevision: current.revision, group } })).ok()).toBe(true);
+          await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+          await expect(chooser.locator(`.session-label-group[data-group="${group ?? ""}"] .organize-btn[data-session-id="${source.sessionId}"]`)).toHaveCount(1);
+          await expect(action).toBeFocused(); await expect(action).toBeVisible();
+        }
+      }
+    });
+  }
   for (const cancel of [false, true]) {
     test(`external group refresh retains owned ${surface} focus${cancel ? " after cancel" : ""}`, async ({ page, request }, info) => {
       test.skip(surface === "sidebar" ? info.project.name !== "desktop" : surface === "drawer" && info.project.name === "desktop", "chooser viewport ownership");
@@ -85,25 +180,29 @@ test("reserved-looking groups have distinct presentation and preserve canonical 
   const action = chooser.getByRole("button", { name: "Move test-project to group", exact: true }).filter({ visible: true }).first();
   const select = page.getByLabel("Move to group", { exact: true });
   async function stored() { return (await (await request.get(`${server.baseUrl}/api/session-control/organization?sessionId=${source.sessionId}`)).json()).organization; }
-  for (const label of ["Ungrouped", "New group…", "Grouping unavailable", "Grouping unsupported"]) {
+  for (const label of ["Ungrouped", "Remove from group", "No group", "New group…", "Grouping unavailable", "Grouping unsupported"]) {
     const response = await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: destination.sessionId, expectedRevision: destination.organization.revision, group: label } });
     expect(response.ok()).toBe(true); destination.organization = (await response.json()).organization;
     await page.goto(server.baseUrl);
     const named = chooser.locator('.session-label-group[data-group-kind="group"]').filter({ has: page.locator(`.session-group-name`, { hasText: `Group “${label}”` }) });
     await expect(named.locator('.session-group-name')).toHaveText(`Group “${label}”`);
     await expect(named.getByRole("button", { name: `Collapse Group “${label}”`, exact: true })).toBeVisible();
-    for (const builtin of ["Ungrouped", "Grouping unavailable", "Grouping unsupported"]) {
-      await expect(chooser.getByRole("button", { name: `Collapse ${builtin}`, exact: true })).toBeVisible();
+    await expect(chooser.locator('.session-label-group[data-group=""] .session-group-toggle')).toHaveCount(0);
+    for (const builtin of ["Grouping unavailable", "Grouping unsupported"]) {
+      await expect(chooser.getByText(builtin, { exact: true })).toBeVisible();
+      await expect(chooser.getByRole("button", { name: `Collapse ${builtin}`, exact: true })).toHaveCount(0);
     }
+    await expect(chooser.getByRole("button", { name: "Move prompt-project to group", exact: true })).toBeDisabled();
+    await expect(chooser.getByRole("button", { name: "Move error-project to group", exact: true })).toBeDisabled();
     await action.click();
     const options = await select.locator("option").allTextContents();
     expect(new Set(options).size).toBe(options.length);
-    expect(options).toContain("Ungrouped"); expect(options).toContain("New group…"); expect(options).toContain(`Group “${label}”`);
+    expect(options).toContain("Remove from group"); expect(options).toContain("New group…"); expect(options).toContain(`Group “${label}”`);
     await select.selectOption({ label: `Group “${label}”` });
     await page.getByRole("button", { name: "Move", exact: true }).click();
     await expect(page.getByRole("dialog")).not.toBeVisible();
     expect(await stored()).toMatchObject({ group: label, tags });
-    await action.click(); await select.selectOption({ label: "Ungrouped" });
+    await action.click(); await select.selectOption({ label: "Remove from group" });
     await page.getByRole("button", { name: "Move", exact: true }).click();
     await expect(page.getByRole("dialog")).not.toBeVisible();
     expect(await stored()).toMatchObject({ group: null, tags });
@@ -123,6 +222,12 @@ test("reserved-looking groups have distinct presentation and preserve canonical 
   await expect(page.getByLabel("Group", { exact: true })).toHaveValue("retained draft");
   expect(await stored()).toMatchObject({ group: "Ungrouped", tags });
   await page.screenshot({ path: info.outputPath("reserved-label-feedback.png") });
+  const latest = await stored();
+  expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: source.sessionId, expectedRevision: latest.revision, group: null } })).ok()).toBe(true);
+  await page.getByRole("button", { name: "Review latest", exact: true }).click();
+  await expect(page.locator('.organization-status')).toContainText("Latest saved — No group.");
+  await expect(page.locator('.organization-status')).not.toContainText("Remove from group");
+  await expect(page.getByLabel("Group", { exact: true })).toHaveValue("retained draft");
 });
 
 test("grouping replaces tag chips with compact actions and collapsible machine buckets", async ({ page, request }, info) => {
@@ -160,7 +265,7 @@ test("grouping replaces tag chips with compact actions and collapsible machine b
   await expect(page.getByRole("dialog")).not.toBeVisible();
   await expect(page.locator('#session-list .session-label-group[data-group="New operations"] .card-name-text')).toHaveText(["another-project", "test-project"]);
   await other.click();
-  await page.getByLabel("Move to group", { exact: true }).selectOption({ label: "Ungrouped" });
+  await page.getByLabel("Move to group", { exact: true }).selectOption({ label: "Remove from group" });
   await page.getByRole("button", { name: "Move", exact: true }).click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
   await expect(page.locator('#session-list .session-label-group[data-group=""]')).toContainText("another-project");
@@ -171,8 +276,10 @@ test("pointer drop uses one root CAS, keeps tags, and Escape or an invalid targe
   const { sessions } = await (await request.get(`${server.baseUrl}/api/session-control/list`)).json();
   const source = sessions.find((s: any) => s.session === "test-project");
   const target = sessions.find((s: any) => s.session === "another-project");
-  for (const [session, group] of [[source, "Source"], [target, "Target"]] as const) {
-    expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group, tags: ["keep"] } })).ok()).toBe(true);
+  for (const session of sessions) {
+    const group = session === source ? "Source" : session === target ? "Target" : null;
+    const response = await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group, tags: ["keep"] } });
+    expect(response.ok()).toBe(true); session.organization = (await response.json()).organization;
   }
   await page.goto(server.baseUrl);
   const card = page.locator(`#session-list .card[data-session-order-id="${source.sessionId}"]`);
@@ -202,10 +309,21 @@ test("pointer drop uses one root CAS, keeps tags, and Escape or an invalid targe
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 10 });
   await page.mouse.up();
   await expect.poll(() => writes.length).toBe(1);
-  expect(writes[0]).toEqual({ sessionId: source.sessionId, expectedRevision: source.organization.revision + 1, group: "Target" });
+  expect(writes[0]).toEqual({ sessionId: source.sessionId, expectedRevision: source.organization.revision, group: "Target" });
   await expect(page.locator('#session-list .session-label-group[data-group="Target"] .card-name-text')).toHaveText(["another-project", "test-project"]);
   expect((await (await request.get(`${server.baseUrl}/api/session-control/organization?sessionId=${source.sessionId}`)).json()).organization.tags).toEqual(["keep"]);
   await expect(page.locator('#sessions-view')).toHaveClass(/visible/);
+  // The existing free rows remain a mouse destination without a synthetic header.
+  const free = page.locator('#session-list .session-label-group[data-group-kind="group"][data-group=""]');
+  await expect(free.locator('.session-group-toggle')).toHaveCount(0);
+  await startDrag();
+  box = (await free.locator('.card').first().boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 10 });
+  await page.mouse.up();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1]).toEqual({ sessionId: source.sessionId, expectedRevision: writes[0].expectedRevision + 1, group: null });
+  await expect(free.locator(`[data-session-order-id="${source.sessionId}"]`)).toBeVisible();
+  expect((await (await request.get(`${server.baseUrl}/api/session-control/organization?sessionId=${source.sessionId}`)).json()).organization.tags).toEqual(["keep"]);
 });
 
 test("full inventory groups matching nested children under their ancestor and moves only its root", async ({ page, request }, info) => {
@@ -277,7 +395,7 @@ test("grouped drawer preserves accessible session lists when expanded and collap
   expect((await new AxeBuilder({ page }).include('#drawer-list').analyze()).violations).toEqual([]);
   await expect(drawer.getByRole("list")).toHaveCount(2);
   await expect(drawer.getByRole("list", { name: "Group “Drawer group”", exact: true }).getByRole("listitem")).toHaveCount(1);
-  await expect(drawer.getByRole("list", { name: "Ungrouped", exact: true }).getByRole("listitem")).toHaveCount(sessions.length - 1);
+  await expect(drawer.getByRole("list", { name: "No group", exact: true }).getByRole("listitem")).toHaveCount(sessions.length - 1);
   expect(await drawer.locator('h2, .session-group-toggle').evaluateAll(elements => elements.every(element => !element.closest('[role="list"]')))).toBe(true);
   await page.screenshot({ path: info.outputPath("drawer-lists-expanded.png") });
   await drawer.getByRole("button", { name: "Collapse Group “Drawer group”", exact: true }).tap();
@@ -290,7 +408,7 @@ test("grouped drawer preserves accessible session lists when expanded and collap
 
 test("served grouping assets are source-bound and grouping controls are accessible", async ({ page, request }) => {
   await page.goto(server.baseUrl);
-  await expect(page.locator('#session-list .session-group-toggle').first()).toBeVisible();
+  await expect(page.locator('#session-list .card').first()).toBeVisible();
   for (const asset of ["app.bundle.js", "styles.css"]) {
     const response = await request.get(`${server.baseUrl}/${asset}`);
     expect(response.ok()).toBe(true);
@@ -323,8 +441,12 @@ test("no-change and cancellation never post; disappeared UUID does not authorize
   expect(await page.evaluate(() => document.activeElement?.getAttribute('data-session-id'))).not.toBe(original.sessionId);
 });
 
-test("sidebar search updates unchanged grouped markup without stranding matches or empty headers", async ({ page }, info) => {
+test("sidebar search updates unchanged grouped markup without stranding matches or empty headers", async ({ page, request }, info) => {
   test.skip(info.project.name !== "desktop", "sidebar ownership only");
+  const { sessions } = await (await request.get(`${server.baseUrl}/api/session-control/list`)).json();
+  for (const session of sessions) {
+    expect((await request.post(`${server.baseUrl}/api/session-control/organization`, { data: { sessionId: session.sessionId, expectedRevision: session.organization.revision, group: "Search" } })).ok()).toBe(true);
+  }
   await page.goto(server.baseUrl); await collapseInitialSessionMenu(page);
   const search = page.locator('#sidebar-search');
   await search.fill("test-project");

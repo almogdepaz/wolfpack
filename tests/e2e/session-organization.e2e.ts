@@ -30,7 +30,7 @@ test("organization saves canonical groups through real API and preserves stored 
   await expect(page.getByText("urgent", { exact: true })).toHaveCount(0);
   await openEditor(page);
   await expect(page.getByLabel("Group", { exact: true })).toHaveValue("ops");
-  await page.getByLabel("Move to group", { exact: true }).selectOption({ label: "Ungrouped" });
+  await page.getByLabel("Move to group", { exact: true }).selectOption({ label: "Remove from group" });
   await page.getByRole("button", { name: "Move", exact: true }).click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
   const saved = await (await request.get(`${server.baseUrl}/api/session-control/organization?sessionId=${session.sessionId}`)).json();
