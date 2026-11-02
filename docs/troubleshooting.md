@@ -6,7 +6,25 @@ Start here:
 wolfpack doctor
 ```
 
-`doctor` checks the server, broker, binaries, JWT settings, Tailscale, and common service problems.
+`doctor` checks the server, broker, binaries, JWT settings, Tailscale, common service problems, and storage capacity.
+
+## Storage capacity before exhaustion
+
+```bash
+wolfpack doctor --storage
+wolfpack doctor --storage --json
+```
+
+`--storage` runs only local, on-demand capacity checks: no network/service probes, log excerpts, store initialization, cleanup, permission repair, task replay or retention sweep. It cannot be combined with `--fix`. `WOLFPACK_DIR` selects the local state root as usual; this is not a remote-machine API. No document bodies, receipts, task assignments, session IDs or ledger filenames are printed.
+
+- **Extension documents:** the entire host's extension root shares **256 records / 16 MiB** (serialized records, including retained receipts), not 256 per extension. At 90% of either limit doctor warns `near-full`; at either limit it reports `full` and exits 1. Count exhaustion blocks new keys even when another extension owns the records. Existing-key replacements may still fit. Per-extension count/byte attribution is an observation, not a separate quota, installed-package verification or writable-session authority.
+- **Durable tasks:** counts and logical bytes are retained `.jsonl` files under sender, receiver and quarantine directories. These are **not unique tasks**, and include historical or corrupt evidence. There is no configured aggregate task count/byte limit (`null` in JSON), not an invented threshold. Task contents and the unresolved/unacknowledged subset remain unknown: diagnostics do not load history. Caches, tombstones, other files, allocated disk blocks and filesystem free space are outside these totals.
+- `absent` means the path was missing and was not created. `unknown` or `unavailable` means counts/bytes are **null**, never zero. Corrupt document records, linked/unexpected entries and crash temporaries require explicit operator review; diagnostics never recover or delete them. Permission failures are unavailable, not empty stores. Warnings can exit 0, so automation must inspect `capacity.state`, not only the exit code.
+- Measurements are best-effort observations, not atomic snapshots or permission to publish. JSON `measurement` distinguishes bounded coherent document reads from metadata-only counts; above document quotas, contents/attribution are not validated (`perExtension: null`). Directory work stops after 4,096 entries and reports unknown rather than scanning unlimited history. Retry during a quiet period if a writer changes the store; do not poll these scans on a timer.
+
+Before full capacity, preserve an owner-private backup of the complete state root during a quiet/offline maintenance window (including receipts and unresolved/unacknowledged task evidence), identify the extension attribution, and reduce creation of new document keys while planning maintenance. If usage is unknown/unavailable, investigate permissions or an offline copy without deleting evidence. Do not use whole-extension purge as a capacity quick fix or raise quotas to hide pressure.
+
+**Deferred policy decision:** targeted export/archive/per-session deletion still requires an explicit design for receipt replay, unresolved/unacknowledged history and retention ownership. These diagnostics add no deletion, automatic expiry, archival command or retention change.
 
 ## `wolfpack: command not found`
 

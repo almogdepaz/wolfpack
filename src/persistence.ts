@@ -54,12 +54,15 @@ export function writePrivateJsonFile(path: string, value: unknown): void {
 
 /** Suffix protocol used by writePrivateFile; owner-private stores may recover regular crash leftovers. */
 export const PRIVATE_FILE_TEMP_SUFFIX_PATTERN = String.raw`\.tmp-\d+-[a-f0-9]+`;
+const PRIVATE_FILE_TEMP_RANDOM_BYTES = 6;
+/** Exact current writer shape; retain the broader legacy protocol above for existing callers. */
+export const PRIVATE_FILE_EXACT_TEMP_SUFFIX_PATTERN = String.raw`\.tmp-[1-9]\d*-[a-f0-9]{${PRIVATE_FILE_TEMP_RANDOM_BYTES * 2}}`;
 
 /** Binary callers may require directory fsync rather than the portable JSON fallback. */
 export function writePrivateFile(path: string, bytes: string | Uint8Array, requireDirectorySync = false): void {
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(PRIVATE_FILE_TEMP_RANDOM_BYTES).toString("hex")}`;
   let fd: number | undefined;
   try {
     fd = openSync(tmp, "wx", 0o600);

@@ -9,6 +9,7 @@ import {
   formatPerfRunsSummary,
   parsePerfDeviceMode,
   parsePerfRunCount,
+  parsePerfSoakSeconds,
   PERF_FLASH_EVENT,
   serverTimingsFor,
   summarizeCell,
@@ -92,6 +93,17 @@ describe("terminal-load perf run options", () => {
     expect(parsePerfRunCount(undefined)).toBe(1);
     expect(parsePerfRunCount("3")).toBe(3);
     expect(() => parsePerfRunCount("0")).toThrow("WOLFPACK_PERF_RUNS");
+  });
+
+  test("bounds soak duration before creating fixture resources", () => {
+    expect(parsePerfSoakSeconds(undefined)).toBe(1800);
+    expect(parsePerfSoakSeconds("30")).toBe(30);
+    expect(parsePerfSoakSeconds("3600")).toBe(3600);
+    for (const invalid of ["", "0", "-1", "1.5", "3601", "NaN", "Infinity"]) expect(() => parsePerfSoakSeconds(invalid)).toThrow("WOLFPACK_PERF_SOAK_SECONDS");
+  });
+
+  test("documents the bounded application reconnect soak mode", () => {
+    expect(describePerfHarnessEnv()).toContain("WOLFPACK_PERF_SOAK: set to 1 for an isolated application pool/reconnect soak (default: 1800 seconds)");
   });
 
   test("selects desktop or emulated-mobile measurement mode", () => {

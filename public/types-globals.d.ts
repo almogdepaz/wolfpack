@@ -43,6 +43,10 @@ declare global {
     getScrollbackLength?(): number;
     clear(): void;
     dispose(): void;
+    /** Wolfpack build-stage API, not an upstream ghostty-web API. */
+    readonly renderingSuspended: boolean;
+    suspendRendering(): void;
+    resumeRendering(): void;
     write(data: Uint8Array | string, callback?: () => void): void;
   }
 

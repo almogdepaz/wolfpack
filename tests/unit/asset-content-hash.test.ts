@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { ASSET_VERSIONS, assets } from "../../src/public-assets";
+import { gzipSync } from "node:zlib";
+
+describe("actual embedded browser asset budgets", () => {
+  for (const [file, raw, gzip] of [["app.bundle.js", 386000, 98000], ["styles.css", 104500, 20000], ["ghostty-web.bundle.js", 700000, 210000]] as const) {
+    test(`${file} shipped bytes meet existing raw/gzip caps`, () => {
+      const content = assets.get(file)?.content;
+      if (content === undefined) throw new Error(`missing shipped asset ${file}`);
+      const bytes = typeof content === "string" ? Buffer.from(content) : content;
+      expect(bytes.byteLength).toBeLessThanOrEqual(raw);
+      expect(gzipSync(bytes, { level: 9 }).byteLength).toBeLessThanOrEqual(gzip);
+    });
+  }
+  test("the served stylesheet is the only shipped CSS payload", () => {
+    expect([...assets.keys()].filter(file => file.endsWith(".css"))).toEqual(["styles.css"]);
+  });
+});
 
 describe("per-asset browser cache versions", () => {
   test("index URLs use the corresponding content hash", () => {

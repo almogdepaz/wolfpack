@@ -47,6 +47,9 @@ const MAX_PENDING_REPLY_BYTES: usize = 1024;
 const EXIT_DRAIN_BARRIER_TIMEOUT: Duration = Duration::from_secs(5);
 /// Re-check child exit even when a descendant keeps the slave open.
 const PTY_POLL_TIMEOUT_MS: libc::c_int = 250;
+// Writer contention is normally brief (e.g. a capability reply). Do not add
+// the PTY-capacity polling interval to a keystroke that only waited on a lock.
+const PTY_INPUT_LOCK_RETRY: Duration = Duration::from_millis(1);
 /// Minimum spacing of one session's `program_status_changed` events. Real
 /// emitters change state on human time scales (claude: idle → working → done
 /// over seconds), so 200ms (≤ 5 events/s per session) costs no visible latency,
@@ -546,6 +549,11 @@ impl Session {
         self.input.write_input(data)
     }
 
+    /// Connection-owned input stops at teardown, without ending the session.
+    pub fn write_stdin_cancellable(&self, data: &[u8], cancelled: &AtomicBool) -> io::Result<()> {
+        self.input.write_input_cancellable(data, cancelled)
+    }
+
     /// Materialise a `protocol::Snapshot` from the session's emulator state.
     ///
     /// `scrollback_lines = Some(n)` truncates the snapshot's scrollback to its
@@ -808,29 +816,50 @@ impl PtyInput {
 
     /// Client input: blocks while the program's input queue is full.
     fn write_input(&self, data: &[u8]) -> io::Result<()> {
+        self.write_input_cancellable(data, &AtomicBool::new(false))
+    }
+
+    fn write_input_cancellable(&self, data: &[u8], cancelled: &AtomicBool) -> io::Result<()> {
         let written = {
-            let mut writer = self.writer.lock().expect("writer poisoned");
+            let mut writer = loop {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                match self.writer.try_lock() {
+                    Ok(writer) => break writer,
+                    Err(std::sync::TryLockError::Poisoned(_)) => panic!("writer poisoned"),
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        thread::sleep(PTY_INPUT_LOCK_RETRY);
+                    }
+                }
+            };
             // A reply the drainer could only write part of must be completed
             // before this input, or the program parses the input as OSC text.
-            self.flush_replies(&mut writer, ReplyWrite::Blocking);
-            let written = self.write_blocking(writer.as_mut(), data).map_err(|(count, error)| {
+            self.flush_replies(&mut writer, ReplyWrite::Blocking(cancelled));
+            let written = self.write_blocking(writer.as_mut(), data, cancelled).map_err(|(count, error)| {
                 tracing::debug!(session_id = %self.session_id, written = count, total = data.len(), %error, "PTY stdin write failed");
                 error
             });
-            self.flush_replies(&mut writer, ReplyWrite::Blocking);
+            self.flush_replies(&mut writer, ReplyWrite::Blocking(cancelled));
             written
         };
-        self.flush_replies_if_idle(ReplyWrite::Blocking);
+        self.flush_replies_if_idle(ReplyWrite::Blocking(cancelled));
         written
     }
 
     /// Synchronous backpressure without ever entering a blocking write(2).
-    fn write_blocking(&self, writer: &mut dyn Write, data: &[u8]) -> Result<(), (usize, io::Error)> {
+    fn write_blocking(&self, writer: &mut dyn Write, data: &[u8], cancelled: &AtomicBool) -> Result<(), (usize, io::Error)> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err((0, io::ErrorKind::Interrupted.into()));
+        }
         let Some(fd) = &self.reply_fd else {
             return write_counting(writer, data);
         };
         let mut count = 0;
         while count < data.len() {
+            if cancelled.load(Ordering::Acquire) {
+                return Err((count, io::ErrorKind::Interrupted.into()));
+            }
             if self.child_exited.load(Ordering::Acquire) {
                 return Err((count, io::ErrorKind::BrokenPipe.into()));
             }
@@ -842,6 +871,9 @@ impl PtyInput {
             }
             if ready & libc::POLLOUT == 0 {
                 continue;
+            }
+            if cancelled.load(Ordering::Acquire) {
+                return Err((count, io::ErrorKind::Interrupted.into()));
             }
             match writer.write(&data[count..]) {
                 Ok(0) => return Err((count, io::ErrorKind::WriteZero.into())),
@@ -888,13 +920,13 @@ impl PtyInput {
         let batch = replies.batch();
         let written = match mode {
             ReplyWrite::NonBlocking => write_counting(writer, &batch),
-            ReplyWrite::Blocking => self.write_blocking(writer.as_mut(), &batch),
+            ReplyWrite::Blocking(cancelled) => self.write_blocking(writer.as_mut(), &batch, cancelled),
         };
         // Best effort, like the probe itself: a dropped or failed reply only
         // means the program sees the protocol as unsupported.
         match written {
             Ok(()) => {}
-            Err((count, error)) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err((count, error)) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
                 self.requeue_cut_reply(&replies, count);
                 tracing::debug!(
                     session_id = %self.session_id,
@@ -1258,11 +1290,11 @@ fn process_group_exists(group: libc::pid_t) -> bool {
 
 /// How a thread holding the PTY writer flushes queued replies.
 #[derive(Clone, Copy)]
-enum ReplyWrite {
+enum ReplyWrite<'a> {
     /// Drainer thread only: never wait for input capacity.
     NonBlocking,
     /// Client input threads.
-    Blocking,
+    Blocking(&'a AtomicBool),
 }
 
 /// One bounded readiness wait. EINTR returns to the caller so it can also
@@ -2962,6 +2994,25 @@ mod tests {
             dropped_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
             "session drop blocked on the PTY"
         );
+    }
+
+    #[test]
+    fn stdin_lock_contention_does_not_add_a_pty_poll_interval_to_typing() {
+        let input = Arc::new(PtyInput::new(Uuid::nil(), Box::new(CapturedWrites::default()), None));
+        let guard = input.writer.lock().expect("writer");
+        let writing_input = input.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let writing = thread::spawn(move || {
+            started_tx.send(()).expect("started");
+            let _ = done_tx.send(writing_input.write_input(b"typed"));
+        });
+        started_rx.recv().expect("writer started");
+        assert!(done_rx.recv_timeout(Duration::from_millis(20)).is_err(), "writer must contend on the held lock");
+        drop(guard);
+        let responsive = done_rx.recv_timeout(Duration::from_millis(100));
+        writing.join().expect("writer thread");
+        responsive.expect("brief lock contention delayed typing by a full PTY poll interval").expect("input");
     }
 
     #[test]

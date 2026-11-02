@@ -53,7 +53,9 @@ test.beforeAll(async () => {
   if (!BROKER_BIN) throw new Error("native selected-host acceptance requires an existing approved broker binary; no download/skip");
   const buildHome = createOwnedTestServerHome(); homes.push(buildHome);
   const bundle = join(buildHome.path, "app.bundle.js");
-  execFileSync("bun", ["build", join(ROOT, "public/app.ts"), "--outfile", bundle, "--target=browser", "--format=iife", "--minify"], { cwd: ROOT, stdio: "pipe" });
+  // Exercise the served minifier pipeline, not a competing direct Bun build.
+  const build = `import { buildAppBundle } from ${JSON.stringify(join(ROOT, "scripts/bundle-app.ts"))}; await Bun.write(${JSON.stringify(bundle)}, await buildAppBundle());`;
+  execFileSync("bun", ["--eval", build], { cwd: ROOT, stdio: "pipe" });
   bundleHash = createHash("sha256").update(readFileSync(bundle)).digest("hex");
   for (const key of ["a", "b", "local"] as const) {
     const home = createOwnedTestServerHome(); homes.push(home);

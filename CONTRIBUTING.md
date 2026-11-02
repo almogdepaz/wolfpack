@@ -40,11 +40,23 @@ The broker refuses a group- or other-writable socket parent, so tests must creat
 
 ## Asset Pipeline
 
-Frontend files live in `public/`. The server doesn't serve from disk — everything is embedded into the binary:
+Frontend entrypoints live in `public/`; readable CSS lives in `src/browser/styles.css`. The server doesn't serve from disk — browser assets are embedded into the binary:
 
-1. Edit files in `public/` (HTML, TS, CSS, manifest, etc.)
-2. Run `bun run scripts/gen-assets.ts` — bundles `public/app.ts` and ghostty-web, then embeds every file from `public/` into `src/public-assets.ts` (binary → base64, text → string)
-3. **Do NOT edit `src/public-assets.ts` manually** — it's auto-generated
+1. Edit `public/` HTML/TS/manifest sources or `src/browser/styles.css`. Do not edit generated `public/styles.css` or `public/app.bundle.js`.
+2. Run `bun run scripts/gen-assets.ts` — native Bun builds CSS to the same `/styles.css` URL, Bun + pinned build-only Terser optimize `public/app.ts`, and the isolated pinned Ghostty stage builds its bundle. Compiled public assets (not TS/readable CSS sources) are embedded into `src/public-assets.ts` (binary → base64, text → string).
+3. **Do NOT edit `src/public-assets.ts` manually** — it's auto-generated. Per-asset content hashes drive HTML/service-worker cache URLs.
+4. Run `bun run check:bundle-budgets`; it measures the actual served JS/CSS filenames with their existing raw/gzip caps. Do not move payload into unbudgeted files or raise caps to conceal growth.
+
+Terser 5.51.2 (BSD-2-Clause) is an exact development dependency, not shipped runtime code. Its app-IIFE pass never touches fetched extension modules or the separately pinned Ghostty bundle. Property mangling, unsafe transforms, getter assumptions and console/debugger dropping are disabled; names/arity are retained, including inferred function names (`reduce_vars` is intentionally disabled). Keep legal comments and rerun `tests/unit/browser-iife-minify.test.ts` when changing compiler options/version. Native CSS normalization is checked against resolved layout/motion/accessibility and exact rendered pixels, not merely CSSOM spelling; `tests/e2e/asset-build.e2e.ts` covers dashboard, terminal and settings with reduced-motion/forced-colors variants.
+
+For isolated resource checks using the existing cached Playwright runner:
+
+```bash
+WOLFPACK_TEST=1 WOLFPACK_PERF_RENDER_RESOURCES=1 bun run perf:terminal-load
+WOLFPACK_TEST=1 WOLFPACK_PERF_SOAK=1 WOLFPACK_PERF_SOAK_SECONDS=1800 bun run perf:terminal-load
+```
+
+The soak uses four fixture sessions to exercise the unchanged three-slot desktop LRU pool, native browser/WASM parsing, output credit/query replies and forced reconnects. It does not use a live broker/session or increase production capacity. Duration is bounded to 1–3600 seconds; `WOLFPACK_PERF_RUNS` controls explicit repeats and `WOLFPACK_PERF_RENDER_ARTIFACT_PARENT` selects an existing private parent for unique artifacts. Failures retain structured samples and screenshots; long-run tracing is disabled to avoid accumulating protocol histories. Reports distinguish logical lifetimes, explicit-post-GC JS/WeakRef observations, WASM linear bytes and owned-process RSS sums (shared pages can be double-counted). These are not natural-GC/RSS plateau, native-PTY, Tailnet, Safari or physical-phone evidence.
 
 ## Building Binaries
 

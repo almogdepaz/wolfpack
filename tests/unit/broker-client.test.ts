@@ -162,6 +162,99 @@ async function bootClientToServer(opts: { onEvent?: (e: EventBody) => void } = {
   return { server, client };
 }
 
+describe("BrokerSupervisor: connection generation verification", () => {
+  for (const lateResult of ["success", "failure"] as const) {
+    test(`late ${lateResult} from an old handshake cannot publish or close the new generation`, async () => {
+      const server = await startMockServer(makeSocketPath());
+      activeServer = server;
+      server.onRequest = (req, sock) => server.send(sock, {
+        kind: FRAME_KIND_CONTROL_RESPONSE, value: { id: req.id, status: "ok" },
+      });
+      let attempts = 0;
+      let connects = 0;
+      let release!: () => void;
+      let reject!: (error: Error) => void;
+      const oldGate = new Promise<void>((resolve, fail) => { release = resolve; reject = fail; });
+      const client = new BrokerClient({
+        socketPath: server.socketPath, reconnectInitialDelayMs: 10,
+        verifyConnection: async (request) => {
+          const attempt = ++attempts;
+          await request("hello");
+          if (attempt === 1) await oldGate;
+        },
+        onConnect: () => { connects++; },
+      });
+      activeClient = client;
+      client.start();
+      await waitFor(() => attempts === 1);
+      expect(client.isConnected()).toBe(false);
+      server.connections[0]!.destroy();
+      await waitFor(() => client.isConnected());
+      expect(connects).toBe(1);
+      if (lateResult === "success") release();
+      else reject(new Error("late old-generation failure"));
+      await oldGate.catch(() => undefined);
+      // A current RPC settles after the stale handshake continuation.
+      expect((await client.request("list_sessions")).status).toBe("ok");
+      expect(client.isConnected()).toBe(true);
+      expect(connects).toBe(1);
+    });
+  }
+
+  for (const replacement of ["incompatible", "blackhole", "compatible", "pre_hello"] as const) {
+    test(`reconnect verifies ${replacement} replacement before readiness or replay`, async () => {
+      const { BrokerSupervisor } = await import("../../src/server/broker-supervisor.ts");
+      const server = await startMockServer(makeSocketPath());
+      activeServer = server;
+      let generation = 1;
+      const replacementRequests: string[] = [];
+      let releaseHello: (() => void) | undefined;
+      server.onRequest = (req, sock) => {
+        if (generation > 1) replacementRequests.push(req.method);
+        const respond = () => server.send(sock, {
+          kind: FRAME_KIND_CONTROL_RESPONSE,
+          value: req.method === "hello" && generation > 1 && replacement === "pre_hello"
+            ? { id: req.id, status: "error", error: { code: "unknown_method", message: "old broker" } }
+            : { id: req.id, status: "ok", payload: req.method === "hello"
+                ? { kind: "hello", protocol_version: generation > 1 && replacement === "incompatible" ? 999 : 2, broker_version: `generation-${generation}` }
+                : { kind: req.method, sessions: [] } },
+        });
+        if (generation > 1 && req.method === "hello") releaseHello = respond;
+        else respond();
+      };
+      const supervisor = new BrokerSupervisor({ start: false });
+      (supervisor as any).brokerSocketPath = server.socketPath;
+      supervisor.recheckBroker();
+      const client: BrokerClient = (supervisor as any).brokerClient;
+      activeClient = client;
+      expect(await supervisor.verifyBrokerHandshake()).toBe(true);
+      expect(supervisor.getBrokerVersion()?.brokerVersion).toBe("generation-1");
+      await client.subscribe(SAMPLE_UUID);
+      generation = 2;
+      server.connections[0]!.destroy();
+      await waitFor(() => replacementRequests.length > 0);
+      // Even a compatible broker is not ready while hello is outstanding.
+      expect(replacementRequests).toEqual(["hello"]);
+      expect(supervisor.isBrokerReady()).toBe(false);
+      expect(supervisor.getBrokerVersion()).toBeNull();
+      await expect(client.request("list_sessions")).rejects.toBeInstanceOf(BrokerNotConnectedError);
+      expect(() => client.writeInput(SAMPLE_UUID, new Uint8Array([1]))).toThrow(BrokerNotConnectedError);
+      if (replacement !== "blackhole") releaseHello!();
+      if (replacement === "compatible" || replacement === "pre_hello") {
+        await waitFor(() => supervisor.isBrokerReady());
+        await waitFor(() => replacementRequests.includes("subscribe"));
+        expect(supervisor.getBrokerVersion()).toEqual(replacement === "pre_hello" ? null : { protocolVersion: 2, brokerVersion: "generation-2" });
+        expect(replacementRequests.slice(0, replacement === "pre_hello" ? 3 : 2)).toEqual(replacement === "pre_hello" ? ["hello", "list_sessions", "subscribe"] : ["hello", "subscribe"]);
+      } else {
+        await waitFor(() => server.connections.length === 0, 2000);
+        expect(supervisor.isBrokerReady()).toBe(false);
+        expect(supervisor.getBrokerVersion()).toBeNull();
+        expect(replacementRequests).not.toContain("subscribe");
+      }
+    });
+  }
+});
+
 describe("BrokerClient: RPC correlation", () => {
   test("request resolves with matching response id", async () => {
     const { server, client } = await bootClientToServer();
