@@ -32,6 +32,11 @@ export function projectSessionGroups<T extends DelegationSessionLike>(inventory:
   return [...groups.values()].sort((a, b) => rank(a) - rank(b) || (a.label! < b.label! ? -1 : a.label! > b.label! ? 1 : 0));
 }
 
+/** Presentation only: canonical labels never collide with built-in buckets or actions. */
+export function sessionGroupLabel(group: string | null): string {
+  return group === null ? "Ungrouped" : `Group “${group}”`;
+}
+
 const COLLAPSE_KEY = "wolfpack-session-group-collapse";
 export function sessionGroupKey(machine: string, kind: string, label: string | null): string {
   return JSON.stringify([machine, kind, label]);

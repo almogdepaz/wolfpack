@@ -1,4 +1,5 @@
 import { normalizeOrganizationUpdate } from "../src/session-organization-contract";
+import { sessionGroupLabel } from "./session-grouping";
 import type { SessionOrganization, SessionOrganizationUpdate } from "../src/session-organization-contract";
 
 export interface OrganizationEditorOptions {
@@ -25,10 +26,15 @@ export function captureOrganizationFocus(invoker: Element | null): (() => void) 
     : `.organize-btn[data-session-id="${CSS.escape(sessionId ?? "")}"][data-machine="${CSS.escape(machine ?? "")}"]`;
   const pinned = Boolean(invoker.closest(".needs-you"));
   return () => {
-    const target = invoker.isConnected ? invoker : [...chooser.querySelectorAll<HTMLButtonElement>(selector)]
+    if (document.querySelector("dialog[open]")) return;
+    let target = invoker.isConnected ? invoker : [...chooser.querySelectorAll<HTMLButtonElement>(selector)]
       .find(candidate => Boolean(candidate.closest(".needs-you")) === pinned);
+    // A still-owned action may move under a collapsed group during an external refresh.
+    if (target && !target.disabled && target.closest('.session-label-body[hidden]')) {
+      target = target.closest('.session-label-group')?.querySelector<HTMLButtonElement>('.session-group-toggle') ?? undefined;
+    }
     // A removed/hidden owner is not permission to focus another session surface.
-    if (target && chooser.isConnected && !target.disabled && !target.closest('[inert], [hidden]')
+    if (target && chooser.isConnected && chooser.contains(target) && !target.disabled && !target.closest('[inert], [hidden]')
       && target.getClientRects().length && getComputedStyle(target).visibility === "visible") target.focus({ preventScroll: true });
   };
 }
@@ -44,7 +50,6 @@ export function showOrganizationEditor(options: OrganizationEditorOptions): void
     <h2 id="organization-title"></h2>
     <p></p>
     <div class="app-dialog-field"><label for="organization-destination">Move to group</label><select id="organization-destination" name="destination"></select></div>
-    <button type="button" class="organization-secondary" data-editor="new">New group</button>
     <label class="app-dialog-field">Group<input name="group" autocomplete="off"></label>
     <p class="organization-error" role="alert"></p>
     <p class="organization-status" role="status"></p>
@@ -70,7 +75,7 @@ export function showOrganizationEditor(options: OrganizationEditorOptions): void
   let needsReview = false;
   let latest: SessionOrganization | null = null;
   const values: (string | null)[] = [null, ...[...new Set(options.groups)].sort()];
-  values.forEach((value, index) => destination.add(new Option(value ?? "Ungrouped", String(index))));
+  values.forEach((value, index) => destination.add(new Option(sessionGroupLabel(value), String(index))));
   destination.add(new Option("New group…", "new"));
   function setGroup(value: string | null | undefined): void {
     group.value = value ?? "";
@@ -122,7 +127,7 @@ export function showOrganizationEditor(options: OrganizationEditorOptions): void
       const value = await options.read(controller.signal);
       if (!scopeCurrent()) return;
       latest = value;
-      status.textContent = `Latest saved — group: ${value.group ?? "Ungrouped"}. Your draft has not changed.`;
+      status.textContent = `Latest saved — ${sessionGroupLabel(value.group)}. Your draft has not changed.`;
       useLatest.hidden = false;
     } catch { if (scopeCurrent()) status.textContent = "Could not read latest. Draft unchanged."; }
     finally { pending = false; syncDisabled(); }
@@ -134,7 +139,6 @@ export function showOrganizationEditor(options: OrganizationEditorOptions): void
     reviewArea.hidden = true; syncDisabled(); destination.focus();
   });
   destination.addEventListener("change", () => setGroup(values[Number(destination.value)]));
-  dialog.querySelector('[data-editor="new"]')!.addEventListener("click", () => setGroup(undefined));
   dialog.querySelector('[data-editor="cancel"]')!.addEventListener("click", () => dialog.close());
   dialog.addEventListener("keydown", event => { if (event.key === "Escape") event.stopPropagation(); });
   const timer = setInterval(syncDisabled, 500);

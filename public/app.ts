@@ -115,7 +115,7 @@ import {
   sessionIdentityId,
   sessionParentReference,
 } from "./delegation-sessions";
-import { loadSessionGroupCollapse, projectSessionGroups, saveSessionGroupCollapse, sessionGroupKey, sessionGroupRoot } from "./session-grouping";
+import { loadSessionGroupCollapse, projectSessionGroups, saveSessionGroupCollapse, sessionGroupKey, sessionGroupLabel, sessionGroupRoot } from "./session-grouping";
 import { harnessIconHtml as knownHarnessIconHtml } from "./harness-icon";
 import type {
   DelegationSessionLike as BaseDelegationSessionLike,
@@ -1965,14 +1965,14 @@ function sessionLabelGroupsHtml(inventory: readonly DelegationSessionLike[], row
   const filtering = !!query || surface !== "drawer" && state.sessionCardView !== SESSION_CARD_VIEW.ALL;
   return projectSessionGroups(inventory, rows).map(group => {
     const key = sessionGroupKey(machine, group.kind, group.label);
-    const label = group.kind === "group" ? group.label ?? "Ungrouped" : group.kind === "unsupported" ? "Grouping unsupported" : "Grouping unavailable";
+    const label = group.kind === "group" ? sessionGroupLabel(group.label) : group.kind === "unsupported" ? "Grouping unsupported" : "Grouping unavailable";
     const collapsed = !filtering && collapsedSessionGroups.has(key);
     const bodyId = `${surface}-session-group-${encodeURIComponent(key)}`;
     const visible = query ? group.rows : visibleDelegationRows(group.rows, machine);
     const cards = visible.map((row, index) => surface === "drawer"
       ? drawerItemHtml(row, machine)
       : surface === "sidebar" ? sidebarCardHtml(row, machine) : renderDashboardSessionCardHtml(row, machine, index, true)).join("");
-    return `<section class="session-label-group" data-group="${escAttr(group.label ?? "")}" data-group-kind="${group.kind}" data-machine="${escAttr(machine)}"><button type="button" class="session-group-toggle" data-group-key="${escAttr(key)}"${filtering ? ' disabled title="Expanded while filtering"' : ""} aria-expanded="${!collapsed}" aria-controls="${escAttr(bodyId)}" aria-label="${collapsed ? "Expand" : "Collapse"} group ${escAttr(label)}"><span class="machine-collapse-chevron" aria-hidden="true"></span><span class="session-group-name">${esc(label)}</span><small>${group.rows.length}</small></button><div id="${escAttr(bodyId)}" class="session-label-body"${collapsed ? " hidden inert" : ""}>${cards}</div></section>`;
+    return `<section class="session-label-group" data-group="${escAttr(group.label ?? "")}" data-group-kind="${group.kind}" data-machine="${escAttr(machine)}"><button type="button" class="session-group-toggle" data-group-key="${escAttr(key)}"${filtering ? ' disabled title="Expanded while filtering"' : ""} aria-expanded="${!collapsed}" aria-controls="${escAttr(bodyId)}" aria-label="${collapsed ? "Expand" : "Collapse"} ${escAttr(label)}"><span class="machine-collapse-chevron" aria-hidden="true"></span><span class="session-group-name">${esc(label)}</span><small>${group.rows.length}</small></button><div id="${escAttr(bodyId)}" class="session-label-body"${surface === "drawer" ? ` role="list" aria-label="${escAttr(label)}"` : ""}${collapsed ? " hidden inert" : ""}>${cards}</div></section>`;
   }).join("");
 }
 

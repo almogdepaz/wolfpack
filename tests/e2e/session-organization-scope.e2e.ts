@@ -6,7 +6,7 @@ let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ canonicalSessionIds: true }); });
 test.afterAll(async () => { await server?.close(); });
 async function draft(page: Page, value: string) {
-  await page.getByRole("button", { name: "New group", exact: true }).click();
+  await page.getByLabel("Move to group", { exact: true }).selectOption({ label: "New group…" });
   await page.getByLabel("Group", { exact: true }).fill(value);
 }
 const peerOrigin = "https://organization-peer.example.ts.net";
@@ -60,7 +60,7 @@ test("older and unreadable organization projections disable editing without disa
   await page.goto(server.baseUrl);
   const unsupported = page.getByRole("button", { name: "Move test-project to group", exact: true }).filter({ visible: true }).first();
   await expect(unsupported).toBeDisabled(); await expect(unsupported).toHaveAttribute("title", "Organization unsupported on this host");
-  await expect(page.getByRole("button", { name: "Collapse group Grouping unsupported", exact: true }).filter({ visible: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Collapse Grouping unsupported", exact: true }).filter({ visible: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Move another-project to group", exact: true }).filter({ visible: true }).first()).toBeDisabled();
   await expect(page.getByRole("button", { name: "Open test-project", exact: true }).filter({ visible: true }).first()).toBeEnabled();
 });
@@ -82,9 +82,9 @@ test("metadata refresh updates needs-you duplicates and preserves their exact ac
   await expect(page.locator('#session-list .session-label-group[data-group="external update"]')).toContainText("test-project");
   await expect(buttons).toHaveCount(2);
   // Attention remains visible even when its canonical group is collapsed.
-  await page.locator('#session-list').getByRole("button", { name: "Collapse group external update", exact: true }).click();
+  await page.locator('#session-list').getByRole("button", { name: "Collapse Group “external update”", exact: true }).click();
   await expect(page.locator('#session-list .needs-you').getByRole("button", { name: "Move test-project to group", exact: true })).toBeVisible();
-  await page.locator('#session-list').getByRole("button", { name: "Expand group external update", exact: true }).click();
+  await page.locator('#session-list').getByRole("button", { name: "Expand Group “external update”", exact: true }).click();
   for (const owner of [".machine-group:not(.needs-you)", ".needs-you"]) {
     const button = page.locator(`#session-list ${owner}`).getByRole("button", { name: "Move test-project to group", exact: true });
     const original = await button.elementHandle(); expect(original).not.toBeNull(); await button.click();
@@ -111,10 +111,10 @@ test("mobile drawer shares saved organization and its touch editor", async ({ pa
   await page.getByRole("button", { name: "Open test-project", exact: true }).filter({ visible: true }).first().click(); await page.locator('#session-chip').click();
   const drawer = page.locator('#session-drawer'); await expect(drawer).toHaveClass(/open/); await expect(drawer).toContainText("drawer group");
   const button = drawer.getByRole("button", { name: "Move test-project to group", exact: true });
-  await drawer.getByRole("button", { name: "Collapse group drawer group", exact: true }).tap();
+  await drawer.getByRole("button", { name: "Collapse Group “drawer group”", exact: true }).tap();
   await expect(button).not.toBeVisible();
-  await expect(drawer.getByRole("button", { name: "Expand group drawer group", exact: true })).toBeFocused();
-  await drawer.getByRole("button", { name: "Expand group drawer group", exact: true }).tap();
+  await expect(drawer.getByRole("button", { name: "Expand Group “drawer group”", exact: true })).toBeFocused();
+  await drawer.getByRole("button", { name: "Expand Group “drawer group”", exact: true }).tap();
   await button.tap(); await expect(page.getByLabel("Group", { exact: true })).toHaveValue("drawer group");
   await page.getByRole("button", { name: "Cancel", exact: true }).click(); await expect(button).toBeFocused();
   const original = await button.elementHandle(); expect(original).not.toBeNull(); await button.tap();

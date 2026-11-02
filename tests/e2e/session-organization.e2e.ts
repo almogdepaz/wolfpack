@@ -7,7 +7,7 @@ let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ canonicalSessionIds: true }); });
 test.afterAll(async () => { await server?.close(); });
 async function draft(page: Page, value: string) {
-  await page.getByRole("button", { name: "New group", exact: true }).click();
+  await page.getByLabel("Move to group", { exact: true }).selectOption({ label: "New group…" });
   await page.getByLabel("Group", { exact: true }).fill(value);
 }
 async function openEditor(page: Page) {
