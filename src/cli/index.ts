@@ -272,7 +272,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
   if (["list", "ls", "kill", "events"].includes(family ?? "")) return command.length === 1;
   if (family === "session") {
     return command.length === 1 || (command.length === 2 && [
-      "create", "open", "status", "inbox", "read", "send", "wait", "prompt",
+      "create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt",
     ].includes(action ?? ""));
   }
   if (family === "extension-data") return command.length === 1 || (command.length === 2 && ["read", "publish", "put-blob", "delete-blob"].includes(action ?? ""));
@@ -284,7 +284,7 @@ function isMachineCommandSupported(argv: readonly string[]): boolean {
   const [family, action] = argv;
   if (["list", "ls", "kill", "events"].includes(family ?? "")) return true;
   if (family === "session") {
-    return ["create", "open", "status", "inbox", "read", "send", "wait", "prompt"].includes(action ?? "");
+    return ["create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt"].includes(action ?? "");
   }
   if (family === "extension-data") return ["read", "publish", "put-blob", "delete-blob"].includes(action ?? "");
   return family === "agent" && (action === "spawn" || action === "inbox");

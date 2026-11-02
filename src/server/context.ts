@@ -1,3 +1,4 @@
+import { SessionOrganizationService } from "./session-organization.ts";
 import { TaskGateway } from "../tasks/gateway.ts";
 import { createTaskRelayGateway } from "../task-relay/gateway.ts";
 import { ExtensionRouteService } from "./extension-routes.ts";
@@ -24,6 +25,7 @@ export interface ServerContext {
   readonly taskGateway: TaskGateway;
   readonly taskRelayGateway: RelayGateway;
   readonly extensionRouteService: ExtensionRouteService;
+  readonly sessionOrganization: SessionOrganizationService;
 }
 
 // Context-owned lazy instances. Compatibility test hooks reset only the default
@@ -32,6 +34,7 @@ interface ServiceCache {
   taskGateway?: TaskGateway;
   taskRelayGateway?: RelayGateway;
   extensionRouteService?: ExtensionRouteService;
+  sessionOrganization?: SessionOrganizationService;
 }
 const serviceCaches = new WeakMap<ServerContext, ServiceCache>();
 /** @internal Compatibility shim lookup; request handlers use context properties. */
@@ -71,6 +74,9 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
         peerOrigin: context.config ? remoteUrl(context.config) ?? undefined : undefined,
         inspectSession: selector => context.backend.inspectSession(selector) });
     },
+    get sessionOrganization() {
+      return overrides.sessionOrganization ?? (cache.sessionOrganization ??= new SessionOrganizationService());
+    },
     get extensionRouteService() {
       return cache.extensionRouteService ??= new ExtensionRouteService({ backend: { listSessionFacts: () => context.backend.listSessionFacts() } });
     },
@@ -98,4 +104,5 @@ export const defaultServerContext: ServerContext = {
   get taskGateway() { return getDefaultServerContext().taskGateway; },
   get taskRelayGateway() { return getDefaultServerContext().taskRelayGateway; },
   get extensionRouteService() { return getDefaultServerContext().extensionRouteService; },
+  get sessionOrganization() { return getDefaultServerContext().sessionOrganization; },
 };

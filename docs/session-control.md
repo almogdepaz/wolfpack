@@ -8,13 +8,37 @@ Wolfpack exposes a scriptable session surface for agents and operators. The serv
 wolfpack --machine <short-name-or-fqdn> <control-command> ...
 ```
 
-The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `agent inbox`, `session status`, `session inbox`, `session read`, `session send`, `session wait`, `session prompt`, `kill`, and `events`. Other commands reject it.
+The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `agent inbox`, `session status`, `session organization`, `session inbox`, `session read`, `session send`, `session wait`, `session prompt`, `kill`, and `events`. Other commands reject it.
 
 A short name is expanded using the exact Tailnet suffix from configured `tailscaleHostname`. A full name must be a canonical HTTPS Tailnet hostname in that suffix; URLs, ports, paths, foreign suffixes, malformed or duplicate selectors, and missing configuration fail closed without a localhost fallback. Before any control request, the CLI sends an exact, bounded `GET /api/machine` probe with redirects disabled, a bounded timeout, and the normal Wolfpack JWT `Authorization` header when configured. The structured handshake must report the selected canonical origin and session-control capability.
 
 Subsequent requests go directly to that verified HTTPS origin. Remote JSON successes retain server fields (except the task endpoint projection described below) and add the verified identity as `"machine": { "tailnetNodeId": string, "installationId": string, "displayName": string, "origin": string }`; server-owned `sessionId` values are unchanged. Without `--machine`, request routing and JSON output remain local and unchanged.
 
 `agent spawn` still uses `POST /api/session-open` and resolves its parent on the selected machine. It does not create cross-machine lineage: a parent absent from the selected machine fails through the existing structured response.
+
+## Session organization
+
+```bash
+wolfpack session organization <session-or-id> --json
+wolfpack session organization <session-or-id> --group ops --add-tag urgent
+wolfpack session organization <session-or-id> --clear-group --remove-tag waiting --revision 3
+```
+
+Organization is host-owned classification: multiple stored tags and one optional flat group label. It does not change parents, runtime state, names or machine ownership, and adds no filters. The CLI resolves a live selector once, then pins all organization requests to its UUID. Normal `--machine` routing applies.
+
+The dashboard, sidebar and mobile drawer show collapsible named groups within each machine, followed by ordinary headerless rows for sessions with no group. Free rows have no separate collapse; existing machine collapse governs them, and obsolete null-group collapse preferences cannot hide them. Named groups display as **Group “label”**, distinct from built-in states and actions without changing stored labels. Labels sort deterministically; urgency and manual sibling order remain intact within each group. The highest present ancestor's group governs its whole tree, resolved from the full machine inventory even during search/status filtering. An orphaned tree uses its highest surviving ancestor's group. Needs-you attention remains visible independently of group collapse.
+
+Use a session's ellipsis **Move to group** action to select an existing group, **New group…**, or **Remove from group** in the picker. Removal clears membership even when no free rows are currently shown. A child-invoked move identifies the whole tree it will move. Desktop mouse dragging onto another group is an optional shortcut using the same guarded operation; touch and keyboard always have the menu path. Moving a tree writes only its authoritative root with one UUID/revision compare-and-swap; child annotations are not rewritten. Collapse preferences are local, not replicated. If an external update moves the focused session into a collapsed group, focus returns to that group's toggle in the same chooser; a local move expands its destination and returns to the session action. Groups exist only while sessions carry their labels; there is no empty-group registry or cross-machine move.
+
+The UI neither displays nor edits tags. Existing stored tags and API/CLI tag support are unchanged; UI group writes omit tags, including after explicit conflict review. Unknown or unsupported metadata retains a static diagnostic, is distinct from known-free membership, and cannot be edited.
+
+`GET /api/session-control/organization?sessionId=<uuid>` returns `{ sessionId, organization: { group, tags, revision } }`. `POST` to the same path accepts `{ sessionId, expectedRevision, group?, tags? }` with at least one changed field. `group: null` clears the group; `tags: []` clears all tags. UI/CLI use this shared service; a stale revision returns `409 ORGANIZATION_CONFLICT`. Convenience CLI edits read the revision first; `--revision` supplies an explicit automation precondition. There is no automatic retry of an uncertain save.
+
+Labels are NFC-normalized and trimmed, preserve display case, reject control/format/surrogate characters, and allow 1–64 Unicode code points / 256 UTF-8 bytes each. At most 16 supplied tags are accepted and deduplicated using locale-independent lowercase, retaining first spelling/order. Bodies are bounded to 8192 bytes. Unknown fields are rejected. Canonical no-ops retain the revision; clears retain a revision tombstone.
+
+Records persist privately under `$WOLFPACK_DIR/session-organization/<uuid>.json` (default Wolfpack directory). One server process owns writes; this is not a cross-process transaction. No inventory reconciliation or automatic garbage collection deletes annotations, and a new UUID reusing a name never inherits them.
+
+Dashboard/control projections include the same additive `organization` value. Corrupt/unreadable storage instead yields `{ status: "unavailable" }` without changing terminal liveness. Missing projection on older hosts means unsupported, not empty labels. Direct storage failure is `503 ORGANIZATION_UNAVAILABLE`; backend unavailability remains distinct. CLI failures distinguish unsupported hosts, invalid labels, conflicts and uncertain writes. Read and review before retrying a failed save.
 
 ## Create a top-level session
 

@@ -14,6 +14,8 @@ export interface SessionOrderUiHandlers {
   ) => boolean;
   readonly moveByOffset: (moving: SessionOrderCardReference, offset: -1 | 1) => boolean;
   readonly reset: (machineUrl: string) => void;
+  /** Capture UUID/root/revision authority at gesture start; only mouse group drops use it. */
+  readonly beginGroupMove?: (moving: SessionOrderCardReference, card: HTMLElement) => ((target: HTMLElement) => void) | null;
   readonly setDragActive: (active: boolean) => void;
 }
 
@@ -47,6 +49,8 @@ interface SessionOrderDragState {
   readonly pointerOffsetX: number;
   readonly pointerOffsetY: number;
   target: SessionOrderCardReference | null;
+  groupTarget: HTMLElement | null;
+  readonly moveToGroup: ((target: HTMLElement) => void) | null;
   placement: Placement;
 }
 
@@ -165,7 +169,7 @@ class SessionOrderDragController {
     clientX: number,
     clientY: number,
   ): void {
-    if (!(target instanceof Element) || target.closest(INTERACTIVE_CONTROL_SELECTOR)) return;
+    if (this.drag || this.candidate || !(target instanceof Element) || target.closest(INTERACTIVE_CONTROL_SELECTOR)) return;
     const card = target.closest<HTMLElement>(".card[data-session-order-id]");
     const moving = cardReference(card);
     if (!card || !moving) return;
@@ -248,7 +252,8 @@ class SessionOrderDragController {
   private restoreDraggedCard(active: SessionOrderDragState): void {
     active.card.classList.remove("session-order-floating");
     active.card.style.cssText = active.cardStyle;
-    active.originParent.insertBefore(active.card, active.originNextSibling);
+    active.originParent.insertBefore(active.card, active.originNextSibling?.parentNode === active.originParent ? active.originNextSibling : null);
+    active.groupTarget?.classList.remove("group-drop-target");
     active.placeholder.remove();
     for (const hidden of active.hiddenCards) hidden.element.style.display = hidden.display;
     document.body.classList.remove("session-order-pointer-active");
@@ -265,7 +270,9 @@ class SessionOrderDragController {
       this.suppressNextCardClick = true;
       window.setTimeout(() => { this.suppressNextCardClick = false; }, 0);
     }
-    if (commit && completed.target
+    if (commit && completed.originParent.isConnected && completed.groupTarget?.isConnected && completed.moveToGroup) {
+      completed.moveToGroup(completed.groupTarget);
+    } else if (commit && completed.originParent.isConnected && completed.target
       && this.handlers.move(completed.moving, completed.target, completed.placement)) {
       focusCard(completed.moving);
     }
@@ -293,6 +300,7 @@ class SessionOrderDragController {
     const hiddenCards = followers.map(element => ({ element, display: element.style.display }));
     for (const hidden of hiddenCards) hidden.element.style.display = "none";
 
+    const moveToGroup = pending.pointerType === "mouse" ? this.handlers.beginGroupMove?.(pending.moving, pending.card) ?? null : null;
     const cardStyle = pending.card.style.cssText;
     pending.card.classList.add("session-order-floating");
     pending.card.style.left = `${cardRect.left}px`;
@@ -317,6 +325,8 @@ class SessionOrderDragController {
       pointerOffsetX: clientX - cardRect.left,
       pointerOffsetY: clientY - cardRect.top,
       target: null,
+      groupTarget: null,
+      moveToGroup,
       placement: "before",
     };
   }
@@ -327,10 +337,24 @@ class SessionOrderDragController {
     active.card.style.left = `${clientX - active.pointerOffsetX}px`;
     active.card.style.top = `${clientY - active.pointerOffsetY}px`;
 
-    const target = scopeReferenceAtPoint(document.elementFromPoint(clientX, clientY), active.moving);
-    if (!target || target.sessionId === active.moving.sessionId) return;
-    const targetCard = cardForReference(target);
-    if (!targetCard) return;
+    const element = document.elementFromPoint(clientX, clientY);
+    const group = element?.closest<HTMLElement>(".session-label-group");
+    active.groupTarget?.classList.remove("group-drop-target");
+    active.groupTarget = null;
+    if (active.moveToGroup && group && group !== active.originParent.closest(".session-label-group")
+      && group.dataset.groupKind === "group" && group.dataset.machine === active.moving.machineUrl
+      && group.closest("#session-list, #sidebar-session-list")?.id === active.moving.listId) {
+      active.target = null;
+      active.groupTarget = group;
+      group.classList.add("group-drop-target");
+      return;
+    }
+    const target = scopeReferenceAtPoint(element, active.moving);
+    const targetCard = target && cardForReference(target);
+    if (!target || target.sessionId === active.moving.sessionId || !targetCard || targetCard.parentElement !== active.originParent) {
+      active.target = null;
+      return;
+    }
     const targetRect = targetCard.getBoundingClientRect();
     const placement: Placement = clientY > targetRect.top + targetRect.height / 2 ? "after" : "before";
     if (active.target?.sessionId === target.sessionId && active.placement === placement) return;

@@ -4,6 +4,7 @@ import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
 import { MAX_GIT_DIFF_SECTION_BYTES, MAX_GIT_DIFF_UNTRACKED_BYTES } from "../extensions/git-diff-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
+import { SESSION_ORGANIZATION_MAX_REQUEST_BYTES } from "../session-organization-contract.ts";
 import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
 import { TERMINAL_PREFILL_MODES } from "../terminal-prefill.ts";
 import {
@@ -761,6 +762,7 @@ export const controlApiSource: ControlApiSource = {
       triage: ref("TriageStatus"),
       outputSequence: ref("BrokerOutputSequence"),
       identity: ref("PublicSessionIdentity"),
+      organization: ref("SessionOrganizationProjection"),
       runtimeState: ref("AgentRuntimeState"),
       activity: ref("ActivityObservation"),
       quietAlert: ref("QuietAlertFact"),
@@ -804,6 +806,18 @@ export const controlApiSource: ControlApiSource = {
       status: { const: SESSION_TASK_RELAY_UNAVAILABLE.status },
       recovery: string("Explicit server restart/rebind guidance; interrupted mutations are not safe to replay"),
     }, ["status", "recovery"], { description: "Optional registration lookup failed, not terminal/backend failure. Absence of this field is not proof of task readiness." }),
+    SessionOrganizationRequestLabel: {
+      type: "string",
+      minLength: 1,
+      maxLength: SESSION_ORGANIZATION_MAX_REQUEST_BYTES,
+      description: "Raw label; this conservative character ceiling follows the whole-request UTF-8 byte bound. Runtime rejects controls and applies NFC normalization and outer whitespace trimming before enforcing 1–64 Unicode code points and 256 UTF-8 bytes. JSON Schema does not perform that normalization.",
+    },
+    SessionOrganization: object({
+      group: { anyOf: [{ type: "string", minLength: 1, maxLength: 64 }, { type: "null" }] },
+      tags: { type: "array", maxItems: 16, items: { type: "string", minLength: 1, maxLength: 64 } },
+      revision: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+    }, ["group", "tags", "revision"]),
+    SessionOrganizationProjection: { anyOf: [ref("SessionOrganization"), object({ status: { const: "unavailable" } }, ["status"])] },
     SessionStatus: object({
       ok: { const: true },
       selector: ref("SessionSelector"),
@@ -819,6 +833,7 @@ export const controlApiSource: ControlApiSource = {
       taskEndpoint: ref("RelayEndpoint"),
       taskTransport: ref("TaskRelayRegistration"),
       taskRelay: ref("SessionTaskRelayUnavailable"),
+      organization: ref("SessionOrganizationProjection"),
     }, [
       "ok",
       "selector",
@@ -1540,6 +1555,31 @@ export const controlApiSource: ControlApiSource = {
       auth: "jwt-when-configured",
       response: object({ sessions: arrayOf(ref("SessionStatus")) }, ["sessions"]),
       errors: ["503 ErrorEnvelope"],
+    },
+    "GET /api/session-control/organization": {
+      operationId: "getSessionOrganization",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({ sessionId: ref("SessionId") }, ["sessionId"]),
+      response: object({ sessionId: ref("SessionId"), organization: ref("SessionOrganization") }, ["sessionId", "organization"]),
+      errors: ["400 invalid UUID", "404 session not found", "410 session dead", "503 backend or organization unavailable"],
+    },
+    "POST /api/session-control/organization": {
+      operationId: "updateSessionOrganization",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: {
+        ...object({ sessionId: ref("SessionId"), expectedRevision: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
+          group: nullable(ref("SessionOrganizationRequestLabel")),
+          tags: { type: "array", maxItems: 16, items: ref("SessionOrganizationRequestLabel") },
+        }, ["sessionId", "expectedRevision"], { description: "At least group or tags required; both are allowed. Label limits apply after runtime NFC normalization and trimming; the complete request body is limited to 8192 UTF-8 bytes." }),
+        allOf: [{ anyOf: [
+          object({}, ["group"], { additionalProperties: true }),
+          object({}, ["tags"], { additionalProperties: true }),
+        ] }],
+      },
+      response: object({ sessionId: ref("SessionId"), organization: ref("SessionOrganization") }, ["sessionId", "organization"]),
+      errors: ["400 invalid organization", "404 session not found", "409 ORGANIZATION_CONFLICT", "410 session dead", "413 body too large", "503 backend or organization unavailable"],
     },
     "GET /api/session-control/status": {
       operationId: "getSessionStatus",

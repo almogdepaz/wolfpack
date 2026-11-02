@@ -1,3 +1,4 @@
+import { isSessionOrganization, normalizeOrganizationUpdate, SESSION_ORGANIZATION_ID, SessionOrganizationError } from "../session-organization-contract.ts";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { AGENT_KIND, isCreatableHarness, isKnownAgentKind } from "../agent-kind.js";
@@ -87,7 +88,7 @@ export type ExistingProjectSelector =
   | { readonly kind: "project"; readonly project: string; readonly projectDir?: never }
   | { readonly kind: "projectDir"; readonly project?: never; readonly projectDir: string };
 
-type SessionAction = "create" | "open" | "status" | "read" | "send" | "wait" | "prompt" | "current-context";
+type SessionAction = "organization" | "create" | "open" | "status" | "read" | "send" | "wait" | "prompt" | "current-context";
 const HELP_ALIASES = new Set(["--help", "-h", "help"]);
 
 export function sessionCreateUsage(): string {
@@ -132,6 +133,7 @@ Global selector: wolfpack --machine <short-name-or-fqdn> session <supported-comm
 
 Commands:
   wolfpack session create <project> [--harness <agent>] [--prompt|--prompt-file|--plan <value>] [--json]
+  wolfpack session organization <session-or-id> [--group <label>|--clear-group] [--add-tag <label>] [--remove-tag <label>] [--revision <n>] [--json]
   wolfpack session status <session-or-id> [--json]
   wolfpack session inbox <session-or-id> [--since <seq>] [--json]
   wolfpack session read <session-or-id> [--json]
@@ -148,6 +150,7 @@ Run 'wolfpack session create --help' or 'wolfpack agent --help' for details.`;
 }
 
 export type ParsedSessionCommand =
+  | { readonly ok: true; readonly action: "organization"; readonly session: string; readonly output: OutputMode; readonly group?: string | null; readonly addTags: string[]; readonly removeTags: string[]; readonly revision?: number }
   | {
     readonly ok: true;
     readonly action: "create";
@@ -359,7 +362,7 @@ function parseExistingProjectSelector(
 }
 
 type LaunchSessionAction = "create" | "open";
-const TARGET_SESSION_ACTIONS = ["status", "inbox", "read", "send", "wait", "prompt"] as const;
+const TARGET_SESSION_ACTIONS = ["organization", "status", "inbox", "read", "send", "wait", "prompt"] as const;
 type TargetSessionAction = (typeof TARGET_SESSION_ACTIONS)[number];
 
 function isTargetSessionAction(action: string): action is TargetSessionAction {
@@ -491,6 +494,24 @@ function parseTargetSessionCommand(
   if (action === "inbox") {
     const parsed = parseInboxOptions(args, output);
     return parsed.ok ? { ...parsed, session } : parsed;
+  }
+  if (action === "organization") {
+    const addTags: string[] = [], removeTags: string[] = [];
+    let group: string | null | undefined, revision: number | undefined;
+    const bad = () => ({ ok: false as const, message: "invalid organization options; use --group/--clear-group, --add-tag, --remove-tag and optional --revision" });
+    while (args.length) {
+      const flag = args.shift();
+      if (flag === "--clear-group") { if (group !== undefined) return bad(); group = null; continue; }
+      if (!["--group", "--add-tag", "--remove-tag", "--revision"].includes(flag ?? "")) return bad();
+      const value = args.shift();
+      if (!value || value.startsWith("--")) return bad();
+      if (flag === "--group") { if (group !== undefined) return bad(); group = value; }
+      if (flag === "--add-tag") addTags.push(value);
+      if (flag === "--remove-tag") removeTags.push(value);
+      if (flag === "--revision") { if (revision !== undefined || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) return bad(); revision = Number(value); }
+    }
+    if (revision !== undefined && group === undefined && !addTags.length && !removeTags.length) return bad();
+    return { ok: true, action, session, output, ...(group !== undefined && { group }), addTags, removeTags, ...(revision !== undefined && { revision }) };
   }
   if (action === "status" || action === "read") {
     if (args.length > 0) return { ok: false, message: `Usage: wolfpack session ${action} <session-or-id> [--json]` };
@@ -1429,6 +1450,32 @@ async function runTargetSessionCommand(
       else for (const entry of data.notifications) print(`${entry.seq} ${entry.at}${entry.from !== undefined ? ` [${entry.from}]` : ""} ${entry.message}`.replace(/[\r\n\u2028\u2029]/g, " "));
       return SESSION_EXIT.OK;
     }
+    if (parsed.action === "organization") {
+      const status = await call(`/api/session-control/status?session=${encodeURIComponent(parsed.session)}`, {}, target) as { sessionId?: unknown };
+      if (typeof status.sessionId !== "string" || !SESSION_ORGANIZATION_ID.test(status.sessionId) || (SESSION_ORGANIZATION_ID.test(parsed.session) && status.sessionId !== parsed.session)) return writeOpenError(parsed.output, "INVALID_ORGANIZATION_RESPONSE", "invalid session identity", SESSION_EXIT.GENERAL);
+      const sessionId = status.sessionId;
+      let data: { sessionId: string; organization: unknown };
+      try { data = await call(`/api/session-control/organization?sessionId=${sessionId}`, {}, target) as typeof data; }
+      catch (error) {
+        if ((error as ApiError).status === 404 && (error as ApiError).code !== "SESSION_NOT_FOUND") return writeOpenError(parsed.output, "ORGANIZATION_UNSUPPORTED", "selected host does not support session organization", SESSION_EXIT.GENERAL);
+        throw error;
+      }
+      if (data.sessionId !== sessionId || !isSessionOrganization(data.organization)) return writeOpenError(parsed.output, "INVALID_ORGANIZATION_RESPONSE", "invalid organization response", SESSION_EXIT.GENERAL);
+      if (parsed.group !== undefined || parsed.addTags.length || parsed.removeTags.length) {
+        const additions = normalizeOrganizationUpdate({ expectedRevision: 0, tags: parsed.addTags }).tags!;
+        const removals = new Set(normalizeOrganizationUpdate({ expectedRevision: 0, tags: parsed.removeTags }).tags!.map(tag => tag.toLowerCase()));
+        const update = normalizeOrganizationUpdate({ expectedRevision: parsed.revision ?? data.organization.revision,
+          ...(parsed.group !== undefined && { group: parsed.group }),
+          ...((parsed.addTags.length || parsed.removeTags.length) && { tags: [...data.organization.tags.filter(tag => !removals.has(tag.toLowerCase())), ...additions] }),
+        });
+        // Exactly one guarded write. A failed response may have committed: never replay.
+        data = await call("/api/session-control/organization", { method: "POST", body: JSON.stringify({ sessionId, ...update }) }, target) as typeof data;
+        if (data.sessionId !== sessionId || !isSessionOrganization(data.organization)) return writeOpenError(parsed.output, "INVALID_ORGANIZATION_RESPONSE", "save response uncertain; read before retrying", SESSION_EXIT.GENERAL);
+      }
+      if (parsed.output === "json") jsonOut(data, target);
+      else print(JSON.stringify(data.organization));
+      return SESSION_EXIT.OK;
+    }
     if (parsed.action === "status") {
       const data = await call(
         `/api/session-control/status?session=${encodeURIComponent(parsed.session)}`,
@@ -1502,6 +1549,17 @@ async function runTargetSessionCommand(
     if (parsed.output === "json") jsonOut(data, target);
     return SESSION_EXIT.OK;
   } catch (e: unknown) {
+    if (parsed.action === "organization") {
+      const error = e as Partial<ApiError>;
+      if (e instanceof SessionOrganizationError) return writeOpenError(parsed.output, e.code, e.message, SESSION_EXIT.USAGE);
+      const messages: Record<string, string> = {
+        ORGANIZATION_CONFLICT: "organization revision conflict; reload and review before saving",
+        ORGANIZATION_UNAVAILABLE: "organization storage unavailable; read before retrying an uncertain save",
+        INVALID_ORGANIZATION: "invalid organization labels or revision",
+      };
+      if (error.code && messages[error.code]) return writeOpenError(parsed.output, error.code, messages[error.code]!, error.status === 503 ? SESSION_EXIT.BACKEND_UNAVAILABLE : SESSION_EXIT.GENERAL);
+      if (error.status === 0) return writeOpenError(parsed.output, "ORGANIZATION_UNCERTAIN", "request failed; a save may have committed; read before retrying", SESSION_EXIT.GENERAL);
+    }
     return mapApiError(e, parsed.output);
   }
 }

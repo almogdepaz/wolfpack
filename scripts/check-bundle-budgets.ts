@@ -14,14 +14,17 @@ const limits: ReadonlyArray<readonly [string, number, number]> = [
   // USER APPROVED round14 authoritative grid hydration fix: app gzip cap 101600 → 101700; all other caps unchanged.
   // Sidebar/session freshness: approved gzip cap 102000; measured 101756.
   // USER APPROVED merge of main #460 into redesign: app gzip cap 102000 -> 105500; measured 104968
-  ["public/app.bundle.js", 386_000, 105_500],
+  // USER APPROVED #198 session labels/editor: gzip 105500 -> 109000; raw cap unchanged.
+  // USER APPROVED #198 grouping accessibility corrections: gzip 109000 -> 110000; measured 109096; all other caps unchanged.
+  ["public/app.bundle.js", 386_000, 110_000],
   ["public/ghostty-web.bundle.js", 700_000, 210_000],
   // Phase-1 shell controls/full-view recovery: base 96978/17005; measured 100603/17595.
   // Selected-machine extensions + current main: approved raw cap 103000; measured 102177.
   // Harness icon chips + current main: approved raw cap 104000; measured 103477.
   // Notification prompt/test button: approved raw cap 104500; measured 104051.
   // UI redesign after final control removals: measured 112770/20859; approved caps 113200/21000.
-  ["public/styles.css", 113_200, 21_000],
+  // USER APPROVED #198 session labels/editor: raw 113200 -> 115000, gzip 21000 -> 21600.
+  ["public/styles.css", 115_000, 21_600],
 ];
 let failed = false;
 for (const [file, rawLimit, gzipLimit] of limits) {

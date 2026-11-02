@@ -2575,6 +2575,144 @@
         "503 ErrorEnvelope"
       ]
     },
+    "getSessionOrganization": {
+      "route": "GET /api/session-control/organization",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:getSessionOrganization:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getSessionOrganization request",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:getSessionOrganization:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getSessionOrganization response",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "organization": {
+            "$ref": "#/$defs/SessionOrganization"
+          }
+        },
+        "required": [
+          "sessionId",
+          "organization"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 invalid UUID",
+        "404 session not found",
+        "410 session dead",
+        "503 backend or organization unavailable"
+      ]
+    },
+    "updateSessionOrganization": {
+      "route": "POST /api/session-control/organization",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:updateSessionOrganization:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateSessionOrganization request",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "group": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SessionOrganizationRequestLabel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "$ref": "#/$defs/SessionOrganizationRequestLabel"
+            }
+          }
+        },
+        "required": [
+          "sessionId",
+          "expectedRevision"
+        ],
+        "additionalProperties": false,
+        "description": "At least group or tags required; both are allowed. Label limits apply after runtime NFC normalization and trimming; the complete request body is limited to 8192 UTF-8 bytes.",
+        "allOf": [
+          {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "group"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "object",
+                "properties": {},
+                "required": [
+                  "tags"
+                ],
+                "additionalProperties": true
+              }
+            ]
+          }
+        ]
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:updateSessionOrganization:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateSessionOrganization response",
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "organization": {
+            "$ref": "#/$defs/SessionOrganization"
+          }
+        },
+        "required": [
+          "sessionId",
+          "organization"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 invalid organization",
+        "404 session not found",
+        "409 ORGANIZATION_CONFLICT",
+        "410 session dead",
+        "413 body too large",
+        "503 backend or organization unavailable"
+      ]
+    },
     "getSessionStatus": {
       "route": "GET /api/session-control/status",
       "stable": true,
@@ -6210,6 +6348,9 @@
         "identity": {
           "$ref": "#/$defs/PublicSessionIdentity"
         },
+        "organization": {
+          "$ref": "#/$defs/SessionOrganizationProjection"
+        },
         "runtimeState": {
           "$ref": "#/$defs/AgentRuntimeState"
         },
@@ -6386,6 +6527,68 @@
       "additionalProperties": false,
       "description": "Optional registration lookup failed, not terminal/backend failure. Absence of this field is not proof of task readiness."
     },
+    "SessionOrganizationRequestLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192,
+      "description": "Raw label; this conservative character ceiling follows the whole-request UTF-8 byte bound. Runtime rejects controls and applies NFC normalization and outer whitespace trimming before enforcing 1–64 Unicode code points and 256 UTF-8 bytes. JSON Schema does not perform that normalization."
+    },
+    "SessionOrganization": {
+      "type": "object",
+      "properties": {
+        "group": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          }
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "group",
+        "tags",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "SessionOrganizationProjection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SessionOrganization"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
     "SessionStatus": {
       "type": "object",
       "properties": {
@@ -6430,6 +6633,9 @@
         },
         "taskRelay": {
           "$ref": "#/$defs/SessionTaskRelayUnavailable"
+        },
+        "organization": {
+          "$ref": "#/$defs/SessionOrganizationProjection"
         }
       },
       "required": [

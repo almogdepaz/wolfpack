@@ -2934,6 +2934,7 @@ describe("agent-native top-level session control", () => {
     );
     expect(listed).toEqual({
       ok: true,
+      organization: { status: "unavailable" },
       selector: "wolf-1",
       session: "wolf-1",
       sessionId: "mock:wolf-1",
@@ -2950,6 +2951,7 @@ describe("agent-native top-level session control", () => {
     expect(status.status).toBe(200);
     expect(await status.json()).toEqual({
       ok: true,
+      organization: { status: "unavailable" },
       selector: "mock:wolf-1",
       session: "wolf-1",
       sessionId: "mock:wolf-1",
@@ -3952,6 +3954,7 @@ describe("session control API", () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({
         ok: true,
+        organization: { status: "unavailable" },
         selector: "wolf-1",
         session: "wolf-1",
         sessionId: "mock:wolf-1",

@@ -37,6 +37,10 @@ import { bindDelegatedAppActions, SESSION_CARD_VIEW } from "./app-action-control
 import type { SessionCardView } from "./app-action-controller";
 import { setupTouchScrollHandler } from "./app-touch";
 import { showAppDialog } from "./app-dialog";
+import { captureOrganizationFocus, showOrganizationEditor } from "./session-organization";
+import type { OrganizationEditorOptions } from "./session-organization";
+import { isSessionOrganization, SESSION_ORGANIZATION_ID } from "../src/session-organization-contract";
+import type { SessionOrganization } from "../src/session-organization-contract";
 import { createSessionInspector } from "./session-inspector";
 import { rankProjectNames } from "./project-picker";
 import { authenticatedFetchWithTimeout, browserAuthFetch, getBrowserAuthToken } from "./browser-auth";
@@ -109,7 +113,9 @@ import {
   delegationRootSession,
   projectDelegationSessions,
   sessionIdentityId,
+  sessionParentReference,
 } from "./delegation-sessions";
+import { loadSessionGroupCollapse, projectSessionGroups, saveSessionGroupCollapse, sessionGroupKey, sessionGroupLabel, sessionGroupRoot } from "./session-grouping";
 import { harnessIconHtml as knownHarnessIconHtml } from "./harness-icon";
 import type {
   DelegationSessionLike as BaseDelegationSessionLike,
@@ -222,6 +228,7 @@ function safeLocalStorage(): Storage | null {
   catch { return null; }
 }
 
+const collapsedSessionGroups = loadSessionGroupCollapse(safeLocalStorage());
 let sessionOrder = loadSessionOrder(safeLocalStorage());
 // Stable server-order fallback is not a user-authored manual position.
 let automaticSessionOrder: SessionOrderIdentity[] = [];
@@ -1236,6 +1243,64 @@ function inspectSession(session: string, sessionId: string, machine: string | un
   sessionInspector.open({ session, sessionId, machine }, invoker);
 }
 
+function organizationMoveOptions(sourceId: string, machine: string, invoker: HTMLElement): OrganizationEditorOptions | null {
+  const findGroup = () => state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === machine);
+  const findSource = () => findGroup()?.sessions.find(candidate => sessionIdentityId(candidate) === sourceId);
+  const findRoot = () => { const source = findSource(); return source ? sessionGroupRoot(findGroup()!.sessions, source) : null; };
+  const source = findSource();
+  const session = findRoot();
+  const sessionId = session && sessionIdentityId(session);
+  const origin = resolveReadyMachineOrigin(machine);
+  if (!source || !SESSION_ORGANIZATION_ID.test(sourceId) || !sessionId || !SESSION_ORGANIZATION_ID.test(sessionId) || !isSessionOrganization(session?.organization) || !findGroup()?.online) return null;
+  const isCurrent = () => {
+    const root = findRoot();
+    return Boolean(findGroup()?.online && root && sessionIdentityId(root) === sessionId && isSessionOrganization(root.organization)
+      && (!machine || resolveReadyMachineOrigin(machine) === origin && origin !== undefined));
+  };
+  const request = async (opts?: RequestInit): Promise<SessionOrganization> => {
+    if (!isCurrent()) throw new Error("Organization unavailable");
+    const response = await api<{ sessionId: string; organization: SessionOrganization }>("/session-control/organization" + (opts?.method === "POST" ? "" : `?sessionId=${encodeURIComponent(sessionId)}`), opts, machine || undefined, false);
+    if (!isCurrent() || response.sessionId !== sessionId || !isSessionOrganization(response.organization)) throw new Error("Organization unavailable");
+    return response.organization;
+  };
+  const restoreFocus = captureOrganizationFocus(invoker);
+  return {
+    session: source.name, tree: findGroup()!.sessions.some(candidate => sessionParentReference(candidate)?.wolfpackSessionId === sessionId) ? session.name : undefined,
+    initial: session.organization,
+    groups: findGroup()!.sessions.flatMap(({ organization }) => isSessionOrganization(organization) && organization.group ? [organization.group] : []),
+    isCurrent,
+    read: signal => request({ signal }),
+    save: (update, signal) => request({ method: "POST", signal, body: JSON.stringify({ sessionId, ...update }) }),
+    saved: organization => {
+      if (!isCurrent()) return;
+      const group = findGroup()!;
+      group.sessions = group.sessions.map(candidate => sessionIdentityId(candidate) === sessionId ? { ...candidate, organization } : candidate);
+      collapsedSessionGroups.delete(sessionGroupKey(machine, "group", organization.group));
+      saveSessionGroupCollapse(safeLocalStorage(), collapsedSessionGroups);
+      publishSessionProjection();
+      void refreshMachineSessions(machine, true);
+    },
+    returnFocus: () => { if (isCurrent()) requestAnimationFrame(() => restoreFocus?.()); },
+  };
+}
+
+function organizeSession(sessionId: string, machine: string, invoker: HTMLElement): void {
+  const options = organizationMoveOptions(sessionId, machine, invoker);
+  if (options) showOrganizationEditor(options);
+}
+
+function organizationHtml(session: DelegationSessionLike, machine: string): string {
+  const id = sessionIdentityId(session);
+  if (!id) return "";
+  const inventory = state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === machine)?.sessions ?? [];
+  const root = sessionGroupRoot(inventory, session);
+  const organization = root?.organization;
+  const attributes = `data-action="organize-session" data-session-id="${escAttr(id)}" data-machine="${escAttr(machine)}"`;
+  const ready = isSessionOrganization(organization) && SESSION_ORGANIZATION_ID.test(id) && SESSION_ORGANIZATION_ID.test(root && sessionIdentityId(root) || "");
+  const explanation = root && organization === undefined ? "Organization unsupported on this host" : "Organization unavailable";
+  return `<button type="button" class="organize-btn" ${attributes} aria-label="Move ${escAttr(session.name)} to group" title="${ready ? "Move to group" : explanation}"${ready ? "" : " disabled"}><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg></button>`;
+}
+
 function pinnedSessionInspectionTarget(session: string, machine: string): SessionInspectorTarget | null {
   const group = state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === machine);
   const selected = group?.sessions.find(candidate => candidate.name === session);
@@ -1592,31 +1657,6 @@ function setSessionCardView(view: SessionCardView): void {
   renderSidebar();
 }
 
-function sessionCardRows(
-  rows: readonly DelegationSessionRow<DelegationSessionLike>[],
-): readonly DelegationSessionRow<DelegationSessionLike>[] {
-  if (state.sessionCardView === SESSION_CARD_VIEW.ALL) return rows;
-  return rows.filter((row) => sessionTier(row.session) === state.sessionCardView);
-}
-
-type SessionCardEmptyKind = "idle" | "source-empty" | null;
-
-interface SessionCardGroupPresentation {
-  readonly rows: readonly DelegationSessionRow<DelegationSessionLike>[];
-  readonly empty: SessionCardEmptyKind;
-}
-
-function sessionCardGroupPresentation(
-  sessions: readonly DelegationSessionLike[],
-  machineUrl: string,
-): SessionCardGroupPresentation {
-  if (sessions.length === 0) {
-    return { rows: [], empty: state.sessionCardView !== SESSION_CARD_VIEW.ALL ? "idle" : "source-empty" };
-  }
-  const rows = sessionCardRows(sessionOrderRows(sessions, machineUrl));
-  return { rows, empty: rows.length === 0 ? "idle" : null };
-}
-
 function delegationCardAttributes(row: DelegationSessionRow<DelegationSessionLike>): { readonly className: string; readonly dataAttribute: string } {
   return {
     className: `${row.childSummary ? " delegation-parent-card" : ""}${row.role === "child" ? " sub-session-card" : row.role === "orphan" ? " orphan-session-card" : ""}`,
@@ -1694,6 +1734,7 @@ function renderSessionListFromState(): void {
       ? renderMachineGroupHtml(canonicalLocalGroup, false, "main", 0)
       : "";
   const html = renderNeedsYouGroupHtml(multiMachine ? groups : canonicalLocalGroup ? [canonicalLocalGroup] : []) + machineHtml;
+  const restoreOrganizationFocus = el.contains(document.activeElement) ? captureOrganizationFocus(document.activeElement) : undefined;
   if (html !== state.lastSessionsHtml) {
     const focused = document.activeElement;
     const machine = focused instanceof HTMLElement && el.contains(focused) && focused.matches('.machine-add-btn') ? focused.dataset.machine : undefined;
@@ -1703,6 +1744,7 @@ function renderSessionListFromState(): void {
     if (machine !== undefined) el.querySelector<HTMLElement>(`.machine-add-btn[data-machine="${CSS.escape(machine)}"]`)?.focus({ preventScroll: true });
   }
   filterSessionSurface("dashboard");
+  restoreOrganizationFocus?.();
 }
 
 function toggleSidebarDelegationChildren(key: string, event?: Event): void {
@@ -1899,9 +1941,9 @@ function renderDashboardSessionCardHtml(
       <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${chip}${collapsible ? sidebarDelegationToggleHtml(row, machineUrl) : ""}</div>
       ${pinned ? "" : delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(s.lastLine || "")}</div>
-      <div class="card-meta">${activityHtml(s)}</div>
+      <div class="card-meta"><span class="status st-${tier}" title="${escAttr(ui.title)}">${sessionStatusContent(s, machineUrl)}</span>${activityHtml(s)}</div>
     </div>
-    <span class="status st-${tier}" title="${escAttr(ui.title)}">${sessionStatusContent(s, machineUrl)}</span>
+    ${organizationHtml(s, machineUrl)}
     <svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
     ${sessionKillButtonHtml(s.name, machineUrl, tier)}
   </div>`;
@@ -1917,6 +1959,38 @@ function renderNeedsYouGroupHtml(groups: typeof state.lastSessionGroups): string
   if (!waiting.length) return "";
   return `<section class="machine-group needs-you" aria-label="Needs you"><h2 class="machine-header needs-you-header"><span class="dot yellow" aria-hidden="true"></span>Needs you</h2><div class="machine-group-body">${waiting.map(({ row, machine }, index) => renderDashboardSessionCardHtml(row, machine.url || "", index, false, machine.name)).join("")}</div></section>`;
 }
+
+function sessionLabelGroupsHtml(inventory: readonly DelegationSessionLike[], rows: readonly DelegationSessionRow<DelegationSessionLike>[], machine: string, surface: "main" | "sidebar" | "drawer"): string {
+  const query = surface === "drawer" ? "" : (document.getElementById(surface === "main" ? "dashboard-search" : "sidebar-search") as HTMLInputElement | null)?.value.trim() ?? "";
+  const filtering = !!query || surface !== "drawer" && state.sessionCardView !== SESSION_CARD_VIEW.ALL;
+  return projectSessionGroups(inventory, rows).map(group => {
+    const key = sessionGroupKey(machine, group.kind, group.label);
+    const label = group.kind === "group" ? sessionGroupLabel(group.label) : group.kind === "unsupported" ? "Grouping unsupported" : "Grouping unavailable";
+    const named = group.kind === "group" && group.label !== null;
+    // Obsolete null/unknown collapse preferences must never hide these rows.
+    const collapsed = named && !filtering && collapsedSessionGroups.has(key);
+    const bodyId = `${surface}-session-group-${encodeURIComponent(key)}`;
+    const visible = query ? group.rows : visibleDelegationRows(group.rows, machine);
+    const cards = visible.map((row, index) => surface === "drawer"
+      ? drawerItemHtml(row, machine)
+      : surface === "sidebar" ? sidebarCardHtml(row, machine) : renderDashboardSessionCardHtml(row, machine, index, true)).join("");
+    const header = named ? `<button type="button" class="session-group-toggle" data-group-key="${escAttr(key)}"${filtering ? ' disabled title="Expanded while filtering"' : ""} aria-expanded="${!collapsed}" aria-controls="${escAttr(bodyId)}" aria-label="${collapsed ? "Expand" : "Collapse"} ${escAttr(label)}"><span class="machine-collapse-chevron" aria-hidden="true"></span><span class="session-group-name">${esc(label)}</span><small>${group.rows.length}</small></button>` : group.kind === "group" ? "" : `<div class="group-status">${esc(label)}</div>`;
+    return `<section class="session-label-group" data-group="${escAttr(group.label ?? "")}" data-group-kind="${group.kind}" data-machine="${escAttr(machine)}">${header}<div id="${escAttr(bodyId)}" class="session-label-body"${surface === "drawer" ? ` role="list" aria-label="${escAttr(label)}"` : ""}${collapsed ? " hidden inert" : ""}>${cards}</div></section>`;
+  }).join("");
+}
+
+document.addEventListener("click", event => {
+  const button = event.target instanceof Element ? event.target.closest<HTMLButtonElement>(".session-group-toggle") : null;
+  if (!button?.dataset.groupKey) return;
+  event.preventDefault(); event.stopPropagation();
+  const key = button.dataset.groupKey;
+  if (collapsedSessionGroups.has(key)) collapsedSessionGroups.delete(key); else collapsedSessionGroups.add(key);
+  const restore = captureOrganizationFocus(button);
+  const saved = saveSessionGroupCollapse(safeLocalStorage(), collapsedSessionGroups);
+  renderSessionListFromState(); renderSidebar(); if (state.drawerOpen) renderDrawerList();
+  requestAnimationFrame(() => restore?.());
+  if (!saved) announceSessionOrder("Group preference could not be saved");
+});
 
 // Shared session groups cache for switcher reuse
 function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, index: number) {
@@ -1936,14 +2010,12 @@ function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, i
   if (g.pending) {
     bodyHtml = `<div class="${surface === "sidebar" ? "sidebar-conn-status" : "group-status"}">Connecting...</div>`;
   } else if (g.online) {
-    const presentation = sessionCardGroupPresentation(g.sessions, machineKey);
-    if (presentation.empty === "idle") {
+    const rows = g.sessions.length ? sessionOrderRows(g.sessions, machineKey)
+      .filter(row => state.sessionCardView === SESSION_CARD_VIEW.ALL || sessionTier(row.session) === state.sessionCardView) : [];
+    if (!rows.length && state.sessionCardView !== SESSION_CARD_VIEW.ALL) {
       bodyHtml = idleSessionEmptyHtml();
-    } else if (presentation.rows.length) {
-      const rows = visibleDelegationRows(presentation.rows, machineKey);
-      bodyHtml = surface === "sidebar"
-        ? rows.map(row => sidebarCardHtml(row, machineKey)).join("")
-        : rows.map((row, rowIndex) => renderDashboardSessionCardHtml(row, machineKey, rowIndex, true)).join("");
+    } else if (rows.length) {
+      bodyHtml = sessionLabelGroupsHtml(g.sessions, rows, machineKey, surface);
     } else if (surface !== "sidebar") {
       bodyHtml = zeroSessionOnboardingHtml(machineKey);
     }
@@ -4173,35 +4245,25 @@ async function killSession(name, e, machineUrl) {
 function renderDrawerList() {
   const groups = state.lastSessionGroups;
   const list = document.getElementById("drawer-list");
-  const multiMachine = groups.some(group => group.machine.url);
 
   // Unavailable summaries cannot establish authoritative session disappearance
   // or prune a machine's manual UUID order while waiting for recovery.
-  const all = groups.filter(group => group.online).flatMap(group => {
-    const machineUrl = group.machine.url || "";
-    const rows = visibleDelegationRows(sessionOrderRows(group.sessions, machineUrl), machineUrl);
-    return rows.map(row => ({
-      row,
-      session: row.session,
-      machineUrl,
-      machineName: group.machine.name,
-    }));
-  });
-
-  let html = "";
-  html += all.map(item => drawerItemHtml(item, multiMachine)).join("");
+  const all = machineGroupsInPresentationOrder(groups).filter(group => group.online);
+  let html = all.map(group => `<section><h2 class="drawer-machine-name">${esc(group.machine.name)}</h2>${sessionLabelGroupsHtml(group.sessions, sessionOrderRows(group.sessions, group.machine.url || ""), group.machine.url || "", "drawer")}</section>`).join("");
   html += groups.filter(group => !group.online && !group.pending).map(group => `<div class="machine-group offline" data-machine="${escAttr(group.machine.url)}"><div class="group-status" role="status">${esc(group.machine.name)}: ${esc(machineFailureLabel(group.failure || "unknown"))}. ${esc(machineHealthDetail(group))}</div>${machineRetryButtonHtml(group)}</div>`).join("");
-  if (!all.length && groups.every(group => group.online)) {
+  if (all.every(group => !group.sessions.length) && groups.every(group => group.online)) {
     html += `<div class="sidebar-empty">No active sessions</div>`;
   }
 
+  const restoreOrganizationFocus = list.contains(document.activeElement) ? captureOrganizationFocus(document.activeElement) : undefined;
   const focused = list.contains(document.activeElement) && document.activeElement instanceof HTMLElement
     ? Object.entries(document.activeElement.dataset) : null;
   const chipLabel = document.getElementById("chip-label");
   if (chipLabel) chipLabel.textContent = state.currentSession || "";
   if (list.innerHTML === html) return;
   list.innerHTML = html;
-  if (focused) {
+  if (restoreOrganizationFocus) restoreOrganizationFocus();
+  else if (focused) {
     const target = [...list.querySelectorAll<HTMLElement>("button")].find(item =>
       focused.length > 0 && focused.every(([key, value]) => item.dataset[key] === value));
     (target || list.querySelector<HTMLElement>("button"))?.focus({ preventScroll: true });
@@ -4214,11 +4276,10 @@ function renderDrawerList() {
   });
 }
 
-function drawerItemHtml(item, multiMachine) {
-  const { row, session, machineUrl, machineName } = item;
+function drawerItemHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string) {
+  const session = row.session;
   const val = machineUrl ? machineUrl + "|" + session.name : session.name;
   const isCurrent = session.name === state.currentSession && machineUrl === state.currentMachine;
-  const machineLbl = multiMachine ? `<span class="drawer-item-machine">${esc(machineName)}</span>` : "";
   const hierarchyClass = row.role === "child"
     ? " drawer-child-item"
     : row.role === "orphan"
@@ -4228,9 +4289,9 @@ function drawerItemHtml(item, multiMachine) {
     <button type="button" class="drawer-item${hierarchyClass}${isCurrent ? " current" : ""}" data-val="${escAttr(val)}"${isCurrent ? ' aria-current="page"' : ""}>
       <span class="dot ${isCurrent ? "active" : "inactive"}" title="${isCurrent ? "current session" : "other session"}"></span>
       ${harnessIconHtml(session.identity?.agentKind)}<span class="drawer-item-name">${esc(session.name)}${stoppingSessions.has(stoppingSessionKey(machineUrl, sessionIdentityId(session))) ? " · Stopping…" : ""}</span>
-      ${machineLbl}
     </button>
     ${sidebarDelegationToggleHtml(row, machineUrl)}
+    ${organizationHtml(session, machineUrl)}
   </div>`;
 }
 
@@ -4837,17 +4898,20 @@ function filterSessionSurface(surface: "dashboard" | "sidebar"): void {
   const root = document.getElementById(surface === "dashboard" ? "session-list" : "sidebar-session-list");
   const query = input?.value.trim().toLocaleLowerCase() || "";
   root?.querySelectorAll<HTMLElement>(".card").forEach(card => { card.hidden = !!query && !card.textContent?.toLocaleLowerCase().includes(query); });
+  root?.querySelectorAll<HTMLElement>(".session-label-group").forEach(group => {
+    group.hidden = !!query && !group.querySelector(".card:not([hidden])");
+  });
   const pinned = root?.querySelector<HTMLElement>(".needs-you");
   if (pinned) pinned.hidden = !pinned.querySelector(".card:not([hidden])");
 }
 document.getElementById("mobile-search")?.addEventListener("input", event => {
   const dashboard = document.getElementById("dashboard-search") as HTMLInputElement;
   dashboard.value = (event.target as HTMLInputElement).value;
-  filterSessionSurface("dashboard");
+  renderSessionListFromState();
 });
 document.getElementById("expanded-notifications")?.addEventListener("click", () => void showSettings().then(() => revealSettingsSection("settings-effects")));
 for (const surface of ["dashboard", "sidebar"] as const) {
-  document.getElementById(`${surface}-search`)?.addEventListener("input", () => filterSessionSurface(surface));
+  document.getElementById(`${surface}-search`)?.addEventListener("input", () => { renderSessionListFromState(); renderSidebar(); });
 }
 document.addEventListener("keydown", event => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k" && state.currentView === "sessions") {
@@ -5521,11 +5585,13 @@ function _renderSidebarNow() {
     html += renderMachineGroupHtml(g, multiMachine, "sidebar", index);
   }
   // Skip DOM update if nothing changed
-  if (html === _lastSidebarHtml) return;
+  if (html === _lastSidebarHtml) { filterSessionSurface("sidebar"); return; }
+  const restoreOrganizationFocus = el.contains(document.activeElement) ? captureOrganizationFocus(document.activeElement) : undefined;
   machineGroupEventController?.cancelForRender();
   _lastSidebarHtml = html;
   el.innerHTML = html;
   filterSessionSurface("sidebar");
+  restoreOrganizationFocus?.();
 }
 
 function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machineUrl: string) {
@@ -5554,8 +5620,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
       <div class="card-preview">${esc(lastLine)}</div>
       ${sessionActivityHtml(s)}
     </div>
-    ${gridBtn}
-    ${sessionKillButtonHtml(s.name, machineUrl, tier)}
+    <div class="session-card-actions">${organizationHtml(s, machineUrl)}${gridBtn}${sessionKillButtonHtml(s.name, machineUrl, tier)}</div>
   </div>`;
 }
 
@@ -5583,7 +5648,9 @@ function sessionOrderSiblingScope(
   if (!movingRow) return [];
   const priorities = sessionTriagePriorities(context.rows);
   const movingTier = sessionTier(priorities.get(movingRow)!);
-  return context.rows.flatMap(row => {
+  const inventory = state.lastSessionGroups.find(group => (group.machine.url || "") === moving.machineUrl)?.sessions ?? [];
+  const groupRows = projectSessionGroups(inventory, context.rows).find(group => group.rows.includes(movingRow))?.rows ?? [];
+  return groupRows.flatMap(row => {
     const identity = sessionOrderIdentity(row.session, moving.machineUrl);
     if (!identity) return [];
     const parentId = row.role === "child" ? row.parent?.wolfpackSessionId ?? "" : "";
@@ -5926,6 +5993,7 @@ function bindHtmlEventListeners(): void {
   };
 
   bindDelegatedAppActions(document, {
+    organizeSession,
     quickSend: sendQuickCmd,
     quickMove: moveQuickCmd,
     quickEdit: index => { void editQuickCmd(index); },
@@ -5953,6 +6021,18 @@ function bindHtmlEventListeners(): void {
   on("gear-btn", "click", () => showSettings());
   bindSessionOrderEvents({
     move: moveSessionCard,
+    beginGroupMove: (moving, card) => {
+      const invoker = card.querySelector<HTMLElement>(".organize-btn");
+      const options = invoker && organizationMoveOptions(moving.sessionId, moving.machineUrl, invoker);
+      if (!options) return null;
+      return target => {
+        const destination = target.dataset.group || null;
+        const inventory = state.lastSessionGroups.find(group => (group.machine.url || "") === moving.machineUrl)?.sessions ?? [];
+        if (!options.isCurrent() || !target.isConnected || target.dataset.machine !== moving.machineUrl || target.dataset.groupKind !== "group"
+          || options.initial.group === destination || !projectSessionGroups(inventory, projectDelegationSessions(inventory)).some(group => group.kind === "group" && group.label === destination)) return;
+        showOrganizationEditor({ ...options, destination });
+      };
+    },
     moveByOffset: moveSessionCardByOffset,
     reset: resetSessionCardOrder,
     setDragActive: active => { sidebarSessionOrderDragActive = active; },

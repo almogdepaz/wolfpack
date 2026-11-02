@@ -110,6 +110,18 @@ const mock = new MockBackend({
   sessions: fakeSessions,
   capturePane: async (session) => paneContent[session] || "",
 });
+if (process.env.WOLFPACK_E2E_CANONICAL_SESSION_IDS === "1") {
+  const ids = new Map(fakeSessions.map(name => [name, crypto.randomUUID()]));
+  const listIdentities = mock.listIdentities.bind(mock);
+  mock.listIdentities = async () => {
+    const identities = await listIdentities();
+    for (const [name, identity] of Object.entries(identities)) {
+      if (!ids.has(name)) ids.set(name, crypto.randomUUID());
+      identity.wolfpackSessionId = ids.get(name)!;
+    }
+    return identities;
+  };
+}
 __setTestBackend(mock);
 
 // Only the dedicated lifecycle fixture emits a completed mock-backend exit.
