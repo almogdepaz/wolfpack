@@ -177,6 +177,44 @@ D("Broker restart/crash recovery", () => {
     client2.close();
   }, 20_000);
 
+  test("SIGTERM exits promptly with blocked stdin while its owned child is still alive", async () => {
+    const sub = fs.mkdtempSync("/tmp/wp-brk-input-");
+    const subSocket = path.join(sub, "b.sock"), ready = path.join(sub, "ready");
+    const subProc = spawn(BROKER_BIN!, [], {
+      env: { ...process.env, WOLFPACK_BROKER_SOCKET: subSocket, WOLFPACK_BROKER_LOG: "warn" },
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    let client: BrokerClient | undefined;
+    let childPid: number | undefined;
+    try {
+      await waitForFile(subSocket, 5000);
+      client = await buildClient(subSocket);
+      const response = await client.request("create_session", {
+        cwd: sub, command: ["sh", "-c", `stty raw -echo; : > '${ready}'; exec sleep 30`], cols: 80, rows: 24,
+      });
+      expect(response.status).toBe("ok");
+      const session = response.payload?.session;
+      if (!session || typeof session !== "object" || !("id" in session) || typeof session.id !== "string"
+        || !("pid" in session) || typeof session.pid !== "number" || !Number.isSafeInteger(session.pid) || session.pid <= 0) {
+        throw new Error("create_session did not report the exact owned UUID and child PID");
+      }
+      childPid = session.pid;
+      await waitForFile(ready, 5000);
+      client.writeInput(session.id, new Uint8Array(256 * 1024 - 16).fill(120));
+      expect((await client.request("hello")).status).toBe("ok");
+      await wait(100); // let the blocking writer reach PTY backpressure
+      process.kill(childPid, 0);
+      const exited = new Promise<number | null>((resolve) => subProc.once("exit", resolve));
+      subProc.kill("SIGTERM");
+      expect(await Promise.race([exited, wait(2000).then(() => "timeout")])).toBe(0);
+    } finally {
+      client?.close();
+      if (childPid !== undefined) { try { process.kill(childPid, "SIGKILL"); } catch { /* owned child already exited */ } }
+      if (subProc.exitCode === null) { try { subProc.kill("SIGKILL"); } catch { /* owned broker already exited */ } }
+      fs.rmSync(sub, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   test("broker death surfaces an error to BrokerBackend (no silent zombies)", async () => {
     // Spawn a SECOND ephemeral broker so killing it doesn't break the suite's
     // long-lived broker (`proc`). Each test gets isolated lifecycle state.

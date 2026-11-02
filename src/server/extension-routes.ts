@@ -45,7 +45,17 @@ export class ExtensionRouteService {
     if (req.method !== "POST") return false;
     const body = await parseObjectBody(req, res, { maxBytes: 72 * 1024, invalidResponse: { envelope: { error: { code: EXTENSION_API_ERROR.INVALID_REQUEST, message: "body must be a JSON object" } }, status: 400 }, tooLargeResponse: { envelope: { error: { code: EXTENSION_API_ERROR.QUOTA_EXCEEDED, message: "document request exceeds limit" } }, status: 413 }, respondOnTooLarge: true }); if (!body) return true;
     if (!Object.keys(body).every((key) => ["sessionId", "document", "ifRevision", "requestId", "schemaVersion"].includes(key)) || !UUID.test(String(body.sessionId ?? ""))) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "publish requires exact sessionId, document, ifRevision, requestId and schemaVersion", 400); return true; }
-    try { const declaration = this.runtime.declaration(path.extensionId, path.documentId); if (body.schemaVersion !== declaration.document.schemaVersion) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "schemaVersion must match the installed document declaration", 400); return true; } const installation = declaration.entry; const key: ExtensionDocumentKey = { installationId: installation.installationId, scopeSessionId: body.sessionId as string, extensionId: path.extensionId, documentId: path.documentId }; const receipt = await this.store.publish({ key, document: body.document, ifRevision: body.ifRevision as number, requestId: body.requestId as string, schemaVersion: declaration.document.schemaVersion }, this.runtime.schema(key)); noStore(res); json(res, { receipt }); } catch (value) { documentError(res, value); } return true;
+    try {
+      const key: ExtensionDocumentKey = { installationId: this.runtime.installationId, scopeSessionId: body.sessionId as string, extensionId: path.extensionId, documentId: path.documentId };
+      const prepared = this.runtime.prepareDocumentPublication(key, body.schemaVersion);
+      if (!prepared) { error(res, EXTENSION_API_ERROR.INVALID_REQUEST, "schemaVersion must match the installed document declaration", 400); return true; }
+      // Declaration and validator share one verified synchronous operation.
+      // The store's writable-scope callback still re-verifies the full registry
+      // after awaiting authoritative broker facts, before a new commit.
+      const receipt = await this.store.publish({ key, document: body.document, ifRevision: body.ifRevision as number, requestId: body.requestId as string, schemaVersion: prepared.schemaVersion }, prepared.validator);
+      noStore(res); json(res, { receipt });
+    } catch (value) { documentError(res, value); }
+    return true;
   }
 
   private async blob(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -54,8 +64,7 @@ export class ExtensionRouteService {
     const extensionId = path[1]!, digest = path[2]!;
     try {
       const declaration = this.runtime.blobDeclaration(extensionId);
-      const authority = async () => {
-        const current = this.runtime.blobDeclaration(extensionId);
+      const authority = async (current = this.runtime.blobDeclaration(extensionId)) => {
         if (this.safeMode() || !current.entry.enabled || current.entry.package.digest !== declaration.entry.package.digest) throw new ExtensionRuntimeError("DISABLED", "blob channel is disabled");
         if (!current.blobs) throw new ExtensionDocumentError("INVALID_DOCUMENT", "extension has no declared blob channel");
         if (req.method !== "GET") {
@@ -67,7 +76,9 @@ export class ExtensionRouteService {
           if (this.safeMode() || !latest.enabled || latest.package.digest !== declaration.entry.package.digest) throw new ExtensionRuntimeError("DISABLED", "blob channel scope changed");
         } else if ([...url.searchParams.keys()].length) throw new ExtensionDocumentError("INVALID_KEY", "blob reads accept no session or query parameters");
       };
-      await authority();
+      // No await separates declaration from this first check. Only that
+      // synchronous verification can be reused; later checks remain fresh.
+      await authority(declaration);
       const store = new ExtensionBlobStore({ root: this.runtime.root }), key = { installationId: declaration.entry.installationId, extensionId };
       noStore(res);
       if (req.method === "GET") { const bytes = store.read(key, digest); if (!bytes) { error(res, EXTENSION_API_ERROR.ASSET_NOT_FOUND, "blob not found", 404); return; } res.writeHead(200, { "Content-Type": "application/octet-stream", "X-Wolfpack-Blob-Digest": digest }); res.end(bytes); return; }

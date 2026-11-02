@@ -24,6 +24,7 @@ import {
 } from "../broker/hello.js";
 import pkg from "../../package.json";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
+import { checkStorageCapacity, type StorageCapacity } from "./storage-capacity.ts";
 
 const log = createLogger("doctor");
 const CLI_VERSION: string = pkg.version;
@@ -65,6 +66,8 @@ export interface CheckResult {
   fix?: () => void;
   /** Structured state used to classify supported operating modes. Not rendered. */
   fact?: DoctorFact;
+  /** Read-only observed usage; not writer admission or retention authority. */
+  capacity?: StorageCapacity;
 }
 
 export type DoctorCheckFn = () => CheckResult[] | Promise<CheckResult[]>;
@@ -749,6 +752,7 @@ export function applyFixes(results: CheckResult[]): number {
 export interface DoctorOptions {
   readonly fix?: boolean;
   readonly json?: boolean;
+  readonly storage?: boolean;
   /** Test seam: production callers omit this so real host probes remain opt-in CLI behavior. */
   readonly checkGroups?: DoctorCheckFn[];
 }
@@ -756,8 +760,10 @@ export interface DoctorOptions {
 export async function doctor({
   fix: doFix = process.argv.includes("--fix"),
   json = process.argv.includes("--json"),
-  checkGroups = [checkDeps, checkConfig, checkService, checkConnectivity, checkSecurity, checkBinary, checkDoctorBroker, checkEnvironment, checkLogs],
+  storage = false,
+  checkGroups = storage ? [() => checkStorageCapacity(WOLFPACK_DIR)] : [checkDeps, checkConfig, checkService, checkConnectivity, checkSecurity, checkBinary, checkDoctorBroker, checkEnvironment, checkLogs, () => checkStorageCapacity(WOLFPACK_DIR)],
 }: DoctorOptions = {}) {
+  if (storage && doFix) throw new TypeError("doctor --storage is read-only and cannot be combined with --fix");
 
   let allResults = await runCheckGroups(checkGroups);
 

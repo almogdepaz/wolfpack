@@ -1,0 +1,16 @@
+{
+  "formatVersion": 1,
+  "package": { "name": "ghostty-web", "version": "0.4.0" },
+  "basePatchSha256": "5b5072963696f455368a5d5c7bff7b372e05706722de1b549747355374482873",
+  "patchSha256": "3d8cc5de39ab50d77152f09dfd6836fa7600ca662f5bc2eec28b49827beb60b7",
+  "inputs": {
+    "dist/ghostty-web.js": { "bytes": 690180, "sha256": "63f0122591d02a1a307162a7cc7edc1f0b75536bc1935ea234b3ef81168a974e" },
+    "dist/index.d.ts": { "bytes": 56343, "sha256": "c145f0b435dba0351c6c20760eb85b9ec3aa23e1b0ec99ec035dc8948d3b5d5e" },
+    "dist/__vite-browser-external-2447137e.js": { "bytes": 41, "sha256": "f8c456031e5001c0cda4837cd9ee3a33d79beeba120ec633ec9d990632fb2aa6" },
+    "LICENSE": { "bytes": 1062, "sha256": "5eccd0eeca906db6d661b64dd05e1d4a4b2e49d37d43bbcfd2c8cce4d7832920" }
+  },
+  "outputs": {
+    "dist/ghostty-web.js": "5026c40ef51d99c34394f4d1ba31282f88cf356a2f1fabf7bb3b13a907bd84d8",
+    "dist/index.d.ts": "a8d3affad8f782f10402fd00fcdfe2bfb9a4da836b8b04c74604ea334433c736"
+  }
+}

@@ -91,7 +91,7 @@ Commands:
   wolfpack                         Start the dashboard/server
   wolfpack setup                   Run the setup wizard
   wolfpack service <action>        Manage the Wolfpack service
-  wolfpack doctor                  Diagnose the installation
+  wolfpack doctor                  Diagnose the installation (--storage for read-only capacity)
   wolfpack list [--json]           List active sessions (alias: ls)
   wolfpack session create <project> Create a top-level session
   wolfpack session <action>        Inspect or control sessions
@@ -359,12 +359,12 @@ async function runServiceCommand(argv: readonly string[]): Promise<void> {
 
 async function runDoctorCommand(argv: readonly string[]): Promise<void> {
   if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) {
-    print("Usage: wolfpack doctor [--json] [--fix]");
+    print("Usage: wolfpack doctor [--json] [--fix | --storage]");
     return;
   }
   const flags = argv.slice(1);
-  if (flags.some(flag => flag !== "--json" && flag !== "--fix")) throw new Error("Usage: wolfpack doctor [--json] [--fix]");
-  process.exit(await doctor({ fix: flags.includes("--fix"), json: flags.includes("--json") }));
+  if (flags.some(flag => flag !== "--json" && flag !== "--fix" && flag !== "--storage")) throw new Error("Usage: wolfpack doctor [--json] [--fix | --storage]");
+  process.exit(await doctor({ fix: flags.includes("--fix"), json: flags.includes("--json"), storage: flags.includes("--storage") }));
 }
 
 function runUninstallCommand(argv: readonly string[]): void {

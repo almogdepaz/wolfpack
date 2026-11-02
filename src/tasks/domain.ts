@@ -789,6 +789,33 @@ function applyCanonicalTaskEvent(state: TaskStateSnapshot, event: CanonicalTaskE
   });
 }
 
+/** Validate one append with exactly the same rules used by durable-history replay. */
+export function appendCanonicalTaskEvent(state: TaskStateSnapshot, event: CanonicalTaskEvent): TaskStateSnapshot {
+  const { taskId, participants } = state;
+  if (event.taskId !== taskId || event.sequence !== state.nextTaskSequence) {
+    throw new TypeError("canonical task ledger event has an invalid task id or sequence");
+  }
+  if (event.type === TASK_EVENT_TYPE.LATE_TERMINAL) {
+    if (!isTerminal(state.status) || !sameAddress(event.source, participants.sender) || !sameAddress(event.destination, participants.receiver)) {
+      throw new TypeError("canonical late-terminal event has invalid provenance");
+    }
+    return applyCanonicalTaskEvent(state, event);
+  }
+  const expectedSource = event.actor === "parent"
+    ? participants.parent
+    : event.actor === "receiver"
+      ? participants.receiver
+      : participants.sender;
+  if (!sameAddress(event.source, expectedSource) || !sameAddress(event.destination, destinationFor(state, event))
+    || !isCoherentEvent(event) || !ACTORS_BY_EVENT_TYPE[event.type].includes(event.actor)) {
+    throw new TypeError("canonical task ledger event has invalid authority or shape");
+  }
+  if (validateTransition(state, event) !== "accepted") {
+    throw new TypeError("canonical task ledger event has an invalid transition");
+  }
+  return applyCanonicalTaskEvent(state, event);
+}
+
 /** Replays validated canonical ledger events; malformed history is rejected by the caller. */
 export function rebuildTaskState(
   taskId: string,
@@ -796,32 +823,7 @@ export function rebuildTaskState(
   events: readonly CanonicalTaskEvent[],
 ): TaskStateSnapshot {
   let state = createTaskState(taskId, participants);
-  for (const event of events) {
-    if (event.taskId !== taskId || event.sequence !== state.nextTaskSequence) {
-      throw new TypeError("canonical task ledger event has an invalid task id or sequence");
-    }
-    if (event.type === TASK_EVENT_TYPE.LATE_TERMINAL) {
-      if (!isTerminal(state.status) || !sameAddress(event.source, participants.sender) || !sameAddress(event.destination, participants.receiver)) {
-        throw new TypeError("canonical late-terminal event has invalid provenance");
-      }
-      state = applyCanonicalTaskEvent(state, event);
-      continue;
-    }
-
-    const expectedSource = event.actor === "parent"
-      ? participants.parent
-      : event.actor === "receiver"
-        ? participants.receiver
-        : participants.sender;
-    if (!sameAddress(event.source, expectedSource) || !sameAddress(event.destination, destinationFor(state, event))
-      || !isCoherentEvent(event) || !ACTORS_BY_EVENT_TYPE[event.type].includes(event.actor)) {
-      throw new TypeError("canonical task ledger event has invalid authority or shape");
-    }
-    if (validateTransition(state, event) !== "accepted") {
-      throw new TypeError("canonical task ledger event has an invalid transition");
-    }
-    state = applyCanonicalTaskEvent(state, event);
-  }
+  for (const event of events) state = appendCanonicalTaskEvent(state, event);
   return state;
 }
 

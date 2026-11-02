@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, opendirSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, mkdirSync, opendirSync, unlinkSync, type Stats } from "node:fs";
+import { basename, join } from "node:path";
 import Ajv2020 from "ajv/dist/2020.js";
 import { canonicalJson } from "../canonical-json.ts";
-import { writePrivateJsonFile } from "../persistence.ts";
+import { PRIVATE_FILE_EXACT_TEMP_SUFFIX_PATTERN, writePrivateJsonFile } from "../persistence.ts";
 import { boundedCanonicalJson, isPlainJsonObject, type JsonBudget } from "./bounded-json.ts";
 import { readBoundedRegularFile } from "./bounded-file.ts";
 
@@ -235,6 +235,49 @@ export interface ExtensionDocumentStoreOptions {
   readonly now?: () => string;
 }
 
+export const DOCUMENT_RECORD_FILE = /^[a-f0-9]{64}\.json$/;
+const DOCUMENT_TEMP_FILE = new RegExp(`^[a-f0-9]{64}\\.json${PRIVATE_FILE_EXACT_TEMP_SUFFIX_PATTERN}$`);
+
+/** Shared mutation inventory for publish and explicit purge. The caller owns
+ * this store exclusively; no cross-process writer support. Nothing awaits in
+ * this scan/commit, so a matching temporary cannot belong to an active write.
+ * Only uncommitted private regular files are reclaimed, never promoted. */
+export function visitExtensionDocumentFiles(root: string, visit: (path: string, stat: Stats) => void): void {
+  const path = join(root, "documents");
+  let directoryStat: Stats;
+  try { directoryStat = lstatSync(path); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  if (!directoryStat.isDirectory()) throw new ExtensionDocumentError("STORE_CORRUPT", "document directory is not a regular directory");
+  const directory = opendirSync(path);
+  try {
+    for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+      const file = join(path, entry.name), stat = lstatSync(file);
+      if (!entry.isFile() || !stat.isFile()) throw new ExtensionDocumentError("STORE_CORRUPT", "document directory contains a non-regular entry");
+      if (DOCUMENT_TEMP_FILE.test(entry.name)) {
+        const uid = process.geteuid?.();
+        const rootStat = lstatSync(root);
+        const privateOwner = (value: Stats) => uid !== undefined && value.uid === uid && (value.mode & 0o077) === 0;
+        if (!rootStat.isDirectory() || !privateOwner(rootStat) || !privateOwner(directoryStat) || !privateOwner(stat) || stat.nlink !== 1) {
+          throw new ExtensionDocumentError("STORE_CORRUPT", "document crash temporary is not an exclusively owned private file");
+        }
+        unlinkSync(file);
+        continue;
+      }
+      if (!DOCUMENT_RECORD_FILE.test(entry.name)) throw new ExtensionDocumentError("STORE_CORRUPT", "document directory contains an unexpected entry; explicit recovery is required");
+      visit(file, stat);
+    }
+  } finally { directory.closeSync(); }
+}
+
+/** Bounded coherent record read only; never inventories, recovers, or creates a store. */
+export function readExtensionDocumentRecord(path: string): StoredExtensionDocument {
+  const record: unknown = JSON.parse(readBoundedRegularFile(path, EXTENSION_DOCUMENT_LIMITS.maxRecordBytes).toString("utf8"));
+  if (!isRecord(record) || basename(path) !== `${stableRecordKey(record.key)}.json`) {
+    throw new ExtensionDocumentError("STORE_CORRUPT", "document record identity/content/receipts are incoherent");
+  }
+  return record;
+}
+
 /** Owner-private atomic records; same-instance writes serialize and never await inside the commit. */
 export class ExtensionDocumentStore {
   private readonly locks = new Map<string, Promise<void>>();
@@ -257,11 +300,10 @@ export class ExtensionDocumentStore {
     validateDocumentKey(key);
     try {
       if (!this.directoryExists()) return null;
-      let bytes: Buffer;
-      try { bytes = readBoundedRegularFile(this.path(key), EXTENSION_DOCUMENT_LIMITS.maxRecordBytes); }
+      let record: StoredExtensionDocument;
+      try { record = readExtensionDocumentRecord(this.path(key)); }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
-      const record: unknown = JSON.parse(bytes.toString("utf8"));
-      if (!isRecord(record) || canonicalJson(record.key) !== canonicalJson(key)) throw new Error("record identity/content/receipts are incoherent");
+      if (canonicalJson(record.key) !== canonicalJson(key)) throw new Error("record identity/content/receipts are incoherent");
       return record;
     } catch {
       throw new ExtensionDocumentError("STORE_CORRUPT", "extension document cannot be read as a coherent bounded record");
@@ -271,20 +313,14 @@ export class ExtensionDocumentStore {
     if (!this.directoryExists()) return { documents: 0, bytes: 0 };
     let documents = 0;
     let bytes = 0;
-    const directory = opendirSync(this.directory());
-    try {
-      for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
-        if (!entry.isFile() || !/^[a-f0-9]{64}\.json$/.test(entry.name)) {
-          throw new ExtensionDocumentError("STORE_CORRUPT", "document directory contains an unexpected entry; explicit recovery is required");
-        }
-        documents++;
-        bytes += lstatSync(join(this.directory(), entry.name)).size;
-        if (documents > EXTENSION_DOCUMENT_LIMITS.maxDocumentsPerInstallation || bytes > EXTENSION_DOCUMENT_LIMITS.maxBytesPerInstallation) {
-          throw new ExtensionDocumentError("QUOTA_EXCEEDED", "extension document store already exceeds installation quota");
-        }
+    visitExtensionDocumentFiles(this.options.root, (_path, stat) => {
+      documents++;
+      bytes += stat.size;
+      if (documents > EXTENSION_DOCUMENT_LIMITS.maxDocumentsPerInstallation || bytes > EXTENSION_DOCUMENT_LIMITS.maxBytesPerInstallation) {
+        throw new ExtensionDocumentError("QUOTA_EXCEEDED", "extension document store already exceeds installation quota");
       }
-      return { documents, bytes };
-    } finally { directory.closeSync(); }
+    });
+    return { documents, bytes };
   }
   async publish(input: PublishExtensionDocumentRequest, validator: StaticSchemaValidator): Promise<ExtensionDocumentReceipt> {
     if (!isPlainJsonObject(input)) invalid("publish request must be an object");

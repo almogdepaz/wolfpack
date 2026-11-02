@@ -3458,8 +3458,8 @@ const singleTerminalPool = createTerminalPool<SingleTerminalEntry>({
   capacity: singleTerminalPoolCapacity,
   attach: (entry) => {
     parkedTerminalExpiry.shown(entry);
-    entry.controller?.resumeLayout();
     singleTerminalShell.show(entry.element);
+    entry.controller?.resumeLayout();
   },
   detach: (entry) => {
     entry.controller?.suspendLayout();

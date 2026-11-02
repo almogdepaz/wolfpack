@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Bundles ghostty-web into public/, then generates public-assets.ts — a module
+ * Bundles styles, ghostty-web and app into public/, then generates public-assets.ts — a module
  * that embeds all files from public/ as a
  * Map<string, { content: string | Uint8Array; mime: string }>.
  *
@@ -39,6 +39,10 @@ const TEXT_EXTS = new Set([".html", ".json", ".js", ".css", ".svg", ".txt", ".xm
 function isText(ext: string): boolean {
   return TEXT_EXTS.has(ext);
 }
+
+// Keep readable CSS outside public/; budget/cache/embed only the generated URL.
+console.log("bundling styles...");
+execFileSync("bun", ["run", "scripts/bundle-styles.ts"], { cwd: ROOT, stdio: "inherit" });
 
 // Bundle ghostty-web into public/ (replaces old xterm copy step)
 console.log("bundling ghostty-web...");

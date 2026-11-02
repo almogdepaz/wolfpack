@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { createLogger, errMsg } from "../log.js";
 import { defaultEventBus, type EventBus } from "../event-bus.js";
-import { BrokerClient, defaultBrokerSocketPath } from "../broker/client.js";
+import { BrokerClient, defaultBrokerSocketPath, type BrokerConnectionRequest } from "../broker/client.js";
 import type { EventBody } from "../broker/codec.js";
 import {
   BROKER_HELLO_METHOD,
@@ -44,6 +44,7 @@ export class BrokerSupervisor {
   private watchdogInFlight = false;
   /** From the last successful `hello`; null for a pre-hello broker or no broker. */
   private brokerVersion: BrokerVersionInfo | null = null;
+  private connectionGeneration = 0;
 
   constructor(private readonly options: { start?: boolean; events?: EventBus } = {}) {
     this.brokerSocketPath = defaultBrokerSocketPath();
@@ -67,10 +68,35 @@ export class BrokerSupervisor {
     // Bound to this client's backend, not `this.broker`: a watchdog teardown
     // nulls `this.broker` before the old socket's disconnect callback fires.
     let backend: BrokerBackend | null = null;
+    let negotiatedVersion: BrokerVersionInfo | null = null;
     const client = new BrokerClient({
       socketPath: this.brokerSocketPath,
-      onConnect: () => backend?.handleBrokerConnected(),
-      onDisconnect: () => backend?.handleBrokerDisconnected(),
+      verifyConnection: async (request) => {
+        const generation = ++this.connectionGeneration;
+        const version = await this.negotiateHandshake(request);
+        if (this.brokerClient !== client || generation !== this.connectionGeneration) {
+          throw new Error("broker handshake generation expired");
+        }
+        negotiatedVersion = version;
+      },
+      onConnect: () => {
+        if (this.brokerClient !== client) return;
+        this.brokerVersion = negotiatedVersion;
+        this._brokerAvailable = true;
+        backend?.handleBrokerConnected();
+      },
+      onDisconnect: () => {
+        if (this.brokerClient === client) {
+          this.connectionGeneration++;
+          negotiatedVersion = null;
+          this.brokerVersion = null;
+          this._brokerAvailable = false;
+        }
+        backend?.handleBrokerDisconnected();
+      },
+      onProtocolError: (error) => {
+        log.warn("broker connection verification/protocol error", { error: errMsg(error), socketPath: this.brokerSocketPath });
+      },
       onEvent: (event: EventBody) => {
         this.broker?.ingestEvent(event);
       },
@@ -165,6 +191,7 @@ export class BrokerSupervisor {
   }
 
   private teardownBrokerClient(): void {
+    this.connectionGeneration++;
     if (this.brokerClient) {
       try { this.brokerClient.close(); } catch (e: unknown) {
         log.debug("broker client close failed", { error: errMsg(e) });
@@ -224,64 +251,74 @@ export class BrokerSupervisor {
       await new Promise((r) => setTimeout(r, 25));
     }
     if (!client.isConnected()) {
-      log.warn("broker handshake: connect timed out", { socketPath: this.brokerSocketPath });
-      this.teardownBrokerClient();
+      if (this.brokerClient === client) {
+        log.warn("broker handshake: connect timed out", { socketPath: this.brokerSocketPath });
+        this.teardownBrokerClient();
+      }
       return false;
     }
 
+    const generation = this.connectionGeneration;
+    const current = () => this.brokerClient === client && generation === this.connectionGeneration && client.isConnected();
     try {
-      const hello = classifyBrokerHello(await client.request(
-        BROKER_HELLO_METHOD,
-        {},
-        { timeoutMs: BROKER_HANDSHAKE_TIMEOUT_MS },
-      ));
-      switch (hello.kind) {
-        case "compatible":
-          this.brokerVersion = { protocolVersion: hello.protocolVersion, brokerVersion: hello.brokerVersion };
-          log.info("broker handshake ok", {
-            socketPath: this.brokerSocketPath,
-            brokerVersion: hello.brokerVersion,
-            protocolVersion: hello.protocolVersion,
-          });
-          return true;
-        case "incompatible":
-          log.error("broker protocol version is incompatible; restart the broker from this release", {
-            socketPath: this.brokerSocketPath,
-            brokerVersion: hello.brokerVersion,
-            protocolVersion: hello.protocolVersion,
-            expectedProtocolVersion: BROKER_PROTOCOL_VERSION,
-          });
-          this.teardownBrokerClient();
-          return false;
-        case "error":
-          log.warn("broker handshake: hello failed", { error: hello.message });
-          this.teardownBrokerClient();
-          return false;
-        case "pre_hello":
-          log.warn("broker predates hello; version unknown", { socketPath: this.brokerSocketPath });
-          this.brokerVersion = null;
-          break;
-      }
-      const resp = (await client.request(
-        "list_sessions",
-        {},
-        { timeoutMs: BROKER_HANDSHAKE_TIMEOUT_MS },
-      )) as { status?: string; error?: { code?: string; message?: string } };
-      if (resp.status !== "ok") {
-        log.warn("broker handshake: list_sessions returned error", {
-          code: resp.error?.code,
-          message: resp.error?.message,
-        });
-        this.teardownBrokerClient();
-        return false;
-      }
-      log.info("broker handshake ok", { socketPath: this.brokerSocketPath });
+      const version = await this.negotiateHandshake(client.request.bind(client));
+      if (!current()) return false;
+      this.brokerVersion = version;
+      this._brokerAvailable = true;
       return true;
     } catch (e: unknown) {
-      log.warn("broker handshake failed", { error: errMsg(e) });
-      this.teardownBrokerClient();
+      if (current()) {
+        log.warn("broker handshake failed", { error: errMsg(e) });
+        this.teardownBrokerClient();
+      }
       return false;
     }
+  }
+
+  /** Stateless negotiation shared by startup probes and every reconnect. */
+  private async negotiateHandshake(request: BrokerConnectionRequest): Promise<BrokerVersionInfo | null> {
+    const hello = classifyBrokerHello(await request(
+      BROKER_HELLO_METHOD,
+      {},
+      { timeoutMs: BROKER_HANDSHAKE_TIMEOUT_MS },
+    ));
+    switch (hello.kind) {
+      case "compatible":
+        log.info("broker handshake ok", {
+          socketPath: this.brokerSocketPath,
+          brokerVersion: hello.brokerVersion,
+          protocolVersion: hello.protocolVersion,
+        });
+        return { protocolVersion: hello.protocolVersion, brokerVersion: hello.brokerVersion };
+      case "incompatible":
+        log.error("broker protocol version is incompatible; restart the broker from this release", {
+          socketPath: this.brokerSocketPath,
+          brokerVersion: hello.brokerVersion,
+          protocolVersion: hello.protocolVersion,
+          expectedProtocolVersion: BROKER_PROTOCOL_VERSION,
+        });
+        throw new Error(`incompatible broker protocol ${hello.protocolVersion}`);
+      case "error":
+        log.warn("broker handshake: hello failed", { error: hello.message });
+        throw new Error(hello.message);
+      case "pre_hello":
+        log.warn("broker predates hello; version unknown", { socketPath: this.brokerSocketPath });
+        break;
+    }
+    const resp = (await request(
+      "list_sessions",
+      {},
+      { timeoutMs: BROKER_HANDSHAKE_TIMEOUT_MS },
+    )) as { status?: string; error?: { code?: string; message?: string } };
+    if (resp.status !== "ok") {
+      log.warn("broker handshake: list_sessions returned error", {
+        code: resp.error?.code,
+        message: resp.error?.message,
+      });
+      throw new Error("broker handshake list_sessions failed");
+    }
+    log.info("broker handshake ok", { socketPath: this.brokerSocketPath });
+    return null;
   }
 
   // ── Session counts (for daemon stop warning) ──

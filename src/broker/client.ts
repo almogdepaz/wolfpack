@@ -79,6 +79,8 @@ function snapshotRpcParams(
 }
 const PENDING_OUTPUT_MAX_BYTES_PER_SESSION = 1024 * 1024;
 
+export type BrokerConnectionRequest = (method: string, params?: unknown, opts?: { timeoutMs?: number }) => Promise<unknown>;
+
 export interface BrokerClientOptions {
   /** Absolute path to broker Unix socket. Defaults to `defaultBrokerSocketPath()`. */
   socketPath?: string;
@@ -101,7 +103,10 @@ export interface BrokerClientOptions {
    * resubscribe path can recover the next time the broker is healthy.
    */
   requestTimeoutCircuitBreakerThreshold?: number;
-  /** Called every time a connection is established (initial + each reconnect). */
+  /** Verify each socket before exposing readiness, ordinary RPC/input or replay.
+   * The supplied request function is scoped to that socket and expires with it. */
+  verifyConnection?: (request: BrokerConnectionRequest) => Promise<void>;
+  /** Called after verification on every connection (initial + each reconnect). */
   onConnect?: () => void;
   /** Called when an established connection dies. */
   onDisconnect?: (err?: Error) => void;
@@ -192,6 +197,7 @@ export class BrokerClient {
   private readonly requestTimeoutMs: number;
   private readonly requestTimeoutCircuitBreakerThreshold: number;
   private readonly onConnectCb?: () => void;
+  private readonly verifyConnectionCb?: (request: BrokerConnectionRequest) => Promise<void>;
   private readonly onDisconnectCb?: (err?: Error) => void;
   private readonly onProtocolErrorCb?: (err: Error) => void;
   private readonly onEventCb?: EventSubscriber;
@@ -236,7 +242,7 @@ export class BrokerClient {
   /** Exit events held until their final output watermark has been delivered. */
   private readonly pendingExitEvents = new Map<string, { event: EventBody; finalSeq: bigint }>();
 
-  private state: "idle" | "connecting" | "connected" | "closed" = "idle";
+  private state: "idle" | "connecting" | "verifying" | "connected" | "closed" = "idle";
 
   constructor(opts: BrokerClientOptions = {}) {
     this.socketPath = opts.socketPath ?? defaultBrokerSocketPath();
@@ -246,6 +252,7 @@ export class BrokerClient {
     this.requestTimeoutCircuitBreakerThreshold =
       opts.requestTimeoutCircuitBreakerThreshold ?? 3;
     this.onConnectCb = opts.onConnect;
+    this.verifyConnectionCb = opts.verifyConnection;
     this.onDisconnectCb = opts.onDisconnect;
     this.onProtocolErrorCb = opts.onProtocolError;
     this.onEventCb = opts.onEvent;
@@ -301,6 +308,11 @@ export class BrokerClient {
     if (!this.socket || this.state !== "connected") {
       return Promise.reject(new BrokerNotConnectedError());
     }
+    return this.sendRequest(method, params, opts);
+  }
+
+  /** Only request() and the generation-scoped handshake may enter here. */
+  private sendRequest(method: string, params: unknown, opts: { timeoutMs?: number }): Promise<ControlResponse> {
     const id = this.nextId++;
     const req: ControlRequest = { id, method, params };
     let frame: Uint8Array;
@@ -730,31 +742,45 @@ export class BrokerClient {
 
   private connect(): void {
     if (this.state === "closed") return;
-    if (this.state === "connecting" || this.state === "connected") return;
+    if (this.state === "connecting" || this.state === "verifying" || this.state === "connected") return;
     if (this.socket) return;
     this.state = "connecting";
     this.parser = new FrameParser();
     const sock = net.createConnection(this.socketPath);
     this.socket = sock;
-    sock.on("connect", () => this.handleConnect());
-    sock.on("data", (chunk: Buffer) => this.handleData(chunk));
+    sock.on("connect", () => { void this.handleConnect(sock); });
+    sock.on("data", (chunk: Buffer) => { if (this.socket === sock) this.handleData(chunk); });
     sock.on("drain", () => {
       if (this.socket === sock) this.inputBackpressured = false;
     });
     sock.on("error", () => {
       // Surface via 'close' below — keeps teardown single-pathed.
     });
-    sock.on("close", () => this.handleClose());
+    sock.on("close", () => { if (this.socket === sock) this.handleClose(); });
   }
 
-  private handleConnect(): void {
-    if (this.state !== "connecting") return;
-    this.state = "connected";
-    this.connectionGeneration++;
-    this.currentReconnectDelay = 0;
+  private async handleConnect(sock: net.Socket): Promise<void> {
+    if (this.socket !== sock || this.state !== "connecting") return;
+    this.state = "verifying";
+    const generation = ++this.connectionGeneration;
+    const current = () => this.socket === sock && !sock.destroyed && this.connectionGeneration === generation && this.state === "verifying";
     // Fresh connection starts with a clean breaker counter — stale timeouts
     // from the previous (now dead) socket must not bias this one.
     this.consecutiveRequestTimeouts = 0;
+    try {
+      await this.verifyConnectionCb?.((method, params = {}, opts = {}) => current()
+        ? this.sendRequest(method, params, opts)
+        : Promise.reject(new BrokerNotConnectedError("broker handshake generation expired")));
+    } catch (error) {
+      if (current()) {
+        this.reportProtocolError(toError(error));
+        sock.destroy(toError(error));
+      }
+      return;
+    }
+    if (!current()) return;
+    this.state = "connected";
+    this.currentReconnectDelay = 0;
     try {
       this.onConnectCb?.();
     } catch (e) {
@@ -769,6 +795,7 @@ export class BrokerClient {
       for (const sessionId of ids) {
         const sinceSeq = this.activeSubscriptionSeq.get(sessionId);
         this.issueSubscribe(sessionId, { sinceSeq }).catch((err) => {
+          if (this.connectionGeneration !== generation || this.state !== "connected") return;
           this.clearSubscriptionState(sessionId);
           if (this.onResubscribeErrorCb) {
             try {
@@ -834,7 +861,7 @@ export class BrokerClient {
   }
 
   private handleClose(): void {
-    const wasConnected = this.state === "connected";
+    const wasConnected = this.state === "connected" || this.state === "verifying";
     if (this.state !== "closed") this.state = "idle";
     this.socket = null;
     this.inputBackpressured = false;
@@ -864,6 +891,9 @@ export class BrokerClient {
   }
 
   private dispatch(frame: Frame): void {
+    // Lifecycle events are best-effort across disconnects. Do not expose any
+    // replacement-broker data until its compatibility check succeeds.
+    if (this.state === "verifying" && (frame.kind === FRAME_KIND_OUTPUT_BINARY || frame.kind === FRAME_KIND_EVENT)) return;
     switch (frame.kind) {
       case FRAME_KIND_CONTROL_RESPONSE: {
         const id = frame.value.id;
@@ -922,7 +952,9 @@ export class BrokerClient {
           const lagged = typeof ev.lagged === "number" ? ev.lagged as number : 0;
           if (this.activeSubscriptions.has(sessionId) && this.state === "connected") {
             const sinceSeq = this.activeSubscriptionSeq.get(sessionId);
+            const generation = this.connectionGeneration;
             this.issueSubscribe(sessionId, { sinceSeq }).catch((err) => {
+              if (this.connectionGeneration !== generation || this.state !== "connected") return;
               this.clearSubscriptionState(sessionId);
               if (this.onResubscribeErrorCb) {
                 try { this.onResubscribeErrorCb(sessionId, toError(err)); } catch { /* swallow */ }

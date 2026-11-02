@@ -181,7 +181,7 @@ export interface PtyTerminalController {
   sendFitResize(options?: { readonly force?: boolean; readonly fit?: boolean }): Promise<OrderedResizeSettlement>;
   forceRepaint(): void;
   syncLayout(options?: { readonly forceSend?: boolean; readonly repaint?: boolean; readonly reason?: string }): Promise<void>;
-  /** Parked in the terminal pool: no background layout sync or resize-rehydrate reconnect. */
+  /** Parked presentation/layout stop; parser state, output and protocol replies stay live. */
   suspendLayout(): void;
   resumeLayout(): void;
   send(data: PtySocketSendData): boolean;
@@ -208,6 +208,7 @@ export function createPtyTerminalController(
   const connectionLifecycle = createTerminalConnectionLifecycle();
   let _initialPrefillComplete = opts.prefillMode === TERMINAL_PREFILL_MODE.NONE;
   let _mounting = false;
+  let _renderSuspended = false;
   let _userScrolledUp = false;
   let _userRequestedScrollback = false;
   // Scrollback length snapshot captured when user enters scroll-lock. Used by
@@ -275,6 +276,7 @@ export function createPtyTerminalController(
   }
 
   function forceRepaint() {
+    if (_renderSuspended) return;
     forceTerminalRepaint(_term);
   }
 
@@ -428,6 +430,9 @@ export function createPtyTerminalController(
     if (hydrationEl) { hydrationEl.classList.add("hydrating"); hydrationEl.classList.remove("hydrated"); }
     if (opts.onHydrationStart) opts.onHydrationStart();
 
+    // Parking may race the asynchronous isolated-WASM creation. Establish the
+    // presentation state before open can paint or start a renderer RAF loop.
+    if (_renderSuspended) _term.suspendRendering();
     _term.open(container);
     __wfTraceEvent(trace, "dom.terminal.opened");
     installTerminalTextareaInputBridge(_term, (data) => _ptyClient && _ptyClient.send(data), _canAcceptInput, trace);
@@ -440,7 +445,7 @@ export function createPtyTerminalController(
     // repaint the Canvas 2D framebuffer. Direct fillRect is the only fix.
     // Upstream: github.com/coder/ghostty-web/issues/138, /141, /142
     const _openCanvas = container.querySelector('canvas');
-    if (_openCanvas) {
+    if (_openCanvas && !_renderSuspended) {
       const ctx = _openCanvas.getContext('2d');
       if (ctx) {
         ctx.fillStyle = '#0a0a0a'; // match terminal background
@@ -783,6 +788,7 @@ export function createPtyTerminalController(
     connectionLifecycle.reset();
     resizeLifecycle.dispose();
     _mounting = false;
+    _renderSuspended = false;
     _userScrolledUp = false;
     _userRequestedScrollback = false;
     if (_container) {
@@ -811,8 +817,16 @@ export function createPtyTerminalController(
       : Promise.resolve("cancelled" as const),
     forceRepaint,
     syncLayout,
-    suspendLayout: () => resizeLifecycle.suspend(),
-    resumeLayout: () => resizeLifecycle.resume(),
+    suspendLayout: () => {
+      _renderSuspended = true;
+      resizeLifecycle.suspend();
+      _term?.suspendRendering();
+    },
+    resumeLayout: () => {
+      _renderSuspended = false;
+      _term?.resumeRendering();
+      resizeLifecycle.resume();
+    },
     send: (data) => {
       if (!_ptyClient || !_ptyClient.isOpen) return false;
       const accepted = _ptyClient.send(data);
