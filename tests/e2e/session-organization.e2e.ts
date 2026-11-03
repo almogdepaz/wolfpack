@@ -160,3 +160,21 @@ test("dashboard card group and close actions share one aligned control box", asy
   expect(geometry.close.x).toBeGreaterThan(geometry.group.right);
   if (geometry.chevron.shown) expect(geometry.chevron.x).toBeGreaterThanOrEqual(geometry.close.right);
 });
+
+test("sidebar card actions sit in one row of matching controls", async ({ page }) => {
+  await page.goto(server.baseUrl); await collapseInitialSessionMenu(page);
+  const actions = page.locator("#sidebar-session-list .session-card-actions").filter({ has: page.getByRole("button", { name: "Move test-project to group", exact: true }) }).first();
+  test.skip(!(await actions.isVisible()), "desktop sidebar only");
+  await actions.hover();
+  const boxes = await actions.evaluate(element => [...element.querySelectorAll(":scope > button")].map(button => {
+    const rect = button.getBoundingClientRect();
+    return { x: rect.x, right: rect.right, width: rect.width, height: rect.height, center: rect.y + rect.height / 2, radius: getComputedStyle(button).borderRadius };
+  }));
+  expect(boxes.length).toBe(3);
+  for (const box of boxes.slice(1)) {
+    expect({ width: box.width, height: box.height, radius: box.radius }).toEqual({ width: boxes[0].width, height: boxes[0].height, radius: boxes[0].radius });
+    expect(Math.abs(box.center - boxes[0].center)).toBeLessThanOrEqual(1);
+  }
+  expect(boxes[1].x).toBeGreaterThanOrEqual(boxes[0].right);
+  expect(boxes[2].x).toBeGreaterThanOrEqual(boxes[1].right);
+});
