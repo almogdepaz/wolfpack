@@ -140,3 +140,23 @@ test("organization failure retains input, cancels safely, and returns keyboard f
   await page.keyboard.press("Escape"); await expect(page.getByRole("dialog")).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Move test-project to group", exact: true }).filter({ visible: true }).first()).toBeFocused();
 });
+
+test("dashboard card group and close actions share one aligned control box", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  const card = page.locator("#session-list .machine-group .card").filter({ has: page.getByRole("button", { name: "Move test-project to group", exact: true }) }).first();
+  await card.hover();
+  const geometry = await card.evaluate(element => {
+    const box = (selector: string) => {
+      const target = element.querySelector(selector)!;
+      const rect = target.getBoundingClientRect();
+      return { x: rect.x, right: rect.right, width: rect.width, height: rect.height, center: rect.y + rect.height / 2, radius: getComputedStyle(target).borderRadius, shown: getComputedStyle(target).display !== "none" && rect.width > 0 };
+    };
+    return { group: box(".organize-btn"), close: box(".kill-btn"), chevron: box(".chev") };
+  });
+  expect({ width: geometry.close.width, height: geometry.close.height, radius: geometry.close.radius })
+    .toEqual({ width: geometry.group.width, height: geometry.group.height, radius: geometry.group.radius });
+  expect(Math.abs(geometry.close.center - geometry.group.center)).toBeLessThanOrEqual(1);
+  // The two actions stay adjacent; the decorative chevron never splits them.
+  expect(geometry.close.x).toBeGreaterThan(geometry.group.right);
+  if (geometry.chevron.shown) expect(geometry.chevron.x).toBeGreaterThanOrEqual(geometry.close.right);
+});

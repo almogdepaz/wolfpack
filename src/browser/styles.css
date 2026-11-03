@@ -2737,6 +2737,9 @@ body > header { height: 52px; min-height: 52px; }
 .machine-group .card + .card { border-top: 1px solid var(--hairline); }
 .machine-group .card.tier-fail { background: rgba(255,138,128,.05); }
 .machine-group .card.tier-fail .card-preview { color: var(--danger); }
+/* Group and close share one 44px control box; the decorative chevron sits after both. */
+.machine-group .card > .kill-btn { flex: 0 0 auto; width: 44px; height: 44px; margin: 0; padding: 0; border-radius: var(--radius-md); line-height: 1; }
+.machine-group .card > .chev { order: 1; }
 .machine-group .card.tier-fail .kill-btn { opacity: 1; width: auto; padding: 6px 9px; background: var(--danger-tint); color: var(--danger); font: 500 12px var(--font-ui); }
 .machine-group .card.keyboard-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 .card .card-name { color: var(--text-1); font: 600 14px var(--font-ui); letter-spacing: -.01em; }
