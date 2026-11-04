@@ -2170,6 +2170,57 @@ async fn create_rejects_metadata_that_cannot_fit_the_started_event() {
     h.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn blocked_pty_input_preserves_other_session_fifo_and_control_on_same_connection() {
+    let h = Harness::boot().await;
+    let ready = h._dir.path().join("same-connection.ready");
+    let script = format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display());
+    let mut stream = connect(&h.socket_path).await;
+    let blocked = round_trip(&mut stream, create_request(1, None, &["sh", "-c", &script])).await;
+    let blocked_id = match blocked.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session.id,
+        other => panic!("unexpected {other:?}"),
+    };
+    let echo = round_trip(&mut stream, create_request(2, None, &["sh", "-c", "stty raw -echo; exec cat"])).await;
+    let echo_id = match echo.payload.expect("payload") {
+        ResponsePayload::CreateSession { session } => session.id,
+        other => panic!("unexpected {other:?}"),
+    };
+    round_trip(&mut stream, ControlRequest {
+        id: 3, method: methods::SUBSCRIBE.into(), params: json!({ "session_id": echo_id }),
+    }).await;
+    timeout(TEST_TIMEOUT, async {
+        while !ready.exists() { tokio::time::sleep(POLL_INTERVAL).await; }
+    }).await.expect("raw mode ready");
+    write_frame_async(&mut stream, &Frame::InputBinary(InputFrame {
+        session_id: blocked_id, data: vec![b'x'; 256 * 1024 - 16],
+    })).await.expect("blocked input");
+    for data in [b"FIRST\n".to_vec(), b"SECOND\n".to_vec()] {
+        write_frame_async(&mut stream, &Frame::InputBinary(InputFrame { session_id: echo_id, data })).await.expect("echo input");
+    }
+    // Fill the blocked session's accepted frame queue without exceeding it:
+    // the reader must still dispatch control and the other session's input.
+    for _ in 0..16 {
+        write_frame_async(&mut stream, &Frame::InputBinary(InputFrame {
+            session_id: blocked_id, data: vec![b'x'],
+        })).await.expect("queued blocked input");
+    }
+    let mut received = Vec::new();
+    let responsive = timeout(Duration::from_secs(1), async {
+        loop {
+            if let Frame::OutputBinary(output) = read_frame_async(&mut stream).await.expect("read output") {
+                if output.session_id == echo_id { received.extend_from_slice(&output.data); }
+                if String::from_utf8_lossy(&received).contains("FIRST\nSECOND\n") { break; }
+            }
+        }
+        round_trip(&mut stream, ControlRequest { id: 4, method: methods::HELLO.into(), params: json!({}) }).await
+    }).await;
+    drop(stream);
+    h.shutdown().await;
+    assert!(responsive.is_ok(), "blocked session stalled other input/control; received {received:?}");
+    assert_eq!(responsive.unwrap().status, Status::Ok);
+}
+
 /// A child that stops reading its PTY blocks the input write. That write must
 /// not occupy an async executor thread: on a one-worker runtime another
 /// connection's list and kill must still be served while input is blocked.

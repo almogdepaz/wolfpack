@@ -374,9 +374,20 @@ Binary payload layout:
 
 - `session_id`: target session.
 - `raw stdin bytes`: written verbatim to the PTY master.
-- There is no client-side seq for input frames. Broker writes are best-effort
-  in arrival order on the connection and never reordered across `input_binary`
-  frames for the same session.
+- There is no client-side seq or acknowledgement for input frames. Broker
+  writes preserve arrival order for each session on a connection. A blocked
+  session does not serialize writes to other sessions or control requests.
+- Input admission includes queued and in-flight bytes: 4 MiB per connection,
+  64 MiB process-wide, at most 32 concurrent writers process-wide and 16 queued
+  chunks per session lane. Consecutive queued frames for a session coalesce into
+  one chunk of up to 256 KiB, so frame count alone never exhausts a lane. Empty
+  frames consume one byte of admission. Idle lanes release their slots
+  immediately.
+- Exhausted input admission closes the connection rather than indefinitely
+  blocking its reader or silently truncating a frame on a healthy transport.
+  Disconnect/shutdown cancels pending writes and discards queued input, without
+  killing broker-owned sessions. A prefix can already have reached a PTY when
+  the transport fails; clients must not automatically replay input/mutations.
 
 This frame is the canonical stdin path. Stdin bytes never travel through
 control-plane JSON.
@@ -619,9 +630,12 @@ long as deserializers default-fill unknown fields.
 - `unknown_method` is the protocol's "unknown verb" error: a v1 client talking
   to a v2 broker that requested a v2-only method would get this rather than a
   silent drop.
-- Clients should call `hello` first and refuse a broker whose
-  `protocol_version` differs from their own; `unknown_method` means a
-  pre-`hello` broker whose version is unknown.
+- Clients should call `hello` first on **each connection generation**, before
+  readiness, ordinary operations or subscription replay, and refuse a broker
+  whose `protocol_version` differs from their own; `unknown_method` means a
+  pre-`hello` broker whose version is unknown (probe `list_sessions` instead).
+  Disconnect invalidates the prior version/readiness. A late handshake result
+  from an old generation must not publish readiness or invalidate a newer one.
 
 ---
 

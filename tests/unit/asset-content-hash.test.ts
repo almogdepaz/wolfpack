@@ -1,5 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { ASSET_VERSIONS, assets } from "../../src/public-assets";
+import { gzipSync } from "node:zlib";
+import { BUNDLE_BUDGETS } from "../../scripts/check-bundle-budgets";
+
+describe("actual embedded browser asset budgets", () => {
+  for (const [path, raw, gzip] of BUNDLE_BUDGETS) {
+    const file = path.replace(/^public\//, "");
+    test(`${file} shipped bytes meet existing raw/gzip caps`, () => {
+      const content = assets.get(file)?.content;
+      if (content === undefined) throw new Error(`missing shipped asset ${file}`);
+      const bytes = typeof content === "string" ? Buffer.from(content) : content;
+      expect(bytes.byteLength).toBeLessThanOrEqual(raw);
+      expect(gzipSync(bytes, { level: 9 }).byteLength).toBeLessThanOrEqual(gzip);
+    });
+  }
+  test("the served stylesheet is the only shipped CSS payload", () => {
+    expect([...assets.keys()].filter(file => file.endsWith(".css"))).toEqual(["styles.css"]);
+  });
+});
 
 describe("per-asset browser cache versions", () => {
   test("index URLs use the corresponding content hash", () => {

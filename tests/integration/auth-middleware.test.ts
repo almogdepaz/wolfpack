@@ -152,6 +152,23 @@ afterAll(async () => {
 });
 
 describe("JWT auth middleware", () => {
+  test("malformed request targets return 400 without disabling auth or the listener", async () => {
+    for (const target of ["//[", "http://["]) {
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = connect({ host: "127.0.0.1", port });
+        let received = "";
+        socket.setTimeout(2000, () => socket.destroy(new Error("HTTP response timed out")));
+        socket.once("connect", () => socket.write(`GET ${target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`));
+        socket.on("data", (chunk) => { received += chunk.toString(); });
+        socket.once("end", () => resolve(received));
+        socket.once("error", reject);
+      });
+      expect(response).toMatch(/^HTTP\/1\.1 400 /);
+      expect((await fetch(`${baseUrl}/api/projects`)).status).toBe(401);
+      expect((await fetch(`${baseUrl}/api/info`)).status).toBe(200);
+    }
+  });
+
   test("allows unauthenticated access to GET /api/info", async () => {
     const res = await fetch(`${baseUrl}/api/info`);
     expect(res.status).toBe(200);

@@ -2,12 +2,12 @@ use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore};
-use tokio::task::JoinHandle;
+use tokio::sync::{broadcast, mpsc, oneshot, watch, OwnedSemaphorePermit, Semaphore, SemaphorePermit};
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -25,7 +25,7 @@ use crate::protocol::{
 };
 use crate::registry::{Registry, SNAPSHOT_CONCURRENCY_LIMIT_MESSAGE};
 use crate::ring_buffer::OutputChunk;
-use crate::session::EventSender;
+use crate::session::{EventSender, Session};
 use crate::session_router::{validate_snapshot_target_cols, SessionRouter};
 
 /// Per-connection queue depth. Control/global lifecycle and output use separate
@@ -51,10 +51,119 @@ const OUTPUT_FRAME_COALESCE_MAX_BYTES: usize = 8 * 1024;
 /// but bound per-subscription memory. At the cap we drain queued frames first;
 /// sustained producers then hit the existing broadcast-lag recovery contract.
 const OUTPUT_FORWARD_BUFFER_MAX_BYTES: usize = 8 * 1024 * 1024;
-/// Input is ordered per connection and bounded by bytes: the codec caps each
-/// frame and this depth caps queued data before socket backpressure applies.
+/// FIFO is per session, not per connection. These budgets include in-flight
+/// bytes. Admission never waits in the frame reader: overload closes the
+/// connection (binary input has no acknowledgement/error response contract).
 const INPUT_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
 const INPUT_QUEUE_CAPACITY: usize = INPUT_QUEUE_MAX_BYTES / MAX_INPUT_BINARY_PAYLOAD as usize;
+const INPUT_GLOBAL_MAX_BYTES: usize = 64 * 1024 * 1024;
+const INPUT_WORKER_LIMIT: usize = 32;
+static INPUT_BYTES: Semaphore = Semaphore::const_new(INPUT_GLOBAL_MAX_BYTES);
+static INPUT_WORKERS: Semaphore = Semaphore::const_new(INPUT_WORKER_LIMIT);
+
+struct QueuedInput {
+    data: Vec<u8>,
+    _connection_bytes: OwnedSemaphorePermit,
+    _global_bytes: SemaphorePermit<'static>,
+}
+
+impl QueuedInput {
+    fn merge(&mut self, next: QueuedInput) {
+        self.data.extend_from_slice(&next.data);
+        self._connection_bytes.merge(next._connection_bytes);
+        self._global_bytes.merge(next._global_bytes);
+    }
+}
+
+/// One blocking write per active session lane. Empty lanes are removed as soon
+/// as their write completes; neither idle sessions nor past UUIDs retain slots.
+struct ConnectionInput {
+    pending: HashMap<Uuid, VecDeque<QueuedInput>>,
+    tasks: JoinSet<(Uuid, SemaphorePermit<'static>)>,
+    bytes: Arc<Semaphore>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ConnectionInput {
+    fn new() -> Self {
+        Self {
+            pending: HashMap::new(), tasks: JoinSet::new(),
+            bytes: Arc::new(Semaphore::new(INPUT_QUEUE_MAX_BYTES)),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn submit(&mut self, input: InputFrame, registry: &Registry) -> bool {
+        let Some(session) = registry.get(input.session_id) else {
+            debug!(session_id = %input.session_id, "input_binary for unknown session; ignoring");
+            return true;
+        };
+        let bytes = input.data.len().max(1) as u32;
+        let Ok(connection_bytes) = self.bytes.clone().try_acquire_many_owned(bytes) else { return false; };
+        let Ok(global_bytes) = INPUT_BYTES.try_acquire_many(bytes) else { return false; };
+        let queued = QueuedInput { data: input.data, _connection_bytes: connection_bytes, _global_bytes: global_bytes };
+        if let Some(pending) = self.pending.get_mut(&input.session_id) {
+            // Stdin is a byte stream: append to the queued tail while it stays
+            // within one input payload, so bursts of small frames are bounded
+            // by the byte budgets rather than by frame count.
+            if let Some(tail) = pending.back_mut() {
+                if tail.data.len() + queued.data.len() <= MAX_INPUT_BINARY_PAYLOAD as usize {
+                    tail.merge(queued);
+                    return true;
+                }
+            }
+            if pending.len() >= INPUT_QUEUE_CAPACITY { return false; }
+            pending.push_back(queued);
+        } else {
+            let Ok(worker) = INPUT_WORKERS.try_acquire() else { return false; };
+            self.pending.insert(input.session_id, VecDeque::new());
+            self.start(session, queued, worker);
+        }
+        true
+    }
+
+    fn start(&mut self, session: Arc<Session>, input: QueuedInput, worker: SemaphorePermit<'static>) {
+        let cancelled = self.cancelled.clone();
+        self.tasks.spawn_blocking(move || {
+            let session_id = session.id();
+            if let Err(error) = session.write_stdin_cancellable(&input.data, &cancelled) {
+                if !cancelled.load(Ordering::Acquire) { warn!(%session_id, %error, "write_stdin failed"); }
+            }
+            drop(input);
+            (session_id, worker)
+        });
+    }
+
+    fn completed(&mut self, result: Result<(Uuid, SemaphorePermit<'static>), tokio::task::JoinError>, registry: &Registry) -> bool {
+        let (id, worker) = match result {
+            Ok(result) => result,
+            Err(error) => { warn!(%error, "broker input task failed; closing connection"); return false; }
+        };
+        if let Some(next) = self.pending.get_mut(&id).and_then(VecDeque::pop_front) {
+            if let Some(session) = registry.get(id) {
+                self.start(session, next, worker);
+                return true;
+            }
+        }
+        self.pending.remove(&id);
+        true
+    }
+
+    async fn cancel(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        self.pending.clear();
+        // Aborting spawn_blocking is insufficient; join cooperative workers.
+        while let Some(result) = self.tasks.join_next().await {
+            if let Err(error) = result { warn!(%error, "broker input task join error"); }
+        }
+    }
+}
+
+impl Drop for ConnectionInput {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+}
 /// Bound pending control payloads while one ordered worker is busy. Socket
 /// backpressure still applies when this budget is exhausted.
 const CONTROL_REQUEST_QUEUE_MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -329,6 +438,8 @@ async fn accept_loop(
                         writer_queue_capacity,
                         conn_shutdown,
                         connection_permit,
+                        #[cfg(test)]
+                        None,
                     ));
                 }
                 Err(e) => {
@@ -347,6 +458,7 @@ async fn handle_connection(
     writer_queue_cap: Option<usize>,
     mut shutdown: watch::Receiver<bool>,
     _connection_permit: OwnedSemaphorePermit,
+    #[cfg(test)] mut input_completed_for_test: Option<oneshot::Sender<()>>,
 ) {
     debug!("broker connection opened");
     let (mut read_half, write_half) = stream.into_split();
@@ -357,35 +469,14 @@ async fn handle_connection(
     let output_queue_cap = writer_queue_cap.unwrap_or(WRITER_QUEUE_CAPACITY);
     let (writer_tx, writer_rx) = mpsc::channel::<QueuedControl>(control_queue_cap);
     let (output_tx, output_rx) = mpsc::channel::<Frame>(output_queue_cap);
-    let writer_task = tokio::spawn(connection_writer(
+    let mut writer_task = tokio::spawn(connection_writer(
         write_half,
         writer_rx,
         output_rx,
         control_queue_cap,
         output_queue_cap,
     ));
-    let (input_tx, mut input_rx) = mpsc::channel::<InputFrame>(INPUT_QUEUE_CAPACITY);
-    let input_registry = Arc::clone(&registry);
-    let input_task = tokio::spawn(async move {
-        while let Some(inp) = input_rx.recv().await {
-            match input_registry.get(inp.session_id) {
-                Some(session) => {
-                    // A child that stops reading blocks this write. Run it on
-                    // the blocking pool and await it so input stays FIFO and
-                    // backpressured without holding an executor thread.
-                    let session_id = inp.session_id;
-                    match tokio::task::spawn_blocking(move || session.write_stdin(&inp.data)).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(error)) => warn!(%session_id, %error, "write_stdin failed"),
-                        Err(error) => warn!(%session_id, %error, "write_stdin task failed"),
-                    }
-                }
-                None => {
-                    debug!(session_id = %inp.session_id, "input_binary for unknown session; ignoring")
-                }
-            }
-        }
-    });
+    let mut input = ConnectionInput::new();
 
     // Drain async lifecycle events into this connection's writer queue.
     // Started here (not inside `accept_loop`) so the receiver was already
@@ -405,68 +496,79 @@ async fn handle_connection(
         output_tx.clone(),
     ));
 
-    loop {
-        tokio::select! {
-            biased;
-            res = shutdown.changed() => {
-                if res.is_err() || *shutdown.borrow() {
-                    debug!("broker connection draining due to shutdown");
+    'connection: loop {
+        // read_exact retains partial header/payload bytes inside this future.
+        // Keep it pinned across input completions; only connection teardown may
+        // cancel it. There is still just one frame read, with no read-ahead queue.
+        let frame_read = read_frame_async(&mut read_half);
+        tokio::pin!(frame_read);
+        let frame = loop {
+            tokio::select! {
+                biased;
+                res = shutdown.changed() => {
+                    if res.is_err() || *shutdown.borrow() {
+                        debug!("broker connection draining due to shutdown");
+                        break 'connection;
+                    }
+                }
+                _ = &mut writer_task => break 'connection,
+                Some(result) = input.tasks.join_next(), if !input.tasks.is_empty() => {
+                    if !input.completed(result, &registry) { break 'connection; }
+                    #[cfg(test)]
+                    if let Some(completed) = input_completed_for_test.take() { let _ = completed.send(()); }
+                }
+                frame = &mut frame_read => break frame,
+            }
+        };
+        match frame {
+            Ok(frame) => {
+                let dispatched = tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => false,
+                    _ = &mut writer_task => false,
+                    dispatched = dispatch_frame(frame, &request_tx, &mut input, &registry) => dispatched,
+                };
+                if !dispatched {
+                    // Closed worker, invalid direction or exhausted input admission.
                     break;
                 }
             }
-            frame = read_frame_async(&mut read_half) => match frame {
-                Ok(frame) => {
-                    if !dispatch_frame(
-                        frame,
-                        &request_tx,
-                        &input_tx,
-                    )
-                    .await
-                    {
-                        // Writer queue closed (peer gone); stop the read loop.
-                        break;
-                    }
-                }
-                Err(CodecError::Io(e))
-                    if matches!(
-                        e.kind(),
-                        io::ErrorKind::UnexpectedEof
-                            | io::ErrorKind::ConnectionReset
-                            | io::ErrorKind::BrokenPipe
-                    ) =>
-                {
-                    debug!(error = %e, "broker connection closed by peer");
-                    break;
-                }
-                Err(e) => {
-                    warn!(error = %e, "broker connection error; dropping connection");
-                    break;
-                }
-            },
+            Err(CodecError::Io(e))
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::UnexpectedEof
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                debug!(error = %e, "broker connection closed by peer");
+                break;
+            }
+            Err(e) => {
+                warn!(error = %e, "broker connection error; dropping connection");
+                break;
+            }
         }
     }
 
-    // Cleanly tear down per-session forwarders, then the event forwarder,
-    // then drop both senders so the writer task observes EOF and exits.
+    // Tear down per-session/event forwarders and discard connection-owned
+    // input/output. Session lifetime and replay rings remain broker-owned.
     // Abort drops the subscription owner and discards queued requests. A
     // spawn_blocking operation already running finishes, but its result is
     // dropped: no response or replacement forwarder can outlive this worker.
+    input.cancelled.store(true, Ordering::Release);
     control_task.abort();
     let _ = control_task.await;
     drop(request_tx);
     event_task.abort();
-    drop(input_tx);
-    if let Err(error) = input_task.await {
-        if !error.is_cancelled() {
-            warn!(%error, "broker input task join error");
-        }
-    }
+    input.cancel().await;
     drop(writer_tx);
     drop(output_tx);
-    if let Err(e) = writer_task.await {
-        if !e.is_cancelled() {
-            warn!(error = %e, "broker writer task join error");
-        }
+    // A peer that stopped reading must not pin its socket/connection permit.
+    // Teardown discards connection-local output, not durable session output.
+    if !writer_task.is_finished() {
+        writer_task.abort();
+        let _ = writer_task.await;
     }
 }
 
@@ -563,16 +665,22 @@ async fn connection_writer(
     }
 }
 
-/// Returns `false` if a worker queue is closed or the frame direction is
-/// invalid, so the caller stops reading rather than enqueueing dead work.
+/// Returns `false` on closed workers, exhausted input admission or invalid
+/// direction, so the caller fail-closes rather than enqueueing dead work.
 async fn dispatch_frame(
     frame: Frame,
     request_tx: &mpsc::Sender<ControlRequest>,
-    input_tx: &mpsc::Sender<InputFrame>,
+    input: &mut ConnectionInput,
+    registry: &Registry,
 ) -> bool {
     match frame {
         Frame::ControlRequest(req) => request_tx.send(req).await.is_ok(),
-        Frame::InputBinary(inp) => input_tx.send(inp).await.is_ok(),
+        Frame::InputBinary(inp) => {
+            if input.submit(inp, registry) { true } else {
+                warn!("broker input admission exhausted; closing connection without replay");
+                false
+            }
+        },
         Frame::ControlResponse(_) | Frame::OutputBinary(_) | Frame::Event(_) => {
             // Spec: these flow broker→client only. Receiving one from a client
             // is a protocol violation. Match the symmetric TS-side behavior
@@ -1167,6 +1275,250 @@ mod tests {
         drop(subs);
         assert!(tokio::time::timeout(std::time::Duration::from_secs(5), cancelled)
             .await.expect("forwarder leaked on owner cancellation").is_err());
+    }
+
+    async fn fragmented_frame_survives_input_completion(split: usize) {
+        use std::os::fd::{AsFd, AsRawFd};
+        use std::time::Duration;
+        use tokio::io::AsyncWriteExt;
+
+        struct OwnedSession(Arc<Session>);
+        impl Drop for OwnedSession {
+            fn drop(&mut self) {
+                let _ = self.0.kill(libc::SIGKILL);
+                let _ = self.0.wait_for_exit(Duration::from_secs(5));
+            }
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ready = dir.path().join("ready");
+        let (events, _) = broadcast::channel::<Event>(16);
+        let registry = Arc::new(Registry::new(events.clone()));
+        let session = OwnedSession(registry.create(CreateOptions {
+            name: None, cwd: "/tmp".into(),
+            command: vec!["sh".into(), "-c".into(), format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display())],
+            env: vec![], cols: 80, rows: 24,
+        }).expect("session"));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.expect("raw mode ready");
+
+        let (mut client, server) = UnixStream::pair().expect("pair");
+        // Observe kernel buffering without reading any bytes or copying the
+        // decoder. This proves the incomplete prefix reached read_exact.
+        let observed_read = server.as_fd().try_clone_to_owned().expect("dup read fd");
+        let slots = Arc::new(Semaphore::new(1));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (completed_tx, mut completed_rx) = oneshot::channel();
+        let task = tokio::spawn(handle_connection(
+            server, Arc::new(SessionRouter::new(registry.clone(), events.clone())),
+            registry, events.subscribe(), None, shutdown_rx,
+            slots.clone().acquire_owned().await.expect("permit"), Some(completed_tx),
+        ));
+        write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
+            session_id: session.0.id(), data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
+        })).await.expect("input");
+        let request = ControlRequest { id: 77, method: methods::HELLO.into(), params: json!({}) };
+        let mut encoded = Vec::new();
+        crate::codec::write_frame(&mut encoded, &Frame::ControlRequest(request)).expect("encode hello");
+        client.write_all(&encoded[..split]).await.expect("frame prefix");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let mut unread: libc::c_int = 0;
+                // SAFETY: the duplicate stays open; ioctl writes one c_int.
+                assert_eq!(unsafe { libc::ioctl(observed_read.as_raw_fd(), libc::FIONREAD, &mut unread) }, 0);
+                if unread == 0 { break; }
+                tokio::task::yield_now().await;
+            }
+        }).await.expect("server did not consume partial frame");
+        assert!(matches!(completed_rx.try_recv(), Err(oneshot::error::TryRecvError::Empty)), "input completed before the partial read");
+        // Child exit lets the real input job finish. The bounded test-only
+        // oneshot confirms the actual scheduler completion branch has run.
+        session.0.kill(libc::SIGKILL).expect("release input write");
+        tokio::time::timeout(Duration::from_secs(2), completed_rx).await.expect("input completion timed out").expect("completion branch missing");
+        client.write_all(&encoded[split..]).await.expect("frame suffix");
+        let response = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match read_frame_async(&mut client).await {
+                    Ok(Frame::ControlResponse(response)) if response.id == 77 => return Ok(response),
+                    Ok(Frame::Event(_)) => continue,
+                    other => return Err(format!("unexpected frame after input completion: {other:?}")),
+                }
+            }
+        }).await;
+        let _ = shutdown_tx.send(true);
+        tokio::time::timeout(Duration::from_secs(2), task).await.expect("connection teardown").expect("connection task");
+        assert_eq!(response.expect("hello timed out after fragmented read").expect("partial frame lost").status, Status::Ok);
+        assert_eq!(slots.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn fragmented_header_survives_input_completion() {
+        fragmented_frame_survives_input_completion(2).await;
+    }
+
+    #[tokio::test]
+    async fn fragmented_payload_survives_input_completion() {
+        fragmented_frame_survives_input_completion(5 + 10).await;
+    }
+
+    #[tokio::test]
+    async fn blocked_input_connections_release_permits_on_disconnect_and_shutdown() {
+        use std::time::Duration;
+        let (events, _) = broadcast::channel::<Event>(16);
+        let registry = Arc::new(Registry::new(events.clone()));
+        let session = registry.create(CreateOptions {
+            name: None, cwd: "/tmp".into(),
+            command: vec!["sh".into(), "-c".into(), "stty raw -echo; echo READY; exec sleep 30".into()],
+            env: vec![], cols: 80, rows: 24,
+        }).expect("session");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let snapshot = session.snapshot_terminal(None, None).expect("snapshot");
+            let text: String = snapshot.visible_screen.iter().flat_map(|line| line.cells.iter().map(|cell| cell.ch.as_ref())).collect();
+            if text.contains("READY") { break; }
+            assert!(tokio::time::Instant::now() < deadline, "raw-mode marker missing");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let permits = Arc::new(Semaphore::new(2));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let mut clients = Vec::new();
+        let mut tasks = Vec::new();
+        // The second connection waits on the writer mutex held by the first.
+        for _ in 0..2 {
+            let (mut client, server) = UnixStream::pair().expect("pair");
+            tasks.push(tokio::spawn(handle_connection(
+                server, Arc::new(SessionRouter::new(registry.clone(), events.clone())),
+                registry.clone(), events.subscribe(), None, shutdown_rx.clone(),
+                permits.clone().acquire_owned().await.expect("permit"), None,
+            )));
+            write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
+                session_id: session.id(), data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
+            })).await.expect("blocked input");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            clients.push(client);
+        }
+        assert_eq!(permits.available_permits(), 0);
+        drop(clients.pop()); // cancelled mutex waiter
+        let waiter_released = tokio::time::timeout(Duration::from_secs(2), &mut tasks[1]).await.is_ok();
+        shutdown_tx.send(true).expect("shutdown"); // cancelled PTY capacity waiter
+        let writer_released = tokio::time::timeout(Duration::from_secs(2), &mut tasks[0]).await.is_ok();
+        let alive = session.info().alive;
+        // Always release the owned child, including on the pre-fix timeout.
+        let _ = session.kill(libc::SIGKILL);
+        let _ = session.wait_for_exit(Duration::from_secs(5));
+        assert!(waiter_released, "disconnected mutex waiter retained connection permit");
+        assert!(writer_released, "shutdown retained blocked input connection permit");
+        assert!(alive, "connection teardown killed durable session");
+        assert_eq!(permits.available_permits(), 2);
+    }
+
+    #[tokio::test]
+    async fn saturated_input_closes_connection_and_discards_queued_bytes_without_killing_session() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ready = dir.path().join("ready");
+        let (events, _) = broadcast::channel::<Event>(16);
+        let registry = Arc::new(Registry::new(events.clone()));
+        let session = registry.create(CreateOptions {
+            name: None, cwd: "/tmp".into(),
+            command: vec!["sh".into(), "-c".into(), format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display())],
+            env: vec![], cols: 80, rows: 24,
+        }).expect("session");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !ready.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.expect("raw mode ready");
+        let permits = Arc::new(Semaphore::new(1));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (mut client, server) = UnixStream::pair().expect("pair");
+        let task = tokio::spawn(handle_connection(
+            server, Arc::new(SessionRouter::new(registry.clone(), events.clone())),
+            registry, events.subscribe(), None, shutdown_rx,
+            permits.clone().acquire_owned().await.expect("permit"), None,
+        ));
+        write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
+            session_id: session.id(), data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
+        })).await.expect("blocked input");
+        // Small frames coalesce; saturation is byte-bounded, so queue full
+        // payloads until the per-connection budget is exhausted.
+        // The broker may close before the last write lands (EPIPE).
+        for _ in 0..=INPUT_QUEUE_CAPACITY {
+            if write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
+                session_id: session.id(), data: vec![b'y'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
+            })).await.is_err() { break; }
+        }
+        let reclaimed = tokio::time::timeout(Duration::from_secs(2), task).await;
+        let alive = session.info().alive;
+        let _ = session.kill(libc::SIGKILL);
+        let _ = session.wait_for_exit(Duration::from_secs(5));
+        drop(shutdown_tx);
+        reclaimed.expect("input overload must promptly close, not stall the frame reader").expect("connection task");
+        assert_eq!(permits.available_permits(), 1);
+        assert!(alive, "overload killed durable session");
+    }
+
+    #[tokio::test]
+    async fn input_admission_accounts_inflight_bytes_and_releases_them_on_cancel() {
+        let (events, _) = broadcast::channel::<Event>(16);
+        let registry = Registry::new(events);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ready = dir.path().join("ready");
+        let session = registry.create(CreateOptions {
+            name: None, cwd: "/tmp".into(),
+            command: vec!["sh".into(), "-c".into(), format!("stty raw -echo; : > '{}'; exec sleep 30", ready.display())],
+            env: vec![], cols: 80, rows: 24,
+        }).expect("session");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !ready.exists() { tokio::time::sleep(std::time::Duration::from_millis(10)).await; }
+        }).await.expect("raw mode ready");
+        let mut input = ConnectionInput::new();
+        let bytes = vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16];
+        assert!(input.submit(InputFrame { session_id: session.id(), data: bytes.clone() }, &registry));
+        assert!(input.bytes.available_permits() <= INPUT_QUEUE_MAX_BYTES - bytes.len());
+        assert!(input.submit(InputFrame { session_id: session.id(), data: b"queued".to_vec() }, &registry));
+        assert_eq!(input.pending[&session.id()].len(), 1);
+        // A burst of small frames behind an in-flight write coalesces into the
+        // queued tail instead of consuming one lane slot per frame.
+        for _ in 0..INPUT_QUEUE_CAPACITY * 4 {
+            assert!(input.submit(InputFrame { session_id: session.id(), data: b"k".to_vec() }, &registry));
+        }
+        assert_eq!(input.pending[&session.id()].len(), 1);
+        assert_eq!(input.pending[&session.id()][0].data.len(), b"queued".len() + INPUT_QUEUE_CAPACITY * 4);
+        input.cancel().await;
+        assert_eq!(input.bytes.available_permits(), INPUT_QUEUE_MAX_BYTES);
+        assert!(input.pending.is_empty());
+        assert!(input.tasks.is_empty());
+        let _ = session.kill(libc::SIGKILL);
+        let _ = session.wait_for_exit(std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn shutdown_reclaims_a_connection_whose_peer_stopped_reading() {
+        use std::os::fd::AsRawFd;
+        use std::time::Duration;
+        let (events, event_rx) = broadcast::channel::<Event>(16);
+        let registry = Arc::new(Registry::new(events.clone()));
+        let (client, server) = UnixStream::pair().expect("pair");
+        let buffer_size: libc::c_int = 1024;
+        // A control frame larger than the kernel buffer leaves the actual
+        // socket writer inside write_all while the peer deliberately won't read.
+        assert_eq!(unsafe { libc::setsockopt(server.as_raw_fd(), libc::SOL_SOCKET, libc::SO_SNDBUF,
+            &buffer_size as *const _ as *const libc::c_void, std::mem::size_of_val(&buffer_size) as libc::socklen_t) }, 0);
+        let permits = Arc::new(Semaphore::new(1));
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(handle_connection(
+            server, Arc::new(SessionRouter::new(registry.clone(), events.clone())),
+            registry, event_rx, None, shutdown_rx,
+            permits.clone().acquire_owned().await.expect("permit"), None,
+        ));
+        events.send(Event::SessionStarted { session: crate::protocol::SessionInfo {
+            id: Uuid::new_v4(), name: "slow-reader".into(), cwd: "/tmp".into(),
+            command: vec!["x".repeat(128 * 1024)], env: vec![], cols: 80, rows: 24,
+            pid: None, started_at_ms: 0, alive: true, exit_code: None, output_seq: None, program_status: None,
+        }}).expect("event");
+        tokio::time::timeout(Duration::from_secs(2), client.readable()).await.expect("writer never started").expect("readable");
+        shutdown_tx.send(true).expect("shutdown");
+        tokio::time::timeout(Duration::from_secs(2), task).await.expect("blocked writer pinned connection").expect("connection task");
+        assert_eq!(permits.available_permits(), 1);
     }
 
     #[test]

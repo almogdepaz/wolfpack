@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
+import { rebuildTaskState } from "../../src/tasks/domain.ts";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -155,6 +157,83 @@ describe("task append-only store", () => {
     })).resolves.toMatchObject({ kind: "conflict", code: "IMMUTABLE_CONTENT_CONFLICT" });
   });
 
+  test("batches only derived writes while every accepted append is already fsynced", async () => {
+    const root = testRoot();
+    let durableAppends = 0;
+    const store = new TaskStore({ root, testHooks: { beforeFsync: undefined, afterFsync: step => { if (step === "ledger-file") durableAppends++; } } });
+    const ledger = await createSender(store, "task-derived-batch");
+    durableAppends = 0;
+    const rename = spyOn(fs, "renameSync");
+    try {
+      for (let index = 0; index < 3; index++) {
+        await store.appendDiagnostic(ledger, { id: `diagnostic-${index}`, code: "probe", message: "durable", occurredAt: "2026-08-03T00:00:00.000Z" });
+        expect(durableAppends).toBe(index + 1);
+      }
+      expect(rename.mock.calls.filter(([, path]) => path === ledger.paths.cachePath)).toHaveLength(0);
+      expect(rename.mock.calls.filter(([, path]) => path === ledger.paths.inboxIndexPath)).toHaveLength(0);
+      await store.appendInboxRecord(ledger, { id: "inbox-batch", eventId: "diagnostic-0", occurredAt: "2026-08-03T00:00:00.000Z" });
+      expect(durableAppends).toBe(4);
+      expect(readFileSync(ledger.paths.ledgerPath, "utf8").trim().split("\n")).toHaveLength(5);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(rename.mock.calls.filter(([, path]) => path === ledger.paths.cachePath)).toHaveLength(1);
+      expect(rename.mock.calls.filter(([, path]) => path === ledger.paths.inboxIndexPath)).toHaveLength(1);
+      expect(JSON.parse(readFileSync(ledger.paths.cachePath, "utf8")).records).toHaveLength(4);
+      const restarted = new TaskStore({ root });
+      expect((await restarted.getLedger(ledger.key))?.records).toHaveLength(4);
+      expect((await restarted.inboxAfter("0")).events).toHaveLength(1);
+    } finally { rename.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("deferred derived persistence cannot resurrect a removed store root", async () => {
+    const root = testRoot(), store = new TaskStore({ root });
+    const ledger = await createSender(store, "task-removed-root");
+    await store.appendInboxRecord(ledger, { id: "inbox-removed-root", eventId: "event", occurredAt: "2026-08-03T00:00:00.000Z" });
+    rmSync(root, { recursive: true, force: true });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const resurrected = existsSync(root);
+    rmSync(root, { recursive: true, force: true });
+    expect(resurrected).toBe(false);
+  });
+
+  test("a deferred cache failure cannot undo accepted records or restart recovery", async () => {
+    const root = testRoot(), store = new TaskStore({ root });
+    try {
+      const ledger = await createSender(store, "task-deferred-cache-failure");
+      rmSync(ledger.paths.cachePath); mkdirSync(ledger.paths.cachePath);
+      await expect(store.appendEvent(ledger, createdEvent(ledger.key.taskId))).resolves.toMatchObject({ kind: "appended" });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(readFileSync(ledger.paths.ledgerPath, "utf8")).toContain(createdEvent(ledger.key.taskId).id);
+      expect((await new TaskStore({ root }).getLedger(ledger.key))?.state.events).toHaveLength(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("incremental mutation preserves replay validation and earlier ledger snapshots", async () => {
+    const root = testRoot(), store = new TaskStore({ root });
+    const empty = await createSender(store, "task-incremental");
+    await store.appendEvent(empty, createdEvent(empty.key.taskId));
+    const first = (await store.getLedger(empty.key))!;
+    const before = readFileSync(empty.paths.ledgerPath, "utf8");
+    for (const invalid of [
+      { ...receivedEvent(empty.key.taskId), sequence: "9" },
+      { ...receivedEvent(empty.key.taskId), source: PARENT },
+      { ...receivedEvent(empty.key.taskId), destination: RECEIVER },
+    ]) await expect(store.appendEvent(empty, invalid)).rejects.toMatchObject({ code: "STORE_UNAVAILABLE" });
+    expect(readFileSync(empty.paths.ledgerPath, "utf8")).toBe(before);
+    await store.appendEvent(empty, receivedEvent(empty.key.taskId));
+    await store.appendDiagnostic(empty, { id: "diagnostic", code: "probe", message: "stable state", occurredAt: "2026-08-03T00:00:00.000Z" });
+    const current = (await store.getLedger(empty.key))!;
+    expect(current.state).toEqual(rebuildTaskState(empty.key.taskId, PARTICIPANTS, [createdEvent(empty.key.taskId), receivedEvent(empty.key.taskId)]));
+    expect(empty.records).toHaveLength(0);
+    expect(first.records).toHaveLength(1);
+    expect(first.state.events).toHaveLength(1);
+    expect(current.records).toHaveLength(3);
+    await expect(store.appendDiagnostic(empty, { id: "diagnostic", code: "probe", message: "stable state", occurredAt: "2026-08-03T00:00:00.000Z" })).resolves.toMatchObject({ kind: "reused" });
+    await expect(store.appendDiagnostic(empty, { id: "diagnostic", code: "probe", message: "changed", occurredAt: "2026-08-03T00:00:00.000Z" })).resolves.toMatchObject({ kind: "conflict" });
+    await expect(store.appendDiagnostic(empty, { id: createdEvent(empty.key.taskId).id, code: "probe", message: "different kind", occurredAt: "2026-08-03T00:00:00.000Z" })).resolves.toMatchObject({ kind: "conflict" });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    rmSync(root, { recursive: true, force: true });
+  });
+
   test("allocates unique ordered machine delivery sequences across concurrent tasks", async () => {
     const root = testRoot();
     const store = new TaskStore({ root });
@@ -167,6 +246,22 @@ describe("task append-only store", () => {
 
     const sequences = records.map((record) => record.deliverySequence).sort((left, right) => Number(left) - Number(right));
     expect(sequences).toEqual(["1", "2"]);
+  });
+
+  test("startup indexes all ledgers before writing the shared inbox projection once", async () => {
+    const root = testRoot(), store = new TaskStore({ root });
+    for (let index = 0; index < 3; index++) {
+      const ledger = await createSender(store, `task-startup-${index}`);
+      await store.appendInboxRecord(ledger, { id: `inbox-${index}`, eventId: `event-${index}`, occurredAt: "2026-08-03T00:00:00.000Z" });
+    }
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const rename = spyOn(fs, "renameSync");
+    try {
+      const restarted = new TaskStore({ root });
+      const inbox = await restarted.inboxAfter("0");
+      expect(inbox.events.map(entry => entry.deliverySequence)).toEqual(["1", "2", "3"]);
+      expect(rename.mock.calls.filter(([, path]) => path === taskStorePaths(root).inboxIndexPath)).toHaveLength(1);
+    } finally { rename.mockRestore(); rmSync(root, { recursive: true, force: true }); }
   });
 
   test("rebuilds derived state and inbox index from ledgers when caches are absent or stale", async () => {

@@ -4,7 +4,9 @@ import * as fs from "node:fs";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { ExtensionRuntime } from "../../src/extensions/runtime.ts";
+import { ExtensionDocumentStore, compileStaticDocumentSchema } from "../../src/extensions/document-contract.ts";
 import { ExtensionRouteService } from "../../src/server/extension-routes.ts";
 import type { SessionBackend } from "../../src/server/backend-contract.ts";
 
@@ -31,6 +33,70 @@ describe("extension runtime integration", () => {
       (runtime as any).declarations(installation.snapshot);
       expect(open.mock.calls.filter(([path]) => path === join(installation.snapshot, "schemas/context.json"))).toHaveLength(1);
     } finally { open.mockRestore(); }
+  });
+
+  test("document publication verifies once before preparation and again after writable authority", async () => {
+    const base = root(), runtime = new ExtensionRuntime({ root: join(base, "runtime") });
+    await runtime.install({ source: fixture(base), trustBrowserCode: true });
+    const service = new ExtensionRouteService({ runtime, backend });
+    const registry = spyOn(runtime as any, "registry");
+    try {
+      const body = { sessionId, document: { schemaVersion: 1, goal: "saved" }, ifRevision: 0, requestId: "c0a80123-1234-4234-9234-123456789abc", schemaVersion: 1 };
+      const first = await fetchThrough(service, "POST", "/api/extensions/documents/fixture/context", body);
+      expect(first.status).toBe(200);
+      expect(registry).toHaveBeenCalledTimes(2);
+      registry.mockClear();
+      const duplicate = await fetchThrough(service, "POST", "/api/extensions/documents/fixture/context", body);
+      expect(duplicate.body).toEqual(first.body);
+      expect(registry).toHaveBeenCalledTimes(1);
+      registry.mockClear();
+      expect((await fetchThrough(service, "GET", `/api/extensions/documents/fixture/context?session=${sessionId}`)).status).toBe(200);
+      expect(registry).toHaveBeenCalledTimes(1);
+    } finally { registry.mockRestore(); }
+  });
+
+  test.each(["GET", "DELETE"] as const)("blob %s reuses only the same-stack declaration verification", async method => {
+    const { ExtensionBlobStore } = await import("../../src/extensions/blob-store.ts");
+    const base = root(), source = fixture(base);
+    const manifest = JSON.parse(readFileSync(join(source, "package.json"), "utf8"));
+    manifest.wolfpack.blobs = { maxBlobBytes: 64 };
+    writeFileSync(join(source, "package.json"), JSON.stringify(manifest));
+    const runtime = new ExtensionRuntime({ root: join(base, "runtime") });
+    await runtime.install({ source, trustBrowserCode: true });
+    const bytes = Buffer.from("null"), digest = createHash("sha256").update(bytes).digest("hex");
+    new ExtensionBlobStore({ root: runtime.root }).put({ installationId: runtime.installationId, extensionId: "fixture" }, digest, bytes, 64);
+    const registry = spyOn(runtime as any, "registry");
+    try {
+      const response = await fetchThrough(new ExtensionRouteService({ runtime, backend }), method,
+        `/api/extensions/blobs/fixture/${digest}${method === "DELETE" ? `?session=${sessionId}` : ""}`);
+      expect(response.status).toBe(200);
+      expect(registry).toHaveBeenCalledTimes(method === "GET" ? 1 : 2);
+    } finally { registry.mockRestore(); }
+  });
+
+  test("publication still detects a tampered previous snapshot after the writable-scope await", async () => {
+    const base = root(), runtime = new ExtensionRuntime({ root: join(base, "runtime") });
+    const first = await runtime.install({ source: fixture(base), trustBrowserCode: true });
+    await runtime.install({ source: fixture(base, "1.1.0"), trustBrowserCode: true });
+    const service = new ExtensionRouteService({ runtime, backend: { async listSessionFacts() {
+      writeFileSync(join(first.installation.snapshot, "dist/ui.js"), "tampered during authority await");
+      return backend.listSessionFacts();
+    } } });
+    const result = await fetchThrough(service, "POST", "/api/extensions/documents/fixture/context", {
+      sessionId, document: { schemaVersion: 1, goal: "not committed" }, ifRevision: 0, requestId: "c0a80123-1234-4234-9234-123456789abc", schemaVersion: 1,
+    });
+    expect(result.status).not.toBe(200);
+    expect(fs.existsSync(join(runtime.root, "documents"))).toBe(false);
+  });
+
+  test("publication keeps invalid schema-version precedence when an extension is disabled", async () => {
+    const base = root(), runtime = new ExtensionRuntime({ root: join(base, "runtime") });
+    await runtime.install({ source: fixture(base), trustBrowserCode: true });
+    runtime.setEnabled("fixture", false);
+    const service = new ExtensionRouteService({ runtime, backend });
+    const body = { sessionId, document: { schemaVersion: 1, goal: "blocked" }, ifRevision: 0, requestId: "c0a80123-1234-4234-9234-123456789abc", schemaVersion: 2 };
+    expect((await fetchThrough(service, "POST", "/api/extensions/documents/fixture/context", body)).status).toBe(400);
+    expect((await fetchThrough(service, "POST", "/api/extensions/documents/fixture/context", { ...body, schemaVersion: 1 })).status).toBe(409);
   });
 
   test("catalog/assets never compile, validators reuse verified bytes with bounded retention and tampering still fails", async () => {
@@ -71,6 +137,25 @@ describe("extension runtime integration", () => {
     runtime.remove("fixture"); runtime.purge("fixture");
     expect(runtime.catalog().installations).toEqual([]);
   });
+  test("purge recovers only private document crash temporaries and retains other documents", async () => {
+    const base = root(), runtimeRoot = join(base, "runtime");
+    const runtime = new ExtensionRuntime({ root: runtimeRoot });
+    await runtime.install({ source: fixture(base), trustBrowserCode: true });
+    const store = new ExtensionDocumentStore({ root: runtimeRoot });
+    const key = { installationId: runtime.installationId, scopeSessionId: sessionId, extensionId: "fixture", documentId: "context" };
+    const request = { key, document: { schemaVersion: 1, goal: "saved" }, ifRevision: 0, schemaVersion: 1, requestId: "11111111-1111-4111-8111-111111111111" };
+    const schema = compileStaticDocumentSchema(true);
+    await store.publish(request, schema);
+    await store.publish({ ...request, key: { ...key, extensionId: "other" } }, schema);
+    const docs = join(runtimeRoot, "documents"), record = fs.readdirSync(docs)[0]!;
+    writeFileSync(join(docs, `${record}.tmp-123-abcdef012345`), "partial", { mode: 0o600 });
+    new ExtensionRuntime({ root: runtimeRoot }).purge("fixture");
+    expect(store.read(key)).toBeNull();
+    expect(store.read({ ...key, extensionId: "other" })?.revision).toBe(1);
+    expect(fs.readdirSync(docs)).toHaveLength(1);
+    expect(runtime.catalog().installations).toEqual([]);
+  });
+
   test("reclaims superseded snapshots on update and leaves none after purge", async () => {
     const base = root(); const runtimeRoot = join(base, "runtime"); const runtime = new ExtensionRuntime({ root: runtimeRoot });
     const snapshots = () => fs.readdirSync(join(runtimeRoot, "snapshots")).filter((name) => !name.startsWith(".")).sort();

@@ -1,0 +1,248 @@
+--- a/dist/ghostty-web.js
++++ b/dist/ghostty-web.js
+@@ -1339,6 +1339,7 @@
+ const RENDER_COLOR_CACHE_LIMIT = 256;
+ class $ {
+   constructor(A, B = {}) {
++    this.renderSuspended = !!B.renderSuspended;
+     this.synchronizedOutputStartedAt = null, this.resizePresentationDeadline = null, this.pendingForcedRender = false;
+     this.lastCursorVisible = null, this.lastCursorStyle = null, this.lastCursorColor = null, this.lastScrollbackLength = 0, this.lastFont = null, this.lastFillStyle = null, this.colorCache = new Map();
+     this.cursorVisible = !0, this.lastCursorPosition = { x: 0, y: 0 }, this.lastViewportY = 0, this.currentBuffer = null, this.currentSelectionCoords = null, this.hoveredHyperlinkId = 0, this.previousHoveredHyperlinkId = 0, this.hoveredLinkRange = null, this.previousHoveredLinkRange = null, this.scrollbarTrack = null, this.scrollbarThumb = null, this.canvas = A;
+@@ -1405,6 +1406,7 @@
+    * Resize canvas to fit terminal dimensions
+    */
+   resize(A, B) {
++    if (this.renderSuspended) { this.pendingForcedRender = true; return; }
+     if (this.resizePresentationPending() || this.currentBuffer && this.synchronizedOutputPending(this.currentBuffer)) {
+       this.pendingForcedRender = true;
+       return;
+@@ -1444,6 +1446,7 @@
+    * Render the terminal buffer to canvas
+    */
+   render(A, B = !1, g = 0, E, C = 1) {
++    if (this.renderSuspended) { this.pendingForcedRender = true; return; }
+     var U;
+     this.currentBuffer = A;
+     if (g !== this.lastViewportY) this.resumeResizePresentation();
+@@ -1659,6 +1662,7 @@
+   // Cursor Blinking
+   // ==========================================================================
+   startCursorBlink() {
++    if (this.renderSuspended || this.cursorBlinkInterval !== void 0) return;
+     this.cursorBlinkInterval = window.setInterval(() => {
+       this.cursorVisible = !this.cursorVisible;
+     }, 530);
+@@ -1666,6 +1670,13 @@
+   stopCursorBlink() {
+     this.cursorBlinkInterval !== void 0 && (clearInterval(this.cursorBlinkInterval), this.cursorBlinkInterval = void 0), this.cursorVisible = !0;
+   }
++  setRenderSuspended(suspended) {
++    if (this.renderSuspended === suspended) return;
++    this.renderSuspended = suspended;
++    this.pendingForcedRender = true;
++    if (suspended) this.stopCursorBlink();
++    else if (this.cursorBlink) this.startCursorBlink();
++  }
+   // ==========================================================================
+   // Public API
+   // ==========================================================================
+@@ -1796,6 +1807,7 @@
+    * Clear entire canvas
+    */
+   clear() {
++    if (this.renderSuspended) { this.pendingForcedRender = true; return; }
+     this.ctx.fillStyle = this.theme.background, this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+   }
+   /**
+@@ -2227,6 +2239,7 @@
+         return "15.1";
+       }
+     }, this.dataEmitter = new J(), this.resizeEmitter = new J(), this.bellEmitter = new J(), this.selectionChangeEmitter = new J(), this.keyEmitter = new J(), this.titleChangeEmitter = new J(), this.scrollEmitter = new J(), this.renderEmitter = new J(), this.cursorMoveEmitter = new J(), this.onData = this.dataEmitter.event, this.onResize = this.resizeEmitter.event, this.onBell = this.bellEmitter.event, this.onSelectionChange = this.selectionChangeEmitter.event, this.onKey = this.keyEmitter.event, this.onTitleChange = this.titleChangeEmitter.event, this.onScroll = this.scrollEmitter.event, this.onRender = this.renderEmitter.event, this.onCursorMove = this.cursorMoveEmitter.event, this.isOpen = !1, this.isDisposed = !1, this.addons = [], this.currentTitle = "", this.viewportY = 0, this.targetViewportY = 0, this.lastCursorY = 0, this.isDraggingScrollbar = !1, this.scrollbarDragStart = null, this.scrollbarDragStartViewportY = 0, this.scrollbarVisible = !1, this.scrollbarOpacity = 0, this.SCROLLBAR_HIDE_DELAY_MS = 1500, this.SCROLLBAR_FADE_DURATION_MS = 200, this.animateScroll = () => {
++      if (this.isDisposed || this.renderingSuspended) return;
+       if (!this.wasmTerm || this.scrollAnimationStartTime === void 0)
+         return;
+       const g = this.options.smoothScrollDuration ?? 100, E = this.targetViewportY - this.viewportY;
+@@ -2459,6 +2472,7 @@
+       }), this.canvas.addEventListener("touchend", (E) => {
+         E.preventDefault(), g.focus();
+       }), this.renderer = new $(this.canvas, {
++        renderSuspended: this.renderingSuspended,
+         fontSize: this.options.fontSize,
+         fontFamily: this.options.fontFamily,
+         cursorStyle: this.options.cursorStyle,
+@@ -2517,7 +2531,7 @@
+     if (resizePending) this.wasmTerm.update(), this.wasmTerm.markClean();
+     this.wasmTerm.write(A);
+     if (resizePending && this.wasmTerm.isDirty()) this.renderer.resumeResizePresentation();
+-    this.renderer.synchronizedOutputPending(this.wasmTerm), this.processTerminalResponses(), typeof A == "string" && A.includes("\x07") ? this.bellEmitter.fire() : A instanceof Uint8Array && A.includes(7) && this.bellEmitter.fire(), (g = this.linkDetector) == null || g.invalidateCache(), this.viewportY !== 0 && this.scrollToBottom(), typeof A == "string" && A.includes("\x1B]") && this.checkForTitleChange(A), B && requestAnimationFrame(B);
++    this.renderer.synchronizedOutputPending(this.wasmTerm), this.processTerminalResponses(), typeof A == "string" && A.includes("\x07") ? this.bellEmitter.fire() : A instanceof Uint8Array && A.includes(7) && this.bellEmitter.fire(), (g = this.linkDetector) == null || g.invalidateCache(), this.viewportY !== 0 && this.scrollToBottom(), typeof A == "string" && A.includes("\x1B]") && this.checkForTitleChange(A), B && (this.renderingSuspended ? queueMicrotask(B) : requestAnimationFrame(B));
+   }
+   /**
+    * Write data with newline
+@@ -2575,9 +2589,9 @@
+    * Focus terminal input
+    */
+   focus() {
+-    this.isOpen && this.element && (this.element.focus({ preventScroll: !0 }), setTimeout(() => {
++    this.isOpen && !this.renderingSuspended && this.element && (this.element.focus({ preventScroll: !0 }), setTimeout(() => {
+       var A;
+-      (A = this.element) == null || A.focus({ preventScroll: !0 });
++      if (this.isOpen && !this.renderingSuspended) (A = this.element) == null || A.focus({ preventScroll: !0 });
+     }, 0));
+   }
+   /**
+@@ -2738,6 +2752,8 @@
+    * @param targetY Target viewport Y position (in lines, can be fractional)
+    */
+   smoothScrollTo(A) {
++    if (this.isDisposed) return;
++    if (this.renderingSuspended) { this.scrollToLine(A); return; }
+     if (!this.wasmTerm)
+       return;
+     const B = this.getScrollbackLength(), E = Math.max(0, Math.min(B, A));
+@@ -2755,24 +2771,61 @@
+    */
+   dispose() {
+     if (!this.isDisposed) {
++      this.suspendRendering();
+       this.isDisposed = !0, this.isOpen = !1, this.animationFrameId && (cancelAnimationFrame(this.animationFrameId), this.animationFrameId = void 0), this.scrollAnimationFrame && (cancelAnimationFrame(this.scrollAnimationFrame), this.scrollAnimationFrame = void 0), this.mouseMoveThrottleTimeout && (clearTimeout(this.mouseMoveThrottleTimeout), this.mouseMoveThrottleTimeout = void 0), this.pendingMouseMove = void 0;
+       for (const A of this.addons)
+         A.dispose();
+       this.addons = [], this.cleanupComponents(), this.dataEmitter.dispose(), this.resizeEmitter.dispose(), this.bellEmitter.dispose(), this.selectionChangeEmitter.dispose(), this.keyEmitter.dispose(), this.titleChangeEmitter.dispose(), this.scrollEmitter.dispose(), this.renderEmitter.dispose(), this.cursorMoveEmitter.dispose();
+     }
+   }
++  /** Wolfpack-supported API, not an upstream ghostty-web contract.
++   * Suspend presentation only: writes, parser state and protocol replies stay live.
++   * While suspended, write callbacks complete after parsing via a microtask. */
++  get renderingSuspended() { return !!this.renderSuspended; }
++  suspendRendering() {
++    if (this.isDisposed || this.renderingSuspended) return;
++    this.renderSuspended = true;
++    this.renderLoopGeneration = (this.renderLoopGeneration ?? 0) + 1;
++    if (this.animationFrameId !== void 0) cancelAnimationFrame(this.animationFrameId);
++    if (this.scrollAnimationFrame !== void 0) cancelAnimationFrame(this.scrollAnimationFrame);
++    if (this.scrollbarAnimationFrame !== void 0) cancelAnimationFrame(this.scrollbarAnimationFrame);
++    this.animationFrameId = this.scrollAnimationFrame = this.scrollbarAnimationFrame = void 0;
++    this.scrollAnimationStartTime = this.scrollAnimationStartY = void 0;
++    this.targetViewportY = this.viewportY;
++    if (this.scrollbarHideTimeout !== void 0) clearTimeout(this.scrollbarHideTimeout);
++    this.scrollbarHideTimeout = void 0;
++    if (this.mouseMoveThrottleTimeout !== void 0) clearTimeout(this.mouseMoveThrottleTimeout);
++    this.mouseMoveThrottleTimeout = this.pendingMouseMove = void 0;
++    this.isDraggingScrollbar = false;
++    this.scrollbarDragStart = null;
++    if (this.selectionManager) { this.selectionManager.stopAutoScroll(); this.selectionManager.isSelecting = false; }
++    this.renderer?.setRenderSuspended(true);
++  }
++  resumeRendering() {
++    if (this.isDisposed || !this.renderingSuspended) return;
++    this.renderSuspended = false;
++    this.renderer?.setRenderSuspended(false);
++    if (this.isOpen) {
++      if (this.scrollbarVisible) this.showScrollbar();
++      this.startRenderLoop();
++    }
++  }
+   // ==========================================================================
+   // Private Methods
+   // ==========================================================================
+-  /**
+-   * Start the render loop
+-   */
++  /** Start exactly one presentation loop; generation fences reentrant teardown. */
+   startRenderLoop() {
++    if (this.isDisposed || !this.isOpen || this.renderingSuspended || this.animationFrameId !== void 0) return;
++    const generation = this.renderLoopGeneration = (this.renderLoopGeneration ?? 0) + 1;
+     const A = () => {
+-      if (!this.isDisposed && this.isOpen) {
++      if (generation !== this.renderLoopGeneration) return;
++      this.animationFrameId = void 0;
++      if (!this.isDisposed && this.isOpen && !this.renderingSuspended && generation === this.renderLoopGeneration) {
+         this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
+         const B = this.wasmTerm.getCursor();
+-        B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire()), this.animationFrameId = requestAnimationFrame(A);
++        B.y !== this.lastCursorY && (this.lastCursorY = B.y, this.cursorMoveEmitter.fire());
++        if (!this.isDisposed && this.isOpen && !this.renderingSuspended && generation === this.renderLoopGeneration)
++          this.animationFrameId = requestAnimationFrame(A);
+       }
+     };
+     A();
+@@ -2874,6 +2927,7 @@
+    * Show scrollbar with fade-in and schedule auto-hide
+    */
+   showScrollbar() {
++    if (this.isDisposed || this.renderingSuspended) return;
+     this.scrollbarHideTimeout && (window.clearTimeout(this.scrollbarHideTimeout), this.scrollbarHideTimeout = void 0), this.scrollbarVisible ? this.scrollbarOpacity = 1 : (this.scrollbarVisible = !0, this.scrollbarOpacity = 0, this.fadeInScrollbar()), this.isDraggingScrollbar || (this.scrollbarHideTimeout = window.setTimeout(() => {
+       this.hideScrollbar();
+     }, this.SCROLLBAR_HIDE_DELAY_MS));
+@@ -2882,15 +2936,20 @@
+    * Hide scrollbar with fade-out
+    */
+   hideScrollbar() {
++    if (this.isDisposed || this.renderingSuspended) return;
+     this.scrollbarHideTimeout && (window.clearTimeout(this.scrollbarHideTimeout), this.scrollbarHideTimeout = void 0), this.scrollbarVisible && this.fadeOutScrollbar();
+   }
+   /**
+    * Fade in scrollbar
+    */
+   fadeInScrollbar() {
++    if (this.scrollbarAnimationFrame !== void 0) cancelAnimationFrame(this.scrollbarAnimationFrame);
+     const A = Date.now(), B = () => {
++      this.scrollbarAnimationFrame = void 0;
++      if (this.isDisposed || this.renderingSuspended) return;
+       const g = Date.now() - A, E = Math.min(g / this.SCROLLBAR_FADE_DURATION_MS, 1);
+-      this.scrollbarOpacity = E, this.renderer && this.wasmTerm && this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity), E < 1 && requestAnimationFrame(B);
++      this.scrollbarOpacity = E, this.renderer && this.wasmTerm && this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
++      if (E < 1) this.scrollbarAnimationFrame = requestAnimationFrame(B);
+     };
+     B();
+   }
+@@ -2898,9 +2957,14 @@
+    * Fade out scrollbar
+    */
+   fadeOutScrollbar() {
++    if (this.scrollbarAnimationFrame !== void 0) cancelAnimationFrame(this.scrollbarAnimationFrame);
+     const A = Date.now(), B = this.scrollbarOpacity, g = () => {
++      this.scrollbarAnimationFrame = void 0;
++      if (this.isDisposed || this.renderingSuspended) return;
+       const E = Date.now() - A, C = Math.min(E / this.SCROLLBAR_FADE_DURATION_MS, 1);
+-      this.scrollbarOpacity = B * (1 - C), this.renderer && this.wasmTerm && this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity), C < 1 ? requestAnimationFrame(g) : (this.scrollbarVisible = !1, this.scrollbarOpacity = 0, this.renderer && this.wasmTerm && this.renderer.render(this.wasmTerm, !1, this.viewportY, this, 0));
++      this.scrollbarOpacity = B * (1 - C), this.renderer && this.wasmTerm && this.renderer.render(this.wasmTerm, !1, this.viewportY, this, this.scrollbarOpacity);
++      if (C < 1) this.scrollbarAnimationFrame = requestAnimationFrame(g);
++      else { this.scrollbarVisible = !1; this.scrollbarOpacity = 0; this.renderer && this.wasmTerm && this.renderer.render(this.wasmTerm, !1, this.viewportY, this, 0); }
+     };
+     g();
+   }
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -43,6 +43,8 @@
+     resumeResizePresentation(): void;
+     resizePresentationPending(): boolean;
+     synchronizedOutputPending(buffer: IRenderable): boolean;
++    /** Wolfpack build-stage extension: suspend canvas/blink work, not parsing. */
++    setRenderSuspended(suspended: boolean): void;
+     /**
+      * Render a single line using two-pass approach:
+      * 1. First pass: Draw all cell backgrounds
+@@ -1271,6 +1273,8 @@
+ }
+ 
+ export declare interface RendererOptions {
++    /** Wolfpack build-stage option used for a terminal suspended before open. */
++    renderSuspended?: boolean;
+     fontSize?: number;
+     fontFamily?: string;
+     cursorStyle?: 'block' | 'underline' | 'bar';
+@@ -1699,6 +1703,12 @@
+      * Dispose terminal and clean up resources
+      */
+     dispose(): void;
++    /** Wolfpack-supported build-stage API, not an upstream ghostty-web API. */
++    readonly renderingSuspended: boolean;
++    /** Stops presentation; parser/query replies stay live. Write callbacks complete after parsing while parked. */
++    suspendRendering(): void;
++    /** Restores one render loop and invalidates the first visible frame. Idempotent, including after disposal. */
++    resumeRendering(): void;
+     /**
+      * Start the render loop
+      */

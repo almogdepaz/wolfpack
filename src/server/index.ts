@@ -115,61 +115,67 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
   });
 
   const server = createServer(async (req, res) => {
-    const directOrigin = req.headers.origin;
-    const recoveredServeOrigin = directOrigin
-      ? undefined
-      : originPolicy.recoverTailscaleServeOrigin({
-          fromLoopback: isLoopbackAddress(req.socket.remoteAddress),
-          tailscaleUserLogin: req.headers["tailscale-user-login"],
-          referer: req.headers.referer,
-        });
-    const origin = directOrigin ?? recoveredServeOrigin;
-    res.setHeader("Vary", directOrigin ? "Origin" : "Origin, Referer, Tailscale-User-Login");
-    if (origin) {
-      if (isAllowedOrigin(origin)) {
-        res.setHeader("Access-Control-Allow-Origin", origin);
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      } else {
-        res.writeHead(403, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "origin not allowed" }));
-        return;
-      }
-    }
-
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    const url = new URL(req.url ?? "/", "http://localhost");
-    const client = classifyRequestClient({
-      remoteAddress: req.socket.remoteAddress,
-      tailscaleUserLogin: req.headers["tailscale-user-login"],
-    });
-    const operationalPath = url.pathname === "/api/health" || url.pathname === "/api/metrics" || url.pathname === "/metrics";
-    const localOperationalRequest = operationalPath && client.isDirectLoopback;
-    if ((shouldAuthenticateApiPath(url.pathname) || url.pathname === "/metrics") && !localOperationalRequest) {
-      const auth = validateRequestJwt(req.headers, url, false);
-      if (!auth.ok) {
-        log.debug("jwt auth failed", { path: url.pathname, reason: auth.error });
-        writeUnauthorized(res);
-        return;
-      }
-    }
-
-    // Rate limiting — per-IP, checked before route dispatch
-    if (!globalRateLimiter.allow(client.clientKey)) {
-      json(res, { error: "rate limit exceeded" }, 429);
-      return;
-    }
-    if (POLL_HEAVY_PATHS.has(url.pathname) && !pollRateLimiter.allow(client.clientKey)) {
-      json(res, { error: "rate limit exceeded" }, 429);
-      return;
-    }
-
     try {
+      const directOrigin = req.headers.origin;
+      const recoveredServeOrigin = directOrigin
+        ? undefined
+        : originPolicy.recoverTailscaleServeOrigin({
+            fromLoopback: isLoopbackAddress(req.socket.remoteAddress),
+            tailscaleUserLogin: req.headers["tailscale-user-login"],
+            referer: req.headers.referer,
+          });
+      const origin = directOrigin ?? recoveredServeOrigin;
+      res.setHeader("Vary", directOrigin ? "Origin" : "Origin, Referer, Tailscale-User-Login");
+      if (origin) {
+        if (isAllowedOrigin(origin)) {
+          res.setHeader("Access-Control-Allow-Origin", origin);
+          res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+          res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        } else {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "origin not allowed" }));
+          return;
+        }
+      }
+
+      if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
+      let url: URL;
+      try {
+        url = new URL(req.url ?? "/", "http://localhost");
+      } catch {
+        json(res, { error: "invalid request URL" }, 400);
+        return;
+      }
+      const client = classifyRequestClient({
+        remoteAddress: req.socket.remoteAddress,
+        tailscaleUserLogin: req.headers["tailscale-user-login"],
+      });
+      const operationalPath = url.pathname === "/api/health" || url.pathname === "/api/metrics" || url.pathname === "/metrics";
+      const localOperationalRequest = operationalPath && client.isDirectLoopback;
+      if ((shouldAuthenticateApiPath(url.pathname) || url.pathname === "/metrics") && !localOperationalRequest) {
+        const auth = validateRequestJwt(req.headers, url, false);
+        if (!auth.ok) {
+          log.debug("jwt auth failed", { path: url.pathname, reason: auth.error });
+          writeUnauthorized(res);
+          return;
+        }
+      }
+
+      // Rate limiting — per-IP, checked before route dispatch
+      if (!globalRateLimiter.allow(client.clientKey)) {
+        json(res, { error: "rate limit exceeded" }, 429);
+        return;
+      }
+      if (POLL_HEAVY_PATHS.has(url.pathname) && !pollRateLimiter.allow(client.clientKey)) {
+        json(res, { error: "rate limit exceeded" }, 429);
+        return;
+      }
+
       if (await ctx.extensionRouteService.handle(req, res, url)) return;
       const key = `${req.method ?? "GET"} ${url.pathname}`;
       const handler = routes[key];
@@ -183,6 +189,7 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
     } catch (err) {
       log.error("route error", { error: String(err) });
       if (!res.headersSent) json(res, { error: "internal error" }, 500);
+      else if (!res.writableEnded) res.destroy();
     }
   });
 

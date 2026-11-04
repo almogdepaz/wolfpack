@@ -23,6 +23,7 @@ import {
   TASK_EVENT_TYPE,
   TASK_STATUS,
   acceptSenderEvent,
+  appendCanonicalTaskEvent,
   hashImmutableAssignment,
   rebuildTaskState,
 } from "./domain.ts";
@@ -54,9 +55,11 @@ export interface TaskLedgerKey {
 export interface TaskLedgerPaths {
   readonly root: string;
   readonly ledgerPath: string;
+  /** Rebuildable projection; append success does not promise immediate cache freshness. */
   readonly cachePath: string;
   readonly quarantinePath: string;
   readonly tombstonePath: string;
+  /** Rebuilt on startup, and coalesced only when authoritative inbox rows change. */
   readonly inboxIndexPath: string;
   readonly deliverySequencePath: string;
 }
@@ -477,6 +480,12 @@ function ledgerCache(ledger: TaskLedger): string {
 export class TaskStore {
   readonly root: string;
   readonly #ledgers = new Map<string, TaskLedger>();
+  readonly #recordIndexes = new Map<string, { readonly byId: Map<string, TaskLedgerRecord>; readonly outboundEventIds: Set<string> }>();
+  /** At most one dirty key per retained ledger and one timer per store; never a queue of snapshots. */
+  readonly #dirtyCaches = new Set<string>();
+  #inboxDirty = true;
+  #rebuilding = true;
+  #derivedFlushTimer: ReturnType<typeof setTimeout> | undefined;
   readonly #inbox = new Map<string, TaskInboxEntry>();
   readonly #idempotency = new Map<string, TaskScopedIdempotencyRecord>();
   readonly #taskLocks = new Map<string, Promise<void>>();
@@ -550,6 +559,9 @@ export class TaskStore {
         this.#testHooks?.afterFsync?.("ledger-directory", dirname(paths.ledgerPath));
         const ledger = await parseLedger(paths.ledgerPath);
         this.#setLedger(ledger);
+        // Preserve the initial inspectable cache artifact. Later appends coalesce;
+        // neither this cache nor its subsequent freshness is authority.
+        this.#flushDerivedCaches();
         return { kind: "created", ledger };
       } catch (error: unknown) {
         throw this.#storeError("could not create task ledger", error);
@@ -596,8 +608,7 @@ export class TaskStore {
   ): Promise<TaskInboxLedgerRecord> {
     await this.initialize();
     return lock(this.#deliverySequenceLocks, "delivery-sequence", async () => {
-      const current = this.#ledgers.get(keyString(ledger.key));
-      const existing = current?.records.find((record) => record.id === input.id);
+      const existing = this.#recordIndexes.get(keyString(ledger.key))?.byId.get(input.id);
       if (existing) {
         if (existing.kind === "inbox" && existing.eventId === input.eventId && existing.occurredAt === input.occurredAt) return existing;
         throw new TaskStoreError("inbox record identity conflicts with prior content", existing);
@@ -616,16 +627,14 @@ export class TaskStore {
   }
 
   async appendOutboxAttempt(ledger: TaskLedger, record: Omit<TaskOutboxAttemptRecord, "kind">): Promise<AppendRecordResult> {
-    const current = this.#ledgers.get(keyString(ledger.key));
-    if (!current?.records.some((candidate) => candidate.kind === "outbox.intent" && candidate.event.id === record.eventId)) {
+    if (!this.#recordIndexes.get(keyString(ledger.key))?.outboundEventIds.has(record.eventId)) {
       throw new TaskStoreError("outbox attempt must reference a durable receiver outbound intent", undefined);
     }
     return this.#appendRecord(ledger.key, { kind: "outbox.attempt", ...record });
   }
 
   async appendOutboxDelivered(ledger: TaskLedger, record: Omit<TaskOutboxDeliveredRecord, "kind">): Promise<AppendRecordResult> {
-    const current = this.#ledgers.get(keyString(ledger.key));
-    if (!current?.records.some((candidate) => candidate.kind === "outbox.intent" && candidate.event.id === record.eventId)) {
+    if (!this.#recordIndexes.get(keyString(ledger.key))?.outboundEventIds.has(record.eventId)) {
       throw new TaskStoreError("outbox delivery must reference a durable outbound intent", undefined);
     }
     return this.#appendRecord(ledger.key, { kind: "outbox.delivered", ...record });
@@ -684,9 +693,8 @@ export class TaskStore {
 
   async markCleanupEligible(ledger: TaskLedger, record: Omit<TaskCleanupEligibilityRecord, "kind">): Promise<AppendRecordResult> {
     await this.initialize();
-    const current = this.#ledgers.get(keyString(ledger.key));
-    if (ledger.key.role !== TASK_LEDGER_ROLE.RECEIVER
-      || !current?.records.some((candidate) => candidate.kind === "acknowledgment" && candidate.id === record.acknowledgedEventId)) {
+    const acknowledgment = this.#recordIndexes.get(keyString(ledger.key))?.byId.get(record.acknowledgedEventId);
+    if (ledger.key.role !== TASK_LEDGER_ROLE.RECEIVER || acknowledgment?.kind !== "acknowledgment") {
       throw new TaskStoreError("receiver cleanup eligibility requires its durable acknowledgment record", undefined);
     }
     return this.#appendRecord(ledger.key, { kind: "cleanup.eligible", ...record });
@@ -749,18 +757,16 @@ export class TaskStore {
           // Retried startup/access sweeps may remove a stale cache later.
         }
         this.#ledgers.delete(keyString(current.key));
+        this.#recordIndexes.delete(keyString(current.key));
+        this.#dirtyCaches.delete(keyString(current.key));
         this.#rebuiltLedgerKeys.delete(keyString(current.key));
         for (const [inboxKey, entry] of this.#inbox) {
-          if (sameKey(entry.key, current.key)) this.#inbox.delete(inboxKey);
+          if (sameKey(entry.key, current.key)) { this.#inbox.delete(inboxKey); this.#inboxDirty = true; }
         }
         for (const [scopeKey, record] of this.#idempotency) {
           if (record.taskId === current.key.taskId && record.assignmentHash === current.header.assignmentHash) this.#idempotency.delete(scopeKey);
         }
-        try {
-          this.#writeInboxIndex();
-        } catch {
-          // The index is derived and will be rebuilt from surviving ledgers.
-        }
+        this.#scheduleDerivedFlush();
         return removed;
       } catch (error: unknown) {
         throw this.#storeError("could not remove task ledger payload", error);
@@ -876,18 +882,25 @@ export class TaskStore {
   #appendRecordLocked(ledger: TaskLedger, record: TaskLedgerRecord): AppendRecordResult {
     try {
       if (ledger.truncatedTailBytes > 0) throw new TypeError("task ledger has an uncommitted truncated tail");
-      const existing = ledger.records.find((candidate) => candidate.id === record.id);
+      const existing = this.#recordIndexes.get(keyString(ledger.key))?.byId.get(record.id);
       if (existing) {
         return canonicalJson(existing) === canonicalJson(record)
           ? { kind: "reused", record: existing }
           : { kind: "conflict", code: TASK_API_ERROR.IMMUTABLE_CONTENT_CONFLICT };
       }
-      const next = this.#deriveLedger(ledger.header, [...ledger.records, record], 0);
+      const next: TaskLedger = {
+        ...ledger,
+        records: [...ledger.records, record],
+        state: record.kind === "event" ? appendCanonicalTaskEvent(ledger.state, record.event) : ledger.state,
+      };
       this.#testHooks?.beforeFsync?.("ledger-file", ledger.paths.ledgerPath);
       this.#uncertainLedgerKeys.add(keyString(ledger.key));
       fsyncFile(ledger.paths.ledgerPath, `${canonicalJson(record)}\n`, true);
       this.#testHooks?.afterFsync?.("ledger-file", ledger.paths.ledgerPath);
-      this.#setLedger(next);
+      this.#ledgers.set(keyString(next.key), next);
+      this.#indexRecord(next, record);
+      this.#dirtyCaches.add(keyString(next.key));
+      this.#scheduleDerivedFlush();
       this.#uncertainLedgerKeys.delete(keyString(ledger.key));
       return { kind: "appended", record };
     } catch (error: unknown) {
@@ -917,13 +930,11 @@ export class TaskStore {
           if (name.endsWith(".jsonl")) await this.#loadPath(join(roleDirectory, name));
         }
       }
-      try {
-        this.#writeInboxIndex();
-      } catch {
-        // The index is derived and may be rebuilt after a transient cache failure.
-      }
+      this.#flushDerivedCaches();
     } catch (error: unknown) {
       throw this.#storeError("could not rebuild task store", error);
+    } finally {
+      this.#rebuilding = false;
     }
   }
 
@@ -936,8 +947,10 @@ export class TaskStore {
       for (const [key, ledger] of this.#ledgers) {
         if (ledger.paths.ledgerPath === path) {
           this.#ledgers.delete(key);
+          this.#recordIndexes.delete(key);
+          this.#dirtyCaches.delete(key);
           for (const [inboxKey, entry] of this.#inbox) {
-            if (sameKey(entry.key, ledger.key)) this.#inbox.delete(inboxKey);
+            if (sameKey(entry.key, ledger.key)) { this.#inbox.delete(inboxKey); this.#inboxDirty = true; }
           }
         }
       }
@@ -963,41 +976,59 @@ export class TaskStore {
     return containedPath(this.root, "quarantine", name);
   }
 
-  #deriveLedger(header: TaskLedgerHeader, records: readonly TaskLedgerRecord[], truncatedTailBytes: number): TaskLedger {
-    const events = records.filter((record): record is TaskEventLedgerRecord => record.kind === "event").map((record) => record.event);
-    const paths = taskStorePaths(this.root, header.key);
-    return {
-      key: header.key,
-      paths,
-      header,
-      records,
-      state: rebuildTaskState(header.key.taskId, header.participants, events),
-      truncatedTailBytes,
-    };
+  /** Full index installation is reserved for load/recovery, never an ordinary append. */
+  #setLedger(ledger: TaskLedger): void {
+    const key = keyString(ledger.key);
+    this.#ledgers.set(key, ledger);
+    this.#recordIndexes.set(key, { byId: new Map(), outboundEventIds: new Set() });
+    for (const record of ledger.records) this.#indexRecord(ledger, record);
+    this.#dirtyCaches.add(key);
+    this.#scheduleDerivedFlush();
   }
 
-  #setLedger(ledger: TaskLedger): void {
-    this.#ledgers.set(keyString(ledger.key), ledger);
-    for (const record of ledger.records) {
-      if (record.kind === "inbox") {
-        this.#inbox.set(`${keyString(ledger.key)}\u0000${record.id}`, {
-          key: ledger.key,
-          eventId: record.eventId,
-          deliverySequence: record.deliverySequence,
-        });
-        const next = BigInt(record.deliverySequence) + 1n;
-        if (next > this.#nextDeliverySequence) this.#nextDeliverySequence = next;
-      }
-      if (record.kind === "idempotency") {
-        this.#idempotency.set(`${record.scope.machine}\u0000${record.scope.sessionId}\u0000${record.scope.key}`, record);
-      }
+  #indexRecord(ledger: TaskLedger, record: TaskLedgerRecord): void {
+    const index = this.#recordIndexes.get(keyString(ledger.key))!;
+    index.byId.set(record.id, record);
+    if (record.kind === "outbox.intent") index.outboundEventIds.add(record.event.id);
+    if (record.kind === "inbox") {
+      this.#inbox.set(`${keyString(ledger.key)}\u0000${record.id}`, {
+        key: ledger.key, eventId: record.eventId, deliverySequence: record.deliverySequence,
+      });
+      const next = BigInt(record.deliverySequence) + 1n;
+      if (next > this.#nextDeliverySequence) this.#nextDeliverySequence = next;
+      this.#inboxDirty = true;
     }
-    // Caches are never authoritative: a cache failure cannot negate an fsynced ledger record.
-    try {
-      atomicWrite(ledger.paths.cachePath, ledgerCache(ledger));
-      this.#writeInboxIndex();
-    } catch {
-      // The next startup rebuilds these derived artifacts from the JSONL ledgers.
+    if (record.kind === "idempotency") {
+      this.#idempotency.set(`${record.scope.machine}\u0000${record.scope.sessionId}\u0000${record.scope.key}`, record);
+    }
+  }
+
+  #scheduleDerivedFlush(): void {
+    if (this.#rebuilding || this.#derivedFlushTimer !== undefined) return;
+    this.#derivedFlushTimer = setTimeout(() => this.#flushDerivedCaches(), 0);
+    this.#derivedFlushTimer.unref();
+  }
+
+  #flushDerivedCaches(): void {
+    if (this.#derivedFlushTimer !== undefined) clearTimeout(this.#derivedFlushTimer);
+    this.#derivedFlushTimer = undefined;
+    if (!this.#rebuilding && !existsSync(this.root)) {
+      this.#dirtyCaches.clear();
+      this.#inboxDirty = false;
+      return;
+    }
+    for (const key of this.#dirtyCaches) {
+      this.#dirtyCaches.delete(key);
+      const ledger = this.#ledgers.get(key);
+      // A removed ledger/root must not be resurrected by deferred derived work.
+      if (!ledger || !existsSync(ledger.paths.ledgerPath)) continue;
+      try { atomicWrite(ledger.paths.cachePath, ledgerCache(ledger)); }
+      catch { /* A derived failure cannot negate authoritative fsync; startup rebuilds. */ }
+    }
+    if (this.#inboxDirty) {
+      this.#inboxDirty = false;
+      try { this.#writeInboxIndex(); }
+      catch { /* Startup reconstructs this non-authoritative index from JSONL. */ }
     }
   }
 

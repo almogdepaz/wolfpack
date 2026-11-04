@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -217,6 +217,10 @@ const ROOT = join(import.meta.dirname, "..");
 const DEFAULT_GRID_CELL_COUNTS = [2, 4, 6] as const;
 const PERF_HARNESS_ENV_HELP = [
   "WOLFPACK_PERF_RUNS: positive integer repeated-run count (default: 1)",
+  "WOLFPACK_PERF_SOAK: set to 1 for an isolated application pool/reconnect soak (default: 1800 seconds)",
+  "WOLFPACK_PERF_SOAK_SECONDS: integer duration 1-3600 seconds; reports exact wall time, post-GC and RSS coverage",
+  "WOLFPACK_PERF_RENDER_RESOURCES: set to 1 for isolated 1/4/16 renderer/parser/prewarm profiling, without production grid/pool changes",
+  "WOLFPACK_PERF_RENDER_ARTIFACT_PARENT: existing private parent for uniquely owned renderer profile artifacts (default: system temp)",
   "WOLFPACK_PERF_DEVICE: desktop or mobile browser profile (default: desktop)",
   "WOLFPACK_PERF_GHOSTTY_PREWARM_POOL_SIZE: debug-only pool size override 0-2",
   "WOLFPACK_PERF_TERMINAL_POOL_SIZE: debug-only single-terminal pool size override 1-6 (default: 3 desktop, 1 mobile)",
@@ -1071,6 +1075,12 @@ export function parsePerfRunCount(raw: string | undefined): number {
   return count;
 }
 
+export function parsePerfSoakSeconds(raw: string | undefined): number {
+  const seconds = raw === undefined ? 1800 : Number(raw);
+  if (!Number.isInteger(seconds) || seconds < 1 || seconds > 3600) throw new Error("WOLFPACK_PERF_SOAK_SECONDS must be an integer from 1 to 3600");
+  return seconds;
+}
+
 export function parsePerfDeviceMode(raw: string | undefined): PerfDeviceMode {
   if (!raw || raw === "desktop") return "desktop";
   if (raw === "mobile") return "mobile";
@@ -1427,6 +1437,20 @@ async function main(): Promise<void> {
   if (process.env.WOLFPACK_PERF_HELP === "1") {
     console.log("terminal-load perf environment:");
     for (const line of describePerfHarnessEnv()) console.log(`- ${line}`);
+    return;
+  }
+
+  if (process.env.WOLFPACK_PERF_RENDER_RESOURCES === "1" || process.env.WOLFPACK_PERF_SOAK === "1") {
+    const soak = process.env.WOLFPACK_PERF_SOAK === "1";
+    if (soak) parsePerfSoakSeconds(process.env.WOLFPACK_PERF_SOAK_SECONDS);
+    const runs = parsePerfRunCount(process.env.WOLFPACK_PERF_RUNS);
+    const artifacts = mkdtempSync(join(process.env.WOLFPACK_PERF_RENDER_ARTIFACT_PARENT ?? tmpdir(), soak ? "wolfpack-terminal-soak-" : "wolfpack-render-perf-"));
+    console.log(`${soak ? "terminal-soak" : "render-resource"} artifacts: ${artifacts}`);
+    execFileSync(process.execPath, [join(ROOT, "node_modules/@playwright/test/cli.js"), "test",
+      soak ? "tests/e2e/terminal-resource-soak.e2e.ts" : "tests/e2e/ghostty-render-suspension.e2e.ts",
+      "--grep", soak ? "bounded application terminal" : "resource profile", "--project=desktop", "--retries=0", `--repeat-each=${runs}`, `--output=${artifacts}`], {
+      cwd: ROOT, stdio: "inherit", env: { ...process.env, WOLFPACK_TEST: "1", WOLFPACK_RENDER_RESOURCE_PROFILE: soak ? "0" : "1" },
+    });
     return;
   }
 

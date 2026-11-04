@@ -140,3 +140,41 @@ test("organization failure retains input, cancels safely, and returns keyboard f
   await page.keyboard.press("Escape"); await expect(page.getByRole("dialog")).not.toBeVisible();
   await expect(page.getByRole("button", { name: "Move test-project to group", exact: true }).filter({ visible: true }).first()).toBeFocused();
 });
+
+test("dashboard card group and close actions share one aligned control box", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  const card = page.locator("#session-list .machine-group .card").filter({ has: page.getByRole("button", { name: "Move test-project to group", exact: true }) }).first();
+  await card.hover();
+  const geometry = await card.evaluate(element => {
+    const box = (selector: string) => {
+      const target = element.querySelector(selector)!;
+      const rect = target.getBoundingClientRect();
+      return { x: rect.x, right: rect.right, width: rect.width, height: rect.height, center: rect.y + rect.height / 2, radius: getComputedStyle(target).borderRadius, shown: getComputedStyle(target).display !== "none" && rect.width > 0 };
+    };
+    return { group: box(".organize-btn"), close: box(".kill-btn"), chevron: box(".chev") };
+  });
+  expect({ width: geometry.close.width, height: geometry.close.height, radius: geometry.close.radius })
+    .toEqual({ width: geometry.group.width, height: geometry.group.height, radius: geometry.group.radius });
+  expect(Math.abs(geometry.close.center - geometry.group.center)).toBeLessThanOrEqual(1);
+  // The two actions stay adjacent; the decorative chevron never splits them.
+  expect(geometry.close.x).toBeGreaterThan(geometry.group.right);
+  if (geometry.chevron.shown) expect(geometry.chevron.x).toBeGreaterThanOrEqual(geometry.close.right);
+});
+
+test("sidebar card actions sit in one row of matching controls", async ({ page }) => {
+  await page.goto(server.baseUrl); await collapseInitialSessionMenu(page);
+  const actions = page.locator("#sidebar-session-list .session-card-actions").filter({ has: page.getByRole("button", { name: "Move test-project to group", exact: true }) }).first();
+  test.skip(!(await actions.isVisible()), "desktop sidebar only");
+  await actions.hover();
+  const boxes = await actions.evaluate(element => [...element.querySelectorAll(":scope > button")].map(button => {
+    const rect = button.getBoundingClientRect();
+    return { x: rect.x, right: rect.right, width: rect.width, height: rect.height, center: rect.y + rect.height / 2, radius: getComputedStyle(button).borderRadius };
+  }));
+  expect(boxes.length).toBe(3);
+  for (const box of boxes.slice(1)) {
+    expect({ width: box.width, height: box.height, radius: box.radius }).toEqual({ width: boxes[0].width, height: boxes[0].height, radius: boxes[0].radius });
+    expect(Math.abs(box.center - boxes[0].center)).toBeLessThanOrEqual(1);
+  }
+  expect(boxes[1].x).toBeGreaterThanOrEqual(boxes[0].right);
+  expect(boxes[2].x).toBeGreaterThanOrEqual(boxes[1].right);
+});

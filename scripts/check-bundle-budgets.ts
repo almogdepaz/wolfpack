@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 
 const root = join(import.meta.dirname, "..");
-const limits: ReadonlyArray<readonly [string, number, number]> = [
+/** Approved raw/gzip caps; also enforced on the embedded assets by tests/unit/asset-content-hash.test.ts. */
+export const BUNDLE_BUDGETS: ReadonlyArray<readonly [string, number, number]> = [
   // Phase-2 extension host: approved base 349590/85735; reviewed 385409/94531.
   // Selected-machine extensions + current main: approved gzip cap 97000; measured 96008.
   // OSC 7501 program status + current main: approved gzip cap 97500; measured 97087.
@@ -26,14 +27,16 @@ const limits: ReadonlyArray<readonly [string, number, number]> = [
   // USER APPROVED #198 session labels/editor: raw 113200 -> 115000, gzip 21000 -> 21600.
   ["public/styles.css", 115_000, 21_600],
 ];
-let failed = false;
-for (const [file, rawLimit, gzipLimit] of limits) {
-  const bytes = readFileSync(join(root, file));
-  const gzipBytes = gzipSync(bytes, { level: 9 }).byteLength;
-  console.log(`${file}: ${bytes.byteLength} raw, ${gzipBytes} gzip`);
-  if (bytes.byteLength > rawLimit || gzipBytes > gzipLimit) {
-    console.error(`budget exceeded: ${file} (limits ${rawLimit} raw / ${gzipLimit} gzip)`);
-    failed = true;
+if (import.meta.main) {
+  let failed = false;
+  for (const [file, rawLimit, gzipLimit] of BUNDLE_BUDGETS) {
+    const bytes = readFileSync(join(root, file));
+    const gzipBytes = gzipSync(bytes, { level: 9 }).byteLength;
+    console.log(`${file}: ${bytes.byteLength} raw, ${gzipBytes} gzip`);
+    if (bytes.byteLength > rawLimit || gzipBytes > gzipLimit) {
+      console.error(`budget exceeded: ${file} (limits ${rawLimit} raw / ${gzipLimit} gzip)`);
+      failed = true;
+    }
   }
+  if (failed) process.exit(1);
 }
-if (failed) process.exit(1);
