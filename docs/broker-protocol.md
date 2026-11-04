@@ -379,8 +379,10 @@ Binary payload layout:
   session does not serialize writes to other sessions or control requests.
 - Input admission includes queued and in-flight bytes: 4 MiB per connection,
   64 MiB process-wide, at most 32 concurrent writers process-wide and 16 queued
-  frames per session lane. Empty frames consume one byte of admission. Idle
-  lanes release their slots immediately.
+  chunks per session lane. Consecutive queued frames for a session coalesce into
+  one chunk of up to 256 KiB, so frame count alone never exhausts a lane. Empty
+  frames consume one byte of admission. Idle lanes release their slots
+  immediately.
 - Exhausted input admission closes the connection rather than indefinitely
   blocking its reader or silently truncating a frame on a healthy transport.
   Disconnect/shutdown cancels pending writes and discards queued input, without

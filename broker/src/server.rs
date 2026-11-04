@@ -67,6 +67,14 @@ struct QueuedInput {
     _global_bytes: SemaphorePermit<'static>,
 }
 
+impl QueuedInput {
+    fn merge(&mut self, next: QueuedInput) {
+        self.data.extend_from_slice(&next.data);
+        self._connection_bytes.merge(next._connection_bytes);
+        self._global_bytes.merge(next._global_bytes);
+    }
+}
+
 /// One blocking write per active session lane. Empty lanes are removed as soon
 /// as their write completes; neither idle sessions nor past UUIDs retain slots.
 struct ConnectionInput {
@@ -95,6 +103,15 @@ impl ConnectionInput {
         let Ok(global_bytes) = INPUT_BYTES.try_acquire_many(bytes) else { return false; };
         let queued = QueuedInput { data: input.data, _connection_bytes: connection_bytes, _global_bytes: global_bytes };
         if let Some(pending) = self.pending.get_mut(&input.session_id) {
+            // Stdin is a byte stream: append to the queued tail while it stays
+            // within one input payload, so bursts of small frames are bounded
+            // by the byte budgets rather than by frame count.
+            if let Some(tail) = pending.back_mut() {
+                if tail.data.len() + queued.data.len() <= MAX_INPUT_BINARY_PAYLOAD as usize {
+                    tail.merge(queued);
+                    return true;
+                }
+            }
             if pending.len() >= INPUT_QUEUE_CAPACITY { return false; }
             pending.push_back(queued);
         } else {
@@ -1421,10 +1438,13 @@ mod tests {
         write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
             session_id: session.id(), data: vec![b'x'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
         })).await.expect("blocked input");
+        // Small frames coalesce; saturation is byte-bounded, so queue full
+        // payloads until the per-connection budget is exhausted.
+        // The broker may close before the last write lands (EPIPE).
         for _ in 0..=INPUT_QUEUE_CAPACITY {
-            write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
-                session_id: session.id(), data: b"must-not-run".to_vec(),
-            })).await.expect("queued input");
+            if write_frame_async(&mut client, &Frame::InputBinary(InputFrame {
+                session_id: session.id(), data: vec![b'y'; MAX_INPUT_BINARY_PAYLOAD as usize - 16],
+            })).await.is_err() { break; }
         }
         let reclaimed = tokio::time::timeout(Duration::from_secs(2), task).await;
         let alive = session.info().alive;
@@ -1456,6 +1476,13 @@ mod tests {
         assert!(input.bytes.available_permits() <= INPUT_QUEUE_MAX_BYTES - bytes.len());
         assert!(input.submit(InputFrame { session_id: session.id(), data: b"queued".to_vec() }, &registry));
         assert_eq!(input.pending[&session.id()].len(), 1);
+        // A burst of small frames behind an in-flight write coalesces into the
+        // queued tail instead of consuming one lane slot per frame.
+        for _ in 0..INPUT_QUEUE_CAPACITY * 4 {
+            assert!(input.submit(InputFrame { session_id: session.id(), data: b"k".to_vec() }, &registry));
+        }
+        assert_eq!(input.pending[&session.id()].len(), 1);
+        assert_eq!(input.pending[&session.id()][0].data.len(), b"queued".len() + INPUT_QUEUE_CAPACITY * 4);
         input.cancel().await;
         assert_eq!(input.bytes.available_permits(), INPUT_QUEUE_MAX_BYTES);
         assert!(input.pending.is_empty());
