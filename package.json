@@ -1,6 +1,6 @@
 {
   "name": "wolfpack-bridge",
-  "version": "1.6.27",
+  "version": "1.6.28",
   "type": "module",
   "description": "Wolfpack is a self-hosted control room for persistent coding-agent terminals on your own machines.",
   "homepage": "https://almogdepaz.github.io/wolfpack/",
@@ -63,10 +63,10 @@
     "demo:encode": "bun run scripts/demo/encode.ts"
   },
   "optionalDependencies": {
-    "wolfpack-bridge-darwin-arm64": "1.6.27",
-    "wolfpack-bridge-darwin-x64": "1.6.27",
-    "wolfpack-bridge-linux-arm64": "1.6.27",
-    "wolfpack-bridge-linux-x64": "1.6.27"
+    "wolfpack-bridge-darwin-arm64": "1.6.28",
+    "wolfpack-bridge-darwin-x64": "1.6.28",
+    "wolfpack-bridge-linux-arm64": "1.6.28",
+    "wolfpack-bridge-linux-x64": "1.6.28"
   },
   "keywords": [
     "ai-agent-terminal",
