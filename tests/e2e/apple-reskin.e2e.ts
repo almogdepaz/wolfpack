@@ -7,15 +7,6 @@ test.afterAll(() => server?.close());
 
 test("triage filters toggle off, preserve row actions, and capture responsive chrome", async ({ page }, info) => {
   test.skip(!["desktop", "iphone-14"].includes(info.project.name));
-  const inputBytes: number[][] = [];
-  await page.routeWebSocket(/\/ws\/pty/, socket => {
-    const upstream = socket.connectToServer();
-    socket.onMessage(message => {
-      if (typeof message !== "string") inputBytes.push(Array.from(Buffer.from(message)));
-      upstream.send(message);
-    });
-    upstream.onMessage(message => socket.send(message));
-  });
   const width = info.project.name === "desktop" ? 1440 : 390;
   await page.setViewportSize({ width, height: 900 });
   const peerOrigin = "https://reskin-peer.example.ts.net";
@@ -64,11 +55,7 @@ test("triage filters toggle off, preserve row actions, and capture responsive ch
   await expect(access(info.outputPath(`dashboard-${width}.png`))).resolves.toBeUndefined();
   await page.getByRole("button", { name: "Open test-project", exact: true }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
-  await expect(page.locator("#needs-input-banner")).toHaveJSProperty("hidden", info.project.name !== "desktop");
+  // The floating needs-input reply banner was removed; replies go through the terminal itself.
+  await expect(page.locator("#needs-input-banner")).toHaveCount(0);
   await page.screenshot({ path: info.outputPath(`terminal-${width}.png`), animations: "disabled" });
-  if (info.project.name === "desktop") for (const [key, expected] of [["y", 121], ["n", 110], ["Escape", 27]] as const) {
-    inputBytes.length = 0;
-    await page.locator(`[data-reply-key="${key}"]`).click();
-    await expect.poll(() => inputBytes).toEqual([[expected]]);
-  }
 });

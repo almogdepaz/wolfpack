@@ -126,12 +126,11 @@ test("M2 single-terminal destructive chrome is absent in a manual grid", async (
   await page.goto(server.baseUrl);
   await page.getByRole('button', { name: 'Open test-project', exact: true }).click();
   await expect(page.locator('#terminal-chrome')).toHaveCount(0);
-  await expect(page.locator('#terminal-footer')).toHaveJSProperty('hidden', false);
+  await expect(page.locator('#terminal-footer')).toHaveCount(0);
   await expect(page.locator('#sidebar-session-list .sidebar-active .card-preview')).toHaveCSS('color', 'rgb(184, 198, 190)');
   await page.locator('#sidebar-session-list [data-action="toggle-grid"][data-session="another-project"]').click();
   await expect(page.locator('#desktop-grid-container')).toBeVisible();
   await expect(page.locator('#terminal-chrome')).toHaveCount(0);
-  await expect(page.locator('#terminal-footer')).toHaveJSProperty('hidden', true);
 });
 
 test("H3 settings navigation link restores focus and uses a matching Back label", async ({ page }, info) => {

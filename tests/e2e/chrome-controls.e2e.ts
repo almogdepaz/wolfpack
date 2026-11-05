@@ -44,8 +44,8 @@ test("single terminal retains global navigation and confirmed row Stop", async (
   await page.getByRole("button", { name: "Open test-project", exact: true }).first().click();
   await expect(page.locator("#desktop-terminal-container canvas")).toBeVisible();
   await expect(page.locator("#terminal-view")).not.toHaveClass(/swiping/);
-  await expect(page.locator("#terminal-footer-session")).toHaveText("test-project");
-  await expect(page.locator("#needs-input-banner")).toHaveJSProperty("hidden", true);
+  await expect(page.locator("#terminal-footer")).toHaveCount(0);
+  await expect(page.locator("#needs-input-banner")).toHaveCount(0);
   await page.screenshot({ path: info.outputPath(`single-terminal-${width}.png`) });
   await expect(page.locator("#terminal-chrome")).toHaveCount(0);
   const geometry = await page.locator("#terminal-view").evaluate(view => ({
@@ -64,7 +64,7 @@ test("single terminal retains global navigation and confirmed row Stop", async (
     await page.locator('.drawer-item[data-val="another-project"]').click();
     await expect(page.locator("#chip-label")).toHaveText("another-project");
   }
-  await expect(page.locator("#terminal-footer-session")).toHaveText("another-project");
+  if (desktop) await expect(page.locator("#sidebar-session-list .sidebar-active")).toContainText("another-project");
   const dialog = page.getByRole("dialog", { name: "Stop session", exact: true });
   if (desktop) {
     await page.locator("#sidebar-session-list").getByRole("button", { name: "Stop another-project", exact: true }).click();
