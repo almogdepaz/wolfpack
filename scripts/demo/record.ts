@@ -212,7 +212,7 @@ async function trustRemoteExtensions(page: Page): Promise<void> {
   }
 }
 
-/** S1–S4: dashboard, answer a needs-input banner, switch/resize/grid, delegation tree. */
+/** S1–S4: dashboard, answer a needs-input session in its terminal, switch/resize/grid, delegation tree. */
 async function recordDesktop(browser: Browser, options: Options): Promise<void> {
   const recorder = new SceneRecorder("desktop", options);
   const stage = await openStage(browser, { viewport: DESKTOP_VIEWPORT, dpr: options.dpr, mobile: false });
@@ -231,15 +231,14 @@ async function recordDesktop(browser: Browser, options: Options): Promise<void> 
     await page.waitForTimeout(1600);
     await pointer.glide(page.locator("#session-list .needs-you .card").first(), 700);
 
-    // S2: open the session that needs input and answer it from the banner.
+    // S2: open the session that needs input and answer it in the terminal.
     recorder.mark("s2-start");
     await pointer.click(localCard(page, "#session-list .needs-you", "api-gateway"));
     await waitLive(page);
-    await page.locator("#needs-input-banner:not([hidden])").waitFor();
     await page.waitForTimeout(1100);
-    await recorder.checkpoint(page, "s2-banner");
-    await pointer.click(page.locator('[data-reply-key="y"]'), 450);
-    await page.locator("#needs-input-banner").waitFor({ state: "hidden", timeout: 10_000 });
+    await recorder.checkpoint(page, "s2-needs-input");
+    await pointer.click(page.locator("#desktop-terminal-container canvas"), 450);
+    await page.keyboard.type("y", { delay: 120 });
     await page.waitForTimeout(3600);
     await recorder.checkpoint(page, "s2-answered");
     recorder.mark("s3-start");
@@ -446,11 +445,10 @@ async function recordStills(browser: Browser, options: Options): Promise<void> {
     await recorder.checkpoint(page, "desktop-sessions");
     await localCard(page, "#session-list .needs-you", "api-gateway").click();
     await waitLive(page);
-    await page.locator("#needs-input-banner:not([hidden])").waitFor();
     await page.waitForTimeout(1200);
     await recorder.checkpoint(page, "desktop-terminal");
-    await page.locator('[data-reply-key="y"]').click();
-    await page.locator("#needs-input-banner").waitFor({ state: "hidden", timeout: 10_000 });
+    await page.locator("#desktop-terminal-container canvas").click();
+    await page.keyboard.type("y");
     await page.waitForTimeout(3800);
     for (const session of ["billing-service", "docs-site"]) {
       await page.locator(`#sidebar-session-list .grid-btn[data-session="${session}"][data-machine=""]`).click();
