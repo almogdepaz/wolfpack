@@ -9,6 +9,7 @@ export interface DelegationSessionIdentity {
   readonly wolfpackSessionId?: string;
   readonly wolfpackSessionName?: string;
   readonly agentKind?: string;
+  readonly projectPath?: string;
   readonly parentSession?: unknown;
 }
 
@@ -42,6 +43,7 @@ export interface DelegationSessionLike {
   readonly name: string;
   readonly organization?: SessionOrganizationProjection;
   readonly lastLine?: string;
+  readonly pinned?: boolean;
   readonly identity?: DelegationSessionIdentity;
   readonly runtimeState?: DelegationRuntimeState;
   readonly activity?: DelegationActivityObservation;

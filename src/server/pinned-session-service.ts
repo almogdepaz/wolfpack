@@ -16,6 +16,7 @@ export class PinnedSessionService {
     this.timer.unref();
   }
   stop(): void { clearInterval(this.timer); this.timer = undefined; }
+  reset(name: string): void { delete this.history[name]; delete this.errors[name]; this.liveSince.delete(name); }
   tick(): Promise<void> { return this.flight ??= this.reconcile().catch(error => { log.warn("pinned reconciliation unavailable", { error: errMsg(error) }); }).finally(() => { this.flight = undefined; }); }
   private async reconcile(): Promise<void> {
     const now = (this.options.now ?? Date.now)();
@@ -39,7 +40,7 @@ export class PinnedSessionService {
       if (action.action !== "create") continue;
       const pin = pins.find(p => p.name === action.name)!;
       try {
-        if (facts.some(f => f.alive && f.identity?.projectPath === pin.cwd)) throw new Error("a live session already owns the pinned working directory");
+        if (pin.name === "assistant" && facts.some(f => f.alive && f.identity?.projectPath === pin.cwd)) throw new Error("a live session already owns the pinned working directory");
         await this.options.backend.createSession(pin.name, pin.cwd, pin.command[0], () => ({ agentCmd: pin.command[0]! }), { agentKind: pin.harness, pinnedCommand: pin.command });
         this.liveSince.set(pin.name, now);
         delete this.errors[pin.name];

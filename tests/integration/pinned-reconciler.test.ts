@@ -29,6 +29,31 @@ test("fake broker restart recreates pinned session once; config removal never ki
     expect(await backend.list()).toEqual(["assistant"]);
   } finally { service.stop(); rmSync(root, { recursive: true, force: true }); }
 });
+test("assistant runtime drains fast completed turns using broker program timestamps", async () => {
+  process.env.WOLFPACK_TEST = "1";
+  const root = mkdtempSync(join(tmpdir(), "focus-fast-turn-"));
+  const { createServerContext } = await import("../../src/server/context.ts");
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const folder = join(root, "assistant");
+  const backend = new MockBackend();
+  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }));
+  let at = 1000;
+  backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: at });
+  const sent: string[] = [];
+  backend.sendAndObserveSubmission = async (_id, options) => {
+    sent.push(options.text);
+    backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: ++at });
+    return { delivery: "delivered", outcome: "submitted", observedMs: 1 };
+  };
+  const config = { devDir: root, port: 19791, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] };
+  const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
+  try {
+    await ctx.focusRuntime.ask("one");
+    await ctx.focusRuntime.ask("two");
+    expect(sent).toEqual(["one", "two"]);
+  } finally { ctx.focusRuntime.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("enable requires login confirmation, seeds only focus skill, resumes by path", async () => {
   const root = mkdtempSync(join(tmpdir(), "focus-enable-success-"));
   const { AssistantService } = await import("../../src/server/assistant-service.ts");

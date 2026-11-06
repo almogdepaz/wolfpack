@@ -30,6 +30,8 @@ export interface TestServerOptions {
   readonly lifecycleEvents?: boolean;
   /** Exact-UUID metadata routes require real-shaped identities rather than legacy mock:name IDs. */
   readonly canonicalSessionIds?: boolean;
+  /** Synthetic focus data and a mock Pi terminal; never launches a provider process. */
+  readonly focusAssistant?: boolean;
 }
 
 // ── Server startup ───────────────────────────────────────────────────────────
@@ -68,10 +70,13 @@ export function startTestServer(options: TestServerOptions = {}): Promise<TestSe
         env: {
           ...process.env,
           HOME: options.home ?? isolatedHome.path,
+          WOLFPACK_DIR: join(isolatedHome.path, ".wolfpack"),
+          WOLFPACK_PORT: "19792",
           WOLFPACK_TEST: "1",
           WOLFPACK_E2E_IGNORE_SIGTERM: options.ignoreSigterm ? "1" : undefined,
           WOLFPACK_E2E_LIFECYCLE_EVENTS: options.lifecycleEvents ? "1" : undefined,
           WOLFPACK_E2E_CANONICAL_SESSION_IDS: options.canonicalSessionIds ? "1" : undefined,
+          WOLFPACK_E2E_FOCUS_ASSISTANT: options.focusAssistant ? "1" : undefined,
         },
       },
     );

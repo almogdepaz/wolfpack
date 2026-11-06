@@ -1,0 +1,74 @@
+import { test, expect } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { startTestServer, type TestServer } from "./helpers";
+let server: TestServer;
+test.beforeAll(async () => {
+  server = await startTestServer();
+  mkdirSync(join(server.home, ".wolfpack"), { recursive: true });
+  writeFileSync(join(server.home, ".wolfpack/config.json"), JSON.stringify({ devDir: "/tmp", port: server.port }));
+});
+test.afterAll(async () => { await server?.close(); });
+test("first run add, view, done, open/start and accessible focus surfaces", async ({ page }) => {
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    session.runtimeState = { ...session.runtimeState, state: "needs-input", authority: "program", stale: false };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  await expect(block.getByRole("textbox", { name: "What are you working on?" })).toBeVisible();
+  await block.getByRole("textbox").fill("ship focus");
+  await block.getByRole("textbox").press("Enter");
+  await expect(block.getByRole("button", { name: /start.*ship focus/i })).toBeVisible();
+  expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
+  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  const view = page.locator("#assistant-view");
+  await expect(view).toBeVisible();
+  await expect(view.getByRole("textbox", { name: "Ask the assistant" })).toBeHidden();
+  await view.getByRole("textbox", { name: "Add an intention" }).fill("reply to issue");
+  await view.getByRole("textbox", { name: "Add an intention" }).press("Enter");
+  await view.getByRole("checkbox", { name: "Done: reply to issue" }).check();
+  await expect(view).toContainText("1 of 2 done");
+  expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
+  await view.getByRole("button", { name: /start.*ship focus/i }).click();
+  await expect(page.locator("#projects-view")).toBeVisible();
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: /prompt-project/ }).click();
+  await expect(page.locator("#terminal-view")).toBeVisible();
+});
+test("cached home-offline focus is read-only and still ranks live sessions", async ({ page }) => {
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  if (!current.document) await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: 0, ops: [{ type: "add", intention: { id: "offline", title: "offline intention" } }] } });
+  await page.goto(server.baseUrl);
+  await expect(page.locator("#dashboard-focus .focus-next")).toBeVisible();
+  await page.route("**/api/focus", route => route.abort("failed"));
+  await page.reload();
+  await expect(page.locator("#dashboard-focus")).toContainText("offline");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();
+  await expect(page.locator("#assistant-content .focus-next")).toBeVisible();
+});
+
+test("enable assistant, talk, focus tab, queued ask and unpin & stop", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#assistant-view").getByRole("button", { name: /assistant.*settings/i }).click();
+  await page.getByRole("button", { name: "Enable assistant", exact: true }).click();
+  await page.locator("#app-dialog-confirm").click();
+  await expect(page.locator("#assistant-setting-status")).toContainText("enabled");
+  await page.locator("#assistant-setting-open").click();
+  await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
+  await expect(page.locator("#terminal-view")).toBeVisible();
+  await expect(page.locator("#assistant-terminal-focus")).toBeVisible();
+  await page.locator("#assistant-terminal-focus").click();
+  await page.getByRole("textbox", { name: "Ask the assistant" }).fill("move ship focus first");
+  await page.getByRole("textbox", { name: "Ask the assistant" }).press("Enter");
+  await expect(page.locator("#assistant-terminal-state")).toContainText("queued");
+  await page.locator("#assistant-terminal-stop").click();
+  await page.locator("#app-dialog-confirm").click();
+  await expect.poll(async () => (await (await page.request.get(`${server.baseUrl}/api/focus`)).json()).assistant.enabled).toBe(false);
+});

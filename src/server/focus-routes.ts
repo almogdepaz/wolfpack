@@ -2,8 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ServerContext } from "./context.js";
 import { json, parseObjectBody, hasOnlyKeys } from "./http.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
-import { FocusConflict } from "./focus-store.js";
-import { PersistenceReadError } from "../persistence.js";
+import { FocusConflict, FocusValidationError } from "./focus-store.js";
 import { errMsg } from "../log.js";
 
 export function createFocusRoutes(ctx: ServerContext) {
@@ -31,6 +30,8 @@ export function createFocusRoutes(ctx: ServerContext) {
       try {
         if (body.enabled) {
           await ctx.assistantService.enable(body.loginConfirmed === true);
+          ctx.focusRuntime.pins.reset("assistant");
+          ctx.focusRuntime.queue.clear();
           ctx.focusRuntime.start();
           await ctx.focusRuntime.pins.tick();
         } else {
@@ -63,7 +64,7 @@ export function createFocusRoutes(ctx: ServerContext) {
         json(res, { ...owner, document, revision: document.revision });
       } catch (error) {
         if (error instanceof FocusConflict) return json(res, { ...owner, error: error.message, document: error.document, revision: error.document?.revision ?? 0 }, 409);
-        json(res, { error: errMsg(error) }, error instanceof PersistenceReadError ? 503 : 400);
+        json(res, { error: errMsg(error) }, error instanceof FocusValidationError ? 400 : 503);
       }
     },
   };

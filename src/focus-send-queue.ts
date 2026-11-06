@@ -15,7 +15,7 @@ export class FocusSendQueue {
     this.pending.push({ id, text });
     return "queued";
   }
-  clear(reason: string): void { this.pending = []; this.outstanding = undefined; this.error = reason; }
+  clear(reason?: string): void { this.pending = []; this.outstanding = undefined; this.error = reason; }
   async tick(sample: { id: string; idle: boolean; token: string }): Promise<void> {
     if (this.ticking) return;
     this.ticking = true;

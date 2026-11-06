@@ -12,6 +12,13 @@ test("focus CLI parses every operation with explicit link/project/machine fields
   expect(() => parseFocusCommand(["done", "ship", "junk"])).toThrow();
   expect(() => parseFocusCommand(["add", "ship", "--wat", "x"])).toThrow();
 });
+test("remote focus help never resolves a machine or starts a server", () => {
+  const child = Bun.spawnSync([process.execPath, "src/cli/index.ts", "--machine", "peer", "focus", "--help"], { cwd: process.cwd(), env: { ...process.env, WOLFPACK_TEST: "1", NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
+  expect(child.exitCode).toBe(0);
+  expect(child.stdout.toString()).toContain("wolfpack focus");
+  expect(child.stderr.toString()).toBe("");
+});
+
 test("CLI CAS retries exactly once with fresh revision, not on ambiguous transport failure", async () => {
   const revisions: number[] = [];
   let reads = 0;

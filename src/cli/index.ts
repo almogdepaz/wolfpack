@@ -277,6 +277,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
       "create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt",
     ].includes(action ?? ""));
   }
+  if (family === "focus") return command.length === 1 || (command.length === 2 && ["show", "add", "edit", "done", "undo", "drop", "reorder", "nudge", "note", "day-summary"].includes(action ?? ""));
   if (family === "extension-data") return command.length === 1 || (command.length === 2 && ["read", "publish", "put-blob", "delete-blob"].includes(action ?? ""));
   return family === "agent"
     && (command.length === 1 || (command.length === 2 && (action === "spawn" || action === "inbox")));

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
@@ -10,7 +10,7 @@ const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createRoutes } = await import("../../src/server/routes.ts");
 
-test("focus HTTP CAS, first write, invalid ops, peer-style authenticated request and corrupt-file protection", async () => {
+test("focus HTTP CAS, first write, invalid ops and corrupt-file protection", async () => {
   const root = mkdtempSync(join(tmpdir(), "focus-route-"));
   const path = join(root, "assistant", "focus.json");
   const ctx = createServerContext({ backend: new MockBackend({ sessions: ["live"] }), config: null, focusStore: new FocusStore(path), taskRelayRoot: join(root, "relay") });
@@ -36,8 +36,56 @@ test("focus HTTP CAS, first write, invalid ops, peer-style authenticated request
     expect((await fetch(`${base}/api/focus`)).status).toBe(503);
     expect((await post(write)).status).toBe(503);
     expect(readFileSync(path, "utf8")).toBe("corrupt");
+    rmSync(path);
+    const parent = join(root, "assistant");
+    chmodSync(parent, 0o500);
+    try { expect((await post(write)).status).toBe(503); }
+    finally { chmodSync(parent, 0o700); }
   } finally {
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("peer clients use normal owner auth for focus reads and CAS writes; non-home refuses local writes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "focus-peer-auth-"));
+  const prior = process.env.WOLFPACK_JWT_SECRET;
+  const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
+  const { issueJwt } = await import("../../src/jwt-issue.ts");
+  process.env.WOLFPACK_JWT_SECRET = "focus-peer-test-secret-012345678901234567890";
+  __resetJwtAuthConfig();
+  const { createServerInstance } = await import("../../src/server/index.ts");
+  const ctx = createServerContext({ backend: new MockBackend(), config: null, focusStore: new FocusStore(join(root, "focus.json")) });
+  const { server, wss } = createServerInstance(ctx);
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    expect((await fetch(`${base}/api/focus`)).status).toBe(401);
+    const headers = { Authorization: `Bearer ${issueJwt()}`, "Content-Type": "application/json" };
+    const response = await fetch(`${base}/api/focus`, { headers });
+    expect(response.status).toBe(200);
+    const current = await response.json();
+    const body = JSON.stringify({ expectedRevision: current.revision, ops: [{ type: "add", intention: { id: "peer", title: "written from a peer client" } }] });
+    expect((await fetch(`${base}/api/focus`, { method: "POST", body })).status).toBe(401);
+    expect((await fetch(`${base}/api/focus`, { method: "POST", headers, body })).status).toBe(200);
+    expect((await (await fetch(`${base}/api/focus`, { headers })).json()).document.intentions[0].id).toBe("peer");
+    const remoteCtx = createServerContext({ backend: new MockBackend(), config: { devDir: root, port: 19791, focus: { home: "other-install" } }, focusStore: ctx.focusStore });
+    const { createFocusRoutes } = await import("../../src/server/focus-routes.ts");
+    const remoteRoutes = createFocusRoutes(remoteCtx);
+    const remote = createServer((req, res) => { void remoteRoutes[`${req.method} /api/focus` as "GET /api/focus"]!(req, res); });
+    await new Promise<void>(resolve => remote.listen(0, "127.0.0.1", resolve));
+    try {
+      const remoteBase = `http://127.0.0.1:${(remote.address() as AddressInfo).port}`;
+      const read = await (await fetch(`${remoteBase}/api/focus`)).json();
+      expect(read.local).toBe(false);
+      expect(read.document).toBeNull();
+      expect((await fetch(`${remoteBase}/api/focus`, { method: "POST", body })).status).toBe(409);
+    } finally { await new Promise<void>(resolve => { remote.close(() => resolve()); remote.closeAllConnections(); }); }
+  } finally {
+    wss.close();
+    await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
+    if (prior === undefined) delete process.env.WOLFPACK_JWT_SECRET; else process.env.WOLFPACK_JWT_SECRET = prior;
+    __resetJwtAuthConfig();
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -19,6 +19,11 @@ test("explicit links win over cwd; fallback cwd is machine scoped and needs inpu
   expect(rankFocus(doc(), sessions, 10).map(r => r.session?.id ?? r.intention?.id)).toEqual(["b1", "b2", "a", "wrong"]);
   expect(linkedFocusSessions(doc().intentions[1]!, [{ ...sessions[1]!, machine: "other" }])).toEqual([]);
 });
+test("an explicitly empty sessions list wins over cwd fallback", () => {
+  const intention = { ...doc().intentions[0]!, sessions: [] };
+  expect(linkedFocusSessions(intention, [session("same-cwd", "working", now)])).toEqual([]);
+});
+
 test("idle sessions are live chips, not next actions or starts", () => {
   expect(rankFocus(doc(), [session("linked", "idle", now)], 5).map(r => r.intention?.id)).toEqual(["b"]);
 });

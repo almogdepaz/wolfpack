@@ -17,7 +17,8 @@ export const BUNDLE_BUDGETS: ReadonlyArray<readonly [string, number, number]> = 
   // USER APPROVED merge of main #460 into redesign: app gzip cap 102000 -> 105500; measured 104968
   // USER APPROVED #198 session labels/editor: gzip 105500 -> 109000; raw cap unchanged.
   // USER APPROVED #198 grouping accessibility corrections: gzip 109000 -> 110000; measured 109096; all other caps unchanged.
-  ["public/app.bundle.js", 386_000, 110_000],
+  // USER APPROVED focus assistant: app gzip cap 110000 -> 114000; measured 111354.
+  ["public/app.bundle.js", 386_000, 114_000],
   ["public/ghostty-web.bundle.js", 700_000, 210_000],
   // Phase-1 shell controls/full-view recovery: base 96978/17005; measured 100603/17595.
   // Selected-machine extensions + current main: approved raw cap 103000; measured 102177.

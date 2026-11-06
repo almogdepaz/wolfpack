@@ -1,3 +1,4 @@
+import { createAssistantView } from "./assistant-view";
 import { sessionMetaHtml } from "./session-meta";
 import type { SessionMeta } from "../src/session-meta-contract";
 import {
@@ -1230,6 +1231,31 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
   return data as TResponse;
 }
 
+const focusUi = createAssistantView({
+  request: api,
+  homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
+  sessions: () => state.lastSessionGroups.filter(g => g.online).flatMap(g => g.sessions.map(s => ({ id: s.identity?.wolfpackSessionId ?? s.name, name: s.name, state: s.runtimeState?.state ?? "unknown", changedAt: s.runtimeState?.changedAt, cwd: s.identity?.projectPath, machine: g.machine.name, machineUrl: g.machine.url }))),
+  open: (name, machine) => { void openSession(name, machine); },
+  start: intention => {
+    const group = intention.machine ? state.lastSessionGroups.find(g => g.machine.name === intention.machine || g.machine.url === intention.machine) : state.lastSessionGroups.find(g => !g.machine.url);
+    if (intention.machine && !group?.online) { void showMachineUnavailable(); return; }
+    if (!intention.project) { void showProjectPicker(group?.machine.url); return; }
+    state.projectMachine = group?.machine.url || "";
+    state.viewBeforePicker = "assistant";
+    state.selectedProject = intention.project;
+    state.selectedProjectDir = intention.project;
+    state.isNewProject = false;
+    void showAgentPicker();
+  },
+  show: view => { if (view === "sessions") backToSessions(); else showView(view); },
+  confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Pi authentication cannot be checked automatically. Run pi and /login on the home machine first. Confirm it is logged in; this launches one persistent assistant." : "Unpin and stop the assistant? Focus and its conversation are kept.", confirmLabel: enabled ? "Pi is logged in — enable" : "Unpin & stop", destructive: !enabled }),
+});
+document.getElementById("assistant-terminal-inspect").onclick = event => {
+  const target = pinnedSessionInspectionTarget(state.currentSession, state.currentMachine);
+  if (target) inspectSession(target.session, target.sessionId, target.machine, event.currentTarget as HTMLElement);
+};
+document.getElementById("assistant-terminal-stop").onclick = event => { void killSession(state.currentSession, event, state.currentMachine); };
+
 const sessionInspector = createSessionInspector({
   requestSnapshot: (sessionId, machine, signal) => api(
     "/session-control/snapshot?sessionId=" + encodeURIComponent(sessionId),
@@ -1508,12 +1534,18 @@ function applyMobileViewNavigation(viewName: string): void {
     renderQuickCmdSettings();
     loadAgentsSettings();
     void loadTaskWorkerExtensionPolicySettings();
+  } else if (viewName === "assistant") {
+    back.style.display = "block";
+    back.onclick = () => backToSessions();
+    gear.style.display = "none";
+    title.textContent = "Assistant";
   } else if (viewName === "terminal") {
     back.style.display = "block";
     back.onclick = () => {
+      const assistant = focusUi.isAssistant(state.currentSession, state.currentMachine);
       destroyTerminal();
       setState({ currentSession: null, currentMachine: "" });
-      showView("sessions");
+      showView(assistant ? "assistant" : "sessions");
       loadSessions();
     };
     gear.style.display = "none";
@@ -1549,6 +1581,8 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
   stopDebugPanelRefresh(previousView, viewName);
   teardownTerminalForViewChange(previousView, viewName);
   setState({ currentView: viewName });
+  document.getElementById("assistant-terminal-header").hidden = viewName !== "terminal" || !focusUi.isAssistant(state.currentSession, state.currentMachine);
+  if (viewName === "assistant" || viewName === "settings") void focusUi.refresh();
   document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   applyViewVisibility(previousElement, nextElement, animate, goingForward);
 
@@ -1821,10 +1855,15 @@ function sessionOrderResetButtonHtml(machineUrl: string): string {
   return `<button type="button" class="session-order-reset" data-session-order-machine="${escAttr(machineUrl)}" aria-label="Reset session order" title="Reset session order">↺</button>`;
 }
 
+function sessionPinHtml(session: DelegationSessionLike): string {
+  return session.pinned ? '<svg class="ui-icon session-pin" viewBox="0 0 24 24" role="img" aria-label="Pinned session"><path d="m9 4 6 6M14 3l7 7-4 1-4 4-1 4-7-7 4-1 4-4 1-4ZM5 19l4-4"/></svg>' : "";
+}
+
 function sessionKillButtonHtml(name: string, machineUrl: string, tier: ReturnType<typeof sessionTier>): string {
-  const action = tier === "fail" ? "Close" : "Stop";
+  const pinned = state.lastSessionGroups.find(g => g.machine.url === machineUrl)?.sessions.find(s => s.name === name)?.pinned;
+  const action = pinned ? "Unpin & stop" : tier === "fail" ? "Close" : "Stop";
   const nameAttr = escAttr(name);
-  return `<button type="button" class="kill-btn" data-action="kill-session" data-session="${nameAttr}" data-machine="${escAttr(machineUrl)}" aria-label="${action} ${nameAttr}" title="${action} session">${tier === "fail" ? "Close" : "&times;"}</button>`;
+  return `<button type="button" class="kill-btn" data-action="kill-session" data-session="${nameAttr}" data-machine="${escAttr(machineUrl)}" aria-label="${action} ${nameAttr}" title="${action} session">${pinned ? "Unpin & stop" : tier === "fail" ? "Close" : "&times;"}</button>`;
 }
 
 // Shared visual treatment; actions and machine routing stay on the parent button.
@@ -1937,7 +1976,7 @@ function renderDashboardSessionCardHtml(
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${escAttr(machineUrl)}" aria-label="Open ${escAttr(s.name)}"${ordering.openAttributes}></button>
     ${harnessIconHtml(s.identity?.agentKind)}
     <div class="card-info">
-      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${chip}${collapsible ? sidebarDelegationToggleHtml(row, machineUrl) : ""}</div>
+      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${sessionPinHtml(s)}${chip}${collapsible ? sidebarDelegationToggleHtml(row, machineUrl) : ""}</div>
       ${pinned ? "" : delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(s.lastLine || "")}</div>
       <div class="card-meta"><span class="status st-${tier}" title="${escAttr(ui.title)}">${sessionStatusContent(s, machineUrl)}</span>${activityHtml(s)}</div>
@@ -2299,6 +2338,8 @@ function publishSessionProjection(): void {
     : []);
   renderSessionListFromState();
   renderSidebar();
+  focusUi.render();
+  document.getElementById("assistant-terminal-header").hidden = !focusUi.isAssistant(state.currentSession, state.currentMachine);
   if (state.drawerOpen) renderDrawerList();
   syncDelegationWorkspace();
   checkStateTransitions(state.lastSessionGroups);
@@ -2381,7 +2422,7 @@ function loadSessions(force = false): Promise<void> {
   syncLifecycleStreams();
   // Each machine owns its flight: waiting for one caller's aggregate never
   // prevents a later poll/event from refreshing other machines.
-  return Promise.all(machines.map(identity => refreshMachineSessions(identity, force))).then(() => undefined);
+  return Promise.all([focusUi.refresh(), ...machines.map(identity => refreshMachineSessions(identity, force))]).then(() => undefined);
 }
 
 async function openSessionFromNotificationRoute(expectedLoadEpoch: number): Promise<void> {
@@ -2480,7 +2521,7 @@ function syncSessionRefreshTimer(refreshNow = false): void {
     state.sessionRefreshTimer = null;
   }
   if (document.visibilityState !== "visible") return;
-  if (!isDesktop() && state.currentView !== "sessions" && !state.drawerOpen) return;
+  if (!isDesktop() && state.currentView !== "sessions" && state.currentView !== "assistant" && !state.drawerOpen) return;
   if (refreshNow) void loadSessions(true);
   state.sessionRefreshTimer = setInterval(() => { void loadSessions(); }, SESSION_REFRESH_INTERVAL_MS);
 }
@@ -4183,7 +4224,8 @@ async function killSession(name, e, machineUrl) {
     ? { session: state.activeDelegationRoot, machine: state.delegationMachine || "" }
     : null;
   const session = state.lastSessionGroups.find(group => (group.machine.url || "") === (machineUrl || ""))?.sessions.find(session => session.name === name);
-  const action = session && sessionTier(session) === "fail" ? "Close" : "Stop";
+  const pinnedSession = session?.pinned || focusUi.isAssistant(name, machine);
+  const action = pinnedSession ? "Unpin & stop" : session && sessionTier(session) === "fail" ? "Close" : "Stop";
   const confirmed = await showAppDialog({
     title: `${action} session`,
     message: `${action} session "${name}"?`,
@@ -4195,7 +4237,7 @@ async function killSession(name, e, machineUrl) {
     const result = await api<{ readonly sessionId?: string }>("/kill", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session: pinnedId || name }),
+      body: JSON.stringify({ session: pinnedId || name, ...(pinnedSession && { unpin: true }) }),
     }, machine);
     const stoppedId = pinnedId || result.sessionId;
     if (stoppedId) {
@@ -5572,7 +5614,7 @@ function sidebarCardHtml(row: DelegationSessionRow<DelegationSessionLike>, machi
     <button type="button" class="card-open" data-action="open-session" data-session="${escAttr(s.name)}" data-machine="${machineUrlAttr}" aria-label="Open ${escAttr(s.name)}"${isActive ? ' aria-current="page"' : ''}${ordering.openAttributes}></button>
     <div class="dot ${ui.dot}" title="${ui.title}"></div>
     <div class="card-info">
-      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${harnessIconHtml(s.identity?.agentKind)}${sidebarDelegationToggleHtml(row, machineUrl)}</div>
+      <div class="card-name"><span class="card-name-text">${esc(s.name)}</span>${sessionPinHtml(s)}${harnessIconHtml(s.identity?.agentKind)}${sidebarDelegationToggleHtml(row, machineUrl)}</div>
       <div class="card-status"><span class="triage-badge ${ui.badge}">${ui.label}</span></div>
       ${delegationParentMissingHtml(row)}
       <div class="card-preview">${esc(lastLine)}</div>

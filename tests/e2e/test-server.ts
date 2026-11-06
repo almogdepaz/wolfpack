@@ -53,7 +53,10 @@ if (!isolatedHome) {
   await runOwnedBootstrap(ownedHome);
 }
 
+if (!isolatedHome) throw new Error("isolated E2E home required");
 process.env.HOME = isolatedHome;
+process.env.WOLFPACK_DIR = join(isolatedHome, ".wolfpack");
+process.env.WOLFPACK_PORT = "19792";
 process.env.WOLFPACK_TEST = "1";
 let shuttingDown = false;
 const shutdown = (): void => {
@@ -121,6 +124,30 @@ if (process.env.WOLFPACK_E2E_CANONICAL_SESSION_IDS === "1") {
     }
     return identities;
   };
+}
+if (process.env.WOLFPACK_E2E_FOCUS_ASSISTANT === "1") {
+  const { saveConfig } = await import("../../src/config.ts");
+  const { FocusStore } = await import("../../src/server/focus-store.ts");
+  const folder = join(process.env.WOLFPACK_DIR, "assistant");
+  saveConfig({ devDir: "/tmp", port: 19792, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] });
+  await mock.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }));
+  paneContent.assistant = "pi · focus-assistant · skill: wolfpack-focus\n\n› broker leak first, the focus view can wait a day\n\n  Moving fix broker leak to the top.\n  prompt-project is still waiting on your answer.\n\n  $ wolfpack focus nudge 'Broker leak first. Answer the blocked session.'\n\n  Focus saved. Your conversation stays in this terminal.\n\n› ".replace(/\n/g, "\r\n");
+  // capturePane is display text (CR stripped); a PTY prefill must restore line starts.
+  const getPrefill = mock.getSessionPrefill.bind(mock);
+  mock.getSessionPrefill = async (...args) => {
+    const prefill = await getPrefill(...args);
+    return args[0] === "assistant" ? { ...prefill, data: Buffer.from(prefill.data.toString().replace(/\r?\n/g, "\r\n")) } : prefill;
+  };
+  mock.setProgramStatus("assistant", { id: "", state: "done", app: "pi", updatedAtMs: Date.now() });
+  mock.setProgramStatus("prompt-project", { id: "", state: "blocked", kind: "question", updatedAtMs: Date.now() - 7200000 });
+  mock.setProgramStatus("another-project", { id: "", state: "working", updatedAtMs: Date.now() });
+  new FocusStore().update(0, [
+    { type: "add", intention: { id: "ship", title: "ship the focus assistant", sessions: ["mock:prompt-project", "mock:another-project"] } },
+    { type: "add", intention: { id: "leak", title: "fix broker leak" } },
+    { type: "add", intention: { id: "reply", title: "reply to the release issue" } },
+    { type: "done", id: "reply" },
+    { type: "nudge", text: "Ship the focus assistant today. The broker leak can wait; answer the blocked session first.", author: "assistant" },
+  ]);
 }
 __setTestBackend(mock);
 

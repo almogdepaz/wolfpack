@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { emptyFocus, isFocusDocument, reduceFocus, type FocusDocument } from "../focus-contract.js";
 import { readValidatedJsonFile, writePrivateJsonFile } from "../persistence.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
+export class FocusValidationError extends Error {}
 export class FocusConflict extends Error {
   constructor(readonly document: FocusDocument | null) { super("focus revision conflict"); }
 }
@@ -12,7 +13,9 @@ export class FocusStore {
   update(expectedRevision: number, ops: unknown): FocusDocument {
     const document = this.read();
     if ((document?.revision ?? 0) !== expectedRevision) throw new FocusConflict(document);
-    const next = reduceFocus(document ?? emptyFocus(), ops, new Date().toISOString());
+    let next: FocusDocument;
+    try { next = reduceFocus(document ?? emptyFocus(), ops, new Date().toISOString()); }
+    catch (error) { throw new FocusValidationError(error instanceof Error ? error.message : "invalid focus operations"); }
     writePrivateJsonFile(this.path, next);
     return next;
   }

@@ -27,6 +27,15 @@ test("one outstanding send; stale idle cannot release the next; queue bounded an
   expect(sent).toEqual(["one", "two"]);
   expect(queue.error).toContain("restarted");
 });
+test("a fast completed turn releases the queue via a new program timestamp even if working was not sampled", async () => {
+  const sent: string[] = [];
+  const queue = new FocusSendQueue(async (_id, text) => { sent.push(text); });
+  queue.enqueue("a", "one"); queue.enqueue("a", "two");
+  await queue.tick({ id: "a", idle: true, token: "program:1000" });
+  await queue.tick({ id: "a", idle: true, token: "program:1001" });
+  expect(sent).toEqual(["one", "two"]);
+});
+
 test("send failure is surfaced, never blindly replayed", async () => {
   const queue = new FocusSendQueue(async () => { throw new Error("disconnected"); });
   queue.enqueue("a", "hello");

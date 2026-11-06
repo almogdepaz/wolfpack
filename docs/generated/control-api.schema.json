@@ -2684,6 +2684,9 @@
         "properties": {
           "session": {
             "$ref": "#/$defs/SessionSelector"
+          },
+          "unpin": {
+            "type": "boolean"
           }
         },
         "required": [

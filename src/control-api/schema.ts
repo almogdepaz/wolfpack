@@ -1564,7 +1564,7 @@ export const controlApiSource: ControlApiSource = {
       operationId: "killSession",
       stable: true,
       auth: "jwt-when-configured",
-      request: object({ session: ref("SessionSelector") }, ["session"]),
+      request: object({ session: ref("SessionSelector"), unpin: boolean() }, ["session"]),
       response: object({
         ok: { const: true },
         session: ref("SessionName"),

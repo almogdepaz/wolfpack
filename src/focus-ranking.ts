@@ -1,3 +1,4 @@
+import { AGENT_STATUS_STATE } from "./agent-status-contract.js";
 import type { FocusDocument, FocusIntention } from "./focus-contract.js";
 export interface FocusSession {
   id: string;
@@ -15,11 +16,11 @@ export interface FocusAction {
   reason: string;
 }
 export function linkedFocusSessions(intention: FocusIntention, sessions: readonly FocusSession[]): FocusSession[] {
-  return sessions.filter(s => intention.sessions?.length
-    ? intention.sessions.includes(s.id) || intention.sessions.includes(s.name)
+  return sessions.filter(s => intention.sessions !== undefined
+    ? intention.sessions.includes(s.id)
     : !!intention.project && s.cwd === intention.project && (!intention.machine || s.machine === intention.machine));
 }
-const needsYou = (s: FocusSession) => s.state === "needs-input" || s.state === "failed";
+const needsYou = (s: FocusSession) => s.state === AGENT_STATUS_STATE.NEEDS_INPUT || s.state === AGENT_STATUS_STATE.FAILED;
 const oldest = (a: FocusSession, b: FocusSession) => (Date.parse(a.changedAt ?? "") || 0) - (Date.parse(b.changedAt ?? "") || 0) || a.id.localeCompare(b.id) || (a.machine ?? "").localeCompare(b.machine ?? "");
 /** Intention order is authoritative. Working/idle sessions remain chips, never next actions. */
 export function rankFocus(doc: FocusDocument, sessions: readonly FocusSession[], cap = 5): FocusAction[] {
