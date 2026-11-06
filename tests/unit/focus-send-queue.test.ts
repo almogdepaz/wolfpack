@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { FocusSendQueue } from "../../src/focus-send-queue.ts";
 import { genericHarness, piHarness } from "../../src/focus-harness.ts";
+import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
 test("pi semantic status distinguishes resting from input dialogs, rejects stale or fallback facts", () => {
   expect(piHarness.isIdle({ state: "done", authority: "program", stale: false })).toBe(true);
   expect(piHarness.needsScreen({ state: "done", authority: "program", stale: false })).toBe(false);
@@ -13,6 +14,17 @@ test("pi semantic status distinguishes resting from input dialogs, rejects stale
   expect(piHarness.isIdle({ state: "idle", authority: "program", stale: true })).toBe(false);
   expect(genericHarness.isIdle({ screen: "› ", quietMs: 5000 })).toBe(true);
   expect(genericHarness.isIdle({ screen: "Allow? (y/n)\n› ", quietMs: 5000 })).toBe(false);
+});
+test("fresh program/manifest non-resting states veto a generic quiet prompt, without changing stale/fallback heuristics", () => {
+  for (const authority of [AGENT_STATUS_AUTHORITY.PROGRAM, AGENT_STATUS_AUTHORITY.MANIFEST]) {
+    for (const state of Object.values(AGENT_STATUS_STATE)) {
+      const sample = { state, authority, stale: false, screen: "› ", quietMs: 6000 };
+      expect(genericHarness.needsScreen(sample)).toBe(true);
+      expect(genericHarness.isIdle(sample)).toBe(state === AGENT_STATUS_STATE.IDLE || state === AGENT_STATUS_STATE.DONE);
+    }
+  }
+  expect(genericHarness.isIdle({ state: AGENT_STATUS_STATE.WORKING, authority: AGENT_STATUS_AUTHORITY.MANIFEST, stale: true, screen: "› ", quietMs: 6000 })).toBe(true);
+  expect(genericHarness.isIdle({ state: AGENT_STATUS_STATE.WORKING, authority: AGENT_STATUS_AUTHORITY.FALLBACK, stale: false, screen: "› ", quietMs: 6000 })).toBe(true);
 });
 test("one outstanding send; stale idle cannot release the next; queue bounded and incarnation pinned", async () => {
   const sent: string[] = [];

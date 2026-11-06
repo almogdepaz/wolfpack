@@ -79,7 +79,7 @@ test("assistant runtime drains fast completed turns using broker program timesta
   } finally { ctx.focusRuntime.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test.each(["done", "blocked"] as const)("generic runtime samples a quiet prompt with structured %s status and respects blocked questions", async state => {
+test.each(["done", "blocked", "working"] as const)("generic runtime samples a quiet prompt with structured %s status and respects busy state", async state => {
   process.env.WOLFPACK_TEST = "1";
   const root = mkdtempSync(join(tmpdir(), "focus-generic-runtime-"));
   const { createServerContext } = await import("../../src/server/context.ts");
@@ -106,6 +106,48 @@ test.each(["done", "blocked"] as const)("generic runtime samples a quiet prompt 
     expect(captures).toBeGreaterThan(baselineCaptures);
     expect(sent).toEqual(state === "done" ? ["queued ask"] : []);
     expect(ctx.focusRuntime.queue.size).toBe(state === "done" ? 0 : 1);
+  } finally { setSystemTime(); ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("generic runtime retains an outstanding send across a fresh working timestamp with a quiet visible prompt", async () => {
+  process.env.WOLFPACK_TEST = "1";
+  const root = mkdtempSync(join(tmpdir(), "focus-generic-outstanding-"));
+  const { createServerContext } = await import("../../src/server/context.ts");
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+  __resetSessionObservationForTests();
+  const folder = join(root, "assistant");
+  mkdirSync(folder);
+  const backend = new MockBackend({ capturePane: async () => "› " });
+  await backend.createSession("assistant", folder, "hermes", () => ({ agentCmd: "hermes" }), { agentKind: "hermes" });
+  const at = Date.now();
+  backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: at });
+  const sent: string[] = [];
+  backend.sendAndObserveSubmission = async (_id, options) => { sent.push(options.text); return { delivery: "delivered", outcome: "submitted", observedMs: 1 }; };
+  const config = { devDir: root, port: 19864, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["hermes"], harness: "hermes" }] };
+  const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
+  try {
+    const status = await ctx.focusRuntime.status();
+    ctx.focusRuntime.queue.enqueue(status.sessionId!, "first turn");
+    ctx.focusRuntime.queue.enqueue(status.sessionId!, "next turn must wait");
+    setSystemTime(new Date(at + 6000));
+    await ctx.focusRuntime.tick();
+    expect(sent).toEqual(["first turn"]);
+    setSystemTime(new Date(at + 6001));
+    backend.setProgramStatus("assistant", { id: "", state: "working", updatedAtMs: at + 6001 });
+    await ctx.focusRuntime.status(); // observe the transition, then leave the visible prompt quiet for six seconds
+    setSystemTime(new Date(at + 12001));
+    await ctx.focusRuntime.tick();
+    expect(sent).toEqual(["first turn"]);
+    expect(ctx.focusRuntime.queue.size).toBe(1);
+    await ctx.focusRuntime.tick();
+    expect(sent).toEqual(["first turn"]);
+    setSystemTime(new Date(at + 12002));
+    backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: at + 12002 });
+    await ctx.focusRuntime.status();
+    setSystemTime(new Date(at + 18002));
+    await ctx.focusRuntime.tick();
+    expect(sent).toEqual(["first turn", "next turn must wait"]);
   } finally { setSystemTime(); ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
 });
 

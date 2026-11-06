@@ -167,6 +167,11 @@ describe("control api generated schema against runtime responses", () => {
         harness: "pi",
         initialPrompt: "execute the plan",
       })],
+      ["createSession", await postJson("/api/create", {
+        project: "wolfpack",
+        cmd: "shell",
+        sessionName: "schema-browser",
+      })],
       ["listSessionStatuses", await getJson("/api/session-control/list")],
       ["getSessionStatus", await getJson(
         `/api/session-control/status?session=${encodeURIComponent("mock:wolfpack")}`,
