@@ -18,10 +18,39 @@ export function createFocusRoutes(ctx: ServerContext) {
     return { ...owner, document, revision: document?.revision ?? 0 };
   };
   return {
-    "GET /api/focus": (_req: IncomingMessage, res: ServerResponse) => {
+    "GET /api/focus": async (_req: IncomingMessage, res: ServerResponse) => {
       res.setHeader("Cache-Control", "no-store");
-      try { json(res, envelope()); }
+      try { const current = envelope(); json(res, { ...current, ...(current.local && { assistant: await ctx.focusRuntime.status() }) }); }
       catch (error) { json(res, { error: errMsg(error) }, 503); }
+    },
+    "POST /api/focus/assistant": async (req: IncomingMessage, res: ServerResponse) => {
+      if (!identity().local) return json(res, { error: "enable the assistant on the focus home machine" }, 409);
+      const body = await parseObjectBody(req, res);
+      if (!body) return;
+      if (!hasOnlyKeys(body, new Set(["enabled", "loginConfirmed"])) || typeof body.enabled !== "boolean" || (body.loginConfirmed !== undefined && typeof body.loginConfirmed !== "boolean")) return json(res, { error: "enabled boolean required" }, 400);
+      try {
+        if (body.enabled) {
+          await ctx.assistantService.enable(body.loginConfirmed === true);
+          ctx.focusRuntime.start();
+          await ctx.focusRuntime.pins.tick();
+        } else {
+          await ctx.focusRuntime.pins.tick();
+          ctx.assistantService.unpin("assistant");
+          ctx.focusRuntime.queue.clear("assistant disabled");
+          const facts = await ctx.backend.listSessionFacts();
+          const session = facts.find(f => f.alive && f.name === "assistant" && f.identity?.projectPath === ctx.assistantService.folder);
+          if (session?.identity) await ctx.backend.killSessionById(session.identity.wolfpackSessionId);
+        }
+        json(res, await ctx.focusRuntime.status());
+      } catch (error) { json(res, { error: errMsg(error) }, 409); }
+    },
+    "POST /api/focus/ask": async (req: IncomingMessage, res: ServerResponse) => {
+      if (!identity().local) return json(res, { error: "assistant is on the home machine" }, 409);
+      const body = await parseObjectBody(req, res);
+      if (!body) return;
+      if (!hasOnlyKeys(body, new Set(["text"])) || typeof body.text !== "string") return json(res, { error: "text required" }, 400);
+      try { json(res, await ctx.focusRuntime.ask(body.text)); }
+      catch (error) { json(res, { error: errMsg(error) }, 409); }
     },
     "POST /api/focus": async (req: IncomingMessage, res: ServerResponse) => {
       const owner = identity();

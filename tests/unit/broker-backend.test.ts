@@ -592,6 +592,17 @@ describe("BrokerBackend.createSession", () => {
     expect(params.env.flat()).not.toContain(initialPrompt);
   });
 
+  test("execs pinned argv without shell interpolation or returning to a shell", async () => {
+    const argv = ["pi", "--session-dir", "/tmp/a folder/$(not-executed)"];
+    client.setHandler("create_session", () => okResp({ session: sessionInfo({ name: "assistant", id: SESSION_UUID_1 }) }));
+    await backend.createSession("assistant", "/tmp/a folder", "pi", loadSettings, { agentKind: "pi", pinnedCommand: argv });
+    const params = client.requests.find(r => r.method === "create_session")?.params as { command: string[]; env: Array<[string, string]> };
+    expect(params.command.slice(3)).toEqual(["wolfpack-agent", ...argv]);
+    expect(params.command[2]).toContain('exec "$@"');
+    expect(params.command[2]).not.toContain(argv[2]!);
+    expect(params.env.find(([key]) => key === "WOLFPACK_DIR")?.[1]).toBe(process.env.WOLFPACK_DIR!);
+  });
+
   test("passes pi model selection as an opaque native --model argv value", async () => {
     const model = "openrouter/$(touch /tmp/not-executed); echo $HOME";
     const initialPrompt = "review the diff";

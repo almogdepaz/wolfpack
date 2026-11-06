@@ -68,6 +68,7 @@ import {
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
+import { resolveWolfpackDir } from "../wolfpack-dir.js";
 import { CMD_REGEX } from "../validation.js";
 import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
 import { createLogger, errMsg } from "../log.js";
@@ -644,6 +645,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         throw new Error("initial prompt requires an agent harness");
       }
       shellCmd = SHELL;
+    } else if (options?.pinnedCommand !== undefined) {
+      if (options.pinnedCommand.length === 0 || options.pinnedCommand.some(arg => typeof arg !== "string" || arg.includes("\0"))) throw new Error("invalid pinned command");
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
+      commandArgs = [...options.pinnedCommand];
     } else if (taskWorker !== undefined) {
       // Test and compatibility callers can provide the pre-policy launch shape;
       // route-owned launches always provide the resolved fields.
@@ -692,6 +697,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         parentSession: options?.parentSession,
       }),
       ...taskWorkerEnv,
+      ...(options?.pinnedCommand ? Object.entries({ WOLFPACK_DIR: resolveWolfpackDir(), ...(process.env.WOLFPACK_PORT && { WOLFPACK_PORT: process.env.WOLFPACK_PORT }) }) : []),
     ];
 
     let resp: ControlResponse;

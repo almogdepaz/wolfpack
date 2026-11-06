@@ -108,6 +108,7 @@ return {
   "GET /api/sessions": async (_req, res) => {
     const sessions = await observeDashboardSessions(ctx);
     json(res, { sessions: sessions.map(session => ({ ...session, changedAt: session.runtimeState.changedAt,
+      pinned: ctx.assistantService.pins.some(pin => pin.name === session.name),
       organization: session.identity ? ctx.sessionOrganization.project(session.identity.wolfpackSessionId) : { status: "unavailable" },
     })) });
   },
@@ -156,10 +157,18 @@ return {
     if (typeof selector !== "string" || !selector) return json(res, { error: "missing session" }, 400);
     const resolved = await resolveActiveSession(res, selector, ctx.backend);
     if (!resolved) return;
+    const pinned = ctx.assistantService.pins.some(pin => pin.name === resolved.name);
+    if (pinned && body.unpin !== true) return json(res, { error: "pinned session: use unpin & stop", pinned: true }, 409);
+    if (pinned) {
+      await ctx.focusRuntime.pins.tick();
+      ctx.assistantService.unpin(resolved.name);
+      if (resolved.name === "assistant") ctx.focusRuntime.queue.clear("assistant unpinned");
+    }
     // Clean up any associated desktop PTY session (wp_*) before killing
     teardownPty(resolved.name);
     forgetSessionObservation(resolved.identity.wolfpackSessionId, resolved.name);
-    await getBackend().killSession(resolved.name);
+    if (pinned) await getBackend().killSessionById(resolved.identity.wolfpackSessionId);
+    else await getBackend().killSession(resolved.name);
     json(res, {
       ok: true,
       session: resolved.name,

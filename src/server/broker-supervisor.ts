@@ -45,6 +45,8 @@ export class BrokerSupervisor {
   /** From the last successful `hello`; null for a pre-hello broker or no broker. */
   private brokerVersion: BrokerVersionInfo | null = null;
   private connectionGeneration = 0;
+  private readonly readyListeners = new Set<() => void>();
+  onReady(listener: () => void): () => void { this.readyListeners.add(listener); return () => { this.readyListeners.delete(listener); }; }
 
   constructor(private readonly options: { start?: boolean; events?: EventBus } = {}) {
     this.brokerSocketPath = defaultBrokerSocketPath();
@@ -84,6 +86,7 @@ export class BrokerSupervisor {
         this.brokerVersion = negotiatedVersion;
         this._brokerAvailable = true;
         backend?.handleBrokerConnected();
+        for (const listener of this.readyListeners) listener();
       },
       onDisconnect: () => {
         if (this.brokerClient === client) {

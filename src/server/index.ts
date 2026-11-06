@@ -319,7 +319,11 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   await taskRelay.initialize();
   ctx.backend.cleanupOrphans();
   startSessionNotificationObserver(ctx);
+  ctx.focusRuntime.start();
+  const stopPinnedReconnect = router?.onReady(() => { void ctx.focusRuntime.pins.tick(); });
   server.once("close", () => {
+    stopPinnedReconnect?.();
+    ctx.focusRuntime.stop();
     taskRelay.close();
     stopSessionNotificationObserver();
   });

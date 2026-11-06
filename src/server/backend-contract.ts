@@ -36,6 +36,8 @@ export class UnsupportedTerminalKeyError extends Error {
 }
 
 export interface SessionLaunchOptions {
+  /** Server-owned pinned launch only; opaque argv, exec so exit is observable. Never accepted from HTTP. */
+  readonly pinnedCommand?: readonly string[];
   readonly agentKind?: AgentKind | string;
   readonly externalAgent?: CaptureSessionIdentityInput["externalAgent"];
   readonly parentSession?: ParentSessionIdentity;

@@ -2,6 +2,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { platform } from "node:os";
+import { isPinnedSessions, type PinnedSession } from "./pinned-sessions.js";
 import { isValidPort } from "./validation.js";
 import { resolveWolfpackDir } from "./wolfpack-dir.js";
 import { canonicalTailnetOrigin, isMachineDisplayName } from "./tailnet-machine-contract.js";
@@ -20,6 +21,7 @@ export interface Config {
   displayName?: string;
   /** Installation identity, not a display name or an arbitrary URL. */
   focus?: { home: string };
+  pinnedSessions?: PinnedSession[];
 }
 
 export function parseConfig(raw: unknown): Config | null {
@@ -40,7 +42,8 @@ export function parseConfig(raw: unknown): Config | null {
     if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.home !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(value.home) || Object.keys(value).some(k => k !== "home")) return null;
     focus = { home: value.home };
   }
-  return { devDir, port, tailscaleHostname, ...(isMachineDisplayName(displayName) && { displayName }), ...(focus && { focus }) };
+  if (candidate.pinnedSessions !== undefined && !isPinnedSessions(candidate.pinnedSessions)) return null;
+  return { devDir, port, tailscaleHostname, ...(isMachineDisplayName(displayName) && { displayName }), ...(focus && { focus }), ...(candidate.pinnedSessions !== undefined && { pinnedSessions: candidate.pinnedSessions as PinnedSession[] }) };
 }
 
 export function loadConfigFromText(text: string): Config | null {

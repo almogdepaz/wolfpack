@@ -765,6 +765,7 @@ export const controlApiSource: ControlApiSource = {
       organization: ref("SessionOrganizationProjection"),
       runtimeState: ref("AgentRuntimeState"),
       changedAt: string(),
+      pinned: boolean(),
       activity: ref("ActivityObservation"),
       quietAlert: ref("QuietAlertFact"),
       quietSuppressedBy: ref("QuietSuppression"),
@@ -1339,9 +1340,19 @@ export const controlApiSource: ControlApiSource = {
       }, ["ok", "taskId", "eventId", "sequence", "event"]),
       errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "413 TaskApiErrorEnvelope", "502 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
     },
+    "POST /api/focus/assistant": {
+      operationId: "configureFocusAssistant", stable: true, auth: "jwt-when-configured",
+      request: object({ enabled: boolean(), loginConfirmed: boolean() }, ["enabled"]),
+      response: { type: "object" }, errors: ["400 ErrorEnvelope", "409 ErrorEnvelope"],
+    },
+    "POST /api/focus/ask": {
+      operationId: "askFocusAssistant", stable: true, auth: "jwt-when-configured",
+      request: object({ text: string() }, ["text"]),
+      response: { type: "object" }, errors: ["400 ErrorEnvelope", "409 ErrorEnvelope"],
+    },
     "GET /api/focus": {
       operationId: "getFocus", stable: true, auth: "jwt-when-configured",
-      response: object({ home: string(), installationId: string(), local: boolean(), document: { type: ["object", "null"] }, revision: integer() }, ["home", "installationId", "local", "document", "revision"]),
+      response: object({ home: string(), installationId: string(), local: boolean(), document: { type: ["object", "null"] }, revision: integer(), assistant: { type: "object" } }, ["home", "installationId", "local", "document", "revision"]),
       errors: ["503 ErrorEnvelope"],
     },
     "POST /api/focus": {

@@ -1,3 +1,5 @@
+import { AssistantService } from "./assistant-service.js";
+import { FocusRuntime } from "./focus-runtime.js";
 import { FocusStore } from "./focus-store.js";
 import { SessionOrganizationService } from "./session-organization.ts";
 import { TaskGateway } from "../tasks/gateway.ts";
@@ -28,6 +30,8 @@ export interface ServerContext {
   readonly extensionRouteService: ExtensionRouteService;
   readonly sessionOrganization: SessionOrganizationService;
   readonly focusStore: FocusStore;
+  readonly assistantService: AssistantService;
+  readonly focusRuntime: FocusRuntime;
 }
 
 // Context-owned lazy instances. Compatibility test hooks reset only the default
@@ -37,6 +41,7 @@ interface ServiceCache {
   taskRelayGateway?: RelayGateway;
   extensionRouteService?: ExtensionRouteService;
   sessionOrganization?: SessionOrganizationService;
+  focusRuntime?: FocusRuntime;
 }
 const serviceCaches = new WeakMap<ServerContext, ServiceCache>();
 /** @internal Compatibility shim lookup; request handlers use context properties. */
@@ -69,6 +74,8 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     config: overrides.config === undefined ? loadConfig() : overrides.config,
     supervisor,
     focusStore: overrides.focusStore ?? new FocusStore(),
+    assistantService: overrides.assistantService ?? new AssistantService(),
+    get focusRuntime() { return overrides.focusRuntime ?? (cache.focusRuntime ??= new FocusRuntime(context)); },
     get taskGateway() {
       return cache.taskGateway ??= new TaskGateway({ root: overrides.taskRoot ?? process.env.WOLFPACK_TASK_ROOT, inspectSession: selector => context.backend.inspectSession(selector) });
     },
@@ -109,4 +116,6 @@ export const defaultServerContext: ServerContext = {
   get extensionRouteService() { return getDefaultServerContext().extensionRouteService; },
   get sessionOrganization() { return getDefaultServerContext().sessionOrganization; },
   get focusStore() { return getDefaultServerContext().focusStore; },
+  get assistantService() { return getDefaultServerContext().assistantService; },
+  get focusRuntime() { return getDefaultServerContext().focusRuntime; },
 };
