@@ -570,6 +570,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     }
     const { project: projectLabel, projectDir } = projectSelection;
     const finalName = customName || await uniqueSessionName(projectLabel, ctx.backend);
+    let sessionId: string;
     try {
       // Backends accept a `loadSettings` thunk that returns the agent to spawn.
       // Resolve the effective agent (respecting enabled-state + fallbacks) here
@@ -579,11 +580,12 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       if (initialPrompt !== undefined && agentKind === AGENT_KIND.SHELL.id) {
         return json(res, { error: "initial prompt requires an agent harness" }, 400);
       }
-      await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, {
+      const identity = await getBackend().createSession(finalName, projectDir, cmd, settingsResolver, {
         agentKind,
         parentSession: parentIdentity,
         initialPrompt,
       });
+      sessionId = identity.wolfpackSessionId;
     } catch (e: unknown) {
       if (e instanceof DuplicateSessionError) {
         return json(res, { error: "session exists", session: finalName, hint: "reconnect or choose a different name" }, 409);
@@ -591,7 +593,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       throw e;
     }
     if (parentName) notifySubSessionOpened(parentName, finalName);
-    json(res, { ok: true, session: finalName });
+    json(res, { ok: true, session: finalName, sessionId, projectDir });
   },
 
   "POST /api/session-create": async (req, res) => {

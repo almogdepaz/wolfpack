@@ -1,4 +1,6 @@
-import { reconcilePinned, recordPinFailure, PIN_STABLE_MS, type PinHistory, type PinnedSession } from "../pinned-sessions.js";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { conflictingAssistantPins, reconcilePinned, recordPinFailure, PIN_STABLE_MS, type PinHistory, type PinnedSession } from "../pinned-sessions.js";
 import type { SessionBackend } from "./backend-contract.js";
 import { createLogger, errMsg } from "../log.js";
 const log = createLogger("server");
@@ -24,6 +26,9 @@ export class PinnedSessionService {
     // A failed list is unavailable, not an empty broker. Do not spawn in that case.
     const facts = await this.options.backend.listSessionFacts();
     const live = facts.filter(f => f.alive).map(f => f.name);
+    const directory = (cwd: string) => { try { return realpathSync(cwd); } catch { return resolve(cwd); } };
+    const conflicts = conflictingAssistantPins(pins.map(pin => ({ name: pin.name, cwd: directory(pin.cwd) })),
+      facts.flatMap(fact => fact.alive && fact.identity ? [{ name: fact.name, cwd: directory(fact.identity.projectPath) }] : []));
     for (const name of Object.keys(this.history)) if (!pins.some(p => p.name === name)) { delete this.history[name]; delete this.errors[name]; }
     for (const pin of pins) {
       if (live.includes(pin.name)) {
@@ -35,12 +40,13 @@ export class PinnedSessionService {
         this.history[pin.name] = recordPinFailure(this.history[pin.name], now);
       }
     }
+    for (const name of conflicts) this.errors[name] = "conflicting ownership of the assistant directory; no additional session launched";
     for (const action of reconcilePinned(pins, live, this.history, now)) {
+      if (conflicts.has(action.name)) continue;
       if (action.action === "failed") { this.errors[action.name] = "pinned session failed repeatedly; disable and enable to retry"; continue; }
       if (action.action !== "create") continue;
       const pin = pins.find(p => p.name === action.name)!;
       try {
-        if (pin.name === "assistant" && facts.some(f => f.alive && f.identity?.projectPath === pin.cwd)) throw new Error("a live session already owns the pinned working directory");
         await this.options.backend.createSession(pin.name, pin.cwd, pin.command[0], () => ({ agentCmd: pin.command[0]! }), { agentKind: pin.harness, pinnedCommand: pin.command });
         this.liveSince.set(pin.name, now);
         delete this.errors[pin.name];

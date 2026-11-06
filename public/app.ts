@@ -1,4 +1,5 @@
 import { createAssistantView } from "./assistant-view";
+import type { FocusSessionStart } from "../src/focus-start";
 import { sessionMetaHtml } from "./session-meta";
 import type { SessionMeta } from "../src/session-meta-contract";
 import {
@@ -1200,6 +1201,8 @@ interface NextSessionNameResponse {
 
 interface CreateSessionResponse {
   readonly session?: string;
+  readonly sessionId?: string;
+  readonly projectDir?: string;
 }
 
 interface AgentRuntimeStateAcknowledgementResponse {
@@ -1231,6 +1234,7 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
   return data as TResponse;
 }
 
+let pendingFocusStart: FocusSessionStart | undefined;
 const focusUi = createAssistantView({
   request: api,
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
@@ -1239,7 +1243,8 @@ const focusUi = createAssistantView({
   start: intention => {
     const group = intention.machine ? state.lastSessionGroups.find(g => g.machine.name === intention.machine || g.machine.url === intention.machine) : state.lastSessionGroups.find(g => !g.machine.url);
     if (intention.machine && !group?.online) { void showMachineUnavailable(); return; }
-    if (!intention.project) { void showProjectPicker(group?.machine.url); return; }
+    if (!intention.project) { void showProjectPicker(group?.machine.url, intention.id); return; }
+    pendingFocusStart = focusUi.captureStart(intention.id);
     state.projectMachine = group?.machine.url || "";
     state.viewBeforePicker = "assistant";
     state.selectedProject = intention.project;
@@ -1566,6 +1571,7 @@ function applyMobileViewNavigation(viewName: string): void {
 
 function showView(name: string, skipAnimation?: boolean, refreshSessions = true): void {
   const previousView = state.currentView;
+  if (name !== "projects" && name !== "agent") pendingFocusStart = undefined;
   const previousElement = document.getElementById(previousView + "-view");
   const isMobile = !isDesktop();
 
@@ -2710,6 +2716,7 @@ function renderProjectNames(projects: readonly string[]): void {
 }
 
 function returnFromProjectPicker(): void {
+  pendingFocusStart = undefined;
   if (!isDesktop()) requestAnimationFrame(() => document.querySelector<HTMLElement>(`#session-list .machine-add-btn[data-machine="${CSS.escape(state.projectMachine)}"]`)?.focus({ preventScroll: true }));
   if (state.viewBeforePicker === "sessions") {
     backToSessions();
@@ -2725,7 +2732,8 @@ function returnFromProjectPicker(): void {
   showView(state.viewBeforePicker || "sessions");
 }
 
-async function showProjectPicker(machineUrl?: string): Promise<void> {
+async function showProjectPicker(machineUrl?: string, focusIntentionId?: string): Promise<void> {
+  pendingFocusStart = focusIntentionId ? focusUi.captureStart(focusIntentionId) : undefined;
   state.projectMachine = machineUrl || "";
   setState({ viewBeforePicker: state.currentView });
   showView("projects");
@@ -3398,6 +3406,8 @@ async function createSessionWithAgent(cmd) {
   const sessionName = (nameInput.value || "").trim();
   if (sessionName && !/^[a-zA-Z0-9_-]+$/.test(sessionName)) return;
   const machine = state.projectMachine;
+  const focusStart = pendingFocusStart;
+  const focusMachine = machine || state.selfName || "this machine";
   const createError = document.getElementById("agent-create-error");
   createError.textContent = "";
   createError.classList.remove("visible");
@@ -3417,6 +3427,8 @@ async function createSessionWithAgent(cmd) {
       body: JSON.stringify(body),
     }, machine);
     if (data.session) {
+      const association = focusStart && pendingFocusStart === focusStart ? focusStart : undefined;
+      if (association) pendingFocusStart = undefined;
       showTerminalLoading(sessionName || state.selectedProject);
       setState({ currentSession: data.session, currentMachine: machine });
       // Refresh session list in background so it doesn't block terminal init
@@ -3428,6 +3440,9 @@ async function createSessionWithAgent(cmd) {
         destroyTerminal();
         initTerminal();
       }
+      if (association) void focusUi.linkStartedSession(association, { sessionId: data.sessionId, projectDir: data.projectDir, machine: focusMachine }).catch(error => {
+        void showAppDialog({ title: "Session created; focus not updated", message: errorMessage(error), confirmLabel: "Close", cancelLabel: null });
+      });
     } else {
       throw new Error("Server returned no session (is wolfpack up to date?)");
     }

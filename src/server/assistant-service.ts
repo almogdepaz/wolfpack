@@ -20,7 +20,7 @@ export class AssistantService {
     this.folder = join(this.root, "assistant");
   }
   get config(): Config | null { return (this.options.readConfig ?? loadConfig)(); }
-  get pins() { return (this.config?.pinnedSessions ?? []).map(pin => pin.name === "assistant" && pin.cwd === this.folder ? { ...pin, command: this.command() } : pin); }
+  get pins() { return (this.config?.pinnedSessions ?? []).map(pin => pin.name === "assistant" && pin.cwd === this.folder && pin.harness === AGENT_KIND.PI.id && pin.command[0] === AGENT_KIND.PI.cmd ? { ...pin, command: this.command() } : pin); }
   get enabled(): boolean { return this.pins.some(p => p.name === "assistant" && p.cwd === this.folder); }
   private save(config: Config): void { (this.options.writeConfig ?? saveConfig)(config); }
   /** Explicit paths keep the conversation portable even when its original cwd no longer exists. */

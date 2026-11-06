@@ -1,3 +1,4 @@
+import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
 import { esc, escAttr } from "./app-state";
 import { rankFocus, linkedFocusSessions, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
@@ -69,7 +70,7 @@ export function createAssistantView(deps: {
     if (tile) { tile.innerHTML = `<span>${dot(state)}assistant</span> <small>${tileStatus}</small>`; tile.title = current.nudge?.text ?? info; tile.setAttribute("aria-label", `Assistant ${tileStatus}. ${state}. Open assistant`); }
     replace("dashboard-focus", `<div class="focus-header">${dot(state)}${button("view", "assistant", "Open assistant")}<small>${esc(info)}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${nudge}${focus?.document ? nextHtml(3) + `<small>today · ${summary}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error || focus?.assistant?.error ? `<p role="status">${esc(error || focus?.assistant?.error || "")}</p>` : ""}`);
     const enabled = !!focus?.assistant?.enabled;
-    replace("assistant-content", `<div class="focus-header"><span>${dot(state)} ${esc(info)}</span>${button("settings", enabled ? "settings" : "enable assistant", enabled ? "Assistant settings" : "Enable assistant — settings")}</div>${enabled ? `<div class="focus-conversation"><form data-focus-form="ask"><input type="text" data-focus-key="ask" aria-label="Ask the assistant" placeholder="ask…" maxlength="8192" required${offline || busy ? " disabled" : ""}><button type="submit"${offline || busy ? " disabled" : ""}>Ask</button></form><button type="button" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk</button></div>` : ""}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2><ul class="focus-today" aria-label="Intentions">${current.intentions.map(i => `<li${i.done ? ' class="done"' : ""}><label><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${offline || busy ? " disabled" : ""}><span>${esc(i.title)}</span></label><span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>`);
+    replace("assistant-content", `<div class="focus-header">${state === "needs you" ? `<button type="button" data-focus-action="talk">${dot(state)} ${esc(info)}</button>` : `<span>${dot(state)} ${esc(info)}</span>`}${button("settings", enabled ? "settings" : "enable assistant", enabled ? "Assistant settings" : "Enable assistant — settings")}</div>${enabled ? `<div class="focus-conversation"><form data-focus-form="ask"><input type="text" data-focus-key="ask" aria-label="Ask the assistant" placeholder="ask…" maxlength="8192" required${offline || busy ? " disabled" : ""}><button type="submit"${offline || busy ? " disabled" : ""}>Ask</button></form><button type="button" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk</button></div>` : ""}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2><ul class="focus-today" aria-label="Intentions">${current.intentions.map(i => `<li${i.done ? ' class="done"' : ""}><label><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${offline || busy ? " disabled" : ""}><span>${esc(i.title)}</span></label><span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = error || focus?.assistant?.error || (focus?.assistant?.queued ? `${focus.assistant.queued} queued` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -102,11 +103,11 @@ export function createAssistantView(deps: {
     })().finally(() => { flight = undefined; });
     return flight;
   }
-  async function write(op: FocusOp) {
+  async function write(op: FocusOp | (() => FocusOp)) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (offline) throw new Error("focus home is offline; changes were not saved");
       try {
-        const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: [op] }) }, machine);
+        const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: [typeof op === "function" ? op() : op] }) }, machine);
         focus = { ...saved, assistant: focus?.assistant };
         try { localStorage.setItem(cacheKey, JSON.stringify(focus)); } catch { /* optional cache */ }
         notice = "focus updated";
@@ -166,5 +167,14 @@ export function createAssistantView(deps: {
     await refresh();
   }); };
   render();
-  return { refresh, render, isAssistant: (name: string, key: string) => name === focus?.assistant?.session && key === machine };
+  return { refresh, render,
+    captureStart: (intentionId: string): FocusSessionStart => ({ intentionId, home: focus?.home ?? "" }),
+    linkStartedSession: async (start: FocusSessionStart, session: StartedFocusSession) => {
+      await write(() => {
+        if (start.home !== focus?.home) throw new Error("focus home changed while creating the session");
+        return linkStartedFocusSession(doc(), start.intentionId, session);
+      });
+      render();
+    },
+    isAssistant: (name: string, key: string) => name === focus?.assistant?.session && key === machine };
 }

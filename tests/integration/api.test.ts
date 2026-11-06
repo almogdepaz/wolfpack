@@ -3107,7 +3107,7 @@ describe("POST /api/create", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, session: "wolf-1-sub-agent" });
+    expect(await res.json()).toEqual({ ok: true, session: "wolf-1-sub-agent", sessionId: "mock:wolf-1-sub-agent", projectDir: join(TEST_DEV_DIR, "my-app") });
   });
 
   test("exposes structured parent identity on the created child", async () => {
@@ -3227,7 +3227,7 @@ describe("POST /api/create", () => {
     const res = await post("/api/create", { projectDir, cmd: "claude" });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, session: "browser_workspace" });
+    expect(await res.json()).toEqual({ ok: true, session: "browser_workspace", sessionId: "mock:browser_workspace", projectDir });
     expect(mockBackend.lastCreateArgs).toMatchObject({
       name: "browser_workspace",
       cwd: projectDir,
@@ -3262,7 +3262,7 @@ describe("POST /api/create", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, session: "fresh-override" });
+    expect(await res.json()).toEqual({ ok: true, session: "fresh-override", sessionId: "mock:fresh-override", projectDir: join(TEST_DEV_DIR, "fresh-override") });
     expect(mockBackend.lastCreateArgs?.cwd).toBe(join(TEST_DEV_DIR, "fresh-override"));
   });
 

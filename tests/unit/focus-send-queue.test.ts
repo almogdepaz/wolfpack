@@ -3,6 +3,10 @@ import { FocusSendQueue } from "../../src/focus-send-queue.ts";
 import { genericHarness, piHarness } from "../../src/focus-harness.ts";
 test("pi semantic status distinguishes resting from input dialogs, rejects stale or fallback facts", () => {
   expect(piHarness.isIdle({ state: "done", authority: "program", stale: false })).toBe(true);
+  expect(piHarness.needsScreen({ state: "done", authority: "program", stale: false })).toBe(false);
+  expect(piHarness.needsScreen({ state: "idle", authority: "manifest", stale: true })).toBe(true);
+  expect(piHarness.needsScreen({ state: "idle", authority: "identity", stale: false })).toBe(true);
+  expect(genericHarness.needsScreen({ state: "done", authority: "program", stale: false })).toBe(true);
   expect(piHarness.isIdle({ state: "needs-input", authority: "program", stale: false })).toBe(false);
   expect(piHarness.needsInput({ state: "needs-input", authority: "program", stale: false })).toBe(true);
   expect(piHarness.isIdle({ state: "idle", authority: "fallback", stale: false })).toBe(false);

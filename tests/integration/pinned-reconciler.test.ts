@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test, setSystemTime } from "bun:test";
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +29,31 @@ test("fake broker restart recreates pinned session once; config removal never ki
     expect(await backend.list()).toEqual(["assistant"]);
   } finally { service.stop(); rmSync(root, { recursive: true, force: true }); }
 });
+test.each([false, true])("broker recovery rejects conflicting assistant-directory pins before launching either (reverse=%s)", async reverse => {
+  const root = mkdtempSync(join(tmpdir(), "focus-conflicting-pins-"));
+  const backend = new MockBackend();
+  const assistant = { name: "assistant", cwd: root, command: ["pi"], harness: "pi" };
+  const copy = { ...assistant, name: "assistant-copy" };
+  let pins = [assistant];
+  let now = 100000;
+  const service = new PinnedSessionService({ backend, pins: () => pins, now: () => now });
+  try {
+    await service.tick();
+    expect(await backend.list()).toEqual(["assistant"]);
+    pins = reverse ? [copy, assistant] : [assistant, copy];
+    backend.setSessions([]); // broker restart loses the original writer
+    await service.tick();
+    now += 100000;
+    await Promise.all([service.tick(), service.tick()]);
+    expect(await backend.list()).toEqual([]); // reject the entire conflicting ownership before launch
+    expect(service.errors.assistant).toContain("assistant directory");
+    expect(service.errors[copy.name]).toContain("assistant directory");
+    await backend.createSession("assistant", root, "pi", () => ({ agentCmd: "pi" }));
+    await service.tick();
+    expect(await backend.list()).toEqual(["assistant"]); // never stop or duplicate an existing writer
+  } finally { service.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("assistant runtime drains fast completed turns using broker program timestamps", async () => {
   process.env.WOLFPACK_TEST = "1";
   const root = mkdtempSync(join(tmpdir(), "focus-fast-turn-"));
@@ -54,6 +79,60 @@ test("assistant runtime drains fast completed turns using broker program timesta
   } finally { ctx.focusRuntime.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test.each(["done", "blocked"] as const)("generic runtime samples a quiet prompt with structured %s status and respects blocked questions", async state => {
+  process.env.WOLFPACK_TEST = "1";
+  const root = mkdtempSync(join(tmpdir(), "focus-generic-runtime-"));
+  const { createServerContext } = await import("../../src/server/context.ts");
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+  __resetSessionObservationForTests();
+  const folder = join(root, "assistant");
+  mkdirSync(folder);
+  let captures = 0;
+  const backend = new MockBackend({ capturePane: async () => { captures++; return "› "; } });
+  await backend.createSession("assistant", folder, "hermes", () => ({ agentCmd: "hermes" }), { agentKind: "hermes" });
+  const at = Date.now();
+  backend.setProgramStatus("assistant", { id: "", state, ...(state === "blocked" && { kind: "question" as const }), updatedAtMs: at });
+  const sent: string[] = [];
+  backend.sendAndObserveSubmission = async (_id, options) => { sent.push(options.text); return { delivery: "delivered", outcome: "submitted", observedMs: 1 }; };
+  const config = { devDir: root, port: 19864, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["hermes"], harness: "hermes" }] };
+  const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
+  try {
+    const status = await ctx.focusRuntime.status(); // establish rendered-activity baseline
+    const baselineCaptures = captures;
+    ctx.focusRuntime.queue.enqueue(status.sessionId!, "queued ask");
+    setSystemTime(new Date(at + 6000));
+    await ctx.focusRuntime.tick();
+    expect(captures).toBeGreaterThan(baselineCaptures);
+    expect(sent).toEqual(state === "done" ? ["queued ask"] : []);
+    expect(ctx.focusRuntime.queue.size).toBe(state === "done" ? 0 : 1);
+  } finally { setSystemTime(); ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("reconciler preserves the configured non-pi assistant's effective argv and harness", async () => {
+  const root = mkdtempSync(join(tmpdir(), "focus-custom-harness-"));
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const folder = join(root, "assistant");
+  mkdirSync(folder);
+  const pin = { name: "assistant", cwd: folder, command: ["hermes", "--tui", "--conversation", "focus"], harness: "hermes" };
+  const config = { devDir: root, port: 19864, pinnedSessions: [pin] };
+  const assistant = new AssistantService({ root, readConfig: () => config });
+  const backend = new MockBackend();
+  const create = backend.createSession.bind(backend);
+  let launched: readonly string[] | undefined;
+  backend.createSession = async (...args) => { launched = args[4]?.pinnedCommand; return create(...args); };
+  const reconciler = new PinnedSessionService({ backend, pins: () => assistant.pins });
+  try {
+    await reconciler.tick();
+    expect(launched).toEqual(pin.command);
+    expect((await backend.listIdentities()).assistant?.agentKind).toBe("hermes");
+    backend.setSessions([]);
+    reconciler.reset("assistant");
+    await reconciler.tick();
+    expect(launched).toEqual(pin.command);
+  } finally { reconciler.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("enable requires login confirmation, seeds only focus skill, resumes by path", async () => {
   const root = mkdtempSync(join(tmpdir(), "focus-enable-success-"));
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
@@ -70,6 +149,7 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     const file = join(service.folder, "sessions/2026_focus-assistant.jsonl");
     writeFileSync(file, "conversation");
     expect(service.command()).toContain(file);
+    expect(service.pins[0]?.command).toContain(file);
     expect(service.command()).not.toContain("--session-id");
     writeFileSync(join(service.folder, "AGENTS.md"), "user instructions");
     await service.enable(true);

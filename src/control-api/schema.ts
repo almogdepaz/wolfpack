@@ -1449,7 +1449,9 @@ export const controlApiSource: ControlApiSource = {
       response: object({
         ok: boolean(),
         session: ref("SessionName"),
-      }, ["ok", "session"]),
+        sessionId: ref("SessionId"),
+        projectDir: ref("ProjectDirectory"),
+      }, ["ok", "session", "sessionId", "projectDir"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "POST /api/session-create": {

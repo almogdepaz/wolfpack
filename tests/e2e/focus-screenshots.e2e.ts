@@ -6,6 +6,21 @@ import { startTestServer, type TestServer } from "./helpers";
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
+test("needs-you state header opens the assistant terminal while the tile opens the view", async ({ page }) => {
+  await page.route("**/api/focus", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.assistant.state = "needs-input";
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(page.locator("#assistant-view")).toBeVisible();
+  await page.locator("#assistant-content .focus-header").getByRole("button", { name: /needs you.*updated/ }).click();
+  await expect(page.locator("#terminal-view")).toBeVisible();
+  await expect(page.locator("#assistant-terminal-header")).toBeVisible();
+});
+
 test("focus screenshot and layout evidence", async ({ page }, info) => {
   const desktop = info.project.name === "desktop";
   await page.setViewportSize({ width: desktop ? 1440 : 390, height: desktop ? 900 : 844 });

@@ -1,9 +1,17 @@
 import { expect, test } from "bun:test";
-import { reconcilePinned, recordPinFailure, type PinHistory } from "../../src/pinned-sessions.ts";
+import { conflictingAssistantPins, reconcilePinned, recordPinFailure, type PinHistory } from "../../src/pinned-sessions.ts";
 const pins = [{ name: "assistant", cwd: "/tmp/assistant", command: ["pi"], harness: "pi" }];
 test("reconciler creates only absent pins, never replaces live sessions", () => {
   expect(reconcilePinned(pins, [], {}, 0)).toEqual([{ name: "assistant", action: "create" }]);
   expect(reconcilePinned(pins, ["assistant"], {}, 0)).toEqual([]);
+});
+test("assistant directory reservations cover the complete configuration and live unpinned owners only", () => {
+  const assistant = pins[0]!;
+  const copy = { ...assistant, name: "copy" };
+  expect([...conflictingAssistantPins([assistant, copy], [])].sort()).toEqual(["assistant", "copy"]);
+  expect([...conflictingAssistantPins([copy], [assistant])]).toEqual(["copy"]);
+  expect([...conflictingAssistantPins([assistant], [copy])]).toEqual(["assistant"]);
+  expect([...conflictingAssistantPins([copy, { ...copy, name: "other" }], [])]).toEqual([]);
 });
 test("failure backoff caps then fails; stable runtime clears history in orchestrator", () => {
   const history: Record<string, PinHistory> = {};

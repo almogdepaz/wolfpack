@@ -1,5 +1,4 @@
 import { AGENT_KIND } from "../agent-kind.js";
-import { AGENT_STATUS_AUTHORITY } from "../agent-status-contract.js";
 import type { ServerContext } from "./context.js";
 import { PinnedSessionService } from "./pinned-session-service.js";
 import { FocusSendQueue } from "../focus-send-queue.js";
@@ -55,7 +54,7 @@ export class FocusRuntime {
     // fences both stale idle projections and repeated done states without a sampled working state.
     const state = programStatusSource(fact.programStatus, { observedAt: new Date().toISOString() }) ?? session.runtimeState;
     const adapter = service.pins.find(p => p.name === "assistant")?.harness === AGENT_KIND.PI.id ? piHarness : genericHarness;
-    const screen = state.authority === AGENT_STATUS_AUTHORITY.FALLBACK ? await this.ctx.backend.capturePane(session.name, { scrollbackLines: 0 }) : undefined;
+    const screen = adapter.needsScreen(state) ? await this.ctx.backend.capturePane(session.name, { scrollbackLines: 0 }) : undefined;
     const quietMs = Date.now() - Date.parse(session.activity.lastRenderedActivityAt ?? session.runtimeState.changedAt);
     await this.queue.tick({ id: session.identity.wolfpackSessionId, idle: adapter.isIdle({ ...state, screen, quietMs }), token: fact.programStatus ? `program:${fact.programStatus.updatedAtMs}` : session.runtimeState.changedAt });
   }

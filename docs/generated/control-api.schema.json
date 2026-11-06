@@ -2067,11 +2067,19 @@
           },
           "session": {
             "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "projectDir": {
+            "$ref": "#/$defs/ProjectDirectory"
           }
         },
         "required": [
           "ok",
-          "session"
+          "session",
+          "sessionId",
+          "projectDir"
         ],
         "additionalProperties": false
       },
