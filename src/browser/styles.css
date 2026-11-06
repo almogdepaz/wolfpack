@@ -2766,16 +2766,8 @@ body > header { height: 52px; min-height: 52px; }
 .harness-icon[data-harness="gemini"] { background: linear-gradient(#4f8ae6,#355fb3); }
 .harness-icon[data-harness="cursor"] { background: linear-gradient(#5a6b61,#3a4740); }
 .harness-icon[data-harness="shell"] { background: linear-gradient(#b8962e,#8a6f1f); color: #16100d; }
-#needs-input-banner { flex: none; display: flex; align-items: center; gap: 12px; margin: 12px 16px; padding: 12px 14px; border-radius: var(--r-card); background: var(--attn-fill); border: 1px solid var(--attn-line); backdrop-filter: blur(10px); }
-#needs-input-banner[hidden] { display: none; }
-#needs-input-prompt { flex: 1; min-width: 0; overflow-wrap: anywhere; font: 400 12.5px/1.5 var(--font-mono); color: var(--attn); }
-.needs-input-actions { display: flex; gap: 6px; }
-.needs-input-actions button { padding: 7px 11px; border: 0; border-radius: 8px; background: var(--attn-tint); color: var(--attn); font: 500 12px var(--font-mono); }
-.needs-input-actions #reply-in-terminal { background: var(--accent); color: var(--accent-on); font-family: var(--font-ui); font-weight: 600; }
 #workspace-context-region { background: var(--surface-1); border-left: 1px solid var(--hairline); }
 #desktop-terminal-container { background: var(--bg-terminal); }
-#terminal-footer { display: flex; justify-content: space-between; gap: 16px; height: 30px; flex: none; align-items: center; padding: 0 16px; border-top: 1px solid var(--hairline); background: rgba(255,255,255,.02); color: var(--text-4); font: 400 11px var(--font-mono); }
-#terminal-footer .live { color: var(--accent); }
 #online-machine-count { align-self: center; color: var(--text-3); font-size: 12px; margin-right: 8px; }
 .machine-session-count { color: var(--text-4); font: 500 11px var(--font-ui); text-transform: none; letter-spacing: 0; white-space: nowrap; }
 .mobile-session-search { display: none; }
@@ -2867,7 +2859,6 @@ body > header { height: 52px; min-height: 52px; }
   .card > .harness-icon { width: 34px; height: 34px; }
   .card .status { font-size: 11px; margin-left: auto; }
   .card .kill-btn { min-width: 44px; width: 44px; }
-  #terminal-footer { display: none; }
   .machine-session-count { display: none; }
   .mobile-session-search { display: block; position: relative; }
   .mobile-session-search summary { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; list-style: none; background: var(--surface-3); color: var(--text-2); }

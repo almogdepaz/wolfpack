@@ -40,7 +40,7 @@ async function expectMainSafeArea(page: Page): Promise<void> {
   })).toBe(34);
 }
 
-for (const needsInput of [false, true]) test(`accessory retains main safe-area padding and mobile banner stays hidden (banner ${needsInput})`, async ({ page }, info) => {
+for (const needsInput of [false, true]) test(`accessory retains main safe-area padding without a reply banner (needs-input ${needsInput})`, async ({ page }, info) => {
   test.skip(info.project.name === 'desktop', 'mobile visual viewport and safe-area contract');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.route('**/api/sessions', route => route.fulfill({ json: { sessions: [{
@@ -66,7 +66,7 @@ for (const needsInput of [false, true]) test(`accessory retains main safe-area p
   await forceTerminalSafeArea(page);
   await expect(view).toHaveCSS('padding-bottom', '34px');
   await expect(input).toHaveAttribute('inputmode', 'none');
-  await expect(banner).toHaveJSProperty('hidden', true);
+  await expect(banner).toHaveCount(0);
   await expect(page.locator('#input-bar')).toBeHidden();
 
   await emulateKeyboardViewport(page, 524, 0);
@@ -78,7 +78,7 @@ for (const needsInput of [false, true]) test(`accessory retains main safe-area p
   await expectMainSafeArea(page);
   await expect(view).toHaveCSS('padding-bottom', '34px');
   await expect(page.locator('#input-bar')).toBeHidden();
-  await expect(banner).toHaveJSProperty('hidden', true);
+  await expect(banner).toHaveCount(0);
 
   await emulateKeyboardViewport(page, 484, 40, 'scroll');
   await expect(view).toHaveCSS('bottom', '320px');
@@ -97,7 +97,7 @@ for (const needsInput of [false, true]) test(`accessory retains main safe-area p
   await expect(input).toHaveAttribute('inputmode', 'none');
   await emulateKeyboardViewport(page, 844, 0);
   await expect(view).toHaveCSS('padding-bottom', '34px');
-  await expect(banner).toHaveJSProperty('hidden', true);
+  await expect(banner).toHaveCount(0);
   await expect(page.locator('#input-bar')).toBeHidden();
 });
 test('first input line remains visible above a simulated software keyboard', async ({ page }, info) => {

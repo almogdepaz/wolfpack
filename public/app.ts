@@ -1722,7 +1722,6 @@ function renderSessionListFromState(): void {
   if (machineCount) machineCount.textContent = `● ${online.length} ${online.length === 1 ? "machine" : "machines"} online`;
   const summary = document.getElementById("session-summary");
   if (summary) summary.innerHTML = `${sessions.length} ${sessions.length === 1 ? "session" : "sessions"} across ${online.length} ${online.length === 1 ? "machine" : "machines"} · <strong>${sessions.filter(session => sessionTier(session) === "need").length} need you</strong>`;
-  syncSessionChrome();
   const el = document.getElementById("session-list");
   if (!el || !state.lastSessionGroups.length) return;
   const multiMachine = state.lastSessionGroups.some(group => group.machine.url);
@@ -4050,11 +4049,6 @@ function setConnState(connState: string): void {
   const statusEl = document.getElementById("conn-status");
   if (!statusEl) return;
   statusEl.dataset.connState = connState;
-  const footer = document.getElementById("terminal-footer-connection");
-  if (footer) {
-    footer.textContent = connState === "live" ? "● live" : connState.replaceAll("-", " ");
-    footer.classList.toggle("live", connState === "live");
-  }
   if (connState !== "reconnecting") connStatusBanner.stop();
   const active = !!state.terminalController?.term;
   if (state.currentView !== "terminal" || !active || connState === "live") {
@@ -4857,37 +4851,6 @@ function insertMessageInputNewline(): void {
   saveDraft();
 }
 
-function singleTerminalChromeActive(): boolean {
-  return state.currentView === "terminal" && !isGridActive() && !(state.activeDelegationRoot && !state.focusedDelegationSession);
-}
-
-function needsInputSession() {
-  if (!singleTerminalChromeActive()) return undefined;
-  const group = state.lastSessionGroups.find(group => (group.machine.url || "") === (state.currentMachine || ""));
-  const session = group?.sessions.find(session => session.name === state.currentSession);
-  return session && sessionRuntimeState(session) === AGENT_STATUS_STATE.NEEDS_INPUT ? session : undefined;
-}
-
-function syncSessionChrome(): void {
-  const footer = document.getElementById("terminal-footer");
-  if (footer) footer.hidden = !singleTerminalChromeActive();
-  const footerSession = document.getElementById("terminal-footer-session");
-  if (footerSession) footerSession.textContent = state.currentSession || "";
-  const banner = document.getElementById("needs-input-banner");
-  const session = needsInputSession();
-  if (!banner) return;
-  banner.hidden = !session || !isDesktop();
-  const prompt = document.getElementById("needs-input-prompt");
-  if (prompt) prompt.textContent = session?.lastLine || "This session needs your input.";
-}
-
-document.querySelectorAll<HTMLButtonElement>("[data-reply-key]").forEach(button => {
-  button.addEventListener("click", () => {
-    if (!needsInputSession()) return;
-    state.terminalController?.focus();
-    sendAccessoryKey(button.dataset.replyKey!);
-  });
-});
 function sessionSearchActive(): boolean {
   const input = document.getElementById(state.sessionsExpanded ? "dashboard-search" : "sidebar-search") as HTMLInputElement | null;
   return !!input?.value.trim();
@@ -4918,10 +4881,6 @@ document.addEventListener("keydown", event => {
     event.preventDefault();
     document.getElementById(state.sessionsExpanded ? "dashboard-search" : "sidebar-search")?.focus();
   }
-});
-document.getElementById("reply-in-terminal")?.addEventListener("click", () => {
-  if (isDesktop()) state.terminalController?.focus();
-  else setMobileGhosttyKeyboardOpen(true);
 });
 document.getElementById("mobile-sessions")?.addEventListener("click", backToSessions);
 document.getElementById("mobile-settings")?.addEventListener("click", event => {
@@ -5551,7 +5510,6 @@ function syncSessionChooserOwnership(): boolean {
 }
 
 function renderSidebar() {
-  syncSessionChrome();
   if (!isDesktop()) return;
   syncSessionChooserOwnership();
   // Coalesce multiple calls per frame
