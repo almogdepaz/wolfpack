@@ -18,6 +18,8 @@ export interface Config {
   tailscaleHostname?: string;
   /** Host-owned machine display name; overrides the OS computer name in every handshake. */
   displayName?: string;
+  /** Installation identity, not a display name or an arbitrary URL. */
+  focus?: { home: string };
 }
 
 export function parseConfig(raw: unknown): Config | null {
@@ -32,7 +34,13 @@ export function parseConfig(raw: unknown): Config | null {
   const canonicalOrigin = configuredHostname ? canonicalTailnetOrigin(configuredHostname) : null;
   const tailscaleHostname = canonicalOrigin?.slice("https://".length);
   const displayName = typeof candidate.displayName === "string" ? candidate.displayName.trim() : undefined;
-  return { devDir, port, tailscaleHostname, ...(isMachineDisplayName(displayName) && { displayName }) };
+  let focus: Config["focus"];
+  if (candidate.focus !== undefined) {
+    const value = candidate.focus as Record<string, unknown> | null;
+    if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.home !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(value.home) || Object.keys(value).some(k => k !== "home")) return null;
+    focus = { home: value.home };
+  }
+  return { devDir, port, tailscaleHostname, ...(isMachineDisplayName(displayName) && { displayName }), ...(focus && { focus }) };
 }
 
 export function loadConfigFromText(text: string): Config | null {

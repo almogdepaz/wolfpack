@@ -33,6 +33,7 @@ import { attachCommand } from "./attach.js";
 import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { applyServiceAuthFile } from "./service-auth.js";
 import { logsCommand } from "./logs.js";
+import { focusCommand } from "./focus.js";
 import { EVENTS_USAGE, eventsCommand } from "./events.js";
 import { issueJwt } from "./api.js";
 import { isMachineDisplayName } from "../tailnet-machine-contract.js";
@@ -102,6 +103,7 @@ Commands:
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack logs [--follow|--json]  Read or follow service logs
   wolfpack events [--kinds ..] [--json] Follow live session and task events
+  wolfpack focus <action>          Read or update intentions on the focus home
   wolfpack extensions <action>     Install and manage local extension packages
   wolfpack extension-data <action> Read/publish documents or put/delete extension blobs
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
@@ -282,7 +284,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
 
 function isMachineCommandSupported(argv: readonly string[]): boolean {
   const [family, action] = argv;
-  if (["list", "ls", "kill", "events"].includes(family ?? "")) return true;
+  if (["list", "ls", "kill", "events", "focus"].includes(family ?? "")) return true;
   if (family === "session") {
     return ["create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt"].includes(action ?? "");
   }
@@ -419,6 +421,7 @@ async function dispatchCommand(
   if (cmd === "session") return exitAfterOutput(await runSessionCommand(argv.slice(1), target));
   if (cmd === "agent") return exitAfterOutput(await runAgentCommand(argv.slice(1), target));
   if (cmd === "kill") process.exit(await killSession(argv.slice(1), target));
+  if (cmd === "focus") return exitAfterOutput(await focusCommand(argv.slice(1), target));
   if (cmd === "extensions") process.exit(await extensionsCommand(argv.slice(1)));
   if (cmd === "extension-data") {
     if ((argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) || (argv.length === 3 && ["read", "publish", "put-blob", "delete-blob"].includes(argv[1] ?? "") && HELP_ALIASES.has(argv[2] ?? ""))) print(extensionDataUsage());

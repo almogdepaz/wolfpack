@@ -1,3 +1,4 @@
+import { FocusStore } from "./focus-store.js";
 import { SessionOrganizationService } from "./session-organization.ts";
 import { TaskGateway } from "../tasks/gateway.ts";
 import { createTaskRelayGateway } from "../task-relay/gateway.ts";
@@ -26,6 +27,7 @@ export interface ServerContext {
   readonly taskRelayGateway: RelayGateway;
   readonly extensionRouteService: ExtensionRouteService;
   readonly sessionOrganization: SessionOrganizationService;
+  readonly focusStore: FocusStore;
 }
 
 // Context-owned lazy instances. Compatibility test hooks reset only the default
@@ -66,6 +68,7 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     events,
     config: overrides.config === undefined ? loadConfig() : overrides.config,
     supervisor,
+    focusStore: overrides.focusStore ?? new FocusStore(),
     get taskGateway() {
       return cache.taskGateway ??= new TaskGateway({ root: overrides.taskRoot ?? process.env.WOLFPACK_TASK_ROOT, inspectSession: selector => context.backend.inspectSession(selector) });
     },
@@ -105,4 +108,5 @@ export const defaultServerContext: ServerContext = {
   get taskRelayGateway() { return getDefaultServerContext().taskRelayGateway; },
   get extensionRouteService() { return getDefaultServerContext().extensionRouteService; },
   get sessionOrganization() { return getDefaultServerContext().sessionOrganization; },
+  get focusStore() { return getDefaultServerContext().focusStore; },
 };

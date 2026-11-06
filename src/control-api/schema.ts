@@ -764,6 +764,7 @@ export const controlApiSource: ControlApiSource = {
       identity: ref("PublicSessionIdentity"),
       organization: ref("SessionOrganizationProjection"),
       runtimeState: ref("AgentRuntimeState"),
+      changedAt: string(),
       activity: ref("ActivityObservation"),
       quietAlert: ref("QuietAlertFact"),
       quietSuppressedBy: ref("QuietSuppression"),
@@ -1337,6 +1338,17 @@ export const controlApiSource: ControlApiSource = {
         ok: { const: true }, taskId: ref("TaskId"), eventId: ref("TaskId"), sequence: { type: "string", pattern: "^[1-9][0-9]*$" }, event: ref("CanonicalTaskEvent"),
       }, ["ok", "taskId", "eventId", "sequence", "event"]),
       errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "413 TaskApiErrorEnvelope", "502 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
+    },
+    "GET /api/focus": {
+      operationId: "getFocus", stable: true, auth: "jwt-when-configured",
+      response: object({ home: string(), installationId: string(), local: boolean(), document: { type: ["object", "null"] }, revision: integer() }, ["home", "installationId", "local", "document", "revision"]),
+      errors: ["503 ErrorEnvelope"],
+    },
+    "POST /api/focus": {
+      operationId: "updateFocus", stable: true, auth: "jwt-when-configured",
+      request: object({ expectedRevision: integer(), ops: arrayOf({ type: "object", description: "Validated by src/focus-contract.ts; add/edit/done/undo/drop/reorder/nudge/note/day-summary/seen-day-note" }) }, ["expectedRevision", "ops"]),
+      response: object({ home: string(), installationId: string(), local: boolean(), document: { type: "object" }, revision: integer() }, ["home", "installationId", "local", "document", "revision"]),
+      errors: ["400 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "GET /api/sessions": {
       operationId: "listSessions",

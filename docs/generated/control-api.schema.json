@@ -1570,6 +1570,112 @@
         "503 TaskApiErrorEnvelope"
       ]
     },
+    "getFocus": {
+      "route": "GET /api/focus",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:getFocus:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "getFocus response",
+        "type": "object",
+        "properties": {
+          "home": {
+            "type": "string"
+          },
+          "installationId": {
+            "type": "string"
+          },
+          "local": {
+            "type": "boolean"
+          },
+          "document": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "home",
+          "installationId",
+          "local",
+          "document",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "503 ErrorEnvelope"
+      ]
+    },
+    "updateFocus": {
+      "route": "POST /api/focus",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:updateFocus:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateFocus request",
+        "type": "object",
+        "properties": {
+          "expectedRevision": {
+            "type": "integer"
+          },
+          "ops": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Validated by src/focus-contract.ts; add/edit/done/undo/drop/reorder/nudge/note/day-summary/seen-day-note"
+            }
+          }
+        },
+        "required": [
+          "expectedRevision",
+          "ops"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:updateFocus:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "updateFocus response",
+        "type": "object",
+        "properties": {
+          "home": {
+            "type": "string"
+          },
+          "installationId": {
+            "type": "string"
+          },
+          "local": {
+            "type": "boolean"
+          },
+          "document": {
+            "type": "object"
+          },
+          "revision": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "home",
+          "installationId",
+          "local",
+          "document",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
     "listSessions": {
       "route": "GET /api/sessions",
       "stable": true,
@@ -6353,6 +6459,9 @@
         },
         "runtimeState": {
           "$ref": "#/$defs/AgentRuntimeState"
+        },
+        "changedAt": {
+          "type": "string"
         },
         "activity": {
           "$ref": "#/$defs/ActivityObservation"

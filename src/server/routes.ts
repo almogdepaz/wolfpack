@@ -44,6 +44,7 @@ import { createVolatileRelayRoutes } from "./volatile-relay-routes.ts";
 import { createProjectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, createSessionControlRoutes } from "./session-control-routes.js";
 import { createPushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
+import { createFocusRoutes } from "./focus-routes.js";
 import { createEventRoutes } from "./event-routes.js";
 
 const log = createLogger("routes");
@@ -106,7 +107,7 @@ return {
 
   "GET /api/sessions": async (_req, res) => {
     const sessions = await observeDashboardSessions(ctx);
-    json(res, { sessions: sessions.map(session => ({ ...session,
+    json(res, { sessions: sessions.map(session => ({ ...session, changedAt: session.runtimeState.changedAt,
       organization: session.identity ? ctx.sessionOrganization.project(session.identity.wolfpackSessionId) : { status: "unavailable" },
     })) });
   },
@@ -123,6 +124,7 @@ return {
   },
 
   ...createProjectSettingsRoutes(ctx),
+  ...createFocusRoutes(ctx),
 
   "GET /api/backend": async (_req, res) => {
     const router = ctx.supervisor ?? {
