@@ -25,13 +25,15 @@ export class AssistantService {
   private save(config: Config): void { (this.options.writeConfig ?? saveConfig)(config); }
   /**
    * Explicit paths keep the conversation portable even when its original cwd no longer exists.
-   * `--approve`: the seeded skill lives under `<folder>/.pi/`, which makes pi ask "Trust project folder?" on a fresh
-   * launch and block every routine behind that dialog; the folder is server-owned (0700), so it is pre-approved.
+   * `--no-approve`: the seeded skill lives under `<folder>/.pi/`, which makes pi ask "Trust project folder?" on a fresh
+   * launch and block every routine behind that dialog. Declining trust up front skips the dialog; `AGENTS.md` and the
+   * explicit `--skill` still load, while `<folder>/.pi` settings, extensions and packages are never loaded or executed,
+   * so nothing the assistant (or an injected inbox row) writes there runs at the next launch.
    */
   command(): string[] {
     const sessions = join(this.folder, "sessions");
     const file = existsSync(sessions) ? readdirSync(sessions).filter(f => f.endsWith("_focus-assistant.jsonl")).sort().at(-1) : undefined;
-    return [AGENT_KIND.PI.cmd, "--approve", "--session-dir", sessions, ...(file ? ["--session", join(sessions, file)] : ["--session-id", "focus-assistant"]), "--no-skills", "--skill", join(this.folder, ".pi", "skills", "wolfpack-focus", "SKILL.md")];
+    return [AGENT_KIND.PI.cmd, "--no-approve", "--session-dir", sessions, ...(file ? ["--session", join(sessions, file)] : ["--session-id", "focus-assistant"]), "--no-skills", "--skill", join(this.folder, ".pi", "skills", "wolfpack-focus", "SKILL.md")];
   }
   async enable(loginConfirmed = false): Promise<void> {
     const config = this.config;

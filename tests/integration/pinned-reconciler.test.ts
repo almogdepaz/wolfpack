@@ -218,9 +218,11 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(service.enabled).toBe(true);
     expect(service.command()).toContain("--session-id");
     // the seeded skill lives under <folder>/.pi/, which makes pi 1.3.0 ask "Trust project folder?" on every fresh
-    // launch; the folder is server-owned (0700), so the launch pre-approves it instead of blocking on that dialog.
-    expect(service.command()).toContain("--approve");
-    expect(service.pins[0]?.command).toContain("--approve");
+    // launch; `--no-approve` skips that dialog without trusting the folder (AGENTS.md and the explicit --skill still
+    // load; nothing under <folder>/.pi is executed), so nothing the assistant writes there runs at a relaunch.
+    expect(service.command()).toContain("--no-approve");
+    expect(service.command()).not.toContain("--approve");
+    expect(service.pins[0]?.command).toContain("--no-approve");
     expect(readFileSync(join(service.folder, "AGENTS.md"), "utf8")).toContain("Never kill/create/send");
     expect(existsSync(join(service.folder, ".pi/skills/wolfpack-tailnet-control"))).toBe(false);
     const file = join(service.folder, "sessions/2026_focus-assistant.jsonl");
