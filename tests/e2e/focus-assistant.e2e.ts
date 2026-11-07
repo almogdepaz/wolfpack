@@ -85,6 +85,30 @@ test("cached home-offline focus is read-only and still ranks live sessions", asy
   await expect(page.locator("#assistant-content .focus-next")).toBeVisible();
 });
 
+test("the assistant's own session is not a card and not counted; its terminal is reached through the assistant ui", async ({ page }, info) => {
+  await page.goto(server.baseUrl);
+  await expect(page.locator("#dashboard-focus")).toBeVisible();
+  // the fixture has four mock sessions plus the pinned assistant the enable created
+  await expect.poll(async () => (await (await page.request.get(`${server.baseUrl}/api/sessions`)).json()).sessions.some((s: { name: string; pinned?: boolean }) => s.name === "assistant" && s.pinned)).toBe(true);
+  await page.reload();
+  await expect(page.locator("#session-summary")).toContainText("4 sessions");
+  await expect(page.locator("#session-list .card-name-text", { hasText: /^assistant$/ })).toHaveCount(0);
+  await expect(page.locator("#session-list .machine-session-count").first()).toHaveText("4 sessions");
+  await expect(page.locator("#dashboard-session-filter [data-session-card-view=idle] .n")).toHaveAttribute("data-count", "4");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
+  await expect(page.locator("#assistant-terminal-header")).toBeVisible();
+  await expect(page.locator("#assistant-terminal-stop")).toHaveText(/disable/i);
+  if (info.project.name === "desktop") {
+    await expect(page.locator("#sidebar-session-list .card").first()).toBeVisible();
+    await expect(page.locator("#sidebar-session-list .card-name-text", { hasText: /^assistant$/ })).toHaveCount(0);
+  } else {
+    await page.locator("#session-chip").click();
+    await expect(page.locator("#drawer-list .drawer-item").first()).toBeVisible();
+    await expect(page.locator("#drawer-list")).not.toContainText(/\bassistant\b/);
+  }
+});
+
 test("talk opens the assistant terminal, Focus returns, a busy ask is queued, and the terminal header can disable it", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();

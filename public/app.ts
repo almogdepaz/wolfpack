@@ -1,5 +1,6 @@
 import { createAssistantView } from "./assistant-view";
 import type { FocusSessionStart } from "../src/focus-start";
+import { withoutFocusAssistant } from "../src/focus-session";
 import { sessionMetaHtml } from "./session-meta";
 import type { SessionMeta } from "../src/session-meta-contract";
 import {
@@ -1238,7 +1239,7 @@ let pendingFocusStart: FocusSessionStart | undefined;
 const focusUi = createAssistantView({
   request: api,
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
-  sessions: () => state.lastSessionGroups.filter(g => g.online).flatMap(g => g.sessions.map(s => ({ id: s.identity?.wolfpackSessionId ?? s.name, name: s.name, state: s.runtimeState?.state ?? "unknown", changedAt: s.runtimeState?.changedAt, cwd: s.identity?.projectPath, machine: g.machine.name, machineUrl: g.machine.url }))),
+  sessions: () => state.lastSessionGroups.filter(g => g.online).flatMap(g => withoutFocusAssistant(g.sessions).map(s => ({ id: s.identity?.wolfpackSessionId ?? s.name, name: s.name, state: s.runtimeState?.state ?? "unknown", changedAt: s.runtimeState?.changedAt, cwd: s.identity?.projectPath, machine: g.machine.name, machineUrl: g.machine.url }))),
   open: (name, machine) => { void openSession(name, machine); },
   start: intention => {
     const group = intention.machine ? state.lastSessionGroups.find(g => g.machine.name === intention.machine || g.machine.url === intention.machine) : state.lastSessionGroups.find(g => !g.machine.url);
@@ -1676,7 +1677,7 @@ function activityHtml(session: DelegationSessionLike): string {
 function sessionCardViewControlsHtml(): string {
   const counts = { need: 0, work: 0, idle: 0, fail: 0 };
   for (const group of state.lastSessionGroups) {
-    if (group.online) for (const session of group.sessions) counts[sessionTier(session)]++;
+    if (group.online) for (const session of withoutFocusAssistant(group.sessions)) counts[sessionTier(session)]++;
   }
   const button = (view: Exclude<SessionCardView, "all">, label: string, color = ""): string => {
     const selected = state.sessionCardView === view;
@@ -1760,7 +1761,7 @@ function renderSessionListFromState(): void {
     }
   }
   const online = state.lastSessionGroups.filter(group => group.online);
-  const sessions = online.flatMap(group => group.sessions);
+  const sessions = online.flatMap(group => withoutFocusAssistant(group.sessions));
   const machineCount = document.getElementById("online-machine-count");
   if (machineCount) machineCount.textContent = `● ${online.length} ${online.length === 1 ? "machine" : "machines"} online`;
   const summary = document.getElementById("session-summary");
@@ -1999,7 +2000,7 @@ function renderDashboardSessionCardHtml(
 function renderNeedsYouGroupHtml(groups: typeof state.lastSessionGroups): string {
   if (state.sessionCardView !== SESSION_CARD_VIEW.ALL && state.sessionCardView !== SESSION_CARD_VIEW.NEED) return "";
   const waiting = groups.filter(group => group.online).flatMap(group =>
-    sessionOrderRows(group.sessions, group.machine.url || "")
+    sessionOrderRows(withoutFocusAssistant(group.sessions), group.machine.url || "")
       .filter(row => sessionTier(row.session) === "need")
       .map(row => ({ row, machine: group.machine })),
   ).sort((left, right) => compareSessionTriage(left.row.session, right.row.session));
@@ -2040,7 +2041,9 @@ document.addEventListener("click", event => {
 });
 
 // Shared session groups cache for switcher reuse
-function renderMachineGroupHtml(g, multiMachine, surface: MachineGroupSurface, index: number) {
+function renderMachineGroupHtml(group, multiMachine, surface: MachineGroupSurface, index: number) {
+  // The assistant's own session is reached through the assistant ui, never listed or counted here.
+  const g = { ...group, sessions: withoutFocusAssistant(group.sessions) };
   const mUrlAttr = multiMachine ? escAttr(g.machine.url) : "";
   const statusDot = g.online ? "green" : (g.pending ? "gray" : "red");
   const statusTitle = g.online ? "online" : (g.pending ? "connecting" : "offline");
@@ -2343,7 +2346,7 @@ function reconcileMachineSessionGroups(): void {
 
 function publishSessionProjection(): void {
   state.allSessions = state.lastSessionGroups.flatMap(group => group.online
-    ? group.sessions.map(session => ({ ...session, machineUrl: group.machine.url, machineName: group.machine.name }))
+    ? withoutFocusAssistant(group.sessions).map(session => ({ ...session, machineUrl: group.machine.url, machineName: group.machine.name }))
     : []);
   renderSessionListFromState();
   renderSidebar();
@@ -4243,8 +4246,14 @@ async function killSession(name, e, machineUrl) {
     : null;
   const session = state.lastSessionGroups.find(group => (group.machine.url || "") === (machineUrl || ""))?.sessions.find(session => session.name === name);
   const pinnedSession = session?.pinned || focusUi.isAssistant(name, machine);
-  const action = pinnedSession ? "Unpin & stop" : session && sessionTier(session) === "fail" ? "Close" : "Stop";
-  const confirmed = await showAppDialog({
+  const action = pinnedSession ? "Disable" : session && sessionTier(session) === "fail" ? "Close" : "Stop";
+  // Stopping the assistant unpins it (a pinned session would otherwise relaunch); the words stay the settings' words.
+  const confirmed = await showAppDialog(pinnedSession ? {
+    title: "Disable assistant",
+    message: "Stop the assistant? Its conversation and your focus list are kept; enable it again any time.",
+    confirmLabel: "Disable",
+    destructive: true,
+  } : {
     title: `${action} session`,
     message: `${action} session "${name}"?`,
     confirmLabel: `${action} session`,
@@ -4303,9 +4312,10 @@ function renderDrawerList() {
   // Unavailable summaries cannot establish authoritative session disappearance
   // or prune a machine's manual UUID order while waiting for recovery.
   const all = machineGroupsInPresentationOrder(groups).filter(group => group.online);
-  let html = all.map(group => `<section><h2 class="drawer-machine-name">${esc(group.machine.name)}</h2>${sessionLabelGroupsHtml(group.sessions, sessionOrderRows(group.sessions, group.machine.url || ""), group.machine.url || "", "drawer")}</section>`).join("");
+  const listed = (group: typeof all[number]) => withoutFocusAssistant(group.sessions);
+  let html = all.map(group => `<section><h2 class="drawer-machine-name">${esc(group.machine.name)}</h2>${sessionLabelGroupsHtml(listed(group), sessionOrderRows(listed(group), group.machine.url || ""), group.machine.url || "", "drawer")}</section>`).join("");
   html += groups.filter(group => !group.online && !group.pending).map(group => `<div class="machine-group offline" data-machine="${escAttr(group.machine.url)}"><div class="group-status" role="status">${esc(group.machine.name)}: ${esc(machineFailureLabel(group.failure || "unknown"))}. ${esc(machineHealthDetail(group))}</div>${machineRetryButtonHtml(group)}</div>`).join("");
-  if (all.every(group => !group.sessions.length) && groups.every(group => group.online)) {
+  if (all.every(group => !listed(group).length) && groups.every(group => group.online)) {
     html += `<div class="sidebar-empty">No active sessions</div>`;
   }
 
@@ -4633,7 +4643,7 @@ function checkStateTransitions(groups) {
     if (!group.online) continue;
     const machineIdentity = group.machine.url || "";
     if (machineIdentity && !resolveReadyMachineOrigin(machineIdentity)) continue;
-    for (const session of group.sessions) {
+    for (const session of withoutFocusAssistant(group.sessions)) {
       const sessionId = sessionIdentityId(session);
       if (!sessionId) continue;
       const key = `${machineIdentity}|${sessionId}`;
@@ -5551,7 +5561,7 @@ function sidebarOwnsSessionChooser(): boolean {
   return isDesktop()
     && sidebarIsChooserSurface
     && !state.sessionsExpanded
-    && state.lastSessionGroups.some(group => group.sessions.length > 0);
+    && state.lastSessionGroups.some(group => withoutFocusAssistant(group.sessions).length > 0);
 }
 
 function syncSessionChooserOwnership(): boolean {
