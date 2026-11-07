@@ -55,7 +55,7 @@ export function showAppDialog(options: AppDialogOptions): Promise<AppDialogResul
   message.textContent = options.message || "";
   message.hidden = !options.message;
   message.classList.toggle("app-dialog-scroll", options.scroll === true);
-  if (options.scroll) message.tabIndex = 0; else message.removeAttribute("tabindex");
+  message.tabIndex = options.scroll ? 0 : -1;
   fields.replaceChildren();
 
   for (const field of options.fields || []) {
