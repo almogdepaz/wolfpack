@@ -22,6 +22,20 @@ test("pi semantic status distinguishes resting from input dialogs, rejects stale
   expect(genericHarness.isIdle({ screen: "Done with step one.\n\n#\n\n\n", quietMs: 6000 })).toBe(false);
   expect(genericHarness.isIdle({ screen: "output\n❯ \n\n", quietMs: 5000 })).toBe(true);
 });
+// pi 1.3.0's select dialogs (trust folder, login, resume) emit no semantic status; the screen ends with pi's
+// navigation footer, not a prompt. live 2026-11-07: the pinned assistant sat on "Trust project folder?" all afternoon
+// while the ui said idle. that screen must read as needs-input and never as idle.
+const TRUST_DIALOG = "Warning: No project session found with id 'focus-assistant'; creating a new session with that id.\n────────────\n\n Trust project folder?\n /home/almog/.wolfpack/assistant\n\n This allows pi to load .pi settings and resources, install missing project packages, and execute project extensions.\n\n → Trust\n   Trust parent folder (/home/almog/.wolfpack)\n   Trust (this session only)\n   Do not trust\n   Do not trust (this session only)\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel\n\n────────────\n\n\n\n";
+test("a pi select dialog without semantic status is needs-input, not idle", () => {
+  const sample = { state: "idle", authority: "fallback", stale: false, screen: TRUST_DIALOG, quietMs: 60_000 };
+  expect(piHarness.needsScreen(sample)).toBe(true);
+  expect(piHarness.needsInput(sample)).toBe(true);
+  expect(piHarness.isIdle(sample)).toBe(false);
+  expect(genericHarness.needsInput(sample)).toBe(true);
+  // the footer only counts when it is the last non-blank row; scrolled-away dialog text is not a dialog
+  expect(piHarness.needsInput({ ...sample, screen: "enter select escape\nmore output\n› \n\n" })).toBe(false);
+  expect(piHarness.isIdle({ ...sample, screen: "enter select escape\nmore output\n› \n\n" })).toBe(true);
+});
 test("fresh program/manifest non-resting states veto a generic quiet prompt, without changing stale/fallback heuristics", () => {
   for (const authority of [AGENT_STATUS_AUTHORITY.PROGRAM, AGENT_STATUS_AUTHORITY.MANIFEST]) {
     for (const state of Object.values(AGENT_STATUS_STATE)) {

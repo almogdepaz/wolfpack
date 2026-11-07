@@ -175,6 +175,37 @@ test("reconciler preserves the configured non-pi assistant's effective argv and 
   } finally { reconciler.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a pi dialog with no semantic status reports needs-input in /api/focus status, from a bounded screen sample", async () => {
+  process.env.WOLFPACK_TEST = "1";
+  const root = mkdtempSync(join(tmpdir(), "focus-dialog-status-"));
+  const { createServerContext } = await import("../../src/server/context.ts");
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+  __resetSessionObservationForTests();
+  const folder = join(root, "assistant");
+  mkdirSync(folder);
+  let captures = 0;
+  const dialog = " Trust project folder?\n /x/assistant\n\n → Trust\n   Do not trust\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel\n\n────\n\n\n";
+  const backend = new MockBackend({ capturePane: async () => { captures++; return dialog; } });
+  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+  const config = { devDir: root, port: 19865, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] };
+  const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
+  try {
+    const status = await ctx.focusRuntime.status();
+    expect(status.state).toBe("needs-input");
+    expect(status.idle).toBe(false);
+    const after = captures;
+    // every dashboard polls /api/focus; the verdict is cached for a few seconds instead of re-reading the screen per request
+    await ctx.focusRuntime.status();
+    await ctx.focusRuntime.status();
+    expect(captures).toBe(after);
+    // an ask typed now stays queued (the dialog is not idle), it is not dropped and not sent
+    ctx.focusRuntime.queue.enqueue(status.sessionId!, "move ship first");
+    await ctx.focusRuntime.tick();
+    expect(ctx.focusRuntime.queue.size).toBe(1);
+  } finally { ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("enable requires login confirmation, seeds only focus skill, resumes by path", async () => {
   const root = mkdtempSync(join(tmpdir(), "focus-enable-success-"));
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
@@ -186,6 +217,10 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     await service.enable(true);
     expect(service.enabled).toBe(true);
     expect(service.command()).toContain("--session-id");
+    // the seeded skill lives under <folder>/.pi/, which makes pi 1.3.0 ask "Trust project folder?" on every fresh
+    // launch; the folder is server-owned (0700), so the launch pre-approves it instead of blocking on that dialog.
+    expect(service.command()).toContain("--approve");
+    expect(service.pins[0]?.command).toContain("--approve");
     expect(readFileSync(join(service.folder, "AGENTS.md"), "utf8")).toContain("Never kill/create/send");
     expect(existsSync(join(service.folder, ".pi/skills/wolfpack-tailnet-control"))).toBe(false);
     const file = join(service.folder, "sessions/2026_focus-assistant.jsonl");

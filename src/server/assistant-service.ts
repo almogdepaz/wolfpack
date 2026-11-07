@@ -23,11 +23,15 @@ export class AssistantService {
   get pins() { return (this.config?.pinnedSessions ?? []).map(pin => pin.name === "assistant" && pin.cwd === this.folder && pin.harness === AGENT_KIND.PI.id && pin.command[0] === AGENT_KIND.PI.cmd ? { ...pin, command: this.command() } : pin); }
   get enabled(): boolean { return this.pins.some(p => p.name === "assistant" && p.cwd === this.folder); }
   private save(config: Config): void { (this.options.writeConfig ?? saveConfig)(config); }
-  /** Explicit paths keep the conversation portable even when its original cwd no longer exists. */
+  /**
+   * Explicit paths keep the conversation portable even when its original cwd no longer exists.
+   * `--approve`: the seeded skill lives under `<folder>/.pi/`, which makes pi ask "Trust project folder?" on a fresh
+   * launch and block every routine behind that dialog; the folder is server-owned (0700), so it is pre-approved.
+   */
   command(): string[] {
     const sessions = join(this.folder, "sessions");
     const file = existsSync(sessions) ? readdirSync(sessions).filter(f => f.endsWith("_focus-assistant.jsonl")).sort().at(-1) : undefined;
-    return [AGENT_KIND.PI.cmd, "--session-dir", sessions, ...(file ? ["--session", join(sessions, file)] : ["--session-id", "focus-assistant"]), "--no-skills", "--skill", join(this.folder, ".pi", "skills", "wolfpack-focus", "SKILL.md")];
+    return [AGENT_KIND.PI.cmd, "--approve", "--session-dir", sessions, ...(file ? ["--session", join(sessions, file)] : ["--session-id", "focus-assistant"]), "--no-skills", "--skill", join(this.folder, ".pi", "skills", "wolfpack-focus", "SKILL.md")];
   }
   async enable(loginConfirmed = false): Promise<void> {
     const config = this.config;

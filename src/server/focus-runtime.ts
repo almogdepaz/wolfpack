@@ -1,4 +1,5 @@
 import { AGENT_KIND } from "../agent-kind.js";
+import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { ServerContext } from "./context.js";
 import { PinnedSessionService } from "./pinned-session-service.js";
 import { FocusSendQueue } from "../focus-send-queue.js";
@@ -9,11 +10,13 @@ import { getInstallationId } from "../tailnet-machine-installation.js";
 import { getMachineDisplayName } from "../machine-display-name.js";
 import { FocusRoutines, localActivitySource, peerActivitySource } from "./focus-routines.js";
 const log = createLogger("server");
+const VERDICT_TTL_MS = 5_000;
 export class FocusRuntime {
   readonly pins: PinnedSessionService;
   readonly queue: FocusSendQueue;
   readonly routines: FocusRoutines;
   private sampledSessionId?: string;
+  private lastVerdict?: { at: number; verdict: { idle: boolean; needsInput: boolean } | undefined };
   private timer?: ReturnType<typeof setInterval>;
   constructor(private readonly ctx: ServerContext) {
     this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => ctx.assistantService.pins });
@@ -56,9 +59,22 @@ export class FocusRuntime {
     const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
     const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
+    const verdict = session && service.enabled ? await this.verdict() : undefined;
+    // A harness dialog (pi's trust / login / resume selects) has no semantic status and reads as idle from the
+    // screen fallback; the harness verdict is what the user needs to see, with the terminal as the action.
+    const state = verdict?.needsInput ? AGENT_STATUS_STATE.NEEDS_INPUT : session?.runtimeState.state ?? (service.enabled ? "starting" : "off");
     return { enabled: service.enabled, folder: service.folder, session: session?.name, sessionId: session?.identity?.wolfpackSessionId,
-      state: session?.runtimeState.state ?? (service.enabled ? "starting" : "off"), queued: this.queue.size,
+      state, idle: verdict?.idle ?? false, queued: this.queue.size,
       error: service.enabled ? this.queue.error ?? this.pins.errors.assistant : undefined };
+  }
+  /** Every dashboard polls `/api/focus`; one screen sample serves them for a few seconds. */
+  private async verdict(): Promise<{ idle: boolean; needsInput: boolean } | undefined> {
+    const now = Date.now();
+    if (!this.lastVerdict || now - this.lastVerdict.at > VERDICT_TTL_MS) {
+      const sample = await this.sample();
+      this.lastVerdict = { at: now, verdict: sample && { idle: sample.idle, needsInput: sample.needsInput } };
+    }
+    return this.lastVerdict.verdict;
   }
   async ask(text: string) {
     if (!this.ctx.assistantService.enabled) throw new Error("assistant is off");
@@ -73,8 +89,8 @@ export class FocusRuntime {
     const sample = await this.sample();
     if (sample) await this.queue.tick(sample);
   }
-  /** The assistant's current incarnation and whether its harness is resting. */
-  private async sample(): Promise<{ id: string; idle: boolean; token: string } | undefined> {
+  /** The assistant's current incarnation, whether its harness is resting, and whether it is waiting on the user. */
+  private async sample(): Promise<{ id: string; idle: boolean; needsInput: boolean; token: string } | undefined> {
     const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
     const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
@@ -87,6 +103,7 @@ export class FocusRuntime {
     const adapter = service.pins.find(p => p.name === "assistant")?.harness === AGENT_KIND.PI.id ? piHarness : genericHarness;
     const screen = adapter.needsScreen(state) ? await this.ctx.backend.capturePane(session.name, { scrollbackLines: 0 }) : undefined;
     const quietMs = Date.now() - Date.parse(session.activity.lastRenderedActivityAt ?? session.runtimeState.changedAt);
-    return { id: session.identity.wolfpackSessionId, idle: adapter.isIdle({ ...state, screen, quietMs }), token: fact.programStatus ? `program:${fact.programStatus.updatedAtMs}` : session.runtimeState.changedAt };
+    const facts = { ...state, screen, quietMs };
+    return { id: session.identity.wolfpackSessionId, idle: adapter.isIdle(facts), needsInput: adapter.needsInput(facts), token: fact.programStatus ? `program:${fact.programStatus.updatedAtMs}` : session.runtimeState.changedAt };
   }
 }
