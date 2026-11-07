@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isFocusOp, type FocusDocument, type FocusOp } from "../focus-contract.js";
 import { candidateEnumerationCandidates } from "../tailnet-machine-contract.js";
 import { call, issueJwt } from "./api.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, saveConfig, type Config } from "./config.js";
 import { verifyMachineTarget, type VerifiedMachineTarget } from "./machine-target.js";
 import { print, printError, printJson } from "./formatting.js";
 
@@ -12,7 +12,8 @@ export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|r
   done|undo|drop <id>
   reorder <id> <id> ... (all intentions, in order)
   nudge|note <text>
-  day-summary <YYYY-MM-DD> <done> <carried> <questions>`;
+  day-summary <YYYY-MM-DD> <done> <carried> <questions>
+  home [<installation-id>|--clear]   show or set this machine's focus home (config.json; restart to apply)`;
 export function parseFocusCommand(args: readonly string[]): { json: boolean; op?: FocusOp } {
   const json = args.includes("--json");
   const argv = args.filter(a => a !== "--json");
@@ -65,9 +66,42 @@ export async function focusHomeTarget(target?: VerifiedMachineTarget): Promise<V
   if (!home?.ok) throw new Error(`focus home ${current.home} offline; no local writes performed`);
   return home.target;
 }
+/** `home`: local config only; `home: null` clears it (this machine becomes its own home). */
+export function parseFocusHomeCommand(args: readonly string[]): { json: boolean; home?: string | null } {
+  const json = args.includes("--json");
+  const rest = args.slice(1).filter(a => a !== "--json");
+  if (rest.length === 0) return { json };
+  if (rest.length === 1 && rest[0] === "--clear") return { json, home: null };
+  // Same shape config.json accepts for focus.home.
+  if (rest.length === 1 && !rest[0]!.startsWith("-") && /^[a-zA-Z0-9_-]{1,128}$/.test(rest[0]!)) return { json, home: rest[0] };
+  throw new Error("usage: wolfpack focus home [<installation-id>|--clear] [--json]");
+}
+interface FocusHomeIo { load(): Config | null; save(config: Config): void; installationId(): string | Promise<string> }
+const focusHomeIo: FocusHomeIo = { load: loadConfig, save: saveConfig, installationId: async () => (await import("../tailnet-machine-installation.js")).getInstallationId() };
+export async function focusHomeCommand(parsed: { json?: boolean; home?: string | null }, io: FocusHomeIo = focusHomeIo) {
+  const config = io.load();
+  const self = await io.installationId();
+  let changed = false;
+  if (parsed.home !== undefined) {
+    if (!config) throw new Error("valid wolfpack config required");
+    const { focus: _prior, ...rest } = config;
+    const next: Config = parsed.home === null ? rest : { ...rest, focus: { home: parsed.home } };
+    changed = (config.focus?.home ?? null) !== parsed.home;
+    if (changed) io.save(next);
+    return { home: parsed.home ?? self, local: (parsed.home ?? self) === self, changed };
+  }
+  const home = config?.focus?.home ?? self;
+  return { home, local: home === self, changed };
+}
 export async function focusCommand(args: readonly string[], target?: VerifiedMachineTarget): Promise<number> {
   if (args.length === 0 || args.includes("--help")) { print(FOCUS_USAGE); return 0; }
   try {
+    if (args[0] === "home") {
+      const result = await focusHomeCommand(parseFocusHomeCommand(args));
+      if (args.includes("--json")) printJson(result);
+      else print(`focus home ${result.home}${result.local ? " (this machine)" : ""}${result.changed ? " · restart wolfpack on this machine to apply" : ""}`);
+      return 0;
+    }
     const parsed = parseFocusCommand(args);
     const home = await focusHomeTarget(target);
     const request: FocusRequest = (path, init) => call(path, init, home);

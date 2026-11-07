@@ -34,3 +34,20 @@ test("CLI CAS retries exactly once with fresh revision, not on ambiguous transpo
   await expect(updateFocusWithRetry({ type: "done", id: "ship" }, async () => { if (++calls === 1) return Response.json({ revision: 1 }); throw new Error("disconnected"); })).rejects.toThrow("disconnected");
   expect(calls).toBe(2);
 });
+
+test("focus home writes or clears focus.home in the configured config and keeps every other field", async () => {
+  const { parseFocusHomeCommand, focusHomeCommand } = await import("../../src/cli/focus.ts");
+  expect(parseFocusHomeCommand(["home"])).toEqual({ json: false });
+  expect(parseFocusHomeCommand(["home", "abc-123", "--json"])).toEqual({ json: true, home: "abc-123" });
+  expect(parseFocusHomeCommand(["home", "--clear"])).toEqual({ json: false, home: null });
+  for (const bad of [["home", "a", "b"], ["home", "bad id"], ["home", "--clear", "x"], ["home", "--wat"]]) expect(() => parseFocusHomeCommand(bad)).toThrow();
+  let config: import("../../src/config.ts").Config | null = { devDir: "/dev", port: 18790, pinnedSessions: [] };
+  const io = { load: () => config, save: (next: import("../../src/config.ts").Config) => { config = next; }, installationId: () => "self-id" };
+  expect(await focusHomeCommand({ json: false, home: "home-id" }, io)).toEqual({ home: "home-id", local: false, changed: true });
+  expect(config).toEqual({ devDir: "/dev", port: 18790, pinnedSessions: [], focus: { home: "home-id" } });
+  expect(await focusHomeCommand({ json: false }, io)).toEqual({ home: "home-id", local: false, changed: false });
+  expect(await focusHomeCommand({ json: false, home: null }, io)).toEqual({ home: "self-id", local: true, changed: true });
+  expect(config).toEqual({ devDir: "/dev", port: 18790, pinnedSessions: [] });
+  config = null;
+  await expect(focusHomeCommand({ json: false, home: "x" }, io)).rejects.toThrow("valid wolfpack config required");
+});
