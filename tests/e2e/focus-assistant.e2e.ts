@@ -106,7 +106,9 @@ test("cached home-offline focus is read-only and still ranks live sessions", asy
   await expect(page.locator("#dashboard-focus .focus-next")).toBeVisible();
   await page.route(url => url.pathname === "/api/focus", route => route.abort("failed"));
   await page.reload();
-  await expect(page.locator("#dashboard-focus")).toContainText("offline");
+  await expect(page.locator("#dashboard-focus")).toContainText(/focus from \w+ \d\d:\d\d · .+ offline · read-only/);
+  await expect(page.locator("#dashboard-focus .focus-header > .dot")).toHaveClass(/red/);
+  await expect(page.locator("#sidebar-assistant .dot")).toHaveClass(/red/);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();
   await expect(page.locator("#assistant-content .focus-next")).toBeVisible();

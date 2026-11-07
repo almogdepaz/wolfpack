@@ -54,7 +54,9 @@ test("stale, peer not reached and unacked inbox; catch up now sends the catch-up
   await expect(block).toContainText(/macbook not reached since \w+ \d\d:\d\d · its day is reviewed when it is back/);
   await expect(block).toContainText("has not confirmed reading activity · sent 4 times");
   await expect(block).toContainText("look at its terminal, then");
-  await expect(page.locator("#sidebar-assistant")).toHaveText(/needs you|assistant/);
+  await expect(page.locator("#sidebar-assistant")).toHaveText(/needs you/);
+  await expect(page.locator("#sidebar-assistant .dot")).toHaveClass(/yellow/);
+  await expect(block.locator(".focus-header > .dot")).toHaveClass(/yellow/);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await shot(page, "stale", info.project.name === "desktop");
   await expect(block.getByRole("button", { name: "catch up now" })).toHaveCount(1);
