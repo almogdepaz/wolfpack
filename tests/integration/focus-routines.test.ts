@@ -595,3 +595,27 @@ test("the manual 'nothing new' notice clears on the next ordinary tick (n-r5)", 
   await t.routines.tick();
   expect(t.routines.status().notice).toBeUndefined();
 });
+
+for (const offline of [true, false]) test(`a machine the provisional review carried needs user input, not a state row, to reopen the day at the turn (n-f2, ${offline ? "offline" : "reachable"})`, async () => {
+  const t = setup(at(6, 9));
+  await booted(t);
+  t.peer.add(inputAt("web", at(6, 10)), at(6, 10));
+  t.clock.now = at(6, 10, 5);
+  await t.routines.tick();
+  await ackLast(t);
+  t.clock.now = at(6, 11, 31);
+  await t.routines.tick();
+  expect(fileOf(t.sends.at(-1)!.text)).toStartWith("day-review-");
+  await ackLast(t);
+  expect(t.coverage().provisional.through).toEqual({ laptop: 1 });
+  t.peer.add(state("web"), at(6, 12));
+  t.clock.now = at(6, 12, 10);
+  await t.routines.tick();
+  if (t.coverage().inbox) await ackLast(t);
+  t.peer.down = offline;
+  const sent = t.sends.length;
+  t.clock.now = at(7, 3, 1);
+  await t.routines.tick();
+  expect(t.sends).toHaveLength(sent);
+  expect(t.coverage()).toMatchObject({ reviewedThrough: "2026-11-06", provisional: null, inbox: null });
+});

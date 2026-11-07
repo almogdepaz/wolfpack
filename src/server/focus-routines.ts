@@ -345,8 +345,10 @@ export class FocusRoutines {
       const window = activityDayWindow(date, timing.fallbackTime);
       return Object.entries(coverage.catchUpCursors).filter(([id, cursor]) => {
         if (this.reached.has(id) || date >= today) return false;
-        const after = provisional?.date === date && provisional.through[id] !== undefined ? Date.parse(provisional.at) : -Infinity;
-        return [cursor.lastRowAt, cursor.lastInputAt].some(at => { const t = at ? Date.parse(at) : NaN; return t >= window.start && t < window.end && t > after; });
+        const onProvisionalDay = provisional?.date === date;
+        const after = onProvisionalDay && provisional.through[id] !== undefined ? Date.parse(provisional.at) : -Infinity;
+        // Like reached machines, the provisional day reopens only for user input, never for a state-only row.
+        return (onProvisionalDay ? [cursor.lastInputAt] : [cursor.lastRowAt, cursor.lastInputAt]).some(at => { const t = at ? Date.parse(at) : NaN; return t >= window.start && t < window.end && t > after; });
       }).map(([, cursor]) => ({ name: cursor.name, lastReachedAt: cursor.lastReachedAt }));
     };
     const active = pulled.filter(d => unreachedOn(d.date).length > 0

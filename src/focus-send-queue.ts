@@ -41,14 +41,16 @@ export class FocusSendQueue {
       if (this.outstanding || !sample.idle) return;
       const item = this.pending.shift();
       if (!item) return;
-      this.outstanding = { id: item.id, token: sample.token, sawBusy: false };
+      const slot: Outstanding = { id: item.id, token: sample.token, sawBusy: false };
+      this.outstanding = slot;
       try { await this.send(item.id, item.text); item.settled?.("sent"); }
       catch (error) {
         item.settled?.("failed");
         // A routine's unverified send is reported by the routine (delivery unconfirmed); it must not
         // drop the user's asks queued behind it. The line may still have arrived, so the next item waits
         // for a new idle token (that turn ran) or a short fence (it never arrived), not the same sample.
-        if (item.origin === "routine") { this.outstanding = { ...this.outstanding!, unverifiedAt: this.now() }; return; }
+        // Fence only the slot this send created: a clear() during the send already released it.
+        if (item.origin === "routine") { if (this.outstanding === slot) slot.unverifiedAt = this.now(); return; }
         this.clear(`assistant send failed: ${error instanceof Error ? error.message : String(error)}; delivery may be uncertain`);
       }
     } finally { this.ticking = false; }

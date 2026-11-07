@@ -132,3 +132,23 @@ test("after an unverified routine send the next item waits for a new idle token 
   await second.tick({ id: "a", idle: true, token: "program:2" });
   expect(sent).toEqual(["user ask", "second ask"]);
 });
+test("a clear during an in-flight routine send leaves no phantom slot: a later user ask is delivered (P11)", async () => {
+  const sent: string[] = [];
+  const outcomes: string[] = [];
+  let reject!: (error: Error) => void;
+  const queue = new FocusSendQueue((_id, text) => {
+    if (text.startsWith("process")) return new Promise<void>((_resolve, fail) => { reject = fail; });
+    sent.push(text);
+    return Promise.resolve();
+  });
+  queue.enqueue("a", "process inbox inbox/catch-up-20261106T100000Z.json", o => outcomes.push(`routine:${o}`), "routine");
+  const inFlight = queue.tick({ id: "a", idle: true, token: "idle1" });
+  queue.clear();
+  queue.enqueue("a", "user ask", o => outcomes.push(`ask:${o}`));
+  reject(new Error("send unverified"));
+  await inFlight;
+  await queue.tick({ id: "a", idle: true, token: "idle1" });
+  expect(sent).toEqual(["user ask"]);
+  expect(outcomes).toEqual(["routine:failed", "ask:sent"]);
+  expect(queue.error).toBeUndefined();
+});
