@@ -1,4 +1,5 @@
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, truncateSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, truncateSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   ACTIVITY_KIND,
@@ -23,7 +24,10 @@ export const ACTIVITY_RETENTION_INTERVAL_MS = 60 * 60_000;
 /** Rows held while the disk refuses writes; beyond this the oldest are dropped with a warning. */
 const BUFFER_MAX = 10_000;
 
-export interface ActivityJournalStatus { headSeq: number; oldestSeq: number | null; lastRowAt: string | null; lastInputAt: string | null }
+/** Name of the file holding this journal's random identity; a new id means a new seq space. */
+export const ACTIVITY_JOURNAL_ID_FILE = "journal-id";
+export interface ActivityJournalStatus { journalId: string; headSeq: number; oldestSeq: number | null; lastRowAt: string | null; lastInputAt: string | null }
+type Window = { from?: number; to?: number };
 export interface ActivityJournalOptions {
   dir?: string;
   now?: () => number;
@@ -43,6 +47,11 @@ export class ActivityJournal {
   private oldestSeq: number | null = null;
   private lastRowAt: string | null = null;
   private lastInputAt: string | null = null;
+  private journalId = "";
+  /** Newest input time per session, so the quiet gate can ignore the assistant's own typing. */
+  private lastInputBySession = new Map<string, string>();
+  /** Highest seq per day file: a read skips files with nothing after its cursor, in any file order. */
+  private fileMaxSeq = new Map<string, number>();
   private buffer: ActivityRow[] = [];
   private flushTimer?: ReturnType<typeof setTimeout>;
   private retentionTimer?: ReturnType<typeof setInterval>;
@@ -62,6 +71,7 @@ export class ActivityJournal {
     if (this.opened) return;
     this.opened = true;
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    this.journalId = this.readOrCreateId();
     this.pruneFiles();
     const files = this.files();
     const newest = files.at(-1);
@@ -80,10 +90,25 @@ export class ActivityJournal {
     }
   }
 
+  private readOrCreateId(): string {
+    const path = join(this.dir, ACTIVITY_JOURNAL_ID_FILE);
+    try {
+      writeFileSync(path, randomUUID(), { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    return readFileSync(path, "utf8").trim();
+  }
+
   private observe(row: ActivityRow): void {
     if (row.seq > this.seq) { this.seq = row.seq; this.lastRowAt = row.at; }
     this.oldestSeq ??= row.seq;
-    if (row.kind === ACTIVITY_KIND.INPUT && (!this.lastInputAt || row.at > this.lastInputAt)) this.lastInputAt = row.at;
+    const file = activityFileName(activityFileDay(row.at));
+    this.fileMaxSeq.set(file, Math.max(this.fileMaxSeq.get(file) ?? 0, row.seq));
+    if (row.kind !== ACTIVITY_KIND.INPUT) return;
+    if (!this.lastInputAt || row.at > this.lastInputAt) this.lastInputAt = row.at;
+    const last = this.lastInputBySession.get(row.session);
+    if (!last || row.at > last) this.lastInputBySession.set(row.session, row.at);
   }
 
   append(body: ActivityRowBody): ActivityRow {
@@ -106,56 +131,71 @@ export class ActivityJournal {
   flush(): void {
     if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = undefined; }
     if (this.buffer.length === 0) return;
-    const byFile = new Map<string, string>();
+    const byFile = new Map<string, ActivityRow[]>();
     for (const row of this.buffer) {
       const name = activityFileName(activityFileDay(row.at));
-      byFile.set(name, (byFile.get(name) ?? "") + serializeActivityRow(row));
+      byFile.set(name, [...(byFile.get(name) ?? []), row]);
     }
     try {
       mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-      for (const [name, text] of byFile) appendFileSync(join(this.dir, name), text, { mode: 0o600 });
-      this.buffer = [];
+      for (const [name, rows] of byFile) {
+        appendFileSync(join(this.dir, name), rows.map(serializeActivityRow).join(""), { mode: 0o600 });
+        // Drop each file's rows as soon as they are on disk: a later file failing must not re-append them.
+        const written = new Set(rows);
+        this.buffer = this.buffer.filter(row => !written.has(row));
+      }
     } catch (error) {
       log.warn("activity flush failed; rows kept in memory", { error: errMsg(error), rows: this.buffer.length });
     }
   }
 
-  status(): ActivityJournalStatus {
+  /** `exceptSession` leaves one session's input out of `lastInputAt` (the assistant's own typing). */
+  status(options: { exceptSession?: string } = {}): ActivityJournalStatus {
     this.open();
-    return { headSeq: this.seq, oldestSeq: this.oldestSeq, lastRowAt: this.lastRowAt, lastInputAt: this.lastInputAt };
+    let lastInputAt = this.lastInputAt;
+    if (options.exceptSession !== undefined) {
+      lastInputAt = null;
+      for (const [session, at] of this.lastInputBySession) if (session !== options.exceptSession && (!lastInputAt || at > lastInputAt)) lastInputAt = at;
+    }
+    return { journalId: this.journalId, headSeq: this.seq, oldestSeq: this.oldestSeq, lastRowAt: this.lastRowAt, lastInputAt };
+  }
+
+  /** Day files that can hold rows of the window, oldest first. */
+  private filesIn(window: Window): string[] {
+    const first = window.from === undefined ? "" : activityFileName(activityFileDay(new Date(window.from).toISOString()));
+    const last = window.to === undefined ? "~" : activityFileName(activityFileDay(new Date(window.to - 1).toISOString()));
+    return this.files().filter(name => name >= first && name <= last);
+  }
+
+  private rowsIn(names: readonly string[], window: Window): ActivityRow[] {
+    const inWindow = (row: ActivityRow) => { const at = Date.parse(row.at); return (window.from === undefined || at >= window.from) && (window.to === undefined || at < window.to); };
+    // A clock step can put a higher seq in an earlier-named file; pages are by seq.
+    return names.flatMap(name => this.readFile(name)).filter(inWindow).sort((a, b) => a.seq - b.seq);
   }
 
   /**
-   * Reads newest files backwards only until the cursor is covered. A time
-   * window (`from`/`to`, epoch ms) restricts both the files read and the rows.
+   * Reads only the files holding rows after the cursor. A time window
+   * (`from`/`to`, epoch ms) restricts both the files read and the rows, and
+   * then `truncated` means retention removed rows inside that window.
    */
-  read(since: number, limit: number, window: { from?: number; to?: number } = {}): ActivityPage {
+  read(since: number, limit: number, window: Window = {}): ActivityPage {
     this.open();
     this.flush();
-    const chunks: ActivityRow[][] = [];
-    const first = window.from === undefined ? "" : activityFileName(activityFileDay(new Date(window.from).toISOString()));
-    const last = window.to === undefined ? "~" : activityFileName(activityFileDay(new Date(window.to - 1).toISOString()));
-    if (limit > 0) {
-      for (const name of this.files().reverse()) {
-        if (name > last) continue;
-        if (name < first) break;
-        const rows = this.readFile(name);
-        chunks.unshift(rows);
-        if (rows.length && rows[0]!.seq <= since + 1) break;
-      }
-    }
-    const inWindow = (row: ActivityRow) => { const at = Date.parse(row.at); return (window.from === undefined || at >= window.from) && (window.to === undefined || at < window.to); };
-    const page = pageActivity(chunks.flat().filter(inWindow), since, limit, this.oldestSeq);
-    return { ...page, headSeq: this.seq };
+    const names = limit > 0 ? this.filesIn(window).filter(name => (this.fileMaxSeq.get(name) ?? Infinity) > since) : [];
+    const page = pageActivity(this.rowsIn(names, window), since, limit, this.oldestSeq);
+    const oldestFile = this.files()[0];
+    const oldestDayStart = oldestFile ? Date.parse(`${oldestFile.slice(0, 10)}T00:00:00.000Z`) : -Infinity;
+    const truncated = page.truncated && (window.from === undefined || window.from < oldestDayStart);
+    return { ...page, headSeq: this.seq, truncated };
   }
 
-  /** Every retained row; for infrequent day-review work such as resolving session cwds. */
-  readAll(): ActivityRow[] { this.open(); this.flush(); return this.files().flatMap(name => this.readFile(name)); }
+  /** Retained rows, optionally bounded by a window; for infrequent day-review work such as resolving session cwds. */
+  readAll(window: Window = {}): ActivityRow[] { this.open(); this.flush(); return this.rowsIn(this.filesIn(window), window); }
 
   private pruneFiles(): void {
     const days = (this.retentionDays ?? this.options.retentionDays)?.() ?? ACTIVITY_RETENTION_DAYS_DEFAULT;
     const expired = expiredActivityFiles(this.files(), new Date(this.now()).toISOString().slice(0, 10), days);
-    for (const name of expired) rmSync(join(this.dir, name), { force: true });
+    for (const name of expired) { rmSync(join(this.dir, name), { force: true }); this.fileMaxSeq.delete(name); }
     if (expired.length) log.info("activity retention pruned files", { files: expired.length, days });
   }
 

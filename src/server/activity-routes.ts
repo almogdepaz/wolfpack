@@ -16,8 +16,8 @@ export function createActivityRoutes(ctx: ServerContext) {
       if (!query.ok) return json(res, { error: query.error }, 400);
       try {
         const page = ctx.activityJournal.read(query.since, query.limit, { from: query.from, to: query.to });
-        const { lastRowAt, lastInputAt } = ctx.activityJournal.status();
-        json(res, { installationId: getInstallationId(), machine: getMachineDisplayName(), ...page, lastRowAt, lastInputAt });
+        const { journalId, lastRowAt, lastInputAt } = ctx.activityJournal.status();
+        json(res, { installationId: getInstallationId(), machine: getMachineDisplayName(), journalId, ...page, lastRowAt, lastInputAt });
       } catch (error) { json(res, { error: errMsg(error) }, 503); }
     },
     /** Day-note git summary for repositories this machine's sessions used in [from, to). */
@@ -25,7 +25,7 @@ export function createActivityRoutes(ctx: ServerContext) {
       res.setHeader("Cache-Control", "no-store");
       const query = parseActivityQuery(new URL(req.url ?? "/", "http://localhost").searchParams);
       if (!query.ok || query.from === undefined || query.to === undefined) return json(res, { error: query.ok ? "from and to are required" : query.error }, 400);
-      try { json(res, { repos: await readGitLogs(activeCwds(ctx.activityJournal.readAll(), query.from, query.to), query.from, query.to) }); }
+      try { json(res, { repos: await readGitLogs(activeCwds(ctx.activityJournal.readAll({ to: query.to }), query.from, query.to), query.from, query.to) }); }
       catch (error) { json(res, { error: errMsg(error) }, 503); }
     },
   };

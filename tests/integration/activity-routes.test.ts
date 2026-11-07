@@ -32,6 +32,7 @@ test("GET /api/activity pages rows behind normal owner auth, like /api/sessions"
     const first = await (await fetch(`${base}/api/activity?since=0&limit=2`, { headers })).json();
     expect(first.installationId).toBe(getInstallationId());
     expect(typeof first.machine).toBe("string");
+    expect(first.journalId).toMatch(/^[0-9a-f-]{36}$/);
     expect(first.rows.map((r: { seq: number }) => r.seq)).toEqual([1, 2]);
     expect(first).toMatchObject({ next: 2, headSeq: 4, oldestSeq: 1, truncated: false });
     expect(typeof first.lastInputAt).toBe("string");

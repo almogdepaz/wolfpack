@@ -35,7 +35,7 @@ export function localActivitySource(id: string, name: string, journal: ActivityJ
   return {
     id, name, local: true,
     read: async (since, limit, window) => ({ ...journal.read(since, limit, window ?? {}), ...journal.status() }),
-    git: async (from, to) => ({ repos: await readGitLogs(activeCwds(journal.readAll(), from, to), from, to) }),
+    git: async (from, to) => ({ repos: await readGitLogs(activeCwds(journal.readAll({ to }), from, to), from, to) }),
   };
 }
 export function peerActivitySource(peer: ActivityPeer): ActivitySource {
