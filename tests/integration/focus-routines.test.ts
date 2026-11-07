@@ -158,6 +158,20 @@ describe("focus routines runtime", () => {
     expect(t.routines.status().notice).toBe("nothing new to catch up on");
   });
 
+  test("a failed (possibly delivered) send counts toward the cap and waits for the debounce", async () => {
+    const t = setup();
+    t.peer.add({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "t1", eventType: "task.completed" }, at(6, 14));
+    await t.routines.tick();
+    await t.routines.tick();
+    t.sends[0]!.settle("failed");
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
+    expect(t.coverage().inbox).toMatchObject({ sends: 1, lastSentAt: new Date(at(6, 15)).toISOString() });
+    t.clock.now += 16 * MIN;
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(2);
+  });
+
   test("an unreachable peer is recorded pending without blocking; its delta arrives on the next catch-up", async () => {
     const t = setup();
     t.peer.add({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "t1", eventType: "task.completed" }, at(6, 14));

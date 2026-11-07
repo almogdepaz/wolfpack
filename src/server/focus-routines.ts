@@ -198,7 +198,9 @@ export class FocusRoutines {
     try {
       this.deps.enqueue(inboxPrompt(file), outcome => {
         if (this.queuedFile === file) this.queuedFile = undefined;
-        if (outcome !== "sent") return;
+        // A failed send may still have reached the terminal (unverified submission), so it
+        // counts toward the re-send cap and the debounce; only a never-attempted (dropped) send is free.
+        if (outcome === "dropped") return;
         const sentAt = this.iso();
         void this.exclusive(() => {
           const current = this.read();
