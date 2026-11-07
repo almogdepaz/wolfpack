@@ -104,9 +104,10 @@ export function pageActivity(rows: readonly ActivityRow[], since: number, limit:
   return { rows: page, next: page.at(-1)?.seq ?? since, headSeq: rows.at(-1)?.seq ?? 0, oldestSeq, truncated: oldestSeq !== null && since < oldestSeq - 1 };
 }
 
-export type ParsedActivityQuery = { ok: true; since: number; limit: number } | { ok: false; error: string };
+export type ParsedActivityQuery = { ok: true; since: number; limit: number; from?: number; to?: number } | { ok: false; error: string };
+/** `since`/`limit` page by cursor; optional `from`/`to` (ISO) bound rows by time, e.g. one activity day. */
 export function parseActivityQuery(params: URLSearchParams): ParsedActivityQuery {
-  for (const key of params.keys()) if (key !== "since" && key !== "limit") return { ok: false, error: `unknown parameter: ${key}` };
+  for (const key of params.keys()) if (!["since", "limit", "from", "to"].includes(key)) return { ok: false, error: `unknown parameter: ${key}` };
   const int = (name: string, fallback: number, max: number) => {
     const raw = params.get(name);
     if (raw === null) return fallback;
@@ -117,7 +118,25 @@ export function parseActivityQuery(params: URLSearchParams): ParsedActivityQuery
   const limit = int("limit", ACTIVITY_PAGE_DEFAULT, ACTIVITY_PAGE_MAX);
   if (since === undefined) return { ok: false, error: "since must be a non-negative integer" };
   if (limit === undefined) return { ok: false, error: `limit must be an integer from 0 to ${ACTIVITY_PAGE_MAX}` };
-  return { ok: true, since, limit };
+  const time = (name: string) => { const raw = params.get(name); return raw === null ? null : iso(raw) ? Date.parse(raw) : NaN; };
+  const from = time("from"), to = time("to");
+  if (Number.isNaN(from) || Number.isNaN(to) || (from !== null && to !== null && from >= to)) return { ok: false, error: "from/to must be ISO timestamps with from < to" };
+  return { ok: true, since, limit, ...(from !== null && { from }), ...(to !== null && { to }) };
+}
+
+/** Distinct cwds of sessions with any row in [from, to); cwd is known from created/live rows up to `to`. */
+export function activeCwds(rows: readonly ActivityRow[], from: number, to: number): string[] {
+  const cwd = new Map<string, string>();
+  const active = new Set<string>();
+  for (const row of rows) {
+    const at = Date.parse(row.at);
+    if (at >= to) continue;
+    if (row.kind === ACTIVITY_KIND.SESSION_CREATED || row.kind === ACTIVITY_KIND.SESSION_LIVE) { cwd.set(row.sessionId, row.cwd); cwd.set(`name:${row.session}`, row.cwd); }
+    if (at < from) continue;
+    if ("sessionId" in row && row.sessionId) active.add(row.sessionId);
+    else if ("session" in row && row.session) active.add(`name:${row.session}`);
+  }
+  return [...new Set([...active].flatMap(key => cwd.get(key) ?? []))].sort();
 }
 
 /** Files whose UTC day is older than the window. The newest file always stays: it anchors `seq` recovery. */

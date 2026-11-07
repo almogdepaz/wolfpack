@@ -95,3 +95,41 @@ test("focus config preserves home identity and refuses invalid home", async () =
   expect(parseConfig({ devDir: "/tmp", port: 19791, focus: { home: "home-install" } })?.focus).toEqual({ home: "home-install" });
   expect(parseConfig({ devDir: "/tmp", port: 19791, focus: { home: "" } })).toBeNull();
 });
+
+test("routine routes on the focus home: catch-up, status in /api/focus, day note, ack contract", async () => {
+  const root = mkdtempSync(join(tmpdir(), "focus-routine-routes-"));
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const { ActivityJournal } = await import("../../src/server/activity-journal.ts");
+  const assistantService = new AssistantService({ root, readConfig: () => null });
+  let enabled = false;
+  Object.defineProperty(assistantService, "enabled", { get: () => enabled });
+  const ctx = createServerContext({ backend: new MockBackend(), config: null, assistantService, focusStore: new FocusStore(join(root, "assistant", "focus.json")),
+    activityJournal: new ActivityJournal({ dir: join(root, "activity") }), taskRelayRoot: join(root, "relay") });
+  const routes = createRoutes(ctx);
+  const server = createServer((req, res) => { void routes[`${req.method} ${new URL(req.url!, "http://localhost").pathname}`]!(req, res); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (path: string, body?: unknown) => fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, ...(body !== undefined && { body: JSON.stringify(body) }) });
+  try {
+    expect((await post("/api/focus/catch-up")).status).toBe(409);
+    enabled = true;
+    const caught = await post("/api/focus/catch-up");
+    expect(caught.status).toBe(200);
+    expect((await caught.json()).notice).toBe("nothing new to catch up on");
+    const focus = await (await fetch(`${base}/api/focus?open=1`)).json();
+    expect(focus.routines).toMatchObject({ catchingUp: null, surfaced: null, unreachable: [] });
+    expect(focus.routines.yesterday.date).toMatch(/^\d{4}-\d\d-\d\d$/);
+    expect((await fetch(`${base}/api/focus/day-note?date=bad`)).status).toBe(400);
+    expect((await fetch(`${base}/api/focus/day-note?date=2026-11-05`)).status).toBe(404);
+    mkdirSync(join(root, "assistant", "days"), { recursive: true });
+    writeFileSync(join(root, "assistant", "days", "2026-11-05.md"), "# 2026-11-05\n");
+    expect(await (await fetch(`${base}/api/focus/day-note?date=2026-11-05`)).json()).toEqual({ date: "2026-11-05", markdown: "# 2026-11-05\n" });
+    expect((await post("/api/activity/ack", { file: "../routines.json" })).status).toBe(400);
+    expect((await post("/api/activity/ack", { nope: 1 })).status).toBe(400);
+    expect((await post("/api/activity/ack", { file: "catch-up-20261106T100000Z.json" })).status).toBe(404);
+  } finally {
+    ctx.focusRuntime.stop();
+    await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
+    rmSync(root, { recursive: true, force: true });
+  }
+});

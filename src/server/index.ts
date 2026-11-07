@@ -12,6 +12,8 @@ import { SHELL } from "./shell.js";
 import { resolveLoginShellPath } from "./login-shell-path.js";
 import { createServerContext, defaultServerContext, setDefaultServerContext, type ServerContext } from "./context.js";
 import { createRoutes } from "./routes.js";
+import { loadSettings } from "./project-settings-routes.js";
+import { ACTIVITY_RETENTION_INTERVAL_MS } from "./activity-journal.js";
 import {
   startSessionNotificationObserver,
   stopSessionNotificationObserver,
@@ -319,7 +321,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   await taskRelay.initialize();
   ctx.backend.cleanupOrphans();
   // The journal subscribes to the event bus before observation starts, so state transitions are journaled.
-  ctx.activityJournal.startRetention();
+  ctx.activityJournal.startRetention(ACTIVITY_RETENTION_INTERVAL_MS, () => loadSettings().assistant.journalRetentionDays);
   ctx.activityRecorder.start();
   let activityReconciled = false;
   const reconcileActivity = () => {

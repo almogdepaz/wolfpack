@@ -7,6 +7,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { parseAssistantTiming, validateAssistantTiming, type AssistantTiming } from "../focus-scheduler.js";
 import { access, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { AGENT_KIND, isCreatableHarness, isOpenableHarness } from "../agent-kind.js";
@@ -130,7 +131,7 @@ function taskWorkerFailureBody(error: TaskWorkerReadinessError): Record<string, 
 }
 
 const SETTINGS_BODY_STRING_KEYS = ["agentCmd", "addCmd", "removeCmd"] as const;
-const SETTINGS_BODY_KEYS = new Set<string>([...SETTINGS_BODY_STRING_KEYS, "setCmdEnabled", "quietAlerts"]);
+const SETTINGS_BODY_KEYS = new Set<string>([...SETTINGS_BODY_STRING_KEYS, "setCmdEnabled", "quietAlerts", "assistant"]);
 const SET_CMD_ENABLED_BODY_KEYS = new Set(["cmd", "enabled"]);
 const TASK_WORKER_SETTINGS_UNAVAILABLE_RESPONSE = {
   error: "task-worker settings are unavailable",
@@ -237,6 +238,8 @@ interface SettingsBody extends Record<string, unknown> {
   removeCmd?: string;
   setCmdEnabled?: { cmd: string; enabled: boolean };
   quietAlerts?: QuietAlertPolicy;
+  /** Validated in the handler so the error names the offending field. */
+  assistant?: unknown;
 }
 
 function taskWorkerSettingsUnavailable(res: Parameters<RouteHandler>[1]): void {
@@ -342,6 +345,8 @@ interface Settings {
   cmds: CmdEntry[];
   /** Host-wide automatic quiet-alert policy. */
   quietAlerts: QuietAlertPolicy;
+  /** Focus-assistant routine timing and this machine's journal retention; read on every scheduler tick. */
+  assistant: AssistantTiming;
 }
 
 /** A command is valid if it's literally `"shell"` or matches CMD_REGEX. */
@@ -364,6 +369,7 @@ export function loadSettings(): Settings {
   const quietAlerts = raw && isQuietAlertPolicy(raw.quietAlerts)
     ? raw.quietAlerts
     : DEFAULT_QUIET_ALERT_POLICY;
+  const assistant = parseAssistantTiming(raw?.assistant);
 
   // A persisted `cmds` array is authoritative, including an explicitly empty
   // array. Synthesizing built-ins would undo the user's explicit configuration.
@@ -377,7 +383,7 @@ export function loadSettings(): Settings {
       seen.add(obj.cmd);
       cmds.push({ cmd: obj.cmd, enabled: obj.enabled !== false });
     }
-    return { agentCmd, cmds, quietAlerts };
+    return { agentCmd, cmds, quietAlerts, assistant };
   }
 
   // Legacy settings still receive the session-picker defaults.
@@ -391,7 +397,7 @@ export function loadSettings(): Settings {
       cmds.push({ cmd: command, enabled: true });
     }
   }
-  return { agentCmd, cmds, quietAlerts };
+  return { agentCmd, cmds, quietAlerts, assistant };
 }
 
 function saveSettings(s: Settings): void {
@@ -401,6 +407,7 @@ function saveSettings(s: Settings): void {
     agentCmd: s.agentCmd,
     cmds: s.cmds,
     quietAlerts: s.quietAlerts,
+    assistant: s.assistant,
   }, null, 2));
 }
 
@@ -970,6 +977,12 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       || (body.quietAlerts?.mode === QUIET_ALERT_MODE.NEEDS_INPUT_ONLY
         && settings.quietAlerts.mode === QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY);
     if (body.quietAlerts !== undefined) settings.quietAlerts = body.quietAlerts;
+
+    if (body.assistant !== undefined) {
+      const assistant = validateAssistantTiming(body.assistant);
+      if (!assistant.ok) return json(res, { error: assistant.error }, 400);
+      settings.assistant = assistant.value;
+    }
 
     if (body.agentCmd != null) {
       const cmd = body.agentCmd.trim();

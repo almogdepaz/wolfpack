@@ -196,7 +196,14 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     writeFileSync(join(service.folder, "AGENTS.md"), "user instructions");
     await service.enable(true);
     expect(readFileSync(join(service.folder, "AGENTS.md"), "utf8")).toBe("user instructions");
+    const skill = join(service.folder, ".pi/skills/wolfpack-focus/SKILL.md");
+    writeFileSync(skill, "phase 1 skill");
+    service.refreshSkill();
+    expect(readFileSync(skill, "utf8")).toContain("process inbox");
     service.unpin("assistant");
+    writeFileSync(skill, "phase 1 skill");
+    service.refreshSkill();
+    expect(readFileSync(skill, "utf8")).toBe("phase 1 skill");
     expect(service.enabled).toBe(false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

@@ -4,6 +4,7 @@ import { json, parseObjectBody, hasOnlyKeys } from "./http.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
 import { FocusConflict, FocusValidationError } from "./focus-store.js";
 import { errMsg } from "../log.js";
+import { InvalidInboxFile, UnknownInboxFile } from "../focus-coverage.js";
 
 export function createFocusRoutes(ctx: ServerContext) {
   const identity = () => {
@@ -17,9 +18,14 @@ export function createFocusRoutes(ctx: ServerContext) {
     return { ...owner, document, revision: document?.revision ?? 0 };
   };
   return {
-    "GET /api/focus": async (_req: IncomingMessage, res: ServerResponse) => {
+    "GET /api/focus": async (req: IncomingMessage, res: ServerResponse) => {
       res.setHeader("Cache-Control", "no-store");
-      try { const current = envelope(); json(res, { ...current, ...(current.local && { assistant: await ctx.focusRuntime.status() }) }); }
+      try {
+        const current = envelope();
+        // Opening the dashboard is a catch-up trigger; the debounce still applies.
+        if (current.local && new URL(req.url ?? "/", "http://localhost").searchParams.get("open") === "1") void ctx.focusRuntime.routines.tick();
+        json(res, { ...current, ...(current.local && { assistant: await ctx.focusRuntime.status(), routines: ctx.focusRuntime.routines.status() }) });
+      }
       catch (error) { json(res, { error: errMsg(error) }, 503); }
     },
     "POST /api/focus/assistant": async (req: IncomingMessage, res: ServerResponse) => {
@@ -52,6 +58,30 @@ export function createFocusRoutes(ctx: ServerContext) {
       if (!hasOnlyKeys(body, new Set(["text"])) || typeof body.text !== "string") return json(res, { error: "text required" }, 400);
       try { json(res, await ctx.focusRuntime.ask(body.text)); }
       catch (error) { json(res, { error: errMsg(error) }, 409); }
+    },
+    "POST /api/focus/catch-up": async (_req: IncomingMessage, res: ServerResponse) => {
+      if (!identity().local) return json(res, { error: "catch-up runs on the focus home machine" }, 409);
+      if (!ctx.assistantService.enabled) return json(res, { error: "assistant is off" }, 409);
+      await ctx.focusRuntime.routines.tick({ manual: true });
+      json(res, ctx.focusRuntime.routines.status());
+    },
+    "GET /api/focus/day-note": async (req: IncomingMessage, res: ServerResponse) => {
+      res.setHeader("Cache-Control", "no-store");
+      if (!identity().local) return json(res, { error: "day notes live on the focus home machine" }, 409);
+      const date = new URL(req.url ?? "/", "http://localhost").searchParams.get("date") ?? "";
+      try {
+        const markdown = ctx.focusRuntime.routines.dayNote(date);
+        if (markdown === null) return json(res, { error: "no day note for that date" }, 404);
+        json(res, { date, markdown });
+      } catch (error) { json(res, { error: errMsg(error) }, 400); }
+    },
+    "POST /api/activity/ack": async (req: IncomingMessage, res: ServerResponse) => {
+      if (!identity().local) return json(res, { error: "ack on the focus home machine" }, 409);
+      const body = await parseObjectBody(req, res);
+      if (!body) return;
+      if (!hasOnlyKeys(body, new Set(["file"])) || typeof body.file !== "string") return json(res, { error: "file required" }, 400);
+      try { json(res, await ctx.focusRuntime.routines.ack(body.file)); }
+      catch (error) { json(res, { error: errMsg(error) }, error instanceof UnknownInboxFile ? 404 : error instanceof InvalidInboxFile ? 400 : 503); }
     },
     "POST /api/focus": async (req: IncomingMessage, res: ServerResponse) => {
       const owner = identity();

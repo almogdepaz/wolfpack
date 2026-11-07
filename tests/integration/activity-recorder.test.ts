@@ -95,3 +95,18 @@ describe("activity recorder", () => {
     expect(await readGitHead("/definitely/missing")).toEqual({});
   });
 });
+
+test("git log per repository within a time window", async () => {
+  const { readGitLogs } = await import("../../src/server/activity-recorder.ts");
+  const repo = root();
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  writeFileSync(join(repo, "f"), "x");
+  execFileSync("git", ["-C", repo, "add", "f"]);
+  execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "ship\tit"], { env: { ...process.env, GIT_COMMITTER_DATE: "2026-11-06T10:00:00Z", GIT_AUTHOR_DATE: "2026-11-06T10:00:00Z" } });
+  const window = [Date.parse("2026-11-06T03:00:00Z"), Date.parse("2026-11-07T03:00:00Z")] as const;
+  const [inside, missing] = await readGitLogs([repo, "/definitely/missing"], ...window);
+  expect(inside!.commits).toHaveLength(1);
+  expect(inside!.commits[0]!.subject).toBe("ship it");
+  expect(missing!.error).toBe("not a readable git repository");
+  expect((await readGitLogs([repo], Date.parse("2026-11-07T03:00:00Z"), Date.parse("2026-11-08T03:00:00Z")))[0]!.commits).toEqual([]);
+});

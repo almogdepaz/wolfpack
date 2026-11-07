@@ -84,3 +84,16 @@ describe("activity journal writer", () => {
     reopened.close();
   });
 });
+
+test("windowed reads return only rows inside [from, to) and page by seq", () => {
+  const dir = join(root(), "activity");
+  let now = Date.parse("2026-11-05T23:00:00.000Z");
+  const journal = new ActivityJournal({ dir, now: () => now });
+  for (const step of [0, 2, 4, 26]) { now = Date.parse("2026-11-05T23:00:00.000Z") + step * 3_600_000; journal.append(task(`h${step}`)); }
+  const window = { from: Date.parse("2026-11-06T00:00:00.000Z"), to: Date.parse("2026-11-07T00:00:00.000Z") };
+  expect(journal.read(0, 10, window).rows.map(r => r.seq)).toEqual([2, 3]);
+  expect(journal.read(0, 1, window)).toMatchObject({ next: 2, headSeq: 4 });
+  expect(journal.read(2, 10, window).rows.map(r => r.seq)).toEqual([3]);
+  expect(journal.readAll().map(r => r.seq)).toEqual([1, 2, 3, 4]);
+  journal.close();
+});

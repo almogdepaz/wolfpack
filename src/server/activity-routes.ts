@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { parseActivityQuery } from "../activity-journal.js";
+import { activeCwds, parseActivityQuery } from "../activity-journal.js";
+import { readGitLogs } from "./activity-recorder.js";
 import { getMachineDisplayName } from "../machine-display-name.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
 import type { ServerContext } from "./context.js";
@@ -14,10 +15,18 @@ export function createActivityRoutes(ctx: ServerContext) {
       const query = parseActivityQuery(new URL(req.url ?? "/", "http://localhost").searchParams);
       if (!query.ok) return json(res, { error: query.error }, 400);
       try {
-        const page = ctx.activityJournal.read(query.since, query.limit);
+        const page = ctx.activityJournal.read(query.since, query.limit, { from: query.from, to: query.to });
         const { lastRowAt, lastInputAt } = ctx.activityJournal.status();
         json(res, { installationId: getInstallationId(), machine: getMachineDisplayName(), ...page, lastRowAt, lastInputAt });
       } catch (error) { json(res, { error: errMsg(error) }, 503); }
+    },
+    /** Day-note git summary for repositories this machine's sessions used in [from, to). */
+    "GET /api/activity/git": async (req: IncomingMessage, res: ServerResponse) => {
+      res.setHeader("Cache-Control", "no-store");
+      const query = parseActivityQuery(new URL(req.url ?? "/", "http://localhost").searchParams);
+      if (!query.ok || query.from === undefined || query.to === undefined) return json(res, { error: query.ok ? "from and to are required" : query.error }, 400);
+      try { json(res, { repos: await readGitLogs(activeCwds(ctx.activityJournal.readAll(), query.from, query.to), query.from, query.to) }); }
+      catch (error) { json(res, { error: errMsg(error) }, 503); }
     },
   };
 }

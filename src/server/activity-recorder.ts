@@ -118,3 +118,22 @@ export class ActivityRecorder {
     }
   }
 }
+
+export interface GitCommit { sha: string; at: string; subject: string }
+const GIT_LOG_MAX_COMMITS = 50;
+const GIT_LOG_MAX_REPOS = 20;
+/** Commits on any ref in [from, to) for one repository; `error` when it is not a readable repository. */
+export function readGitLog(cwd: string, from: number, to: number): Promise<{ commits: GitCommit[]; error?: string }> {
+  const args = ["-C", cwd, "log", "--all", "--no-merges", `--since=${new Date(from).toISOString()}`, `--until=${new Date(to).toISOString()}`, "--format=%h%x09%cI%x09%s", "-n", String(GIT_LOG_MAX_COMMITS)];
+  return new Promise(resolve => {
+    execFile("git", args, { timeout: GIT_TIMEOUT_MS, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }, (error, stdout) => {
+      if (error) return resolve({ commits: [], error: "not a readable git repository" });
+      const commits = stdout.split("\n").filter(Boolean).map(line => { const [sha = "", at = "", ...subject] = line.split("\t"); return { sha, at, subject: subject.join(" ").slice(0, 200) }; });
+      resolve({ commits });
+    });
+  });
+}
+/** Distinct repositories (by cwd), bounded; cwds always come from this machine's own journal. */
+export async function readGitLogs(cwds: readonly string[], from: number, to: number): Promise<{ cwd: string; commits: GitCommit[]; error?: string }[]> {
+  return Promise.all(cwds.slice(0, GIT_LOG_MAX_REPOS).map(async cwd => ({ cwd, ...(await readGitLog(cwd, from, to)) })));
+}

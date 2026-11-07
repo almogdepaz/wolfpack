@@ -54,13 +54,19 @@ async function body<T>(response: Response): Promise<T> {
   return value;
 }
 
-export async function activityCommand(args: readonly string[], target?: VerifiedMachineTarget, ack?: (file: string) => Promise<unknown>): Promise<number> {
+/** Acks go to the focus home: the only server that owns routine cursors. */
+async function ackOnFocusHome(file: string, target?: VerifiedMachineTarget): Promise<unknown> {
+  const { focusHomeTarget } = await import("./focus.js");
+  const home = await focusHomeTarget(target);
+  return body(await call("/api/activity/ack", { method: "POST", body: JSON.stringify({ file }) }, home));
+}
+
+export async function activityCommand(args: readonly string[], target?: VerifiedMachineTarget, ack: (file: string) => Promise<unknown> = file => ackOnFocusHome(file, target)): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) { print(ACTIVITY_USAGE); return 0; }
   const json = args.includes("--json");
   try {
     const command = parseActivityCommand(args);
     if (command.action === "ack") {
-      if (!ack) throw new Error("ack is not available");
       const result = await ack(command.file);
       if (json) printJson(result); else print(`acked ${command.file}`);
       return 0;

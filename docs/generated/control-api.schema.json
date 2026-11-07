@@ -1663,6 +1663,10 @@
           },
           "assistant": {
             "type": "object"
+          },
+          "routines": {
+            "type": "object",
+            "description": "Render-ready routine state from src/server/focus-routines.ts (home only); ?open=1 also requests a debounced catch-up"
           }
         },
         "required": [
@@ -1740,6 +1744,122 @@
         "400 ErrorEnvelope",
         "409 ErrorEnvelope",
         "503 ErrorEnvelope"
+      ]
+    },
+    "catchUpFocus": {
+      "route": "POST /api/focus/catch-up",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:catchUpFocus:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "catchUpFocus response",
+        "type": "object",
+        "description": "Routine state after a manual catch-up (drops an unacked inbox first)"
+      },
+      "errors": [
+        "409 ErrorEnvelope"
+      ]
+    },
+    "readFocusDayNote": {
+      "route": "GET /api/focus/day-note",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:readFocusDayNote:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readFocusDayNote response",
+        "type": "object",
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "markdown": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "markdown"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope"
+      ]
+    },
+    "ackActivityInbox": {
+      "route": "POST /api/activity/ack",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:ackActivityInbox:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ackActivityInbox request",
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:ackActivityInbox:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "ackActivityInbox response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "already": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "already"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "404 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
+    "readActivityGit": {
+      "route": "GET /api/activity/git",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:readActivityGit:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readActivityGit response",
+        "type": "object",
+        "properties": {
+          "repos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "git log per active session cwd within ?from&to"
+            }
+          }
+        },
+        "required": [
+          "repos"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope"
       ]
     },
     "readActivity": {
@@ -2640,6 +2760,9 @@
           },
           "quietAlerts": {
             "$ref": "#/$defs/QuietAlertPolicy"
+          },
+          "assistant": {
+            "$ref": "#/$defs/AssistantTiming"
           }
         },
         "required": [],
@@ -6200,6 +6323,37 @@
       ],
       "additionalProperties": false
     },
+    "AssistantTiming": {
+      "type": "object",
+      "properties": {
+        "quietMinutes": {
+          "type": "integer",
+          "minimum": 15,
+          "maximum": 480
+        },
+        "fallbackTime": {
+          "type": "string",
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+        },
+        "catchUpDebounceMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120
+        },
+        "journalRetentionDays": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 365
+        }
+      },
+      "required": [
+        "quietMinutes",
+        "fallbackTime",
+        "catchUpDebounceMinutes",
+        "journalRetentionDays"
+      ],
+      "additionalProperties": false
+    },
     "Settings": {
       "type": "object",
       "properties": {
@@ -6214,12 +6368,16 @@
         },
         "quietAlerts": {
           "$ref": "#/$defs/QuietAlertPolicy"
+        },
+        "assistant": {
+          "$ref": "#/$defs/AssistantTiming"
         }
       },
       "required": [
         "agentCmd",
         "cmds",
-        "quietAlerts"
+        "quietAlerts",
+        "assistant"
       ],
       "additionalProperties": false
     },

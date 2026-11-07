@@ -82,3 +82,21 @@ describe("activity retention", () => {
     expect(expiredActivityFiles(["2026-01-01.jsonl", "2026-01-02.jsonl"], "2026-11-07", 30)).toEqual(["2026-01-01.jsonl"]);
   });
 });
+
+describe("activity windows", () => {
+  test("from/to bound rows by time; cwds come from session rows seen in the window", async () => {
+    const { activeCwds } = await import("../../src/activity-journal.ts");
+    expect(parseActivityQuery(new URLSearchParams("from=2026-11-06T03:00:00.000Z&to=2026-11-07T03:00:00.000Z"))).toEqual({ ok: true, since: 0, limit: 500, from: Date.parse("2026-11-06T03:00:00.000Z"), to: Date.parse("2026-11-07T03:00:00.000Z") });
+    expect(parseActivityQuery(new URLSearchParams("from=yesterday")).ok).toBe(false);
+    expect(parseActivityQuery(new URLSearchParams("from=2026-11-07T03:00:00.000Z&to=2026-11-06T03:00:00.000Z")).ok).toBe(false);
+    const rows: ActivityRow[] = [
+      { seq: 1, at: "2026-11-05T10:00:00.000Z", kind: ACTIVITY_KIND.SESSION_CREATED, session: "old", sessionId: "id-old", cwd: "/dev/old" },
+      { seq: 2, at: "2026-11-05T11:00:00.000Z", kind: ACTIVITY_KIND.SESSION_CREATED, session: "quiet", sessionId: "id-quiet", cwd: "/dev/quiet" },
+      { seq: 3, at: "2026-11-06T10:00:00.000Z", kind: ACTIVITY_KIND.SESSION_STATE, session: "old", sessionId: "id-old", state: "working", label: "Working" },
+      { seq: 4, at: "2026-11-06T11:00:00.000Z", kind: ACTIVITY_KIND.INPUT, session: "app", source: "browser", bucket: "2026-11-06T11:00:00.000Z" },
+      { seq: 5, at: "2026-11-06T12:00:00.000Z", kind: ACTIVITY_KIND.SESSION_LIVE, session: "app", sessionId: "id-app", cwd: "/dev/app" },
+      { seq: 6, at: "2026-11-07T12:00:00.000Z", kind: ACTIVITY_KIND.SESSION_CREATED, session: "later", sessionId: "id-later", cwd: "/dev/later" },
+    ];
+    expect(activeCwds(rows, Date.parse("2026-11-06T00:00:00.000Z"), Date.parse("2026-11-07T00:00:00.000Z"))).toEqual(["/dev/app", "/dev/old"]);
+  });
+});

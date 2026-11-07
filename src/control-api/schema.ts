@@ -662,11 +662,18 @@ export const controlApiSource: ControlApiSource = {
       mode: { enum: Object.values(QUIET_ALERT_MODE) },
       quietAfterSeconds: { type: "integer", minimum: QUIET_ALERT_MIN_SECONDS, maximum: QUIET_ALERT_MAX_SECONDS },
     }, ["mode", "quietAfterSeconds"]),
+    AssistantTiming: object({
+      quietMinutes: { type: "integer", minimum: 15, maximum: 480 },
+      fallbackTime: { type: "string", pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+      catchUpDebounceMinutes: { type: "integer", minimum: 1, maximum: 120 },
+      journalRetentionDays: { type: "integer", minimum: 1, maximum: 365 },
+    }, ["quietMinutes", "fallbackTime", "catchUpDebounceMinutes", "journalRetentionDays"]),
     Settings: object({
       agentCmd: string(),
       cmds: arrayOf(ref("CmdEntry")),
       quietAlerts: ref("QuietAlertPolicy"),
-    }, ["agentCmd", "cmds", "quietAlerts"]),
+      assistant: ref("AssistantTiming"),
+    }, ["agentCmd", "cmds", "quietAlerts", "assistant"]),
     TaskWorkerExtensionPolicySettings: object({
       extensionPolicy: { enum: ["inherit", "isolated"] },
     }, ["extensionPolicy"]),
@@ -1352,7 +1359,8 @@ export const controlApiSource: ControlApiSource = {
     },
     "GET /api/focus": {
       operationId: "getFocus", stable: true, auth: "jwt-when-configured",
-      response: object({ home: string(), installationId: string(), local: boolean(), document: { type: ["object", "null"] }, revision: integer(), assistant: { type: "object" } }, ["home", "installationId", "local", "document", "revision"]),
+      response: object({ home: string(), installationId: string(), local: boolean(), document: { type: ["object", "null"] }, revision: integer(), assistant: { type: "object" },
+        routines: { type: "object", description: "Render-ready routine state from src/server/focus-routines.ts (home only); ?open=1 also requests a debounced catch-up" } }, ["home", "installationId", "local", "document", "revision"]),
       errors: ["503 ErrorEnvelope"],
     },
     "POST /api/focus": {
@@ -1360,6 +1368,23 @@ export const controlApiSource: ControlApiSource = {
       request: object({ expectedRevision: integer(), ops: arrayOf({ type: "object", description: "Validated by src/focus-contract.ts; add/edit/done/undo/drop/reorder/nudge/note/day-summary/seen-day-note" }) }, ["expectedRevision", "ops"]),
       response: object({ home: string(), installationId: string(), local: boolean(), document: { type: "object" }, revision: integer() }, ["home", "installationId", "local", "document", "revision"]),
       errors: ["400 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "POST /api/focus/catch-up": {
+      operationId: "catchUpFocus", stable: true, auth: "jwt-when-configured",
+      response: { type: "object", description: "Routine state after a manual catch-up (drops an unacked inbox first)" }, errors: ["409 ErrorEnvelope"],
+    },
+    "GET /api/focus/day-note": {
+      operationId: "readFocusDayNote", stable: true, auth: "jwt-when-configured",
+      response: object({ date: string(), markdown: string() }, ["date", "markdown"]), errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope"],
+    },
+    "POST /api/activity/ack": {
+      operationId: "ackActivityInbox", stable: true, auth: "jwt-when-configured",
+      request: object({ file: string() }, ["file"]),
+      response: object({ ok: { const: true }, already: boolean() }, ["ok", "already"]), errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
+    "GET /api/activity/git": {
+      operationId: "readActivityGit", stable: true, auth: "jwt-when-configured",
+      response: object({ repos: arrayOf({ type: "object", description: "git log per active session cwd within ?from&to" }) }, ["repos"]), errors: ["400 ErrorEnvelope"],
     },
     "GET /api/activity": {
       operationId: "readActivity", stable: true, auth: "jwt-when-configured",
@@ -1533,6 +1558,7 @@ export const controlApiSource: ControlApiSource = {
           enabled: boolean(),
         }, ["cmd", "enabled"]),
         quietAlerts: ref("QuietAlertPolicy"),
+        assistant: ref("AssistantTiming"),
       }),
       response: object({
         ok: boolean(),
