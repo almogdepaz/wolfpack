@@ -1253,7 +1253,7 @@ const focusUi = createAssistantView({
     void showAgentPicker();
   },
   show: view => { if (view === "sessions") backToSessions(); else showView(view); },
-  confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Pi authentication cannot be checked automatically. Run pi and /login on the home machine first. Confirm it is logged in; this launches one persistent assistant." : "Unpin and stop the assistant? Focus and its conversation are kept.", confirmLabel: enabled ? "Pi is logged in — enable" : "Unpin & stop", destructive: !enabled }),
+  confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Wolfpack starts one persistent pi terminal on the home machine and keeps it running across restarts. If pi is not logged in there yet, run pi and /login first; the assistant opens right after so you can see it start." : "Stop the assistant? Its conversation and your focus list are kept; enable it again any time.", confirmLabel: enabled ? "Enable" : "Disable", destructive: !enabled }),
 });
 document.getElementById("assistant-terminal-inspect").onclick = event => {
   const target = pinnedSessionInspectionTarget(state.currentSession, state.currentMachine);
@@ -1569,7 +1569,9 @@ function applyMobileViewNavigation(viewName: string): void {
   }
 }
 
-function showView(name: string, skipAnimation?: boolean, refreshSessions = true): void {
+function showView(requested: string, skipAnimation?: boolean, refreshSessions = true): void {
+  // The assistant page exists only while the assistant is enabled; nothing of the focus ui shows when it is off.
+  const name = requested === "assistant" && !focusUi.enabled() ? "sessions" : requested;
   const previousView = state.currentView;
   if (name !== "projects" && name !== "agent") pendingFocusStart = undefined;
   const previousElement = document.getElementById(previousView + "-view");

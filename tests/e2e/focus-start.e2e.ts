@@ -9,6 +9,9 @@ test.beforeAll(async () => {
   mkdirSync(join(server.home, "Dev", "focus-project"), { recursive: true });
   mkdirSync(join(server.home, ".wolfpack"), { recursive: true });
   writeFileSync(join(server.home, ".wolfpack/config.json"), JSON.stringify({ devDir: join(server.home, "Dev"), port: server.port }));
+  // Nothing of the focus ui shows while the assistant is off; the start rows under test need it on.
+  const enabled = await fetch(`${server.baseUrl}/api/focus/assistant`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true, loginConfirmed: true }) });
+  if (!enabled.ok) throw new Error(`enable assistant: ${enabled.status} ${await enabled.text()}`);
 });
 test.afterAll(async () => { await server?.close(); });
 async function addIntention(page: Page, id: string) {

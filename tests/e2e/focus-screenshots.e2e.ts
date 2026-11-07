@@ -31,7 +31,7 @@ test("focus screenshot and layout evidence", async ({ page }, info) => {
   await expect(block).toContainText("Ship the focus assistant today");
   await expect(block.getByRole("button", { name: /prompt-project/ })).toBeVisible();
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
-  const screenshots = join(process.cwd(), ".plans/screenshots");
+  const screenshots = join(process.cwd(), process.env.WOLFPACK_FOCUS_SHOTS ?? ".plans/screenshots");
   mkdirSync(screenshots, { recursive: true });
   await page.screenshot({ path: join(screenshots, `focus-dashboard-${desktop ? 1440 : 390}.png`), fullPage: true });
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();

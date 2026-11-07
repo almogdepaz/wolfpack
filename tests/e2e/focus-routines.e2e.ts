@@ -7,7 +7,8 @@ let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
 
-const shots = join(process.cwd(), ".plans/screenshots");
+// WOLFPACK_FOCUS_SHOTS keeps a run from overwriting the captures kept under .plans/screenshots.
+const shots = join(process.cwd(), process.env.WOLFPACK_FOCUS_SHOTS ?? ".plans/screenshots");
 const ago = (hours: number) => new Date(Date.now() - hours * 3600_000).toISOString();
 const localDay = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const idle = { catchingUp: null, stale: null, unreachable: [], surfaced: null };
