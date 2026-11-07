@@ -112,9 +112,10 @@ const isoOrNull = (v: unknown) => v === null || iso(v);
 export function parseActivityPage(v: unknown): ActivityPeerPage | null {
   if (!object(v) || !Array.isArray(v.rows) || typeof v.truncated !== "boolean") return null;
   if (!Number.isSafeInteger(v.next) || (v.next as number) < 0 || !Number.isSafeInteger(v.headSeq) || (v.headSeq as number) < 0 || !seqOrNull(v.oldestSeq)) return null;
-  if (!isoOrNull(v.lastRowAt) || !isoOrNull(v.lastInputAt) || (v.journalId !== undefined && !str(v.journalId, 128))) return null;
+  // "" is a peer whose id file could not be created: same as an older peer without one.
+  if (!isoOrNull(v.lastRowAt) || !isoOrNull(v.lastInputAt) || (v.journalId !== undefined && v.journalId !== "" && !str(v.journalId, 128))) return null;
   return { rows: v.rows.filter(isActivityRow), next: v.next as number, headSeq: v.headSeq as number, oldestSeq: v.oldestSeq as number | null, truncated: v.truncated,
-    lastRowAt: v.lastRowAt as string | null, lastInputAt: v.lastInputAt as string | null, ...(v.journalId !== undefined && { journalId: v.journalId as string }) };
+    lastRowAt: v.lastRowAt as string | null, lastInputAt: v.lastInputAt as string | null, ...(typeof v.journalId === "string" && v.journalId !== "" && { journalId: v.journalId }) };
 }
 export interface ActivityGitRepo { cwd: string; commits: { sha: string; at: string; subject: string }[]; error?: string }
 const isCommit = (v: unknown) => object(v) && str(v.sha, 64) && typeof v.at === "string" && v.at.length <= 64 && typeof v.subject === "string" && v.subject.length <= 4096;

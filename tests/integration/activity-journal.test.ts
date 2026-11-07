@@ -179,3 +179,30 @@ describe("activity journal corrections", () => {
     expect(journal.readAll({ from: Date.parse("2026-11-07T00:00:00Z") }).map(r => r.seq)).toEqual([2]);
   });
 });
+
+describe("activity journal id robustness (r1)", () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  test("an unreadable id never skips seq recovery: the next row continues the journal and the id is served absent", () => {
+    const dir = join(root(), "activity");
+    mkdirSync(join(dir, "journal-id"), { recursive: true });
+    appendFileSync(join(dir, "2026-11-06.jsonl"), serializeActivityRow({ seq: 41, at: "2026-11-06T10:00:00.000Z", ...task("old") } as never));
+    const journal = new ActivityJournal({ dir, now: () => Date.parse("2026-11-06T11:00:00.000Z") });
+    expect(journal.append(task("next")).seq).toBe(42);
+    expect(journal.append(task("after")).seq).toBe(43);
+    expect(journal.status()).toMatchObject({ journalId: "", headSeq: 43 });
+    journal.close();
+  });
+
+  test("an empty or malformed id file is replaced atomically by a fresh uuid", () => {
+    for (const content of ["", "not-a-uuid\n"]) {
+      const dir = join(root(), "activity");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "journal-id"), content);
+      const id = new ActivityJournal({ dir }).status().journalId;
+      expect(id).toMatch(UUID);
+      expect(readFileSync(join(dir, "journal-id"), "utf8").trim()).toBe(id);
+      expect(statSync(join(dir, "journal-id")).mode & 0o777).toBe(0o600);
+      expect(readdirSync(dir).filter(name => name.includes(".tmp-"))).toEqual([]);
+    }
+  });
+});

@@ -395,6 +395,8 @@ describe("focus routines: peer boundary and review caps (b2/b3/b4)", () => {
     t.peer.once = { lastRowAt: "not-a-date" };
     await t.routines.tick();
     expect(t.routines.status().error).toContain("not saved");
+    // the inbox file written before the refused save is removed, not orphaned
+    expect(readdirSync(join(t.root, "assistant", "inbox"))).toEqual([]);
     await t.routines.tick();
     expect(t.routines.status().error).toBeUndefined();
     expect(t.coverage().catchUpCursors.laptop.lastRowAt).toBe(new Date(at(6, 9)).toISOString());
@@ -501,7 +503,7 @@ describe("focus routines: unverified routine sends (u2)", () => {
     expect(routines.status().catchingUp).toMatchObject({ routine: "catch-up", unconfirmed: true });
     expect(t.coverage().inbox.sends).toBe(1);
     fail = false;
-    await queue.tick({ id: "a", idle: true, token: "t1" });
+    await queue.tick({ id: "a", idle: true, token: "t2" });
     expect(delivered).toEqual(["what next?"]);
   });
 });
@@ -516,4 +518,80 @@ describe("focus routines: the day-note row (n9/n13)", () => {
     expect(t.routines.status("2026-11-04").yesterday.note).toBe(true);
     expect(t.routines.status("../x").yesterday.date).toBe("2026-11-05");
   });
+});
+
+describe("focus routines: unreached machines at review time (r2)", () => {
+  test("a day whose only activity is on a machine offline at the turn still gets a review, closed on ack (P9)", async () => {
+    const t = setup(at(6, 9));
+    await booted(t);
+    t.peer.add(inputAt("web", at(6, 9)), at(6, 9));
+    t.clock.now = at(6, 9, 5);
+    await t.routines.tick();
+    await ackLast(t);
+    t.peer.down = true;
+    t.clock.now = at(6, 11, 31);
+    await t.routines.tick();
+    expect(t.coverage().reviewedThrough).toBe("2026-11-05");
+    t.clock.now = at(7, 3, 1);
+    await t.routines.tick();
+    expect(t.coverage().reviewedThrough).toBe("2026-11-05");
+    const file = fileOf(t.sends.at(-1)!.text);
+    expect(file).toStartWith("day-review-");
+    const doc = t.inbox(file);
+    expect(doc.days.map((d: { date: string }) => d.date)).toEqual(["2026-11-06"]);
+    expect(doc.machines).toEqual([expect.objectContaining({ installationId: "laptop", reached: false })]);
+    expect(noteOf(t, "2026-11-06")).toContain("mac");
+    await ackLast(t);
+    expect(t.coverage()).toMatchObject({ reviewedThrough: "2026-11-06", provisional: null });
+  });
+
+  test("a gap review counts a completed day active from an unreached machine's last activity", async () => {
+    const t = setup(at(6, 9));
+    await booted(t);
+    t.peer.add(inputAt("web", at(6, 10)), at(6, 10));
+    t.clock.now = at(6, 10, 5);
+    await t.routines.tick();
+    await ackLast(t);
+    t.peer.down = true;
+    t.clock.now = at(8, 9);
+    const fresh = new FocusRoutines({
+      folder: join(t.root, "assistant"), enabled: () => true, sources: async () => [localActivitySource("home", "sgt", t.journal), t.peer],
+      timing: async () => ASSISTANT_TIMING_DEFAULTS, assistant: async () => t.assistant, queueBusy: () => false, enqueue: (text, settle) => { t.sends.push({ text, settle }); }, now: () => t.clock.now,
+    });
+    await fresh.tick();
+    const doc = t.inbox(fileOf(t.sends.at(-1)!.text));
+    expect(doc.routine).toBe("gap-review");
+    expect(doc.days.map((d: { date: string }) => d.date)).toEqual(["2026-11-06"]);
+    expect(t.coverage().reviewedThrough).toBe("2026-11-05");
+  });
+});
+
+test("an id-less peer reset while its rows are outstanding is detected against the inbox's through (n-r3)", async () => {
+  const t = setup(at(6, 14));
+  for (const id of ["a", "b", "c", "d", "e"]) t.peer.add(task(id), at(6, 13));
+  await t.routines.tick();
+  await t.routines.tick();
+  const file = fileOf(t.sends.at(-1)!.text);
+  expect(t.coverage().inbox.through.laptop).toBe(5);
+  t.peer.rows = [];
+  t.peer.add(task("new1"), at(6, 14));
+  t.clock.now = at(6, 14, 1);
+  await t.routines.tick();
+  expect(t.coverage().inbox.through.laptop).toBeUndefined();
+  t.sends.at(-1)!.settle("sent");
+  await t.routines.ack(file);
+  t.peer.add(task("new2"), at(6, 14, 2));
+  t.clock.now = at(6, 14, 30);
+  await t.routines.tick();
+  const next = t.inbox(fileOf(t.sends.at(-1)!.text));
+  expect(next.machines.find((m: { installationId: string }) => m.installationId === "laptop").rows.map((r: { taskId: string }) => r.taskId)).toEqual(["new1", "new2"]);
+});
+
+test("the manual 'nothing new' notice clears on the next ordinary tick (n-r5)", async () => {
+  const t = setup(at(6, 9));
+  await booted(t);
+  await t.routines.tick({ manual: true });
+  expect(t.routines.status().notice).toBe("nothing new to catch up on");
+  await t.routines.tick();
+  expect(t.routines.status().notice).toBeUndefined();
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FocusSendQueue } from "../../src/focus-send-queue.ts";
+import { FocusSendQueue, ROUTINE_FAILURE_FENCE_MS } from "../../src/focus-send-queue.ts";
 import { genericHarness, piHarness } from "../../src/focus-harness.ts";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
 test("pi semantic status distinguishes resting from input dialogs, rejects stale or fallback facts", () => {
@@ -106,7 +106,29 @@ test("a routine send that cannot be verified settles failed without costing the 
   expect(queue.error).toBeUndefined();
   expect(queue.size).toBe(1);
   fail = false;
-  await queue.tick({ id: "a", idle: true, token: "t1" });
+  await queue.tick({ id: "a", idle: true, token: "t2" });
   expect(sent).toEqual(["what next?"]);
   expect(outcomes).toEqual(["routine:failed", "ask:sent"]);
+});
+test("after an unverified routine send the next item waits for a new idle token or a short fence, never the same sample (P10)", async () => {
+  let now = 1_000_000;
+  const sent: string[] = [];
+  let fail = true;
+  const queue = new FocusSendQueue(async (_id, text) => { if (fail) { fail = false; throw new Error("send unverified"); } sent.push(text); }, () => now);
+  queue.enqueue("a", "process inbox inbox/catch-up-20261106T100000Z.json", undefined, "routine");
+  queue.enqueue("a", "user ask");
+  await queue.tick({ id: "a", idle: true, token: "idle1" });
+  await queue.tick({ id: "a", idle: true, token: "idle1" });
+  expect(sent).toEqual([]);
+  expect(queue.busy).toBe(true);
+  now += ROUTINE_FAILURE_FENCE_MS;
+  await queue.tick({ id: "a", idle: true, token: "idle1" });
+  expect(sent).toEqual(["user ask"]);
+  // a changed idle token (the unverified line did start a turn) releases it without waiting
+  const second = new FocusSendQueue(async (_id, text) => { if (text.startsWith("process")) throw new Error("send unverified"); sent.push(text); }, () => now);
+  second.enqueue("a", "process inbox inbox/catch-up-20261106T110000Z.json", undefined, "routine");
+  second.enqueue("a", "second ask");
+  await second.tick({ id: "a", idle: true, token: "idle1" });
+  await second.tick({ id: "a", idle: true, token: "program:2" });
+  expect(sent).toEqual(["user ask", "second ask"]);
 });

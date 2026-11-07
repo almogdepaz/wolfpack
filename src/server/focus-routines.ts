@@ -157,7 +157,8 @@ export class FocusRoutines {
     if (!this.deps.enabled()) return;
     let coverage: FocusCoverage;
     try { coverage = this.read(); this.error = undefined; } catch (error) { this.error = errMsg(error); return; }
-    if (manual) this.notice = undefined;
+    // A notice answers one manual request; any later tick (or the inbox it writes) supersedes it.
+    this.notice = undefined;
     const now = this.now();
     const timing = await this.deps.timing();
     this.fallbackTime = timing.fallbackTime;
@@ -190,7 +191,9 @@ export class FocusRoutines {
       const status = await source.read(0, 0);
       let cursor: MachineCursor | undefined = coverage.catchUpCursors[source.id];
       const otherJournal = !!cursor?.journalId && !!status.journalId && cursor.journalId !== status.journalId;
-      if (cursor && (otherJournal || status.headSeq < cursor.seq)) {
+      // Without ids, a head behind any seq already recorded for this machine (acked or outstanding) means a new journal.
+      const recorded = Math.max(cursor?.seq ?? 0, coverage.inbox?.through[source.id] ?? 0, coverage.provisional?.through[source.id] ?? 0);
+      if (cursor && (otherJournal || status.headSeq < recorded)) {
         log.warn("activity journal replaced; cursor restarted", { machine: source.name });
         cursor = undefined;
         if (coverage.inbox) delete coverage.inbox.through[source.id];
@@ -259,10 +262,12 @@ export class FocusRoutines {
     const createdAt = this.iso();
     const file = inboxFileName(routine, this.now());
     mkdirSync(join(this.deps.folder, "inbox"), { recursive: true, mode: 0o700 });
-    writePrivateJsonFile(join(this.deps.folder, "inbox", file), buildInbox({ file, routine, createdAt, ...doc }));
+    const path = join(this.deps.folder, "inbox", file);
+    writePrivateJsonFile(path, buildInbox({ file, routine, createdAt, ...doc }));
     const next: FocusCoverage = { ...coverage, lastRun: { ...coverage.lastRun, [routine]: createdAt },
       inbox: { file, routine, createdAt, sends: 0, lastSentAt: null, surfaced: false, through, ...(days?.length && { days }), ...(provisional && { provisional }) } };
-    this.save(next);
+    // The file is only reachable through coverage: a refused save must not leave it behind.
+    try { this.save(next); } catch (error) { rmSync(path, { force: true }); throw error; }
     this.send(file);
     return next;
   }
@@ -334,7 +339,18 @@ export class FocusRoutines {
       if (total >= REVIEW_ROW_CAP) break;
     }
     const isUserInput = (row: ActivityRow) => row.kind === ACTIVITY_KIND.INPUT;
-    const active = pulled.filter(d => d.machines.some(m => provisional?.date === d.date ? m.rows.some(isUserInput) : m.rows.length > 0));
+    // A machine unreached now but known (from its cursor) to have been active on a completed day still makes
+    // that day reviewable: the assistant writes it from what catch-ups delivered, and the ack closes it.
+    const unreachedOn = (date: string) => {
+      const window = activityDayWindow(date, timing.fallbackTime);
+      return Object.entries(coverage.catchUpCursors).filter(([id, cursor]) => {
+        if (this.reached.has(id) || date >= today) return false;
+        const after = provisional?.date === date && provisional.through[id] !== undefined ? Date.parse(provisional.at) : -Infinity;
+        return [cursor.lastRowAt, cursor.lastInputAt].some(at => { const t = at ? Date.parse(at) : NaN; return t >= window.start && t < window.end && t > after; });
+      }).map(([, cursor]) => ({ name: cursor.name, lastReachedAt: cursor.lastReachedAt }));
+    };
+    const active = pulled.filter(d => unreachedOn(d.date).length > 0
+      || d.machines.some(m => provisional?.date === d.date ? m.rows.some(isUserInput) : m.rows.length > 0));
     const completed = pulled.map(d => d.date).filter(date => date < today);
     const closed = completed.at(-1);
     const advance = (c: FocusCoverage): FocusCoverage => {
@@ -354,11 +370,12 @@ export class FocusRoutines {
       const note = join(this.deps.folder, "days", `${day.date}.md`);
       const update = provisional?.date === day.date && existsSync(note);
       const machines = day.machines.filter(m => m.rows.length).map(m => ({ name: m.source.name, rows: m.rows }));
+      const unreached = unreachedOn(day.date);
       if (update && !provisional.noteUpdated) {
-        writePrivateFile(note, readFileSync(note, "utf8") + dayNoteUpdateMarkdown(day, machines, await this.gitFor(day, day.machines)));
+        writePrivateFile(note, readFileSync(note, "utf8") + dayNoteUpdateMarkdown(day, machines, await this.gitFor(day, day.machines), unreached));
         noteUpdated = true;
       } else if (!existsSync(note)) {
-        writePrivateFile(note, dayNoteMarkdown(day.date, day, machines, await this.gitFor(day, day.machines)));
+        writePrivateFile(note, dayNoteMarkdown(day.date, day, machines, await this.gitFor(day, day.machines), unreached));
       }
       inboxDays.push({ date: day.date, note: `days/${day.date}.md`, from: new Date(day.start).toISOString(), to: new Date(day.end).toISOString(), capped: day.capped, ...(update && { update: true as const }) });
     }

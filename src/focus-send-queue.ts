@@ -2,14 +2,16 @@ export type SendOutcome = "sent" | "failed" | "dropped";
 /** `user`: an ask typed by the user; `routine`: a server-generated inbox line. */
 export type SendOrigin = "user" | "routine";
 interface QueueItem { id: string; text: string; origin: SendOrigin; settled?: (outcome: SendOutcome) => void }
-interface Outstanding { id: string; token: string; sawBusy: boolean }
+interface Outstanding { id: string; token: string; sawBusy: boolean; unverifiedAt?: number }
+/** After an unverified routine send, the next item waits for a new idle token or this long (it may have started a turn). */
+export const ROUTINE_FAILURE_FENCE_MS = 2500;
 /** Volatile, incarnation-pinned sends. Ambiguous delivery is surfaced, never replayed automatically. */
 export class FocusSendQueue {
   private pending: QueueItem[] = [];
   private outstanding?: Outstanding;
   private ticking = false;
   error?: string;
-  constructor(private readonly send: (id: string, text: string) => Promise<void>) {}
+  constructor(private readonly send: (id: string, text: string) => Promise<void>, private readonly now: () => number = Date.now) {}
   get size(): number { return this.pending.length; }
   /** Items waiting, or a sent turn not yet observed to finish. */
   get busy(): boolean { return this.pending.length > 0 || this.outstanding !== undefined; }
@@ -33,7 +35,8 @@ export class FocusSendQueue {
       if (this.outstanding) {
         if (!sample.idle) this.outstanding.sawBusy = true;
         // A changed idle transition can also cover a turn shorter than the observation cadence.
-        if (sample.idle && (this.outstanding.sawBusy || sample.token !== this.outstanding.token)) this.outstanding = undefined;
+        const fenced = this.outstanding.unverifiedAt !== undefined && this.now() - this.outstanding.unverifiedAt >= ROUTINE_FAILURE_FENCE_MS;
+        if (sample.idle && (this.outstanding.sawBusy || sample.token !== this.outstanding.token || fenced)) this.outstanding = undefined;
       }
       if (this.outstanding || !sample.idle) return;
       const item = this.pending.shift();
@@ -43,8 +46,9 @@ export class FocusSendQueue {
       catch (error) {
         item.settled?.("failed");
         // A routine's unverified send is reported by the routine (delivery unconfirmed); it must not
-        // drop the user's asks queued behind it. The next send still waits for the assistant to rest.
-        if (item.origin === "routine") { this.outstanding = undefined; return; }
+        // drop the user's asks queued behind it. The line may still have arrived, so the next item waits
+        // for a new idle token (that turn ran) or a short fence (it never arrived), not the same sample.
+        if (item.origin === "routine") { this.outstanding = { ...this.outstanding!, unverifiedAt: this.now() }; return; }
         this.clear(`assistant send failed: ${error instanceof Error ? error.message : String(error)}; delivery may be uncertain`);
       }
     } finally { this.ticking = false; }

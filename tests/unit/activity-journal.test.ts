@@ -111,11 +111,13 @@ describe("peer payload validation", () => {
     expect(mixed?.rows.map(r => r.seq)).toEqual([1, 3]);
     const { journalId: _, ...older } = page;
     expect(parseActivityPage(older)).toEqual(older);
+    // a peer whose id file could not be created serves "": read it like an older peer, never reject the page
+    expect(parseActivityPage({ ...page, journalId: "" })).toEqual(older);
   });
   test("a page with a bad cursor, timestamp or shape is rejected whole", () => {
     for (const bad of [
       { ...page, lastRowAt: "not-a-date" }, { ...page, lastInputAt: 5 }, { ...page, next: 1.5 }, { ...page, headSeq: "2" },
-      { ...page, oldestSeq: -1 }, { ...page, truncated: "no" }, { ...page, rows: {} }, { ...page, journalId: 7 }, null, [],
+      { ...page, oldestSeq: -1 }, { ...page, truncated: "no" }, { ...page, rows: {} }, { ...page, journalId: 7 }, { ...page, journalId: "x".repeat(129) }, null, [],
     ]) expect(parseActivityPage(bad)).toBeNull();
     expect(parseActivityPage({ ...page, oldestSeq: null })?.oldestSeq).toBeNull();
   });

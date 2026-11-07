@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, truncateSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, truncateSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   ACTIVITY_KIND,
@@ -16,6 +16,7 @@ import {
   type ActivityRowBody,
 } from "../activity-journal.js";
 import { createLogger, errMsg } from "../log.js";
+import { writePrivateFile } from "../persistence.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
 
 const log = createLogger("server");
@@ -28,6 +29,7 @@ const BUFFER_MAX = 10_000;
 export const ACTIVITY_JOURNAL_ID_FILE = "journal-id";
 export interface ActivityJournalStatus { journalId: string; headSeq: number; oldestSeq: number | null; lastRowAt: string | null; lastInputAt: string | null }
 type Window = { from?: number; to?: number };
+const JOURNAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export interface ActivityJournalOptions {
   dir?: string;
   now?: () => number;
@@ -71,7 +73,9 @@ export class ActivityJournal {
     if (this.opened) return;
     this.opened = true;
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    this.journalId = this.readOrCreateId();
+    // The id is best effort: without it the journal still prunes, recovers seq and serves rows (journalId "").
+    try { this.journalId = this.readOrCreateId(); }
+    catch (error) { log.warn("activity journal id unavailable; serving without one", { error: errMsg(error) }); }
     this.pruneFiles();
     const files = this.files();
     const newest = files.at(-1);
@@ -90,14 +94,16 @@ export class ActivityJournal {
     }
   }
 
+  /** A missing, empty or malformed id (e.g. a crash mid-create) is replaced atomically by a fresh uuid. */
   private readOrCreateId(): string {
     const path = join(this.dir, ACTIVITY_JOURNAL_ID_FILE);
-    try {
-      writeFileSync(path, randomUUID(), { flag: "wx", mode: 0o600 });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    }
-    return readFileSync(path, "utf8").trim();
+    const read = () => { try { return readFileSync(path, "utf8").trim(); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return ""; throw error; } };
+    const existing = read();
+    if (JOURNAL_ID.test(existing)) return existing;
+    writePrivateFile(path, `${randomUUID()}\n`);
+    const created = read();
+    if (!JOURNAL_ID.test(created)) throw new Error("journal id did not persist");
+    return created;
   }
 
   private observe(row: ActivityRow): void {
