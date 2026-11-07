@@ -1,0 +1,84 @@
+import { describe, expect, test } from "bun:test";
+import {
+  ACTIVITY_KIND,
+  activityFileDay,
+  expiredActivityFiles,
+  isActivityRow,
+  pageActivity,
+  parseActivityLines,
+  parseActivityQuery,
+  presenceBucket,
+  serializeActivityRow,
+  type ActivityRow,
+} from "../../src/activity-journal.ts";
+
+const row = (seq: number, at = "2026-11-06T10:00:00.000Z"): ActivityRow => ({ seq, at, kind: ACTIVITY_KIND.TASK_UPDATED, taskId: `t${seq}`, eventType: "task.completed" });
+
+describe("activity journal rows", () => {
+  test("every row kind round-trips through one line and validates", () => {
+    const rows: ActivityRow[] = [
+      { seq: 1, at: "2026-11-06T10:00:00.000Z", kind: ACTIVITY_KIND.SESSION_CREATED, session: "app", sessionId: "id-1", cwd: "/dev/app", harness: "pi", branch: "main", head: "abc123" },
+      { seq: 2, at: "2026-11-06T10:00:01.000Z", kind: ACTIVITY_KIND.SESSION_LIVE, session: "app", sessionId: "id-1", cwd: "/dev/app", harness: "pi", state: "idle" },
+      { seq: 3, at: "2026-11-06T10:00:02.000Z", kind: ACTIVITY_KIND.SESSION_STATE, session: "app", sessionId: "id-1", state: "needs-input", label: "Needs input", message: "approve?", inputKind: "question" },
+      { seq: 4, at: "2026-11-06T10:00:03.000Z", kind: ACTIVITY_KIND.SESSION_EXITED, session: "app", sessionId: "id-1", reason: "exit", exitCode: 0, head: "def456" },
+      { seq: 5, at: "2026-11-06T10:00:04.000Z", kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "task-1", eventType: "task.completed" },
+      { seq: 6, at: "2026-11-06T10:05:00.000Z", kind: ACTIVITY_KIND.INPUT, session: "app", sessionId: "id-1", source: "browser", bucket: "2026-11-06T10:05:00.000Z" },
+    ];
+    const text = rows.map(serializeActivityRow).join("");
+    expect(text.split("\n").length).toBe(rows.length + 1);
+    expect(parseActivityLines(text)).toEqual({ rows, partialTailBytes: 0 });
+    for (const r of rows) expect(isActivityRow(r)).toBe(true);
+  });
+
+  test("presence rows carry a bucket, never content", () => {
+    expect(isActivityRow({ ...row(1), kind: ACTIVITY_KIND.INPUT, session: "a", source: "browser", bucket: "2026-11-06T10:05:00.000Z", text: "secret" })).toBe(false);
+    expect(presenceBucket(Date.parse("2026-11-06T10:09:59.999Z"))).toBe("2026-11-06T10:05:00.000Z");
+    expect(presenceBucket(Date.parse("2026-11-06T10:10:00.000Z"))).toBe("2026-11-06T10:10:00.000Z");
+  });
+
+  test("labels and messages are bounded at serialization", () => {
+    const long: ActivityRow = { seq: 1, at: "2026-11-06T10:00:00.000Z", kind: ACTIVITY_KIND.SESSION_STATE, session: "a", state: "working", label: "l".repeat(1000), message: "m".repeat(5000) };
+    const [parsed] = parseActivityLines(serializeActivityRow(long)).rows as Extract<ActivityRow, { kind: "session.state" }>[];
+    expect(parsed!.label.length).toBeLessThanOrEqual(200);
+    expect(parsed!.message!.length).toBeLessThanOrEqual(500);
+  });
+
+  test("a partial last line is skipped and measured; malformed middle lines are skipped", () => {
+    const text = serializeActivityRow(row(1)) + "not json\n" + serializeActivityRow(row(2)) + serializeActivityRow(row(3)).slice(0, 20);
+    const parsed = parseActivityLines(text);
+    expect(parsed.rows.map(r => r.seq)).toEqual([1, 2]);
+    expect(parsed.partialTailBytes).toBe(20);
+    // A complete-looking final row without its newline is still an unfinished append.
+    expect(parseActivityLines(serializeActivityRow(row(1)).trimEnd()).partialTailBytes).toBeGreaterThan(0);
+  });
+
+  test("rows are day-partitioned by UTC day", () => {
+    expect(activityFileDay("2026-11-06T23:59:59.999Z")).toBe("2026-11-06");
+    expect(activityFileDay("2026-11-07T00:00:00.000Z")).toBe("2026-11-07");
+  });
+});
+
+describe("activity paging", () => {
+  const rows = [3, 4, 5, 6, 7].map(seq => row(seq));
+  test("since/limit pages with a next cursor, head and oldest seq", () => {
+    expect(pageActivity(rows, 0, 2)).toEqual({ rows: rows.slice(0, 2), next: 4, headSeq: 7, oldestSeq: 3, truncated: true });
+    expect(pageActivity(rows, 2, 2).truncated).toBe(false);
+    expect(pageActivity(rows, 4, 10)).toEqual({ rows: rows.slice(2), next: 7, headSeq: 7, oldestSeq: 3, truncated: false });
+    expect(pageActivity(rows, 7, 10)).toEqual({ rows: [], next: 7, headSeq: 7, oldestSeq: 3, truncated: false });
+    expect(pageActivity(rows, 5, 0)).toEqual({ rows: [], next: 5, headSeq: 7, oldestSeq: 3, truncated: false });
+    expect(pageActivity([], 0, 10)).toEqual({ rows: [], next: 0, headSeq: 0, oldestSeq: null, truncated: false });
+  });
+  test("query validation", () => {
+    expect(parseActivityQuery(new URLSearchParams(""))).toEqual({ ok: true, since: 0, limit: 500 });
+    expect(parseActivityQuery(new URLSearchParams("since=12&limit=0"))).toEqual({ ok: true, since: 12, limit: 0 });
+    for (const bad of ["since=-1", "since=1.5", "limit=1001", "limit=x", "other=1"]) expect(parseActivityQuery(new URLSearchParams(bad)).ok).toBe(false);
+  });
+});
+
+describe("activity retention", () => {
+  test("drops files older than the retention window but always keeps the newest", () => {
+    const names = ["2026-10-01.jsonl", "2026-10-07.jsonl", "2026-10-08.jsonl", "2026-11-06.jsonl", "notes.txt"];
+    expect(expiredActivityFiles(names, "2026-11-07", 30)).toEqual(["2026-10-01.jsonl", "2026-10-07.jsonl"]);
+    expect(expiredActivityFiles(["2026-01-01.jsonl", "2026-01-02.jsonl"], "2026-11-07", 30)).toEqual(["2026-01-01.jsonl"]);
+  });
+});

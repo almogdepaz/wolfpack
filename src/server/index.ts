@@ -318,11 +318,26 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   const taskRelay = ctx.taskRelayGateway;
   await taskRelay.initialize();
   ctx.backend.cleanupOrphans();
+  // The journal subscribes to the event bus before observation starts, so state transitions are journaled.
+  ctx.activityJournal.startRetention();
+  ctx.activityRecorder.start();
+  let activityReconciled = false;
+  const reconcileActivity = () => {
+    if (activityReconciled) return;
+    activityReconciled = true;
+    void ctx.activityRecorder.reconcile().catch((error: unknown) => {
+      activityReconciled = false;
+      log.warn("activity startup reconciliation deferred", { error: errMsg(error) });
+    });
+  };
+  reconcileActivity();
   startSessionNotificationObserver(ctx);
   ctx.focusRuntime.start();
-  const stopPinnedReconnect = router?.onReady(() => { void ctx.focusRuntime.pins.tick(); });
+  const stopPinnedReconnect = router?.onReady(() => { void ctx.focusRuntime.pins.tick(); reconcileActivity(); });
   server.once("close", () => {
     stopPinnedReconnect?.();
+    ctx.activityRecorder.stop();
+    ctx.activityJournal.close();
     ctx.focusRuntime.stop();
     taskRelay.close();
     stopSessionNotificationObserver();
@@ -337,7 +352,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
     process.exit(1);
   });
 
-  installShutdownSignalHandlers(wss);
+  installShutdownSignalHandlers(wss, () => ctx.activityJournal.flush());
 
   server.listen(port, host, () => {
     log.info("server started", { url: `http://localhost:${port}/` });

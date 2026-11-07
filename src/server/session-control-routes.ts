@@ -2,6 +2,7 @@ import { createSessionOrganizationRoutes } from "./session-organization-routes.t
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename } from "node:path";
 import { createLogger, errMsg } from "../log.js";
+import { INPUT_SOURCE } from "../activity-journal.js";
 import {
   MAX_INITIAL_PROMPT_LENGTH,
 } from "../validation.js";
@@ -458,6 +459,7 @@ return {
       if (!streaming) {
         // Nothing to observe through: deliver as before and say so.
         await getBackend().send(session, body.text, noEnter);
+        ctx.activityRecorder.notePresence(session, INPUT_SOURCE.CLI);
         return json(res, {
           ok: true,
           session,
@@ -474,6 +476,7 @@ return {
         ensureSubmitted: body.ensureSubmitted === true,
         sessionName: session,
       });
+      if (result.reason !== SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE) ctx.activityRecorder.notePresence(session, INPUT_SOURCE.CLI);
       if (result.reason === SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE) {
         // Same status a failed write always had; the body says nothing was written.
         return json(res, { ok: false, error: "backend unavailable", session, sessionId, ...result }, 503);
@@ -515,6 +518,7 @@ return {
       });
     }
     try {
+      ctx.activityRecorder.notePresence(session, INPUT_SOURCE.CLI);
       const result = await streaming.promptAndWaitForOutput(sessionId, {
         prompt: body.prompt,
         outputContains: body.outputContains,

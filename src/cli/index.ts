@@ -34,6 +34,7 @@ import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { applyServiceAuthFile } from "./service-auth.js";
 import { logsCommand } from "./logs.js";
 import { focusCommand } from "./focus.js";
+import { activityCommand } from "./activity.js";
 import { EVENTS_USAGE, eventsCommand } from "./events.js";
 import { issueJwt } from "./api.js";
 import { isMachineDisplayName } from "../tailnet-machine-contract.js";
@@ -104,6 +105,7 @@ Commands:
   wolfpack logs [--follow|--json]  Read or follow service logs
   wolfpack events [--kinds ..] [--json] Follow live session and task events
   wolfpack focus <action>          Read or update intentions on the focus home
+  wolfpack activity [--since seq]  Read a machine's activity journal (ack: confirm an inbox)
   wolfpack extensions <action>     Install and manage local extension packages
   wolfpack extension-data <action> Read/publish documents or put/delete extension blobs
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
@@ -271,7 +273,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
   const command = argv.slice(0, -1);
   if (command.length === 0) return true;
   const [family, action] = command;
-  if (["list", "ls", "kill", "events"].includes(family ?? "")) return command.length === 1;
+  if (["list", "ls", "kill", "events", "activity"].includes(family ?? "")) return command.length === 1;
   if (family === "session") {
     return command.length === 1 || (command.length === 2 && [
       "create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt",
@@ -286,6 +288,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
 function isMachineCommandSupported(argv: readonly string[]): boolean {
   const [family, action] = argv;
   if (["list", "ls", "kill", "events", "focus"].includes(family ?? "")) return true;
+  if (family === "activity") return action !== "ack";
   if (family === "session") {
     return ["create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt"].includes(action ?? "");
   }
@@ -423,6 +426,7 @@ async function dispatchCommand(
   if (cmd === "agent") return exitAfterOutput(await runAgentCommand(argv.slice(1), target));
   if (cmd === "kill") process.exit(await killSession(argv.slice(1), target));
   if (cmd === "focus") return exitAfterOutput(await focusCommand(argv.slice(1), target));
+  if (cmd === "activity") return exitAfterOutput(await activityCommand(argv.slice(1), target));
   if (cmd === "extensions") process.exit(await extensionsCommand(argv.slice(1)));
   if (cmd === "extension-data") {
     if ((argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) || (argv.length === 3 && ["read", "publish", "put-blob", "delete-blob"].includes(argv[1] ?? "") && HELP_ALIASES.has(argv[2] ?? ""))) print(extensionDataUsage());

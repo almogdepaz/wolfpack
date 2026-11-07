@@ -2,7 +2,9 @@ process.env.WOLFPACK_TEST = "1";
 
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { closeWebSocketsForShutdown, type ShutdownSocket } from "../../src/server/shutdown";
 import { CLOSE_CODE_SERVICE_RESTART, WS_CLOSE_REASONS } from "../../src/ws-constants";
@@ -88,6 +90,32 @@ describe("installShutdownSignalHandlers", () => {
       expect(await exited).toEqual({ code: null, signal: "SIGTERM" });
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  }, 15_000);
+
+  test("SIGTERM flushes buffered journal rows before the default exit", async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "shutdown-activity-")), "activity");
+    const child = spawn(process.execPath, [join(import.meta.dir, "fixtures", "shutdown-signal-server.ts")], {
+      env: { ...process.env, WOLFPACK_TEST: "1", ACTIVITY_DIR: dir },
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let out = "";
+        child.stdout!.on("data", (chunk: Buffer) => { out += chunk.toString(); if (/PORT \d+/.test(out)) resolve(); });
+        child.once("exit", () => reject(new Error("fixture exited before listening")));
+      });
+      expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+        child.once("exit", (code, signal) => resolve({ code, signal }));
+      });
+      child.kill("SIGTERM");
+      expect(await exited).toEqual({ code: null, signal: "SIGTERM" });
+      const [file] = readdirSync(dir);
+      expect(readFileSync(join(dir, file!), "utf8")).toContain("buffered-at-sigterm");
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      rmSync(dirname(dir), { recursive: true, force: true });
     }
   }, 15_000);
 });

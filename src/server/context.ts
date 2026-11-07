@@ -1,6 +1,8 @@
 import { AssistantService } from "./assistant-service.js";
 import { FocusRuntime } from "./focus-runtime.js";
 import { FocusStore } from "./focus-store.js";
+import { ActivityJournal } from "./activity-journal.js";
+import { ActivityRecorder } from "./activity-recorder.js";
 import { SessionOrganizationService } from "./session-organization.ts";
 import { TaskGateway } from "../tasks/gateway.ts";
 import { createTaskRelayGateway } from "../task-relay/gateway.ts";
@@ -32,6 +34,8 @@ export interface ServerContext {
   readonly focusStore: FocusStore;
   readonly assistantService: AssistantService;
   readonly focusRuntime: FocusRuntime;
+  readonly activityJournal: ActivityJournal;
+  readonly activityRecorder: ActivityRecorder;
 }
 
 // Context-owned lazy instances. Compatibility test hooks reset only the default
@@ -42,6 +46,8 @@ interface ServiceCache {
   extensionRouteService?: ExtensionRouteService;
   sessionOrganization?: SessionOrganizationService;
   focusRuntime?: FocusRuntime;
+  activityJournal?: ActivityJournal;
+  activityRecorder?: ActivityRecorder;
 }
 const serviceCaches = new WeakMap<ServerContext, ServiceCache>();
 /** @internal Compatibility shim lookup; request handlers use context properties. */
@@ -76,6 +82,10 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     focusStore: overrides.focusStore ?? new FocusStore(),
     assistantService: overrides.assistantService ?? new AssistantService(),
     get focusRuntime() { return overrides.focusRuntime ?? (cache.focusRuntime ??= new FocusRuntime(context)); },
+    get activityJournal() { return overrides.activityJournal ?? (cache.activityJournal ??= new ActivityJournal()); },
+    get activityRecorder() {
+      return overrides.activityRecorder ?? (cache.activityRecorder ??= new ActivityRecorder({ journal: context.activityJournal, events, facts: () => context.backend.listSessionFacts() }));
+    },
     get taskGateway() {
       return cache.taskGateway ??= new TaskGateway({ root: overrides.taskRoot ?? process.env.WOLFPACK_TASK_ROOT, inspectSession: selector => context.backend.inspectSession(selector) });
     },
@@ -118,4 +128,6 @@ export const defaultServerContext: ServerContext = {
   get focusStore() { return getDefaultServerContext().focusStore; },
   get assistantService() { return getDefaultServerContext().assistantService; },
   get focusRuntime() { return getDefaultServerContext().focusRuntime; },
+  get activityJournal() { return getDefaultServerContext().activityJournal; },
+  get activityRecorder() { return getDefaultServerContext().activityRecorder; },
 };

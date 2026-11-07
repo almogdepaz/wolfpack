@@ -45,6 +45,7 @@ import { createProjectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, createSessionControlRoutes } from "./session-control-routes.js";
 import { createPushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
 import { createFocusRoutes } from "./focus-routes.js";
+import { createActivityRoutes } from "./activity-routes.js";
 import { createEventRoutes } from "./event-routes.js";
 
 const log = createLogger("routes");
@@ -126,6 +127,7 @@ return {
 
   ...createProjectSettingsRoutes(ctx),
   ...createFocusRoutes(ctx),
+  ...createActivityRoutes(ctx),
 
   "GET /api/backend": async (_req, res) => {
     const router = ctx.supervisor ?? {

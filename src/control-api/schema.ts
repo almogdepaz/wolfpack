@@ -1361,6 +1361,13 @@ export const controlApiSource: ControlApiSource = {
       response: object({ home: string(), installationId: string(), local: boolean(), document: { type: "object" }, revision: integer() }, ["home", "installationId", "local", "document", "revision"]),
       errors: ["400 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
+    "GET /api/activity": {
+      operationId: "readActivity", stable: true, auth: "jwt-when-configured",
+      response: object({ installationId: string(), machine: string(), rows: arrayOf({ type: "object", description: "Validated by src/activity-journal.ts; session/task rows and coarse input presence, never terminal content" }),
+        next: integer(), headSeq: integer(), oldestSeq: { type: ["integer", "null"] }, truncated: boolean(), lastRowAt: { type: ["string", "null"] }, lastInputAt: { type: ["string", "null"] } },
+      ["installationId", "machine", "rows", "next", "headSeq", "oldestSeq", "truncated"]),
+      errors: ["400 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
     "GET /api/sessions": {
       operationId: "listSessions",
       stable: true,

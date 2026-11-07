@@ -874,6 +874,22 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(Array.from(backend.writeCalls[0].data)).toEqual([0x01, 0x02, 0x03]);
   });
 
+  test("binary stdin records one coarse presence row per bucket, never the bytes", async () => {
+    const { defaultServerContext } = await import("../../src/server/context.ts");
+    const session = "presence-only-session";
+    backend.alive.add(session);
+    const ws = new FakeWs();
+    attachWs(ws, session);
+    ws.pushBinary(Buffer.from("secret-keystrokes"));
+    ws.pushBinary(Buffer.from("more"));
+    expect(backend.writeCalls.length).toBe(2);
+    const rows = defaultServerContext.activityJournal.read(0, 1000).rows.filter(r => r.kind === "input" && r.session === session);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ source: "browser" });
+    expect(JSON.stringify(rows)).not.toContain("secret");
+    teardownPty(session);
+  });
+
   test("oversized binary stdin frames are dropped (cap at 16KB)", () => {
     const ws = new FakeWs();
     attachWs(ws);

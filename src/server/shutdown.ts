@@ -50,12 +50,15 @@ export function closeWebSocketsForShutdown(
 
 /**
  * On SIGTERM/SIGINT, close viewers with 1012 and then re-raise the signal
- * with default handling so the exit status is unchanged.
+ * with default handling so the exit status is unchanged. `beforeExit` runs
+ * synchronously first (e.g. flushing buffered journal rows); a separate signal
+ * listener would suppress the default exit of the re-raised signal.
  */
-export function installShutdownSignalHandlers(wss: WebSocketServer): void {
+export function installShutdownSignalHandlers(wss: WebSocketServer, beforeExit?: () => void): void {
   const onSignal = (signal: NodeJS.Signals): void => {
     process.off("SIGTERM", onSignal);
     process.off("SIGINT", onSignal);
+    try { beforeExit?.(); } catch (e: unknown) { log.warn("shutdown: flush failed", { error: errMsg(e) }); }
     log.info("shutting down", { signal, viewers: wss.clients.size });
     void closeWebSocketsForShutdown(wss.clients).finally(() => process.kill(process.pid, signal));
   };

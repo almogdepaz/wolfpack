@@ -26,6 +26,7 @@ import type { SessionAttachLease, SessionBackend, PtyBackendMethods } from "./ba
 import { createRateLimiter } from "./http.js";
 import { registerSubSessionOpenedNotifier } from "./session-notifications.js";
 import { createLogger, errMsg } from "../log.js";
+import { INPUT_SOURCE } from "../activity-journal.js";
 import { decideOutputCoalescing } from "../output-coalescing.js";
 import {
   isTerminalLoadTimingEnabled,
@@ -1394,6 +1395,7 @@ function setupNewPtyEntry(
         return false;
       }
     }
+    if (queuedInput.length) serverContext.activityRecorder.notePresence(session, INPUT_SOURCE.BROWSER);
     return true;
   }
 
@@ -1549,6 +1551,9 @@ function setupNewPtyEntry(
         } else if (!streamingBackend.writeToTerminal(session, raw as Buffer)) {
           log.warn("terminal input write failed", { session });
           ws.close(CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED);
+        } else {
+          // Presence only (one row per session per bucket); the bytes never leave this branch.
+          serverContext.activityRecorder.notePresence(session, INPUT_SOURCE.BROWSER);
         }
       }
     } catch (e: unknown) {

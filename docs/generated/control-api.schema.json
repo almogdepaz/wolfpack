@@ -1742,6 +1742,73 @@
         "503 ErrorEnvelope"
       ]
     },
+    "readActivity": {
+      "route": "GET /api/activity",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "response": {
+        "$id": "wolfpack:control-api:http:readActivity:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readActivity response",
+        "type": "object",
+        "properties": {
+          "installationId": {
+            "type": "string"
+          },
+          "machine": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Validated by src/activity-journal.ts; session/task rows and coarse input presence, never terminal content"
+            }
+          },
+          "next": {
+            "type": "integer"
+          },
+          "headSeq": {
+            "type": "integer"
+          },
+          "oldestSeq": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "lastRowAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastInputAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "installationId",
+          "machine",
+          "rows",
+          "next",
+          "headSeq",
+          "oldestSeq",
+          "truncated"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
     "listSessions": {
       "route": "GET /api/sessions",
       "stable": true,
