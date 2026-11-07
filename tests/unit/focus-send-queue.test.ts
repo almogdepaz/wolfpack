@@ -13,6 +13,9 @@ test("pi semantic status distinguishes resting from input dialogs, rejects stale
   expect(piHarness.isIdle({ state: "idle", authority: "fallback", stale: false })).toBe(false);
   expect(piHarness.isIdle({ state: "idle", authority: "program", stale: true })).toBe(false);
   expect(genericHarness.isIdle({ screen: "› ", quietMs: 5000 })).toBe(true);
+  // A real broker capture is the whole screen: the prompt row is followed by blank rows.
+  expect(genericHarness.isIdle({ screen: "output\n$\n\n\n", quietMs: 5000 })).toBe(true);
+  expect(genericHarness.isIdle({ screen: "Allow? (y/n)\n$ \n\n", quietMs: 5000 })).toBe(false);
   expect(genericHarness.isIdle({ screen: "Allow? (y/n)\n› ", quietMs: 5000 })).toBe(false);
 });
 test("fresh program/manifest non-resting states veto a generic quiet prompt, without changing stale/fallback heuristics", () => {
