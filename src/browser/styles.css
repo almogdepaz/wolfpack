@@ -2942,7 +2942,9 @@ body > header { height: 52px; min-height: 52px; }
 .focus-conversation { margin-top: 14px; }
 .focus-conversation form { flex: 1; }
 .focus-block > p:not([class]) { margin: 14px 0 0; font: 600 15px var(--font-ui); color: var(--text-1); }
-.focus-block > p[role=status], #focus-status:not(:empty) { margin: 10px 0 0; font-size: 12.5px; color: var(--danger); }
+.focus-block > p[role=status] { margin: 10px 0 0; font-size: 12.5px; color: var(--danger); }
+#focus-status { margin: 10px 0 0; font-size: 12.5px; color: var(--text-3); }
+#focus-status:empty { display: none; }
 .focus-block > small { display: block; margin-top: 10px; font-size: 12px; color: var(--text-3); }
 .focus-empty { margin: 8px 0; font-size: 13px; color: var(--text-3); }
 #assistant-view { overflow-y: auto; }
