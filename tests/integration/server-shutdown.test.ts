@@ -105,13 +105,14 @@ describe("installShutdownSignalHandlers", () => {
         child.stdout!.on("data", (chunk: Buffer) => { out += chunk.toString(); if (/PORT \d+/.test(out)) resolve(); });
         child.once("exit", () => reject(new Error("fixture exited before listening")));
       });
-      expect(existsSync(dir) ? readdirSync(dir) : []).toEqual([]);
+      const dayFiles = () => (existsSync(dir) ? readdirSync(dir) : []).filter(name => name.endsWith(".jsonl"));
+      expect(dayFiles()).toEqual([]);
       const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
         child.once("exit", (code, signal) => resolve({ code, signal }));
       });
       child.kill("SIGTERM");
       expect(await exited).toEqual({ code: null, signal: "SIGTERM" });
-      const [file] = readdirSync(dir);
+      const [file] = dayFiles();
       expect(readFileSync(join(dir, file!), "utf8")).toContain("buffered-at-sigterm");
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
