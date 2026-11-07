@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTIVITY_KIND, pageActivity, type ActivityRow, type ActivityRowBody } from "../../src/activity-journal.ts";
 import { ASSISTANT_TIMING_DEFAULTS } from "../../src/focus-scheduler.ts";
-import type { SendOutcome } from "../../src/focus-send-queue.ts";
+import { FocusSendQueue, type SendOutcome } from "../../src/focus-send-queue.ts";
 import { ActivityJournal } from "../../src/server/activity-journal.ts";
 import { FocusRoutines, localActivitySource, peerActivitySource, type ActivitySource } from "../../src/server/focus-routines.ts";
 
@@ -475,5 +475,33 @@ describe("focus routines: peer boundary and review caps (b2/b3/b4)", () => {
     await t.routines.tick();
     const doc = t.inbox(fileOf(t.sends.at(-1)!.text));
     expect(doc.machines.find((m: { installationId: string }) => m.installationId === "laptop").rows.map((r: { taskId: string }) => r.taskId)).toEqual(["n1", "n2", "n3", "n4", "n5"]);
+  });
+});
+
+describe("focus routines: unverified routine sends (u2)", () => {
+  test("a failed routine send keeps the user's queued ask, sets no error and reports delivery unconfirmed", async () => {
+    const t = setup(at(6, 9));
+    await booted(t);
+    let fail = true;
+    const delivered: string[] = [];
+    const queue = new FocusSendQueue(async (_id, text) => { if (fail) throw new Error("send unverified"); delivered.push(text); });
+    const routines = new FocusRoutines({
+      folder: join(t.root, "assistant"), enabled: () => true, sources: async () => [localActivitySource("home", "sgt", t.journal)],
+      timing: async () => ASSISTANT_TIMING_DEFAULTS, assistant: async () => t.assistant, queueBusy: () => false,
+      enqueue: (text, settle) => { queue.enqueue("a", text, settle, "routine"); }, now: () => t.clock.now,
+    });
+    t.append(state("app"), at(6, 9, 1));
+    t.clock.now = at(6, 9, 30);
+    await routines.tick();
+    queue.enqueue("a", "what next?");
+    await queue.tick({ id: "a", idle: true, token: "t1" });
+    await routines.tick();
+    expect(queue.error).toBeUndefined();
+    expect(queue.size).toBe(1);
+    expect(routines.status().catchingUp).toMatchObject({ routine: "catch-up", unconfirmed: true });
+    expect(t.coverage().inbox.sends).toBe(1);
+    fail = false;
+    await queue.tick({ id: "a", idle: true, token: "t1" });
+    expect(delivered).toEqual(["what next?"]);
   });
 });

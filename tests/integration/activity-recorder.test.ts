@@ -110,3 +110,16 @@ test("git log per repository within a time window", async () => {
   expect(missing!.error).toBe("not a readable git repository");
   expect((await readGitLogs([repo], Date.parse("2026-11-07T03:00:00Z"), Date.parse("2026-11-08T03:00:00Z")))[0]!.commits).toEqual([]);
 });
+
+const hasSshKeygen = (() => { try { execFileSync("ssh-keygen", ["-?"], { stdio: "ignore" }); return true; } catch (error) { return (error as { status?: number }).status !== undefined; } })();
+test.skipIf(!hasSshKeygen)("git log ignores a repository's log.showSignature: signature lines never become commits", async () => {
+  const { readGitLog } = await import("../../src/server/activity-recorder.ts");
+  const repo = root();
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", join(repo, ".key")]);
+  const env = { ...process.env, GIT_COMMITTER_DATE: "2026-11-06T10:00:00Z", GIT_AUTHOR_DATE: "2026-11-06T10:00:00Z" };
+  execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "gpg.format=ssh", "-c", `user.signingkey=${join(repo, ".key.pub")}`, "commit", "-q", "-S", "--allow-empty", "-m", "signed"], { env });
+  execFileSync("git", ["-C", repo, "config", "log.showSignature", "true"]);
+  const log = await readGitLog(repo, Date.parse("2026-11-06T03:00:00Z"), Date.parse("2026-11-07T03:00:00Z"));
+  expect(log.commits.map(c => c.subject)).toEqual(["signed"]);
+});

@@ -79,7 +79,8 @@ export interface RoutineDeps {
 export interface RoutineStatus {
   reviewedThrough: string | null;
   lastAckAt: string | null;
-  catchingUp: { machines: number; since: string | null; routine?: string } | null;
+  /** `unconfirmed`: the outstanding inbox's last send could not be verified (it may still have arrived). */
+  catchingUp: { machines: number; since: string | null; routine?: string; unconfirmed?: true } | null;
   stale: { since: string } | null;
   unreachable: { name: string; since: string | null }[];
   surfaced: { file: string; sends: number } | null;
@@ -100,6 +101,7 @@ export class FocusRoutines {
   private restartPending = false;
   private lastSessionId?: string;
   private queuedFile?: string;
+  private unconfirmedFile?: string;
   private reached = new Set<string>();
   private snapshot: FocusCoverage = emptyCoverage();
   private pending = false;
@@ -237,6 +239,8 @@ export class FocusRoutines {
     try {
       this.deps.enqueue(inboxPrompt(file), outcome => {
         if (this.queuedFile === file) this.queuedFile = undefined;
+        if (outcome === "failed") this.unconfirmedFile = file;
+        else if (outcome === "sent" && this.unconfirmedFile === file) this.unconfirmedFile = undefined;
         // A failed send may still have reached the terminal (unverified submission), so it
         // counts toward the re-send cap and the debounce; only a never-attempted (dropped) send is free.
         if (outcome === "dropped") return;
@@ -403,6 +407,12 @@ export class FocusRoutines {
     });
   }
 
+  /** Why `catch up now` is refused right now, if it is: an inbox is in flight and not yet surfaced. */
+  manualRefusal(): string | null {
+    const inbox = this.snapshot.inbox;
+    return inbox && !inbox.surfaced ? `the ${inbox.routine} inbox is not acknowledged yet; catch up now is offered if it stays unacknowledged` : null;
+  }
+
   dayNote(date: string): string | null {
     if (!/^\d{4}-\d\d-\d\d$/.test(date)) throw new Error("date must be YYYY-MM-DD");
     try { return readFileSync(join(this.deps.folder, "days", `${date}.md`), "utf8"); } catch { return null; }
@@ -414,7 +424,8 @@ export class FocusRoutines {
     const inbox = c.inbox;
     // A surfaced inbox waits for `catch up now`; it is not progress, even right after a restart.
     const catchingUp = this.deps.enabled() && !inbox?.surfaced && (this.booting || inbox)
-      ? { machines: Math.max(1, Object.keys(c.catchUpCursors).length), since: c.lastAckAt, ...(inbox && { routine: inbox.routine }) } : null;
+      ? { machines: Math.max(1, Object.keys(c.catchUpCursors).length), since: c.lastAckAt, ...(inbox && { routine: inbox.routine }),
+        ...(inbox && this.unconfirmedFile === inbox.file && { unconfirmed: true as const }) } : null;
     const yesterday = addDays(activityDayOf(this.now(), this.fallbackTime), -1);
     const stale = !catchingUp && this.pending && c.lastAckAt && this.now() - Date.parse(c.lastAckAt) > STALE_AFTER_MS ? { since: c.lastAckAt } : null;
     return {

@@ -41,13 +41,26 @@ test("focus home writes or clears focus.home in the configured config and keeps 
   expect(parseFocusHomeCommand(["home", "abc-123", "--json"])).toEqual({ json: true, home: "abc-123" });
   expect(parseFocusHomeCommand(["home", "--clear"])).toEqual({ json: false, home: null });
   for (const bad of [["home", "a", "b"], ["home", "bad id"], ["home", "--clear", "x"], ["home", "--wat"]]) expect(() => parseFocusHomeCommand(bad)).toThrow();
-  let config: import("../../src/config.ts").Config | null = { devDir: "/dev", port: 18790, pinnedSessions: [] };
-  const io = { load: () => config, save: (next: import("../../src/config.ts").Config) => { config = next; }, installationId: () => "self-id" };
-  expect(await focusHomeCommand({ json: false, home: "home-id" }, io)).toEqual({ home: "home-id", local: false, changed: true });
-  expect(config).toEqual({ devDir: "/dev", port: 18790, pinnedSessions: [], focus: { home: "home-id" } });
-  expect(await focusHomeCommand({ json: false }, io)).toEqual({ home: "home-id", local: false, changed: false });
-  expect(await focusHomeCommand({ json: false, home: null }, io)).toEqual({ home: "self-id", local: true, changed: true });
-  expect(config).toEqual({ devDir: "/dev", port: 18790, pinnedSessions: [] });
-  config = null;
-  await expect(focusHomeCommand({ json: false, home: "x" }, io)).rejects.toThrow("valid wolfpack config required");
+  const { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "focus-home-"));
+  const path = join(dir, "config.json");
+  const io = { path, installationId: () => "self-id" };
+  const config = () => JSON.parse(readFileSync(path, "utf8"));
+  try {
+    // keys this build does not know (a newer release's settings) survive the rewrite
+    writeFileSync(path, JSON.stringify({ devDir: "/dev", port: 18790, pinnedSessions: [], futureKey: { keep: true } }));
+    expect(await focusHomeCommand({ json: false, home: "home-id" }, io)).toEqual({ home: "home-id", local: false, changed: true });
+    expect(config()).toEqual({ devDir: "/dev", port: 18790, pinnedSessions: [], futureKey: { keep: true }, focus: { home: "home-id" } });
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(await focusHomeCommand({ json: false }, io)).toEqual({ home: "home-id", local: false, changed: false });
+    expect(await focusHomeCommand({ json: false, home: null }, io)).toEqual({ home: "self-id", local: true, changed: true });
+    expect(config()).toEqual({ devDir: "/dev", port: 18790, pinnedSessions: [], futureKey: { keep: true } });
+    writeFileSync(path, "{not json");
+    await expect(focusHomeCommand({ json: false, home: "x" }, io)).rejects.toThrow("valid wolfpack config required");
+    expect(readFileSync(path, "utf8")).toBe("{not json");
+    rmSync(path);
+    await expect(focusHomeCommand({ json: false, home: "x" }, io)).rejects.toThrow("valid wolfpack config required");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

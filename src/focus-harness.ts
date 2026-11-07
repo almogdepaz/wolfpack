@@ -8,7 +8,7 @@ export const genericHarness: FocusHarness = {
   needsScreen: () => true,
   needsInput: s => s.state === AGENT_STATUS_STATE.NEEDS_INPUT || question(s.screen),
   isIdle: s => !(semantic(s) && s.state !== AGENT_STATUS_STATE.IDLE && s.state !== AGENT_STATUS_STATE.DONE)
-    && (s.quietMs ?? 0) >= 5000 && !genericHarness.needsInput(s) && /(?:^|\n)[›>❯$#]\s*$/.test(s.screen ?? ""),
+    && (s.quietMs ?? 0) >= 5000 && !genericHarness.needsInput(s) && /(?:^|\n)[›❯$]\s*$/.test(s.screen ?? ""),
 };
 export const piHarness: FocusHarness = {
   needsScreen: s => !semantic(s),

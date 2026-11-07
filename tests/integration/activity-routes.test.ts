@@ -40,6 +40,19 @@ test("GET /api/activity pages rows behind normal owner auth, like /api/sessions"
     expect(second.rows.map((r: { seq: number }) => r.seq)).toEqual([3, 4]);
     const probe = await (await fetch(`${base}/api/activity?since=4&limit=0`, { headers })).json();
     expect(probe).toMatchObject({ rows: [], next: 4, headSeq: 4 });
+    // git summary: owner auth, from/to required and ordered, only cwds of sessions active in the window
+    journal.append({ kind: ACTIVITY_KIND.SESSION_CREATED, session: "app", sessionId: "app-id", cwd: root });
+    const now = Date.now();
+    const range = (from: number, to: number) => `from=${new Date(from).toISOString()}&to=${new Date(to).toISOString()}`;
+    expect((await fetch(`${base}/api/activity/git?${range(now - 60_000, now + 60_000)}`)).status).toBe(401);
+    for (const query of ["", `from=${new Date(now).toISOString()}`, range(now, now), range(now, now - 1), `${range(now - 1, now)}&x=1`, "from=yesterday&to=today"]) {
+      const response = await fetch(`${base}/api/activity/git?${query}`, { headers });
+      expect(response.status).toBe(400);
+    }
+    const git = await fetch(`${base}/api/activity/git?${range(now - 60_000, now + 60_000)}`, { headers });
+    expect(git.headers.get("cache-control")).toBe("no-store");
+    expect(await git.json()).toEqual({ repos: [{ cwd: root, commits: [], error: "not a readable git repository" }] });
+    expect(await (await fetch(`${base}/api/activity/git?${range(now - 7_200_000, now - 3_600_000)}`, { headers })).json()).toEqual({ repos: [] });
     const bad = await fetch(`${base}/api/activity?limit=5000`, { headers });
     expect(bad.status).toBe(400);
     expect(bad.headers.get("cache-control")).toBe("no-store");

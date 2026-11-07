@@ -72,7 +72,7 @@ test("peer clients use normal owner auth for focus reads and CAS writes; non-hom
     const remoteCtx = createServerContext({ backend: new MockBackend(), config: { devDir: root, port: 19791, focus: { home: "other-install" } }, focusStore: ctx.focusStore });
     const { createFocusRoutes } = await import("../../src/server/focus-routes.ts");
     const remoteRoutes = createFocusRoutes(remoteCtx);
-    const remote = createServer((req, res) => { void remoteRoutes[`${req.method} /api/focus` as "GET /api/focus"]!(req, res); });
+    const remote = createServer((req, res) => { void (remoteRoutes as Record<string, (q: typeof req, r: typeof res) => unknown>)[`${req.method} ${new URL(req.url!, "http://localhost").pathname}`]!(req, res); });
     await new Promise<void>(resolve => remote.listen(0, "127.0.0.1", resolve));
     try {
       const remoteBase = `http://127.0.0.1:${(remote.address() as AddressInfo).port}`;
@@ -80,6 +80,10 @@ test("peer clients use normal owner auth for focus reads and CAS writes; non-hom
       expect(read.local).toBe(false);
       expect(read.document).toBeNull();
       expect((await fetch(`${remoteBase}/api/focus`, { method: "POST", body })).status).toBe(409);
+      // routine state lives on the home machine only
+      expect((await fetch(`${remoteBase}/api/focus/day-note?date=2026-11-05`)).status).toBe(409);
+      expect((await fetch(`${remoteBase}/api/activity/ack`, { method: "POST", body: JSON.stringify({ file: "catch-up-20261106T100000Z.json" }) })).status).toBe(409);
+      expect((await fetch(`${remoteBase}/api/focus/catch-up`, { method: "POST" })).status).toBe(409);
     } finally { await new Promise<void>(resolve => { remote.close(() => resolve()); remote.closeAllConnections(); }); }
   } finally {
     wss.close();
@@ -127,6 +131,22 @@ test("routine routes on the focus home: catch-up, status in /api/focus, day note
     expect((await post("/api/activity/ack", { file: "../routines.json" })).status).toBe(400);
     expect((await post("/api/activity/ack", { nope: 1 })).status).toBe(400);
     expect((await post("/api/activity/ack", { file: "catch-up-20261106T100000Z.json" })).status).toBe(404);
+    // catch up now is refused while an inbox is outstanding and not yet surfaced, allowed once surfaced
+    const routinesPath = join(root, "assistant", "routines.json");
+    const coverage = JSON.parse(readFileSync(routinesPath, "utf8"));
+    const file = "catch-up-20261106T100000Z.json";
+    mkdirSync(join(root, "assistant", "inbox"), { recursive: true });
+    writeFileSync(join(root, "assistant", "inbox", file), "{}");
+    writeFileSync(routinesPath, JSON.stringify({ ...coverage, inbox: { file, routine: "catch-up", createdAt: new Date().toISOString(), sends: 1, lastSentAt: new Date().toISOString(), surfaced: false, through: {} } }));
+    await fetch(`${base}/api/focus?open=1`);
+    await ctx.focusRuntime.routines.tick();
+    const refused = await post("/api/focus/catch-up");
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toContain("not acknowledged yet");
+    writeFileSync(routinesPath, JSON.stringify({ ...JSON.parse(readFileSync(routinesPath, "utf8")), inbox: { ...JSON.parse(readFileSync(routinesPath, "utf8")).inbox, surfaced: true } }));
+    await ctx.focusRuntime.routines.tick();
+    expect((await post("/api/focus/catch-up")).status).toBe(200);
+    expect(JSON.parse(readFileSync(routinesPath, "utf8")).inbox).toBeNull();
   } finally {
     ctx.focusRuntime.stop();
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });

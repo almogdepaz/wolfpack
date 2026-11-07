@@ -102,7 +102,8 @@ const elapsed = (now: number, at: string | null | undefined, minutes: number) =>
 export function decideRoutines(input: SchedulerInput): RoutineAction[] {
   const { now, timing, inbox } = input;
   if (!input.enabled) return [];
-  if (input.manual) return [...(inbox ? [{ type: "drop-inbox" as const, file: inbox.file }] : []), { type: ROUTINE.CATCH_UP, reason: "manual" }];
+  // `catch up now` replaces only a surfaced inbox; one still in flight is left to its ack.
+  if (input.manual) return inbox && !inbox.surfaced ? [] : [...(inbox ? [{ type: "drop-inbox" as const, file: inbox.file }] : []), { type: ROUTINE.CATCH_UP, reason: "manual" }];
   if (!input.idle) return [];
   if (inbox) {
     if (inbox.queued || inbox.surfaced) return [];

@@ -129,5 +129,7 @@ describe("routine decisions", () => {
     expect(decideRoutines(input({ manual: true, machines: pending(), lastRun: { "catch-up": iso(at(6, 14, 59)) }, inbox: { file: "catch-up-x.json", routine: "catch-up", sends: 4, lastSentAt: null, queued: false, surfaced: true } })))
       .toEqual([{ type: "drop-inbox", file: "catch-up-x.json" }, { type: "catch-up", reason: "manual" }]);
     expect(decideRoutines(input({ manual: true, idle: false }))).toEqual([{ type: "catch-up", reason: "manual" }]);
+    // an inbox still in flight (not surfaced) is never dropped by catch up now
+    expect(decideRoutines(input({ manual: true, machines: pending(), inbox: { file: "catch-up-x.json", routine: "catch-up", sends: 1, lastSentAt: null, queued: false, surfaced: false } }))).toEqual([]);
   });
 });

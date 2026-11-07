@@ -37,7 +37,7 @@ export class FocusRuntime {
       queueBusy: () => this.queue.busy,
       enqueue: (text, settled) => {
         if (!this.sampledSessionId) throw new Error("assistant is not running");
-        this.queue.enqueue(this.sampledSessionId, text, settled);
+        this.queue.enqueue(this.sampledSessionId, text, settled, "routine");
         void this.tick().catch(error => log.warn("assistant queue unavailable", { error: errMsg(error) }));
       },
     });

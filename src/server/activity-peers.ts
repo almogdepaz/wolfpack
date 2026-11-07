@@ -3,6 +3,9 @@ import { issueJwt } from "../jwt-issue.js";
 import { classifyMachineHandshake } from "../tailnet-machine-contract.js";
 import { readPeerResponse, withPeerAbort } from "../task-relay/peer-response.js";
 import { readRelayPeerTopology } from "./tailscale-status.js";
+import { createLogger, errMsg } from "../log.js";
+
+const log = createLogger("server");
 
 export const PEER_TIMEOUT_MS = 4000;
 const HANDSHAKE_TTL_MS = 10 * 60_000;
@@ -13,8 +16,8 @@ export interface ActivityPeer { origin: string; installationId: string; name: st
  * maps a canonical tailnet origin to a local URL so private servers can act as peers.
  * Identity is still verified against the canonical origin by the handshake.
  */
-function transportUrl(origin: string): string {
-  const raw = process.env.WOLFPACK_TEST ? process.env.WOLFPACK_FOCUS_PEER_URLS_JSON : undefined;
+export function activityPeerTransportUrl(origin: string, env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const raw = env.WOLFPACK_TEST ? env.WOLFPACK_FOCUS_PEER_URLS_JSON : undefined;
   if (!raw) return origin;
   try { const map = JSON.parse(raw) as Record<string, unknown>; return typeof map[origin] === "string" ? map[origin] as string : origin; } catch { return origin; }
 }
@@ -28,7 +31,7 @@ async function peerGet<T>(origin: string, path: string, maxBytes: number): Promi
       const headers = new Headers();
       const jwt = issueJwt();
       if (jwt) headers.set("authorization", `Bearer ${jwt}`);
-      const response = await fetch(transportUrl(origin) + path, { headers, redirect: "error", cache: "no-store", signal: controller.signal });
+      const response = await fetch(activityPeerTransportUrl(origin) + path, { headers, redirect: "error", cache: "no-store", signal: controller.signal });
       const text = await readPeerResponse(response, controller.signal, maxBytes);
       if (!response.ok) {
         let message = `HTTP ${response.status}`;
@@ -40,13 +43,20 @@ async function peerGet<T>(origin: string, path: string, maxBytes: number): Promi
   } finally { clearTimeout(timer); controller.abort(); }
 }
 
+/** Last topology failure, so a persistent one warns once per change, not every tick. */
+let topologyError: string | undefined;
 const handshakes = new Map<string, { nodeId: string; installationId: string; name: string; expiresAt: number }>();
 /** Online verified tailnet peers. A missing tailnet is a single-machine setup, not an error. */
 export async function discoverActivityPeers(now = Date.now()): Promise<{ peers: ActivityPeer[]; failures: { origin: string; error: string }[] }> {
   const config = loadConfig();
   let topology;
-  try { topology = await readRelayPeerTopology(config ? remoteUrl(config) ?? undefined : undefined); }
-  catch { return { peers: [], failures: [] }; }
+  try { topology = await readRelayPeerTopology(config ? remoteUrl(config) ?? undefined : undefined); topologyError = undefined; }
+  catch (error) {
+    const message = errMsg(error);
+    if (message !== topologyError) log.warn("activity peers unavailable: tailnet topology unreadable; using this machine only", { error: message });
+    topologyError = message;
+    return { peers: [], failures: [] };
+  }
   const peers: ActivityPeer[] = [];
   const failures: { origin: string; error: string }[] = [];
   await Promise.all([...topology.peers].map(async ([origin, nodeId]) => {

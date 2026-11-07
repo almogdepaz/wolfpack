@@ -62,6 +62,8 @@ export function createFocusRoutes(ctx: ServerContext) {
     "POST /api/focus/catch-up": async (_req: IncomingMessage, res: ServerResponse) => {
       if (!identity().local) return json(res, { error: "catch-up runs on the focus home machine" }, 409);
       if (!ctx.assistantService.enabled) return json(res, { error: "assistant is off" }, 409);
+      const refusal = ctx.focusRuntime.routines.manualRefusal();
+      if (refusal) return json(res, { error: refusal }, 409);
       await ctx.focusRuntime.routines.tick({ manual: true });
       json(res, ctx.focusRuntime.routines.status());
     },

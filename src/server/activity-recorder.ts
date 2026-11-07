@@ -124,7 +124,7 @@ const GIT_LOG_MAX_COMMITS = 50;
 const GIT_LOG_MAX_REPOS = 20;
 /** Commits on any ref in [from, to) for one repository; `error` when it is not a readable repository. */
 export function readGitLog(cwd: string, from: number, to: number): Promise<{ commits: GitCommit[]; error?: string }> {
-  const args = ["-C", cwd, "log", "--all", "--no-merges", `--since=${new Date(from).toISOString()}`, `--until=${new Date(to).toISOString()}`, "--format=%h%x09%cI%x09%s", "-n", String(GIT_LOG_MAX_COMMITS)];
+  const args = ["-C", cwd, "log", "--all", "--no-merges", "--no-show-signature", `--since=${new Date(from).toISOString()}`, `--until=${new Date(to).toISOString()}`, "--format=%h%x09%cI%x09%s", "-n", String(GIT_LOG_MAX_COMMITS)];
   return new Promise(resolve => {
     execFile("git", args, { timeout: GIT_TIMEOUT_MS, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }, (error, stdout) => {
       if (error) return resolve({ commits: [], error: "not a readable git repository" });

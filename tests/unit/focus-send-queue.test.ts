@@ -17,6 +17,10 @@ test("pi semantic status distinguishes resting from input dialogs, rejects stale
   expect(genericHarness.isIdle({ screen: "output\n$\n\n\n", quietMs: 5000 })).toBe(true);
   expect(genericHarness.isIdle({ screen: "Allow? (y/n)\n$ \n\n", quietMs: 5000 })).toBe(false);
   expect(genericHarness.isIdle({ screen: "Allow? (y/n)\n› ", quietMs: 5000 })).toBe(false);
+  // mid-turn markdown that pauses with a lone blockquote or heading marker is not a prompt
+  expect(genericHarness.isIdle({ screen: "Here is the plan:\n\n>\n\n\n", quietMs: 6000 })).toBe(false);
+  expect(genericHarness.isIdle({ screen: "Done with step one.\n\n#\n\n\n", quietMs: 6000 })).toBe(false);
+  expect(genericHarness.isIdle({ screen: "output\n❯ \n\n", quietMs: 5000 })).toBe(true);
 });
 test("fresh program/manifest non-resting states veto a generic quiet prompt, without changing stale/fallback heuristics", () => {
   for (const authority of [AGENT_STATUS_AUTHORITY.PROGRAM, AGENT_STATUS_AUTHORITY.MANIFEST]) {
@@ -88,4 +92,21 @@ test("per-item outcomes: sent, failed, or dropped by a clear/restart; busy until
   queue.enqueue("b", "five", o => outcomes.push(`five:${o}`));
   queue.clear("disabled");
   expect(outcomes.slice(-2)).toEqual(["four:sent", "five:dropped"]);
+});
+
+test("a routine send that cannot be verified settles failed without costing the user's queued asks or setting an error", async () => {
+  const outcomes: string[] = [];
+  const sent: string[] = [];
+  let fail = true;
+  const queue = new FocusSendQueue(async (_id, text) => { if (fail) throw new Error("send unverified"); sent.push(text); });
+  queue.enqueue("a", "process inbox inbox/catch-up-20261106T100000Z.json", o => outcomes.push(`routine:${o}`), "routine");
+  queue.enqueue("a", "what next?", o => outcomes.push(`ask:${o}`));
+  await queue.tick({ id: "a", idle: true, token: "t1" });
+  expect(outcomes).toEqual(["routine:failed"]);
+  expect(queue.error).toBeUndefined();
+  expect(queue.size).toBe(1);
+  fail = false;
+  await queue.tick({ id: "a", idle: true, token: "t1" });
+  expect(sent).toEqual(["what next?"]);
+  expect(outcomes).toEqual(["routine:failed", "ask:sent"]);
 });
