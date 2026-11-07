@@ -86,7 +86,8 @@ export function reduceFocus(current: FocusDocument, ops: unknown, now: string): 
         if (index < 0) throw new Error(`intention not found: ${op.id}`);
         if (op.type === "drop") doc.intentions.splice(index, 1);
         else if (op.type === "edit") Object.assign(doc.intentions[index]!, op.patch);
-        else if (op.type === "done") Object.assign(doc.intentions[index]!, { done: true, doneAt: now });
+        // a repeated done (the assistant re-running `wolfpack focus done`) keeps the first tick's time
+        else if (op.type === "done") { const i = doc.intentions[index]!; Object.assign(i, { done: true, doneAt: i.done && i.doneAt ? i.doneAt : now }); }
         else { doc.intentions[index]!.done = false; delete doc.intentions[index]!.doneAt; }
         break;
       }

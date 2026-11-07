@@ -20,6 +20,14 @@ describe("focus document", () => {
     expect(reduceFocus(two, [{ type: "undo", id: "ship" }, { type: "drop", id: "other" }], now).intentions).toEqual([{ ...one.intentions[0], title: "ship now", done: false }]);
     expect(isFocusDocument(two)).toBe(true);
   });
+  test("a repeated done keeps the first tick's time; a legacy done row without one gets stamped", () => {
+    const later = "2026-11-06T15:30:00.000Z";
+    const ticked = reduceFocus(reduceFocus(emptyFocus(), [add], now), [{ type: "done", id: "ship" }], now);
+    expect(reduceFocus(ticked, [{ type: "done", id: "ship" }], later).intentions[0]?.doneAt).toBe(now);
+    const legacy = { ...ticked, intentions: [{ ...ticked.intentions[0]!, doneAt: undefined }] };
+    delete legacy.intentions[0]!.doneAt;
+    expect(reduceFocus(legacy, [{ type: "done", id: "ship" }], later).intentions[0]?.doneAt).toBe(later);
+  });
   test("bounded assistant data and shared day-note acknowledgement", () => {
     const doc = reduceFocus(emptyFocus(), [{ type: "nudge", text: "ship first", author: "assistant" }, { type: "note", text: "durable memory" }, { type: "day-summary", summary: { date: "2026-11-05", done: 4, carried: 2, questions: 1 } }, { type: "seen-day-note", at: now }], now);
     expect(doc.nudge).toEqual({ text: "ship first", author: "assistant", updatedAt: now });
