@@ -85,6 +85,8 @@ export interface SchedulerInput {
   manual: boolean;
   machines: readonly SchedulerMachine[];
   reviewedThrough: string | null;
+  /** Day of a provisional quiet review already run: no further quiet review that day. */
+  provisional?: string | null;
   lastRun: Partial<Record<Routine, string>>;
   inbox: SchedulerInbox | null;
 }
@@ -117,10 +119,10 @@ export function decideRoutines(input: SchedulerInput): RoutineAction[] {
     const routine = !input.booting && input.reviewedThrough === addDays(yesterday, -1);
     return [routine ? { type: ROUTINE.DAY_REVIEW, days, reason: "fallback" } : { type: ROUTINE.GAP_REVIEW, days }];
   }
-  // Today's review: someone typed today, and every machine with rows today has been quiet for the threshold.
+  // Today's (provisional) review: someone typed today, and every machine with rows today has been quiet for the threshold.
   const window = activityDayWindow(today, timing.fallbackTime);
   const todays = input.machines.filter(m => ms(m.lastRowAt) >= window.start);
-  if (input.reviewedThrough < today && todays.some(m => ms(m.lastInputAt) >= window.start)
+  if (input.reviewedThrough < today && input.provisional !== today && todays.some(m => ms(m.lastInputAt) >= window.start)
     && todays.every(m => elapsed(now, m.lastInputAt, timing.quietMinutes))) {
     return [{ type: ROUTINE.DAY_REVIEW, days: [today], reason: "quiet" }];
   }

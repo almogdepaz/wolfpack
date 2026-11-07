@@ -5,7 +5,9 @@ import {
   expiredActivityFiles,
   isActivityRow,
   pageActivity,
+  parseActivityGit,
   parseActivityLines,
+  parseActivityPage,
   parseActivityQuery,
   presenceBucket,
   serializeActivityRow,
@@ -98,5 +100,30 @@ describe("activity windows", () => {
       { seq: 6, at: "2026-11-07T12:00:00.000Z", kind: ACTIVITY_KIND.SESSION_CREATED, session: "later", sessionId: "id-later", cwd: "/dev/later" },
     ];
     expect(activeCwds(rows, Date.parse("2026-11-06T00:00:00.000Z"), Date.parse("2026-11-07T00:00:00.000Z"))).toEqual(["/dev/app", "/dev/old"]);
+  });
+});
+
+describe("peer payload validation", () => {
+  const page = { rows: [row(1), row(2)], next: 2, headSeq: 2, oldestSeq: 1, truncated: false, lastRowAt: "2026-11-06T10:00:00.000Z", lastInputAt: null, journalId: "j-1" };
+  test("a valid page passes and invalid rows are dropped", () => {
+    expect(parseActivityPage(page)).toEqual(page);
+    const mixed = parseActivityPage({ ...page, rows: [row(1), { seq: 2, at: "x", kind: "task.updated" }, row(3)] });
+    expect(mixed?.rows.map(r => r.seq)).toEqual([1, 3]);
+    const { journalId: _, ...older } = page;
+    expect(parseActivityPage(older)).toEqual(older);
+  });
+  test("a page with a bad cursor, timestamp or shape is rejected whole", () => {
+    for (const bad of [
+      { ...page, lastRowAt: "not-a-date" }, { ...page, lastInputAt: 5 }, { ...page, next: 1.5 }, { ...page, headSeq: "2" },
+      { ...page, oldestSeq: -1 }, { ...page, truncated: "no" }, { ...page, rows: {} }, { ...page, journalId: 7 }, null, [],
+    ]) expect(parseActivityPage(bad)).toBeNull();
+    expect(parseActivityPage({ ...page, oldestSeq: null })?.oldestSeq).toBeNull();
+  });
+  test("git payloads need repos with commits", () => {
+    const repo = { cwd: "/w", commits: [{ sha: "abc", at: "2026-11-06T10:00:00+02:00", subject: "x" }] };
+    expect(parseActivityGit({ repos: [repo, { cwd: "/n", commits: [], error: "not a readable git repository" }] })?.repos).toHaveLength(2);
+    expect(parseActivityGit({ repos: [{ cwd: "/w" }] })).toBeNull();
+    expect(parseActivityGit({ repos: [{ ...repo, commits: [{ sha: 1 }] }] })).toBeNull();
+    expect(parseActivityGit({})).toBeNull();
   });
 });

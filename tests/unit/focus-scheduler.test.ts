@@ -104,6 +104,9 @@ describe("routine decisions", () => {
     expect(decideRoutines(input({ ...base, now: at(6, 20, 29) }))).toEqual([]);
     expect(decideRoutines(input({ ...base, now: at(6, 20, 30) }))).toEqual([{ type: "day-review", days: ["2026-11-06"], reason: "quiet" }]);
     expect(decideRoutines(input({ ...base, now: at(7, 0, 30), reviewedThrough: "2026-11-06" }))).toEqual([]);
+    // a provisional review of today already ran: no second quiet review that day, even after more quiet
+    expect(decideRoutines(input({ ...base, now: at(6, 23), provisional: "2026-11-06" }))).toEqual([]);
+    expect(decideRoutines(input({ ...base, now: at(6, 23), provisional: "2026-11-05" }))).toEqual([{ type: "day-review", days: ["2026-11-06"], reason: "quiet" }]);
     // work that ends at 23:00 still reviews its own day at 00:30
     const late = [{ id: "home", reachable: true, pendingRows: false, lastRowAt: iso(at(6, 23)), lastInputAt: iso(at(6, 23)) }];
     expect(decideRoutines(input({ now: at(7, 0, 30), machines: late }))).toEqual([{ type: "day-review", days: ["2026-11-06"], reason: "quiet" }]);

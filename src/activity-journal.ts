@@ -104,6 +104,27 @@ export function pageActivity(rows: readonly ActivityRow[], since: number, limit:
   return { rows: page, next: page.at(-1)?.seq ?? since, headSeq: rows.at(-1)?.seq ?? 0, oldestSeq, truncated: oldestSeq !== null && since < oldestSeq - 1 };
 }
 
+/** A peer's `GET /api/activity` body as the home server consumes it; `journalId` is absent on older peers. */
+export interface ActivityPeerPage extends ActivityPage { lastRowAt: string | null; lastInputAt: string | null; journalId?: string }
+const seqOrNull = (v: unknown) => v === null || (Number.isSafeInteger(v) && (v as number) >= 0);
+const isoOrNull = (v: unknown) => v === null || iso(v);
+/** Validates a peer page at the trust boundary; invalid rows are dropped, anything else invalid rejects the page. */
+export function parseActivityPage(v: unknown): ActivityPeerPage | null {
+  if (!object(v) || !Array.isArray(v.rows) || typeof v.truncated !== "boolean") return null;
+  if (!Number.isSafeInteger(v.next) || (v.next as number) < 0 || !Number.isSafeInteger(v.headSeq) || (v.headSeq as number) < 0 || !seqOrNull(v.oldestSeq)) return null;
+  if (!isoOrNull(v.lastRowAt) || !isoOrNull(v.lastInputAt) || (v.journalId !== undefined && !str(v.journalId, 128))) return null;
+  return { rows: v.rows.filter(isActivityRow), next: v.next as number, headSeq: v.headSeq as number, oldestSeq: v.oldestSeq as number | null, truncated: v.truncated,
+    lastRowAt: v.lastRowAt as string | null, lastInputAt: v.lastInputAt as string | null, ...(v.journalId !== undefined && { journalId: v.journalId as string }) };
+}
+export interface ActivityGitRepo { cwd: string; commits: { sha: string; at: string; subject: string }[]; error?: string }
+const isCommit = (v: unknown) => object(v) && str(v.sha, 64) && typeof v.at === "string" && v.at.length <= 64 && typeof v.subject === "string" && v.subject.length <= 4096;
+/** Validates a peer's `GET /api/activity/git` body. */
+export function parseActivityGit(v: unknown): { repos: ActivityGitRepo[] } | null {
+  if (!object(v) || !Array.isArray(v.repos)) return null;
+  const ok = v.repos.every(r => object(r) && str(r.cwd) && Array.isArray(r.commits) && r.commits.every(isCommit) && opt(r.error));
+  return ok ? { repos: v.repos as ActivityGitRepo[] } : null;
+}
+
 export type ParsedActivityQuery = { ok: true; since: number; limit: number; from?: number; to?: number } | { ok: false; error: string };
 /** `since`/`limit` page by cursor; optional `from`/`to` (ISO) bound rows by time, e.g. one activity day. */
 export function parseActivityQuery(params: URLSearchParams): ParsedActivityQuery {

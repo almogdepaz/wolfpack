@@ -24,6 +24,11 @@ describe("coverage document", () => {
   test("validates and rejects malformed coverage", () => {
     expect(isFocusCoverage(emptyCoverage())).toBe(true);
     expect(isFocusCoverage(coverage({ reviewedThrough: "2026-11-05", lastRun: { "catch-up": now }, inbox: { file: inboxFileName("catch-up", Date.parse(now)), routine: "catch-up", createdAt: now, sends: 1, lastSentAt: now, surfaced: false, through: { home: 9 } } }))).toBe(true);
+    // phase-2 files on disk have no provisional marker and no journal ids
+    const { provisional: _, ...phase2 } = emptyCoverage();
+    expect(isFocusCoverage({ ...phase2, catchUpCursors: { home: { name: "sgt", seq: 1, headSeq: 2, lastReachedAt: null, lastRowAt: null, lastInputAt: null } } })).toBe(true);
+    expect(isFocusCoverage({ ...emptyCoverage(), provisional: { date: "2026-11-06", at: now, through: { home: 3 } } })).toBe(true);
+    expect(isFocusCoverage({ ...emptyCoverage(), provisional: { date: "2026-11-06", at: "noon", through: {} } })).toBe(false);
     expect(isFocusCoverage({ ...emptyCoverage(), version: 2 })).toBe(false);
     expect(isFocusCoverage({ ...emptyCoverage(), reviewedThrough: "yesterday" })).toBe(false);
     expect(isFocusCoverage({ ...emptyCoverage(), catchUpCursors: { home: { name: "sgt", seq: -1 } } })).toBe(false);

@@ -6,7 +6,7 @@ import { ACTIVITY_KIND, pageActivity, type ActivityRow, type ActivityRowBody } f
 import { ASSISTANT_TIMING_DEFAULTS } from "../../src/focus-scheduler.ts";
 import type { SendOutcome } from "../../src/focus-send-queue.ts";
 import { ActivityJournal } from "../../src/server/activity-journal.ts";
-import { FocusRoutines, localActivitySource, type ActivitySource } from "../../src/server/focus-routines.ts";
+import { FocusRoutines, localActivitySource, peerActivitySource, type ActivitySource } from "../../src/server/focus-routines.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -17,13 +17,19 @@ class FakePeer implements ActivitySource {
   local = false;
   rows: ActivityRow[] = [];
   down = false;
+  journalId?: string;
+  /** Overrides merged into the next page only (a misbehaving peer). */
+  once?: Record<string, unknown>;
   constructor(public id: string, public name: string, private clock: () => number) {}
   add(body: ActivityRowBody, when = this.clock()) { this.rows.push({ ...body, seq: (this.rows.at(-1)?.seq ?? 0) + 1, at: new Date(when).toISOString() } as ActivityRow); }
   async read(since: number, limit: number, window?: { from: number; to: number }) {
     if (this.down) throw new Error("peer unreachable");
     const rows = window ? this.rows.filter(r => Date.parse(r.at) >= window.from && Date.parse(r.at) < window.to) : this.rows;
     const input = this.rows.filter(r => r.kind === ACTIVITY_KIND.INPUT).at(-1);
-    return { ...pageActivity(rows, since, limit, this.rows[0]?.seq ?? null), headSeq: this.rows.at(-1)?.seq ?? 0, lastRowAt: this.rows.at(-1)?.at ?? null, lastInputAt: input?.at ?? null };
+    const once = this.once;
+    this.once = undefined;
+    return { ...pageActivity(rows, since, limit, this.rows[0]?.seq ?? null), headSeq: this.rows.at(-1)?.seq ?? 0, lastRowAt: this.rows.at(-1)?.at ?? null, lastInputAt: input?.at ?? null,
+      ...(this.journalId && { journalId: this.journalId }), ...once };
   }
   async git() { if (this.down) throw new Error("peer unreachable"); return { repos: [{ cwd: "/peer/repo", commits: [{ sha: "abc1234", at: "2026-11-05T10:00:00Z", subject: "peer commit" }] }] }; }
 }
@@ -246,5 +252,228 @@ describe("focus routines runtime", () => {
     t.clock.now = at(6, 15, 30);
     await t.routines.tick();
     expect(t.inbox(fileOf(t.sends[1]!.text)).machines.find((m: { installationId: string }) => m.installationId === "laptop").rows.map((r: { taskId: string }) => r.taskId)).toEqual(["new"]);
+  });
+});
+
+const task = (id: string): ActivityRowBody => ({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: id, eventType: "task.completed" });
+const inputAt = (session: string, when: number): ActivityRowBody => ({ kind: ACTIVITY_KIND.INPUT, session, source: "browser", bucket: new Date(when).toISOString() });
+const noteOf = (t: ReturnType<typeof setup>, date: string) => readFileSync(join(t.root, "assistant", "days", `${date}.md`), "utf8");
+/** Boot at 09:00 with no history: the gap check closes yesterday and nothing is outstanding. */
+async function booted(t: ReturnType<typeof setup>) {
+  await t.routines.tick();
+  expect(t.coverage()).toMatchObject({ reviewedThrough: "2026-11-05", inbox: null });
+}
+async function ackLast(t: ReturnType<typeof setup>) {
+  const file = fileOf(t.sends.at(-1)!.text);
+  t.sends.at(-1)!.settle("sent");
+  await t.routines.ack(file);
+  return file;
+}
+
+describe("focus routines: current-day review is provisional (b1/u1)", () => {
+  test("assistant-only input never triggers or closes the day (P7)", async () => {
+    const t = setup(at(6, 9));
+    await booted(t);
+    t.append(inputAt("assistant", at(6, 9)), at(6, 9));
+    t.append(state("app"), at(6, 9, 1));
+    t.clock.now = at(6, 10, 31);
+    await t.routines.tick();
+    await t.routines.tick();
+    expect(t.sends.map(s => fileOf(s.text)).filter(f => f.startsWith("day-review"))).toEqual([]);
+    expect(t.coverage().reviewedThrough).toBe("2026-11-05");
+    expect(t.coverage().catchUpCursors.home.lastInputAt).toBeNull();
+  });
+
+  test("an unreachable peer that was the only typing machine does not close today; its day is reviewed at the turn", async () => {
+    const t = setup(at(6, 9));
+    await booted(t);
+    t.peer.add(inputAt("web", at(6, 10)), at(6, 10));
+    t.clock.now = at(6, 10, 5);
+    await t.routines.tick();
+    await ackLast(t);
+    t.peer.down = true;
+    t.clock.now = at(6, 11, 31);
+    await t.routines.tick();
+    expect(t.coverage().reviewedThrough).toBe("2026-11-05");
+    expect(t.coverage().provisional).toMatchObject({ date: "2026-11-06" });
+    const quiet = t.sends.length;
+    t.clock.now = at(6, 13);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(quiet);
+    t.peer.down = false;
+    t.clock.now = at(7, 3, 1);
+    await t.routines.tick();
+    const file = fileOf(t.sends.at(-1)!.text);
+    expect(file).toStartWith("day-review-");
+    expect(t.inbox(file).days.map((d: { date: string }) => d.date)).toEqual(["2026-11-06"]);
+    expect(noteOf(t, "2026-11-06")).toContain("web");
+    await ackLast(t);
+    expect(t.coverage()).toMatchObject({ reviewedThrough: "2026-11-06", provisional: null });
+  });
+
+  test("midday quiet review, afternoon input: the day turn appends a later section to the note", async () => {
+    const t = setup(at(6, 9));
+    await booted(t);
+    t.append({ kind: ACTIVITY_KIND.SESSION_CREATED, session: "app", sessionId: "app-id", cwd: "/dev/app", harness: "pi" }, at(6, 9));
+    t.append(inputAt("app", at(6, 9)), at(6, 9));
+    t.clock.now = at(6, 10, 31);
+    await t.routines.tick();
+    const first = fileOf(t.sends.at(-1)!.text);
+    expect(first).toStartWith("day-review-");
+    const doc = t.inbox(first);
+    expect(doc.days.map((d: { date: string }) => d.date)).toEqual(["2026-11-06"]);
+    await ackLast(t);
+    expect(t.coverage().reviewedThrough).toBe("2026-11-05");
+    const morning = noteOf(t, "2026-11-06") + "the assistant's morning write-up\n";
+    await Bun.write(join(t.root, "assistant", "days", "2026-11-06.md"), morning);
+    t.append(inputAt("app", at(6, 13)), at(6, 13));
+    t.append(state("web"), at(6, 13, 1));
+    t.clock.now = at(6, 14, 40);
+    await t.routines.tick();
+    if (t.coverage().inbox) await ackLast(t);
+    expect(t.sends.filter(s => fileOf(s.text).startsWith("day-review"))).toHaveLength(1);
+    t.clock.now = at(7, 3, 1);
+    await t.routines.tick();
+    const second = fileOf(t.sends.at(-1)!.text);
+    expect(second).toStartWith("day-review-");
+    const later = t.inbox(second);
+    expect(later.days).toEqual([expect.objectContaining({ date: "2026-11-06", update: true })]);
+    expect(later.machines.find((m: { installationId: string }) => m.installationId === "home").rows.map((r: { kind: string }) => r.kind)).toEqual(["input", "session.state"]);
+    const note = noteOf(t, "2026-11-06");
+    expect(note.startsWith(morning)).toBe(true);
+    const appended = note.slice(morning.length);
+    expect(appended).toContain("untrusted data");
+    expect(appended).toContain("web");
+    expect(appended.trimEnd().endsWith("## assistant")).toBe(true);
+    await ackLast(t);
+    expect(t.coverage()).toMatchObject({ reviewedThrough: "2026-11-06", provisional: null });
+  });
+
+  test("no input after the provisional review: the day turn advances coverage without a turn", async () => {
+    const t = setup(at(6, 9));
+    await booted(t);
+    t.append(inputAt("app", at(6, 9)), at(6, 9));
+    t.clock.now = at(6, 10, 31);
+    await t.routines.tick();
+    await ackLast(t);
+    t.append(state("app"), at(6, 16));
+    t.clock.now = at(6, 18);
+    await t.routines.tick();
+    if (t.coverage().inbox) await ackLast(t);
+    const sent = t.sends.length;
+    t.clock.now = at(7, 3, 1);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(sent);
+    expect(t.coverage()).toMatchObject({ reviewedThrough: "2026-11-06", provisional: null });
+  });
+});
+
+describe("focus routines: peer boundary and review caps (b2/b3/b4)", () => {
+  test("a malformed peer page counts as unreached and never bricks routines.json (P5)", async () => {
+    const t = setup(at(6, 9));
+    await booted(t);
+    const raw = { rows: [], next: 0, headSeq: 0, oldestSeq: null, truncated: false, lastRowAt: null as string | null, lastInputAt: null };
+    let body: unknown = { ...raw, lastRowAt: "not-a-date" };
+    const peer = peerActivitySource({ installationId: "laptop", name: "mac", get: async <T,>() => body as T } as never);
+    const routines = new FocusRoutines({
+      folder: join(t.root, "assistant"), enabled: () => true, sources: async () => [localActivitySource("home", "sgt", t.journal), peer],
+      timing: async () => ASSISTANT_TIMING_DEFAULTS, assistant: async () => t.assistant, queueBusy: () => false, enqueue: () => {}, now: () => t.clock.now,
+    });
+    await routines.tick();
+    expect(routines.status().unreachable.map(u => u.name)).toEqual(["mac"]);
+    expect(routines.status().error).toBeUndefined();
+    body = raw;
+    await routines.tick();
+    expect(routines.status()).toMatchObject({ unreachable: [] });
+    expect(routines.status().error).toBeUndefined();
+  });
+
+  test("an invalid value from a source fails the tick, not the coverage file", async () => {
+    const t = setup(at(6, 9));
+    await booted(t);
+    t.peer.add(task("a"), at(6, 9));
+    t.peer.once = { lastRowAt: "not-a-date" };
+    await t.routines.tick();
+    expect(t.routines.status().error).toContain("not saved");
+    await t.routines.tick();
+    expect(t.routines.status().error).toBeUndefined();
+    expect(t.coverage().catchUpCursors.laptop.lastRowAt).toBe(new Date(at(6, 9)).toISOString());
+  });
+
+  test("a peer git payload without commits becomes an error line in the day note", async () => {
+    const t = setup(at(6, 9));
+    const page = (rows: ActivityRow[]) => ({ ...pageActivity(rows, 0, 1000, rows[0]?.seq ?? null), headSeq: rows.length, lastRowAt: rows.at(-1)?.at ?? null, lastInputAt: null });
+    const rows = [{ seq: 1, at: new Date(at(5, 10)).toISOString(), ...task("a") } as ActivityRow];
+    const peer = peerActivitySource({ installationId: "laptop", name: "mac", get: async <T,>(path: string) => (path.includes("/git") ? { repos: [{ cwd: "/w" }] } : page(rows)) as T } as never);
+    const routines = new FocusRoutines({
+      folder: join(t.root, "assistant"), enabled: () => true, sources: async () => [peer],
+      timing: async () => ASSISTANT_TIMING_DEFAULTS, assistant: async () => t.assistant, queueBusy: () => false, enqueue: () => {}, now: () => t.clock.now,
+    });
+    await routines.tick();
+    expect(noteOf(t, "2026-11-05")).toContain("(all repositories) (mac): invalid git payload");
+  });
+
+  test("a heavy day is capped per day and never hides later days (P3)", async () => {
+    const t = setup(at(8, 9));
+    await t.routines.tick();
+    const seeded = t.coverage();
+    seeded.reviewedThrough = "2026-11-04";
+    seeded.inbox = null;
+    await Bun.write(join(t.root, "assistant", "routines.json"), JSON.stringify(seeded));
+    for (let i = 0; i < 5200; i++) t.append(task(`d5-${i}`), at(5, 10) + i);
+    t.append(task("d6"), at(6, 10));
+    t.append(task("d7"), at(7, 10));
+    const fresh = new FocusRoutines({
+      folder: join(t.root, "assistant"), enabled: () => true, sources: async () => [localActivitySource("home", "sgt", t.journal)],
+      timing: async () => ASSISTANT_TIMING_DEFAULTS, assistant: async () => t.assistant, queueBusy: () => false, enqueue: (text, settle) => { t.sends.push({ text, settle }); }, now: () => t.clock.now,
+    });
+    await fresh.tick();
+    const doc = t.inbox(fileOf(t.sends.at(-1)!.text));
+    expect(doc.days.map((d: { date: string; capped: boolean }) => [d.date, d.capped])).toEqual([["2026-11-05", true], ["2026-11-06", false], ["2026-11-07", false]]);
+    const ids = doc.machines[0].rows.map((r: { taskId: string }) => r.taskId);
+    expect(ids).toContain("d6");
+    expect(ids).toContain("d7");
+    expect(t.coverage().inbox.days).toEqual(["2026-11-05", "2026-11-06", "2026-11-07"]);
+  });
+
+  test("a replaced peer journal drops that machine from the outstanding inbox (P4)", async () => {
+    const t = setup(at(6, 14));
+    t.peer.journalId = "j1";
+    for (const id of ["a", "b", "c", "d", "e"]) t.peer.add(task(id), at(6, 13));
+    await t.routines.tick();
+    await t.routines.tick();
+    const file = fileOf(t.sends.at(-1)!.text);
+    expect(t.coverage().inbox.through.laptop).toBe(5);
+    t.peer.rows = [];
+    t.peer.journalId = "j2";
+    t.peer.add(task("new1"), at(6, 14));
+    t.clock.now = at(6, 14, 1);
+    await t.routines.tick();
+    expect(t.coverage().inbox.through.laptop).toBeUndefined();
+    t.sends.at(-1)!.settle("sent");
+    await t.routines.ack(file);
+    expect(t.coverage().catchUpCursors.laptop).toMatchObject({ seq: 0, journalId: "j2" });
+    for (const id of ["new2", "new3"]) t.peer.add(task(id), at(6, 14, 2));
+    t.clock.now = at(6, 14, 30);
+    await t.routines.tick();
+    const next = t.inbox(fileOf(t.sends.at(-1)!.text));
+    expect(next.machines.find((m: { installationId: string }) => m.installationId === "laptop").rows.map((r: { taskId: string }) => r.taskId)).toEqual(["new1", "new2", "new3"]);
+  });
+
+  test("a reinstalled peer whose new journal already passed the cursor is restarted by its journal id", async () => {
+    const t = setup(at(6, 14));
+    t.peer.journalId = "j1";
+    for (const id of ["a", "b", "c"]) t.peer.add(task(id), at(6, 13));
+    await t.routines.tick();
+    await t.routines.tick();
+    await ackLast(t);
+    expect(t.coverage().catchUpCursors.laptop).toMatchObject({ seq: 3, journalId: "j1" });
+    t.peer.rows = [];
+    t.peer.journalId = "j2";
+    for (let i = 1; i <= 5; i++) t.peer.add(task(`n${i}`), at(6, 14));
+    t.clock.now = at(6, 14, 30);
+    await t.routines.tick();
+    const doc = t.inbox(fileOf(t.sends.at(-1)!.text));
+    expect(doc.machines.find((m: { installationId: string }) => m.installationId === "laptop").rows.map((r: { taskId: string }) => r.taskId)).toEqual(["n1", "n2", "n3", "n4", "n5"]);
   });
 });

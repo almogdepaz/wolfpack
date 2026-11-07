@@ -1,9 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { ACTIVITY_PAGE_MAX, ACTIVITY_PATH, activeCwds, type ActivityPage, type ActivityRow } from "../activity-journal.js";
 import {
-  InvalidInboxFile, applyAck, buildInbox, dayNoteMarkdown, emptyCoverage, inboxFileName, inboxPrompt, isFocusCoverage, isInboxFileName, withoutAssistantRows,
-  type FocusCoverage, type GitRepoLog, type InboxMachine, type MachineCursor,
+  ACTIVITY_KIND, ACTIVITY_PAGE_MAX, ACTIVITY_PATH, activeCwds, parseActivityGit, parseActivityPage, type ActivityGitRepo, type ActivityPeerPage, type ActivityRow,
+} from "../activity-journal.js";
+import {
+  ASSISTANT_SESSION_NAME, InvalidInboxFile, applyAck, buildInbox, dayNoteMarkdown, dayNoteUpdateMarkdown, emptyCoverage, inboxFileName, inboxPrompt, isFocusCoverage,
+  isInboxFileName, settledProvisional, withoutAssistantRows,
+  type FocusCoverage, type GitRepoLog, type InboxDay, type InboxMachine, type MachineCursor,
 } from "../focus-coverage.js";
 import {
   ASSISTANT_TIMING_DEFAULTS, ROUTINE, STALE_AFTER_MS, activityDayOf, addDays, activityDayWindow, decideRoutines,
@@ -11,7 +14,7 @@ import {
 } from "../focus-scheduler.js";
 import type { SendOutcome } from "../focus-send-queue.js";
 import { readValidatedJsonFile, writePrivateFile, writePrivateJsonFile } from "../persistence.js";
-import type { ActivityJournal, ActivityJournalStatus } from "./activity-journal.js";
+import type { ActivityJournal } from "./activity-journal.js";
 import type { ActivityPeer } from "./activity-peers.js";
 import { readGitLogs } from "./activity-recorder.js";
 import { createLogger, errMsg } from "../log.js";
@@ -19,9 +22,12 @@ import { createLogger, errMsg } from "../log.js";
 const log = createLogger("server");
 export const ROUTINE_TICK_MS = 60_000;
 const CATCH_UP_ROW_CAP = 2000;
+/** Rows per machine per review day: a heavy day is capped instead of hiding the days after it. */
+const REVIEW_DAY_ROW_CAP = 2000;
+/** Rows per review turn; days after the one that reaches it wait for the next review. */
 const REVIEW_ROW_CAP = 5000;
-type Page = ActivityPage & Pick<ActivityJournalStatus, "lastRowAt" | "lastInputAt">;
-type GitRepos = { repos: { cwd: string; commits: GitRepoLog["commits"]; error?: string }[] };
+type Page = ActivityPeerPage;
+type GitRepos = { repos: ActivityGitRepo[] };
 
 /** One machine's journal: this server's own (direct) or a verified peer's `/api/activity`. */
 export interface ActivitySource {
@@ -34,7 +40,8 @@ export interface ActivitySource {
 export function localActivitySource(id: string, name: string, journal: ActivityJournal): ActivitySource {
   return {
     id, name, local: true,
-    read: async (since, limit, window) => ({ ...journal.read(since, limit, window ?? {}), ...journal.status() }),
+    // The quiet gate must see the same input pull() feeds the assistant: never its own terminal.
+    read: async (since, limit, window) => ({ ...journal.read(since, limit, window ?? {}), ...journal.status({ exceptSession: ASSISTANT_SESSION_NAME }) }),
     git: async (from, to) => ({ repos: await readGitLogs(activeCwds(journal.readAll({ to }), from, to), from, to) }),
   };
 }
@@ -43,8 +50,17 @@ export function peerActivitySource(peer: ActivityPeer): ActivitySource {
     `?since=${since}&limit=${limit}${window ? `&from=${new Date(window.from).toISOString()}&to=${new Date(window.to).toISOString()}` : ""}`;
   return {
     id: peer.installationId, name: peer.name, local: false,
-    read: (since, limit, window) => peer.get<Page>(`${ACTIVITY_PATH}${query(since, limit, window)}`, 2 * 1024 * 1024),
-    git: (from, to) => peer.get<GitRepos>(`${ACTIVITY_PATH}/git${query(0, 0, { from, to })}`, 1024 * 1024),
+    // Peer bodies are validated at this boundary; a bad page throws, so the peer counts as unreached this tick.
+    read: async (since, limit, window) => {
+      const page = parseActivityPage(await peer.get<unknown>(`${ACTIVITY_PATH}${query(since, limit, window)}`, 2 * 1024 * 1024));
+      if (!page) throw new Error("invalid activity page");
+      return page;
+    },
+    git: async (from, to) => {
+      const git = parseActivityGit(await peer.get<unknown>(`${ACTIVITY_PATH}/git${query(0, 0, { from, to })}`, 1024 * 1024));
+      if (!git) throw new Error("invalid git payload");
+      return git;
+    },
   };
 }
 
@@ -117,7 +133,12 @@ export class FocusRoutines {
   stop(): void { clearInterval(this.timer); this.timer = undefined; }
 
   private read(): FocusCoverage { return readValidatedJsonFile(this.path, "routines", isFocusCoverage) ?? emptyCoverage(); }
-  private save(coverage: FocusCoverage): void { writePrivateJsonFile(this.path, coverage); this.snapshot = coverage; }
+  /** A value that would not read back fails the tick here instead of bricking routines.json. */
+  private save(coverage: FocusCoverage): void {
+    if (!isFocusCoverage(coverage)) throw new Error("routine coverage failed validation; not saved");
+    writePrivateJsonFile(this.path, coverage);
+    this.snapshot = coverage;
+  }
 
   /** At most one tick waits behind the running one; a manual request rides on it. */
   tick(trigger: { manual?: boolean } = {}): Promise<void> {
@@ -151,30 +172,42 @@ export class FocusRoutines {
     this.pending = machines.some(m => m.pendingRows);
     const inbox = coverage.inbox && { ...coverage.inbox, queued: this.queuedFile === coverage.inbox.file };
     const actions = decideRoutines({ now, timing, enabled: true, idle, booting: this.booting, restarted: this.restartPending, manual, machines,
-      reviewedThrough: coverage.reviewedThrough, lastRun: coverage.lastRun, inbox });
+      reviewedThrough: coverage.reviewedThrough, provisional: coverage.provisional?.date ?? null, lastRun: coverage.lastRun, inbox });
     if (!actions.length && this.booting && idle && !coverage.inbox) this.booting = false;
     for (const action of actions) coverage = await this.execute(action, coverage, sources, timing, manual);
     this.save(coverage);
   }
 
-  /** Heads and last input per machine; a replaced journal (head behind the cursor) restarts that cursor. */
+  /**
+   * Heads and last input per machine. A replaced journal (a different journal
+   * id, or a head behind the cursor) restarts that cursor and forgets every
+   * seq recorded against the old journal.
+   */
   private async probe(coverage: FocusCoverage, source: ActivitySource, timing: AssistantTiming): Promise<void> {
     try {
       const status = await source.read(0, 0);
       let cursor: MachineCursor | undefined = coverage.catchUpCursors[source.id];
-      if (cursor && status.headSeq < cursor.seq) { log.warn("activity journal replaced; cursor restarted", { machine: source.name }); cursor = undefined; }
+      const otherJournal = !!cursor?.journalId && !!status.journalId && cursor.journalId !== status.journalId;
+      if (cursor && (otherJournal || status.headSeq < cursor.seq)) {
+        log.warn("activity journal replaced; cursor restarted", { machine: source.name });
+        cursor = undefined;
+        if (coverage.inbox) delete coverage.inbox.through[source.id];
+        if (coverage.provisional) delete coverage.provisional.through[source.id];
+      }
       if (!cursor) {
         // First contact: catch-ups start at today's first row; earlier days belong to reviews.
         const today = activityDayWindow(activityDayOf(this.now(), timing.fallbackTime), timing.fallbackTime);
         const first = (await source.read(0, 1, { from: today.start, to: today.end })).rows[0];
         cursor = { name: source.name, seq: first ? first.seq - 1 : status.headSeq, headSeq: status.headSeq, lastReachedAt: null, lastRowAt: null, lastInputAt: null };
       }
-      coverage.catchUpCursors[source.id] = { ...cursor, name: source.name, headSeq: status.headSeq, lastReachedAt: this.iso(), lastRowAt: status.lastRowAt, lastInputAt: status.lastInputAt };
+      coverage.catchUpCursors[source.id] = { ...cursor, name: source.name, headSeq: status.headSeq, lastReachedAt: this.iso(), lastRowAt: status.lastRowAt, lastInputAt: status.lastInputAt,
+        ...(status.journalId && { journalId: status.journalId }) };
       this.reached.add(source.id);
     } catch (error) { log.debug("activity source unreachable", { machine: source.name, error: errMsg(error) }); }
   }
 
-  private async pull(source: ActivitySource, since: number, cap: number, window?: { from: number; to: number }): Promise<{ rows: ActivityRow[]; through: number; truncated: boolean }> {
+  /** `capped`: the row cap stopped the pull; `truncated`: retention removed rows the cursor or window needed. */
+  private async pull(source: ActivitySource, since: number, cap: number, window?: { from: number; to: number }): Promise<{ rows: ActivityRow[]; through: number; truncated: boolean; capped: boolean }> {
     const rows: ActivityRow[] = [];
     let cursor = since, truncated = false;
     for (;;) {
@@ -185,7 +218,13 @@ export class FocusRoutines {
       cursor = page.next;
       if (page.rows.length < ACTIVITY_PAGE_MAX || rows.length >= cap || cursor >= page.headSeq) break;
     }
-    return { rows, through: cursor, truncated };
+    return { rows, through: cursor, truncated, capped: rows.length >= cap };
+  }
+
+  /** A source that fails mid-routine counts as unreached for the rest of this tick. */
+  private async tryPull(source: ActivitySource, ...args: [number, number, { from: number; to: number }?]) {
+    try { return await this.pull(source, ...args); }
+    catch (error) { this.reached.delete(source.id); log.debug("activity source failed mid-routine", { machine: source.name, error: errMsg(error) }); return null; }
   }
 
   private unreachedBlocks(coverage: FocusCoverage): InboxMachine[] {
@@ -212,13 +251,13 @@ export class FocusRoutines {
   }
 
   private writeInbox(coverage: FocusCoverage, routine: typeof ROUTINE[keyof typeof ROUTINE], doc: Omit<Parameters<typeof buildInbox>[0], "file" | "routine" | "createdAt">,
-    through: Record<string, number>, days?: string[]): FocusCoverage {
+    through: Record<string, number>, days?: string[], provisional?: string): FocusCoverage {
     const createdAt = this.iso();
     const file = inboxFileName(routine, this.now());
     mkdirSync(join(this.deps.folder, "inbox"), { recursive: true, mode: 0o700 });
     writePrivateJsonFile(join(this.deps.folder, "inbox", file), buildInbox({ file, routine, createdAt, ...doc }));
     const next: FocusCoverage = { ...coverage, lastRun: { ...coverage.lastRun, [routine]: createdAt },
-      inbox: { file, routine, createdAt, sends: 0, lastSentAt: null, surfaced: false, through, ...(days && { days }) } };
+      inbox: { file, routine, createdAt, sends: 0, lastSentAt: null, surfaced: false, through, ...(days?.length && { days }), ...(provisional && { provisional }) } };
     this.save(next);
     this.send(file);
     return next;
@@ -229,7 +268,8 @@ export class FocusRoutines {
     switch (action.type) {
       case "drop-inbox":
         rmSync(join(this.deps.folder, "inbox", action.file), { force: true });
-        return { ...coverage, inbox: null };
+        // A dropped provisional review was never processed: today may be reviewed again.
+        return { ...coverage, inbox: null, ...(coverage.inbox?.provisional && { provisional: null }) };
       case "surface":
         return coverage.inbox ? { ...coverage, inbox: { ...coverage.inbox, surfaced: true } } : coverage;
       case "resend":
@@ -242,9 +282,10 @@ export class FocusRoutines {
         const through: Record<string, number> = {};
         for (const source of reachable) {
           const cursor = coverage.catchUpCursors[source.id]!;
-          const pulled = await this.pull(source, cursor.seq, CATCH_UP_ROW_CAP);
+          const pulled = await this.tryPull(source, cursor.seq, CATCH_UP_ROW_CAP);
+          if (!pulled) continue;
           through[source.id] = pulled.through;
-          if (pulled.rows.length) blocks.push({ installationId: source.id, name: source.name, reached: true, from: cursor.seq, through: pulled.through, truncated: pulled.truncated, rows: pulled.rows });
+          if (pulled.rows.length) blocks.push({ installationId: source.id, name: source.name, reached: true, from: cursor.seq, through: pulled.through, truncated: pulled.truncated, capped: pulled.capped, rows: pulled.rows });
         }
         if (!blocks.length) {
           for (const [id, seq] of Object.entries(through)) coverage.catchUpCursors[id] = { ...coverage.catchUpCursors[id]!, seq: Math.max(coverage.catchUpCursors[id]!.seq, seq) };
@@ -253,34 +294,98 @@ export class FocusRoutines {
         }
         return this.writeInbox(coverage, ROUTINE.CATCH_UP, { machines: [...blocks, ...this.unreachedBlocks(coverage)] }, through);
       }
-      case ROUTINE.DAY_REVIEW: case ROUTINE.GAP_REVIEW: {
-        const windows = action.days.map(date => ({ date, ...activityDayWindow(date, timing.fallbackTime) }));
-        const span = { from: windows[0]!.start, to: windows.at(-1)!.end };
-        const perMachine = await Promise.all(reachable.map(async source => ({ source, ...(await this.pull(source, 0, REVIEW_ROW_CAP, span)) })));
-        const active = windows.filter(w => perMachine.some(m => m.rows.some(r => activityDayOf(Date.parse(r.at), timing.fallbackTime) === w.date)));
-        if (!active.length) {
-          const reviewed = action.days.at(-1)!;
-          return { ...coverage, reviewedThrough: !coverage.reviewedThrough || reviewed > coverage.reviewedThrough ? reviewed : coverage.reviewedThrough, lastRun: { ...coverage.lastRun, [action.type]: this.iso() } };
-        }
-        mkdirSync(join(this.deps.folder, "days"), { recursive: true, mode: 0o700 });
-        for (const window of active) {
-          const note = join(this.deps.folder, "days", `${window.date}.md`);
-          if (existsSync(note)) continue;
-          const dayRows = perMachine.map(m => ({ name: m.source.name, rows: m.rows.filter(r => activityDayOf(Date.parse(r.at), timing.fallbackTime) === window.date) })).filter(m => m.rows.length);
-          const git: GitRepoLog[] = (await Promise.all(perMachine.map(async m => {
-            try { return (await m.source.git(window.start, window.end)).repos.map(repo => ({ machine: m.source.name, ...repo })); }
-            catch (error) { return [{ machine: m.source.name, cwd: "(all repositories)", commits: [], error: errMsg(error) }]; }
-          }))).flat();
-          writePrivateFile(note, dayNoteMarkdown(window.date, window, dayRows, git));
-        }
-        const through: Record<string, number> = {};
-        for (const m of perMachine) if (m.rows.length) through[m.source.id] = Math.max(...m.rows.map(r => r.seq));
-        return this.writeInbox(coverage, action.type, {
-          days: active.map(w => ({ date: w.date, note: `days/${w.date}.md`, from: new Date(w.start).toISOString(), to: new Date(w.end).toISOString() })),
-          machines: [...perMachine.filter(m => m.rows.length).map(m => ({ installationId: m.source.id, name: m.source.name, reached: true as const, from: 0, through: through[m.source.id]!, truncated: m.truncated, rows: m.rows })), ...this.unreachedBlocks(coverage)],
-        }, through, action.days);
-      }
+      case ROUTINE.DAY_REVIEW: case ROUTINE.GAP_REVIEW:
+        return this.review(action.type, action.days, coverage, reachable, timing);
     }
+  }
+
+  /**
+   * Day and gap reviews. Each day is pulled per machine with its own cap, and
+   * only days actually pulled are listed or closed. The current day is
+   * provisional: it never advances `reviewedThrough`. A provisional day at
+   * the turn is pulled only after the provisional review's rows; with no user
+   * input after it the day closes without a turn, otherwise a later section is
+   * appended to its note.
+   */
+  private async review(routine: typeof ROUTINE.DAY_REVIEW | typeof ROUTINE.GAP_REVIEW, days: string[], coverage: FocusCoverage, reachable: ActivitySource[], timing: AssistantTiming): Promise<FocusCoverage> {
+    const today = activityDayOf(this.now(), timing.fallbackTime);
+    const provisional = coverage.provisional ?? null;
+    const dayOf = (row: ActivityRow) => activityDayOf(Date.parse(row.at), timing.fallbackTime);
+    const pulled: { date: string; start: number; end: number; capped: boolean; machines: { source: ActivitySource; rows: ActivityRow[]; truncated: boolean }[] }[] = [];
+    let total = 0;
+    for (const date of days) {
+      const window = activityDayWindow(date, timing.fallbackTime);
+      const after = provisional?.date === date ? provisional : null;
+      const machines: (typeof pulled)[number]["machines"] = [];
+      let capped = false;
+      for (const source of reachable.filter(s => this.reached.has(s.id))) {
+        const result = await this.tryPull(source, after?.through[source.id] ?? 0, REVIEW_DAY_ROW_CAP, { from: window.start, to: window.end });
+        if (!result) continue;
+        const rows = result.rows.filter(r => dayOf(r) === date);
+        capped ||= result.capped;
+        machines.push({ source, rows, truncated: result.truncated });
+        total += rows.length;
+      }
+      pulled.push({ date, start: after ? Date.parse(after.at) : window.start, end: window.end, capped, machines });
+      if (total >= REVIEW_ROW_CAP) break;
+    }
+    const isUserInput = (row: ActivityRow) => row.kind === ACTIVITY_KIND.INPUT;
+    const active = pulled.filter(d => d.machines.some(m => provisional?.date === d.date ? m.rows.some(isUserInput) : m.rows.length > 0));
+    const completed = pulled.map(d => d.date).filter(date => date < today);
+    const closed = completed.at(-1);
+    const advance = (c: FocusCoverage): FocusCoverage => {
+      const next = { ...c, ...(closed && (!c.reviewedThrough || closed > c.reviewedThrough) && { reviewedThrough: closed }) };
+      return { ...next, provisional: settledProvisional(next) };
+    };
+    const reviewsToday = pulled.some(d => d.date === today);
+    if (!active.length) {
+      // Nothing for the assistant: close completed days, and for today only record the run.
+      const next = advance({ ...coverage, lastRun: { ...coverage.lastRun, [routine]: this.iso() } });
+      return reviewsToday ? { ...next, provisional: { date: today, at: this.iso(), through: {} } } : next;
+    }
+    mkdirSync(join(this.deps.folder, "days"), { recursive: true, mode: 0o700 });
+    let noteUpdated = false;
+    const inboxDays: InboxDay[] = [];
+    for (const day of active) {
+      const note = join(this.deps.folder, "days", `${day.date}.md`);
+      const update = provisional?.date === day.date && existsSync(note);
+      const machines = day.machines.filter(m => m.rows.length).map(m => ({ name: m.source.name, rows: m.rows }));
+      if (update && !provisional.noteUpdated) {
+        writePrivateFile(note, readFileSync(note, "utf8") + dayNoteUpdateMarkdown(day, machines, await this.gitFor(day, day.machines)));
+        noteUpdated = true;
+      } else if (!existsSync(note)) {
+        writePrivateFile(note, dayNoteMarkdown(day.date, day, machines, await this.gitFor(day, day.machines)));
+      }
+      inboxDays.push({ date: day.date, note: `days/${day.date}.md`, from: new Date(day.start).toISOString(), to: new Date(day.end).toISOString(), capped: day.capped, ...(update && { update: true as const }) });
+    }
+    const blocks = new Map<string, { source: ActivitySource; rows: ActivityRow[]; truncated: boolean; capped: boolean }>();
+    for (const day of pulled) for (const m of day.machines) {
+      const block = blocks.get(m.source.id) ?? { source: m.source, rows: [], truncated: false, capped: false };
+      block.rows.push(...m.rows);
+      block.truncated ||= m.truncated;
+      block.capped ||= day.capped && m.rows.length >= REVIEW_DAY_ROW_CAP;
+      blocks.set(m.source.id, block);
+    }
+    const through: Record<string, number> = {};
+    for (const [id, b] of blocks) if (b.rows.length) through[id] = Math.max(...b.rows.map(r => r.seq));
+    let next = coverage;
+    if (noteUpdated && provisional) next = { ...next, provisional: { ...provisional, noteUpdated: true } };
+    if (reviewsToday) {
+      const todays: Record<string, number> = {};
+      for (const m of pulled.find(d => d.date === today)!.machines) if (m.rows.length) todays[m.source.id] = Math.max(...m.rows.map(r => r.seq));
+      next = { ...next, provisional: { date: today, at: this.iso(), through: todays } };
+    }
+    return this.writeInbox(next, routine, {
+      days: inboxDays,
+      machines: [...[...blocks.values()].filter(b => b.rows.length).map(b => ({ installationId: b.source.id, name: b.source.name, reached: true as const, from: 0, through: through[b.source.id]!, truncated: b.truncated, capped: b.capped, rows: b.rows })), ...this.unreachedBlocks(next)],
+    }, through, completed, reviewsToday ? today : undefined);
+  }
+
+  private async gitFor(window: { start: number; end: number }, machines: { source: ActivitySource }[]): Promise<GitRepoLog[]> {
+    return (await Promise.all(machines.map(async m => {
+      try { return (await m.source.git(window.start, window.end)).repos.map(repo => ({ machine: m.source.name, ...repo })); }
+      catch (error) { return [{ machine: m.source.name, cwd: "(all repositories)", commits: [], error: errMsg(error) }]; }
+    }))).flat();
   }
 
   /** `wolfpack activity ack <file>`: the only path that advances cursors and review coverage. */
