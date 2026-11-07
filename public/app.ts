@@ -1,6 +1,6 @@
 import { createAssistantView } from "./assistant-view";
 import type { FocusSessionStart } from "../src/focus-start";
-import { withoutFocusAssistant } from "../src/focus-session";
+import { isFocusAssistantSession, withoutFocusAssistant } from "../src/focus-session";
 import { sessionMetaHtml } from "./session-meta";
 import type { SessionMeta } from "../src/session-meta-contract";
 import {
@@ -1236,6 +1236,8 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
 }
 
 let pendingFocusStart: FocusSessionStart | undefined;
+// One copy for the settings toggle and the terminal header / kill path.
+const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant? Its conversation and your focus list are kept; enable it again any time.";
 const focusUi = createAssistantView({
   request: api,
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
@@ -1254,7 +1256,7 @@ const focusUi = createAssistantView({
     void showAgentPicker();
   },
   show: view => { if (view === "sessions") backToSessions(); else showView(view); },
-  confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Wolfpack starts one persistent pi terminal on the home machine and keeps it running across restarts. If pi is not logged in there yet, run pi and /login first; the assistant opens right after so you can see it start." : "Stop the assistant? Its conversation and your focus list are kept; enable it again any time.", confirmLabel: enabled ? "Enable" : "Disable", destructive: !enabled }),
+  confirm: async enabled => !!await showAppDialog({ title: enabled ? "Enable assistant" : "Disable assistant", message: enabled ? "Wolfpack starts one persistent pi terminal on the home machine and keeps it running across restarts. If pi is not logged in there yet, run pi and /login first; the assistant opens right after so you can see it start." : DISABLE_ASSISTANT_MESSAGE, confirmLabel: enabled ? "Enable" : "Disable", destructive: !enabled }),
 });
 document.getElementById("assistant-terminal-inspect").onclick = event => {
   const target = pinnedSessionInspectionTarget(state.currentSession, state.currentMachine);
@@ -4246,11 +4248,12 @@ async function killSession(name, e, machineUrl) {
     : null;
   const session = state.lastSessionGroups.find(group => (group.machine.url || "") === (machineUrl || ""))?.sessions.find(session => session.name === name);
   const pinnedSession = session?.pinned || focusUi.isAssistant(name, machine);
-  const action = pinnedSession ? "Disable" : session && sessionTier(session) === "fail" ? "Close" : "Stop";
+  const action = pinnedSession ? "Unpin & stop" : session && sessionTier(session) === "fail" ? "Close" : "Stop";
   // Stopping the assistant unpins it (a pinned session would otherwise relaunch); the words stay the settings' words.
-  const confirmed = await showAppDialog(pinnedSession ? {
+  // Other pinned sessions keep their own `Unpin & stop` dialog.
+  const confirmed = await showAppDialog(session && isFocusAssistantSession(session) || focusUi.isAssistant(name, machine) ? {
     title: "Disable assistant",
-    message: "Stop the assistant? Its conversation and your focus list are kept; enable it again any time.",
+    message: DISABLE_ASSISTANT_MESSAGE,
     confirmLabel: "Disable",
     destructive: true,
   } : {

@@ -38,6 +38,21 @@ test("with the assistant off nothing of the focus ui shows; settings is the only
   expect((await new AxeBuilder({ page }).include("#settings-assistant").analyze()).violations).toEqual([]);
 });
 
+test("stopping a pinned session that is not the assistant keeps the unpin & stop dialog", async ({ page }) => {
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.sessions.find((s: { name: string }) => s.name === "prompt-project").pinned = true;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator('#session-list [data-action="kill-session"][data-session="prompt-project"]').click();
+  const dialog = page.locator("#app-dialog");
+  await expect(dialog.locator("#app-dialog-title")).toHaveText("Unpin & stop session");
+  await expect(dialog.locator("#app-dialog-confirm")).toHaveText("Unpin & stop session");
+  await dialog.locator("#app-dialog-cancel").click();
+});
+
 test("enabling is one button and one dialog; the assistant then opens for its first run", async ({ page }, info) => {
   await withBlockedPromptProject(page);
   await page.goto(server.baseUrl);
