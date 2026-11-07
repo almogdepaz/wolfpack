@@ -14,9 +14,11 @@ test("needs-you state header opens the assistant terminal while the tile opens t
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  // the dashboard block carries the same amber "needs you · answer ›" control, straight to the terminal
+  await expect(page.locator("#dashboard-focus .focus-header").getByRole("button", { name: /needs you · answer/ })).toBeVisible();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.locator("#assistant-view")).toBeVisible();
-  await page.locator("#assistant-content .focus-header").getByRole("button", { name: /needs you.*updated/ }).click();
+  await page.locator("#assistant-content .focus-header").getByRole("button", { name: /needs you · answer/ }).click();
   await expect(page.locator("#terminal-view")).toBeVisible();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible();
 });

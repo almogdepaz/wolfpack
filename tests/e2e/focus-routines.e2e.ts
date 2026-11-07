@@ -36,7 +36,7 @@ test("sgt just booted: catching up since … with machine count, nudge greyed fr
   await withRoutines(page, { catchingUp: { machines: 2, since: ago(30) } });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block).toContainText(/catching up since \w+ \d\d:\d\d · 2 machines/);
+  await expect(block).toContainText(/reading activity since \w+ \d\d:\d\d · 2 machines/);
   await expect(block.locator(".focus-nudge.from")).toBeVisible();
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await shot(page, "catching-up", info.project.name === "desktop");
@@ -51,8 +51,10 @@ test("stale, peer not reached and unacked inbox; catch up now sends the catch-up
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block).toContainText(/quiet since \w+ \d\d:\d\d/);
-  await expect(block).toContainText(/macbook not reached since \w+ \d\d:\d\d/);
-  await expect(block).toContainText("inbox not acknowledged after 4 sends");
+  await expect(block).toContainText(/macbook not reached since \w+ \d\d:\d\d · its day is reviewed when it is back/);
+  await expect(block).toContainText("has not confirmed reading activity · sent 4 times");
+  await expect(block).toContainText("look at its terminal, then");
+  await expect(page.locator("#sidebar-assistant")).toHaveText(/needs you|assistant/);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await shot(page, "stale", info.project.name === "desktop");
   await expect(block.getByRole("button", { name: "catch up now" })).toHaveCount(1);
@@ -109,7 +111,7 @@ test("an unverified routine send reads as delivery unconfirmed, never failed", a
   await withRoutines(page, { catchingUp: { machines: 1, since: null, routine: "catch-up", unconfirmed: true } });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-header")).toContainText("catching up · delivery unconfirmed");
+  await expect(block.locator(".focus-header")).toContainText("reading activity · not confirmed yet");
   await expect(block).not.toContainText("failed");
   await expect(block.locator(".dot.red")).toHaveCount(0);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
