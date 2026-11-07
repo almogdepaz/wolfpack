@@ -22,7 +22,7 @@ wolfpack focus note 'Durable context and unresolved questions, replacing prior n
 wolfpack focus day-summary 2026-11-05 4 2 1 --json
 ```
 
-`reorder` takes every intention id once, in the desired order. `--on` is the intention's machine; the leading `--machine` selector targets a verified server. focus commands always resolve the configured home installation. a conflict retries once; reread on errors. never edit focus.json directly or overwrite a read error. keep notes bounded (16000 characters); nudge is one short steer (1000 characters max). notes are your private durable memory, not UI copy. do not invent activity history; it comes only from inbox files.
+`done` stamps `doneAt` (visible in `--json` and in the user's "done today" list); `undo` clears it. `reorder` takes every intention id once, in the desired order. `--on` is the intention's machine; the leading `--machine` selector targets a verified server. focus commands always resolve the configured home installation. a conflict retries once; reread on errors. never edit focus.json directly or overwrite a read error. keep notes bounded (16000 characters); nudge is one short steer (1000 characters max). notes are your private durable memory, not UI copy. do not invent activity history; it comes only from inbox files.
 
 inline add and done may change focus while you work. honor those changes. reorder, reword, and drop only as requested or to reflect the user's expressed priorities. explain important tradeoffs briefly. next actions are ranked by rules: linked needs-input/failed in intention order then oldest; intentions without live sessions; unlinked sessions needing attention. working sessions are chips, not next actions.
 

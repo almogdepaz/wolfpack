@@ -120,7 +120,7 @@ export async function focusCommand(args: readonly string[], target?: VerifiedMac
     const doc = parsed.op ? await updateFocusWithRetry(parsed.op, request) : (await checked(await request("/api/focus"))).document;
     if (parsed.json) printJson(doc);
     else if (!doc) print("Set your focus: wolfpack focus add <title>");
-    else { print(`focus r${doc.revision}`); for (const i of doc.intentions) print(`${i.done ? "✓" : "○"} ${i.title} (${i.id})`); if (doc.nudge) print(doc.nudge.text); }
+    else { print(`focus r${doc.revision}`); for (const i of doc.intentions) print(`${i.done ? "✓" : "○"} ${i.title} (${i.id})${i.doneAt ? ` · done ${i.doneAt}` : ""}`); if (doc.nudge) print(doc.nudge.text); }
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

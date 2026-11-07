@@ -6,6 +6,8 @@ export interface FocusIntention {
   machine?: string;
   sessions?: readonly string[];
   done?: boolean;
+  /** Set by the reducer when the intention is ticked done, cleared on undo: "know when items are done". */
+  doneAt?: string;
   createdAt: string;
 }
 export interface FocusDaySummary { date: string; done: number; carried: number; questions: number }
@@ -48,8 +50,8 @@ export function isFocusDocument(v: unknown): v is FocusDocument {
   if (!object(v) || !keys(v, ["version", "revision", "updatedAt", "intentions", "nudge", "notes", "daySummary", "seenDayNoteAt"])) return false;
   return v.version === 1 && Number.isSafeInteger(v.revision) && (v.revision as number) >= 0 && (v.updatedAt === null || timestamp(v.updatedAt))
     && Array.isArray(v.intentions) && v.intentions.length <= 200 && v.intentions.every(i => object(i)
-      && keys(i, ["id", "title", "project", "machine", "sessions", "done", "createdAt"]) && id(i.id) && text(i.title, 500) && timestamp(i.createdAt)
-      && intentionFields(i) && (i.done === undefined || typeof i.done === "boolean"))
+      && keys(i, ["id", "title", "project", "machine", "sessions", "done", "doneAt", "createdAt"]) && id(i.id) && text(i.title, 500) && timestamp(i.createdAt)
+      && intentionFields(i) && (i.done === undefined || typeof i.done === "boolean") && (i.doneAt === undefined || timestamp(i.doneAt)))
     && new Set(v.intentions.map(i => i.id)).size === v.intentions.length
     && (v.nudge === undefined || (object(v.nudge) && keys(v.nudge, ["text", "updatedAt", "author"]) && text(v.nudge.text, 1000, true) && timestamp(v.nudge.updatedAt) && text(v.nudge.author, 128)))
     && (v.notes === undefined || text(v.notes, 16000, true)) && (v.daySummary === undefined || daySummary(v.daySummary))
@@ -84,7 +86,8 @@ export function reduceFocus(current: FocusDocument, ops: unknown, now: string): 
         if (index < 0) throw new Error(`intention not found: ${op.id}`);
         if (op.type === "drop") doc.intentions.splice(index, 1);
         else if (op.type === "edit") Object.assign(doc.intentions[index]!, op.patch);
-        else doc.intentions[index]!.done = op.type === "done";
+        else if (op.type === "done") Object.assign(doc.intentions[index]!, { done: true, doneAt: now });
+        else { doc.intentions[index]!.done = false; delete doc.intentions[index]!.doneAt; }
         break;
       }
       case "reorder": {

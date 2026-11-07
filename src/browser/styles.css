@@ -2938,6 +2938,13 @@ body > header { height: 52px; min-height: 52px; }
 .focus-spin::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border: 2px solid var(--accent-dim); border-top-color: var(--accent); border-radius: 50%; vertical-align: -1px; animation: focus-spin 1s linear infinite; }
 @keyframes focus-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .focus-spin::before { animation: none; } }
+.focus-done { list-style: none; margin: 8px 0 0; padding: 0 8px; border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface-2); }
+.focus-done li { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px; font-size: 13px; color: var(--text-3); }
+.focus-done li + li { border-top: 1px solid var(--hairline); }
+.focus-time { min-width: 44px; color: var(--text-4); font: 12px var(--font-mono); }
+.focus-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.focus-what b { color: var(--text-2); font-weight: 500; }
+.focus-done button { color: var(--accent); font-size: 12px; }
 .focus-yesterday { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 28px; color: var(--text-2); font-size: 13px; }
 .assistant-column .focus-yesterday h2 { margin: 0; }
 .focus-yesterday button { margin-left: auto; color: var(--accent); }

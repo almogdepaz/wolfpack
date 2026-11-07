@@ -59,11 +59,21 @@ test("enabling is one button and one dialog; the assistant then opens for its fi
   await view.getByRole("textbox", { name: "Add an intention" }).press("Enter");
   await view.getByRole("checkbox", { name: "Done: reply to issue" }).check();
   await expect(view).toContainText("1 of 2 done");
+  // a tick lands in today's timeline with its time; undo puts it back in the list
+  const done = view.locator(".focus-done");
+  await expect(done).toContainText("reply to issue");
+  await expect(done).toContainText(/\d\d:\d\d/);
   expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
+  await done.getByRole("button", { name: "Undo done: reply to issue" }).click();
+  await expect(view.getByRole("checkbox", { name: "Done: reply to issue" })).not.toBeChecked();
+  await expect(view).toContainText("0 of 2 done");
+  await view.getByRole("checkbox", { name: "Done: reply to issue" }).check();
+  await expect(view).toContainText("1 of 2 done");
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block).toBeVisible();
   await expect(block.getByRole("button", { name: /start.*ship focus/i })).toBeVisible();
+  await expect(block).toContainText(/1 of 2 done · ✓ reply to issue \d\d:\d\d/);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await block.getByRole("button", { name: /prompt-project/ }).click();
   await expect(page.locator("#terminal-view")).toBeVisible();

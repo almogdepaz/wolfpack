@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { rankFocus, linkedFocusSessions, type FocusSession } from "../../src/focus-ranking.ts";
+import { rankFocus, linkedFocusSessions, doneToday, type FocusSession } from "../../src/focus-ranking.ts";
 import { emptyFocus, reduceFocus } from "../../src/focus-contract.ts";
 const now = "2026-11-06T12:00:00.000Z";
 const doc = () => reduceFocus(emptyFocus(), [
@@ -26,4 +26,24 @@ test("an explicitly empty sessions list wins over cwd fallback", () => {
 
 test("idle sessions are live chips, not next actions or starts", () => {
   expect(rankFocus(doc(), [session("linked", "idle", now)], 5).map(r => r.intention?.id)).toEqual(["b"]);
+});
+test("a linked session that finished recently is a next action after attention and starts; older finishes are chips", () => {
+  const nowMs = Date.parse(now);
+  const sessions = [session("linked", "done", "2026-11-06T11:40:00.000Z"), session("busy", "working", now), session("unlinked", "needs-input", "2026-11-06T09:00:00.000Z")];
+  expect(rankFocus(doc(), sessions, 5, nowMs).map(row => [row.kind, row.session?.id ?? row.intention?.id])).toEqual([["start", "b"], ["open", "linked"], ["open", "unlinked"]]);
+  expect(rankFocus(doc(), sessions, 5, nowMs)[1]?.reason).toMatch(/finished/i);
+  const stale = [session("linked", "done", "2026-11-04T11:40:00.000Z")];
+  expect(rankFocus(doc(), stale, 5, nowMs).map(r => r.session?.id ?? r.intention?.id)).toEqual(["b"]);
+});
+test("done today lists ticked intentions and finished linked sessions of the day, newest first", () => {
+  const nowMs = Date.parse(now);
+  const ticked = reduceFocus(doc(), [{ type: "done", id: "a" }], "2026-11-06T10:05:00.000Z");
+  const sessions = [session("linked", "done", "2026-11-06T11:40:00.000Z"), session("busy", "working", now), session("old", "done", "2026-11-05T11:40:00.000Z")];
+  const items = doneToday(ticked, sessions, nowMs, at => at.slice(0, 10));
+  expect(items.map(i => [i.kind, i.kind === "intention" ? i.intention.id : i.session.id, i.at])).toEqual([
+    ["intention", "c", now], ["session", "linked", "2026-11-06T11:40:00.000Z"], ["intention", "a", "2026-11-06T10:05:00.000Z"],
+  ]);
+  // an intention ticked before doneAt existed stays a done intention in the list, not a timeline entry
+  const legacy = { ...ticked, intentions: ticked.intentions.map(i => { const { doneAt: _, ...rest } = i; return i.id === "c" ? rest : i; }) };
+  expect(doneToday(legacy, sessions, nowMs, at => at.slice(0, 10)).some(i => i.kind === "intention" && i.intention.id === "c")).toBe(false);
 });

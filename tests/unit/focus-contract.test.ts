@@ -12,6 +12,10 @@ describe("focus document", () => {
     expect(one.intentions[0]?.createdAt).toBe(now);
     const two = reduceFocus(one, [{ type: "add", intention: { id: "other", title: "other" } }, { type: "edit", id: "ship", patch: { title: "ship now" } }, { type: "done", id: "ship" }, { type: "reorder", ids: ["other", "ship"] }], now);
     expect(two.intentions.map(i => [i.id, i.done])).toEqual([["other", undefined], ["ship", true]]);
+    // "we need to know when items are done": a tick is stamped, an undo clears the stamp
+    expect(two.intentions[1]?.doneAt).toBe(now);
+    expect(isFocusDocument({ ...two, intentions: [{ ...two.intentions[1]!, doneAt: "not a time" }] })).toBe(false);
+    expect(reduceFocus(two, [{ type: "undo", id: "ship" }], now).intentions[1]).not.toHaveProperty("doneAt");
     expect(two.intentions[1]?.title).toBe("ship now");
     expect(reduceFocus(two, [{ type: "undo", id: "ship" }, { type: "drop", id: "other" }], now).intentions).toEqual([{ ...one.intentions[0], title: "ship now", done: false }]);
     expect(isFocusDocument(two)).toBe(true);
