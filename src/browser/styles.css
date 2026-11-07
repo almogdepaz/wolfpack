@@ -2889,83 +2889,118 @@ body > header { height: 52px; min-height: 52px; }
 }
 /* Focus inherits the session surfaces and attention colors. The filter's intrinsic width leaves the tile its slack. */
 #sidebar-session-filter { flex: 0 0 auto; }
+/* Focus: one row treatment (44px, 12px inset, hairline separators) and three button weights: bordered secondary, amber attention, inline link. */
 .assistant-tile { flex: 1 1 56px; min-width: 0; align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 6px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface-3); color: var(--text-2); text-align: left; font: 600 10px var(--font-ui); }
 .assistant-tile[hidden] { display: none; }
 .assistant-tile > span { display: flex; align-items: center; gap: 4px; }
 .assistant-tile small { font-size: 11px; color: var(--text-3); }
 .assistant-tile .dot { width: 6px; height: 6px; }
-.focus-block { margin: 12px 16px; padding: 16px 20px; border: 1px solid var(--accent-border); border-radius: 14px; background: var(--accent-faint); }
-.focus-block button, .assistant-column button, .focus-terminal-header button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--hairline); border-radius: 7px; background: var(--surface-2); color: var(--text-2); font: inherit; cursor: pointer; }
-.focus-block button:hover, .assistant-column button:hover { background: var(--surface-3); }
-.focus-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--text-3); }
+.focus-block { margin: 12px 16px; padding: 14px 18px 16px; border: 1px solid rgba(69,237,126,.3); border-radius: var(--r-group); background: var(--accent-faint); box-shadow: var(--gloss); }
+.focus-block button, .assistant-column button, .focus-terminal-header button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 34px; padding: 0 12px; border: 1px solid var(--hairline-strong); border-radius: var(--r-control); background: var(--surface-2); color: var(--text-2); font: 500 13px/1.2 var(--font-ui); white-space: nowrap; cursor: pointer; }
+.focus-block button:hover, .assistant-column button:hover, .focus-terminal-header button:hover { background: var(--surface-3); color: var(--text-1); }
+.focus-block button:disabled, .assistant-column button:disabled { opacity: .5; cursor: default; }
+.focus-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 34px; font-size: 12.5px; color: var(--text-3); }
 .focus-header > button:last-child { margin-left: auto; color: var(--accent); }
 .focus-header .dot { display: inline-block; }
-.focus-header .focus-attn { border-color: var(--attn-line); background: var(--attn-fill); color: var(--attn); }
-.focus-nudge { font-size: 18px; line-height: 1.45; margin: 12px 0; overflow-wrap: anywhere; }
+.focus-header > .dot + button { margin-left: -3px; }
+.focus-header .focus-attn { border-color: var(--attn-line); background: var(--attn-tint); color: var(--attn); font-weight: 600; }
+.focus-header .focus-attn:hover { background: var(--attn-tint); color: var(--attn); }
+.focus-notes { display: block; margin: 10px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--attn); }
+.focus-notes > span { display: inline-block; max-width: 100%; margin-right: 14px; }
+.focus-nudge { margin: 12px 0 10px; font-size: 17px; line-height: 1.45; letter-spacing: -.01em; color: var(--text-1); overflow-wrap: anywhere; text-wrap: pretty; }
 .focus-block .focus-nudge { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.focus-next, .focus-today { list-style: none; padding: 0; margin: 12px 0; }
-.focus-next li + li, .focus-today li + li { border-top: 1px solid var(--hairline); }
-.focus-next li > button { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; border-radius: 0; background: transparent; text-align: left; }
-.focus-rank { min-width: 16px; color: var(--text-4); font: 12px var(--font-mono); }
-.focus-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.focus-title small, .focus-for { color: var(--text-3); font-size: 12px; }
-.focus-for { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.focus-action { color: var(--accent); font-size: 12px; }
-#assistant-view { overflow-y: auto; }
-.assistant-column { flex-shrink: 0; width: 100%; max-width: 760px; margin: 0 auto; padding: 24px 20px 40px; }
-.assistant-column > header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; border: 0; background: none; padding: 0; }
-.assistant-column h1 { font: 600 22px var(--font-ui); margin: 0; letter-spacing: 0; text-transform: none; color: var(--text-1); }
-.assistant-column h2 { margin: 28px 0 10px; color: var(--text-3); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
-.assistant-column h2 small { margin-left: 12px; text-transform: none; letter-spacing: 0; }
-.assistant-column details, .assistant-column > small, .assistant-column small, .focus-empty { color: var(--text-3); }
-.assistant-column summary { cursor: pointer; min-height: 36px; font-size: 12px; }
-.focus-today { border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface-2); }
-.focus-today li { display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 6px 12px; }
-.focus-today label { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.focus-today input { accent-color: var(--accent); width: 18px; height: 18px; flex: none; }
-.focus-today .done label span { text-decoration: line-through; color: var(--text-3); }
-.focus-chips { display: flex; gap: 4px; flex-wrap: wrap; }
-.focus-chips button { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border-radius: 16px; }
-.focus-add, .focus-conversation, .focus-conversation form { display: flex; gap: 8px; min-width: 0; }
-.focus-add input, .focus-conversation input { min-width: 0; width: 100%; padding: 8px 12px; border: 1px solid var(--hairline-strong); border-radius: 8px; color: var(--text-1); background: var(--surface-2); font: inherit; }
-.focus-conversation { margin-top: 16px; }
-.focus-conversation form { flex: 1; }
-.focus-terminal-header { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--hairline); font-size: 13px; }
-.focus-terminal-header[hidden] { display: none; }
-.focus-terminal-header span { margin-right: auto; color: var(--text-3); }
-.focus-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 8px 0 0; font-size: 12px; color: var(--attn); }
-.focus-notes button { color: var(--accent); }
+.assistant-column .focus-nudge { margin: 16px 0 0; padding: 14px 16px; border: 1px solid var(--hairline); border-left: 2px solid var(--accent); border-radius: var(--r-control); background: var(--surface-2); }
 .focus-nudge.from { color: var(--text-3); }
-.focus-nudge small { font-size: 12px; }
-.focus-spin::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border: 2px solid var(--accent-dim); border-top-color: var(--accent); border-radius: 50%; vertical-align: -1px; animation: focus-spin 1s linear infinite; }
-@keyframes focus-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .focus-spin::before { animation: none; } }
-.focus-done { list-style: none; margin: 8px 0 0; padding: 0 8px; border: 1px solid var(--hairline); border-radius: 12px; background: var(--surface-2); }
-.focus-done li { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 4px; font-size: 13px; color: var(--text-3); }
-.focus-done li + li { border-top: 1px solid var(--hairline); }
-.focus-time { min-width: 44px; color: var(--text-4); font: 12px var(--font-mono); }
+.focus-nudge small { font-size: 12px; color: var(--text-3); }
+.focus-next, .focus-today, .focus-done { list-style: none; margin: 0; padding: 0; border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--surface-2); box-shadow: var(--gloss); overflow: hidden; }
+.focus-next li + li, .focus-today li + li, .focus-done li + li { border-top: 1px solid var(--hairline); }
+.focus-next li > button, .focus-today li, .focus-done li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 12px; font-size: 13px; color: var(--text-2); }
+.focus-next li > button { width: 100%; justify-content: flex-start; border: 0; border-radius: 0; background: transparent; text-align: left; font-weight: 400; white-space: normal; }
+.focus-next li > button:hover { background: var(--surface-3); color: var(--text-2); }
+.focus-block .focus-next { margin: 4px -18px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.focus-block .focus-next li > button { padding-inline: 18px; }
+.focus-rank { min-width: 14px; color: var(--text-4); font: 12px var(--font-mono); text-align: right; }
+.focus-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: 500; }
+.focus-title small, .focus-for { color: var(--text-3); font-size: 12px; font-weight: 400; }
+.focus-for { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focus-action { color: var(--accent); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.focus-today label { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text-1); cursor: pointer; }
+.focus-today input { accent-color: var(--accent); width: 18px; height: 18px; margin: 0; flex: none; }
+.focus-today .done label span { text-decoration: line-through; color: var(--text-3); }
+.focus-chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.focus-chips:empty { display: none; }
+.focus-chips button { min-height: 26px; padding: 0 9px; gap: 6px; border: 0; border-radius: 13px; background: var(--surface-3); color: var(--text-2); font-size: 11.5px; }
+.focus-chips .dot { width: 7px; height: 7px; box-shadow: none; }
+.focus-done li { color: var(--text-3); }
+.focus-time { min-width: 40px; color: var(--text-4); font: 12px var(--font-mono); }
 .focus-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .focus-what b { color: var(--text-2); font-weight: 500; }
-.focus-done button { color: var(--accent); font-size: 12px; }
-.focus-yesterday { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 28px; color: var(--text-2); font-size: 13px; }
+.focus-add, .focus-conversation, .focus-conversation form { display: flex; gap: 8px; min-width: 0; }
+.focus-add { margin-top: 10px; }
+.focus-add input, .focus-conversation input { min-width: 0; width: 100%; min-height: 36px; padding: 0 12px; border: 1px solid var(--hairline-strong); border-radius: var(--r-control); color: var(--text-1); background: var(--surface-1); font: 400 13px var(--font-ui); }
+.focus-add input:focus, .focus-conversation input:focus { border-color: var(--accent-border); }
+.focus-conversation { margin-top: 14px; }
+.focus-conversation form { flex: 1; }
+.focus-block > p:not([class]) { margin: 14px 0 0; font: 600 15px var(--font-ui); color: var(--text-1); }
+.focus-block > p[role=status], #focus-status:not(:empty) { margin: 10px 0 0; font-size: 12.5px; color: var(--danger); }
+.focus-block > small { display: block; margin-top: 10px; font-size: 12px; color: var(--text-3); }
+.focus-empty { margin: 8px 0; font-size: 13px; color: var(--text-3); }
+#assistant-view { overflow-y: auto; }
+.assistant-column { flex-shrink: 0; width: 100%; max-width: 760px; margin: 0 auto; padding: 24px 20px 48px; }
+.assistant-column > header { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; border: 0; background: none; padding: 0; }
+.assistant-column h1 { font: 600 20px var(--font-ui); margin: 0; letter-spacing: -.01em; text-transform: none; color: var(--text-1); }
+.assistant-column h2 { display: flex; align-items: baseline; gap: 10px; margin: 24px 0 8px; color: var(--text-3); font: 600 11.5px var(--font-ui); text-transform: uppercase; letter-spacing: .07em; }
+.assistant-column h2 small { margin: 0; text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 400; color: var(--text-4); }
+.assistant-column small { color: var(--text-3); }
+#assistant-content > small { display: block; margin-top: 8px; font-size: 12px; color: var(--text-4); }
+.assistant-column details { margin-top: 4px; color: var(--text-3); font-size: 12px; }
+.assistant-column summary { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; list-style: none; cursor: pointer; }
+.assistant-column summary::-webkit-details-marker { display: none; }
+.assistant-column summary::before { content: "›"; display: inline-block; width: 8px; color: var(--text-4); transition: transform .15s; }
+.assistant-column details[open] > summary::before { transform: rotate(90deg); }
+.assistant-column details ol { margin: 0 0 4px; padding-left: 26px; line-height: 1.6; }
+.focus-yesterday { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 24px; color: var(--text-2); font-size: 13px; }
 .assistant-column .focus-yesterday h2 { margin: 0; }
-.focus-yesterday button { margin-left: auto; color: var(--accent); }
+.focus-yesterday button { margin-left: auto; }
+.focus-terminal-header { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--hairline); font-size: 13px; }
+.focus-terminal-header[hidden] { display: none; }
+.focus-terminal-header span { margin-right: auto; color: var(--text-3); }
+.focus-terminal-header button { min-height: 30px; padding: 0 10px; font-size: 12px; }
+.focus-spin > .dot { display: none; }
+.focus-today:empty { display: none; }
+.focus-spin::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border: 2px solid var(--accent-dim); border-top-color: var(--accent); border-radius: 50%; vertical-align: -1px; animation: focus-spin 1s linear infinite; }
+@keyframes focus-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .focus-spin::before { animation: none; } .assistant-column summary::before { transition: none; } }
+/* Inline link weight: names, notes verbs, undo, read, back. Declared last so it wins the shared button rule. */
+.focus-header > button:not(:last-child):not(.focus-attn), .focus-notes button, .focus-done button, .focus-yesterday button, .assistant-column > header button { min-height: 0; padding: 2px 0; border: 0; border-radius: 4px; background: none; color: var(--accent); font-size: 12px; }
+.focus-header > button:not(:last-child):not(.focus-attn):hover, .focus-notes button:hover, .focus-done button:hover, .focus-yesterday button:hover, .assistant-column > header button:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.focus-header > button:not(:last-child):not(.focus-attn) { color: var(--text-1); font-size: 13px; font-weight: 600; }
+.focus-header > button:not(:last-child):not(.focus-attn):hover { color: var(--text-1); }
+.assistant-column > header button { color: var(--text-3); font-size: 13px; }
+.assistant-column > header button:hover { color: var(--text-1); }
+.focus-notes button { display: inline; padding: 0 2px; font-size: inherit; vertical-align: baseline; }
 .app-dialog .app-dialog-scroll { max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--font-mono); }
 .session-pin { width: 12px; height: 12px; color: var(--text-3); flex: none; }
 @media (min-width: 769px) {
   body.sessions-expanded #dashboard-focus { width: calc(100% - 96px); max-width: 1200px; margin: 12px auto 0; }
 }
 @media (max-width: 768px) {
-  .assistant-column { padding: 20px 16px 32px; }
+  .assistant-column { padding: 16px 16px 40px; }
   .assistant-column > header { display: none; }
-  .focus-block { padding: 12px 14px; }
+  .focus-block { margin: 10px 16px 0; padding: 14px; }
+  .focus-block .focus-next { margin-inline: -14px; }
+  .focus-block .focus-nudge { font-size: 16px; -webkit-line-clamp: 3; }
+  .focus-block .focus-next li > button { padding-inline: 14px; }
   .focus-block button, .assistant-column button, .focus-terminal-header button { min-height: 44px; }
+  .focus-notes button { min-height: 0; }
+  .focus-header > button:not(:last-child):not(.focus-attn), .focus-done button, .focus-yesterday button, .focus-chips button { min-height: 32px; }
   .focus-header > small { flex-basis: 100%; order: 1; }
+  .focus-header > span:not(.dot) { flex: 1 1 auto; min-width: 0; }
   .focus-for, .focus-extra { display: none; }
   .focus-today li { flex-wrap: wrap; }
   .focus-today label { min-height: 44px; }
-  .focus-chips { width: 100%; }
-  .focus-add input, .focus-conversation input { font-size: 16px; }
+  .focus-chips { width: 100%; justify-content: flex-start; padding-left: 30px; }
+  .focus-add input, .focus-conversation input { min-height: 44px; font-size: 16px; }
   .focus-terminal-header { flex-wrap: wrap; }
 }
 @media (max-width: 360px) {
