@@ -7,7 +7,7 @@ let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
 test("needs-you state header opens the assistant terminal while the tile opens the view", async ({ page }) => {
-  await page.route("**/api/focus", async route => {
+  await page.route(url => url.pathname === "/api/focus", async route => {
     const response = await route.fetch();
     const body = await response.json();
     body.assistant.state = "needs-input";

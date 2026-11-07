@@ -8,6 +8,8 @@ export interface AppDialogField {
 export interface AppDialogOptions {
   readonly title: string;
   readonly message?: string;
+  /** Long plain text (a day note): keep line breaks and scroll inside the dialog; the region is keyboard reachable. */
+  readonly scroll?: boolean;
   readonly fields?: readonly AppDialogField[];
   readonly confirmLabel: string;
   readonly cancelLabel?: string | null;
@@ -52,6 +54,8 @@ export function showAppDialog(options: AppDialogOptions): Promise<AppDialogResul
   title.textContent = options.title;
   message.textContent = options.message || "";
   message.hidden = !options.message;
+  message.classList.toggle("app-dialog-scroll", options.scroll === true);
+  if (options.scroll) message.tabIndex = 0; else message.removeAttribute("tabindex");
   fields.replaceChildren();
 
   for (const field of options.fields || []) {

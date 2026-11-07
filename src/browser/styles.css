@@ -2398,9 +2398,11 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
 .notification-setting-status { min-height: 18px; margin: 0 0 8px 48px; font-size: 12px; line-height: 1.45; color: var(--text-dim); }
 .quiet-alert-setting { margin: 8px 0 6px 48px; }
 .quiet-alert-setting-help { margin: 0 0 10px; color: var(--text-dim); font-size: 12px; line-height: 1.45; }
-.quiet-alert-setting .settings-toggle, .task-worker-extension-setting .settings-toggle { justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-.quiet-alert-setting select, .quiet-alert-setting input, .task-worker-extension-setting select { max-width: 290px; min-width: 0; min-height: 36px; padding: 6px 8px; color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); font: inherit; }
-.quiet-alert-setting input { width: 82px; }
+.quiet-alert-setting .settings-toggle, .assistant-timing .settings-toggle, .task-worker-extension-setting .settings-toggle { justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.quiet-alert-setting select, .quiet-alert-setting input, .assistant-timing input, .task-worker-extension-setting select { max-width: 290px; min-width: 0; min-height: 36px; padding: 6px 8px; color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); font: inherit; }
+.quiet-alert-setting input, .assistant-timing input { width: 82px; }
+.assistant-timing { max-width: 480px; margin-top: 12px; }
+.assistant-timing .notification-setting-status { margin: 8px 0 0; }
 .task-worker-extension-setting { margin: 12px 0 6px 48px; }
 .notification-setting-status[data-state="pending"] { color: var(--warning); }
 .notification-setting-status[data-state="success"] { color: var(--accent); }
@@ -2670,9 +2672,11 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
   .quiet-alert-setting,
   .task-worker-extension-setting { margin-left: 0; }
   .quiet-alert-setting .settings-toggle,
+  .assistant-timing .settings-toggle,
   .task-worker-extension-setting .settings-toggle { flex-direction: column; align-items: stretch; gap: 8px; padding-block: 10px; }
   .quiet-alert-setting select,
   .quiet-alert-setting input,
+  .assistant-timing input,
   .task-worker-extension-setting select { max-width: 100%; width: 100%; min-height: 44px; font-size: 16px; }
   .settings-section-nav a,
   .discover-btn,
@@ -2921,6 +2925,17 @@ body > header { height: 52px; min-height: 52px; }
 .focus-terminal-header { flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--hairline); font-size: 13px; }
 .focus-terminal-header[hidden] { display: none; }
 .focus-terminal-header span { margin-right: auto; color: var(--text-3); }
+.focus-notes { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 8px 0 0; font-size: 12px; color: var(--attn); }
+.focus-notes button { color: var(--accent); }
+.focus-nudge.from { color: var(--text-3); }
+.focus-nudge small { font-size: 12px; }
+.focus-spin::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border: 2px solid var(--accent-dim); border-top-color: var(--accent); border-radius: 50%; vertical-align: -1px; animation: focus-spin 1s linear infinite; }
+@keyframes focus-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .focus-spin::before { animation: none; } }
+.focus-yesterday { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 28px; color: var(--text-2); font-size: 13px; }
+.assistant-column .focus-yesterday h2 { margin: 0; }
+.focus-yesterday button { margin-left: auto; color: var(--accent); }
+.app-dialog .app-dialog-scroll { max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--font-mono); }
 .session-pin { width: 12px; height: 12px; color: var(--text-3); flex: none; }
 @media (min-width: 769px) {
   body.sessions-expanded #dashboard-focus { width: calc(100% - 96px); max-width: 1200px; margin: 12px auto 0; }

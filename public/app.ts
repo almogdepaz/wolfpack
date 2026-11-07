@@ -1588,7 +1588,8 @@ function showView(name: string, skipAnimation?: boolean, refreshSessions = true)
   teardownTerminalForViewChange(previousView, viewName);
   setState({ currentView: viewName });
   document.getElementById("assistant-terminal-header").hidden = viewName !== "terminal" || !focusUi.isAssistant(state.currentSession, state.currentMachine);
-  if (viewName === "assistant" || viewName === "settings") void focusUi.refresh();
+  if (viewName === "assistant") void focusUi.refresh(true);
+  if (viewName === "settings") void focusUi.loadTiming();
   document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   applyViewVisibility(previousElement, nextElement, animate, goingForward);
 

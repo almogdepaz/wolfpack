@@ -2,8 +2,11 @@ import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSessi
 import { esc, escAttr } from "./app-state";
 import { rankFocus, linkedFocusSessions, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
+import { validateAssistantTiming, type AssistantTiming } from "../src/focus-scheduler";
+import { showAppDialog } from "./app-dialog";
 interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string }
-interface FocusResponse { home: string; installationId: string; local: boolean; document: FocusDocument | null; revision: number; assistant?: AssistantStatus }
+interface RoutineStatus { catchingUp: { machines: number; since: string | null } | null; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
+interface FocusResponse { home: string; installationId: string; local: boolean; document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
 interface Machine { key: string; name: string }
 export function createAssistantView(deps: {
   request: <T>(path: string, init?: RequestInit, machine?: string, interactive?: boolean) => Promise<T>;
@@ -22,10 +25,16 @@ export function createAssistantView(deps: {
   let notice = "";
   let flight: Promise<void> | undefined;
   let busy = false;
+  let opened = false;
   const cacheKey = "wolfpack-focus-cache";
   try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; offline = true; } } catch { /* no valid cached focus */ }
   const doc = () => focus?.document ?? emptyFocus();
-  const status = () => offline ? `${homeName} offline` : focus?.assistant?.error ? "failed" : focus?.assistant?.enabled ? (focus.assistant.state === "needs-input" ? "needs you" : focus.assistant.state) : "off";
+  const routines = () => offline || !focus?.assistant?.enabled ? undefined : focus.routines;
+  const status = () => offline ? `${homeName} offline` : focus?.assistant?.error ? "failed" : focus?.assistant?.enabled ? (focus.assistant.state === "needs-input" ? "needs you" : routines()?.catchingUp ? "catching up" : focus.assistant.state) : "off";
+  // `Tue 23:00`: the plan's copy for catching-up / stale / not-reached times.
+  const when = (at: string) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const localDay = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const dayName = (date: string) => date === localDay(Date.now() - 864e5) ? "yesterday" : new Date(`${date}T12:00`).toLocaleDateString([], { weekday: "short" });
   const freshness = () => doc().updatedAt ? `updated ${age(doc().updatedAt!)}` : "set your focus";
   function age(at: string): string {
     const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(at)) / 60000));
@@ -63,14 +72,26 @@ export function createAssistantView(deps: {
     const state = status();
     const next = rankFocus(current, deps.sessions(), 5);
     const summary = `${current.intentions.filter(i => i.done).length} of ${current.intentions.length} done`;
-    const info = offline ? `focus from ${current.updatedAt ? new Date(current.updatedAt).toLocaleString() : "cache"} · ${homeName} offline` : `${state} · ${freshness()}`;
-    const nudge = current.nudge?.text ? `<p class="focus-nudge">${esc(current.nudge.text)}</p>` : "";
+    const r = routines();
+    const catching = r?.catchingUp;
+    const info = offline ? `focus from ${current.updatedAt ? new Date(current.updatedAt).toLocaleString() : "cache"} · ${homeName} offline`
+      : catching ? `catching up${catching.since ? ` since ${when(catching.since)}` : ""} · ${catching.machines} machine${catching.machines === 1 ? "" : "s"}`
+      : r?.stale ? `quiet since ${when(r.stale.since)}` : `${state} · ${freshness()}`;
+    const nudgeDay = current.nudge && localDay(Date.parse(current.nudge.updatedAt));
+    const nudge = current.nudge?.text ? `<p class="focus-nudge${catching ? " from" : ""}">${esc(current.nudge.text)}${catching && nudgeDay !== localDay(Date.now()) ? ` <small>from ${dayName(nudgeDay!)}</small>` : ""}</p>` : "";
+    const catchUp = button("catch-up", "catch up now");
+    const noteItems = r ? [...r.unreachable.map(m => esc(`${m.name} not reached ${m.since ? `since ${when(m.since)}` : "yet"}`)), ...(r.surfaced ? [`inbox not acknowledged after ${r.surfaced.sends} sends · ${catchUp}`] : []), ...(r.stale && !r.surfaced ? [catchUp] : []), ...[r.notice, r.error].filter(Boolean).map(t => esc(t!))].map(n => `<span>${n}</span>`).join("") : "";
+    const notes = noteItems ? `<p class="focus-notes">${noteItems}</p>` : "";
+    const summaryDay = current.daySummary;
+    // A day note stays listed until it is marked read after that day ended (seenDayNoteAt is shared across devices).
+    const yesterday = summaryDay && !(current.seenDayNoteAt && Date.parse(current.seenDayNoteAt) >= new Date(`${summaryDay.date}T00:00`).getTime() + 864e5)
+      ? `<div class="focus-yesterday"><h2>${dayName(summaryDay.date)}</h2><span>${summaryDay.done} done · ${summaryDay.carried} carried over · ${summaryDay.questions} question${summaryDay.questions === 1 ? "" : "s"}</span>${button("day-note", "read ›", `Read day note for ${summaryDay.date}`)}</div>` : "";
     const tile = document.getElementById("sidebar-assistant");
-    const tileStatus = !focus?.document ? "set up" : offline ? "offline" : state === "needs you" ? state : state === "off" ? "off" : state === "failed" ? "failed" : `${next.length} next`;
+    const tileStatus = !focus?.document ? "set up" : offline ? "offline" : state === "needs you" ? state : state === "off" ? "off" : state === "failed" ? "failed" : catching ? "syncing" : r?.stale ? `stale ${age(r.stale.since)}` : `${next.length} next`;
     if (tile) { tile.innerHTML = `<span>${dot(state)}assistant</span> <small>${tileStatus}</small>`; tile.title = current.nudge?.text ?? info; tile.setAttribute("aria-label", `Assistant ${tileStatus}. ${state}. Open assistant`); }
-    replace("dashboard-focus", `<div class="focus-header">${dot(state)}${button("view", "assistant", "Open assistant")}<small>${esc(info)}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${nudge}${focus?.document ? nextHtml(3) + `<small>today · ${summary}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error || focus?.assistant?.error ? `<p role="status">${esc(error || focus?.assistant?.error || "")}</p>` : ""}`);
+    replace("dashboard-focus", `<div class="focus-header">${dot(state)}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>today · ${summary}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error || focus?.assistant?.error ? `<p role="status">${esc(error || focus?.assistant?.error || "")}</p>` : ""}`);
     const enabled = !!focus?.assistant?.enabled;
-    replace("assistant-content", `<div class="focus-header">${state === "needs you" ? `<button type="button" data-focus-action="talk">${dot(state)} ${esc(info)}</button>` : `<span>${dot(state)} ${esc(info)}</span>`}${button("settings", enabled ? "settings" : "enable assistant", enabled ? "Assistant settings" : "Enable assistant — settings")}</div>${enabled ? `<div class="focus-conversation"><form data-focus-form="ask"><input type="text" data-focus-key="ask" aria-label="Ask the assistant" placeholder="ask…" maxlength="8192" required${offline || busy ? " disabled" : ""}><button type="submit"${offline || busy ? " disabled" : ""}>Ask</button></form><button type="button" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk</button></div>` : ""}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2><ul class="focus-today" aria-label="Intentions">${current.intentions.map(i => `<li${i.done ? ' class="done"' : ""}><label><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${offline || busy ? " disabled" : ""}><span>${esc(i.title)}</span></label><span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>`);
+    replace("assistant-content", `<div class="focus-header">${state === "needs you" ? `<button type="button" data-focus-action="talk">${dot(state)} ${esc(info)}</button>` : `<span${catching ? ' class="focus-spin"' : ""}>${dot(state)} ${esc(info)}</span>`}${button("settings", enabled ? "settings" : "enable assistant", enabled ? "Assistant settings" : "Enable assistant — settings")}</div>${notes}${enabled ? `<div class="focus-conversation"><form data-focus-form="ask"><input type="text" data-focus-key="ask" aria-label="Ask the assistant" placeholder="ask…" maxlength="8192" required${offline || busy ? " disabled" : ""}><button type="submit"${offline || busy ? " disabled" : ""}>Ask</button></form><button type="button" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk</button></div>` : ""}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2><ul class="focus-today" aria-label="Intentions">${current.intentions.map(i => `<li${i.done ? ' class="done"' : ""}><label><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${offline || busy ? " disabled" : ""}><span>${esc(i.title)}</span></label><span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = error || focus?.assistant?.error || (focus?.assistant?.queued ? `${focus.assistant.queued} queued` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -80,18 +101,19 @@ export function createAssistantView(deps: {
     const terminalState = document.getElementById("assistant-terminal-state");
     if (terminalState) terminalState.textContent = focus?.assistant?.queued ? `${focus.assistant.queued} queued` : focus?.assistant?.error ?? state;
   }
-  async function refresh() {
+  async function refresh(open = !opened) {
     if (flight) return flight;
+    opened = true;
     flight = (async () => {
       try {
-        let response = await deps.request<FocusResponse>("/focus", undefined, undefined, false);
+        let response = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, undefined, false);
         const home = response.local ? { key: "", name: "this machine" } : deps.homeMachine(response.home);
         if (focus && focus.home !== response.home) focus = { ...response, document: null };
         machine = home?.key ?? "";
         homeName = home?.name ?? "sgt";
         if (!response.local) {
           if (!home) { if (focus?.home !== response.home) focus = { ...response, document: null }; throw new Error(`${homeName} offline`); }
-          const remote = await deps.request<FocusResponse>("/focus", undefined, machine, false);
+          const remote = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, machine, false);
           if (!remote.local || remote.installationId !== response.home) throw new Error("focus home identity changed");
           response = remote;
         }
@@ -115,6 +137,33 @@ export function createAssistantView(deps: {
       } catch (e) { if (attempt || (e as { status?: number }).status !== 409) throw e; await refresh(); }
     }
   }
+  async function readDayNote() {
+    const date = doc().daySummary?.date;
+    if (!date) return;
+    const note = await deps.request<{ markdown: string }>(`/focus/day-note?date=${date}`, undefined, machine);
+    if (await showAppDialog({ title: `Day note ${date}`, message: note.markdown, scroll: true, confirmLabel: "Mark read", cancelLabel: "Close" })) await write({ type: "seen-day-note", at: new Date().toISOString() });
+  }
+  const timingForm = document.getElementById("assistant-timing") as HTMLFormElement | null;
+  const timingStatus = (text: string, state: string) => { const el = document.getElementById("assistant-timing-status"); if (el) { el.textContent = text; el.dataset.state = state; } };
+  async function loadTiming() {
+    await refresh();
+    if (!timingForm) return;
+    try {
+      const timing = (await deps.request<{ settings: { assistant: AssistantTiming } }>("/settings", undefined, machine, false)).settings.assistant;
+      for (const [key, value] of Object.entries(timing)) (timingForm.elements.namedItem(key) as HTMLInputElement).value = String(value);
+      timingStatus(`Routine timing on ${homeName}.`, "idle");
+    } catch { timingStatus(`Could not load routine timing from ${homeName}.`, "error"); }
+  }
+  timingForm?.addEventListener("submit", event => {
+    event.preventDefault();
+    const values = Object.fromEntries([...new FormData(timingForm)].map(([key, value]) => [key, key === "fallbackTime" ? String(value) : Number(value)]));
+    const checked = validateAssistantTiming(values);
+    if ("error" in checked) return timingStatus(checked.error, "error");
+    void (async () => {
+      try { await deps.request("/settings", { method: "POST", body: JSON.stringify({ assistant: checked.value }) }, machine); timingStatus("Routine timing saved.", "success"); }
+      catch (e) { timingStatus(e instanceof Error ? e.message : "Could not save routine timing.", "error"); }
+    })();
+  });
   function talk() { if (focus?.assistant?.session && !offline) deps.open(focus.assistant.session, machine); }
   async function run(action: () => Promise<void>) {
     if (busy) return;
@@ -131,6 +180,8 @@ export function createAssistantView(deps: {
       if (action === "view") deps.show("assistant");
       if (action === "settings") deps.show("settings");
       if (action === "talk") talk();
+      if (action === "catch-up") void run(async () => { const next = await deps.request<RoutineStatus>("/focus/catch-up", { method: "POST" }, machine); if (focus) focus.routines = next; });
+      if (action === "day-note") void run(readDayNote);
       if (target.dataset.focusNext !== undefined) {
         const row = rankFocus(doc(), deps.sessions(), id === "dashboard-focus" ? 3 : 5)[Number(target.dataset.focusNext)];
         if (row?.session) deps.open(row.session.name, row.session.machineUrl); else if (row?.intention) deps.start(row.intention);
@@ -167,7 +218,7 @@ export function createAssistantView(deps: {
     await refresh();
   }); };
   render();
-  return { refresh, render,
+  return { refresh, render, loadTiming,
     captureStart: (intentionId: string): FocusSessionStart => ({ intentionId, home: focus?.home ?? "" }),
     linkStartedSession: async (start: FocusSessionStart, session: StartedFocusSession) => {
       await write(() => {

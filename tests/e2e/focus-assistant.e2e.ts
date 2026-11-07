@@ -45,7 +45,7 @@ test("cached home-offline focus is read-only and still ranks live sessions", asy
   if (!current.document) await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: 0, ops: [{ type: "add", intention: { id: "offline", title: "offline intention" } }] } });
   await page.goto(server.baseUrl);
   await expect(page.locator("#dashboard-focus .focus-next")).toBeVisible();
-  await page.route("**/api/focus", route => route.abort("failed"));
+  await page.route(url => url.pathname === "/api/focus", route => route.abort("failed"));
   await page.reload();
   await expect(page.locator("#dashboard-focus")).toContainText("offline");
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
