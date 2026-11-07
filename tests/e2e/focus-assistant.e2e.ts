@@ -138,6 +138,22 @@ test("the assistant's own session is not a card and not counted; its terminal is
   }
 });
 
+test("disabling the assistant elsewhere while its page is open returns to sessions", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(page.locator("#assistant-view")).toHaveClass(/visible/);
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    body.assistant = { ...body.assistant, enabled: false };
+    await route.fulfill({ response, json: body });
+  });
+  // the next sessions poll refreshes focus (5 s cadence)
+  await expect(page.locator("#assistant-view")).not.toHaveClass(/visible/, { timeout: 15_000 });
+  await expect(page.locator("#sessions-view")).toHaveClass(/visible/);
+});
+
 test("talk opens the assistant terminal, Focus returns, a busy ask is queued, and the terminal header can disable it", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();

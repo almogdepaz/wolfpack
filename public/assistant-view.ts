@@ -26,6 +26,7 @@ export function createAssistantView(deps: {
   let flight: Promise<void> | undefined;
   let busy = false;
   let opened = false;
+  let wasEnabled = false;
   const cacheKey = "wolfpack-focus-cache";
   try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; offline = true; } } catch { /* no valid cached focus */ }
   const doc = () => focus?.document ?? emptyFocus();
@@ -110,6 +111,10 @@ export function createAssistantView(deps: {
     // The dot follows the user's move: amber while a routine waits on its terminal, red while the home is unreachable.
     const tone = dot(offline ? "failed" : r?.surfaced ? "needs you" : state);
     // Nothing of the focus ui shows while the assistant is off: tile, block and page stay hidden; settings is the only door.
+    // Disabled from another device while the page is open: leave it once, on the transition (show re-enters render).
+    const closing = wasEnabled && !enabled;
+    wasEnabled = enabled;
+    if (closing && document.getElementById("assistant-view")?.classList.contains("visible")) deps.show("sessions");
     const tile = document.getElementById("sidebar-assistant");
     const tileStatus = !focus?.document ? "set focus" : offline ? "offline" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : `${next.length} next`;
     if (tile) { tile.hidden = !enabled; tile.innerHTML = `<span>${tone}assistant</span> <small>${tileStatus}</small>`; tile.title = current.nudge?.text ?? info; tile.setAttribute("aria-label", `Assistant ${tileStatus}. ${state}. Open assistant`); }
