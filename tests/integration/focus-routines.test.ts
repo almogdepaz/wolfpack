@@ -134,6 +134,12 @@ describe("focus routines runtime", () => {
     expect(t.sends).toHaveLength(4);
     expect(t.routines.status().surfaced).toEqual({ file, sends: 4 });
     expect(t.routines.status().catchingUp).toBeNull();
+    const restarted = new FocusRoutines({
+      folder: join(t.root, "assistant"), enabled: () => true, sources: async () => [t.peer], timing: async () => ASSISTANT_TIMING_DEFAULTS,
+      assistant: async () => t.assistant, queueBusy: () => false, enqueue: () => {}, now: () => t.clock.now,
+    });
+    await restarted.tick();
+    expect(restarted.status()).toMatchObject({ surfaced: { file, sends: 4 }, catchingUp: null });
     t.peer.add({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "t2", eventType: "task.completed" });
     await t.routines.tick({ manual: true });
     expect(existsSync(join(t.root, "assistant", "inbox", file))).toBe(false);

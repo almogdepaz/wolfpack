@@ -307,7 +307,8 @@ export class FocusRoutines {
   status(): RoutineStatus {
     const c = this.snapshot;
     const inbox = c.inbox;
-    const catchingUp = this.deps.enabled() && (this.booting || (inbox && !inbox.surfaced))
+    // A surfaced inbox waits for `catch up now`; it is not progress, even right after a restart.
+    const catchingUp = this.deps.enabled() && !inbox?.surfaced && (this.booting || inbox)
       ? { machines: Math.max(1, Object.keys(c.catchUpCursors).length), since: c.lastAckAt, ...(inbox && { routine: inbox.routine }) } : null;
     const yesterday = addDays(activityDayOf(this.now(), this.fallbackTime), -1);
     const stale = !catchingUp && this.pending && c.lastAckAt && this.now() - Date.parse(c.lastAckAt) > STALE_AFTER_MS ? { since: c.lastAckAt } : null;
