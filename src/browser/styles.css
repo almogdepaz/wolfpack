@@ -2890,6 +2890,7 @@ body > header { height: 52px; min-height: 52px; }
 /* Focus inherits the session surfaces and attention colors. The filter's intrinsic width leaves the tile its slack. */
 #sidebar-session-filter { flex: 0 0 auto; }
 .assistant-tile { flex: 1 1 56px; min-width: 0; align-self: stretch; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 6px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface-3); color: var(--text-2); text-align: left; font: 600 10px var(--font-ui); }
+.assistant-tile[hidden] { display: none; }
 .assistant-tile > span { display: flex; align-items: center; gap: 4px; }
 .assistant-tile small { font-size: 11px; color: var(--text-3); }
 .assistant-tile .dot { width: 6px; height: 6px; }

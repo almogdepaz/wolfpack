@@ -35,6 +35,8 @@ test("with the assistant off nothing of the focus ui shows; settings is the only
   await expect(section.locator("#assistant-setting-status")).toHaveText("off");
   await expect(section.getByRole("button", { name: /enable assistant/i })).toHaveCount(1);
   await expect(section.locator("#assistant-setting-open")).toBeHidden();
+  // the tile's own display rule must not override `hidden` where no hidden parent covers it (settings, projects)
+  await expect(page.locator("#sidebar-assistant")).toBeHidden();
   expect((await new AxeBuilder({ page }).include("#settings-assistant").analyze()).violations).toEqual([]);
 });
 
