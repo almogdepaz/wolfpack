@@ -206,6 +206,41 @@ test("a pi dialog with no semantic status reports needs-input in /api/focus stat
   } finally { ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("a relaunched assistant never shows the previous incarnation's cached verdict", async () => {
+  process.env.WOLFPACK_TEST = "1";
+  const root = mkdtempSync(join(tmpdir(), "focus-verdict-incarnation-"));
+  const { createServerContext } = await import("../../src/server/context.ts");
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+  __resetSessionObservationForTests();
+  const folder = join(root, "assistant");
+  mkdirSync(folder);
+  let captures = 0;
+  let screen = " Trust project folder?\n /x/assistant\n\n → Trust\n   Do not trust\n\n ↑↓ navigate  enter select  escape/ctrl+c cancel\n";
+  const backend = new MockBackend({ capturePane: async () => { captures++; return screen; } });
+  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+  // a disable → enable (or a crash relaunch) gives the same name a new session id
+  let incarnation = 1;
+  const identities = backend.listIdentities.bind(backend);
+  backend.listIdentities = async () => {
+    const out = await identities();
+    if (out.assistant) out.assistant = { ...out.assistant, wolfpackSessionId: `mock:assistant:${incarnation}` };
+    return out;
+  };
+  const config = { devDir: root, port: 19866, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] };
+  const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
+  try {
+    expect((await ctx.focusRuntime.status()).state).toBe("needs-input");
+    const after = captures;
+    incarnation = 2;
+    screen = "\n\n";
+    const relaunched = await ctx.focusRuntime.status();
+    expect(relaunched.sessionId).toBe("mock:assistant:2");
+    expect(relaunched.state).not.toBe("needs-input");
+    expect(captures).toBeGreaterThan(after);
+  } finally { ctx.focusRuntime.stop(); __resetSessionObservationForTests(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test("enable requires login confirmation, seeds only focus skill, resumes by path", async () => {
   const root = mkdtempSync(join(tmpdir(), "focus-enable-success-"));
   const { AssistantService } = await import("../../src/server/assistant-service.ts");

@@ -16,7 +16,7 @@ export class FocusRuntime {
   readonly queue: FocusSendQueue;
   readonly routines: FocusRoutines;
   private sampledSessionId?: string;
-  private lastVerdict?: { at: number; verdict: { idle: boolean; needsInput: boolean } | undefined };
+  private lastVerdict?: { at: number; id: string; verdict: { idle: boolean; needsInput: boolean } | undefined };
   private timer?: ReturnType<typeof setInterval>;
   constructor(private readonly ctx: ServerContext) {
     this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => ctx.assistantService.pins });
@@ -59,7 +59,8 @@ export class FocusRuntime {
     const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
     const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
-    const verdict = session && service.enabled ? await this.verdict() : undefined;
+    const id = session?.identity?.wolfpackSessionId;
+    const verdict = id && service.enabled ? await this.verdict(id) : undefined;
     // A harness dialog (pi's trust / login / resume selects) has no semantic status and reads as idle from the
     // screen fallback; the harness verdict is what the user needs to see, with the terminal as the action.
     const state = verdict?.needsInput ? AGENT_STATUS_STATE.NEEDS_INPUT : session?.runtimeState.state ?? (service.enabled ? "starting" : "off");
@@ -67,12 +68,12 @@ export class FocusRuntime {
       state, idle: verdict?.idle ?? false, queued: this.queue.size,
       error: service.enabled ? this.queue.error ?? this.pins.errors.assistant : undefined };
   }
-  /** Every dashboard polls `/api/focus`; one screen sample serves them for a few seconds. */
-  private async verdict(): Promise<{ idle: boolean; needsInput: boolean } | undefined> {
+  /** Every dashboard polls `/api/focus`; one screen sample serves them for a few seconds, per incarnation (a relaunch resamples). */
+  private async verdict(id: string): Promise<{ idle: boolean; needsInput: boolean } | undefined> {
     const now = Date.now();
-    if (!this.lastVerdict || now - this.lastVerdict.at > VERDICT_TTL_MS) {
+    if (!this.lastVerdict || this.lastVerdict.id !== id || now - this.lastVerdict.at > VERDICT_TTL_MS) {
       const sample = await this.sample();
-      this.lastVerdict = { at: now, verdict: sample && { idle: sample.idle, needsInput: sample.needsInput } };
+      this.lastVerdict = { at: now, id, verdict: sample && { idle: sample.idle, needsInput: sample.needsInput } };
     }
     return this.lastVerdict.verdict;
   }
