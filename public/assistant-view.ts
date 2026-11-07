@@ -2,10 +2,10 @@ import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSessi
 import { esc, escAttr } from "./app-state";
 import { rankFocus, linkedFocusSessions, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
-import { validateAssistantTiming, type AssistantTiming } from "../src/focus-scheduler";
+import type { AssistantTiming } from "../src/focus-scheduler";
 import { showAppDialog } from "./app-dialog";
 interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string }
-interface RoutineStatus { catchingUp: { machines: number; since: string | null } | null; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
+interface RoutineStatus { catchingUp: { machines: number; since: string | null; unconfirmed?: true } | null; yesterday?: { date: string; note: boolean; endsAt: string }; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
 interface FocusResponse { home: string; installationId: string; local: boolean; document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
 interface Machine { key: string; name: string }
 export function createAssistantView(deps: {
@@ -40,7 +40,9 @@ export function createAssistantView(deps: {
     const minutes = Math.max(0, Math.floor((Date.now() - Date.parse(at)) / 60000));
     return minutes < 1 ? "now" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h` : `${Math.floor(minutes / 1440)}d`;
   }
-  const button = (action: string, label: string, name = label) => `<button type="button" data-focus-action="${action}" aria-label="${escAttr(name)}">${esc(label.replace(" ›", ""))}${label.endsWith(" ›") ? '<span aria-hidden="true"> ›</span>' : ""}</button>`;
+  // A routine send whose submission could not be verified: uncertain, not failed.
+  const DELIVERY_UNCONFIRMED = "delivery unconfirmed";
+  const button = (action: string, label: string, name = label, disabled = false) => `<button type="button" data-focus-action="${action}" aria-label="${escAttr(name)}"${disabled ? " disabled" : ""}>${esc(label.replace(" ›", ""))}${label.endsWith(" ›") ? '<span aria-hidden="true"> ›</span>' : ""}</button>`;
   const dot = (state: string) => `<span class="dot ${state === "needs-input" || state === "needs you" ? "yellow" : state === "working" ? "green" : state === "failed" ? "red" : "gray"}" aria-hidden="true"></span>`;
   function replace(id: string, html: string) {
     const host = document.getElementById(id);
@@ -75,6 +77,7 @@ export function createAssistantView(deps: {
     const r = routines();
     const catching = r?.catchingUp;
     const info = offline ? `focus from ${current.updatedAt ? new Date(current.updatedAt).toLocaleString() : "cache"} · ${homeName} offline`
+      : catching?.unconfirmed ? `catching up · ${DELIVERY_UNCONFIRMED}`
       : catching ? `catching up${catching.since ? ` since ${when(catching.since)}` : ""} · ${catching.machines} machine${catching.machines === 1 ? "" : "s"}`
       : r?.stale ? `quiet since ${when(r.stale.since)}` : `${state} · ${freshness()}`;
     const nudgeDay = current.nudge && localDay(Date.parse(current.nudge.updatedAt));
@@ -83,9 +86,12 @@ export function createAssistantView(deps: {
     const noteItems = r ? [...r.unreachable.map(m => esc(`${m.name} not reached ${m.since ? `since ${when(m.since)}` : "yet"}`)), ...(r.surfaced ? [`inbox not acknowledged after ${r.surfaced.sends} sends · ${catchUp}`] : []), ...(r.stale && !r.surfaced ? [catchUp] : []), ...[r.notice, r.error].filter(Boolean).map(t => esc(t!))].map(n => `<span>${n}</span>`).join("") : "";
     const notes = noteItems ? `<p class="focus-notes">${noteItems}</p>` : "";
     const summaryDay = current.daySummary;
-    // A day note stays listed until it is marked read after that day ended (seenDayNoteAt is shared across devices).
-    const yesterday = summaryDay && !(current.seenDayNoteAt && Date.parse(current.seenDayNoteAt) >= new Date(`${summaryDay.date}T00:00`).getTime() + 864e5)
-      ? `<div class="focus-yesterday"><h2>${dayName(summaryDay.date)}</h2><span>${summaryDay.done} done · ${summaryDay.carried} carried over · ${summaryDay.questions} question${summaryDay.questions === 1 ? "" : "s"}</span>${button("day-note", "read ›", `Read day note for ${summaryDay.date}`)}</div>` : "";
+    // A day note stays listed until it is marked read after that activity day ended (its turn at the
+    // fallback time, from the home server; calendar midnight when routines are unavailable). seenDayNoteAt is shared across devices.
+    const noteDay = r?.yesterday?.date === summaryDay?.date ? r?.yesterday : undefined;
+    const dayEnd = summaryDay && (noteDay ? Date.parse(noteDay.endsAt) : new Date(`${summaryDay.date}T00:00`).getTime() + 864e5);
+    const yesterday = summaryDay && !(current.seenDayNoteAt && Date.parse(current.seenDayNoteAt) >= dayEnd!)
+      ? `<div class="focus-yesterday"><h2>${dayName(summaryDay.date)}</h2><span>${summaryDay.done} done · ${summaryDay.carried} carried over · ${summaryDay.questions} question${summaryDay.questions === 1 ? "" : "s"}</span>${button("day-note", "read ›", `Read day note for ${summaryDay.date}`, noteDay?.note === false)}</div>` : "";
     const tile = document.getElementById("sidebar-assistant");
     const tileStatus = !focus?.document ? "set up" : offline ? "offline" : state === "needs you" ? state : state === "off" ? "off" : state === "failed" ? "failed" : catching ? "syncing" : r?.stale ? `stale ${age(r.stale.since)}` : `${next.length} next`;
     if (tile) { tile.innerHTML = `<span>${dot(state)}assistant</span> <small>${tileStatus}</small>`; tile.title = current.nudge?.text ?? info; tile.setAttribute("aria-label", `Assistant ${tileStatus}. ${state}. Open assistant`); }
@@ -154,14 +160,20 @@ export function createAssistantView(deps: {
       timingStatus(`Routine timing on ${homeName}.`, "idle");
     } catch { timingStatus(`Could not load routine timing from ${homeName}.`, "error"); }
   }
+  // The home server validates; a field error is worded with that field's own label and marks the input.
   timingForm?.addEventListener("submit", event => {
     event.preventDefault();
     const values = Object.fromEntries([...new FormData(timingForm)].map(([key, value]) => [key, key === "fallbackTime" ? String(value) : Number(value)]));
-    const checked = validateAssistantTiming(values);
-    if ("error" in checked) return timingStatus(checked.error, "error");
+    for (const input of timingForm.querySelectorAll("input")) input.setAttribute("aria-invalid", "false");
     void (async () => {
-      try { await deps.request("/settings", { method: "POST", body: JSON.stringify({ assistant: checked.value }) }, machine); timingStatus("Routine timing saved.", "success"); }
-      catch (e) { timingStatus(e instanceof Error ? e.message : "Could not save routine timing.", "error"); }
+      try { await deps.request("/settings", { method: "POST", body: JSON.stringify({ assistant: values }) }, machine); timingStatus("Routine timing saved.", "success"); }
+      catch (e) {
+        const data = (e as { data?: { field?: string; expected?: string } }).data;
+        const input = data?.field ? timingForm.elements.namedItem(data.field) as HTMLInputElement | null : null;
+        input?.setAttribute("aria-invalid", "true");
+        const label = input?.closest("label")?.textContent?.trim();
+        timingStatus(label && data?.expected ? `${label} must be ${data.expected}` : e instanceof Error ? e.message : "Could not save routine timing.", "error");
+      }
     })();
   });
   function talk() { if (focus?.assistant?.session && !offline) deps.open(focus.assistant.session, machine); }

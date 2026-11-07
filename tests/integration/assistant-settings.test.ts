@@ -28,8 +28,10 @@ test("assistant timing lives in bridge settings: defaults, validated writes, pre
     expect(JSON.parse(readFileSync(path, "utf8")).assistant).toEqual(assistant);
     const bad = await post({ assistant: { ...assistant, quietMinutes: 10 } });
     expect(bad.status).toBe(400);
-    expect((await bad.json()).error).toContain("quietMinutes must be a whole number from 15 to 480");
-    expect((await post({ assistant: { ...assistant, fallbackTime: "4:30" } })).status).toBe(400);
+    expect(await bad.json()).toEqual({ error: "quietMinutes must be a whole number from 15 to 480", field: "quietMinutes", expected: "a whole number from 15 to 480" });
+    const badTime = await post({ assistant: { ...assistant, fallbackTime: "4:30" } });
+    expect(badTime.status).toBe(400);
+    expect(await badTime.json()).toMatchObject({ field: "fallbackTime", expected: "HH:MM (00:00–23:59)" });
     expect((await post({ agentCmd: "shell" })).status).toBe(200);
     expect(JSON.parse(readFileSync(path, "utf8")).assistant).toEqual(assistant);
   } finally {

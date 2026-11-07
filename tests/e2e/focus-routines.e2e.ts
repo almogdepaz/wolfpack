@@ -90,12 +90,39 @@ test("assistant timing settings validate and save to the home machine's bridge s
   await expect(form.getByLabel("Day review fallback time")).toHaveValue("03:00");
   await quiet.fill("10");
   await form.getByRole("button", { name: "Save timing" }).click();
-  await expect(page.locator("#assistant-timing-status")).toHaveText("quietMinutes must be a whole number from 15 to 480");
+  await expect(page.locator("#assistant-timing-status")).toHaveText("Day review after quiet (minutes) must be a whole number from 15 to 480");
+  await expect(quiet).toHaveAttribute("aria-invalid", "true");
+  await expect(form.getByRole("spinbutton", { name: "Catch-up debounce (minutes)" })).toHaveAttribute("aria-invalid", "false");
+  await expect(form.getByRole("spinbutton", { name: "Home machine's activity journal retention (days)" })).toHaveValue("30");
   expect((await new AxeBuilder({ page }).include("#settings-assistant").analyze()).violations).toEqual([]);
   await shot(page, "settings-invalid", info.project.name === "desktop");
   await quiet.fill("45");
   await form.getByRole("spinbutton", { name: "Catch-up debounce (minutes)" }).fill("5");
   await form.getByRole("button", { name: "Save timing" }).click();
   await expect(page.locator("#assistant-timing-status")).toHaveText("Routine timing saved.");
+  await expect(quiet).toHaveAttribute("aria-invalid", "false");
   expect((await (await page.request.get(`${server.baseUrl}/api/settings`)).json()).settings.assistant).toEqual({ quietMinutes: 45, fallbackTime: "03:00", catchUpDebounceMinutes: 5, journalRetentionDays: 30 });
+});
+
+test("an unverified routine send reads as delivery unconfirmed, never failed", async ({ page }, info) => {
+  await withRoutines(page, { catchingUp: { machines: 1, since: null, routine: "catch-up", unconfirmed: true } });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  await expect(block.locator(".focus-header")).toContainText("catching up · delivery unconfirmed");
+  await expect(block).not.toContainText("failed");
+  await expect(block.locator(".dot.red")).toHaveCount(0);
+  expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
+  await shot(page, "unconfirmed", info.project.name === "desktop");
+});
+
+test("the day-note button is disabled when the home server has no note for that day", async ({ page }) => {
+  // A day that has not ended yet stays listed even after the earlier test marked a note read.
+  const date = localDay(Date.now() + 864e5);
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [{ type: "day-summary", summary: { date, done: 1, carried: 0, questions: 0 } }] } })).ok()).toBe(true);
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const read = page.locator("#assistant-view").getByRole("button", { name: `Read day note for ${date}` });
+  await expect(read).toBeDisabled();
+  await expect(page.locator("#assistant-view")).not.toContainText("no day note");
 });

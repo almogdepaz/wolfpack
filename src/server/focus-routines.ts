@@ -84,8 +84,8 @@ export interface RoutineStatus {
   stale: { since: string } | null;
   unreachable: { name: string; since: string | null }[];
   surfaced: { file: string; sends: number } | null;
-  /** The last completed activity day and whether its note exists. */
-  yesterday: { date: string; note: boolean };
+  /** The day-summary day (else the last completed activity day), whether its note exists, and the activity-day turn that ends it. */
+  yesterday: { date: string; note: boolean; endsAt: string };
   notice?: string;
   error?: string;
 }
@@ -418,21 +418,21 @@ export class FocusRoutines {
     try { return readFileSync(join(this.deps.folder, "days", `${date}.md`), "utf8"); } catch { return null; }
   }
 
-  /** Render-ready routine state for `/api/focus`. */
-  status(): RoutineStatus {
+  /** Render-ready routine state for `/api/focus`; `summaryDate` is the focus document's day-summary date. */
+  status(summaryDate?: string): RoutineStatus {
     const c = this.snapshot;
     const inbox = c.inbox;
     // A surfaced inbox waits for `catch up now`; it is not progress, even right after a restart.
     const catchingUp = this.deps.enabled() && !inbox?.surfaced && (this.booting || inbox)
       ? { machines: Math.max(1, Object.keys(c.catchUpCursors).length), since: c.lastAckAt, ...(inbox && { routine: inbox.routine }),
         ...(inbox && this.unconfirmedFile === inbox.file && { unconfirmed: true as const }) } : null;
-    const yesterday = addDays(activityDayOf(this.now(), this.fallbackTime), -1);
+    const yesterday = summaryDate && /^\d{4}-\d\d-\d\d$/.test(summaryDate) ? summaryDate : addDays(activityDayOf(this.now(), this.fallbackTime), -1);
     const stale = !catchingUp && this.pending && c.lastAckAt && this.now() - Date.parse(c.lastAckAt) > STALE_AFTER_MS ? { since: c.lastAckAt } : null;
     return {
       reviewedThrough: c.reviewedThrough, lastAckAt: c.lastAckAt, catchingUp, stale,
       unreachable: this.probed ? Object.entries(c.catchUpCursors).filter(([id]) => !this.reached.has(id)).map(([, m]) => ({ name: m.name, since: m.lastReachedAt })) : [],
       surfaced: inbox?.surfaced ? { file: inbox.file, sends: inbox.sends } : null,
-      yesterday: { date: yesterday, note: existsSync(join(this.deps.folder, "days", `${yesterday}.md`)) },
+      yesterday: { date: yesterday, note: existsSync(join(this.deps.folder, "days", `${yesterday}.md`)), endsAt: new Date(activityDayWindow(yesterday, this.fallbackTime).end).toISOString() },
       ...(this.notice && { notice: this.notice }), ...(this.error && { error: this.error }),
     };
   }

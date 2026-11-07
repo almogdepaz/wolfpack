@@ -29,16 +29,18 @@ export function parseAssistantTiming(raw: unknown): AssistantTiming {
     journalRetentionDays: inRange("journalRetentionDays", v.journalRetentionDays) ? v.journalRetentionDays : ASSISTANT_TIMING_DEFAULTS.journalRetentionDays,
   };
 }
-/** Strict validation of a settings write: all four fields, in range, nothing else. */
-export function validateAssistantTiming(raw: unknown): { ok: true; value: AssistantTiming } | { ok: false; error: string } {
+/** Strict validation of a settings write: all four fields, in range, nothing else. A field error names the field and what it expects, so a UI can word it with its own label. */
+export function validateAssistantTiming(raw: unknown): { ok: true; value: AssistantTiming } | { ok: false; error: string; field?: keyof AssistantTiming; expected?: string } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "assistant settings must be an object" };
   const v = raw as Record<string, unknown>;
   const keys = Object.keys(ASSISTANT_TIMING_DEFAULTS);
   if (Object.keys(v).some(k => !keys.includes(k)) || keys.some(k => !(k in v))) return { ok: false, error: `assistant settings require exactly ${keys.join(", ")}` };
   for (const key of Object.keys(RANGES) as (keyof typeof RANGES)[]) {
-    if (!inRange(key, v[key])) return { ok: false, error: `${key} must be a whole number from ${RANGES[key][0]} to ${RANGES[key][1]}` };
+    const expected = `a whole number from ${RANGES[key][0]} to ${RANGES[key][1]}`;
+    if (!inRange(key, v[key])) return { ok: false, error: `${key} must be ${expected}`, field: key, expected };
   }
-  if (typeof v.fallbackTime !== "string" || !TIME.test(v.fallbackTime)) return { ok: false, error: "fallbackTime must be HH:MM (00:00–23:59)" };
+  const expected = "HH:MM (00:00–23:59)";
+  if (typeof v.fallbackTime !== "string" || !TIME.test(v.fallbackTime)) return { ok: false, error: `fallbackTime must be ${expected}`, field: "fallbackTime", expected };
   return { ok: true, value: v as unknown as AssistantTiming };
 }
 

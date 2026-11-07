@@ -980,7 +980,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
 
     if (body.assistant !== undefined) {
       const assistant = validateAssistantTiming(body.assistant);
-      if (!assistant.ok) return json(res, { error: assistant.error }, 400);
+      if (!assistant.ok) return json(res, { error: assistant.error, ...(assistant.field && { field: assistant.field, expected: assistant.expected }) }, 400);
       settings.assistant = assistant.value;
     }
 

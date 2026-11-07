@@ -505,3 +505,15 @@ describe("focus routines: unverified routine sends (u2)", () => {
     expect(delivered).toEqual(["what next?"]);
   });
 });
+
+describe("focus routines: the day-note row (n9/n13)", () => {
+  test("status reports the summary day's note and the activity-day turn that ends it", async () => {
+    const t = setup(at(7, 1));
+    await t.routines.tick();
+    expect(t.routines.status().yesterday).toEqual({ date: "2026-11-05", note: false, endsAt: new Date(at(6, 3)).toISOString() });
+    expect(t.routines.status("2026-11-04").yesterday).toEqual({ date: "2026-11-04", note: false, endsAt: new Date(at(5, 3)).toISOString() });
+    await Bun.write(join(t.root, "assistant", "days", "2026-11-04.md"), "# 2026-11-04\n");
+    expect(t.routines.status("2026-11-04").yesterday.note).toBe(true);
+    expect(t.routines.status("../x").yesterday.date).toBe("2026-11-05");
+  });
+});
