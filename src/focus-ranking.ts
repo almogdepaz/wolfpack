@@ -8,6 +8,8 @@ export interface FocusSession {
   cwd?: string;
   machine?: string;
   machineUrl?: string;
+  /** Shown in the card body only; ranking ignores it. */
+  lastLine?: string;
 }
 export interface FocusAction {
   kind: "open" | "start";

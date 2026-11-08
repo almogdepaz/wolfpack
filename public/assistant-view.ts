@@ -1,6 +1,6 @@
 import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
 import { esc, escAttr } from "./app-state";
-import { rankFocus, linkedFocusSessions, doneToday, type FocusSession } from "../src/focus-ranking";
+import { rankFocus, linkedFocusSessions, doneToday, type FocusAction, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { showAppDialog } from "./app-dialog";
@@ -83,14 +83,40 @@ export function createAssistantView(deps: {
       : `<p class="focus-wait focus-reply-error">not sent${focus?.assistant?.error ? ` · ${esc(focus.assistant.error)}` : ""}</p>`;
     return `<div class="focus-reply">${you}${line}</div>`;
   }
+  // Cards: every next row and today intention expands to its details; open state survives re-renders.
+  // The summary holds only text: the action, checkbox and chips are its siblings in the row (axe nested-interactive).
+  const openCards = new Set<string>();
+  const stamp = (at: string) => new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  const field = (label: string, value: string) => value ? `<div><dt>${label}</dt><dd>${value}</dd></div>` : "";
+  const project = (path?: string) => path ? `<span title="${escAttr(path)}">${esc(path.replace(/\/+$/, "").split("/").pop() || path)}</span>` : "";
+  // `open=""` is how innerHTML serializes the attribute, so an unchanged render still compares equal in replace().
+  const card = (key: string, summary: string, body: string) => `<details class="focus-card" data-focus-card="${escAttr(key)}"${openCards.has(key) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${key}`)}">${summary}</summary><dl class="focus-card-body">${body}</dl></details>`;
+  function sessionBody(row: FocusAction, session: FocusSession) {
+    return field("machine", esc(session.machine ?? "")) + field("project", project(session.cwd))
+      + field("state", `${esc(session.state === "needs-input" ? "needs you" : session.state)}${session.changedAt ? ` · since ${age(session.changedAt)}` : ""}`)
+      + field("last line", session.lastLine ? `<code>${esc(session.lastLine)}</code>` : "") + field("why here", esc(row.reason)) + field("for", esc(row.intention?.title ?? ""));
+  }
+  function intentionBody(intention: FocusIntention, reason?: string) {
+    const linked = linkedFocusSessions(intention, deps.sessions());
+    return field("sessions", linked.map(s => `<span class="focus-linked">${dot(s.state)}${esc(s.name)}</span>`).join(" ") || "none yet")
+      + field("project", project(intention.project)) + field("machine", esc(intention.machine ?? "")) + field("added", stamp(intention.createdAt))
+      + field("done", intention.done && intention.doneAt ? stamp(intention.doneAt) : "") + field("why here", esc(reason ?? ""));
+  }
   function nextHtml(cap: number) {
     const rows = rankFocus(doc(), deps.sessions(), cap);
     if (!rows.length) return `<p class="focus-empty">${doc().intentions.length && doc().intentions.every(i => i.done) ? "all intentions done — tell the assistant what's next" : "nothing waiting"}</p>`;
     return `<ol class="focus-next" aria-label="Next actions">${rows.map((row, index) => {
       const finished = row.session?.state === "done";
       const title = row.session ? `${row.session.name} ${row.session.state === "needs-input" ? "needs you" : finished ? "finished" : row.session.state}` : `start “${row.intention!.title}”`;
-      return `<li${index >= 3 ? ' class="focus-extra"' : ""}><button type="button" data-focus-next="${index}"><span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span><small class="focus-for">${esc(row.intention?.title ?? row.session?.machine ?? "")}</small><span class="focus-action">${row.kind} ›</span></button></li>`;
+      // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
+      const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
+      const action = `<button type="button" class="focus-action" data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${row.kind} ${title}` : title)}">${row.kind}<span aria-hidden="true"> ›</span></button>`;
+      const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span><small class="focus-for">${esc(row.intention?.title ?? row.session?.machine ?? "")}</small>`;
+      return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason))}${action}</li>`;
     }).join("")}</ol>`;
+  }
+  function todayHtml(items: FocusIntention[]) {
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${offline || busy ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}<span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>`;
   }
   function render() {
     const current = doc();
@@ -140,7 +166,7 @@ export function createAssistantView(deps: {
     if (block) block.hidden = !enabled;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk">${dot(state)} ${esc(info)} ›</button>` : "";
     replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>today · ${summary}${latest ?? ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error ? `<p role="status">${esc(error)}</p>` : ""}`);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${button("settings", "settings", "Assistant settings")}</div>${notes}<div class="focus-conversation"><form data-focus-form="ask"><input type="text" data-focus-key="ask" aria-label="Ask the assistant" placeholder="ask…" maxlength="8000" required${offline || busy ? " disabled" : ""}><button type="submit"${offline || busy ? " disabled" : ""}>Ask</button></form><button type="button" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk</button></div>${replyHtml()}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2><ul class="focus-today" aria-label="Intentions">${open.map(i => `<li${i.done ? ' class="done"' : ""}><label><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${offline || busy ? " disabled" : ""}><span>${esc(i.title)}</span></label><span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${button("settings", "settings", "Assistant settings")}</div>${notes}<div class="focus-conversation"><form data-focus-form="ask"><input type="text" data-focus-key="ask" aria-label="Ask the assistant" placeholder="ask…" maxlength="8000" required${offline || busy ? " disabled" : ""}><button type="submit"${offline || busy ? " disabled" : ""}>Ask</button></form><button type="button" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk</button></div>${replyHtml()}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2>${todayHtml(open)}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = error || focus?.assistant?.error || (focus?.assistant?.queued ? `${focus.assistant.queued} queued` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -252,6 +278,12 @@ export function createAssistantView(deps: {
       const session = deps.sessions().find(s => s.id === target.dataset.focusSession);
       if (session) deps.open(session.name, session.machineUrl);
     });
+    // toggle does not bubble: listen in the capture phase.
+    host.addEventListener("toggle", event => {
+      const key = (event.target as HTMLElement).dataset?.focusCard;
+      if (!key) return;
+      if ((event.target as HTMLDetailsElement).open) openCards.add(key); else openCards.delete(key);
+    }, true);
     host.addEventListener("change", event => {
       const target = event.target as HTMLInputElement;
       if (target.dataset.focusDone) void run(() => write({ type: target.checked ? "done" : "undo", id: target.dataset.focusDone! }));
