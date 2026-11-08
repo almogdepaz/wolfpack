@@ -30,6 +30,11 @@ test("focus HTTP CAS, first write, invalid ops and corrupt-file protection", asy
     expect(conflict.status).toBe(409);
     expect((await conflict.json()).document.intentions[0].title).toBe("ship");
     expect((await post({ expectedRevision: 1, ops: [{ type: "done", id: "absent" }] })).status).toBe(400);
+    // the assistant's inline answer to an ask is an ordinary focus op; an oversized one is a validation error
+    const replied = await post({ expectedRevision: 1, ops: [{ type: "reply", text: "Answer prompt-project first.", author: "assistant" }] });
+    expect(replied.status).toBe(200);
+    expect((await replied.json()).document.reply).toMatchObject({ text: "Answer prompt-project first.", author: "assistant", updatedAt: expect.any(String) });
+    expect((await post({ expectedRevision: 2, ops: [{ type: "reply", text: "x".repeat(2001), author: "assistant" }] })).status).toBe(400);
     const dashboard = await (await fetch(`${base}/api/sessions`)).json();
     expect(dashboard.sessions[0].changedAt).toBe(dashboard.sessions[0].runtimeState.changedAt);
     writeFileSync(path, "corrupt");

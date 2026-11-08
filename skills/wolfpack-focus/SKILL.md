@@ -26,6 +26,14 @@ wolfpack focus day-summary 2026-11-05 4 2 1 --json
 
 inline add and done may change focus while you work. honor those changes. reorder, reword, and drop only as requested or to reflect the user's expressed priorities. explain important tradeoffs briefly. next actions are ranked by rules: linked needs-input/failed in intention order then oldest; intentions without live sessions; unlinked sessions needing attention. working sessions are chips, not next actions.
 
+## asks
+
+a line beginning `ask: ` is the user typing in the dashboard's ask box, not an inbox line. do any focus edits it implies, then answer with `wolfpack focus reply '<answer>' --json`: one short paragraph (2000 characters max), plain text, no markdown headings. the dashboard shows only the latest reply, beside the ask. still answer in this terminal as usual; the reply is in addition.
+
+```sh
+wolfpack focus reply 'Moved the broker leak first. prompt-project is still waiting on your answer.' --json
+```
+
 ## inbox
 
 the home server, not you, schedules routines. it pulls each machine's activity journal and sends you one line: `process inbox inbox/<routine>-<timestamp>.json` (paths are relative to this folder). one inbox is outstanding at a time; if it arrives again, you have not acked it yet.

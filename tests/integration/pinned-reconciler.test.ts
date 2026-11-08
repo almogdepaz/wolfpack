@@ -75,7 +75,11 @@ test("assistant runtime drains fast completed turns using broker program timesta
   try {
     await ctx.focusRuntime.ask("one");
     await ctx.focusRuntime.ask("two");
-    expect(sent).toEqual(["one", "two"]);
+    // a user ask is marked so the assistant answers it inline (wolfpack focus reply); routine lines stay bare
+    expect(sent).toEqual(["ask: one", "ask: two"]);
+    ctx.focusRuntime.queue.enqueue((await ctx.focusRuntime.status()).sessionId!, "process inbox inbox/catch-up-1.json", undefined, "routine");
+    await ctx.focusRuntime.tick();
+    expect(sent.at(-1)).toBe("process inbox inbox/catch-up-1.json");
   } finally { ctx.focusRuntime.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -298,6 +302,8 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     writeFileSync(skill, "phase 1 skill");
     service.refreshSkill();
     expect(readFileSync(skill, "utf8")).toContain("process inbox");
+    // the ask contract: a dashboard ask is answered inline as well as in the terminal
+    expect(readFileSync(skill, "utf8")).toMatch(/`ask: `[\s\S]*wolfpack focus reply/);
     service.unpin("assistant");
     writeFileSync(skill, "phase 1 skill");
     service.refreshSkill();

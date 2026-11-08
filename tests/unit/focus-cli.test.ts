@@ -7,6 +7,9 @@ test("focus CLI parses every operation with explicit link/project/machine fields
   for (const cmd of ["done", "undo", "drop"] as const) expect(parseFocusCommand([cmd, "ship"]).op).toEqual({ type: cmd, id: "ship" });
   expect(parseFocusCommand(["reorder", "b", "a"]).op).toEqual({ type: "reorder", ids: ["b", "a"] });
   expect(parseFocusCommand(["nudge", "do this"]).op).toEqual({ type: "nudge", text: "do this", author: "assistant" });
+  expect(parseFocusCommand(["reply", "broker leak first", "--json"])).toEqual({ json: true, op: { type: "reply", text: "broker leak first", author: "assistant" } });
+  expect(() => parseFocusCommand(["reply", "a", "b"])).toThrow();
+  expect(() => parseFocusCommand(["reply", "x".repeat(2001)])).toThrow();
   expect(parseFocusCommand(["note", "remember"]).op).toEqual({ type: "note", text: "remember" });
   expect(parseFocusCommand(["day-summary", "2026-11-05", "4", "2", "1"]).op).toEqual({ type: "day-summary", summary: { date: "2026-11-05", done: 4, carried: 2, questions: 1 } });
   expect(() => parseFocusCommand(["done", "ship", "junk"])).toThrow();
@@ -16,6 +19,7 @@ test("remote focus help never resolves a machine or starts a server", () => {
   const child = Bun.spawnSync([process.execPath, "src/cli/index.ts", "--machine", "peer", "focus", "--help"], { cwd: process.cwd(), env: { ...process.env, WOLFPACK_TEST: "1", NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
   expect(child.exitCode).toBe(0);
   expect(child.stdout.toString()).toContain("wolfpack focus");
+  expect(child.stdout.toString()).toContain("reply <text>");
   expect(child.stderr.toString()).toBe("");
 });
 

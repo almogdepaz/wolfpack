@@ -17,6 +17,8 @@ export interface FocusDocument {
   updatedAt: string | null;
   intentions: FocusIntention[];
   nudge?: { text: string; updatedAt: string; author: string };
+  /** The assistant's answer to the latest ask typed in the dashboard (`wolfpack focus reply`); the ui shows only the newest. */
+  reply?: { text: string; updatedAt: string; author: string };
   notes?: string;
   daySummary?: FocusDaySummary;
   seenDayNoteAt?: string;
@@ -27,6 +29,7 @@ export type FocusOp =
   | { type: "done" | "undo" | "drop"; id: string }
   | { type: "reorder"; ids: readonly string[] }
   | { type: "nudge"; text: string; author: string }
+  | { type: "reply"; text: string; author: string }
   | { type: "note"; text: string }
   | { type: "day-summary"; summary: FocusDaySummary }
   | { type: "seen-day-note"; at: string };
@@ -47,13 +50,14 @@ function daySummary(v: unknown): v is FocusDaySummary {
 }
 export function emptyFocus(): FocusDocument { return { version: 1, revision: 0, updatedAt: null, intentions: [] }; }
 export function isFocusDocument(v: unknown): v is FocusDocument {
-  if (!object(v) || !keys(v, ["version", "revision", "updatedAt", "intentions", "nudge", "notes", "daySummary", "seenDayNoteAt"])) return false;
+  if (!object(v) || !keys(v, ["version", "revision", "updatedAt", "intentions", "nudge", "reply", "notes", "daySummary", "seenDayNoteAt"])) return false;
   return v.version === 1 && Number.isSafeInteger(v.revision) && (v.revision as number) >= 0 && (v.updatedAt === null || timestamp(v.updatedAt))
     && Array.isArray(v.intentions) && v.intentions.length <= 200 && v.intentions.every(i => object(i)
       && keys(i, ["id", "title", "project", "machine", "sessions", "done", "doneAt", "createdAt"]) && id(i.id) && text(i.title, 500) && timestamp(i.createdAt)
       && intentionFields(i) && (i.done === undefined || typeof i.done === "boolean") && (i.doneAt === undefined || timestamp(i.doneAt)))
     && new Set(v.intentions.map(i => i.id)).size === v.intentions.length
     && (v.nudge === undefined || (object(v.nudge) && keys(v.nudge, ["text", "updatedAt", "author"]) && text(v.nudge.text, 1000, true) && timestamp(v.nudge.updatedAt) && text(v.nudge.author, 128)))
+    && (v.reply === undefined || (object(v.reply) && keys(v.reply, ["text", "updatedAt", "author"]) && text(v.reply.text, 2000, true) && timestamp(v.reply.updatedAt) && text(v.reply.author, 128)))
     && (v.notes === undefined || text(v.notes, 16000, true)) && (v.daySummary === undefined || daySummary(v.daySummary))
     && (v.seenDayNoteAt === undefined || timestamp(v.seenDayNoteAt));
 }
@@ -67,6 +71,7 @@ export function isFocusOp(v: unknown): v is FocusOp {
     case "done": case "undo": case "drop": return keys(v, ["type", "id"]) && id(v.id);
     case "reorder": return keys(v, ["type", "ids"]) && strings(v.ids, 200);
     case "nudge": return keys(v, ["type", "text", "author"]) && text(v.text, 1000, true) && text(v.author, 128);
+    case "reply": return keys(v, ["type", "text", "author"]) && text(v.text, 2000, true) && text(v.author, 128);
     case "note": return keys(v, ["type", "text"]) && text(v.text, 16000, true);
     case "day-summary": return keys(v, ["type", "summary"]) && daySummary(v.summary);
     case "seen-day-note": return keys(v, ["type", "at"]) && timestamp(v.at);
@@ -96,6 +101,7 @@ export function reduceFocus(current: FocusDocument, ops: unknown, now: string): 
         doc.intentions = op.ids.map(key => doc.intentions.find(i => i.id === key)!); break;
       }
       case "nudge": doc.nudge = { text: op.text, author: op.author, updatedAt: now }; break;
+      case "reply": doc.reply = { text: op.text, author: op.author, updatedAt: now }; break;
       case "note": doc.notes = op.text; break;
       case "day-summary": doc.daySummary = op.summary; break;
       case "seen-day-note": doc.seenDayNoteAt = op.at; break;
