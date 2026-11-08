@@ -383,6 +383,7 @@ return {
         const runtime = getAgentRuntimeStateStore().get(identity.wolfpackSessionId);
         return { ...sessionStatusPayload(name, identity, relay.registrations.get(identity.wolfpackSessionId), relay.taskRelay),
           runtime: { state: runtime?.state ?? "unknown", changedAt: runtime?.changedAt ?? null,
+            stoppedAt: runtime?.stoppedAt ?? null, pinned: ctx.assistantService.pins.some(pin => pin.name === name),
             unseen: runtime?.unseen ?? false, stopped: runtime ? stoppedUnseen(runtime) : false } };
       }).sort((left, right) => left.session.localeCompare(right.session));
       json(res, { sessions });

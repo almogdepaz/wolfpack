@@ -6,17 +6,18 @@ export interface FocusSession {
   state: string;
   changedAt?: string;
   unseen?: boolean;
-  hasBeenBusy?: boolean;
+  stoppedSequence?: number;
+  acknowledgedSequence?: number;
   cwd?: string;
   machine?: string;
   machineUrl?: string;
   /** Shown in the card body only; ranking ignores it. */
   lastLine?: string;
 }
-/** An unseen turn end. Idle needs observed work history; startup/source changes alone are not work. */
-export function stoppedUnseen(session: { state: string; unseen?: boolean; hasBeenBusy?: boolean }): boolean {
-  return session.unseen === true && (session.state === AGENT_STATUS_STATE.DONE
-    || (session.state === AGENT_STATUS_STATE.IDLE && session.hasBeenBusy === true));
+/** An unreviewed work episode, not merely an unseen metadata transition. */
+export function stoppedUnseen(session: { state: string; unseen?: boolean; stoppedSequence?: number; acknowledgedSequence?: number }): boolean {
+  return session.unseen === true && (session.state === AGENT_STATUS_STATE.DONE || session.state === AGENT_STATUS_STATE.IDLE)
+    && (session.stoppedSequence ?? 0) > (session.acknowledgedSequence ?? 0);
 }
 export interface FocusAction {
   kind: "open" | "start";

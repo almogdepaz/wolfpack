@@ -6425,7 +6425,18 @@
           "type": "boolean"
         },
         "hasBeenBusy": {
+          "type": "boolean",
+          "deprecated": true,
+          "description": "Legacy cache compatibility only, not work-episode evidence."
+        },
+        "workPending": {
           "type": "boolean"
+        },
+        "stoppedSequence": {
+          "type": "integer"
+        },
+        "stoppedAt": {
+          "type": "string"
         },
         "runId": {
           "type": "string"
@@ -7005,6 +7016,19 @@
             }
           ]
         },
+        "stoppedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pinned": {
+          "type": "boolean"
+        },
         "unseen": {
           "type": "boolean"
         },
@@ -7019,7 +7043,7 @@
         "stopped"
       ],
       "additionalProperties": false,
-      "description": "Last server-observed runtime facts, not terminal liveness. stopped means unseen done or idle after observed work. Unknown with null changedAt means not yet observed."
+      "description": "Last server-observed runtime facts, not terminal liveness. stopped means an unreviewed work episode; stoppedAt is its original end time, not a later metadata transition. pinned identifies server-owned processes excluded from focus ranking. Unknown with null changedAt means not yet observed."
     },
     "SessionStatus": {
       "type": "object",

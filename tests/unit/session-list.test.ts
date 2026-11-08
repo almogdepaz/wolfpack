@@ -19,7 +19,7 @@ describe("session list json", () => {
           session: "branchout",
           sessionId: "id-branchout",
           state: "active",
-          runtime: { state: "idle", changedAt: "2026-11-01T10:00:00.000Z", unseen: true, stopped: true },
+          runtime: { state: "idle", changedAt: "2026-11-01T11:00:00.000Z", stoppedAt: "2026-11-01T10:00:00.000Z", pinned: false, unseen: true, stopped: true },
           projectPath: "/dev/branchout",
           harness: "pi",
         }] });
@@ -35,7 +35,7 @@ describe("session list json", () => {
     const session = JSON.parse(lines[0]).sessions[0];
     expect(session.sessionId).toBe("id-branchout");
     expect(session.state).toBe("active");
-    expect(session.runtime).toEqual({ state: "idle", changedAt: "2026-11-01T10:00:00.000Z", unseen: true, stopped: true });
+    expect(session.runtime).toEqual({ state: "idle", changedAt: "2026-11-01T11:00:00.000Z", stoppedAt: "2026-11-01T10:00:00.000Z", pinned: false, unseen: true, stopped: true });
     expect(session).not.toHaveProperty("lastLine");
   });
 

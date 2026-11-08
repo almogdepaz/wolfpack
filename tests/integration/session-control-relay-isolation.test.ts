@@ -14,6 +14,7 @@ process.env.WOLFPACK_TEST = "1";
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { createSessionControlRoutes } = await import("../../src/server/session-control-routes.ts");
+const { AssistantService } = await import("../../src/server/assistant-service.ts");
 afterAll(() => {
   if (priorTest === undefined) delete process.env.WOLFPACK_TEST;
   else process.env.WOLFPACK_TEST = priorTest;
@@ -46,7 +47,7 @@ class BackendFacts extends MockBackend {
   }
 }
 
-async function fixture() {
+async function fixture(pinned = false) {
   const root = mkdtempSync(join(tmpdir(), "session-relay-isolation-"));
   const backend = new BackendFacts();
   let blocked = false, release!: () => void;
@@ -55,7 +56,9 @@ async function fixture() {
     if (blocked) await gate;
     return backend.inspectSession(selector);
   } });
-  const routes = createSessionControlRoutes(createServerContext({ backend, taskRelayGateway: gateway, config: null }));
+  const config = pinned ? { devDir: "/tmp", port: 19846, pinnedSessions: [{ name: "live", cwd: "/fixture", command: ["pi"], harness: "pi" }] } : null;
+  const routes = createSessionControlRoutes(createServerContext({ backend, taskRelayGateway: gateway, config,
+    assistantService: new AssistantService({ root, readConfig: () => config }) }));
   const server = createServer((req, res) => {
     const route = routes[`GET ${new URL(req.url!, "http://localhost").pathname}`];
     if (!route) { res.writeHead(404).end(); return; }
@@ -111,11 +114,20 @@ test("list adds runtime stop facts without changing terminal or identity fields"
     const list = await f.read("list");
     expect(list.status).toBe(200);
     const live = list.body.sessions.find((s: any) => s.sessionId === LIVE_ID);
-    expect(live).toMatchObject({ ok: true, session: "live", sessionId: LIVE_ID, state: "active", projectDir: "/fixture", harness: "pi", terminal: { exists: true, alive: true, status: "ready" }, runtime: { state: "idle", changedAt: at, unseen: true, stopped: true } });
+    expect(live).toMatchObject({ ok: true, session: "live", sessionId: LIVE_ID, state: "active", projectDir: "/fixture", harness: "pi", terminal: { exists: true, alive: true, status: "ready" }, runtime: { state: "idle", changedAt: at, stoppedAt: at, unseen: true, stopped: true, pinned: false } });
     expect(validate({ $ref: "#/$defs/SessionStatus" }, live, schema)).toEqual([]);
+    const { stoppedAt: _, pinned: __, ...olderRuntime } = live.runtime;
+    expect(validate({ $ref: "#/$defs/SessionStatus" }, { ...live, runtime: olderRuntime }, schema)).toEqual([]);
     store.acknowledge(LIVE_ID, stopped.transitionSequence);
     expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID).runtime).toMatchObject({ unseen: false, stopped: false });
-    expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === DEAD_ID).runtime).toEqual({ state: "unknown", changedAt: null, unseen: false, stopped: false });
+    expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === DEAD_ID).runtime).toEqual({ state: "unknown", changedAt: null, stoppedAt: null, unseen: false, stopped: false, pinned: false });
+  } finally { await f.close(); }
+});
+
+test("list runtime facts expose server-owned pinned processes", async () => {
+  const f = await fixture(true);
+  try {
+    expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID).runtime.pinned).toBe(true);
   } finally { await f.close(); }
 });
 

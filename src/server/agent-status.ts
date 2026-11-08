@@ -107,8 +107,13 @@ export interface AgentRuntimeState extends ProgramStatusFields {
   readonly acknowledgedAt?: string;
   readonly acknowledgedSequence?: number;
   readonly unseen: boolean;
-  /** Sticky per-session evidence of observed work, not a count of metadata transitions. */
+  /** Observed work awaiting a real turn end; acknowledging while busy does not end it. */
+  readonly workPending?: boolean;
+  /** Legacy cache compatibility only; new reductions omit this lifetime-history field. */
   readonly hasBeenBusy?: boolean;
+  /** Transition watermark and time of the last observed stop, independent of metadata churn. */
+  readonly stoppedSequence?: number;
+  readonly stoppedAt?: string;
   readonly runId?: string;
   readonly runOrder?: number;
   readonly signalSequence?: number;
@@ -574,6 +579,21 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
   const transitionSequence = changed ? (previous?.transitionSequence ?? 0) + 1 : previous?.transitionSequence ?? 1;
   const acknowledgedSequence = previous?.acknowledgedSequence;
   const acknowledgedAt = previous?.acknowledgedAt;
+  const pending = previous?.workPending ?? (previous !== undefined && BUSY_STATES.has(previous.state));
+  const previousStop = previous?.stoppedSequence
+    ?? (previous && !pending && (previous.hasBeenBusy || previous.state === AGENT_STATUS_STATE.DONE)
+      ? previous.acknowledgedSequence ?? 0 : 0);
+  const authoritativeDone = selected.state === AGENT_STATUS_STATE.DONE
+    && selected.authority !== AGENT_STATUS_AUTHORITY.FALLBACK
+    && selected.authority !== AGENT_STATUS_AUTHORITY.IDENTITY;
+  const firstDone = authoritativeDone && !previousStop && previous?.state !== AGENT_STATUS_STATE.DONE;
+  // Loss/recovery of a source is not a turn end. Explicit done may cross authorities;
+  // fallback idle must follow actual activity from that same source, not TTL expiry.
+  const endedWork = pending && previous !== undefined && previous.state !== selected.state
+    && previous.source !== AGENT_STATUS_SOURCE.BROKER_LIVENESS
+    && (sameSourceAuthority(previous, selected) || authoritativeDone);
+  const stopped = (selected.state === AGENT_STATUS_STATE.IDLE || authoritativeDone) && (firstDone || endedWork);
+  const stoppedAt = stopped ? selected.observedAt : previous?.stoppedAt;
   return {
     state: selected.state,
     authority: selected.authority,
@@ -587,8 +607,9 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
     ...(acknowledgedAt ? { acknowledgedAt } : {}),
     ...(typeof acknowledgedSequence === "number" ? { acknowledgedSequence } : {}),
     unseen: transitionSequence > (acknowledgedSequence ?? 0),
-    hasBeenBusy: previous?.hasBeenBusy === true || BUSY_STATES.has(selected.state)
-      || (previous !== undefined && BUSY_STATES.has(previous.state)),
+    workPending: BUSY_STATES.has(selected.state) || (pending && !stopped),
+    stoppedSequence: stopped ? transitionSequence : previousStop,
+    ...(stoppedAt ? { stoppedAt } : {}),
     ...(input.currentRun?.runId ? { runId: input.currentRun.runId } : selected.runId ? { runId: selected.runId } : {}),
     ...(typeof input.currentRun?.runOrder === "number" ? { runOrder: input.currentRun.runOrder } : typeof selected.runOrder === "number" ? { runOrder: selected.runOrder } : {}),
     ...(typeof selected.signalSequence === "number" ? { signalSequence: selected.signalSequence } : {}),

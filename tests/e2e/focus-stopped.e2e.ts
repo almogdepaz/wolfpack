@@ -5,9 +5,10 @@ let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
 
-async function runtimeFixture(page: Page, initial: string, target = "test-project") {
+async function runtimeFixture(page: Page, initial: string, target = "test-project", pinned = false) {
   let runtime = { state: initial, authority: "fallback", source: "screen-fallback", freshness: "fresh", stale: false,
-    changedAt: new Date(Date.now() - 12 * 60_000).toISOString(), transitionSequence: 5, unseen: true, hasBeenBusy: true };
+    changedAt: new Date().toISOString(), stoppedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+    transitionSequence: 5, unseen: true, stoppedSequence: initial === "output" ? 0 : 5, acknowledgedSequence: 0 };
   const acknowledgements: { sessionId: string; transitionSequence: number }[] = [];
   const ids = new Map<string, string>();
   let replacementId: string | undefined;
@@ -17,9 +18,9 @@ async function runtimeFixture(page: Page, initial: string, target = "test-projec
     for (const session of body.sessions) {
       if (session.name === target && replacementId) session.identity.wolfpackSessionId = replacementId;
       ids.set(session.name, session.identity.wolfpackSessionId);
-      if (session.name === target) session.runtimeState = runtime;
+      if (session.name === target) { session.runtimeState = runtime; session.pinned = pinned; }
       // Remove unrelated attention without altering the assistant's own state.
-      if (session.name === "prompt-project" && session.name !== target) session.runtimeState = { ...session.runtimeState, state: "idle", unseen: false, hasBeenBusy: false };
+      if (session.name === "prompt-project" && session.name !== target) session.runtimeState = { ...session.runtimeState, state: "idle", unseen: false, stoppedSequence: 0 };
     }
     await route.fulfill({ response, json: body });
   });
@@ -28,10 +29,10 @@ async function runtimeFixture(page: Page, initial: string, target = "test-projec
     acknowledgements.push(body);
     if (body.sessionId !== ids.get(target)) return route.continue();
     if (body.transitionSequence !== runtime.transitionSequence) return route.fulfill({ status: 409, json: { error: "new transition" } });
-    runtime = { ...runtime, unseen: false };
+    runtime = { ...runtime, unseen: false, acknowledgedSequence: body.transitionSequence };
     await route.fulfill({ json: { ok: true, runtimeState: runtime } });
   });
-  return { acknowledgements, ids, replace: () => { replacementId = "e762d0b1-6d2b-4e37-9168-f2841234abce"; }, stop: (state = "done") => { runtime = { ...runtime, state, unseen: true, transitionSequence: runtime.transitionSequence + 1 }; } };
+  return { acknowledgements, ids, metadata: () => { runtime = { ...runtime, unseen: true, transitionSequence: runtime.transitionSequence + 1 }; }, replace: () => { replacementId = "e762d0b1-6d2b-4e37-9168-f2841234abce"; }, stop: (state = "done") => { runtime = { ...runtime, state, unseen: true, transitionSequence: runtime.transitionSequence + 1, stoppedSequence: runtime.transitionSequence + 1, stoppedAt: new Date().toISOString() }; } };
 }
 
 for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped row; open acknowledges it and removes it`, async ({ page }, info) => {
@@ -61,6 +62,28 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
     await page.locator("#back-btn").click();
   }
   await expect(page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
+});
+
+test("reviewed work stays out of next when metadata becomes unseen again", async ({ page }) => {
+  const f = await runtimeFixture(page, "done");
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" }).getByRole("button", { name: "open test-project stopped" }).click();
+  await expect.poll(() => f.acknowledgements).toContainEqual({ sessionId: f.ids.get("test-project"), transitionSequence: 5 });
+  f.metadata();
+  await page.goto(server.baseUrl);
+  const card = page.locator("#session-list .card").filter({ has: page.locator(".card-name-text").filter({ hasText: /^test-project$/ }) });
+  await expect(card.locator(".session-activity")).toHaveText("changed since review");
+  await expect(page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
+});
+
+test("server-owned pinned sessions stay in ordinary lists but never rank as stopped work", async ({ page }) => {
+  await runtimeFixture(page, "idle", "test-project", true);
+  await page.goto(server.baseUrl);
+  await expect(page.locator("#session-list .card-name-text").filter({ hasText: /^test-project$/ })).toBeVisible();
+  await expect(page.locator("#dashboard-focus .focus-next")).toBeVisible();
+  await expect(page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
 });
 
 test("linked stopped work leads the sidebar up-next without a needs-you tone", async ({ page }, info) => {
