@@ -5,6 +5,7 @@ import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, t
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { showAppDialog } from "./app-dialog";
 import { focusReplyView, observePendingAsk, type PendingAsk } from "../src/focus-reply";
+import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, summarizeAgentContext } from "../src/focus-context";
 interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string }
 interface RoutineStatus { catchingUp: { machines: number; since: string | null; unconfirmed?: true } | null; yesterday?: { date: string; note: boolean; endsAt: string }; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
 interface FocusResponse { home: string; installationId: string; local: boolean; document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
@@ -90,7 +91,54 @@ export function createAssistantView(deps: {
   const field = (label: string, value: string) => value ? `<div><dt>${label}</dt><dd>${value}</dd></div>` : "";
   const project = (path?: string) => path ? `<span title="${escAttr(path)}">${esc(path.replace(/\/+$/, "").split("/").pop() || path)}</span>` : "";
   // `open=""` is how innerHTML serializes the attribute, so an unchanged render still compares equal in replace().
-  const card = (key: string, summary: string, body: string) => `<details class="focus-card" data-focus-card="${escAttr(key)}"${openCards.has(key) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${key}`)}">${summary}</summary><dl class="focus-card-body">${body}</dl></details>`;
+  const card = (key: string, summary: string, body: string, extra = "") => `<details class="focus-card" data-focus-card="${escAttr(key)}"${openCards.has(key) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${key}`)}">${summary}</summary><dl class="focus-card-body">${body}</dl>${extra}</details>`;
+  // The agent-context extension's document for a session, fetched only for open session cards (local and peer
+  // sessions alike, through the session's own machine). Catalogs are cached per machine; documents per session.
+  const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const CATALOG_TTL_MS = 5 * 60_000;
+  const catalogs = new Map<string, { at: number; enabled: Promise<boolean> }>();
+  const contexts = new Map<string, unknown>();
+  const contextFlights = new Set<string>();
+  // Re-rendering an open card fires its toggle again; only a first expand loads, refreshes reload the open ones.
+  const contextTried = new Set<string>();
+  const contextKey = (session: FocusSession) => `${session.machineUrl ?? ""}|${session.id}`;
+  function contextEnabled(machineKey: string): Promise<boolean> {
+    const cached = catalogs.get(machineKey);
+    if (cached && Date.now() - cached.at < CATALOG_TTL_MS) return cached.enabled;
+    const enabled = deps.request<unknown>("/extensions", undefined, machineKey || undefined, false).then(agentContextEnabled);
+    // A failed catalog read is retried on the next refresh instead of hiding the block for the TTL.
+    enabled.catch(() => catalogs.delete(machineKey));
+    catalogs.set(machineKey, { at: Date.now(), enabled });
+    return enabled;
+  }
+  async function loadContext(session: FocusSession) {
+    const key = contextKey(session);
+    if (!CANONICAL_UUID.test(session.id) || contextFlights.has(key)) return;
+    contextFlights.add(key);
+    contextTried.add(key);
+    try {
+      if (!await contextEnabled(session.machineUrl ?? "")) { contexts.delete(key); return; }
+      const response = await deps.request<{ document?: unknown }>(`${AGENT_CONTEXT_DOCUMENT_PATH}?session=${encodeURIComponent(session.id)}`, undefined, session.machineUrl || undefined, false);
+      contexts.set(key, response.document ?? null);
+    } catch { /* unreachable machine or extension error: keep what was shown; the next refresh retries */ }
+    finally { contextFlights.delete(key); render(); }
+  }
+  const openSessions = () => deps.sessions().filter(s => openCards.has(`session:${s.id}`));
+  function contextHtml(session: FocusSession) {
+    const context = summarizeAgentContext(contexts.get(contextKey(session)));
+    if (!context) return "";
+    if (context.kind === "unsupported") return `<div class="focus-context"><p class="focus-context-label">context</p><p class="focus-context-note">context panel v${esc(context.version)} not shown</p></div>`;
+    // One self-contained element per needs-you item, keyed by its v3 id: a later round attaches an answer box per item.
+    const need = (item: { id: string; text: string }) => `<li data-focus-need="${escAttr(item.id)}">${esc(item.text)}</li>`;
+    const moreKey = `more:${session.id}`;
+    const more = context.needsYou.length > 5 ? `<details class="focus-context-more" data-focus-card="${escAttr(moreKey)}"${openCards.has(moreKey) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${moreKey}`)}">${context.needsYou.length - 5} more</summary><ul>${context.needsYou.slice(5).map(need).join("")}</ul></details>` : "";
+    const fields = field("goal", esc(context.goal ?? "")) + field("now", esc(context.now ?? ""))
+      + field("needs you", context.needsYou.length ? `<ul class="focus-needs">${context.needsYou.slice(0, 5).map(need).join("")}</ul>${more}` : "")
+      + field("next", context.nextSteps.length ? `<ol>${context.nextSteps.map(step => `<li>${esc(step.text)}${step.owner ? ` <span class="focus-owner">${step.owner}</span>` : ""}</li>`).join("")}</ol>` : "")
+      + field("need to know", context.needToKnow.length ? `<ul>${context.needToKnow.map(text => `<li>${esc(text)}</li>`).join("")}</ul>` : "");
+    const fresh = [context.freshness, context.updatedAt && `updated ${age(context.updatedAt)}`].filter(Boolean).join(" · ");
+    return `<div class="focus-context"><p class="focus-context-label">context</p>${fields ? `<dl class="focus-card-body">${fields}</dl>` : ""}${fresh ? `<p class="focus-context-note">${esc(fresh)}</p>` : ""}</div>`;
+  }
   function sessionBody(row: FocusAction, session: FocusSession) {
     return field("machine", esc(session.machine ?? "")) + field("project", project(session.cwd))
       + field("state", `${esc(session.state === "needs-input" ? "needs you" : session.state)}${session.changedAt ? ` · since ${age(session.changedAt)}` : ""}`)
@@ -112,7 +160,7 @@ export function createAssistantView(deps: {
       const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
       const action = `<button type="button" class="focus-action" data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${row.kind} ${title}` : title)}">${row.kind}<span aria-hidden="true"> ›</span></button>`;
       const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span><small class="focus-for">${esc(row.intention?.title ?? row.session?.machine ?? "")}</small>`;
-      return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason))}${action}</li>`;
+      return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
     }).join("")}</ol>`;
   }
   function todayHtml(items: FocusIntention[]) {
@@ -201,6 +249,7 @@ export function createAssistantView(deps: {
         if (response.document !== null && !isFocusDocument(response.document)) throw new Error("invalid focus document");
         focus = response; offline = false; error = "";
         pendingAsk = observePendingAsk(pendingAsk, activity());
+        for (const session of openSessions()) void loadContext(session);
         try { localStorage.setItem(cacheKey, JSON.stringify(response)); } catch { /* storage unavailable; live view still works */ }
       } catch (e) { offline = true; error = e instanceof Error ? e.message : "focus unavailable"; }
       render();
@@ -282,7 +331,10 @@ export function createAssistantView(deps: {
     host.addEventListener("toggle", event => {
       const key = (event.target as HTMLElement).dataset?.focusCard;
       if (!key) return;
-      if ((event.target as HTMLDetailsElement).open) openCards.add(key); else openCards.delete(key);
+      if (!(event.target as HTMLDetailsElement).open) { openCards.delete(key); return; }
+      openCards.add(key);
+      const session = key.startsWith("session:") && deps.sessions().find(s => `session:${s.id}` === key);
+      if (session && !contextTried.has(contextKey(session))) void loadContext(session);
     }, true);
     host.addEventListener("change", event => {
       const target = event.target as HTMLInputElement;

@@ -2933,6 +2933,19 @@ details.focus-card > summary:focus-visible { outline: 2px solid var(--accent); o
 .focus-card-body code { font: 12px var(--font-mono); color: var(--text-2); white-space: pre-wrap; }
 .focus-linked { display: inline-flex; align-items: center; gap: 5px; margin-right: 10px; }
 .focus-linked .dot { width: 7px; height: 7px; box-shadow: none; }
+/* The agent-context document (extension `agent-context`) inside an open session card. */
+.focus-context { margin: -2px 0 12px; padding-top: 10px; border-top: 1px solid var(--hairline); }
+.focus-context .focus-card-body { margin: 0; padding: 0; border: 0; }
+.focus-context-label { margin: 0 0 6px; color: var(--text-3); font: 600 11px var(--font-ui); text-transform: uppercase; letter-spacing: .07em; }
+.focus-context-note { margin: 6px 0 0; color: var(--text-3); font-size: 12px; }
+.focus-card-body dd ul, .focus-card-body dd ol { margin: 0; padding-left: 16px; }
+.focus-card-body dd li + li { margin-top: 2px; }
+.focus-owner { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px; background: var(--surface-3); color: var(--text-3); font-size: 11px; line-height: 16px; vertical-align: 1px; }
+.focus-context-more { margin: 4px 0 0; color: var(--text-3); font-size: 12px; }
+details.focus-context-more > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; list-style: none; cursor: pointer; }
+details.focus-context-more > summary::-webkit-details-marker { display: none; }
+details.focus-context-more > summary::before { content: "›"; display: inline-block; width: 8px; color: var(--text-4); transition: transform .15s; }
+details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-next .focus-action { min-height: 34px; margin-top: 5px; padding: 0 2px; border: 0; background: none; color: var(--accent); font-size: 12px; font-weight: 500; }
 .focus-next .focus-action:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .focus-block .focus-next { margin: 4px -18px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
@@ -3001,7 +3014,7 @@ details.focus-card > summary:focus-visible { outline: 2px solid var(--accent); o
 .focus-today:empty { display: none; }
 .focus-spin::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 6px; border: 2px solid var(--accent-dim); border-top-color: var(--accent); border-radius: 50%; vertical-align: -1px; animation: focus-spin 1s linear infinite; }
 @keyframes focus-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .focus-spin::before { animation: none; } .assistant-column summary::before, details.focus-card > summary::after { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .focus-spin::before { animation: none; } .assistant-column summary::before, details.focus-card > summary::after, details.focus-context-more > summary::before { transition: none; } }
 /* Inline link weight: names, notes verbs, undo, read, back. Declared last so it wins the shared button rule. */
 .focus-header > button:not(:last-child):not(.focus-attn), .focus-notes button, .focus-done button, .focus-yesterday button, .focus-wait button, .assistant-column > header button { min-height: 0; padding: 2px 0; border: 0; border-radius: 4px; background: none; color: var(--accent); font-size: 12px; }
 .focus-header > button:not(:last-child):not(.focus-attn):hover, .focus-notes button:hover, .focus-done button:hover, .focus-yesterday button:hover, .focus-wait button:hover, .assistant-column > header button:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
