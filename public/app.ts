@@ -117,6 +117,7 @@ import {
   projectDelegationSessions,
   sessionIdentityId,
   sessionParentReference,
+  delegationAncestorIds,
 } from "./delegation-sessions";
 import { loadSessionGroupCollapse, projectSessionGroups, saveSessionGroupCollapse, sessionGroupKey, sessionGroupLabel, sessionGroupRoot } from "./session-grouping";
 import { harnessIconHtml as knownHarnessIconHtml } from "./harness-icon";
@@ -1792,6 +1793,25 @@ function renderSessionListFromState(): void {
   restoreOrganizationFocus?.();
 }
 
+// Opening a session must show it: a child agent hidden under a collapsed parent (focus next rows, notifications, chips)
+// expands every collapsed ancestor on both session lists before the open renders them.
+function revealDelegationAncestors(sessionName: string, machineUrl: string): void {
+  const group = state.lastSessionGroups.find(candidate => (candidate.machine.url || "") === (machineUrl || ""));
+  const target = group?.sessions.find(session => session.name === sessionName);
+  if (!group || !target) return;
+  let changed = false;
+  for (const ancestorId of delegationAncestorIds(group.sessions, target)) {
+    const key = sidebarDelegationParentKey(machineUrl || "", ancestorId);
+    if (expandedSidebarDelegationParents.has(key)) continue;
+    expandedSidebarDelegationParents.add(key);
+    changed = true;
+  }
+  if (!changed) return;
+  renderSessionListFromState();
+  renderSidebar();
+  if (state.drawerOpen) renderDrawerList();
+}
+
 function toggleSidebarDelegationChildren(key: string, event?: Event): void {
   event?.stopPropagation();
   event?.preventDefault();
@@ -2568,6 +2588,7 @@ async function openSession(name, machineUrl) {
     await showMachineUnavailable();
     return;
   }
+  revealDelegationAncestors(name, targetMachine);
   if (isDesktop()) {
     revealWorkspaceTerminals();
     const delegation = delegationWorkspaceContext(name, targetMachine);

@@ -122,6 +122,33 @@ export function delegationRootSession<TSession extends DelegationSessionLike>(
   return null;
 }
 
+/** Ids of the target's ancestors that are present in `sessions`, nearest first (none for a root or an orphan; a cycle ends). */
+export function delegationAncestorIds<TSession extends DelegationSessionLike>(
+  sessions: readonly TSession[],
+  target: TSession,
+): string[] {
+  const sessionsById = new Map(
+    sessions
+      .map(session => [sessionIdentityId(session), session] as const)
+      .filter((entry): entry is readonly [string, TSession] => entry[0] !== null),
+  );
+  const ancestors: string[] = [];
+  const visited = new Set<string>();
+  const targetId = sessionIdentityId(target);
+  if (targetId) visited.add(targetId);
+  let current: TSession | undefined = target;
+  while (current) {
+    const parent = sessionParentReference(current);
+    if (!parent || visited.has(parent.wolfpackSessionId)) break;
+    const ancestor = sessionsById.get(parent.wolfpackSessionId);
+    if (!ancestor) break;
+    visited.add(parent.wolfpackSessionId);
+    ancestors.push(parent.wolfpackSessionId);
+    current = ancestor;
+  }
+  return ancestors;
+}
+
 export function projectDelegationSessions<TSession extends DelegationSessionLike>(
   sessions: readonly TSession[],
 ): DelegationSessionRow<TSession>[] {

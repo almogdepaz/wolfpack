@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
 import {
+  delegationAncestorIds,
   delegationChildSummaryText,
   delegationGridMembers,
   delegationRootSession,
@@ -155,5 +156,22 @@ describe("delegation session projection", () => {
     expect(delegationGridMembers([parent, child], parent).map(row => row.session.name)).toEqual(["parent", "child"]);
     expect(delegationGridMembers([parent], parent).map(row => row.session.name)).toEqual(["parent"]);
     expect(delegationRootSession([parent, orphan], orphan)).toBeNull();
+  });
+});
+
+describe("delegationAncestorIds", () => {
+  test("lists the present ancestors nearest first; a root or an orphan has none; a cycle ends", () => {
+    const grand = session("grand", "grand-id");
+    const parent = session("parent", "parent-id", { parentId: "grand-id", parentName: "grand" });
+    const child = session("child", "child-id", { parentId: "parent-id", parentName: "parent" });
+    const orphan = session("orphan", "orphan-id", { parentId: "gone-id", parentName: "gone" });
+    const sessions = [grand, parent, child, orphan];
+    expect(delegationAncestorIds(sessions, child)).toEqual(["parent-id", "grand-id"]);
+    expect(delegationAncestorIds(sessions, parent)).toEqual(["grand-id"]);
+    expect(delegationAncestorIds(sessions, grand)).toEqual([]);
+    expect(delegationAncestorIds(sessions, orphan)).toEqual([]);
+    const a = session("a", "a-id", { parentId: "b-id", parentName: "b" });
+    const b = session("b", "b-id", { parentId: "a-id", parentName: "a" });
+    expect(delegationAncestorIds([a, b], a)).toEqual(["b-id"]);
   });
 });
