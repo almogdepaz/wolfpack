@@ -16,7 +16,7 @@ export const v3 = {
   activity: { state: "working", observedAt: new Date().toISOString() },
 };
 /** `document` may be a getter so a test can change what the next read returns. */
-export async function withContext(page: Page, document: unknown) {
+export async function withContext(page: Page, document: unknown, patchSession?: (session: Record<string, unknown>) => void) {
   const current = () => typeof document === "function" ? document() : document;
   const reads: string[] = [];
   await page.route("**/api/sessions", async route => {
@@ -25,6 +25,7 @@ export async function withContext(page: Page, document: unknown) {
     // a canonical uuid (the document route requires one) and a project path (the mock backend reports none)
     const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
     session.identity = { ...session.identity, wolfpackSessionId: SESSION_UUID, projectPath: "/home/dev/demo-app" };
+    patchSession?.(session);
     await route.fulfill({ response, json: body });
   });
   // a valid catalog (the app's extension host parses it too); no `ui`, so nothing tries to load an asset

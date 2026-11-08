@@ -97,6 +97,11 @@ export function createAssistantView(deps: {
   // Cards: every next row and today intention expands to its details; open state survives re-renders.
   // The summary holds only text: the action, checkbox and chips are its siblings in the row (axe nested-interactive).
   const openCards = new Set<string>();
+  // The user's open cards, newest last; bounded so keys of sessions that never come back do not pile up.
+  const OPEN_CARDS_MAX = 64;
+  const openCard = (key: string) => { openCards.delete(key); openCards.add(key); if (openCards.size > OPEN_CARDS_MAX) openCards.delete(openCards.values().next().value!); };
+  // Session cards emitted by the last render (either host): only these fetch their context.
+  const renderedSessions = new Map<string, FocusSession>();
   const stamp = (at: string) => new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const field = (label: string, value: string) => value ? `<div><dt>${label}</dt><dd>${value}</dd></div>` : "";
   const project = (path?: string) => path ? `<span title="${escAttr(path)}">${esc(path.replace(/\/+$/, "").split("/").pop() || path)}</span>` : "";
@@ -133,7 +138,7 @@ export function createAssistantView(deps: {
     } catch { /* unreachable machine or extension error: keep what was shown; the next refresh retries */ }
     finally { contextFlights.delete(key); render(); }
   }
-  const openSessions = () => deps.sessions().filter(s => openCards.has(`session:${s.id}`));
+  const openSessions = () => [...renderedSessions].filter(([key]) => openCards.has(key)).map(([, session]) => session);
   function contextHtml(session: FocusSession) {
     const context = summarizeAgentContext(contexts.get(contextKey(session)));
     if (!context) return "";
@@ -168,6 +173,7 @@ export function createAssistantView(deps: {
       const title = row.session ? `${row.session.name} ${row.session.state === "needs-input" ? "needs you" : finished ? "finished" : row.session.state}` : `start “${row.intention!.title}”`;
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
+      if (row.session) renderedSessions.set(key, row.session);
       const action = `<button type="button" class="focus-action" data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${row.kind} ${title}` : title)}">${row.kind}<span aria-hidden="true"> ›</span></button>`;
       const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span><small class="focus-for">${esc(row.intention?.title ?? row.session?.machine ?? "")}</small>`;
       return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
@@ -177,6 +183,7 @@ export function createAssistantView(deps: {
     return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}<span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>`;
   }
   function render() {
+    renderedSessions.clear();
     const current = doc();
     const enabled = !!focus?.assistant?.enabled;
     const state = status();
@@ -348,8 +355,8 @@ export function createAssistantView(deps: {
       const key = (event.target as HTMLElement).dataset?.focusCard;
       if (!key) return;
       if (!(event.target as HTMLDetailsElement).open) { openCards.delete(key); return; }
-      openCards.add(key);
-      const session = key.startsWith("session:") && deps.sessions().find(s => `session:${s.id}` === key);
+      openCard(key);
+      const session = renderedSessions.get(key);
       if (session && !contextTried.has(contextKey(session))) void loadContext(session);
     }, true);
     host.addEventListener("change", event => {

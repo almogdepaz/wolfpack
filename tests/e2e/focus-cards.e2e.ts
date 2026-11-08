@@ -185,3 +185,23 @@ test("a poll answered before a tick lands after it without reverting the tick (S
   expect(conflicts).toEqual([]);
   await page.unroute(url => url.pathname === "/api/focus");
 });
+
+test("a session card whose row left next stops fetching; it may come back open (S3)", async ({ page }) => {
+  let working = false;
+  const reads = await withContext(page, v3, session => {
+    if (working) session.runtimeState = { ...(session.runtimeState as object), state: "working", authority: "program", stale: false };
+  });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  const row = block.locator(".focus-next li").filter({ hasText: "prompt-project" });
+  await row.locator(".focus-card > summary").click();
+  await expect(row.locator(".focus-context")).toBeVisible();
+  working = true;
+  await expect(row).toHaveCount(0, { timeout: 15_000 });
+  const gone = reads.length;
+  await page.waitForTimeout(11_000);
+  expect(reads.length).toBe(gone);
+  working = false;
+  await expect(row.locator("details.focus-card")).toHaveAttribute("open", "", { timeout: 15_000 });
+  await expect.poll(() => reads.length, { timeout: 15_000 }).toBeGreaterThan(gone);
+});
