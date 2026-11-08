@@ -63,7 +63,12 @@ export function createAssistantView(deps: {
   const dot = (state: string) => `<span class="dot ${state === "needs-input" || state === "needs you" ? "yellow" : state === "working" ? "green" : state === "failed" ? "red" : "gray"}" aria-hidden="true"></span>`;
   function replace(id: string, html: string) {
     const host = document.getElementById(id);
-    if (!host || host.innerHTML === html) return;
+    if (!host) return;
+    if (host.innerHTML !== html) swap(host, html);
+    // what each card shows now is what this render meant (a skipped swap means the dom already matched)
+    for (const el of host.querySelectorAll<HTMLDetailsElement>("details[data-focus-card]")) renderedOpen.set(el, el.open);
+  }
+  function swap(host: HTMLElement, html: string) {
     const active = host.contains(document.activeElement) ? document.activeElement as HTMLInputElement : null;
     const key = active?.dataset.focusKey;
     const value = active?.value;
@@ -97,6 +102,8 @@ export function createAssistantView(deps: {
   // Cards: every next row and today intention expands to its details; open state survives re-renders.
   // The summary holds only text: the action, checkbox and chips are its siblings in the row (axe nested-interactive).
   const openCards = new Set<string>();
+  /** Each card element's open state as its host was last rendered (see foldOpenCards). */
+  const renderedOpen = new WeakMap<HTMLDetailsElement, boolean>();
   // The user's open cards, newest last; bounded so keys of sessions that never come back do not pile up.
   const OPEN_CARDS_MAX = 64;
   const openCard = (key: string) => { openCards.delete(key); openCards.add(key); if (openCards.size > OPEN_CARDS_MAX) openCards.delete(openCards.values().next().value!); };
@@ -187,7 +194,21 @@ export function createAssistantView(deps: {
   function todayHtml(items: FocusIntention[]) {
     return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}<span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>`;
   }
+  // The live dom holds the newest open state: a tap sets `open` at once, but the browser queues its toggle event, and a
+  // render in between would rebuild the card from `openCards` and the toggle would then fire on the detached node (N6).
+  // A card whose dom state differs from what the last render gave it was toggled since: take that before building html.
+  // (Not compared with `openCards`: the other host's copy of a card toggled elsewhere is stale, not a toggle.)
+  function foldOpenCards() {
+    for (const id of ["dashboard-focus", "assistant-content"]) {
+      for (const el of document.getElementById(id)?.querySelectorAll<HTMLDetailsElement>("details[data-focus-card]") ?? []) {
+        const rendered = renderedOpen.get(el);
+        if (rendered === undefined || el.open === rendered) continue;
+        if (el.open) openCard(el.dataset.focusCard!); else openCards.delete(el.dataset.focusCard!);
+      }
+    }
+  }
   function render() {
+    foldOpenCards();
     renderedSessions.clear();
     const current = doc();
     const enabled = !!focus?.assistant?.enabled;

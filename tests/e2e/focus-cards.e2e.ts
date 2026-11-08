@@ -47,6 +47,54 @@ test("a next row expands to its session details; the action acts without togglin
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
 
+test("a tap that opens a card stays open when a poll renders before its toggle event (N6)", async ({ page }) => {
+  let hold = false;
+  let arrived!: () => void;
+  const held = new Promise<void>(resolve => { arrived = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/sessions", async route => {
+    if (!hold) return route.continue();
+    hold = false;
+    const response = await route.fetch();
+    arrived();
+    await released;
+    await route.fulfill({ response });
+  });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  const row = block.locator(".focus-next li").filter({ hasText: "prompt-project" });
+  const card = row.locator("details.focus-card");
+  await expect(card).not.toHaveAttribute("open", /.*/);
+  // the browser queues the toggle event after the tap sets `open`; a render can land in between. the test makes that
+  // gap deterministic: it holds the tap's toggle event until the poll it releases has rendered, then lets it go on.
+  await page.evaluate(() => {
+    const w = window as unknown as { heldToggle?: EventTarget };
+    addEventListener("toggle", event => {
+      const target = event.target as HTMLElement;
+      if (w.heldToggle || !target.matches?.("#dashboard-focus details.focus-card")) return;
+      event.stopImmediatePropagation();
+      w.heldToggle = target;
+    }, { capture: true });
+  });
+  hold = true;
+  await held;
+  await row.locator(".focus-card > summary").click();
+  expect(await page.evaluate(() => !!(window as unknown as { heldToggle?: EventTarget }).heldToggle)).toBe(true);
+  const rendered = page.waitForResponse(response => new URL(response.url()).pathname === "/api/sessions");
+  release();
+  await rendered;
+  await page.waitForTimeout(300);
+  await page.evaluate(() => (window as unknown as { heldToggle: EventTarget }).heldToggle.dispatchEvent(new Event("toggle")));
+  await expect(card).toHaveAttribute("open", "");
+  await expect(card.locator(".focus-card-body")).toBeVisible();
+  await expect(card.locator(".focus-card-body")).toContainText("Do you want to continue? (y/n)");
+  // and a poll after that keeps it open
+  await page.waitForTimeout(6000);
+  await expect(card).toHaveAttribute("open", "");
+  await page.unroute("**/api/sessions");
+});
+
 test("today intentions expand to their details; the checkbox and chips work without toggling the card", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
