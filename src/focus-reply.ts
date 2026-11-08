@@ -18,6 +18,8 @@ export interface PendingAsk {
   sawWorking: boolean;
   /** Set once a poll showed the ask was dropped or failed; it stays (a later routine enqueue clears the queue's error). */
   lost?: { error?: string };
+  /** Set once a poll showed the ask's turn over (`terminal`): later restarts, errors or turns are not this ask's. */
+  settled?: true;
 }
 export interface AssistantActivity { state: string; queued: number; error?: string; sessionId?: string }
 /** Resting this long after the send without a reply or a turn the view could see: the answer is in its terminal. */
@@ -44,17 +46,23 @@ export function focusReplyView(ask: PendingAsk | undefined, reply: FocusReply | 
   if (latest && latest.updatedAt !== ask.priorReplyAt) return { kind: "answered", ask, reply: latest };
   if (ask.lost) return ask.lost.error !== undefined || ask.delivery === "failed" ? { kind: "failed", ask, error: ask.lost.error } : { kind: "unconfirmed", ask };
   if (ask.sentAt === undefined) return { kind: "queued", ask };
-  const rested = resting(assistant.state) && assistant.queued === 0;
-  return { kind: rested && (ask.sawWorking || now - ask.sentAt >= ASK_TERMINAL_AFTER_MS) ? "terminal" : "waiting", ask };
+  return { kind: ask.settled || turnOver(ask, assistant, now) ? "terminal" : "waiting", ask };
+}
+/** A sent ask's turn is over: it ran (seen working, now resting with nothing queued), or resting 90 s after the send. */
+function turnOver(ask: PendingAsk, assistant: AssistantActivity, now: number): boolean {
+  return ask.sentAt !== undefined && resting(assistant.state) && assistant.queued === 0
+    && (ask.sawWorking || now - ask.sentAt >= ASK_TERMINAL_AFTER_MS);
 }
 /** Called on every successful poll while an ask is pending. */
 export function observePendingAsk(ask: PendingAsk | undefined, assistant: AssistantActivity, now: number): PendingAsk | undefined {
-  if (!ask || ask.lost) return ask;
+  if (!ask || ask.lost || ask.settled) return ask;
   // The ask's own enqueue cleared the queue's error, so an error other than the one in its answer is newer than the ask.
   if (assistant.error && assistant.error !== ask.errorAtAsk) return { ...ask, lost: { error: assistant.error } };
-  if (assistant.sessionId !== ask.sessionId) return { ...ask, lost: {} };
+  // A status without a session id (starting, unreadable) is no evidence; only a defined, different id is a restart.
+  if (assistant.sessionId !== undefined && ask.sessionId !== undefined && assistant.sessionId !== ask.sessionId) return { ...ask, lost: {} };
   // Queued behind another turn: that turn is not the ask's; the ask is sent when the queue drains.
   // A drained queue with the assistant working: that turn is the ask's.
   if (ask.sentAt === undefined) return assistant.queued > 0 ? ask : { ...ask, sentAt: now, sawWorking: busy(assistant.state) };
+  if (turnOver(ask, assistant, now)) return { ...ask, settled: true };
   return !ask.sawWorking && busy(assistant.state) ? { ...ask, sawWorking: true } : ask;
 }

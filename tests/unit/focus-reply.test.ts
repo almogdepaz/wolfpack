@@ -72,9 +72,21 @@ describe("inline ask reply", () => {
   });
   test("a sent ask whose assistant restarted (new incarnation, no error text) is not confirmed (B1)", () => {
     expect(polls(sent(), [[t0 + 5000, live({ sessionId: "incarnation-2" })], [t0 + 10_000 + ASK_TERMINAL_AFTER_MS, live({ sessionId: "incarnation-2" })]])).toEqual(["unconfirmed", "unconfirmed"]);
-    expect(polls(sent(), [[t0 + 5000, live({ sessionId: undefined, state: "starting" })]])).toEqual(["unconfirmed"]);
+    // a status without a session id is no evidence of a restart; only a defined, different id is (R-1)
+    expect(polls(sent(), [[t0 + 5000, live({ sessionId: undefined, state: "starting" })], [t0 + 10_000, live({ state: "working" })]])).toEqual(["waiting", "waiting"]);
+    expect(polls(sent(), [[t0 + 5000, live({ sessionId: undefined, state: "starting" })], [t0 + 10_000, live({ sessionId: "incarnation-2" })]])).toEqual(["waiting", "unconfirmed"]);
     // a hard failure of the ask itself (not_delivered) clears the queue with an error: not sent
     expect(polls(sent(), [[t0 + 5000, live({ error: "assistant send failed: send not_delivered; delivery may be uncertain" })]])).toEqual(["failed"]);
+  });
+  test("a finished ask stays finished: a later relaunch or pin error does not flip it (R-1)", () => {
+    const ran: [number, AssistantActivity][] = [[t0 + 5000, live({ state: "working" })], [t0 + 10_000, idle]];
+    const hour = t0 + 3_600_000;
+    expect(polls(sent(), [...ran, [hour, live({ sessionId: "incarnation-2" })]])).toEqual(["waiting", "terminal", "terminal"]);
+    expect(polls(sent(), [...ran, [hour, live({ error: "conflicting ownership of the assistant directory" })]])).toEqual(["waiting", "terminal", "terminal"]);
+    // the timeout path settles too
+    expect(polls(sent(), [[t0 + ASK_TERMINAL_AFTER_MS, idle], [hour, live({ sessionId: "incarnation-2", error: "assistant restarted; queued messages were not sent" })]])).toEqual(["terminal", "terminal"]);
+    // a later routine turn does not reopen it either
+    expect(polls(sent(), [...ran, [hour, live({ state: "working" })]])).toEqual(["waiting", "terminal", "terminal"]);
   });
   test("an error that was already there when the ask was answered (a pin note) is not the ask's failure", () => {
     const note = "conflicting ownership of the assistant directory";
