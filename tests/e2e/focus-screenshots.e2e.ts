@@ -165,6 +165,39 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   else expect.soft(Math.abs(save.width - formBox.width)).toBeLessThanOrEqual(1);
 });
 
+test("R-N1: compact chips keep attention first and hide the least urgent sessions", async ({ page }, info) => {
+  const desktop = info.project.name === "desktop";
+  await page.setViewportSize({ width: desktop ? 1440 : 390, height: 900 });
+  const linked = [{ name: "i", state: "idle" }, { name: "f", state: "failed" }, { name: "w", state: "working" },
+    { name: "n", state: "needs-input" }, { name: "x", state: "working" }, { name: "r", state: "idle" }];
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const template = body.sessions.find((s: { name: string }) => s.name === "another-project");
+    body.sessions.push(...linked.map(({ name, state }) => ({ ...template, name,
+      identity: { ...template.identity, wolfpackSessionId: `mock:${name}` },
+      runtimeState: { ...template.runtimeState, state, authority: "program", stale: false },
+    })));
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.document.intentions = [{ id: "priority", title: "Attention-ordered chips", done: false, createdAt: new Date().toISOString(), sessions: linked.map(s => `mock:${s.name}`) }];
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const row = page.locator("#assistant-content .focus-today > li");
+  const chips = row.locator(":scope > .focus-chips");
+  await expect(chips.locator("[data-focus-session]")).toHaveText(["f", "n", "w", "x", "i", "r"]);
+  await expect(chips.locator("[data-focus-session]").filter({ visible: true })).toHaveText(desktop ? ["f", "n", "w"] : ["f", "n", "w", "x", "i", "r"]);
+  if (desktop) await chips.getByRole("button", { name: "3 more sessions: x, i, r", exact: true }).click();
+  else await row.locator("summary").click();
+  // Only the compact presentation is sorted; expanded details retain the original link order.
+  await expect(row.locator(".focus-card-body [data-focus-session]")).toHaveText(linked.map(s => s.name));
+});
+
 test("S1: long session chips stay inside their column; six chips keep a compact desktop row", async ({ page }, info) => {
   const desktop = info.project.name === "desktop";
   const longName = `agent-${"x".repeat(70)}`;

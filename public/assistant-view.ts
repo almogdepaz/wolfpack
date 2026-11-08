@@ -203,8 +203,10 @@ export function createAssistantView(deps: {
   }
   const COMPACT_CHIPS_MAX = 3;
   const compactChipCounts = new Map<string, number>();
+  // Compact presentation only: preserve link order within each attention tier.
+  const chipAttention = (session: FocusSession) => session.state === "needs-input" || session.state === "failed" ? 0 : session.state === "working" ? 1 : 2;
   function chipsHtml(intention: FocusIntention) {
-    const linked = linkedFocusSessions(intention, sessions());
+    const linked = linkedFocusSessions(intention, sessions()).sort((a, b) => chipAttention(a) - chipAttention(b));
     if (!linked.length) return '<span class="focus-chips"></span>';
     const count = Math.min(compactChipCounts.get(intention.id) ?? COMPACT_CHIPS_MAX, linked.length);
     const chips = linked.map((session, index) => sessionChip(session, index >= count)).join("");
