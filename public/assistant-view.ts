@@ -23,6 +23,8 @@ export function createAssistantView(deps: {
   let machine = "";
   let homeName = "sgt";
   let offline = false;
+  // No answer from the home yet (first paint from the cache): show the cached copy as it was, write nothing.
+  let answered = false;
   let error = "";
   let notice = "";
   let flight: Promise<void> | undefined;
@@ -33,7 +35,10 @@ export function createAssistantView(deps: {
   let pendingAsk: PendingAsk | undefined;
   const activity = () => ({ state: focus?.assistant?.state ?? "off", queued: focus?.assistant?.queued ?? 0 });
   const cacheKey = "wolfpack-focus-cache";
-  try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; offline = true; } } catch { /* no valid cached focus */ }
+  try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
+  const locked = () => offline || busy || !answered;
+  // The cached copy carries the home's resolved name, so an offline first answer names the right machine.
+  const cache = (value: FocusResponse) => { try { localStorage.setItem(cacheKey, JSON.stringify({ ...value, homeName })); } catch { /* storage unavailable; live view still works */ } };
   const doc = () => focus?.document ?? emptyFocus();
   const routines = () => offline || !focus?.assistant?.enabled ? undefined : focus.routines;
   // An error beside a live session (a dropped queue, an unverified send) is a note under the live state; "failed" is the assistant not running.
@@ -69,7 +74,7 @@ export function createAssistantView(deps: {
   }
   function addForm(first = false) {
     const label = first ? "What are you working on?" : "Add an intention";
-    return `<form data-focus-form="add" class="focus-add"><input type="text" data-focus-key="add" aria-label="${label}" placeholder="${first ? "what are you working on?" : "add an intention…"}" maxlength="500" required${offline || busy ? " disabled" : ""}><button type="submit"${offline || busy ? " disabled" : ""}>Add</button></form>`;
+    return `<form data-focus-form="add" class="focus-add"><input type="text" data-focus-key="add" aria-label="${label}" placeholder="${first ? "what are you working on?" : "add an intention…"}" maxlength="500" required${locked() ? " disabled" : ""}><button type="submit"${locked() ? " disabled" : ""}>Add</button></form>`;
   }
   // The ask's answer stays on this page: the assistant writes it with `wolfpack focus reply`; the terminal is the fallback.
   function replyHtml() {
@@ -164,7 +169,7 @@ export function createAssistantView(deps: {
     }).join("")}</ol>`;
   }
   function todayHtml(items: FocusIntention[]) {
-    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${offline || busy ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}<span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>`;
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}<span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>`;
   }
   function render() {
     const current = doc();
@@ -176,7 +181,7 @@ export function createAssistantView(deps: {
     const done = doneToday(current, deps.sessions(), Date.now(), doneDay);
     const latest = done[0] && ` · ${done[0].kind === "intention" ? `✓ ${esc(done[0].intention.title)}` : `${esc(done[0].session.name)} finished`} ${clock(done[0].at)}`;
     const doneHtml = done.length ? `<h2>done today <small>${plural(done.filter(i => i.kind === "intention").length, "intention")} · ${plural(done.filter(i => i.kind === "session").length, "session")}</small></h2><ul class="focus-done" aria-label="Done today">${done.map(i => `<li><span class="focus-time">${clock(i.at)}</span>${i.kind === "intention"
-      ? `<span class="focus-what">✓ ${esc(i.intention.title)}</span><button type="button" data-focus-undo="${escAttr(i.intention.id)}" aria-label="Undo done: ${escAttr(i.intention.title)}"${offline || busy ? " disabled" : ""}>undo</button>`
+      ? `<span class="focus-what">✓ ${esc(i.intention.title)}</span><button type="button" data-focus-undo="${escAttr(i.intention.id)}" aria-label="Undo done: ${escAttr(i.intention.title)}"${locked() ? " disabled" : ""}>undo</button>`
       : `<span class="focus-what"><b>${esc(i.session.name)}</b> finished · for ${esc(i.intention.title)}</span><button type="button" data-focus-session="${escAttr(i.session.id)}">open ›</button>`}</li>`).join("")}</ul>` : "";
     const open = current.intentions.filter(i => !(i.done && i.doneAt && doneDay(i.doneAt) === localDay(Date.now())));
     const r = routines();
@@ -214,7 +219,7 @@ export function createAssistantView(deps: {
     if (block) block.hidden = !enabled;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk">${dot(state)} ${esc(info)} ›</button>` : "";
     replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>today · ${summary}${latest ?? ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error ? `<p role="status">${esc(error)}</p>` : ""}`);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${button("settings", "settings", "Assistant settings")}</div>${notes}<div class="focus-conversation"><form data-focus-form="ask"><input type="text" data-focus-key="ask" aria-label="Ask the assistant" placeholder="ask…" maxlength="8000" required${offline || busy ? " disabled" : ""}><button type="submit"${offline || busy ? " disabled" : ""}>Ask</button></form><button type="button" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk</button></div>${replyHtml()}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2>${todayHtml(open)}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${button("settings", "settings", "Assistant settings")}</div>${notes}<div class="focus-conversation"><form data-focus-form="ask"><input type="text" data-focus-key="ask" aria-label="Ask the assistant" placeholder="ask…" maxlength="8000" required${locked() ? " disabled" : ""}><button type="submit"${locked() ? " disabled" : ""}>Ask</button></form><button type="button" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk</button></div>${replyHtml()}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2>${todayHtml(open)}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = error || focus?.assistant?.error || (focus?.assistant?.queued ? `${focus.assistant.queued} queued` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -224,7 +229,7 @@ export function createAssistantView(deps: {
     const settingHome = document.getElementById("assistant-setting-home");
     if (settingHome) settingHome.textContent = `Home: ${homeName}${focus?.assistant?.folder ? ` · ${focus.assistant.folder}` : ""}. Needs pi installed and logged in there (pi, then /login).`;
     const toggle = document.getElementById("assistant-setting-toggle") as HTMLButtonElement;
-    if (toggle) { toggle.textContent = enabled ? "Disable assistant…" : "Enable assistant…"; toggle.disabled = offline || busy; }
+    if (toggle) { toggle.textContent = enabled ? "Disable assistant…" : "Enable assistant…"; toggle.disabled = locked(); }
     const settingOpen = document.getElementById("assistant-setting-open");
     if (settingOpen) settingOpen.hidden = !enabled;
     const terminalState = document.getElementById("assistant-terminal-state");
@@ -250,8 +255,9 @@ export function createAssistantView(deps: {
         focus = response; offline = false; error = "";
         pendingAsk = observePendingAsk(pendingAsk, activity());
         for (const session of openSessions()) void loadContext(session);
-        try { localStorage.setItem(cacheKey, JSON.stringify(response)); } catch { /* storage unavailable; live view still works */ }
+        cache(response);
       } catch (e) { offline = true; error = e instanceof Error ? e.message : "focus unavailable"; }
+      answered = true;
       render();
     })().finally(() => { flight = undefined; });
     return flight;
@@ -259,10 +265,11 @@ export function createAssistantView(deps: {
   async function write(op: FocusOp | (() => FocusOp)) {
     for (let attempt = 0; attempt < 2; attempt++) {
       if (offline) throw new Error("focus home is offline; changes were not saved");
+      if (!answered) throw new Error("focus is still loading; changes were not saved");
       try {
         const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: [typeof op === "function" ? op() : op] }) }, machine);
         focus = { ...saved, assistant: focus?.assistant };
-        try { localStorage.setItem(cacheKey, JSON.stringify(focus)); } catch { /* optional cache */ }
+        cache(focus);
         notice = "focus updated";
         return;
       } catch (e) { if (attempt || (e as { status?: number }).status !== 409) throw e; await refresh(); }

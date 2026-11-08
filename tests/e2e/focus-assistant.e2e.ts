@@ -107,11 +107,34 @@ test("cached home-offline focus is read-only and still ranks live sessions", asy
   await page.route(url => url.pathname === "/api/focus", route => route.abort("failed"));
   await page.reload();
   await expect(page.locator("#dashboard-focus")).toContainText(/focus from \w+ \d\d:\d\d · .+ offline · read-only/);
+  // the cached copy carries the home's resolved name; no stale default machine name
+  await expect(page.locator("#dashboard-focus")).toContainText("this machine offline");
   await expect(page.locator("#dashboard-focus .focus-header > .dot")).toHaveClass(/red/);
   await expect(page.locator("#sidebar-assistant .dot")).toHaveClass(/red/);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();
   await expect(page.locator("#assistant-content .focus-next")).toBeVisible();
+});
+
+test("before the first focus response a cached copy is shown as it was, never as offline", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  await expect(page.locator("#dashboard-focus .focus-next")).toBeVisible();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route(url => url.pathname === "/api/focus", async route => { await held; await route.continue(); });
+  await page.reload();
+  const block = page.locator("#dashboard-focus");
+  await expect(block.locator(".focus-next")).toBeVisible();
+  // one read while the response is held: a retrying assertion would pass once the response lands
+  expect(await block.textContent()).not.toContain("offline");
+  expect(await block.locator(".focus-header > .dot").getAttribute("class")).not.toMatch(/red/);
+  expect(await page.locator("#sidebar-assistant .dot").getAttribute("class")).not.toMatch(/red/);
+  // nothing is written to a home that is not known yet
+  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();
+  release();
+  await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeEnabled();
+  await page.unroute(url => url.pathname === "/api/focus");
 });
 
 test("the assistant's own session is not a card and not counted; its terminal is reached through the assistant ui", async ({ page }, info) => {
