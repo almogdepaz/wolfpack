@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { startTestServer, openSessionFromUi, toggleSessionGridFromUi, type TestServer } from "./helpers";
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
@@ -18,7 +19,7 @@ async function runtimeFixture(page: Page, initial: string, target = "test-projec
     for (const session of body.sessions) {
       if (session.name === target && replacementId) session.identity.wolfpackSessionId = replacementId;
       ids.set(session.name, session.identity.wolfpackSessionId);
-      if (session.name === target) { session.runtimeState = runtime; session.pinned = pinned; }
+      if (session.name === target) { session.runtimeState = runtime; session.pinned = pinned; session.identity.agentKind = "custom"; }
       // Remove unrelated attention without altering the assistant's own state.
       if (session.name === "prompt-project" && session.name !== target) session.runtimeState = { ...session.runtimeState, state: "idle", unseen: false, stoppedSequence: 0 };
     }
@@ -32,7 +33,7 @@ async function runtimeFixture(page: Page, initial: string, target = "test-projec
     runtime = { ...runtime, unseen: false, acknowledgedSequence: body.transitionSequence };
     await route.fulfill({ json: { ok: true, runtimeState: runtime } });
   });
-  return { acknowledgements, ids, metadata: () => { runtime = { ...runtime, unseen: true, transitionSequence: runtime.transitionSequence + 1 }; }, replace: () => { replacementId = "e762d0b1-6d2b-4e37-9168-f2841234abce"; }, stop: (state = "done") => { runtime = { ...runtime, state, unseen: true, transitionSequence: runtime.transitionSequence + 1, stoppedSequence: runtime.transitionSequence + 1, stoppedAt: new Date().toISOString() }; } };
+  return { acknowledgements, ids, stopTime: runtime.stoppedAt, review: () => { runtime = { ...runtime, unseen: false, acknowledgedSequence: runtime.transitionSequence }; }, metadata: () => { runtime = { ...runtime, unseen: true, transitionSequence: runtime.transitionSequence + 1 }; }, replace: () => { replacementId = "e762d0b1-6d2b-4e37-9168-f2841234abce"; }, stop: (state = "done") => { runtime = { ...runtime, state, unseen: true, transitionSequence: runtime.transitionSequence + 1, stoppedSequence: runtime.transitionSequence + 1, stoppedAt: new Date().toISOString() }; } };
 }
 
 for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped row; open acknowledges it and removes it`, async ({ page }, info) => {
@@ -45,9 +46,14 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   expect((await row.boundingBox())!.height).toBeLessThanOrEqual(46);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  const width = info.project.name === "desktop" ? 1440 : 390;
-  mkdirSync(".plans/screenshots/focus-stopped", { recursive: true });
-  await page.screenshot({ path: `.plans/screenshots/focus-stopped/${state}-${width}.png`, fullPage: true });
+  await row.locator("summary").click();
+  await expect(row.getByText("state", { exact: true }).locator("..").locator("dd")).toHaveText("stopped · 12m");
+  await row.locator("summary").click();
+  if (process.env.WOLFPACK_FOCUS_SHOTS) {
+    const width = info.project.name === "desktop" ? 1440 : 390;
+    mkdirSync(process.env.WOLFPACK_FOCUS_SHOTS, { recursive: true });
+    await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `${state}-${width}.png`), fullPage: true });
+  }
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" });
   await expect(next.locator("summary")).toContainText("stopped · 12m");
@@ -62,6 +68,15 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
     await page.locator("#back-btn").click();
   }
   await expect(page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
+});
+
+test("the seen 24-hour finished row uses the original stop time, not metadata time", async ({ page }) => {
+  const f = await runtimeFixture(page, "done", "prompt-project");
+  f.review();
+  await page.goto(server.baseUrl);
+  const stopClock = await page.evaluate(at => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }), f.stopTime);
+  const row = page.locator("#dashboard-focus .focus-next li").filter({ hasText: "prompt-project finished" });
+  await expect(row.locator(".focus-title > small")).toHaveText(` · ${stopClock}`);
 });
 
 test("reviewed work stays out of next when metadata becomes unseen again", async ({ page }) => {
