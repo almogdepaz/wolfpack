@@ -20,6 +20,7 @@ export interface DelegationRuntimeState {
   readonly source?: string;
   readonly stale?: boolean;
   readonly unseen?: boolean;
+  readonly hasBeenBusy?: boolean;
   readonly transitionSequence?: number;
   readonly changedAt?: string;
 }

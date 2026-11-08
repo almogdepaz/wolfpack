@@ -1,6 +1,6 @@
 import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
 import { esc, escAttr } from "./app-state";
-import { rankFocus, linkedFocusSessions, doneToday, type FocusAction, type FocusSession } from "../src/focus-ranking";
+import { rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, type FocusAction, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { showAppDialog } from "./app-dialog";
@@ -161,13 +161,13 @@ export function createAssistantView(deps: {
   }
   // One wording for a next row: the row itself and the sidebar tile's "next" line.
   const nextTitle = (row: FocusAction) => row.session
-    ? `${row.session.name} ${row.session.state === "needs-input" ? "needs you" : row.session.state === "done" ? "finished" : row.session.state}`
+    ? `${row.session.name} ${stoppedUnseen(row.session) ? "stopped" : row.session.state === "needs-input" ? "needs you" : row.session.state === "done" ? "finished" : row.session.state}`
     : `start “${row.intention!.title}”`;
   function nextHtml(cap: number) {
     const rows = rankFocus(doc(), deps.sessions(), cap);
     if (!rows.length) return `<p class="focus-empty">${doc().intentions.length && doc().intentions.every(i => i.done) ? "all intentions done — tell the assistant what's next" : "nothing waiting"}</p>`;
     return `<ol class="focus-next" aria-label="Next actions">${rows.map((row, index) => {
-      const finished = row.session?.state === "done";
+      const finished = row.session?.state === "done" && !stoppedUnseen(row.session);
       const title = nextTitle(row);
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
