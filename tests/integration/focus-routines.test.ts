@@ -133,6 +133,36 @@ describe("focus routines runtime", () => {
     expect(t.routines.status().catchingUp).not.toBeNull();
   });
 
+  for (const busyFirst of [false, true]) test(`restart inside the catch-up debounce sends exactly once with ${busyFirst ? "busy" : "idle"} first tick (N6)`, async () => {
+    const t = setup();
+    t.peer.add(state("app"));
+    await t.routines.tick();
+    await t.routines.tick();
+    t.sends[0]!.settle("sent");
+    await t.routines.ack(fileOf(t.sends[0]!.text));
+    t.clock.now += MIN;
+    t.peer.add(state("new-work"));
+    const sends: { text: string; settle: (o: SendOutcome) => void }[] = [];
+    t.assistant.idle = !busyFirst;
+    const restarted = new FocusRoutines({
+      folder: join(t.root, "assistant"), enabled: () => true, sources: async () => [t.peer], timing: async () => ASSISTANT_TIMING_DEFAULTS,
+      assistant: async () => t.assistant, queueBusy: () => false, enqueue: (text, settle) => { sends.push({ text, settle }); }, now: () => t.clock.now,
+    });
+    await restarted.tick();
+    if (busyFirst) {
+      expect(sends).toHaveLength(0);
+      expect(restarted.status().catchingUp).toBeNull();
+      t.assistant.idle = true;
+      await restarted.tick();
+    }
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.text).toStartWith("process inbox inbox/catch-up-");
+    sends[0]!.settle("sent");
+    await restarted.tick();
+    expect(sends).toHaveLength(1);
+    expect(t.coverage().inbox.sends).toBe(1);
+  });
+
   test("the assistant's own rows never start a turn: the cursor advances without an inbox", async () => {
     const t = setup();
     await t.routines.tick();
