@@ -28,6 +28,13 @@ export function createAssistantView(deps: {
   let writes = 0;
   let error = "";
   let notice = "";
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  const NOTICE_MS = 5_000;
+  function announce(text: string) {
+    clearTimeout(noticeTimer);
+    notice = text;
+    noticeTimer = setTimeout(() => { notice = ""; render(); }, NOTICE_MS);
+  }
   let flight: Promise<void> | undefined;
   let busy = false;
   let opened = false;
@@ -251,8 +258,8 @@ export function createAssistantView(deps: {
     const block = document.getElementById("dashboard-focus");
     if (block) block.hidden = !enabled;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk">${dot(state)} ${esc(info)} ›</button>` : "";
-    replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>today · ${summary}${latest ?? ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error ? `<p role="status">${esc(error)}</p>` : ""}`);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2>${todayHtml(open)}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + (current.intentions.length ? `<small>today · ${summary}${latest ?? ""}</small>` : "") : `<p>Set your focus</p>${addForm(true)}`}${error ? `<p role="status">${esc(error)}</p>` : ""}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next</h2>${nextHtml(5)}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = error || focus?.assistant?.error || (focus?.assistant?.queued ? `${focus.assistant.queued} queued` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -306,7 +313,7 @@ export function createAssistantView(deps: {
         focus = { ...saved, assistant: focus?.assistant };
         writes++;
         cache(focus);
-        notice = "focus updated";
+        announce("focus updated");
         return;
       } catch (e) { if (attempt || (e as { status?: number }).status !== 409) throw e; await refresh(); }
     }
