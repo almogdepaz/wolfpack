@@ -4,7 +4,7 @@ import { rankFocus, linkedFocusSessions, doneToday, type FocusAction, type Focus
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { showAppDialog } from "./app-dialog";
-import { focusReplyView, observePendingAsk, type PendingAsk } from "../src/focus-reply";
+import { focusReplyView, observePendingAsk, startPendingAsk, type PendingAsk } from "../src/focus-reply";
 import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, summarizeAgentContext } from "../src/focus-context";
 interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string }
 interface RoutineStatus { catchingUp: { machines: number; since: string | null; unconfirmed?: true } | null; yesterday?: { date: string; note: boolean; endsAt: string }; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
@@ -33,7 +33,7 @@ export function createAssistantView(deps: {
   let wasEnabled = false;
   // The last ask typed here, until the page reloads; its answer comes back as document.reply.
   let pendingAsk: PendingAsk | undefined;
-  const activity = () => ({ state: focus?.assistant?.state ?? "off", queued: focus?.assistant?.queued ?? 0 });
+  const activity = (assistant = focus?.assistant) => ({ state: assistant?.state ?? "off", queued: assistant?.queued ?? 0, error: assistant?.error, sessionId: assistant?.sessionId });
   const cacheKey = "wolfpack-focus-cache";
   try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
   const locked = () => offline || busy || !answered;
@@ -80,13 +80,16 @@ export function createAssistantView(deps: {
   function replyHtml() {
     const view = focusReplyView(pendingAsk, doc().reply, activity(), Date.now());
     if (view.kind === "none") return "";
+    const look = button("talk", "open ›", "Open the assistant's terminal", offline || !focus?.assistant?.session);
     const you = "ask" in view ? `<p class="focus-ask"><b>you</b> · ${esc(view.ask.text)}</p>` : "";
     const line = view.kind === "reply" || view.kind === "answered"
       ? `<p class="focus-answer">${esc(view.reply.text)} <small>· ${view.reply.author !== "assistant" ? `${esc(view.reply.author)} · ` : ""}${age(view.reply.updatedAt)}</small></p>`
       : view.kind === "queued" ? `<p class="focus-wait">queued · sent when the assistant is free</p>`
       : view.kind === "waiting" ? `<p class="focus-wait">waiting for the assistant…</p>`
-      : view.kind === "terminal" ? `<p class="focus-wait">answered in its terminal · ${button("talk", "open ›", "Open the assistant's terminal", offline || !focus?.assistant?.session)}</p>`
-      : `<p class="focus-wait focus-reply-error">not sent${focus?.assistant?.error ? ` · ${esc(focus.assistant.error)}` : ""}</p>`;
+      : view.kind === "terminal" ? `<p class="focus-wait">answered in its terminal · ${look}</p>`
+      // Dropped, failed or sent to an incarnation that is gone: never "waiting"; the terminal is where to look.
+      : view.kind === "unconfirmed" ? `<p class="focus-wait">not confirmed · the assistant restarted · ${look}</p>`
+      : view.kind === "failed" ? `<p class="focus-wait focus-reply-error">not sent${view.error ? ` · ${esc(view.error)}` : ""} · ${look}</p>` : "";
     return `<div class="focus-reply">${you}${line}</div>`;
   }
   // Cards: every next row and today intention expands to its details; open state survives re-renders.
@@ -253,7 +256,7 @@ export function createAssistantView(deps: {
         }
         if (response.document !== null && !isFocusDocument(response.document)) throw new Error("invalid focus document");
         focus = response; offline = false; error = "";
-        pendingAsk = observePendingAsk(pendingAsk, activity());
+        pendingAsk = observePendingAsk(pendingAsk, activity(), Date.now());
         for (const session of openSessions()) void loadContext(session);
         cache(response);
       } catch (e) { offline = true; error = e instanceof Error ? e.message : "focus unavailable"; }
@@ -358,7 +361,7 @@ export function createAssistantView(deps: {
           const priorReplyAt = doc().reply?.updatedAt ?? null;
           const { delivery, ...assistant } = await deps.request<AssistantStatus & { delivery: PendingAsk["delivery"] }>("/focus/ask", { method: "POST", body: JSON.stringify({ text }) }, machine);
           if (focus) focus.assistant = assistant;
-          pendingAsk = observePendingAsk({ text, askedAt: Date.now(), delivery, priorReplyAt, sawWorking: false }, activity());
+          pendingAsk = startPendingAsk(text, delivery, priorReplyAt, activity(assistant), Date.now());
         }
         else await write({ type: "add", intention: { id: crypto.randomUUID(), title: text } });
         input.value = "";

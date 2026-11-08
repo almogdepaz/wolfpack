@@ -196,6 +196,21 @@ test("an ask is answered on the assistant page: waiting inline, then the reply t
   await expect(view).toHaveClass(/visible/);
   await expect(page.locator("#terminal-view")).not.toHaveClass(/visible/);
   expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
+  // the queue drops it (a restart) and a routine's enqueue clears the error a poll later: the ask still reads as not sent
+  let assistantPatch: Record<string, unknown> = { error: "assistant restarted; queued messages were not sent" };
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    body.assistant = { ...body.assistant, ...assistantPatch };
+    await route.fulfill({ response, json: body });
+  });
+  await expect(reply).toContainText("not sent · assistant restarted; queued messages were not sent", { timeout: 15_000 });
+  assistantPatch = { error: undefined };
+  await page.waitForTimeout(6000);
+  await expect(reply).toContainText("not sent · assistant restarted");
+  await expect(reply.getByRole("button", { name: "Open the assistant's terminal" })).toBeVisible();
+  await page.unroute(url => url.pathname === "/api/focus");
   // the assistant answers through the cli (`wolfpack focus reply`): an ordinary focus op the next poll shows
   const latest = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: latest.revision, ops: [{ type: "reply", text: "Answer prompt-project first, then ship focus.", author: "assistant" }] } })).ok()).toBe(true);
