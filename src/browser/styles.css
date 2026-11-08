@@ -2995,13 +2995,18 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-today input { accent-color: var(--accent); width: 18px; height: 18px; margin: 0; flex: none; }
 .focus-today .focus-title { white-space: normal; overflow-wrap: anywhere; font-weight: 400; }
 .focus-today .done .focus-title { text-decoration: line-through; color: var(--text-3); }
-.focus-chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.focus-chips { display: flex; gap: 6px; flex-wrap: nowrap; justify-content: flex-end; }
 .focus-today .focus-chips { padding-top: 9px; }
 /* An open today card lists its sessions in the body; the chips return when it closes. */
 .focus-today > li:has(> .focus-card[open]) > .focus-chips { display: none; }
 .focus-chips:empty { display: none; }
-.focus-chips button { min-height: 26px; padding: 0 9px; gap: 6px; border: 0; border-radius: 13px; background: var(--surface-3); color: var(--text-2); font-size: 11.5px; }
-.focus-chips .dot { width: 7px; height: 7px; box-shadow: none; }
+.focus-chips button { min-width: 0; max-width: 100%; min-height: 26px; padding: 0 9px; gap: 6px; border: 0; border-radius: 13px; background: var(--surface-3); color: var(--text-2); font-size: 11.5px; }
+.focus-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focus-chips > button.focus-chip-extra, .focus-chips > button.focus-chip-none { display: none; }
+.focus-chips > button.focus-chip-more { flex: none; }
+/* Synchronous sizing only; the measurement class is removed before paint. */
+.focus-chips.focus-chip-measure > button { display: inline-flex; flex: none; max-width: none; }
+.focus-chips .dot { flex: none; width: 7px; height: 7px; box-shadow: none; }
 .focus-done li { color: var(--text-3); }
 .focus-time { min-width: 40px; color: var(--text-4); font: 12px var(--font-mono); }
 .focus-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
@@ -3073,7 +3078,9 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-next .focus-action { min-height: 44px; margin-top: 0; padding-inline: 6px; }
   .focus-today > li { grid-template-columns: auto minmax(0, 1fr); }
   .focus-today .focus-card[open] > summary { width: 100%; }
-  .focus-today .focus-chips { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; padding: 0 0 8px 30px; }
+  .focus-today .focus-chips { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; justify-content: flex-start; padding: 0 0 8px 30px; }
+  .focus-chips > button.focus-chip-extra { display: inline-flex; }
+  .focus-chips > button.focus-chip-more { display: none; }
   .focus-card-body { grid-template-columns: minmax(0, 1fr); gap: 1px; }
   .focus-card-body dd + dt, .focus-card-body > div + div dt { margin-top: 6px; }
   .focus-add input { min-height: 44px; font-size: 16px; }

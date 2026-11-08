@@ -56,7 +56,7 @@ test("QA-14: self-offline keeps last known next rows, disabled, then recovers", 
   await context.setOffline(true);
   await expect(view).toContainText("offline · read-only", { timeout: 15_000 });
   expect(await view.locator(".focus-next .focus-card > summary").allTextContents()).toEqual(summaries);
-  for (const action of await view.locator(".focus-next button, .focus-chips button, .focus-done button").all()) await expect(action).toBeDisabled();
+  for (const action of await view.locator(".focus-next button, .focus-chips [data-focus-session], .focus-done button").all()) await expect(action).toBeDisabled();
   await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeDisabled();
   await context.setOffline(false);
   await expect(view).not.toContainText("offline · read-only", { timeout: 15_000 });

@@ -114,7 +114,7 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   const next = await view.locator(".focus-next > li > .focus-card > summary").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(next), "QA-7 open and start share a disclosure column").toBeLessThanOrEqual(1);
   if (!desktop) {
-    const targets = view.locator("details:not(.focus-card) > summary, .focus-chips button, .focus-done button");
+    const targets = view.locator("details:not(.focus-card) > summary, .focus-chips button, .focus-done button").filter({ visible: true });
     expect(await targets.count()).toBeGreaterThanOrEqual(5);
     for (const target of await targets.all()) {
       const box = (await target.boundingBox())!;
@@ -147,6 +147,82 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   const formBox = (await form.boundingBox())!;
   if (desktop) expect.soft(save.width, "QA-3 timing secondary button is content width").toBeLessThan(formBox.width / 2);
   else expect.soft(Math.abs(save.width - formBox.width)).toBeLessThanOrEqual(1);
+});
+
+test("S1: long session chips stay inside their column; six chips keep a compact desktop row", async ({ page }, info) => {
+  const desktop = info.project.name === "desktop";
+  const longName = `agent-${"x".repeat(70)}`;
+  const shortNames = Array.from({ length: 6 }, (_, index) => `agent-${index + 1}`);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const template = body.sessions.find((s: { name: string }) => s.name === "another-project");
+    body.sessions.push(...[longName, ...shortNames].map(name => ({ ...template, name,
+      identity: { ...template.identity, wolfpackSessionId: `mock:${name}` },
+      runtimeState: { ...template.runtimeState, state: "working", authority: "program", stale: false },
+    })));
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.document.intentions = [["long-chip", "A long session name", [longName]], ["many-chips", "Six linked sessions", shortNames]].map(([id, title, names]) => ({
+      id, title, createdAt: new Date().toISOString(), done: false, sessions: (names as string[]).map(name => `mock:${name}`),
+    }));
+    await route.fulfill({ response, json: body });
+  });
+  const shots = join(process.cwd(), process.env.WOLFPACK_FOCUS_SHOTS ?? ".plans/screenshots");
+  mkdirSync(shots, { recursive: true });
+  for (const width of desktop ? [1024, 1280, 1440] : [390]) {
+    await page.setViewportSize({ width, height: desktop ? 900 : 844 });
+    await page.goto(server.baseUrl);
+    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+    const today = page.locator("#assistant-content .focus-today");
+    await expect(today.locator("li")).toHaveCount(2);
+    const measurements = await today.locator("li").evaluateAll(rows => rows.map(row => {
+      const chips = row.querySelector(".focus-chips")!.getBoundingClientRect();
+      const summary = row.querySelector("summary")!.getBoundingClientRect();
+      const buttons = [...row.querySelectorAll(".focus-chips button")].filter(el => el.getBoundingClientRect().width > 0);
+      return { height: row.getBoundingClientRect().height, left: chips.left, right: chips.right, summaryRight: summary.right,
+        buttons: buttons.map(el => {
+          const rect = el.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, height: rect.height, sameLine: rect.top < summary.bottom && rect.bottom > summary.top,
+            truncated: !!el.querySelector(".focus-chip-name") && el.querySelector(".focus-chip-name")!.scrollWidth > el.querySelector(".focus-chip-name")!.clientWidth };
+        }),
+        sessions: buttons.filter(el => el.hasAttribute("data-focus-session")).length };
+    }));
+    if (desktop) for (const chip of measurements[1]!.buttons) expect.soft(chip.truncated, "short chips are shown only if they fit without losing their identifying suffix").toBe(false);
+    for (const row of measurements) {
+      if (desktop) expect.soft(row.height, `${width}: one desktop chip line`).toBeLessThanOrEqual(45);
+      expect.soft(row.sessions, `${width}: bounded compact chips or full phone list`).toBeLessThanOrEqual(desktop ? 3 : 6);
+      for (const button of row.buttons) {
+        if (!desktop) expect.soft(button.height, "phone chip tap target").toBeGreaterThanOrEqual(44);
+        expect.soft(button.left, `${width}: chip contained, never overlaps disclosure/title`).toBeGreaterThanOrEqual(Math.max(row.left, button.sameLine ? row.summaryRight : row.left) - 1);
+        expect.soft(button.right, `${width}: chip right edge contained`).toBeLessThanOrEqual(row.right + 1);
+      }
+    }
+    const long = today.getByRole("button", { name: longName, exact: true });
+    await expect.soft(long).toHaveAttribute("title", longName, { timeout: 1_000 });
+    expect.soft(await long.evaluate(el => {
+      const label = el.querySelector(".focus-chip-name");
+      return label ? getComputedStyle(label).textOverflow : null;
+    })).toBe("ellipsis");
+    if (desktop) await expect.soft(today.getByRole("button", { name: `4 more sessions: ${shortNames.slice(2).join(", ")}`, exact: true })).toBeVisible({ timeout: 1_000 });
+    else {
+      await expect(today.locator(".focus-chip-more").filter({ visible: true })).toHaveCount(0);
+      await expect(today.locator("li").last().getByRole("button")).toHaveCount(6);
+      await today.scrollIntoViewIfNeeded();
+    }
+    expect((await new AxeBuilder({ page }).include("#assistant-content .focus-today").analyze()).violations).toEqual([]);
+    await page.screenshot({ path: join(shots, `corrections-chips-${width}.png`), fullPage: true });
+  }
+  const today = page.locator("#assistant-content .focus-today");
+  if (desktop) await today.getByRole("button", { name: /^\d+ more sessions:/ }).click();
+  else await today.locator("li").last().locator("summary").click();
+  const expanded = today.locator("li").filter({ hasText: "Six linked sessions" });
+  await expect(expanded.locator("details")).toHaveAttribute("open", "");
+  for (const name of shortNames) await expect(expanded.locator(".focus-card-body")).toContainText(name);
 });
 
 test("focus card captures: a session card open with and without the agent's context, an intention card", async ({ page }, info) => {

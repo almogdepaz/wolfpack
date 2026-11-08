@@ -1,5 +1,5 @@
 import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
-import { esc, escAttr } from "./app-state";
+import { esc, escAttr, isDesktop } from "./app-state";
 import { rankFocus, linkedFocusSessions, doneToday, type FocusAction, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
@@ -197,8 +197,52 @@ export function createAssistantView(deps: {
       return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
     }).join("")}</ol>`;
   }
+  const COMPACT_CHIPS_MAX = 3;
+  const compactChipCounts = new Map<string, number>();
+  function chipsHtml(intention: FocusIntention) {
+    const linked = linkedFocusSessions(intention, sessions());
+    if (!linked.length) return '<span class="focus-chips"></span>';
+    const count = Math.min(compactChipCounts.get(intention.id) ?? COMPACT_CHIPS_MAX, linked.length);
+    const chips = linked.map((session, index) => `<button type="button"${index >= count ? ' class="focus-chip-extra"' : ""}${locked() ? " disabled" : ""} data-focus-session="${escAttr(session.id)}" title="${escAttr(session.name)}">${dot(session.state)}<span class="focus-chip-name">${esc(session.name)}</span></button>`).join("");
+    const rest = linked.slice(count);
+    // Keep the hidden zero-count button as the native sizing probe when all chips fit.
+    const more = `<button type="button" class="focus-chip-more${rest.length ? "" : " focus-chip-none"}" data-focus-expand="${escAttr(`intention:${intention.id}`)}" aria-label="${escAttr(`${rest.length} more sessions: ${rest.map(s => s.name).join(", ")}`)}" title="${escAttr(rest.map(s => s.name).join(", "))}">+${rest.length}</button>`;
+    return `<span class="focus-chips" data-focus-chips="${escAttr(intention.id)}">${chips}${more}</span>`;
+  }
+  // Measure native button widths, including the current font, padding and dots. Keep the
+  // largest prefix that fits with +n; only a lone overlong name needs truncation.
+  function fitChips(): boolean {
+    if (!isDesktop()) return false;
+    let changed = false;
+    for (const chips of document.querySelectorAll<HTMLElement>("[data-focus-chips]")) {
+      if (!chips.clientWidth) continue;
+      const style = getComputedStyle(chips);
+      const available = chips.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const gap = parseFloat(style.columnGap);
+      const more = chips.querySelector<HTMLButtonElement>(".focus-chip-more")!;
+      const original = more.textContent;
+      chips.classList.add("focus-chip-measure");
+      const widths = [...chips.querySelectorAll<HTMLElement>("[data-focus-session]")].map(el => el.getBoundingClientRect().width);
+      let count = Math.min(COMPACT_CHIPS_MAX, widths.length);
+      while (count > 1) {
+        const remaining = widths.length - count;
+        more.textContent = `+${remaining}`;
+        const used = widths.slice(0, count).reduce((sum, width) => sum + width, 0) + (count - 1) * gap
+          + (remaining ? gap + more.getBoundingClientRect().width : 0);
+        if (used <= available) break;
+        count--;
+      }
+      more.textContent = original;
+      chips.classList.remove("focus-chip-measure");
+      if (compactChipCounts.get(chips.dataset.focusChips!) !== count) {
+        compactChipCounts.set(chips.dataset.focusChips!, count);
+        changed = true;
+      }
+    }
+    return changed;
+  }
   function todayHtml(items: FocusIntention[]) {
-    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}<span class="focus-chips">${linkedFocusSessions(i, sessions()).map(s => `<button type="button"${locked() ? " disabled" : ""} data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>`;
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}${chipsHtml(i)}</li>`).join("")}</ul>`;
   }
   // The live dom holds the newest open state: a tap sets `open` at once, but the browser queues its toggle event, and a
   // render in between would rebuild the card from `openCards` and the toggle would then fire on the detached node (N6).
@@ -217,6 +261,7 @@ export function createAssistantView(deps: {
     foldOpenCards();
     renderedSessions.clear();
     const current = doc();
+    for (const id of compactChipCounts.keys()) if (!current.intentions.some(intention => intention.id === id)) compactChipCounts.delete(id);
     const enabled = !!focus?.assistant?.enabled;
     const state = status();
     const next = nextRows(5);
@@ -289,6 +334,7 @@ export function createAssistantView(deps: {
     if (settingOpen) settingOpen.hidden = !enabled;
     const terminalState = document.getElementById("assistant-terminal-state");
     if (terminalState) terminalState.textContent = focus?.assistant?.queued ? `${focus.assistant.queued} queued` : focus?.assistant?.error ?? state;
+    if (fitChips()) render();
   }
   async function refresh(open = !opened) {
     if (flight) return flight;
@@ -381,6 +427,13 @@ export function createAssistantView(deps: {
       const action = target.dataset.focusAction;
       if (action === "view") deps.show("assistant");
       if (action === "settings") deps.show("settings");
+      const expand = target.dataset.focusExpand;
+      if (expand) {
+        openCard(expand);
+        render();
+        host.querySelector<HTMLElement>(`details[data-focus-card="${CSS.escape(expand)}"] > summary`)?.focus();
+        return;
+      }
       if (locked()) return;
       if (action === "talk") talk();
       if (action === "catch-up") void run(async () => { const next = await deps.request<RoutineStatus>("/focus/catch-up", { method: "POST" }, machine); if (focus) focus.routines = next; });
@@ -431,6 +484,7 @@ export function createAssistantView(deps: {
     // One enable: the assistant opens right away so its first run (and anything pi asks) is in view.
     if (enabled) deps.show("assistant");
   }); };
+  window.addEventListener("resize", render);
   render();
   return { refresh, render, loadTiming,
     captureStart: (intentionId: string): FocusSessionStart => ({ intentionId, home: focus?.home ?? "" }),
