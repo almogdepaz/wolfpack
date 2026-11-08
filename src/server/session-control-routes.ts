@@ -1,3 +1,5 @@
+import { stoppedUnseen } from "../focus-ranking.js";
+import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { createSessionOrganizationRoutes } from "./session-organization-routes.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename } from "node:path";
@@ -378,7 +380,10 @@ return {
       const relay = await sessionRegistrations(names.map(name => identities[name]!.wolfpackSessionId));
       const sessions = names.map((name) => {
         const identity = identities[name]!;
-        return sessionStatusPayload(name, identity, relay.registrations.get(identity.wolfpackSessionId), relay.taskRelay);
+        const runtime = getAgentRuntimeStateStore().get(identity.wolfpackSessionId);
+        return { ...sessionStatusPayload(name, identity, relay.registrations.get(identity.wolfpackSessionId), relay.taskRelay),
+          runtime: { state: runtime?.state ?? "unknown", changedAt: runtime?.changedAt ?? null,
+            unseen: runtime?.unseen ?? false, stopped: runtime ? stoppedUnseen(runtime) : false } };
       }).sort((left, right) => left.session.localeCompare(right.session));
       json(res, { sessions });
     } catch (error: unknown) {

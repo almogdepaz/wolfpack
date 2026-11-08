@@ -99,6 +99,26 @@ function assertDegraded(body: any) {
   expect(validate({ $ref: "#/$defs/SessionStatus" }, body, schema)).toEqual([]);
 }
 
+test("list adds runtime stop facts without changing terminal or identity fields", async () => {
+  const { getAgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
+  const store = getAgentRuntimeStateStore();
+  const at = "2026-11-01T10:00:00.000Z";
+  const input = { sessionKey: LIVE_ID, broker: { state: "alive" as const, observedAt: at }, sources: [], fallback: { rawOutputChanged: true, observedAt: at } };
+  store.reduce(input);
+  const stopped = store.reduce({ ...input, fallback: { ...input.fallback, rawOutputChanged: false } });
+  const f = await fixture();
+  try {
+    const list = await f.read("list");
+    expect(list.status).toBe(200);
+    const live = list.body.sessions.find((s: any) => s.sessionId === LIVE_ID);
+    expect(live).toMatchObject({ ok: true, session: "live", sessionId: LIVE_ID, state: "active", projectDir: "/fixture", harness: "pi", terminal: { exists: true, alive: true, status: "ready" }, runtime: { state: "idle", changedAt: at, unseen: true, stopped: true } });
+    expect(validate({ $ref: "#/$defs/SessionStatus" }, live, schema)).toEqual([]);
+    store.acknowledge(LIVE_ID, stopped.transitionSequence);
+    expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID).runtime).toMatchObject({ unseen: false, stopped: false });
+    expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === DEAD_ID).runtime).toEqual({ state: "unknown", changedAt: null, unseen: false, stopped: false });
+  } finally { await f.close(); }
+});
+
 test("healthy reads distinguish a live registration from absent registration without changing payloads", async () => {
   const f = await fixture();
   try {

@@ -86,6 +86,25 @@ describe("agent runtime state reducer", () => {
     expect(idle.state).toBe(AGENT_STATUS_STATE.IDLE);
   });
 
+  test("busy history follows observed work, not startup metadata transitions, and survives idle reductions", () => {
+    const input = { sessionKey: "busy-history", broker: { state: "alive" as const, observedAt: OBSERVED_AT }, sources: [], fallback: { rawOutputChanged: false, observedAt: OBSERVED_AT } };
+    const startup = deriveAgentRuntimeState(input);
+    const metadata = deriveAgentRuntimeState({ ...input, previous: startup, currentRun: { runId: "new", runOrder: 2 } });
+    expect(metadata.transitionSequence).toBeGreaterThan(1);
+    expect(metadata.hasBeenBusy).toBe(false);
+    const output = deriveAgentRuntimeState({ ...input, previous: metadata, fallback: { ...input.fallback, rawOutputChanged: true } });
+    expect(output.hasBeenBusy).toBe(true);
+    const idle = deriveAgentRuntimeState({ ...input, previous: output });
+    expect(idle.hasBeenBusy).toBe(true);
+    expect(deriveAgentRuntimeState({ ...input, previous: idle }).hasBeenBusy).toBe(true);
+    // A legacy cache can still establish work from its last state, without using its transition count.
+    const { hasBeenBusy: _, ...legacy } = output;
+    expect(deriveAgentRuntimeState({ ...input, previous: legacy }).hasBeenBusy).toBe(true);
+    for (const state of [AGENT_STATUS_STATE.RUNNING, AGENT_STATUS_STATE.WORKING, AGENT_STATUS_STATE.AUDIT, AGENT_STATUS_STATE.CLEANUP]) {
+      expect(deriveAgentRuntimeState({ ...input, sources: [source({ state })], currentRun: { runId: "run-1", runOrder: 1 } }).hasBeenBusy).toBe(true);
+    }
+  });
+
   test("terminal prose does not create needs-input or done state", () => {
     const state = deriveAgentRuntimeState({
       sessionKey: "s1",
@@ -392,6 +411,18 @@ describe("agent runtime state persistence and acknowledgement", () => {
     expect(next.transitionSequence).toBe(first.transitionSequence + 1);
     expect(next.unseen).toBe(true);
     expect(next.acknowledgedSequence).toBe(first.transitionSequence);
+    await restarted.flushForShutdown();
+  });
+
+  test("observed busy history persists through restart and acknowledgement", async () => {
+    const input = { sessionKey: "busy", broker: { state: "alive" as const, observedAt: OBSERVED_AT }, sources: [], fallback: { rawOutputChanged: true, observedAt: OBSERVED_AT } };
+    const store = new AgentRuntimeStateStore(path);
+    store.reduce(input);
+    const idle = store.reduce({ ...input, fallback: { ...input.fallback, rawOutputChanged: false } });
+    await store.flushForShutdown();
+    const restarted = new AgentRuntimeStateStore(path);
+    expect(restarted.get("busy")?.hasBeenBusy).toBe(true);
+    expect(restarted.acknowledge("busy", idle.transitionSequence)).toMatchObject({ hasBeenBusy: true, unseen: false });
     await restarted.flushForShutdown();
   });
 

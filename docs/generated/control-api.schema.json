@@ -6424,6 +6424,9 @@
         "unseen": {
           "type": "boolean"
         },
+        "hasBeenBusy": {
+          "type": "boolean"
+        },
         "runId": {
           "type": "string"
         },
@@ -6973,6 +6976,51 @@
         }
       ]
     },
+    "SessionRuntimeSummary": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "running",
+            "working",
+            "audit",
+            "cleanup",
+            "needs-input",
+            "done",
+            "failed",
+            "stopped",
+            "output",
+            "off",
+            "idle",
+            "unknown"
+          ]
+        },
+        "changedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unseen": {
+          "type": "boolean"
+        },
+        "stopped": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "state",
+        "changedAt",
+        "unseen",
+        "stopped"
+      ],
+      "additionalProperties": false,
+      "description": "Last server-observed runtime facts, not terminal liveness. stopped means unseen done or idle after observed work. Unknown with null changedAt means not yet observed."
+    },
     "SessionStatus": {
       "type": "object",
       "properties": {
@@ -6990,6 +7038,9 @@
         },
         "state": {
           "const": "active"
+        },
+        "runtime": {
+          "$ref": "#/$defs/SessionRuntimeSummary"
         },
         "project": {
           "type": "string"

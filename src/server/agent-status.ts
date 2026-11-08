@@ -107,6 +107,8 @@ export interface AgentRuntimeState extends ProgramStatusFields {
   readonly acknowledgedAt?: string;
   readonly acknowledgedSequence?: number;
   readonly unseen: boolean;
+  /** Sticky per-session evidence of observed work, not a count of metadata transitions. */
+  readonly hasBeenBusy?: boolean;
   readonly runId?: string;
   readonly runOrder?: number;
   readonly signalSequence?: number;
@@ -551,6 +553,11 @@ function runtimeStateChanged(previous: AgentRuntimeState | undefined, next: Agen
     || programRequestChanged(previous, next);
 }
 
+const BUSY_STATES: ReadonlySet<AgentStatusState> = new Set([
+  AGENT_STATUS_STATE.RUNNING, AGENT_STATUS_STATE.WORKING, AGENT_STATUS_STATE.AUDIT,
+  AGENT_STATUS_STATE.CLEANUP, AGENT_STATUS_STATE.OUTPUT,
+]);
+
 export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRuntimeState {
   const selected = brokerRuntimeSource(input)
     ?? chooseSemanticRuntimeSource(input)
@@ -580,6 +587,8 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
     ...(acknowledgedAt ? { acknowledgedAt } : {}),
     ...(typeof acknowledgedSequence === "number" ? { acknowledgedSequence } : {}),
     unseen: transitionSequence > (acknowledgedSequence ?? 0),
+    hasBeenBusy: previous?.hasBeenBusy === true || BUSY_STATES.has(selected.state)
+      || (previous !== undefined && BUSY_STATES.has(previous.state)),
     ...(input.currentRun?.runId ? { runId: input.currentRun.runId } : selected.runId ? { runId: selected.runId } : {}),
     ...(typeof input.currentRun?.runOrder === "number" ? { runOrder: input.currentRun.runOrder } : typeof selected.runOrder === "number" ? { runOrder: selected.runOrder } : {}),
     ...(typeof selected.signalSequence === "number" ? { signalSequence: selected.signalSequence } : {}),
