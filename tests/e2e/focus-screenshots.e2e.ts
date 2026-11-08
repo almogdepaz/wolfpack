@@ -225,6 +225,67 @@ test("S1: long session chips stay inside their column; six chips keep a compact 
   for (const name of shortNames) await expect(expanded.locator(".focus-card-body")).toContainText(name);
 });
 
+for (const change of ["resize", "linked sessions"] as const) test(`R1: revealed chips refit after ${change} while their card was open`, async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "desktop fitting after a hidden interval");
+  await page.setViewportSize({ width: change === "resize" ? 390 : 1440, height: 900 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  let names = Array.from({ length: 6 }, (_, index) => `agent-${index + 1}`);
+  let hold = false;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  // No poll response may mask the reveal bug by causing an unrelated render.
+  await page.route("https://**", route => route.abort());
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [] } }));
+  await page.route("**/api/sessions", async route => {
+    if (hold) await gate;
+    const response = await route.fetch();
+    const body = await response.json();
+    const template = body.sessions.find((s: { name: string }) => s.name === "another-project");
+    body.sessions.push(...names.map(name => ({ ...template, name,
+      identity: { ...template.identity, wolfpackSessionId: `mock:${name}` },
+      runtimeState: { ...template.runtimeState, state: "working", authority: "program", stale: false },
+    })));
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (hold) await gate;
+    const response = await route.fetch();
+    const body = await response.json();
+    body.document.intentions = [{ id: "refit", title: "Refit linked sessions", createdAt: new Date().toISOString(), done: false, sessions: names.map(name => `mock:${name}`) }];
+    await route.fulfill({ response, json: body });
+  });
+  try {
+    await page.goto(server.baseUrl);
+    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+    const row = page.locator("#assistant-content .focus-today > li");
+    const summary = row.locator("summary");
+    if (change === "resize") await expect(row.getByRole("button")).toHaveCount(6);
+    else await expect(row.getByRole("button", { name: /^4 more sessions:/ })).toBeVisible();
+    await summary.click();
+    await expect(row.locator("details")).toHaveAttribute("open", "");
+    await expect(row.locator(".focus-chips")).toBeHidden();
+    if (change === "resize") await page.setViewportSize({ width: 1024, height: 900 });
+    else {
+      names = Array.from({ length: 6 }, (_, index) => `reviewer-worker-${index + 1}`);
+      await expect(row.locator(".focus-card-body")).toContainText("reviewer-worker-6", { timeout: 15_000 });
+      await expect(row.locator("details")).toHaveAttribute("open", "");
+    }
+    hold = true;
+    await summary.click();
+    await expect(row.locator("details")).not.toHaveAttribute("open", /.*/);
+    const expectedRest = change === "resize" ? 4 : 5;
+    await expect.soft(row.locator(".focus-chip-more")).toHaveText(`+${expectedRest}`, { timeout: 1_000 });
+    const labels = row.locator("[data-focus-session]:visible .focus-chip-name");
+    expect.soft(await labels.count()).toBe(6 - expectedRest);
+    const readable = await labels.evaluateAll(els => els.every(el => el.scrollWidth <= el.clientWidth));
+    expect.soft(readable, "revealed short names keep their identifying suffixes").toBe(true);
+    await expect(summary).toBeFocused();
+    const shots = join(process.cwd(), process.env.WOLFPACK_FOCUS_SHOTS ?? ".plans/screenshots");
+    mkdirSync(shots, { recursive: true });
+    await page.screenshot({ path: join(shots, `corrections2-reveal-${change.replace(" ", "-")}.png`), fullPage: true });
+  } finally { release(); }
+});
+
 test("focus card captures: a session card open with and without the agent's context, an intention card", async ({ page }, info) => {
   const desktop = info.project.name === "desktop";
   const width = desktop ? 1440 : 390;

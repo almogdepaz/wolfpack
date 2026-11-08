@@ -450,7 +450,12 @@ export function createAssistantView(deps: {
     host.addEventListener("toggle", event => {
       const key = (event.target as HTMLElement).dataset?.focusCard;
       if (!key) return;
-      if (!(event.target as HTMLDetailsElement).open) { openCards.delete(key); return; }
+      if (!(event.target as HTMLDetailsElement).open) {
+        openCards.delete(key);
+        // Closing reveals chips skipped while hidden, possibly after a resize or data update.
+        if (fitChips()) render();
+        return;
+      }
       openCard(key);
       const session = renderedSessions.get(key);
       if (session && !contextTried.has(contextKey(session))) void loadContext(session);
