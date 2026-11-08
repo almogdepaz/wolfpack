@@ -6438,6 +6438,9 @@
         "stoppedAt": {
           "type": "string"
         },
+        "stopObserved": {
+          "type": "boolean"
+        },
         "runId": {
           "type": "string"
         },

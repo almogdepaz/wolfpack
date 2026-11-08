@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeStateStore, deriveAgentRuntimeState, type AgentStatusSource } from "../../src/server/agent-status.ts";
@@ -21,6 +21,15 @@ function episodeFixture(path: string) {
   }
   return { get store() { return store; }, step,
     ack: () => store.acknowledge("episode", store.get("episode")!.transitionSequence),
+    loadLegacyDone: async () => {
+      step("working");
+      const done = step("done");
+      // The legacy schema-v1 cache has runtime facts but no episode fields.
+      const { workPending: _, stoppedSequence: __, stoppedAt: ___, stopObserved: ____, ...legacy } = done;
+      await store.flushForShutdown();
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { episode: { ...legacy, hasBeenBusy: true } } }));
+      store = new AgentRuntimeStateStore(path);
+    },
     reload: async () => { await store.flushForShutdown(); store = new AgentRuntimeStateStore(path); } };
 }
 
@@ -72,8 +81,10 @@ test("an unseen stop keeps its original time across metadata and run changes", (
   expect(stoppedUnseen(metadata)).toBe(true);
   expect(metadata.stoppedAt).toBe(stop.changedAt);
 }));
-test("first authoritative done discovery is a stop; startup metadata alone is not", () => fixture(f => {
+test("first authoritative done discovery is a stop after acknowledged startup idle", () => fixture(async f => {
   f.step("idle", "fallback");
+  f.ack();
+  await f.reload();
   expect(stoppedUnseen(f.step("idle", "manifest", { runId: "run-2" }))).toBe(false);
   const first = f.step("done", "program", { runId: "run-2" });
   expect(stoppedUnseen(first)).toBe(true);
@@ -95,12 +106,33 @@ test("acknowledging while busy does not hide a later real finish, including afte
 test("a reviewed legacy cache cannot rediscover its old done after metadata changes", () => {
   const at = "2026-11-08T10:00:00.000Z";
   const input = { sessionKey: "legacy", broker: { state: "alive" as const, observedAt: at }, sources: [], fallback: { rawOutputChanged: false, observedAt: at } };
-  const { workPending: _, stoppedSequence: __, stoppedAt: ___, ...seed } = deriveAgentRuntimeState(input);
+  const { workPending: _, stoppedSequence: __, stoppedAt: ___, stopObserved: ____, ...seed } = deriveAgentRuntimeState(input);
   const legacy = { ...seed, hasBeenBusy: true, transitionSequence: 2, acknowledgedSequence: 2, unseen: false };
   const metadata = deriveAgentRuntimeState({ ...input, previous: legacy, currentRun: { runId: "new", runOrder: 2 } });
   const done: AgentStatusSource = { state: "done", authority: "program", source: "program-status", freshness: "fresh", stale: false, observedAt: at, label: "done", capabilities: ["semantic-state"] };
   expect(stoppedUnseen(deriveAgentRuntimeState({ ...input, sources: [done], previous: metadata }))).toBe(false);
 });
+
+for (const order of ["before", "after"] as const) test(`legacy done acknowledged ${order} migration never rediscovers its finish`, () => fixture(async f => {
+  await f.loadLegacyDone();
+  expect(f.store.get("episode")?.unseen).toBe(true);
+  if (order === "before") f.ack();
+  f.step("done"); // Migrate without changing the runtime transition.
+  if (order === "after") f.ack();
+  await f.reload();
+  f.step("idle", "manifest", { stale: true });
+  await f.reload(); // Persist loss of the old source as well as acknowledgement.
+  const metadata = f.step("done", "program");
+  expect(metadata.unseen).toBe(true);
+  expect(stoppedUnseen(metadata)).toBe(false);
+  expect(metadata.stoppedAt).toBeUndefined(); // Historical stop time is unknown.
+  // Migration must not fence off real future work, even if it is reviewed while busy.
+  f.step("working", "program");
+  f.ack();
+  const next = f.step("done", "program");
+  expect(stoppedUnseen(next)).toBe(true);
+  expect(next.stoppedAt).toBe(next.changedAt);
+}));
 
 test("TTL loss of a busy semantic source is not an observed stop", () => fixture(f => {
   f.step("working");

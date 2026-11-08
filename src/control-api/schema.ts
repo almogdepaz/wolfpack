@@ -698,6 +698,7 @@ export const controlApiSource: ControlApiSource = {
       workPending: boolean(),
       stoppedSequence: integer(),
       stoppedAt: string(),
+      stopObserved: boolean(),
       runId: string(),
       runOrder: number(),
       signalSequence: number(),
