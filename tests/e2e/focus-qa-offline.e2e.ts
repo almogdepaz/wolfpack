@@ -5,6 +5,49 @@ let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
 
+for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state === "idle" ? "talk" : "needs-you"} work while only the session list is unavailable`, async ({ page }) => {
+  let localDown = false;
+  await page.route(`${server.baseUrl}/api/sessions`, async route => {
+    if (localDown) return route.fulfill({ status: 503, json: { error: "local session list unavailable" } });
+    const response = await route.fetch();
+    const body = await response.json();
+    const finished = body.sessions.find((s: { name: string }) => s.name === "another-project");
+    finished.runtimeState = { ...finished.runtimeState, state: "done", changedAt: new Date().toISOString(), authority: "program", stale: false };
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    body.assistant.state = state;
+    if (body.routines) body.routines.catchingUp = null;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  await expect(view.locator(".focus-next button").first()).toBeEnabled();
+  localDown = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(view.locator(".focus-next button").first()).toBeDisabled({ timeout: 10_000 });
+  for (const button of await view.locator("[data-focus-session]").all()) await expect(button).toBeDisabled();
+  expect((await page.request.get(`${server.baseUrl}/api/focus`)).ok()).toBe(true);
+  const input = view.getByRole("textbox", { name: "Add an intention" });
+  await expect.soft(input).toBeEnabled({ timeout: 1_000 });
+  const title = `Session outage focus write ${state}`;
+  if (await input.isEnabled()) {
+    await input.fill(title);
+    await input.press("Enter");
+    const checkbox = view.getByRole("checkbox", { name: `Done: ${title}`, exact: true });
+    await expect(checkbox).toBeEnabled();
+    await checkbox.check();
+    await expect(view.locator(".focus-done")).toContainText(title);
+  }
+  if (state === "idle") await view.getByRole("button", { name: "Talk to assistant" }).click();
+  else await view.getByRole("button", { name: /needs you · answer/ }).click();
+  await expect(page.locator("#assistant-terminal-header")).toBeVisible({ timeout: 2_000 });
+});
+
 test("S2: a retired peer installation leaves the offline snapshot before local recovery", async ({ page }) => {
   const origin = "https://focus-peer.example.ts.net";
   const oldId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";

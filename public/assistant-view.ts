@@ -45,7 +45,8 @@ export function createAssistantView(deps: {
   let wasEnabled = false;
   const cacheKey = "wolfpack-focus-cache";
   try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
-  const locked = () => offline || busy || !answered || !deps.sessionsAvailable();
+  const locked = () => offline || busy || !answered;
+  const sessionLocked = () => locked() || !deps.sessionsAvailable();
   // Presentation only: retain the last verified projection during a self-offline poll.
   // All session actions are disabled until the local projection is available again.
   let lastSessions: FocusSession[] = [];
@@ -192,7 +193,7 @@ export function createAssistantView(deps: {
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
       if (row.session) renderedSessions.set(key, row.session);
-      const action = `<button type="button" class="focus-action"${locked() ? " disabled" : ""} data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${row.kind} ${title}` : title)}">${row.kind}<span aria-hidden="true"> ›</span></button>`;
+      const action = `<button type="button" class="focus-action"${sessionLocked() ? " disabled" : ""} data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${row.kind} ${title}` : title)}">${row.kind}<span aria-hidden="true"> ›</span></button>`;
       const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span><small class="focus-for">${esc(row.intention?.title ?? row.session?.machine ?? "")}</small>`;
       return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
     }).join("")}</ol>`;
@@ -203,7 +204,7 @@ export function createAssistantView(deps: {
     const linked = linkedFocusSessions(intention, sessions());
     if (!linked.length) return '<span class="focus-chips"></span>';
     const count = Math.min(compactChipCounts.get(intention.id) ?? COMPACT_CHIPS_MAX, linked.length);
-    const chips = linked.map((session, index) => `<button type="button"${index >= count ? ' class="focus-chip-extra"' : ""}${locked() ? " disabled" : ""} data-focus-session="${escAttr(session.id)}" title="${escAttr(session.name)}">${dot(session.state)}<span class="focus-chip-name">${esc(session.name)}</span></button>`).join("");
+    const chips = linked.map((session, index) => `<button type="button"${index >= count ? ' class="focus-chip-extra"' : ""}${sessionLocked() ? " disabled" : ""} data-focus-session="${escAttr(session.id)}" title="${escAttr(session.name)}">${dot(session.state)}<span class="focus-chip-name">${esc(session.name)}</span></button>`).join("");
     const rest = linked.slice(count);
     // Keep the hidden zero-count button as the native sizing probe when all chips fit.
     const more = `<button type="button" class="focus-chip-more${rest.length ? "" : " focus-chip-none"}" data-focus-expand="${escAttr(`intention:${intention.id}`)}" aria-label="${escAttr(`${rest.length} more sessions: ${rest.map(s => s.name).join(", ")}`)}" title="${escAttr(rest.map(s => s.name).join(", "))}">+${rest.length}</button>`;
@@ -271,7 +272,7 @@ export function createAssistantView(deps: {
     const latest = done[0] && ` · ${done[0].kind === "intention" ? `✓ ${esc(done[0].intention.title)}` : `${esc(done[0].session.name)} finished`} ${clock(done[0].at)}`;
     const doneHtml = done.length ? `<h2>done today <small>${plural(done.filter(i => i.kind === "intention").length, "intention")} · ${plural(done.filter(i => i.kind === "session").length, "session")}</small></h2><ul class="focus-done" aria-label="Done today">${done.map(i => `<li><span class="focus-time">${clock(i.at)}</span>${i.kind === "intention"
       ? `<span class="focus-what">✓ ${esc(i.intention.title)}</span><button type="button" data-focus-undo="${escAttr(i.intention.id)}" aria-label="Undo done: ${escAttr(i.intention.title)}"${locked() ? " disabled" : ""}>undo</button>`
-      : `<span class="focus-what"><b>${esc(i.session.name)}</b> finished · for ${esc(i.intention.title)}</span><button type="button" data-focus-session="${escAttr(i.session.id)}"${locked() ? " disabled" : ""}>open ›</button>`}</li>`).join("")}</ul>` : "";
+      : `<span class="focus-what"><b>${esc(i.session.name)}</b> finished · for ${esc(i.intention.title)}</span><button type="button" data-focus-session="${escAttr(i.session.id)}"${sessionLocked() ? " disabled" : ""}>open ›</button>`}</li>`).join("")}</ul>` : "";
     const open = current.intentions.filter(i => !(i.done && i.doneAt && doneDay(i.doneAt) === localDay(Date.now())));
     const r = routines();
     const catching = r?.catchingUp;
@@ -440,11 +441,15 @@ export function createAssistantView(deps: {
       if (action === "day-note") void run(readDayNote);
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
       if (target.dataset.focusNext !== undefined) {
+        if (sessionLocked()) return;
         const row = nextRows(id === "dashboard-focus" ? 3 : 5)[Number(target.dataset.focusNext)];
         if (row?.session) deps.open(row.session.name, row.session.machineUrl); else if (row?.intention) deps.start(row.intention);
       }
-      const session = sessions().find(s => s.id === target.dataset.focusSession);
-      if (session) deps.open(session.name, session.machineUrl);
+      if (target.dataset.focusSession) {
+        if (sessionLocked()) return;
+        const session = sessions().find(s => s.id === target.dataset.focusSession);
+        if (session) deps.open(session.name, session.machineUrl);
+      }
     });
     // toggle does not bubble: listen in the capture phase.
     host.addEventListener("toggle", event => {
