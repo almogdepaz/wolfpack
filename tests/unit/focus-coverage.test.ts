@@ -34,7 +34,12 @@ describe("coverage document", () => {
     const withBaseline = coverage();
     withBaseline.catchUpCursors.home!.needsInputSessions = ["id:one"];
     expect(isFocusCoverage(withBaseline)).toBe(true);
+    expect(isFocusCoverage({ ...withBaseline, catchUpCursors: { home: { ...withBaseline.catchUpCursors.home, needsInputSessions: Array.from({ length: 65 }, (_, i) => `id:${i}`) } } })).toBe(false);
     expect(isFocusCoverage({ ...withBaseline, catchUpCursors: { home: { ...withBaseline.catchUpCursors.home, needsInputSessions: [1] } } })).toBe(false);
+    const snapshot = { complete: false, needsInputSessions: ["id:one"], sessionIdentities: { app: "id:one" } };
+    expect(isFocusCoverage({ ...withBaseline, catchUpCursors: { home: { ...withBaseline.catchUpCursors.home, needsInputSnapshot: snapshot } } })).toBe(true);
+    const oversized = { ...snapshot, sessionIdentities: Object.fromEntries(Array.from({ length: 65 }, (_, i) => [`app-${i}`, `id:${i}`])) };
+    expect(isFocusCoverage({ ...withBaseline, catchUpCursors: { home: { ...withBaseline.catchUpCursors.home, needsInputSnapshot: oversized } } })).toBe(false);
     expect(isFocusCoverage({ ...emptyCoverage(), version: 2 })).toBe(false);
     expect(isFocusCoverage({ ...emptyCoverage(), reviewedThrough: "yesterday" })).toBe(false);
     expect(isFocusCoverage({ ...emptyCoverage(), catchUpCursors: { home: { name: "sgt", seq: -1 } } })).toBe(false);
@@ -67,12 +72,27 @@ describe("ack", () => {
     withBaseline.catchUpCursors.home!.needsInputSessions = ["id:old"];
     withBaseline.catchUpCursors.laptop!.needsInputSessions = ["id:keep"];
     withBaseline.inbox!.needsInputSessions = { home: ["id:new"], laptop: ["id:stale"] };
+    withBaseline.inbox!.needsInputSnapshots = { home: { complete: true, needsInputSessions: ["id:new"], sessionIdentities: { app: "id:new" } } };
+    expect(isFocusCoverage({ ...withBaseline, inbox: { ...withBaseline.inbox, needsInputSessions: { home: Array.from({ length: 65 }, (_, i) => `id:${i}`) } } })).toBe(false);
     expect(isFocusCoverage(withBaseline)).toBe(true);
     const acked = applyAck(withBaseline, file, now).coverage;
-    expect(acked.catchUpCursors.home!.needsInputSessions).toEqual(["id:new"]);
+    expect(acked.catchUpCursors.home!.needsInputSnapshot?.needsInputSessions).toEqual(["id:new"]);
     expect(acked.catchUpCursors.laptop!.needsInputSessions).toEqual(["id:keep"]);
     expect(withBaseline.catchUpCursors.home!.needsInputSessions).toEqual(["id:old"]);
     expect(isFocusCoverage({ ...withBaseline, inbox: { ...withBaseline.inbox, needsInputSessions: { home: [false] } } })).toBe(false);
+    expect(isFocusCoverage({ ...withBaseline, inbox: { ...withBaseline.inbox, needsInputSnapshots: { home: { complete: "unknown", needsInputSessions: [], sessionIdentities: {} } } } })).toBe(false);
+  });
+  test("an advancing legacy ack invalidates an earlier baseline; stale and equal acks preserve it", () => {
+    for (const through of [3, 4, 9]) {
+      const legacy = structuredClone(pending);
+      const snapshot = { complete: true, needsInputSessions: ["id:old"], sessionIdentities: { app: "id:old" } };
+      legacy.catchUpCursors.home!.needsInputSessions = ["id:old"];
+      legacy.catchUpCursors.home!.needsInputSnapshot = snapshot;
+      legacy.inbox!.through = { home: through };
+      const cursor = applyAck(legacy, file, now).coverage.catchUpCursors.home!;
+      expect(cursor.needsInputSnapshot).toEqual(through > 4 ? undefined : snapshot);
+      expect(cursor.needsInputSessions).toEqual(through > 4 ? undefined : ["id:old"]);
+    }
   });
   test("unknown files are refused; coverage never moves backwards", () => {
     expect(() => applyAck(pending, "catch-up-20261106T150000Z.json", now)).toThrow("unknown inbox file");

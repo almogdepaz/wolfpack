@@ -71,21 +71,45 @@ describe("assistant timing settings", () => {
 });
 
 describe("pending needs-input journal transitions", () => {
+  const baseline = (needsInputSessions: string[] = []) => ({ complete: true, needsInputSessions, sessionIdentities: {} });
   const row = (state: string, sessionId = "one") => ({ kind: "session.state" as const, session: "app", sessionId, state, label: "", seq: 1, at: iso(at(6, 15)) });
   test("acknowledged needs-input and label-only repeats are not new", () => {
-    expect(pendingNeedsInput([row("needs-input")], ["id:one"])).toEqual({ newlyNeedsInput: false, needsInputSessions: ["id:one"] });
-    expect(pendingNeedsInput([row("failed")], [])).toEqual({ newlyNeedsInput: false, needsInputSessions: [] });
+    expect(pendingNeedsInput([row("needs-input")], baseline(["id:one"]))).toMatchObject({ newlyNeedsInput: false, needsInputSessions: ["id:one"] });
+    expect(pendingNeedsInput([row("failed")], baseline())).toMatchObject({ newlyNeedsInput: false, needsInputSessions: [] });
+  });
+  test("unknown baselines never mint urgency, but an explicit transition can establish it", () => {
+    expect(pendingNeedsInput([row("needs-input")], undefined).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("working"), row("needs-input")], undefined).newlyNeedsInput).toBe(true);
+    const waiting = pendingNeedsInput([row("needs-input")], undefined);
+    expect(pendingNeedsInput([{ ...row("needs-input"), sessionId: undefined }], waiting).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([{ ...row("needs-input", "unseen"), session: "unseen" }], waiting).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("needs-input", "replacement")], waiting).newlyNeedsInput).toBe(true);
+    const working = pendingNeedsInput([row("working")], undefined);
+    expect(pendingNeedsInput([row("needs-input")], working).newlyNeedsInput).toBe(true);
   });
   test("resolved prompts do not wake the assistant; unknown rows preserve waiting state", () => {
-    expect(pendingNeedsInput([row("needs-input"), row("working")], []).newlyNeedsInput).toBe(false);
-    expect(pendingNeedsInput([row("needs-input"), { kind: "session.exited", sessionId: "one", reason: "exit", seq: 2, at: iso(at(6, 15)) }], []).newlyNeedsInput).toBe(false);
-    expect(pendingNeedsInput([row("unknown"), row("needs-input")], ["id:one"]).newlyNeedsInput).toBe(false);
-    expect(pendingNeedsInput([row("unknown")], ["id:one"]).needsInputSessions).toEqual(["id:one"]);
+    expect(pendingNeedsInput([row("needs-input"), row("working")], baseline()).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("needs-input"), { kind: "session.exited", sessionId: "one", reason: "exit", seq: 2, at: iso(at(6, 15)) }], baseline()).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("unknown"), row("needs-input")], baseline(["id:one"])).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("unknown")], baseline(["id:one"])).needsInputSessions).toEqual(["id:one"]);
+  });
+  test("named lifecycle facts reconcile legacy keys without clearing a newer UUID", () => {
+    const legacy = { ...row("needs-input"), sessionId: undefined };
+    const exit = { kind: "session.exited" as const, session: "app", sessionId: "old", reason: "exit", seq: 2, at: iso(at(6, 15)) };
+    const created = { kind: "session.created" as const, session: "app", sessionId: "new", cwd: "/repo", seq: 3, at: iso(at(6, 15)) };
+    expect(pendingNeedsInput([exit], baseline(["name:app"])).needsInputSessions).toEqual([]);
+    expect(pendingNeedsInput([exit, created, legacy], baseline(["name:app"])).newlyNeedsInput).toBe(true);
+    const linked = pendingNeedsInput([row("needs-input")], baseline(["name:app"]));
+    expect(linked.newlyNeedsInput).toBe(false);
+    expect(linked.needsInputSessions).toEqual(["id:one"]);
+    expect(pendingNeedsInput([legacy, row("needs-input")], baseline()).newlyNeedsInput).toBe(true);
+    const waiting = pendingNeedsInput([created, row("needs-input", "new"), exit], baseline());
+    expect(waiting.needsInputSessions).toEqual(["id:new"]);
   });
   test("a new incarnation or a genuine re-entry counts; exited sessions are forgotten", () => {
-    expect(pendingNeedsInput([row("needs-input", "two")], ["id:one"]).newlyNeedsInput).toBe(true);
-    expect(pendingNeedsInput([row("working"), row("needs-input")], ["id:one"]).newlyNeedsInput).toBe(true);
-    expect(pendingNeedsInput([{ kind: "session.exited", sessionId: "one", reason: "exit", seq: 2, at: iso(at(6, 15)) }], ["id:one"]).needsInputSessions).toEqual([]);
+    expect(pendingNeedsInput([row("needs-input", "two")], baseline(["id:one"])).newlyNeedsInput).toBe(true);
+    expect(pendingNeedsInput([row("working"), row("needs-input")], baseline(["id:one"])).newlyNeedsInput).toBe(true);
+    expect(pendingNeedsInput([{ kind: "session.exited", sessionId: "one", reason: "exit", seq: 2, at: iso(at(6, 15)) }], baseline(["id:one"])).needsInputSessions).toEqual([]);
   });
 });
 

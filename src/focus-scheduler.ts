@@ -67,26 +67,66 @@ export function activityDayOf(ms: number, fallbackTime: string): string {
   return ms < window.start ? addDays(day, -1) : ms >= window.end ? addDays(day, 1) : day;
 }
 
-/** Replay journal facts against the acknowledged baseline, scoped to one machine.
- * UUIDs fence reused names; older peers without UUIDs fall back to session names.
- * A label/message-only needs-input row is not a new entry. Failed is not urgent.
+export interface NeedsInputSnapshot {
+  /** False when bounded recovery could not observe the whole earlier stream. */
+  complete: boolean;
+  needsInputSessions: string[];
+  /** Names map to UUID (or legacy name) keys whose state is known at the cursor. */
+  sessionIdentities: Record<string, string>;
+}
+
+/** Replay per-session facts. Missing cache entries are unknown, not proof of a
+ * transition. A new incarnation or an observed non-waiting state establishes
+ * that proof. Unknown observations and same-state questions do not.
  */
-export function pendingNeedsInput(rows: readonly ActivityRow[], baseline: readonly string[]) {
-  const needsInput = new Set(baseline);
+export function pendingNeedsInput(rows: readonly ActivityRow[], baseline?: NeedsInputSnapshot): NeedsInputSnapshot & { newlyNeedsInput: boolean } {
+  const complete = baseline?.complete ?? false;
+  const needsInput = new Set(baseline?.needsInputSessions);
+  const aliases = new Map(Object.entries(baseline?.sessionIdentities ?? {}));
+  const known = new Set([...aliases.values(), ...needsInput]);
   const entered = new Set<string>();
+  const forget = (key: string) => {
+    needsInput.delete(key); known.delete(key); entered.delete(key);
+    for (const [name, identity] of aliases) if (identity === key) aliases.delete(name);
+  };
   for (const row of rows) {
-    if (!("sessionId" in row) && !("session" in row)) continue;
-    const key = "sessionId" in row && row.sessionId ? `id:${row.sessionId}` : "session" in row && row.session ? `name:${row.session}` : null;
+    if (row.kind !== ACTIVITY_KIND.SESSION_STATE && row.kind !== ACTIVITY_KIND.SESSION_CREATED
+      && row.kind !== ACTIVITY_KIND.SESSION_LIVE && row.kind !== ACTIVITY_KIND.SESSION_EXITED) continue;
+    if ("state" in row && row.state === AGENT_STATUS_STATE.UNKNOWN) continue;
+    const name = row.session;
+    const fallback = name ? `name:${name}` : undefined;
+    const key = row.sessionId ? `id:${row.sessionId}` : (name ? aliases.get(name) : undefined) ?? fallback;
     if (!key) continue;
-    if (row.kind === ACTIVITY_KIND.SESSION_EXITED) needsInput.delete(key);
-    else if ("state" in row && row.state !== undefined && row.state !== AGENT_STATUS_STATE.UNKNOWN) {
-      if (row.state === AGENT_STATUS_STATE.NEEDS_INPUT) {
-        if (!needsInput.has(key)) entered.add(key);
-        needsInput.add(key);
-      } else needsInput.delete(key);
+    if (row.kind === ACTIVITY_KIND.SESSION_EXITED) {
+      forget(key);
+      if (fallback) forget(fallback);
+      continue;
     }
+    if (!name || (row.state === undefined && row.kind !== ACTIVITY_KIND.SESSION_CREATED)) continue;
+    const previous = aliases.get(name);
+    if (previous && previous !== key && previous !== fallback) {
+      forget(previous);
+      known.add(key); // A changed UUID is a newly observed incarnation.
+    }
+    // A UUID-bearing state can identify the same legacy waiting session;
+    // creation instead fences a replacement incarnation and clears that name.
+    if (fallback && fallback !== key) {
+      if (row.kind !== ACTIVITY_KIND.SESSION_CREATED) {
+        if (needsInput.has(fallback)) needsInput.add(key);
+        if (known.has(fallback)) known.add(key);
+        if (entered.has(fallback)) entered.add(key);
+      }
+      forget(fallback);
+    }
+    if (row.kind === ACTIVITY_KIND.SESSION_CREATED) known.add(key);
+    if (row.state === AGENT_STATUS_STATE.NEEDS_INPUT) {
+      if (!needsInput.has(key) && (complete || known.has(key))) entered.add(key);
+      needsInput.add(key);
+    } else if (row.state !== undefined) needsInput.delete(key);
+    known.add(key);
+    aliases.set(name, key);
   }
-  return { newlyNeedsInput: [...entered].some(key => needsInput.has(key)), needsInputSessions: [...needsInput] };
+  return { complete, newlyNeedsInput: [...entered].some(key => needsInput.has(key)), needsInputSessions: [...needsInput], sessionIdentities: Object.fromEntries(aliases) };
 }
 
 export interface SchedulerMachine {

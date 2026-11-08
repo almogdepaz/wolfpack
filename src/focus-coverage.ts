@@ -4,7 +4,7 @@
  * routine), the one outstanding inbox file, and generated day-note facts.
  */
 import { ACTIVITY_KIND, type ActivityRow } from "./activity-journal.js";
-import { ROUTINE, type Routine } from "./focus-scheduler.js";
+import { ROUTINE, type Routine, type NeedsInputSnapshot } from "./focus-scheduler.js";
 
 export interface MachineCursor {
   name: string;
@@ -16,8 +16,10 @@ export interface MachineCursor {
   lastInputAt: string | null;
   /** The peer journal's random id; a different id means a new seq space (absent for older peers). */
   journalId?: string;
-  /** Needs-input identities through seq; absent only in pre-urgent coverage. */
+  /** Legacy positive-only cache, validated for migration but never trusted. */
   needsInputSessions?: string[];
+  /** Cache of known per-session facts; legacy positive-only caches are rebuilt. */
+  needsInputSnapshot?: NeedsInputSnapshot;
 }
 /**
  * A quiet-triggered review of the current day: it does not close the day.
@@ -35,8 +37,10 @@ export interface PendingInbox {
   surfaced: boolean;
   /** Per-machine seq the ack advances each cursor to (monotonic). */
   through: Record<string, number>;
-  /** Baselines at exactly through, applied only when this inbox is acknowledged. */
+  /** Legacy inbox cache: lacks identity/trust metadata and is not applied. */
   needsInputSessions?: Record<string, string[]>;
+  /** Known facts at through, applied only on ack; absent if the replay had gaps. */
+  needsInputSnapshots?: Record<string, NeedsInputSnapshot>;
   /** Completed days the ack closes (`reviewedThrough`). */
   days?: string[];
   /** Set on a provisional current-day review; dropping the inbox forgets the provisional marker. */
@@ -75,11 +79,15 @@ export function inboxFileName(routine: Routine, nowMs: number): string {
 export function inboxPrompt(file: string): string { return `process inbox inbox/${file}`; }
 
 // Journal names/UUIDs allow 256 characters; the longest identity prefix is `name:`.
-const sessionKeys = (v: unknown): v is string[] => Array.isArray(v) && v.every(key => typeof key === "string" && key.length > 0 && key.length <= 261);
+const sessionKeys = (v: unknown): v is string[] => Array.isArray(v) && v.length <= 64 && v.every(key => typeof key === "string" && key.length > 0 && key.length <= 261);
+const identities = (v: unknown) => object(v) && Object.keys(v).length <= 64 && Object.entries(v).every(([key, value]) => name(key) && typeof value === "string" && value.length > 0 && value.length <= 261);
+export const isNeedsInputSnapshot = (v: unknown): v is NeedsInputSnapshot => object(v) && typeof v.complete === "boolean" && sessionKeys(v.needsInputSessions) && identities(v.sessionIdentities);
+const snapshotMap = (v: unknown) => object(v) && Object.keys(v).length <= 64 && Object.values(v).every(isNeedsInputSnapshot);
 const sessionMap = (v: unknown) => object(v) && Object.keys(v).length <= 64 && Object.values(v).every(sessionKeys);
 function isCursor(v: unknown): v is MachineCursor {
   return object(v) && name(v.name) && seq(v.seq) && seq(v.headSeq) && isoOrNull(v.lastReachedAt) && isoOrNull(v.lastRowAt) && isoOrNull(v.lastInputAt)
-    && (v.journalId === undefined || name(v.journalId)) && (v.needsInputSessions === undefined || sessionKeys(v.needsInputSessions));
+    && (v.journalId === undefined || name(v.journalId)) && (v.needsInputSessions === undefined || sessionKeys(v.needsInputSessions))
+    && (v.needsInputSnapshot === undefined || isNeedsInputSnapshot(v.needsInputSnapshot));
 }
 const seqMap = (v: unknown) => object(v) && Object.keys(v).length <= 64 && Object.values(v).every(seq);
 function isProvisional(v: unknown): v is ProvisionalReview {
@@ -88,7 +96,8 @@ function isProvisional(v: unknown): v is ProvisionalReview {
 function isInbox(v: unknown): v is PendingInbox {
   return object(v) && typeof v.file === "string" && isInboxFileName(v.file) && ROUTINES.includes(v.routine as string) && iso(v.createdAt)
     && seq(v.sends) && isoOrNull(v.lastSentAt) && typeof v.surfaced === "boolean"
-    && seqMap(v.through) && (v.needsInputSessions === undefined || sessionMap(v.needsInputSessions)) && (v.days === undefined || (Array.isArray(v.days) && v.days.length <= 400 && v.days.every(day)))
+    && seqMap(v.through) && (v.needsInputSessions === undefined || sessionMap(v.needsInputSessions))
+    && (v.needsInputSnapshots === undefined || snapshotMap(v.needsInputSnapshots)) && (v.days === undefined || (Array.isArray(v.days) && v.days.length <= 400 && v.days.every(day)))
     && (v.provisional === undefined || day(v.provisional));
 }
 export function isFocusCoverage(v: unknown): v is FocusCoverage {
@@ -111,9 +120,16 @@ export function applyAck(coverage: FocusCoverage, file: string, now: string): { 
   const next = structuredClone(coverage);
   for (const [id, through] of Object.entries(coverage.inbox.through)) {
     const cursor = next.catchUpCursors[id] ?? { name: id, seq: 0, headSeq: through, lastReachedAt: null, lastRowAt: null, lastInputAt: null };
-    const needsInputSessions = coverage.inbox.needsInputSessions?.[id];
-    next.catchUpCursors[id] = { ...cursor, seq: Math.max(cursor.seq, through),
-      ...(through >= cursor.seq && needsInputSessions !== undefined && { needsInputSessions }) };
+    const snapshot = coverage.inbox.needsInputSnapshots?.[id];
+    const updated = { ...cursor, seq: Math.max(cursor.seq, through) };
+    if (through > cursor.seq || (through === cursor.seq && snapshot)) {
+      // No snapshot means this ack skipped facts or came from an older inbox.
+      // The previous cache cannot describe the newly advanced cursor.
+      delete updated.needsInputSessions;
+      delete updated.needsInputSnapshot;
+      if (snapshot) updated.needsInputSnapshot = snapshot;
+    }
+    next.catchUpCursors[id] = updated;
   }
   const reviewed = coverage.inbox.days?.at(-1);
   if (reviewed && (!next.reviewedThrough || reviewed > next.reviewedThrough)) next.reviewedThrough = reviewed;
