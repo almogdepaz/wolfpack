@@ -85,8 +85,9 @@ export function pendingNeedsInput(rows: readonly ActivityRow[], baseline?: Needs
   const aliases = new Map(Object.entries(baseline?.sessionIdentities ?? {}));
   const known = new Set([...aliases.values(), ...needsInput]);
   const entered = new Set<string>();
+  const observedEntries = new Set<string>();
   const forget = (key: string) => {
-    needsInput.delete(key); known.delete(key); entered.delete(key);
+    needsInput.delete(key); known.delete(key); entered.delete(key); observedEntries.delete(key);
     for (const [name, identity] of aliases) if (identity === key) aliases.delete(name);
   };
   for (const row of rows) {
@@ -115,12 +116,22 @@ export function pendingNeedsInput(rows: readonly ActivityRow[], baseline?: Needs
         if (needsInput.has(fallback)) needsInput.add(key);
         if (known.has(fallback)) known.add(key);
         if (entered.has(fallback)) entered.add(key);
+        if (observedEntries.has(fallback)) observedEntries.add(key);
       }
       forget(fallback);
     }
-    if (row.kind === ACTIVITY_KIND.SESSION_CREATED) known.add(key);
+    if (row.kind === ACTIVITY_KIND.SESSION_CREATED) {
+      // Creation enrichment may arrive after the first state row. It proves
+      // that a wait observed in this batch belongs to a fresh incarnation,
+      // but must not reopen a wait that was already in the acked baseline.
+      if (observedEntries.has(key) && needsInput.has(key)) entered.add(key);
+      known.add(key);
+    }
     if (row.state === AGENT_STATUS_STATE.NEEDS_INPUT) {
-      if (!needsInput.has(key) && (complete || known.has(key))) entered.add(key);
+      if (!needsInput.has(key)) {
+        observedEntries.add(key);
+        if (complete || known.has(key)) entered.add(key);
+      }
       needsInput.add(key);
     } else if (row.state !== undefined) needsInput.delete(key);
     known.add(key);

@@ -3,6 +3,9 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTIVITY_KIND, pageActivity, type ActivityRow, type ActivityRowBody } from "../../src/activity-journal.ts";
+import { EventBus } from "../../src/event-bus.ts";
+import { WOLFPACK_EVENT_KIND } from "../../src/events-contract.ts";
+import { ActivityRecorder } from "../../src/server/activity-recorder.ts";
 import { ASSISTANT_TIMING_DEFAULTS } from "../../src/focus-scheduler.ts";
 import { FocusSendQueue, type SendOutcome } from "../../src/focus-send-queue.ts";
 import { ActivityJournal } from "../../src/server/activity-journal.ts";
@@ -62,6 +65,74 @@ function setup(now = at(6, 15)) {
 const state = (session: string, label = "Working"): ActivityRowBody => ({ kind: ACTIVITY_KIND.SESSION_STATE, session, sessionId: `${session}-id`, state: "working", label });
 const input = (session: string): ActivityRowBody => ({ kind: ACTIVITY_KIND.INPUT, session, source: "browser", bucket: new Date(at(6, 14, 50)).toISOString() });
 const fileOf = (text: string) => text.replace("process inbox inbox/", "");
+
+describe("urgent catch-up with real recorder enrichment", () => {
+  async function ack(t: ReturnType<typeof setup>) {
+    const send = t.sends.at(-1)!;
+    send.settle("sent");
+    await t.routines.ack(fileOf(send.text));
+  }
+  async function incompleteBaseline() {
+    const t = setup(at(4, 15));
+    t.append(state("app"), at(4, 14));
+    t.append(input("app"), at(4, 14, 50));
+    await t.routines.tick(); await t.routines.tick(); await ack(t);
+    t.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "later", eventType: "updated" }, at(5, 14));
+    t.clock.now = at(6, 15);
+    await t.routines.tick(); await ack(t); // gap review invalidates the earlier cache
+    t.append(input("app"), t.clock.now);
+    await t.routines.tick(); await ack(t); // bounded recovery cannot observe Nov 4
+    expect(t.coverage().catchUpCursors.home.needsInputSnapshot).toEqual({ complete: false, needsInputSessions: [], sessionIdentities: {} });
+    t.clock.now += MIN;
+    return t;
+  }
+
+  test.each(["created-first", "state-first", "resolved-before-created", "resolved-after-created", "ack-before-created"])("real recorder ordering: %s", async mode => {
+    const t = await incompleteBaseline();
+    const since = t.journal.status().headSeq;
+    const events = new EventBus();
+    let release!: () => void;
+    const enrichment = new Promise<void>(resolve => { release = resolve; });
+    const recorder = new ActivityRecorder({ journal: t.journal, events, facts: async () => [], now: () => t.clock.now,
+      git: async () => { await enrichment; return {}; } });
+    const publishState = (state: "needs-input" | "working", transitionSequence: number) => events.publishEvent({
+      kind: WOLFPACK_EVENT_KIND.SESSION_STATE, session: "new-app", sessionId: "new-id", state, label: state, transitionSequence,
+    });
+    recorder.start();
+    try {
+      events.publishEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_CREATED, session: "new-app", sessionId: "new-id", cwd: "/repo" });
+      if (mode === "created-first") { release(); await recorder.settled(); }
+      publishState("needs-input", 1);
+      if (mode === "resolved-before-created") publishState("working", 2);
+      if (mode === "ack-before-created") {
+        const count = t.sends.length;
+        await t.routines.tick();
+        expect(t.sends).toHaveLength(count); // unknown old/new wait alone is not proof
+        await t.routines.tick({ manual: true }); await ack(t);
+      }
+      release(); await recorder.settled();
+      if (mode === "resolved-after-created") publishState("working", 2);
+      const kinds = t.journal.read(since, 10).rows.map(row => row.kind);
+      expect(kinds).toEqual(mode === "created-first" ? ["session.created", "session.state"]
+        : mode === "resolved-before-created" ? ["session.state", "session.state", "session.created"]
+        : mode === "resolved-after-created" ? ["session.state", "session.created", "session.state"]
+        : ["session.state", "session.created"]);
+      const count = t.sends.length;
+      const freshWaiting = mode === "created-first" || mode === "state-first";
+      await t.routines.tick();
+      expect(t.sends).toHaveLength(count + Number(freshWaiting));
+      if (freshWaiting) {
+        expect(t.coverage().lastUrgentCatchUpAt).toBe(new Date(t.clock.now).toISOString());
+        await ack(t);
+      }
+      const settledCount = t.sends.length;
+      t.clock.now += 3 * MIN; // beyond urgent spacing, still inside ordinary debounce
+      if (freshWaiting) publishState("needs-input", 2);
+      await t.routines.tick(); await t.routines.tick();
+      expect(t.sends).toHaveLength(settledCount);
+    } finally { release(); await recorder.settled(); recorder.stop(); }
+  });
+});
 
 describe("focus routines runtime", () => {
   test("boot: gap check, then catch-up inbox with untrusted rows (assistant filtered), cursors advance only on ack", async () => {

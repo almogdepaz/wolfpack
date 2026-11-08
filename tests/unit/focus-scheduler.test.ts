@@ -87,6 +87,17 @@ describe("pending needs-input journal transitions", () => {
     const working = pendingNeedsInput([row("working")], undefined);
     expect(pendingNeedsInput([row("needs-input")], working).newlyNeedsInput).toBe(true);
   });
+  test("delayed creation confirms only a pending wait, not acknowledged or resolved waits", () => {
+    const created = { kind: "session.created" as const, session: "app", sessionId: "one", cwd: "/repo", seq: 2, at: iso(at(6, 15)) };
+    expect(pendingNeedsInput([row("needs-input"), created]).newlyNeedsInput).toBe(true);
+    expect(pendingNeedsInput([created, row("needs-input")]).newlyNeedsInput).toBe(true);
+    const acknowledged = pendingNeedsInput([row("needs-input")]);
+    expect(pendingNeedsInput([created], acknowledged).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("needs-input"), created], acknowledged).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("needs-input"), row("working"), created]).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("needs-input"), created, row("working")]).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("needs-input")]).newlyNeedsInput).toBe(false);
+  });
   test("resolved prompts do not wake the assistant; unknown rows preserve waiting state", () => {
     expect(pendingNeedsInput([row("needs-input"), row("working")], baseline()).newlyNeedsInput).toBe(false);
     expect(pendingNeedsInput([row("needs-input"), { kind: "session.exited", sessionId: "one", reason: "exit", seq: 2, at: iso(at(6, 15)) }], baseline()).newlyNeedsInput).toBe(false);
