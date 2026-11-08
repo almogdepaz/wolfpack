@@ -3,6 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startTestServer, type TestServer } from "./helpers";
+import { v3, withContext } from "./focus-context-fixture";
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
@@ -61,4 +62,39 @@ test("focus screenshot and layout evidence", async ({ page }, info) => {
     expect((await new AxeBuilder({ page }).include("#sidebar-session-controls").include("#assistant-terminal-header").analyze()).violations).toEqual([]);
   }
   await page.screenshot({ path: join(screenshots, `focus-terminal-${desktop ? 1440 : 390}.png`), fullPage: true });
+});
+
+test("focus card captures: a session card open with and without the agent's context, an intention card", async ({ page }, info) => {
+  const desktop = info.project.name === "desktop";
+  const width = desktop ? 1440 : 390;
+  await page.setViewportSize({ width, height: desktop ? 900 : 844 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  let contextDocument: unknown = v3;
+  await withContext(page, () => contextDocument);
+  const screenshots = join(process.cwd(), process.env.WOLFPACK_FOCUS_SHOTS ?? ".plans/screenshots");
+  mkdirSync(screenshots, { recursive: true });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  const row = block.locator(".focus-next li").filter({ hasText: "prompt-project" });
+  await row.locator(".focus-card > summary").click();
+  await expect(row.locator(".focus-context")).toBeVisible();
+  await expect(row.locator(".focus-context")).toContainText("Ship the focus cards round");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
+  await page.screenshot({ path: join(screenshots, `focus-card-context-dashboard-${width}.png`), fullPage: true });
+  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  const view = page.locator("#assistant-view");
+  // open state is per card, shared by the dashboard block and the page: the card opened above is open here too
+  await expect(view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("details.focus-card")).toHaveAttribute("open", "");
+  await view.locator(".focus-today li").filter({ hasText: "ship the focus assistant" }).locator(".focus-card > summary").click();
+  await expect(view.locator(".focus-context")).toBeVisible();
+  await expect(view.locator(".focus-context")).toContainText("Wire the context block");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
+  await page.screenshot({ path: join(screenshots, `focus-card-context-assistant-${width}.png`), fullPage: true });
+  // the same session with no document: the card shows only what the dashboard already knows
+  contextDocument = null;
+  await expect(view.locator(".focus-context")).toHaveCount(0, { timeout: 15_000 });
+  await page.screenshot({ path: join(screenshots, `focus-card-plain-assistant-${width}.png`), fullPage: true });
 });

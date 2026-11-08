@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { startTestServer, type TestServer } from "./helpers";
+import { SESSION_UUID, v3, withContext } from "./focus-context-fixture";
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
@@ -75,40 +76,6 @@ test("today intentions expand to their details; the checkbox and chips work with
   await linked.locator(".focus-chips").getByRole("button", { name: "another-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
-
-// Agent-context v3 fixture shaped by .plans/focus-cards-ref/context.schema.json.
-const SESSION_UUID = "3f1c2a9e-7b4d-4e21-9c0a-5d6e7f8a9b0c";
-const item = (id: string, text: string) => ({ id, text });
-const v3 = {
-  schemaVersion: 3,
-  goal: "Ship the focus cards round",
-  now: { id: "cards", text: "Wire the context block into session cards", details: "So the dashboard answers what each agent is doing." },
-  needsYou: [item("approve-copy", "Approve the <img src=x onerror=alert(1)> state copy"), ...["a", "b", "c", "d", "e", "f"].map(k => item(`q-${k}`, `question ${k}`))],
-  needToKnow: [item("bundle", "Bundle cap is a loose guard"), item("local", "Changes are local"), item("pi", "pi 1.3.0 here"), item("hidden", "fourth fact stays out")],
-  nextSteps: [{ id: "test", text: "Run the e2e", owner: "agent" }, { id: "look", text: "Look at the captures", owner: "user" }],
-  history: [{ id: "h1", text: "Cards over a drawer", kind: "decision" }],
-  source: { harness: "pi", sessionId: "pi-session", branchId: null, coveredEntryId: null },
-  updatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
-  freshness: "reviewed",
-  activity: { state: "working", observedAt: new Date().toISOString() },
-};
-async function withContext(page: import("@playwright/test").Page, document: unknown) {
-  const reads: string[] = [];
-  await page.route("**/api/sessions", async route => {
-    const response = await route.fetch();
-    const body = await response.json();
-    body.sessions.find((s: { name: string }) => s.name === "prompt-project").identity.wolfpackSessionId = SESSION_UUID;
-    await route.fulfill({ response, json: body });
-  });
-  // a valid catalog (the app's extension host parses it too); no `ui`, so nothing tries to load an asset
-  const installation = (extensionId: string, documents: { id: string; schemaVersion: number }[]) => ({ installationId: "6d2f8c1e-4a3b-4c5d-8e9f-0a1b2c3d4e5f", extensionId, enabled: true, package: { name: `wolfpack-extension-${extensionId}`, version: "0.1.0", digest: "a".repeat(64) }, blobs: null, documents });
-  await page.route(url => url.pathname === "/api/extensions", route => route.fulfill({ json: { safeMode: false, installations: [installation("changes", []), installation("agent-context", [{ id: "context", schemaVersion: 3 }])] } }));
-  await page.route(url => url.pathname === "/api/extensions/documents/agent-context/context", route => {
-    reads.push(new URL(route.request().url()).searchParams.get("session") ?? "");
-    return route.fulfill({ json: { installationId: "i", scopeSessionId: SESSION_UUID, extensionId: "agent-context", documentId: "context", revision: document ? 3 : 0, document } });
-  });
-  return reads;
-}
 
 test("a session card shows the agent's context document, fetched only while it is open", async ({ page }) => {
   const reads = await withContext(page, v3);

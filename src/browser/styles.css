@@ -2913,12 +2913,12 @@ body > header { height: 52px; min-height: 52px; }
 .focus-nudge.from { color: var(--text-3); }
 .focus-nudge small { font-size: 12px; color: var(--text-3); }
 .focus-next, .focus-today, .focus-done { list-style: none; margin: 0; padding: 0; border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--surface-2); box-shadow: var(--gloss); overflow: hidden; }
-.focus-next li + li, .focus-today li + li, .focus-done li + li { border-top: 1px solid var(--hairline); }
+.focus-next > li + li, .focus-today > li + li, .focus-done li + li { border-top: 1px solid var(--hairline); }
 .focus-done li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 12px; font-size: 13px; color: var(--text-2); }
 /* Cards: the summary is the 44px row (text only); the action, checkbox and chips sit beside it in the row grid; the body opens under the title. */
-.focus-next li, .focus-today li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: 10px; padding: 0 12px; font-size: 13px; color: var(--text-2); }
-.focus-today li { grid-template-columns: auto minmax(0, 1fr) auto; }
-.focus-next li:has(> .focus-card > summary:hover), .focus-today li:has(> .focus-card > summary:hover) { background: var(--surface-3); }
+.focus-next > li, .focus-today > li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: 10px; padding: 0 12px; font-size: 13px; color: var(--text-2); }
+.focus-today > li { grid-template-columns: auto minmax(0, 1fr) auto; }
+.focus-next > li:has(> .focus-card:not([open]) > summary:hover), .focus-today > li:has(> .focus-card:not([open]) > summary:hover) { background: var(--surface-3); }
 .focus-next .focus-card, .focus-today .focus-card { min-width: 0; margin: 0; color: inherit; font-size: inherit; }
 details.focus-card > summary { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 0; list-style: none; cursor: pointer; }
 details.focus-card > summary::-webkit-details-marker { display: none; }
@@ -2939,6 +2939,7 @@ details.focus-card > summary:focus-visible { outline: 2px solid var(--accent); o
 .focus-context-label { margin: 0 0 6px; color: var(--text-3); font: 600 11px var(--font-ui); text-transform: uppercase; letter-spacing: .07em; }
 .focus-context-note { margin: 6px 0 0; color: var(--text-3); font-size: 12px; }
 .focus-card-body dd ul, .focus-card-body dd ol { margin: 0; padding-left: 16px; }
+.focus-card-body dd ul { list-style: disc; }
 .focus-card-body dd li + li { margin-top: 2px; }
 .focus-owner { display: inline-block; margin-left: 4px; padding: 0 6px; border-radius: 8px; background: var(--surface-3); color: var(--text-3); font-size: 11px; line-height: 16px; vertical-align: 1px; }
 .focus-context-more { margin: 4px 0 0; color: var(--text-3); font-size: 12px; }
@@ -2949,7 +2950,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-next .focus-action { min-height: 34px; margin-top: 5px; padding: 0 2px; border: 0; background: none; color: var(--accent); font-size: 12px; font-weight: 500; }
 .focus-next .focus-action:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .focus-block .focus-next { margin: 4px -18px 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-.focus-block .focus-next li { padding-inline: 18px; }
+.focus-block .focus-next > li { padding-inline: 18px; }
 .focus-rank { min-width: 14px; color: var(--text-4); font: 12px var(--font-mono); text-align: right; }
 .focus-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: 500; }
 .focus-title small, .focus-for { color: var(--text-3); font-size: 12px; font-weight: 400; }
@@ -3034,7 +3035,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-block { margin: 10px 16px 0; padding: 14px; }
   .focus-block .focus-next { margin-inline: -14px; }
   .focus-block .focus-nudge { font-size: 16px; -webkit-line-clamp: 3; }
-  .focus-block .focus-next li { padding-inline: 14px; }
+  .focus-block .focus-next > li { padding-inline: 14px; }
   .focus-block button, .assistant-column button, .focus-terminal-header button { min-height: 44px; }
   .focus-notes button { min-height: 0; }
   .focus-header > button:not(:last-child):not(.focus-attn), .focus-done button, .focus-yesterday button, .focus-chips button, .focus-wait button { min-height: 32px; }
