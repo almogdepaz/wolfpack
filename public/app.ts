@@ -4251,7 +4251,8 @@ async function killSession(name, e, machineUrl) {
   const action = pinnedSession ? "Unpin & stop" : session && sessionTier(session) === "fail" ? "Close" : "Stop";
   // Stopping the assistant unpins it (a pinned session would otherwise relaunch); the words stay the settings' words.
   // Other pinned sessions keep their own `Unpin & stop` dialog.
-  const confirmed = await showAppDialog(session && isFocusAssistantSession(session) || focusUi.isAssistant(name, machine) ? {
+  const assistant = !!(session && isFocusAssistantSession(session)) || focusUi.isAssistant(name, machine);
+  const confirmed = await showAppDialog(assistant ? {
     title: "Disable assistant",
     message: DISABLE_ASSISTANT_MESSAGE,
     confirmLabel: "Disable",
@@ -4277,7 +4278,7 @@ async function killSession(name, e, machineUrl) {
     }
   } catch (e) {
     await showAppDialog({
-      title: `Could not ${action.toLowerCase()} session`,
+      title: assistant ? "Could not disable the assistant" : `Could not ${action.toLowerCase()} session`,
       message: errorMessage(e),
       confirmLabel: "Close",
       cancelLabel: null,

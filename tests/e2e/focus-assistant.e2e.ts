@@ -188,6 +188,22 @@ test("an ask is answered on the assistant page: waiting inline, then the reply t
   await expect(page.locator("#dashboard-focus .focus-reply")).toHaveCount(0);
 });
 
+test("a failed disable from the terminal header is worded as the assistant's, not unpin & stop", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
+  await expect(page.locator("#assistant-terminal-stop")).toBeVisible();
+  await page.route("**/api/kill", route => route.fulfill({ status: 503, json: { error: "broker unavailable" } }));
+  await page.locator("#assistant-terminal-stop").click();
+  await page.locator("#app-dialog-confirm").click();
+  const dialog = page.locator("#app-dialog");
+  await expect(dialog.locator("#app-dialog-title")).toHaveText("Could not disable the assistant");
+  await expect(dialog).toContainText("broker unavailable");
+  await expect(dialog).not.toContainText(/unpin/i);
+  await dialog.locator("#app-dialog-confirm").click();
+  await page.unroute("**/api/kill");
+});
+
 test("talk opens the assistant terminal, Focus returns, a busy ask is queued, and the terminal header can disable it", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
