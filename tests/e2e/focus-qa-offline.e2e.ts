@@ -30,24 +30,29 @@ for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state
   localDown = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(view.locator(".focus-next button").first()).toBeDisabled({ timeout: 10_000 });
+  await expect(view.locator(".focus-header")).toContainText("sessions unavailable", { timeout: 1_000 });
+  await expect(view.locator(".focus-header")).not.toContainText("read-only");
   await view.locator(".focus-today summary").first().click();
   await expect(view.locator(".focus-today .focus-card-body [data-focus-session]")).toHaveCount(2);
   for (const button of await view.locator("[data-focus-session]").all()) await expect(button).toBeDisabled();
   expect((await page.request.get(`${server.baseUrl}/api/focus`)).ok()).toBe(true);
   const input = view.getByRole("textbox", { name: "Add an intention" });
-  await expect.soft(input).toBeEnabled({ timeout: 1_000 });
+  await expect(input).toBeEnabled();
   const title = `Session outage focus write ${state}`;
-  if (await input.isEnabled()) {
-    await input.fill(title);
-    await input.press("Enter");
-    const checkbox = view.getByRole("checkbox", { name: `Done: ${title}`, exact: true });
-    await expect(checkbox).toBeEnabled();
-    await checkbox.check();
-    await expect(view.locator(".focus-done")).toContainText(title);
-  }
+  await input.fill(title);
+  await input.press("Enter");
+  const checkbox = view.getByRole("checkbox", { name: `Done: ${title}`, exact: true });
+  await expect(checkbox).toBeEnabled();
+  await checkbox.click();
+  await expect(view.locator(".focus-done")).toContainText(title);
   if (state === "idle") await view.getByRole("button", { name: "Talk to assistant" }).click();
   else await view.getByRole("button", { name: /needs you · answer/ }).click();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible({ timeout: 2_000 });
+  await page.locator("#assistant-terminal-focus").click();
+  localDown = false;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(view.locator(".focus-next button").first()).toBeEnabled({ timeout: 10_000 });
+  await expect(view.locator(".focus-header")).not.toContainText("sessions unavailable");
 });
 
 test("S2: a retired peer installation leaves the offline snapshot before local recovery", async ({ page }) => {
@@ -100,6 +105,7 @@ test("QA-14: self-offline keeps last known next rows, disabled, then recovers", 
   const summaries = await view.locator(".focus-next .focus-card > summary").allTextContents();
   await context.setOffline(true);
   await expect(view).toContainText("offline · read-only", { timeout: 15_000 });
+  await expect(view.locator(".focus-header")).not.toContainText("sessions unavailable");
   expect(await view.locator(".focus-next .focus-card > summary").allTextContents()).toEqual(summaries);
   for (const action of await view.locator(".focus-next button, .focus-chips [data-focus-session], .focus-done button").all()) await expect(action).toBeDisabled();
   await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeDisabled();
