@@ -5,6 +5,48 @@ let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
 
+test("S2: a retired peer installation leaves the offline snapshot before local recovery", async ({ page }) => {
+  const origin = "https://focus-peer.example.ts.net";
+  const oldId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
+  const newId = "42d17268-cde1-4b14-990a-44e468ec6333";
+  let replaced = false;
+  let localDown = false;
+  const json = (body: unknown, status = 200) => ({ status, contentType: "application/json", headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify(body) });
+  await page.route("https://**", route => route.abort());
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill(json({ candidates: [{ hostname: "focus-peer.example.ts.net", tailnetNodeId: "n-focus", origin, online: true }] })));
+  await page.route(`${origin}/api/machine`, route => route.fulfill(json({
+    protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+    machine: { tailnetNodeId: "n-focus", installationId: replaced ? newId : oldId, displayName: "focus peer", origin },
+    wolfpack: { version: "1.7.0" }, capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+  })));
+  await page.route(`${origin}/api/sessions`, route => route.fulfill(json({ sessions: [{
+    name: replaced ? "replacement-worker" : "retired-worker",
+    identity: { wolfpackSessionId: replaced ? "mock:replacement" : "mock:retired" },
+    runtimeState: { state: "needs-input", authority: "program", stale: false, changedAt: new Date().toISOString() },
+  }] })));
+  await page.route(`${server.baseUrl}/api/sessions`, route => localDown ? route.fulfill(json({ error: "local unavailable" }, 503)) : route.continue());
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const next = page.locator("#assistant-content .focus-next");
+  await expect(next).toContainText("retired-worker", { timeout: 10_000 });
+  localDown = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(next.locator("button").first()).toBeDisabled({ timeout: 10_000 });
+  // Unknown/unavailable is not retirement: preserve it until a verified replacement.
+  await expect(next).toContainText("retired-worker");
+  replaced = true;
+  await page.waitForTimeout(1_100); // the discovery refresh's existing minimum interval
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(page.locator(`.machine-group[data-machine="n-focus:${newId}"]`).first()).toContainText("replacement-worker", { timeout: 10_000 });
+  await expect.soft(next).not.toContainText("retired-worker", { timeout: 2_000 });
+  await expect(next.locator("button").first()).toBeDisabled();
+  localDown = false;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(next).toContainText("replacement-worker", { timeout: 10_000 });
+  await expect(next).not.toContainText("retired-worker");
+  await expect(next.locator("button").first()).toBeEnabled();
+});
+
 test("QA-14: self-offline keeps last known next rows, disabled, then recovers", async ({ page, context }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();

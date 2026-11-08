@@ -15,6 +15,8 @@ export function createAssistantView(deps: {
   sessions: () => FocusSession[];
   /** False means the local session projection is unavailable, not that every session stopped. */
   sessionsAvailable: () => boolean;
+  /** Unavailable peers may retain history; retired/replaced installations may not. */
+  sessionMachineKnown: (identity: string) => boolean;
   open: (name: string, machine?: string) => void;
   start: (intention: FocusIntention) => void;
   show: (view: string) => void;
@@ -49,6 +51,7 @@ export function createAssistantView(deps: {
   let lastSessions: FocusSession[] = [];
   const sessions = () => {
     if (deps.sessionsAvailable()) lastSessions = deps.sessions();
+    lastSessions = lastSessions.filter(session => !session.machineUrl || deps.sessionMachineKnown(session.machineUrl));
     return lastSessions;
   };
   const nextRows = (cap: number) => !deps.sessionsAvailable() && !lastSessions.length ? [] : rankFocus(doc(), sessions(), cap);

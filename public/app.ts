@@ -1244,6 +1244,7 @@ const focusUi = createAssistantView({
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
   sessions: () => state.lastSessionGroups.filter(g => g.online).flatMap(g => withoutFocusAssistant(g.sessions).map(s => ({ id: s.identity?.wolfpackSessionId ?? s.name, name: s.name, state: s.runtimeState?.state ?? "unknown", changedAt: s.runtimeState?.changedAt, cwd: s.identity?.projectPath, machine: g.machine.name, machineUrl: g.machine.url, lastLine: s.lastLine }))),
   sessionsAvailable: () => state.lastSessionGroups.some(g => !g.machine.url && g.online),
+  sessionMachineKnown: identity => tailnetPeers.entries().some(peer => peer.identity === identity),
   open: (name, machine) => { void openSession(name, machine); },
   start: intention => {
     const group = intention.machine ? state.lastSessionGroups.find(g => g.machine.name === intention.machine || g.machine.url === intention.machine) : state.lastSessionGroups.find(g => !g.machine.url);
