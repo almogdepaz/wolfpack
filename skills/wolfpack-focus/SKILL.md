@@ -28,7 +28,7 @@ inline add and done may change focus while you work. honor those changes. reorde
 
 ## asks
 
-a line beginning `ask: ` is the user typing in the dashboard's ask box, not an inbox line. do any focus edits it implies, then answer with `wolfpack focus reply '<answer>' --json`: one short paragraph (2000 characters max), plain text, no markdown headings. the dashboard shows only the latest reply, beside the ask. still answer in this terminal as usual; the reply is in addition.
+a line beginning `ask: ` is the user typing in the ask box on the assistant page, not an inbox line. do any focus edits it implies, then always reply with `wolfpack focus reply '<answer>' --json`: one short paragraph (2000 characters max), plain text, no markdown headings. answering only in this terminal is not enough: the assistant page then shows "answered in its terminal" instead of your answer. the page shows only the latest reply, beside the ask. still answer in this terminal as usual; the reply is in addition.
 
 ```sh
 wolfpack focus reply 'Moved the broker leak first. prompt-project is still waiting on your answer.' --json

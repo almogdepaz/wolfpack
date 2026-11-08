@@ -304,6 +304,12 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(readFileSync(skill, "utf8")).toContain("process inbox");
     // the ask contract: a dashboard ask is answered inline as well as in the terminal
     expect(readFileSync(skill, "utf8")).toMatch(/`ask: `[\s\S]*wolfpack focus reply/);
+    // the ask box and the reply live on the assistant page; an answer only in the terminal is not enough
+    const asks = readFileSync(skill, "utf8").split("## asks")[1]!.split("\n## ")[0]!;
+    expect(asks).toContain("assistant page");
+    expect(asks).not.toContain("dashboard");
+    expect(asks).toContain("always reply with `wolfpack focus reply");
+    expect(asks).toContain("answering only in this terminal is not enough");
     service.unpin("assistant");
     writeFileSync(skill, "phase 1 skill");
     service.refreshSkill();
