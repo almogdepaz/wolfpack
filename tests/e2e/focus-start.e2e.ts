@@ -62,10 +62,11 @@ test("title-only start completes creation and CAS-links its exact identity, chos
   await expect(page.locator("#assistant-content .focus-today li").filter({ hasText: "linked-focus" }).getByRole("button", { name: "focus-created", exact: true })).toBeVisible();
 });
 
-test("cancelling focus start does not associate an unrelated subsequent creation", async ({ page }) => {
+test("cancelling focus start does not associate an unrelated subsequent creation", async ({ page }, info) => {
   await addIntention(page, "cancelled-focus");
   await page.locator("#dashboard-focus").getByRole("button", { name: /start.*cancelled-focus/ }).click();
-  await page.locator("#projects-view .picker-cancel-btn").click();
+  if (info.project.name === "desktop") await page.locator("#projects-view .picker-cancel-btn").click();
+  else await page.getByRole("button", { name: "← Back", exact: true }).click();
   await page.locator("#session-list .machine-add-btn").first().click();
   await finishCreation(page, "unrelated-created");
   const focus = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
