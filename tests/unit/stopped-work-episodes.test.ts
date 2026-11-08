@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { AgentRuntimeStateStore, deriveAgentRuntimeState, type AgentStatusSource } from "../../src/server/agent-status.ts";
+import { dirname, join } from "node:path";
+import { AgentRuntimeStateStore, deriveAgentRuntimeState, agentStatusSources, readLocalStatusManifest, AGENT_STATUS_MANIFEST_PATH, AGENT_STATUS_TTL_MS, type AgentStatusSource } from "../../src/server/agent-status.ts";
 import type { AgentStatusState } from "../../src/agent-status-contract.ts";
 import { stoppedUnseen, rankFocus } from "../../src/focus-ranking.ts";
 import { emptyFocus } from "../../src/focus-contract.ts";
@@ -15,13 +15,26 @@ async function fixture(run: (f: ReturnType<typeof episodeFixture>) => Promise<vo
 function episodeFixture(path: string) {
   let store = new AgentRuntimeStateStore(path);
   let tick = 0;
-  function step(state: AgentStatusState, authority: "manifest" | "program" | "fallback" = "manifest", options: { stale?: boolean; broker?: "alive" | "unavailable"; runId?: string; signalSequence?: number; agentKind?: string } = {}) {
+  function step(state: AgentStatusState, authority: "manifest" | "program" | "fallback" = "manifest", options: { stale?: boolean; broker?: "alive" | "unavailable"; runId?: string | null; signalSequence?: number; agentKind?: string; runOrder?: number } = {}) {
     const observedAt = new Date(Date.parse("2026-11-08T10:00:00Z") + tick++ * 60_000).toISOString();
-    const source: AgentStatusSource = { state, authority, source: authority === "program" ? "program-status" : "local-manifest", freshness: options.stale ? "stale" : "fresh", stale: options.stale ?? false, label: state, observedAt, signalSequence: options.signalSequence, capabilities: ["semantic-state"], runId: options.runId ?? "run-1", runOrder: 1 };
-    return store.reduce({ sessionKey: "episode", agentKind: options.agentKind ?? "custom", broker: { state: options.broker ?? "alive", observedAt }, sources: authority === "fallback" ? [] : [source], fallback: { rawOutputChanged: state === "output", observedAt }, currentRun: { runId: options.runId ?? "run-1", runOrder: 1 } });
+    const runId = options.runId === null ? undefined : options.runId ?? "run-1";
+    const source: AgentStatusSource = { state, authority, source: authority === "program" ? "program-status" : "local-manifest", freshness: options.stale ? "stale" : "fresh", stale: options.stale ?? false, label: state, observedAt, signalSequence: options.signalSequence, capabilities: ["semantic-state"], runId, runOrder: options.runOrder ?? 1 };
+    return store.reduce({ sessionKey: "episode", agentKind: options.agentKind ?? "custom", broker: { state: options.broker ?? "alive", observedAt }, sources: authority === "fallback" ? [] : [source], fallback: { rawOutputChanged: state === "output", observedAt }, currentRun: { runId, runOrder: options.runOrder ?? 1 } });
   }
   return { get store() { return store; }, step,
     ack: () => store.acknowledge("episode", store.get("episode")!.transitionSequence),
+    manifest: async (signalSequence?: number, expired = false) => {
+      const observedAt = new Date(Date.parse("2026-11-08T10:00:00Z") + tick++ * 60_000).toISOString();
+      const project = join(dirname(path), "project");
+      const file = join(project, AGENT_STATUS_MANIFEST_PATH);
+      if (signalSequence !== undefined) {
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, JSON.stringify({ state: "done", observedAt, capabilities: ["semantic-state"], runId: "run-1", runOrder: 1, signalSequence }));
+      }
+      if (expired) { const old = new Date(Date.now() - AGENT_STATUS_TTL_MS - 10_000); utimesSync(file, old, old); }
+      const source = await readLocalStatusManifest(project);
+      return { source, runtime: store.reduce({ sessionKey: "episode", agentKind: "pi", broker: { state: "alive", observedAt }, sources: agentStatusSources(source, { state: "idle", stale: false, observedAt }), fallback: { rawOutputChanged: false, observedAt }, currentRun: { runId: "run-1", runOrder: 1 } }) };
+    },
     loadLegacyDone: async () => {
       step("working");
       const done = step("done");
@@ -175,6 +188,112 @@ for (const agentKind of ["shell", "claude", "codex", "pi", "gemini", "cursor", "
   expect(stoppedUnseen(f.step("done", "program", { agentKind }))).toBe(true);
   f.step("working", "manifest", { agentKind });
   expect(stoppedUnseen(f.step("done", "manifest", { agentKind }))).toBe(true);
+}));
+
+for (const signal of [9, 10, 12]) test(`real manifest TTL recovery compares retained signal 10 with ${signal} across reload`, () => fixture(async f => {
+  const first = await f.manifest(10);
+  expect(first.source.freshness).toBe("fresh");
+  expect(stoppedUnseen(first.runtime)).toBe(true);
+  f.ack();
+  await f.reload();
+  const expired = await f.manifest(undefined, true);
+  expect(expired.source.freshness).toBe("stale");
+  expect(expired.runtime.state).toBe("idle");
+  await f.reload();
+  const recovered = await f.manifest(signal);
+  expect(recovered.runtime.unseen).toBe(true);
+  expect(stoppedUnseen(recovered.runtime)).toBe(signal > 10);
+  expect(recovered.runtime.stoppedAt).toBe(signal > 10 ? recovered.source.observedAt : first.runtime.stoppedAt);
+  expect(rankFocus(emptyFocus(), [{ ...recovered.runtime, id: "episode", name: "pi" }])).toHaveLength(signal > 10 ? 1 : 0);
+  f.ack();
+  await f.reload();
+  expect(stoppedUnseen((await f.manifest(signal)).runtime)).toBe(false);
+  if (signal < 10) {
+    f.step("idle", "fallback");
+    await f.reload();
+    expect(stoppedUnseen((await f.manifest(10)).runtime)).toBe(false); // A lower recovery cannot roll the high-water mark back.
+  }
+}));
+
+for (const gap of ["broker", "program", "missing-counter"] as const) for (const signal of [9, 10, 12]) test(`${gap} gap retains structured stop signal 10 versus ${signal}`, () => fixture(async f => {
+  const first = f.step("done", "manifest", { signalSequence: 10 });
+  f.ack();
+  await f.reload();
+  if (gap === "broker") f.step("idle", "fallback", { broker: "unavailable" });
+  else f.step("done", gap === "program" ? "program" : "manifest");
+  await f.reload();
+  const recovered = f.step("done", "manifest", { signalSequence: signal });
+  expect(stoppedUnseen(recovered)).toBe(signal > 10);
+  expect(recovered.stoppedAt).toBe(signal > 10 ? recovered.observedAt : first.stoppedAt);
+  if (signal > 10) expect(recovered.transitionSequence).toBeGreaterThan(recovered.acknowledgedSequence ?? 0);
+  f.ack();
+  await f.reload();
+  expect(stoppedUnseen(f.step("done", "manifest", { signalSequence: signal }))).toBe(false);
+}));
+
+test("unrelated authority signals neither mint a stop nor poison retained manifest evidence", () => fixture(async f => {
+  f.step("done", "manifest", { signalSequence: 10 });
+  f.ack();
+  f.step("idle", "fallback");
+  await f.reload();
+  expect(stoppedUnseen(f.step("done", "program", { signalSequence: 999 }))).toBe(false);
+  await f.reload();
+  expect(stoppedUnseen(f.step("done", "manifest", { signalSequence: 12 }))).toBe(true);
+}));
+for (const context of [{ runId: "another-run" }, { runOrder: 2 }]) test(`structured stop evidence is fenced by run identity ${JSON.stringify(context)}`, () => fixture(async f => {
+  f.step("done", "manifest", { signalSequence: 10 });
+  f.ack();
+  f.step("idle", "fallback");
+  await f.reload();
+  expect(stoppedUnseen(f.step("done", "manifest", { signalSequence: 999, ...context }))).toBe(false);
+  await f.reload();
+  expect(f.store.get("episode")?.stopSignal).toMatchObject({ runId: "run-1", runOrder: 1, signalSequence: 10 });
+  if (context.runId) expect(stoppedUnseen(f.step("done", "manifest", { signalSequence: 12 }))).toBe(true);
+}));
+
+for (const signal of [10, 12]) test(`run-order-only structured evidence survives a broker gap: ${signal}`, () => fixture(async f => {
+  const run = { runId: null, runOrder: 7 };
+  f.step("done", "manifest", { ...run, signalSequence: 10 });
+  f.ack();
+  await f.reload();
+  f.step("idle", "fallback", { ...run, broker: "unavailable" });
+  await f.reload();
+  const recovered = f.step("done", "manifest", { ...run, signalSequence: signal });
+  expect(recovered.runId).toBeUndefined();
+  expect(recovered.stopSignal?.runOrder).toBe(7);
+  expect(stoppedUnseen(recovered)).toBe(signal > 10);
+}));
+
+for (const signal of [10, 11]) test(`replayed done ${signal} cannot close pending work after a structured busy signal 11`, () => fixture(async f => {
+  const first = f.step("done", "manifest", { signalSequence: 10 });
+  f.ack();
+  f.step("working", "manifest", { signalSequence: 11 });
+  f.ack();
+  f.step("idle", "fallback", { broker: "unavailable" });
+  await f.reload();
+  const replay = f.step("done", "manifest", { signalSequence: signal });
+  expect(stoppedUnseen(replay)).toBe(false);
+  expect(replay.workPending).toBe(true);
+  expect(replay.stoppedAt).toBe(first.stoppedAt);
+  await f.reload();
+  const completed = f.step("done", "manifest", { signalSequence: 12 });
+  expect(stoppedUnseen(completed)).toBe(true);
+  expect(completed.workPending).toBe(false);
+}));
+
+test("a real non-structured stop retires earlier structured work evidence", () => fixture(async f => {
+  f.step("done", "manifest", { signalSequence: 10 });
+  f.ack();
+  f.step("working", "manifest", { signalSequence: 11 });
+  const stop = f.step("done", "program");
+  expect(stoppedUnseen(stop)).toBe(true);
+  expect(stop.stopSignal).toBeUndefined();
+  f.ack();
+  await f.reload();
+  const metadata = f.step("done", "manifest", { signalSequence: 12 });
+  expect(stoppedUnseen(metadata)).toBe(false);
+  expect(metadata.stoppedAt).toBe(stop.stoppedAt);
+  expect(stoppedUnseen(f.step("done", "manifest", { signalSequence: 13 }))).toBe(true);
 }));
 
 test("TTL loss of a busy semantic source is not an observed stop", () => fixture(f => {

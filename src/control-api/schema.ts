@@ -681,6 +681,13 @@ export const controlApiSource: ControlApiSource = {
       agentCmd: string(),
       cmds: arrayOf(ref("Command")),
     }, ["agentCmd", "cmds"]),
+    StructuredStopSignal: {
+      ...object({
+        authority: ref("AgentStatusAuthority"), source: ref("AgentStatusSource"), signalSequence: number(),
+        runId: { type: "string", minLength: 1 }, runOrder: number(),
+      }, ["authority", "source", "signalSequence"], { description: "Retained structured-signal high-water mark for stop detection, fenced by publisher and run identity." }),
+      allOf: [{ anyOf: [{ required: ["runId"] }, { required: ["runOrder"] }] }],
+    },
     AgentRuntimeState: object({
       state: ref("AgentStatusState"),
       authority: ref("AgentStatusAuthority"),
@@ -698,6 +705,7 @@ export const controlApiSource: ControlApiSource = {
       stoppedSequence: integer(),
       stoppedAt: string(),
       stopObserved: boolean(),
+      stopSignal: ref("StructuredStopSignal"),
       runId: string(),
       runOrder: number(),
       signalSequence: number(),

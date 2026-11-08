@@ -755,8 +755,19 @@ describe("control api schema compatibility samples", () => {
         acknowledgedAt: "2026-07-11T00:01:00Z",
         acknowledgedSequence: 3,
         unseen: false,
+        stopSignal: { authority: "manifest", source: "local-manifest", runId: "run-1", signalSequence: 10 },
       },
     }, artifact)).toEqual([]);
+  });
+
+  test("structured stop signal schema requires source, authority and a run fence", () => {
+    const schema = { $ref: "#/$defs/StructuredStopSignal" };
+    const signal = { authority: "manifest", source: "local-manifest", signalSequence: 10 };
+    expect(validate(schema, { ...signal, runId: "run-1" }, artifact)).toEqual([]);
+    expect(validate(schema, { ...signal, runOrder: 1 }, artifact)).toEqual([]);
+    expect(validate(schema, signal, artifact)).not.toEqual([]);
+    expect(validate(schema, { ...signal, runId: "" }, artifact)).not.toEqual([]);
+    expect(validate(schema, { ...signal, runId: "run-1", signalSequence: "10" }, artifact)).not.toEqual([]);
   });
 
   test("session status requires machine-readable preflight fields", () => {

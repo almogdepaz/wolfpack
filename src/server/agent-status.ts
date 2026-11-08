@@ -95,6 +95,14 @@ export interface CandidateStatus extends ProgramStatusFields {
 
 export type BrokerRuntimeLiveness = "alive" | "dead" | "unavailable";
 
+export interface StructuredStopSignal {
+  readonly authority: AgentStatusAuthority;
+  readonly source: AgentStatusSourceKind;
+  readonly signalSequence: number;
+  readonly runId?: string;
+  readonly runOrder?: number;
+}
+
 export interface AgentRuntimeState extends ProgramStatusFields {
   readonly state: AgentStatusState;
   readonly authority: AgentStatusAuthority;
@@ -115,6 +123,8 @@ export interface AgentRuntimeState extends ProgramStatusFields {
   readonly stoppedAt?: string;
   /** A stop was already discovered, even if a legacy cache has no trustworthy watermark/time. */
   readonly stopObserved?: boolean;
+  /** Structured high-water mark for episode detection; survives display-source/liveness gaps. */
+  readonly stopSignal?: StructuredStopSignal;
   readonly runId?: string;
   readonly runOrder?: number;
   readonly signalSequence?: number;
@@ -537,6 +547,22 @@ function structuredSignalAdvanced(previous: AgentRuntimeState | undefined, next:
     && next.signalSequence > previous.signalSequence;
 }
 
+function stopSignal(source: AgentStatusSource | undefined, run?: AgentRuntimeStateInput["currentRun"]): StructuredStopSignal | undefined {
+  if (!source || typeof source.signalSequence !== "number" || !Number.isFinite(source.signalSequence)
+    || source.authority === AGENT_STATUS_AUTHORITY.FALLBACK || source.authority === AGENT_STATUS_AUTHORITY.BROKER
+    || source.authority === AGENT_STATUS_AUTHORITY.IDENTITY) return undefined;
+  const runId = runtimeRunId(source, run) || undefined;
+  const runOrder = runtimeRunOrder(source, run);
+  if (!runId && (typeof runOrder !== "number" || !Number.isFinite(runOrder))) return undefined;
+  return Object.freeze({ authority: source.authority, source: source.source, signalSequence: source.signalSequence,
+    ...(runId ? { runId } : {}), ...(typeof runOrder === "number" && Number.isFinite(runOrder) ? { runOrder } : {}) });
+}
+
+function sameStopSignalContext(a: StructuredStopSignal | undefined, b: StructuredStopSignal | undefined): boolean {
+  return !!a && !!b && a.authority === b.authority && a.source === b.source
+    && a.runId === b.runId && a.runOrder === b.runOrder;
+}
+
 /**
  * A blocked program asking for something new (another kind or another
  * question) is a new request even though the state is still needs-input, so
@@ -574,11 +600,24 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
   if (previous && staleStructuredSignal(previous, selected, input.currentRun)) return previous;
   const stateChanged = runtimeStateChanged(previous, selected, input.currentRun);
   const sequenceAdvanced = structuredSignalAdvanced(previous, selected, input.currentRun);
+  const adjacentSignal = stopSignal(previous);
+  const retainedSignal = previous?.stopSignal ?? adjacentSignal;
+  const incomingSignal = stopSignal(selected, input.currentRun);
+  const sameSignalContext = sameStopSignalContext(retainedSignal, incomingSignal);
+  const comparisonSignal = sameSignalContext ? retainedSignal
+    : sameStopSignalContext(adjacentSignal, incomingSignal) ? adjacentSignal : undefined;
+  const signalAdvanced = !!incomingSignal && !!comparisonSignal && incomingSignal.signalSequence > comparisonSignal.signalSequence;
+  const repeatedSignal = !!incomingSignal && !!retainedSignal && sameSignalContext
+    && incomingSignal.signalSequence <= retainedSignal.signalSequence;
+  const authoritativeDone = selected.state === AGENT_STATUS_STATE.DONE
+    && selected.authority !== AGENT_STATUS_AUTHORITY.FALLBACK
+    && selected.authority !== AGENT_STATUS_AUTHORITY.IDENTITY;
+  const structuredFinishAdvanced = authoritativeDone && signalAdvanced;
   const acknowledgedOutputAdvanced = !stateChanged
     && selected.state === AGENT_STATUS_STATE.OUTPUT
     && input.fallback.rawOutputChanged
     && previous?.acknowledgedSequence === previous?.transitionSequence;
-  const changed = stateChanged || sequenceAdvanced || acknowledgedOutputAdvanced;
+  const changed = stateChanged || sequenceAdvanced || acknowledgedOutputAdvanced || structuredFinishAdvanced;
   const transitionSequence = changed ? (previous?.transitionSequence ?? 0) + 1 : previous?.transitionSequence ?? 1;
   const acknowledgedSequence = previous?.acknowledgedSequence;
   const acknowledgedAt = previous?.acknowledgedAt;
@@ -587,17 +626,19 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
   const pending = previous?.workPending ?? (previous !== undefined && BUSY_STATES.has(previous.state)
     && !(shell && previous.authority === AGENT_STATUS_AUTHORITY.FALLBACK));
   const previousStop = previous?.stoppedSequence ?? 0;
-  const authoritativeDone = selected.state === AGENT_STATUS_STATE.DONE
-    && selected.authority !== AGENT_STATUS_AUTHORITY.FALLBACK
-    && selected.authority !== AGENT_STATUS_AUTHORITY.IDENTITY;
   const stopObserved = previous?.stopObserved === true || previousStop > 0 || previous?.state === AGENT_STATUS_STATE.DONE;
   const firstDone = authoritativeDone && !stopObserved;
   // Source loss alone is not a turn end, but authoritative done confirms pending work
   // even after broker loss. Fallback idle must follow activity from the same source.
   const endedWork = pending && previous !== undefined && previous.state !== selected.state
     && (sameSourceAuthority(previous, selected) || authoritativeDone);
-  const stopped = !fallbackShell && (selected.state === AGENT_STATUS_STATE.IDLE || authoritativeDone)
-    && (firstDone || endedWork || (authoritativeDone && sequenceAdvanced));
+  const stopped = !fallbackShell && !repeatedSignal && (selected.state === AGENT_STATUS_STATE.IDLE || authoritativeDone)
+    && (firstDone || endedWork || structuredFinishAdvanced);
+  const busy = !fallbackShell && !repeatedSignal && BUSY_STATES.has(selected.state);
+  // Unrelated metadata cannot replace the clock. Actual work/stop may establish a new
+  // publisher context; a real non-structured stop retires the old structured episode.
+  const refreshSignal = !!incomingSignal && ((sameSignalContext && signalAdvanced) || busy);
+  const nextStopSignal = stopped || !retainedSignal || refreshSignal ? incomingSignal : retainedSignal;
   const stoppedAt = stopped ? selected.observedAt : previous?.stoppedAt;
   return {
     state: selected.state,
@@ -612,9 +653,10 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
     ...(acknowledgedAt ? { acknowledgedAt } : {}),
     ...(typeof acknowledgedSequence === "number" ? { acknowledgedSequence } : {}),
     unseen: transitionSequence > (acknowledgedSequence ?? 0),
-    workPending: (!fallbackShell && BUSY_STATES.has(selected.state)) || (pending && !stopped),
+    workPending: busy || (pending && !stopped),
     stoppedSequence: stopped ? transitionSequence : previousStop,
     stopObserved: stopObserved || stopped,
+    ...(nextStopSignal ? { stopSignal: nextStopSignal } : {}),
     ...(stoppedAt ? { stoppedAt } : {}),
     ...(input.currentRun?.runId ? { runId: input.currentRun.runId } : selected.runId ? { runId: selected.runId } : {}),
     ...(typeof input.currentRun?.runOrder === "number" ? { runOrder: input.currentRun.runOrder } : typeof selected.runOrder === "number" ? { runOrder: selected.runOrder } : {}),
@@ -622,6 +664,17 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
     ...(selected.message ? { message: selected.message } : {}),
     ...programStatusFields(selected),
   };
+}
+
+function isStructuredStopSignal(value: unknown): value is StructuredStopSignal {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const obj = value as Record<string, unknown>;
+  return Object.values(AGENT_STATUS_AUTHORITY).some(authority => authority === obj.authority)
+    && Object.values(AGENT_STATUS_SOURCE).some(source => source === obj.source)
+    && typeof obj.signalSequence === "number" && Number.isFinite(obj.signalSequence)
+    && (obj.runId === undefined || (typeof obj.runId === "string" && obj.runId.length > 0))
+    && (obj.runOrder === undefined || (typeof obj.runOrder === "number" && Number.isFinite(obj.runOrder)))
+    && (obj.runId !== undefined || obj.runOrder !== undefined);
 }
 
 function isAgentRuntimeState(value: unknown): value is AgentRuntimeState {
@@ -636,7 +689,8 @@ function isAgentRuntimeState(value: unknown): value is AgentRuntimeState {
     && typeof obj.observedAt === "string"
     && typeof obj.changedAt === "string"
     && typeof obj.transitionSequence === "number"
-    && typeof obj.unseen === "boolean";
+    && typeof obj.unseen === "boolean"
+    && (obj.stopSignal === undefined || isStructuredStopSignal(obj.stopSignal));
 }
 
 function isAgentRuntimeStateFile(value: unknown): value is AgentRuntimeStateFile {
@@ -739,8 +793,8 @@ export class AgentRuntimeStateStore {
     const previous = this.file.sessions[sessionKey];
     const equivalent = sameRuntimeState(previous, next);
     if (equivalent && previous!.observedAt === next.observedAt) return previous!;
-    // Reducer values are flat; acknowledgement only shares already-frozen disk
-    // extensions. Never mutate old results or freeze caller-owned input graphs.
+    // Nested signal evidence is frozen by the reducer; acknowledgement shares frozen
+    // cached values. Never mutate old results or freeze caller-owned input graphs.
     this.file.sessions[sessionKey] = Object.freeze(next);
     if (!equivalent) this.dirty = true;
     return next;

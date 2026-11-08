@@ -6385,6 +6385,50 @@
       ],
       "additionalProperties": false
     },
+    "StructuredStopSignal": {
+      "type": "object",
+      "properties": {
+        "authority": {
+          "$ref": "#/$defs/AgentStatusAuthority"
+        },
+        "source": {
+          "$ref": "#/$defs/AgentStatusSource"
+        },
+        "signalSequence": {
+          "type": "number"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runOrder": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "authority",
+        "source",
+        "signalSequence"
+      ],
+      "additionalProperties": false,
+      "description": "Retained structured-signal high-water mark for stop detection, fenced by publisher and run identity.",
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "required": [
+                "runId"
+              ]
+            },
+            {
+              "required": [
+                "runOrder"
+              ]
+            }
+          ]
+        }
+      ]
+    },
     "AgentRuntimeState": {
       "type": "object",
       "properties": {
@@ -6435,6 +6479,9 @@
         },
         "stopObserved": {
           "type": "boolean"
+        },
+        "stopSignal": {
+          "$ref": "#/$defs/StructuredStopSignal"
         },
         "runId": {
           "type": "string"
