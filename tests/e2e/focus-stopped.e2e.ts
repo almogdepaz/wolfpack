@@ -5,6 +5,7 @@ import { startTestServer, openSessionFromUi, toggleSessionGridFromUi, type TestS
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
+test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: "wait" }); });
 
 async function runtimeFixture(page: Page, initial: string, target = "test-project", pinned = false) {
   let runtime = { state: initial, authority: "fallback", source: "screen-fallback", freshness: "fresh", stale: false,
