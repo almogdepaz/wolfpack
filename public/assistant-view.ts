@@ -264,8 +264,8 @@ export function createAssistantView(deps: {
       // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
       tile.dataset.tone = offline || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
       const countedNext = tileState === null;
-      const upNext = next[0] ? `${countedNext ? "" : "<i>next:</i> "}${esc(nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
-      tile.innerHTML = `<span class="assistant-tile-head">${TILE_MARK}<b>assistant,</b><span class="assistant-tile-state">${tone}${tileStatus}${countedNext && next[0] ? ":" : ""}</span></span> <span class="assistant-tile-next">${upNext}</span>`;
+      const upNext = next[0] ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
+      tile.innerHTML = `<span class="assistant-tile-head">${TILE_MARK}<b>assistant<span class="visually-hidden">,</span></b><span class="assistant-tile-state">${tone}${tileStatus}${countedNext && next[0] ? '<span class="visually-hidden">:</span>' : ""}</span></span> <span class="assistant-tile-next">${upNext}</span>`;
       tile.title = current.nudge?.text ?? info;
       // The visible content (name, status, next) is the accessible name: an aria-label would hide what is shown (axe label-content-name-mismatch).
       tile.removeAttribute("aria-label");
