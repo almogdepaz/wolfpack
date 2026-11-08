@@ -13,6 +13,8 @@ export function createAssistantView(deps: {
   request: <T>(path: string, init?: RequestInit, machine?: string, interactive?: boolean) => Promise<T>;
   homeMachine: (id: string) => Machine | undefined;
   sessions: () => FocusSession[];
+  /** False means the local session projection is unavailable, not that every session stopped. */
+  sessionsAvailable: () => boolean;
   open: (name: string, machine?: string) => void;
   start: (intention: FocusIntention) => void;
   show: (view: string) => void;
@@ -41,7 +43,15 @@ export function createAssistantView(deps: {
   let wasEnabled = false;
   const cacheKey = "wolfpack-focus-cache";
   try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
-  const locked = () => offline || busy || !answered;
+  const locked = () => offline || busy || !answered || !deps.sessionsAvailable();
+  // Presentation only: retain the last verified projection during a self-offline poll.
+  // All session actions are disabled until the local projection is available again.
+  let lastSessions: FocusSession[] = [];
+  const sessions = () => {
+    if (deps.sessionsAvailable()) lastSessions = deps.sessions();
+    return lastSessions;
+  };
+  const nextRows = (cap: number) => !deps.sessionsAvailable() && !lastSessions.length ? [] : rankFocus(doc(), sessions(), cap);
   // The cached copy carries the home's resolved name, so an offline first answer names the right machine.
   const cache = (value: FocusResponse) => { try { localStorage.setItem(cacheKey, JSON.stringify({ ...value, homeName })); } catch { /* storage unavailable; live view still works */ } };
   const doc = () => focus?.document ?? emptyFocus();
@@ -161,7 +171,7 @@ export function createAssistantView(deps: {
       + field("last line", session.lastLine ? `<code>${esc(session.lastLine)}</code>` : "") + field("why here", esc(row.reason)) + field("for", esc(row.intention?.title ?? ""));
   }
   function intentionBody(intention: FocusIntention, reason?: string) {
-    const linked = linkedFocusSessions(intention, deps.sessions());
+    const linked = linkedFocusSessions(intention, sessions());
     return field("sessions", linked.map(s => `<span class="focus-linked">${dot(s.state)}${esc(s.name)}</span>`).join(" ") || "none yet")
       + field("project", project(intention.project)) + field("machine", esc(intention.machine ?? "")) + field("added", stamp(intention.createdAt))
       + field("done", intention.done && intention.doneAt ? stamp(intention.doneAt) : "") + field("why here", esc(reason ?? ""));
@@ -171,7 +181,7 @@ export function createAssistantView(deps: {
     ? `${row.session.name} ${row.session.state === "needs-input" ? "needs you" : row.session.state === "done" ? "finished" : row.session.state}`
     : `start “${row.intention!.title}”`;
   function nextHtml(cap: number) {
-    const rows = rankFocus(doc(), deps.sessions(), cap);
+    const rows = nextRows(cap);
     if (!rows.length) return `<p class="focus-empty">${doc().intentions.length && doc().intentions.every(i => i.done) ? "all intentions done — tell the assistant what's next" : "nothing waiting"}</p>`;
     return `<ol class="focus-next" aria-label="Next actions">${rows.map((row, index) => {
       const finished = row.session?.state === "done";
@@ -179,13 +189,13 @@ export function createAssistantView(deps: {
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
       if (row.session) renderedSessions.set(key, row.session);
-      const action = `<button type="button" class="focus-action" data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${row.kind} ${title}` : title)}">${row.kind}<span aria-hidden="true"> ›</span></button>`;
+      const action = `<button type="button" class="focus-action"${locked() ? " disabled" : ""} data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${row.kind} ${title}` : title)}">${row.kind}<span aria-hidden="true"> ›</span></button>`;
       const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span><small class="focus-for">${esc(row.intention?.title ?? row.session?.machine ?? "")}</small>`;
       return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
     }).join("")}</ol>`;
   }
   function todayHtml(items: FocusIntention[]) {
-    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}<span class="focus-chips">${linkedFocusSessions(i, deps.sessions()).map(s => `<button type="button" data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>`;
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}<span class="focus-chips">${linkedFocusSessions(i, sessions()).map(s => `<button type="button"${locked() ? " disabled" : ""} data-focus-session="${escAttr(s.id)}">${dot(s.state)}${esc(s.name)}</button>`).join("")}</span></li>`).join("")}</ul>`;
   }
   // The live dom holds the newest open state: a tap sets `open` at once, but the browser queues its toggle event, and a
   // render in between would rebuild the card from `openCards` and the toggle would then fire on the detached node (N6).
@@ -206,14 +216,14 @@ export function createAssistantView(deps: {
     const current = doc();
     const enabled = !!focus?.assistant?.enabled;
     const state = status();
-    const next = rankFocus(current, deps.sessions(), 5);
+    const next = nextRows(5);
     const summary = `${current.intentions.filter(i => i.done).length} of ${current.intentions.length} done`;
     // "know when items are done": today's ticks and finishes carry a time; the rest of the list stays as it was.
-    const done = doneToday(current, deps.sessions(), Date.now(), doneDay);
+    const done = doneToday(current, sessions(), Date.now(), doneDay);
     const latest = done[0] && ` · ${done[0].kind === "intention" ? `✓ ${esc(done[0].intention.title)}` : `${esc(done[0].session.name)} finished`} ${clock(done[0].at)}`;
     const doneHtml = done.length ? `<h2>done today <small>${plural(done.filter(i => i.kind === "intention").length, "intention")} · ${plural(done.filter(i => i.kind === "session").length, "session")}</small></h2><ul class="focus-done" aria-label="Done today">${done.map(i => `<li><span class="focus-time">${clock(i.at)}</span>${i.kind === "intention"
       ? `<span class="focus-what">✓ ${esc(i.intention.title)}</span><button type="button" data-focus-undo="${escAttr(i.intention.id)}" aria-label="Undo done: ${escAttr(i.intention.title)}"${locked() ? " disabled" : ""}>undo</button>`
-      : `<span class="focus-what"><b>${esc(i.session.name)}</b> finished · for ${esc(i.intention.title)}</span><button type="button" data-focus-session="${escAttr(i.session.id)}">open ›</button>`}</li>`).join("")}</ul>` : "";
+      : `<span class="focus-what"><b>${esc(i.session.name)}</b> finished · for ${esc(i.intention.title)}</span><button type="button" data-focus-session="${escAttr(i.session.id)}"${locked() ? " disabled" : ""}>open ›</button>`}</li>`).join("")}</ul>` : "";
     const open = current.intentions.filter(i => !(i.done && i.doneAt && doneDay(i.doneAt) === localDay(Date.now())));
     const r = routines();
     const catching = r?.catchingUp;
@@ -367,15 +377,16 @@ export function createAssistantView(deps: {
       const action = target.dataset.focusAction;
       if (action === "view") deps.show("assistant");
       if (action === "settings") deps.show("settings");
+      if (locked()) return;
       if (action === "talk") talk();
       if (action === "catch-up") void run(async () => { const next = await deps.request<RoutineStatus>("/focus/catch-up", { method: "POST" }, machine); if (focus) focus.routines = next; });
       if (action === "day-note") void run(readDayNote);
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
       if (target.dataset.focusNext !== undefined) {
-        const row = rankFocus(doc(), deps.sessions(), id === "dashboard-focus" ? 3 : 5)[Number(target.dataset.focusNext)];
+        const row = nextRows(id === "dashboard-focus" ? 3 : 5)[Number(target.dataset.focusNext)];
         if (row?.session) deps.open(row.session.name, row.session.machineUrl); else if (row?.intention) deps.start(row.intention);
       }
-      const session = deps.sessions().find(s => s.id === target.dataset.focusSession);
+      const session = sessions().find(s => s.id === target.dataset.focusSession);
       if (session) deps.open(session.name, session.machineUrl);
     });
     // toggle does not bubble: listen in the capture phase.
