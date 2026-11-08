@@ -101,7 +101,8 @@ test("today intentions expand to their details; the checkbox and chips work with
   const view = page.locator("#assistant-view");
   const item = view.locator(".focus-today li").filter({ hasText: "fix broker leak" });
   const card = item.locator("details.focus-card");
-  await view.getByRole("checkbox", { name: "Done: fix broker leak" }).check();
+  await view.getByRole("checkbox", { name: "Done: fix broker leak" }).click();
+  await expect(view.locator(".focus-done")).toContainText("fix broker leak");
   await expect(view).toContainText("2 of 3 done");
   await expect(view.locator(".focus-today details.focus-card[open]")).toHaveCount(0);
   await view.locator(".focus-done").getByRole("button", { name: "Undo done: fix broker leak" }).click();
@@ -125,7 +126,8 @@ test("today intentions expand to their details; the checkbox and chips work with
   await expect(view.locator("details.focus-card[open]")).toHaveCount(3);
   await linked.locator(".focus-card > summary").click();
   await expect(linked.locator(":scope > .focus-chips")).toBeVisible();
-  await linked.locator(":scope > .focus-chips").getByRole("button", { name: "another-project" }).click();
+  // The attention-first chip stays visible when the idle sibling moves behind +n.
+  await linked.locator(":scope > .focus-chips").getByRole("button", { name: "prompt-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
 
@@ -227,7 +229,8 @@ test("a poll answered before a tick lands after it without reverting the tick (S
   });
   hold = true;
   await held;
-  await view.getByRole("checkbox", { name: "Done: fix broker leak" }).check();
+  await view.getByRole("checkbox", { name: "Done: fix broker leak" }).click();
+  await expect(view.locator(".focus-done")).toContainText("fix broker leak");
   await expect(view).toContainText("2 of 3 done");
   release();
   await page.waitForTimeout(1000);
