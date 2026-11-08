@@ -2972,21 +2972,11 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-time { min-width: 40px; color: var(--text-4); font: 12px var(--font-mono); }
 .focus-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .focus-what b { color: var(--text-2); font-weight: 500; }
-.focus-add, .focus-conversation, .focus-conversation form { display: flex; gap: 8px; min-width: 0; }
+.focus-add, .focus-conversation { display: flex; gap: 8px; min-width: 0; }
 .focus-add { margin-top: 10px; }
-.focus-add input, .focus-conversation input { min-width: 0; width: 100%; min-height: 36px; padding: 0 12px; border: 1px solid var(--hairline-strong); border-radius: var(--r-control); color: var(--text-1); background: var(--surface-1); font: 400 13px var(--font-ui); }
-.focus-add input:focus, .focus-conversation input:focus { border-color: var(--accent-border); }
+.focus-add input { min-width: 0; width: 100%; min-height: 36px; padding: 0 12px; border: 1px solid var(--hairline-strong); border-radius: var(--r-control); color: var(--text-1); background: var(--surface-1); font: 400 13px var(--font-ui); }
+.focus-add input:focus { border-color: var(--accent-border); }
 .focus-conversation { margin-top: 14px; }
-.focus-conversation form { flex: 1; }
-/* The ask's answer, under the ask box: the user's line, then the state or the reply. */
-.focus-reply { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--hairline); border-radius: var(--r-control); background: var(--surface-2); font-size: 13px; line-height: 1.5; color: var(--text-2); }
-.focus-reply p { margin: 0; overflow-wrap: anywhere; }
-.focus-reply p + p { margin-top: 6px; }
-.focus-ask { font-size: 12.5px; color: var(--text-3); }
-.focus-ask b { font-weight: 600; color: var(--text-2); }
-.focus-answer { color: var(--text-1); white-space: pre-line; }
-.focus-answer small, .focus-wait { font-size: 12.5px; color: var(--text-3); }
-.focus-reply-error { color: var(--danger); }
 .focus-block > p:not([class]) { margin: 14px 0 0; font: 600 15px var(--font-ui); color: var(--text-1); }
 .focus-block > p[role=status] { margin: 10px 0 0; font-size: 12.5px; color: var(--danger); }
 #focus-status { margin: 10px 0 0; font-size: 12.5px; color: var(--text-3); }
@@ -3020,8 +3010,8 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 @keyframes focus-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .focus-spin::before { animation: none; } .assistant-column summary::before, details.focus-card > summary::after, details.focus-context-more > summary::before { transition: none; } }
 /* Inline link weight: names, notes verbs, undo, read, back. Declared last so it wins the shared button rule. */
-.focus-header > button:not(:last-child):not(.focus-attn), .focus-notes button, .focus-done button, .focus-yesterday button, .focus-wait button, .assistant-column > header button { min-height: 0; padding: 2px 0; border: 0; border-radius: 4px; background: none; color: var(--accent); font-size: 12px; }
-.focus-header > button:not(:last-child):not(.focus-attn):hover, .focus-notes button:hover, .focus-done button:hover, .focus-yesterday button:hover, .focus-wait button:hover, .assistant-column > header button:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.focus-header > button:not(:last-child):not(.focus-attn), .focus-notes button, .focus-done button, .focus-yesterday button, .assistant-column > header button { min-height: 0; padding: 2px 0; border: 0; border-radius: 4px; background: none; color: var(--accent); font-size: 12px; }
+.focus-header > button:not(:last-child):not(.focus-attn):hover, .focus-notes button:hover, .focus-done button:hover, .focus-yesterday button:hover, .assistant-column > header button:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .focus-header > button:not(:last-child):not(.focus-attn) { color: var(--text-1); font-size: 13px; font-weight: 600; }
 .focus-header > button:not(:last-child):not(.focus-attn):hover { color: var(--text-1); }
 .assistant-column > header button { color: var(--text-3); font-size: 13px; }
@@ -3041,7 +3031,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-block .focus-next > li { padding-inline: 14px; }
   .focus-block button, .assistant-column button, .focus-terminal-header button { min-height: 44px; }
   .focus-notes button { min-height: 0; }
-  .focus-header > button:not(:last-child):not(.focus-attn), .focus-done button, .focus-yesterday button, .focus-chips button, .focus-wait button { min-height: 32px; }
+  .focus-header > button:not(:last-child):not(.focus-attn), .focus-done button, .focus-yesterday button, .focus-chips button { min-height: 32px; }
   .focus-header > small { flex-basis: 100%; order: 1; }
   .focus-header > span:not(.dot) { flex: 1 1 auto; min-width: 0; }
   .focus-for, .focus-extra { display: none; }
@@ -3049,7 +3039,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-today .focus-chips { grid-column: 1 / -1; justify-content: flex-start; padding: 0 0 8px 30px; }
   .focus-card-body { grid-template-columns: minmax(0, 1fr); gap: 1px; }
   .focus-card-body dd + dt, .focus-card-body > div + div dt { margin-top: 6px; }
-  .focus-add input, .focus-conversation input { min-height: 44px; font-size: 16px; }
+  .focus-add input { min-height: 44px; font-size: 16px; }
   .focus-terminal-header { flex-wrap: wrap; }
 }
 @media (max-width: 360px) {

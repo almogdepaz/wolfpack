@@ -185,7 +185,7 @@ test("no document is no block; another schema version is one line", async ({ pag
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
 });
 
-test("open cards refreshing their context do not drop a half-typed ask", async ({ page }) => {
+test("open cards refreshing their context do not drop a half-typed intention", async ({ page }) => {
   await withContext(page, v3);
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
@@ -193,15 +193,15 @@ test("open cards refreshing their context do not drop a half-typed ask", async (
   await view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator(".focus-card > summary").click();
   await view.locator(".focus-today li").filter({ hasText: "fix broker leak" }).locator(".focus-card > summary").click();
   await expect(view.locator(".focus-context")).toBeVisible();
-  const box = view.getByRole("textbox", { name: "Ask the assistant" });
+  const box = view.getByRole("textbox", { name: "Add an intention" });
   await box.click();
   await box.pressSequentially("half typed");
   // two polls with the context reloads and their renders
   await page.waitForTimeout(11_000);
   await expect(box).toHaveValue("half typed");
   await expect(box).toBeFocused();
-  await page.keyboard.type(" ask");
-  await expect(box).toHaveValue("half typed ask");
+  await page.keyboard.type(" intention");
+  await expect(box).toHaveValue("half typed intention");
 });
 
 test("a poll answered before a tick lands after it without reverting the tick (S2)", async ({ page }) => {

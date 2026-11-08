@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { emptyFocus, isFocusDocument, reduceFocus } from "../../src/focus-contract.ts";
+import { emptyFocus, isFocusDocument, reduceFocus, type FocusOp } from "../../src/focus-contract.ts";
 
 const now = "2026-11-06T12:00:00.000Z";
 const add = { type: "add", intention: { id: "ship", title: "ship focus", project: "/dev/app", machine: "sgt", sessions: ["id-1"] } } as const;
@@ -35,18 +35,9 @@ describe("focus document", () => {
     expect(doc.seenDayNoteAt).toBe(now);
     expect(isFocusDocument(doc)).toBe(true);
   });
-  test("the assistant's inline reply mirrors the nudge: bounded, may be empty, one shape", () => {
-    const doc = reduceFocus(emptyFocus(), [{ type: "reply", text: "Broker leak first; answer prompt-project.", author: "assistant" }], now);
-    expect(doc.reply).toEqual({ text: "Broker leak first; answer prompt-project.", author: "assistant", updatedAt: now });
-    expect(isFocusDocument(doc)).toBe(true);
-    expect(reduceFocus(doc, [{ type: "reply", text: "", author: "assistant" }], now).reply?.text).toBe("");
-    expect(reduceFocus(emptyFocus(), [{ type: "reply", text: "x".repeat(2000), author: "assistant" }], now).reply?.text.length).toBe(2000);
-    for (const op of [{ type: "reply", text: "x".repeat(2001), author: "assistant" }, { type: "reply", text: "hi" }, { type: "reply", text: "hi", author: "" }, { type: "reply", text: "hi", author: "assistant", extra: 1 }, { type: "reply", text: 3, author: "assistant" }]) {
-      expect(() => reduceFocus(emptyFocus(), [op], now)).toThrow();
-    }
-    expect(isFocusDocument({ ...doc, reply: { ...doc.reply, extra: true } })).toBe(false);
-    expect(isFocusDocument({ ...doc, reply: { ...doc.reply, updatedAt: "yesterday" } })).toBe(false);
-    expect(isFocusDocument({ ...doc, reply: { ...doc.reply, text: "x".repeat(2001) } })).toBe(false);
+  test("there is no reply op and no reply field: the user talks to the assistant in its terminal", () => {
+    expect(() => reduceFocus(emptyFocus(), [{ type: "reply", text: "Broker leak first.", author: "assistant" } as unknown as FocusOp], now)).toThrow();
+    expect(isFocusDocument({ ...emptyFocus(), reply: { text: "hi", author: "assistant", updatedAt: now } })).toBe(false);
   });
   test("rejects invalid operations atomically, duplicates, partial reorder, unknown fields and oversized text", () => {
     const doc = reduceFocus(emptyFocus(), [add], now);

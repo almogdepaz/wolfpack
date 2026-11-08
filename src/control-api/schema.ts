@@ -1352,11 +1352,6 @@ export const controlApiSource: ControlApiSource = {
       request: object({ enabled: boolean(), loginConfirmed: boolean() }, ["enabled"]),
       response: { type: "object" }, errors: ["400 ErrorEnvelope", "409 ErrorEnvelope"],
     },
-    "POST /api/focus/ask": {
-      operationId: "askFocusAssistant", stable: true, auth: "jwt-when-configured",
-      request: object({ text: string() }, ["text"]),
-      response: { type: "object" }, errors: ["400 ErrorEnvelope", "409 ErrorEnvelope"],
-    },
     "GET /api/focus": {
       operationId: "getFocus", stable: true, auth: "jwt-when-configured",
       response: object({ home: string(), installationId: string(), local: boolean(), document: { type: ["object", "null"] }, revision: integer(), assistant: { type: "object" },

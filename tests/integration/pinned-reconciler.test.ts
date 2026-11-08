@@ -73,19 +73,16 @@ test("assistant runtime drains fast completed turns using broker program timesta
   const config = { devDir: root, port: 19791, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] };
   const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
   try {
-    await ctx.focusRuntime.ask("one");
-    await ctx.focusRuntime.ask("two");
-    // a user ask is marked so the assistant answers it inline (wolfpack focus reply); routine lines stay bare
-    expect(sent).toEqual(["ask: one", "ask: two"]);
+    // routine lines reach the assistant bare: there is no ask channel, the user talks to it in its terminal
     ctx.focusRuntime.queue.enqueue((await ctx.focusRuntime.status()).sessionId!, "process inbox inbox/catch-up-1.json", undefined, "routine");
     await ctx.focusRuntime.tick();
-    expect(sent.at(-1)).toBe("process inbox inbox/catch-up-1.json");
+    expect(sent).toEqual(["process inbox inbox/catch-up-1.json"]);
   } finally { ctx.focusRuntime.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("an ask whose submission cannot be verified is sent, not a failure; a send that is not delivered still is", async () => {
+test("a routine send that cannot be verified or is not delivered settles failed for the routine and never sets an assistant error", async () => {
   process.env.WOLFPACK_TEST = "1";
-  const root = mkdtempSync(join(tmpdir(), "focus-unverified-ask-"));
+  const root = mkdtempSync(join(tmpdir(), "focus-unverified-send-"));
   const { createServerContext } = await import("../../src/server/context.ts");
   const { AssistantService } = await import("../../src/server/assistant-service.ts");
   const folder = join(root, "assistant");
@@ -96,16 +93,21 @@ test("an ask whose submission cannot be verified is sent, not a failure; a send 
   const config = { devDir: root, port: 19791, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] };
   const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
   try {
-    const asked = await ctx.focusRuntime.ask("whats up");
-    expect(asked.delivery).toBe("sent");
-    expect(asked.error).toBeUndefined();
+    const outcomes: string[] = [];
+    const id = (await ctx.focusRuntime.status()).sessionId!;
+    ctx.focusRuntime.queue.enqueue(id, "process inbox inbox/catch-up-1.json", outcome => outcomes.push(outcome), "routine");
+    await ctx.focusRuntime.tick();
+    // unverified: the routine reports delivery unconfirmed; the assistant status carries no error (the live "assistant failed" bug)
+    expect(outcomes).toEqual(["failed"]);
     expect((await ctx.focusRuntime.status()).error).toBeUndefined();
     backend.sendObservation = { delivery: "not_delivered", outcome: "not_delivered", reason: "target_exited", observedMs: 0 };
-    // a new idle token: the unverified ask's slot is released without waiting for the fence
+    // a new idle token: the unverified send's slot is released without waiting for the fence
     backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: 2000 });
-    const failed = await ctx.focusRuntime.ask("still there?");
-    expect(failed.delivery).toBe("failed");
-    expect(failed.error).toContain("not_delivered");
+    ctx.focusRuntime.queue.enqueue(id, "process inbox inbox/catch-up-2.json", outcome => outcomes.push(outcome), "routine");
+    await ctx.focusRuntime.tick();
+    expect(outcomes).toEqual(["failed", "failed"]);
+    expect((await ctx.focusRuntime.status()).error).toBeUndefined();
+    expect(ctx.focusRuntime.queue.size).toBe(0);
   } finally { ctx.focusRuntime.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -302,14 +304,10 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     writeFileSync(skill, "phase 1 skill");
     service.refreshSkill();
     expect(readFileSync(skill, "utf8")).toContain("process inbox");
-    // the ask contract: a dashboard ask is answered inline as well as in the terminal
-    expect(readFileSync(skill, "utf8")).toMatch(/`ask: `[\s\S]*wolfpack focus reply/);
-    // the ask box and the reply live on the assistant page; an answer only in the terminal is not enough
-    const asks = readFileSync(skill, "utf8").split("## asks")[1]!.split("\n## ")[0]!;
-    expect(asks).toContain("assistant page");
-    expect(asks).not.toContain("dashboard");
-    expect(asks).toContain("always reply with `wolfpack focus reply");
-    expect(asks).toContain("answering only in this terminal is not enough");
+    // no ask channel: the reseeded skill teaches no `ask: ` lines and no inline reply; the user talks to the assistant in its terminal
+    expect(readFileSync(skill, "utf8")).not.toContain("## asks");
+    expect(readFileSync(skill, "utf8")).not.toContain("ask: ");
+    expect(readFileSync(skill, "utf8")).not.toContain("focus reply");
     service.unpin("assistant");
     writeFileSync(skill, "phase 1 skill");
     service.refreshSkill();

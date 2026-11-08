@@ -30,22 +30,9 @@ test("focus HTTP CAS, first write, invalid ops and corrupt-file protection", asy
     expect(conflict.status).toBe(409);
     expect((await conflict.json()).document.intentions[0].title).toBe("ship");
     expect((await post({ expectedRevision: 1, ops: [{ type: "done", id: "absent" }] })).status).toBe(400);
-    // the assistant's inline answer to an ask is an ordinary focus op; an oversized one is a validation error
-    const replied = await post({ expectedRevision: 1, ops: [{ type: "reply", text: "Answer prompt-project first.", author: "assistant" }] });
-    expect(replied.status).toBe(200);
-    expect((await replied.json()).document.reply).toMatchObject({ text: "Answer prompt-project first.", author: "assistant", updatedAt: expect.any(String) });
-    expect((await post({ expectedRevision: 2, ops: [{ type: "reply", text: "x".repeat(2001), author: "assistant" }] })).status).toBe(400);
-    // an ask is one line of at most 8000 characters (the queue adds the `ask: ` prefix under its own 8192 limit)
-    const ask = (text: unknown) => fetch(`${base}/api/focus/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
-    for (const bad of ["x".repeat(8001), "two\nlines", "", "   "]) {
-      const refused = await ask(bad);
-      expect(refused.status).toBe(400);
-      expect((await refused.json()).error).toBe("ask must be one line of at most 8000 characters");
-    }
-    // a valid ask passes validation and reaches the runtime (the assistant is off here)
-    const off = await ask("x".repeat(8000));
-    expect(off.status).toBe(409);
-    expect((await off.json()).error).toBe("assistant is off");
+    // the ask channel is gone: `reply` is not an op, and the ask route no longer exists (the user talks to the assistant in its terminal)
+    expect((await post({ expectedRevision: 1, ops: [{ type: "reply", text: "Answer prompt-project first.", author: "assistant" }] })).status).toBe(400);
+    expect(routes["POST /api/focus/ask"]).toBeUndefined();
     const dashboard = await (await fetch(`${base}/api/sessions`)).json();
     expect(dashboard.sessions[0].changedAt).toBe(dashboard.sessions[0].runtimeState.changedAt);
     writeFileSync(path, "corrupt");

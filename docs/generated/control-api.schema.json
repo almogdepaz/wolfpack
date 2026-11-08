@@ -1603,36 +1603,6 @@
         "409 ErrorEnvelope"
       ]
     },
-    "askFocusAssistant": {
-      "route": "POST /api/focus/ask",
-      "stable": true,
-      "auth": "jwt-when-configured",
-      "request": {
-        "$id": "wolfpack:control-api:http:askFocusAssistant:request",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "askFocusAssistant request",
-        "type": "object",
-        "properties": {
-          "text": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "text"
-        ],
-        "additionalProperties": false
-      },
-      "response": {
-        "$id": "wolfpack:control-api:http:askFocusAssistant:response",
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": "askFocusAssistant response",
-        "type": "object"
-      },
-      "errors": [
-        "400 ErrorEnvelope",
-        "409 ErrorEnvelope"
-      ]
-    },
     "getFocus": {
       "route": "GET /api/focus",
       "stable": true,

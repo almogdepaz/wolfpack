@@ -11,8 +11,6 @@ import { getMachineDisplayName } from "../machine-display-name.js";
 import { FocusRoutines, localActivitySource, peerActivitySource } from "./focus-routines.js";
 const log = createLogger("server");
 const VERDICT_TTL_MS = 5_000;
-/** The skill's `## asks` contract: a line starting with this is the user typing in the dashboard's ask box. */
-export const FOCUS_ASK_PREFIX = "ask: ";
 export class FocusRuntime {
   readonly pins: PinnedSessionService;
   readonly queue: FocusSendQueue;
@@ -78,17 +76,6 @@ export class FocusRuntime {
       this.lastVerdict = { at: now, id, verdict: sample && { idle: sample.idle, needsInput: sample.needsInput } };
     }
     return this.lastVerdict.verdict;
-  }
-  async ask(text: string) {
-    if (!this.ctx.assistantService.enabled) throw new Error("assistant is off");
-    const status = await this.status();
-    if (!status.sessionId) throw new Error("assistant is not running");
-    // Marks the line as typed in the dashboard's ask box: the skill answers it with `wolfpack focus reply` as well as in the terminal.
-    // Routine lines (process inbox …) go through the routines' enqueue and stay bare.
-    this.queue.enqueue(status.sessionId, `${FOCUS_ASK_PREFIX}${text}`);
-    this.start();
-    await this.tick();
-    return { ...(await this.status()), delivery: this.queue.size ? "queued" : this.queue.error ? "failed" : "sent" };
   }
   async tick(): Promise<void> {
     const sample = await this.sample();

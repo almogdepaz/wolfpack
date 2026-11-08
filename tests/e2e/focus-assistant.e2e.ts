@@ -177,55 +177,6 @@ test("disabling the assistant elsewhere while its page is open returns to sessio
   await expect(page.locator("#sessions-view")).toHaveClass(/visible/);
 });
 
-test("an ask is answered on the assistant page: waiting inline, then the reply the assistant writes", async ({ page }) => {
-  await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
-  const view = page.locator("#assistant-view");
-  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
-  // this fixture's assistant never rests, so the real queue would hold the line; a sent delivery is the server's other answer
-  let asked = "";
-  await page.route("**/api/focus/ask", route => { asked = JSON.parse(route.request().postData() ?? "{}").text; return route.fulfill({ json: { ...current.assistant, queued: 0, error: undefined, delivery: "sent" } }); });
-  const box = view.getByRole("textbox", { name: "Ask the assistant" });
-  await box.fill("what should I do next?");
-  await box.press("Enter");
-  const reply = view.locator(".focus-reply");
-  await expect(reply).toContainText("you · what should I do next?");
-  await expect(reply).toContainText("waiting for the assistant…");
-  expect(asked).toBe("what should I do next?");
-  await expect(box).toHaveValue("");
-  await expect(view).toHaveClass(/visible/);
-  await expect(page.locator("#terminal-view")).not.toHaveClass(/visible/);
-  expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
-  // the queue drops it (a restart) and a routine's enqueue clears the error a poll later: the ask still reads as not sent
-  let assistantPatch: Record<string, unknown> = { error: "assistant restarted; queued messages were not sent" };
-  await page.route(url => url.pathname === "/api/focus", async route => {
-    if (route.request().method() !== "GET") return route.continue();
-    const response = await route.fetch();
-    const body = await response.json();
-    body.assistant = { ...body.assistant, ...assistantPatch };
-    await route.fulfill({ response, json: body });
-  });
-  await expect(reply).toContainText("not sent · assistant restarted; queued messages were not sent", { timeout: 15_000 });
-  assistantPatch = { error: undefined };
-  await page.waitForTimeout(6000);
-  await expect(reply).toContainText("not sent · assistant restarted");
-  await expect(reply.getByRole("button", { name: "Open the assistant's terminal" })).toBeVisible();
-  await page.unroute(url => url.pathname === "/api/focus");
-  // the assistant answers through the cli (`wolfpack focus reply`): an ordinary focus op the next poll shows
-  const latest = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
-  expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: latest.revision, ops: [{ type: "reply", text: "Answer prompt-project first, then ship focus.", author: "assistant" }] } })).ok()).toBe(true);
-  await expect(reply).toContainText("Answer prompt-project first, then ship focus.", { timeout: 15_000 });
-  await expect(reply).toContainText("you · what should I do next?");
-  await expect(reply).not.toContainText("waiting");
-  expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
-  // a fresh page has no ask in memory and still shows the latest reply with its age
-  await page.reload();
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
-  await expect(reply).toContainText(/Answer prompt-project first, then ship focus\.\s*· now/);
-  await expect(reply).not.toContainText("you ·");
-  await expect(page.locator("#dashboard-focus .focus-reply")).toHaveCount(0);
-});
-
 test("a failed disable from the terminal header is worded as the assistant's, not unpin & stop", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
@@ -242,22 +193,19 @@ test("a failed disable from the terminal header is worded as the assistant's, no
   await page.unroute("**/api/kill");
 });
 
-test("talk opens the assistant terminal, Focus returns, a busy ask is queued, and the terminal header can disable it", async ({ page }) => {
+test("talk opens the assistant terminal, Focus returns, there is no ask box, and the terminal header can disable it", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  // the terminal is how the user talks to the assistant: the page has no ask box and no reply area
+  await expect(page.locator("#assistant-view").getByRole("textbox", { name: "Ask the assistant" })).toHaveCount(0);
+  await expect(page.locator("#assistant-view .focus-reply")).toHaveCount(0);
   await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
   await expect(page.locator("#terminal-view")).toBeVisible();
   await expect(page.locator("#assistant-terminal-focus")).toBeVisible();
   await page.locator("#assistant-terminal-focus").click();
-  await page.getByRole("textbox", { name: "Ask the assistant" }).fill("move ship focus first");
-  await page.getByRole("textbox", { name: "Ask the assistant" }).press("Enter");
-  // the ask stays on the assistant page: its state is inline under the ask box, the terminal is one tap away
-  await expect(page.locator("#assistant-view .focus-reply")).toContainText("you · move ship focus first");
-  await expect(page.locator("#assistant-view .focus-reply")).toContainText("queued");
   await expect(page.locator("#assistant-view")).toHaveClass(/visible/);
   await expect(page.locator("#terminal-view")).not.toHaveClass(/visible/);
   await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
-  await expect(page.locator("#assistant-terminal-state")).toContainText("queued");
   await page.locator("#assistant-terminal-stop").click();
   await page.locator("#app-dialog-confirm").click();
   await expect.poll(async () => (await (await page.request.get(`${server.baseUrl}/api/focus`)).json()).assistant.enabled).toBe(false);

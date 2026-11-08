@@ -8,13 +8,12 @@ import { writePrivateJsonFile } from "../persistence.js";
 import { verifyMachineTarget, type VerifiedMachineTarget } from "./machine-target.js";
 import { print, printError, printJson } from "./formatting.js";
 
-export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|reorder|nudge|reply|note|day-summary [--json]
+export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|reorder|nudge|note|day-summary [--json]
   add <title> [--id id] [--project /path] [--on machine] [--sessions id,id]
   edit <id> [title] [--project /path] [--on machine] [--sessions id,id]
   done|undo|drop <id>
   reorder <id> <id> ... (all intentions, in order)
   nudge|note <text>
-  reply <text>   the assistant's answer to a dashboard ask (one short paragraph, at most 2000 characters)
   day-summary <YYYY-MM-DD> <done> <carried> <questions>
   home [<installation-id>|--clear]   show or set this machine's focus home (config.json; restart to apply)`;
 export function parseFocusCommand(args: readonly string[]): { json: boolean; op?: FocusOp } {
@@ -38,7 +37,7 @@ export function parseFocusCommand(args: readonly string[]): { json: boolean; op?
     if (cmd === "edit" && positional.length >= 1 && positional.length <= 2) op = { type: "edit", id: positional[0], patch: { ...fields, ...(positional[1] !== undefined && { title: positional[1] }) } };
   } else if (["done", "undo", "drop"].includes(cmd ?? "") && rest.length === 1) op = { type: cmd, id: rest[0] };
   else if (cmd === "reorder") op = { type: cmd, ids: rest };
-  else if ((cmd === "nudge" || cmd === "reply" || cmd === "note") && rest.length === 1) op = { type: cmd, text: rest[0], ...(cmd !== "note" && { author: "assistant" }) };
+  else if ((cmd === "nudge" || cmd === "note") && rest.length === 1) op = { type: cmd, text: rest[0], ...(cmd === "nudge" && { author: "assistant" }) };
   else if (cmd === "day-summary" && rest.length === 4) op = { type: cmd, summary: { date: rest[0], done: Number(rest[1]), carried: Number(rest[2]), questions: Number(rest[3]) } };
   if (!isFocusOp(op)) throw new Error(FOCUS_USAGE);
   return { json, op };
