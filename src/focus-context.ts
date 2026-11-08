@@ -44,3 +44,13 @@ export function agentContextEnabled(catalog: unknown): boolean {
   return object(catalog) && catalog.safeMode !== true && Array.isArray(catalog.installations)
     && catalog.installations.some(i => object(i) && i.extensionId === AGENT_CONTEXT_EXTENSION && i.enabled === true);
 }
+/**
+ * The machine answered that the panel's documents are not there: an older build without the extensions api (404),
+ * the extension not installed (404 `NOT_INSTALLED`) or disabled (`DISABLED`). Cached like a disabled catalog;
+ * anything else (transport, auth, store errors) is retried on the next poll.
+ */
+export function extensionUnavailable(error: unknown): boolean {
+  if (!object(error)) return false;
+  const code = object(error.data) && object(error.data.error) ? error.data.error.code : undefined;
+  return error.status === 404 || code === "NOT_INSTALLED" || code === "DISABLED";
+}

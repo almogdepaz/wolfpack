@@ -205,3 +205,19 @@ test("a session card whose row left next stops fetching; it may come back open (
   await expect(row.locator("details.focus-card")).toHaveAttribute("open", "", { timeout: 15_000 });
   await expect.poll(() => reads.length, { timeout: 15_000 }).toBeGreaterThan(gone);
 });
+
+test("a machine that answers not installed is not asked again every poll (N2)", async ({ page }) => {
+  const reads = await withContext(page, v3);
+  await page.unroute(url => url.pathname === "/api/extensions/documents/agent-context/context");
+  await page.route(url => url.pathname === "/api/extensions/documents/agent-context/context", route => {
+    reads.push("not-installed");
+    return route.fulfill({ status: 404, json: { error: { code: "NOT_INSTALLED", message: "extension is not installed" } } });
+  });
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next li").filter({ hasText: "prompt-project" });
+  await row.locator(".focus-card > summary").click();
+  await expect.poll(() => reads.length).toBe(1);
+  await page.waitForTimeout(11_000);
+  expect(reads.length).toBe(1);
+  await expect(row.locator(".focus-context")).toHaveCount(0);
+});

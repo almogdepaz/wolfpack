@@ -5,7 +5,7 @@ import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, t
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { showAppDialog } from "./app-dialog";
 import { focusReplyView, observePendingAsk, startPendingAsk, type PendingAsk } from "../src/focus-reply";
-import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, summarizeAgentContext } from "../src/focus-context";
+import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../src/focus-context";
 interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string }
 interface RoutineStatus { catchingUp: { machines: number; since: string | null; unconfirmed?: true } | null; yesterday?: { date: string; note: boolean; endsAt: string }; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
 interface FocusResponse { home: string; installationId: string; local: boolean; document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
@@ -120,9 +120,10 @@ export function createAssistantView(deps: {
   function contextEnabled(machineKey: string): Promise<boolean> {
     const cached = catalogs.get(machineKey);
     if (cached && Date.now() - cached.at < CATALOG_TTL_MS) return cached.enabled;
-    const enabled = deps.request<unknown>("/extensions", undefined, machineKey || undefined, false).then(agentContextEnabled);
-    // A failed catalog read is retried on the next refresh instead of hiding the block for the TTL.
-    enabled.catch(() => catalogs.delete(machineKey));
+    // "Not there" (an older peer's 404, not installed, disabled) is an answer cached for the TTL; a transport
+    // failure is retried on the next refresh instead of hiding the block for the TTL.
+    const enabled = deps.request<unknown>("/extensions", undefined, machineKey || undefined, false)
+      .then(agentContextEnabled, e => { if (extensionUnavailable(e)) return false; catalogs.delete(machineKey); throw e; });
     catalogs.set(machineKey, { at: Date.now(), enabled });
     return enabled;
   }
@@ -135,7 +136,11 @@ export function createAssistantView(deps: {
       if (!await contextEnabled(session.machineUrl ?? "")) { contexts.delete(key); return; }
       const response = await deps.request<{ document?: unknown }>(`${AGENT_CONTEXT_DOCUMENT_PATH}?session=${encodeURIComponent(session.id)}`, undefined, session.machineUrl || undefined, false);
       contexts.set(key, response.document ?? null);
-    } catch { /* unreachable machine or extension error: keep what was shown; the next refresh retries */ }
+    } catch (e) {
+      // Removed or disabled since the catalog was read: no block, and no reads until the TTL passes.
+      if (extensionUnavailable(e)) { contexts.delete(key); catalogs.set(session.machineUrl ?? "", { at: Date.now(), enabled: Promise.resolve(false) }); }
+      /* otherwise an unreachable machine or a store error: keep what was shown; the next refresh retries */
+    }
     finally { contextFlights.delete(key); render(); }
   }
   const openSessions = () => [...renderedSessions].filter(([key]) => openCards.has(key)).map(([, session]) => session);

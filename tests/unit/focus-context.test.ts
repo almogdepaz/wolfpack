@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { agentContextEnabled, summarizeAgentContext } from "../../src/focus-context.ts";
+import { agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../../src/focus-context.ts";
 
 const item = (id: string, text = `${id} text`) => ({ id, text });
 const v3 = {
@@ -46,5 +46,15 @@ describe("agent-context summary for a session card", () => {
     expect(agentContextEnabled({ safeMode: true, installations: [entry] })).toBe(false);
     expect(agentContextEnabled({ installations: [{ extensionId: "changes", enabled: true }] })).toBe(false);
     expect(agentContextEnabled(null)).toBe(false);
+  });
+  test("an older peer (no extensions api) or a missing/disabled extension is an answer, not a transport error (N2)", () => {
+    const failure = (status: number, data: unknown) => Object.assign(new Error("x"), { status, data });
+    expect(extensionUnavailable(failure(404, {}))).toBe(true);
+    expect(extensionUnavailable(failure(404, { error: { code: "NOT_INSTALLED", message: "extension is not installed" } }))).toBe(true);
+    expect(extensionUnavailable(failure(409, { error: { code: "DISABLED", message: "disabled" } }))).toBe(true);
+    expect(extensionUnavailable(failure(503, { error: { code: "STORE_UNAVAILABLE" } }))).toBe(false);
+    expect(extensionUnavailable(failure(401, {}))).toBe(false);
+    expect(extensionUnavailable(new TypeError("Failed to fetch"))).toBe(false);
+    expect(extensionUnavailable(new Error("selected peer is not ready"))).toBe(false);
   });
 });
