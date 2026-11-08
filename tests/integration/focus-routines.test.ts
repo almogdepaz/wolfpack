@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTIVITY_KIND, pageActivity, type ActivityRow, type ActivityRowBody } from "../../src/activity-journal.ts";
@@ -96,6 +96,76 @@ describe("focus routines runtime", () => {
     expect(t.coverage().catchUpCursors).toMatchObject({ home: { seq: 3 }, laptop: { seq: 1 } });
     expect(existsSync(join(t.root, "assistant", "inbox", file))).toBe(false);
     expect(t.routines.status().catchingUp).toBeNull();
+  });
+
+  test("journal needs-input transitions catch up urgently, persist spacing and never stack inboxes", async () => {
+    const t = setup();
+    const needs = (session: string): ActivityRowBody => ({ kind: ACTIVITY_KIND.SESSION_STATE, session, sessionId: `${session}-id`, state: "needs-input", label: "Needs you" });
+    t.append(needs("already"), at(6, 14));
+    t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick();
+    await t.routines.tick();
+    const ack = async () => {
+      const send = t.sends.at(-1)!;
+      send.settle("sent");
+      await t.routines.ack(fileOf(send.text));
+    };
+    await ack();
+    t.clock.now += MIN;
+    t.append(needs("already"), t.clock.now); // label/state repeat is not a new entry
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "failed", sessionId: "failed-id", state: "failed", label: "Failed" }, t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
+    t.append(needs("new"), t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(2);
+    const urgentAt = new Date(t.clock.now).toISOString();
+    expect(t.coverage().lastUrgentCatchUpAt).toBe(urgentAt);
+    expect(t.inbox(fileOf(t.sends[1]!.text)).machines[0].rows).toContainEqual(expect.objectContaining({ session: "new", state: "needs-input" }));
+    t.clock.now += MIN;
+    t.append(needs("burst"), t.clock.now);
+    await t.routines.tick(); // queued inbox still blocks
+    expect(t.sends).toHaveLength(2);
+    await ack();
+    await t.routines.tick(); // within urgent spacing
+    expect(t.sends).toHaveLength(2);
+    t.clock.now += MIN;
+    await t.routines.tick(); // exact spacing boundary, still within ordinary debounce
+    expect(t.sends).toHaveLength(3);
+    await ack();
+    t.clock.now += MIN;
+    t.append(needs("burst"), t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(3);
+    t.append(state("burst"), t.clock.now);
+    t.append(needs("burst"), t.clock.now);
+    t.clock.now += MIN;
+    await t.routines.tick(); // a genuine re-entry counts
+    expect(t.sends).toHaveLength(4);
+  });
+
+  test("pre-urgent coverage reconstructs already-needs-input from the retained journal, including paged history", async () => {
+    const t = setup();
+    const needs: ActivityRowBody = { kind: ACTIVITY_KIND.SESSION_STATE, session: "old", sessionId: "old-id", state: "needs-input", label: "Needs you" };
+    t.append(needs, at(6, 14));
+    for (let i = 0; i < 1001; i++) t.append(state(`worker-${i}`), at(6, 14, 30));
+    t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick();
+    await t.routines.tick();
+    t.sends[0]!.settle("sent");
+    await t.routines.ack(fileOf(t.sends[0]!.text));
+    const coverage = t.coverage();
+    delete coverage.catchUpCursors.home.needsInputSessions;
+    writeFileSync(join(t.root, "assistant", "routines.json"), JSON.stringify(coverage));
+    t.clock.now += MIN;
+    t.append(needs, t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
+    expect(t.coverage().catchUpCursors.home.needsInputSessions).toEqual(["id:old-id"]);
+    t.peer.add({ ...needs, sessionId: "peer-id" });
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(2);
+    expect(t.coverage().lastUrgentCatchUpAt).toBe(new Date(t.clock.now).toISOString());
   });
 
   test("a restarted server leaves catching up as soon as its retained inbox is acked, even while the assistant works", async () => {

@@ -93,6 +93,8 @@ test("assistant timing settings validate and save to the home machine's bridge s
   const quiet = form.getByRole("spinbutton", { name: "Day review after quiet (minutes)" });
   await expect(quiet).toHaveValue("90");
   await expect(form.getByLabel("Day review fallback time")).toHaveValue("03:00");
+  const urgent = form.getByRole("spinbutton", { name: "Urgent catch-up spacing (minutes)" });
+  await expect(urgent).toHaveValue("2");
   await quiet.fill("10");
   await form.getByRole("button", { name: "Save timing" }).click();
   await expect(page.locator("#assistant-timing-status")).toHaveText("Day review after quiet (minutes) must be a whole number from 15 to 480");
@@ -102,11 +104,16 @@ test("assistant timing settings validate and save to the home machine's bridge s
   expect((await new AxeBuilder({ page }).include("#settings-assistant").analyze()).violations).toEqual([]);
   await shot(page, "settings-invalid", info.project.name === "desktop");
   await quiet.fill("45");
+  await urgent.fill("0");
+  await form.getByRole("button", { name: "Save timing" }).click();
+  await expect(page.locator("#assistant-timing-status")).toHaveText("Urgent catch-up spacing (minutes) must be a whole number from 1 to 120");
+  await expect(urgent).toHaveAttribute("aria-invalid", "true");
+  await urgent.fill("3");
   await form.getByRole("spinbutton", { name: "Catch-up debounce (minutes)" }).fill("5");
   await form.getByRole("button", { name: "Save timing" }).click();
   await expect(page.locator("#assistant-timing-status")).toHaveText("Routine timing saved.");
   await expect(quiet).toHaveAttribute("aria-invalid", "false");
-  expect((await (await page.request.get(`${server.baseUrl}/api/settings`)).json()).settings.assistant).toEqual({ quietMinutes: 45, fallbackTime: "03:00", catchUpDebounceMinutes: 5, journalRetentionDays: 30 });
+  expect((await (await page.request.get(`${server.baseUrl}/api/settings`)).json()).settings.assistant).toEqual({ quietMinutes: 45, fallbackTime: "03:00", catchUpDebounceMinutes: 5, urgentCatchUpSpacingMinutes: 3, journalRetentionDays: 30 });
 });
 
 test("an unverified routine send reads as delivery unconfirmed, never failed", async ({ page }, info) => {

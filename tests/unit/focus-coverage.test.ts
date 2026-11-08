@@ -29,6 +29,12 @@ describe("coverage document", () => {
     expect(isFocusCoverage({ ...phase2, catchUpCursors: { home: { name: "sgt", seq: 1, headSeq: 2, lastReachedAt: null, lastRowAt: null, lastInputAt: null } } })).toBe(true);
     expect(isFocusCoverage({ ...emptyCoverage(), provisional: { date: "2026-11-06", at: now, through: { home: 3 } } })).toBe(true);
     expect(isFocusCoverage({ ...emptyCoverage(), provisional: { date: "2026-11-06", at: "noon", through: {} } })).toBe(false);
+    expect(isFocusCoverage({ ...emptyCoverage(), lastUrgentCatchUpAt: now })).toBe(true);
+    expect(isFocusCoverage({ ...emptyCoverage(), lastUrgentCatchUpAt: "noon" })).toBe(false);
+    const withBaseline = coverage();
+    withBaseline.catchUpCursors.home!.needsInputSessions = ["id:one"];
+    expect(isFocusCoverage(withBaseline)).toBe(true);
+    expect(isFocusCoverage({ ...withBaseline, catchUpCursors: { home: { ...withBaseline.catchUpCursors.home, needsInputSessions: [1] } } })).toBe(false);
     expect(isFocusCoverage({ ...emptyCoverage(), version: 2 })).toBe(false);
     expect(isFocusCoverage({ ...emptyCoverage(), reviewedThrough: "yesterday" })).toBe(false);
     expect(isFocusCoverage({ ...emptyCoverage(), catchUpCursors: { home: { name: "sgt", seq: -1 } } })).toBe(false);
@@ -55,6 +61,18 @@ describe("ack", () => {
     expect(acked.coverage.lastAckAt).toBe("2026-11-06T16:00:00.000Z");
     expect(acked.coverage.lastAckedFile).toBe(file);
     expect(applyAck(acked.coverage, file, "2026-11-06T16:01:00.000Z")).toEqual({ coverage: acked.coverage, already: true });
+  });
+  test("ack applies the inbox's needs-input snapshot, never rolls a newer baseline backwards", () => {
+    const withBaseline = structuredClone(pending);
+    withBaseline.catchUpCursors.home!.needsInputSessions = ["id:old"];
+    withBaseline.catchUpCursors.laptop!.needsInputSessions = ["id:keep"];
+    withBaseline.inbox!.needsInputSessions = { home: ["id:new"], laptop: ["id:stale"] };
+    expect(isFocusCoverage(withBaseline)).toBe(true);
+    const acked = applyAck(withBaseline, file, now).coverage;
+    expect(acked.catchUpCursors.home!.needsInputSessions).toEqual(["id:new"]);
+    expect(acked.catchUpCursors.laptop!.needsInputSessions).toEqual(["id:keep"]);
+    expect(withBaseline.catchUpCursors.home!.needsInputSessions).toEqual(["id:old"]);
+    expect(isFocusCoverage({ ...withBaseline, inbox: { ...withBaseline.inbox, needsInputSessions: { home: [false] } } })).toBe(false);
   });
   test("unknown files are refused; coverage never moves backwards", () => {
     expect(() => applyAck(pending, "catch-up-20261106T150000Z.json", now)).toThrow("unknown inbox file");

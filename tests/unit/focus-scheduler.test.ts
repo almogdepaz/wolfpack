@@ -5,6 +5,7 @@ import {
   activityDayWindow,
   addDays,
   decideRoutines,
+  pendingNeedsInput,
   parseAssistantTiming,
   validateAssistantTiming,
   type SchedulerInput,
@@ -54,13 +55,31 @@ describe("activity day boundary", () => {
 
 describe("assistant timing settings", () => {
   test("defaults and ranges", () => {
-    expect(ASSISTANT_TIMING_DEFAULTS).toEqual({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, journalRetentionDays: 30 });
+    expect(ASSISTANT_TIMING_DEFAULTS).toEqual({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30 });
     expect(parseAssistantTiming(undefined)).toEqual(ASSISTANT_TIMING_DEFAULTS);
     expect(parseAssistantTiming({ quietMinutes: 5, fallbackTime: "25:00", catchUpDebounceMinutes: 30 })).toEqual({ ...ASSISTANT_TIMING_DEFAULTS, catchUpDebounceMinutes: 30 });
-    expect(validateAssistantTiming({ quietMinutes: 15, fallbackTime: "23:59", catchUpDebounceMinutes: 120, journalRetentionDays: 365 })).toEqual({ ok: true, value: { quietMinutes: 15, fallbackTime: "23:59", catchUpDebounceMinutes: 120, journalRetentionDays: 365 } });
+    const edge = { quietMinutes: 15, fallbackTime: "23:59", catchUpDebounceMinutes: 120, urgentCatchUpSpacingMinutes: 120, journalRetentionDays: 365 };
+    expect(validateAssistantTiming(edge)).toEqual({ ok: true, value: edge });
+    for (const urgentCatchUpSpacingMinutes of [0, 121, 1.5, "2", null]) {
+      expect(validateAssistantTiming({ ...ASSISTANT_TIMING_DEFAULTS, urgentCatchUpSpacingMinutes }).ok).toBe(false);
+      expect(parseAssistantTiming({ urgentCatchUpSpacingMinutes }).urgentCatchUpSpacingMinutes).toBe(2);
+    }
     for (const bad of [{ quietMinutes: 14 }, { quietMinutes: 481 }, { fallbackTime: "3:00" }, { fallbackTime: "24:00" }, { catchUpDebounceMinutes: 0 }, { catchUpDebounceMinutes: 121 }, { journalRetentionDays: 0 }, { quietMinutes: 20.5 }, { other: 1 }]) {
       expect(validateAssistantTiming({ ...ASSISTANT_TIMING_DEFAULTS, ...bad }).ok).toBe(false);
     }
+  });
+});
+
+describe("pending needs-input journal transitions", () => {
+  const row = (state: string, sessionId = "one") => ({ kind: "session.state" as const, session: "app", sessionId, state, label: "", seq: 1, at: iso(at(6, 15)) });
+  test("acknowledged needs-input and label-only repeats are not new", () => {
+    expect(pendingNeedsInput([row("needs-input")], ["id:one"])).toEqual({ newlyNeedsInput: false, needsInputSessions: ["id:one"] });
+    expect(pendingNeedsInput([row("failed")], [])).toEqual({ newlyNeedsInput: false, needsInputSessions: [] });
+  });
+  test("a new incarnation or a genuine re-entry counts; exited sessions are forgotten", () => {
+    expect(pendingNeedsInput([row("needs-input", "two")], ["id:one"]).newlyNeedsInput).toBe(true);
+    expect(pendingNeedsInput([row("working"), row("needs-input")], ["id:one"]).newlyNeedsInput).toBe(true);
+    expect(pendingNeedsInput([{ kind: "session.exited", sessionId: "one", reason: "exit", seq: 2, at: iso(at(6, 15)) }], ["id:one"]).needsInputSessions).toEqual([]);
   });
 });
 
@@ -75,6 +94,19 @@ describe("routine decisions", () => {
     expect(decideRoutines(input({ machines: pending(), lastRun: { "catch-up": iso(at(6, 14, 50)) } }))).toEqual([]);
     expect(decideRoutines(input({ machines: pending(), lastRun: { "catch-up": iso(at(6, 14, 45)) } }))).toEqual([{ type: "catch-up", reason: "activity" }]);
     expect(decideRoutines(input({ machines: pending(), lastRun: {} }))).toEqual([{ type: "catch-up", reason: "activity" }]);
+  });
+  test("new needs-input bypasses ordinary debounce but respects independent urgent spacing", () => {
+    const recent = { "catch-up": iso(at(6, 14, 59)) };
+    const urgent = input({ machines: pending({ newlyNeedsInput: true }), lastRun: recent });
+    expect(decideRoutines(urgent)).toEqual([{ type: "catch-up", reason: "urgent" }]);
+    expect(decideRoutines({ ...urgent, lastUrgentCatchUpAt: iso(at(6, 14, 59)) })).toEqual([]);
+    expect(decideRoutines({ ...urgent, lastUrgentCatchUpAt: iso(at(6, 14, 58)) })).toEqual([{ type: "catch-up", reason: "urgent" }]);
+    expect(decideRoutines({ ...urgent, machines: pending({ newlyNeedsInput: false }) })).toEqual([]);
+    expect(decideRoutines({ ...urgent, idle: false })).toEqual([]);
+    for (const extra of [{ queued: true }, { surfaced: true }, {}]) {
+      expect(decideRoutines({ ...urgent, inbox: { file: "catch-up-x.json", routine: "catch-up", sends: 1, lastSentAt: iso(at(6, 14, 59)), queued: false, surfaced: false, ...extra } })).toEqual([]);
+    }
+    expect(decideRoutines({ ...urgent, lastUrgentCatchUpAt: iso(at(6, 14, 56)), timing: { ...ASSISTANT_TIMING_DEFAULTS, urgentCatchUpSpacingMinutes: 5 } })).toEqual([]);
   });
   test("opening wolfpack never bypasses the debounce; an assistant restart or boot does", () => {
     const recent = { "catch-up": iso(at(6, 14, 55)) };

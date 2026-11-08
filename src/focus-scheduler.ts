@@ -7,14 +7,17 @@
  * by default), so work that runs past midnight belongs to the day it started
  * and the fallback review fires exactly when that day ends.
  */
+import { ACTIVITY_KIND, type ActivityRow } from "./activity-journal.js";
+import { AGENT_STATUS_STATE } from "./agent-status-contract.js";
+
 export const ROUTINE = { CATCH_UP: "catch-up", DAY_REVIEW: "day-review", GAP_REVIEW: "gap-review" } as const;
 export type Routine = typeof ROUTINE[keyof typeof ROUTINE];
 export const ROUTINE_RESEND_CAP = 3;
 export const STALE_AFTER_MS = 24 * 60 * 60_000;
 
-export interface AssistantTiming { quietMinutes: number; fallbackTime: string; catchUpDebounceMinutes: number; journalRetentionDays: number }
-export const ASSISTANT_TIMING_DEFAULTS: AssistantTiming = Object.freeze({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, journalRetentionDays: 30 });
-const RANGES = { quietMinutes: [15, 480], catchUpDebounceMinutes: [1, 120], journalRetentionDays: [1, 365] } as const;
+export interface AssistantTiming { quietMinutes: number; fallbackTime: string; catchUpDebounceMinutes: number; urgentCatchUpSpacingMinutes: number; journalRetentionDays: number }
+export const ASSISTANT_TIMING_DEFAULTS: AssistantTiming = Object.freeze({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30 });
+const RANGES = { quietMinutes: [15, 480], catchUpDebounceMinutes: [1, 120], urgentCatchUpSpacingMinutes: [1, 120], journalRetentionDays: [1, 365] } as const;
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const MIN = 60_000;
 
@@ -26,10 +29,11 @@ export function parseAssistantTiming(raw: unknown): AssistantTiming {
     quietMinutes: inRange("quietMinutes", v.quietMinutes) ? v.quietMinutes : ASSISTANT_TIMING_DEFAULTS.quietMinutes,
     fallbackTime: typeof v.fallbackTime === "string" && TIME.test(v.fallbackTime) ? v.fallbackTime : ASSISTANT_TIMING_DEFAULTS.fallbackTime,
     catchUpDebounceMinutes: inRange("catchUpDebounceMinutes", v.catchUpDebounceMinutes) ? v.catchUpDebounceMinutes : ASSISTANT_TIMING_DEFAULTS.catchUpDebounceMinutes,
+    urgentCatchUpSpacingMinutes: inRange("urgentCatchUpSpacingMinutes", v.urgentCatchUpSpacingMinutes) ? v.urgentCatchUpSpacingMinutes : ASSISTANT_TIMING_DEFAULTS.urgentCatchUpSpacingMinutes,
     journalRetentionDays: inRange("journalRetentionDays", v.journalRetentionDays) ? v.journalRetentionDays : ASSISTANT_TIMING_DEFAULTS.journalRetentionDays,
   };
 }
-/** Strict validation of a settings write: all four fields, in range, nothing else. A field error names the field and what it expects, so a UI can word it with its own label. */
+/** Strict validation of a settings write: all timing fields, in range, nothing else. A field error names the field and what it expects, so a UI can word it with its own label. */
 export function validateAssistantTiming(raw: unknown): { ok: true; value: AssistantTiming } | { ok: false; error: string; field?: keyof AssistantTiming; expected?: string } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "assistant settings must be an object" };
   const v = raw as Record<string, unknown>;
@@ -63,11 +67,35 @@ export function activityDayOf(ms: number, fallbackTime: string): string {
   return ms < window.start ? addDays(day, -1) : ms >= window.end ? addDays(day, 1) : day;
 }
 
+/** Replay journal facts against the acknowledged baseline, scoped to one machine.
+ * UUIDs fence reused names; older peers without UUIDs fall back to session names.
+ * A label/message-only needs-input row is not a new entry. Failed is not urgent.
+ */
+export function pendingNeedsInput(rows: readonly ActivityRow[], baseline: readonly string[]) {
+  const needsInput = new Set(baseline);
+  let newlyNeedsInput = false;
+  for (const row of rows) {
+    if (!("sessionId" in row) && !("session" in row)) continue;
+    const key = "sessionId" in row && row.sessionId ? `id:${row.sessionId}` : "session" in row && row.session ? `name:${row.session}` : null;
+    if (!key) continue;
+    if (row.kind === ACTIVITY_KIND.SESSION_EXITED) needsInput.delete(key);
+    else if ("state" in row && row.state !== undefined) {
+      if (row.state === AGENT_STATUS_STATE.NEEDS_INPUT) {
+        if (!needsInput.has(key)) newlyNeedsInput = true;
+        needsInput.add(key);
+      } else needsInput.delete(key);
+    }
+  }
+  return { newlyNeedsInput, needsInputSessions: [...needsInput] };
+}
+
 export interface SchedulerMachine {
   id: string;
   reachable: boolean;
   /** Journal head is past this machine's catch-up cursor. */
   pendingRows: boolean;
+  /** Pending journal rows contain an entry into needs-input not already caught up. */
+  newlyNeedsInput?: boolean;
   lastRowAt: string | null;
   /** Last user input row (from the latest probe, else the last known value from the cursors). */
   lastInputAt: string | null;
@@ -90,12 +118,14 @@ export interface SchedulerInput {
   /** Day of a provisional quiet review already run: no further quiet review that day. */
   provisional?: string | null;
   lastRun: Partial<Record<Routine, string>>;
+  /** Independent spacing: ordinary catch-ups do not reset the urgent clock. */
+  lastUrgentCatchUpAt?: string;
   inbox: SchedulerInbox | null;
 }
 export type RoutineAction =
   | { type: typeof ROUTINE.GAP_REVIEW; days: string[] }
   | { type: typeof ROUTINE.DAY_REVIEW; days: string[]; reason: "quiet" | "fallback" }
-  | { type: typeof ROUTINE.CATCH_UP; reason: "activity" | "boot" | "restart" | "manual" }
+  | { type: typeof ROUTINE.CATCH_UP; reason: "activity" | "urgent" | "boot" | "restart" | "manual" }
   | { type: "resend" | "surface" | "drop-inbox"; file: string };
 
 const ms = (at: string | null | undefined) => at ? Date.parse(at) : NaN;
@@ -132,5 +162,8 @@ export function decideRoutines(input: SchedulerInput): RoutineAction[] {
   if (!input.machines.some(m => m.pendingRows)) return [];
   if (input.booting) return [{ type: ROUTINE.CATCH_UP, reason: "boot" }];
   if (input.restarted) return [{ type: ROUTINE.CATCH_UP, reason: "restart" }];
+  if (input.machines.some(m => m.pendingRows && m.newlyNeedsInput) && elapsed(now, input.lastUrgentCatchUpAt, timing.urgentCatchUpSpacingMinutes)) {
+    return [{ type: ROUTINE.CATCH_UP, reason: "urgent" }];
+  }
   return elapsed(now, input.lastRun[ROUTINE.CATCH_UP], timing.catchUpDebounceMinutes) ? [{ type: ROUTINE.CATCH_UP, reason: "activity" }] : [];
 }

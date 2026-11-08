@@ -666,8 +666,9 @@ export const controlApiSource: ControlApiSource = {
       quietMinutes: { type: "integer", minimum: 15, maximum: 480 },
       fallbackTime: { type: "string", pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
       catchUpDebounceMinutes: { type: "integer", minimum: 1, maximum: 120 },
+      urgentCatchUpSpacingMinutes: { type: "integer", minimum: 1, maximum: 120 },
       journalRetentionDays: { type: "integer", minimum: 1, maximum: 365 },
-    }, ["quietMinutes", "fallbackTime", "catchUpDebounceMinutes", "journalRetentionDays"]),
+    }, ["quietMinutes", "fallbackTime", "catchUpDebounceMinutes", "urgentCatchUpSpacingMinutes", "journalRetentionDays"]),
     Settings: object({
       agentCmd: string(),
       cmds: arrayOf(ref("CmdEntry")),

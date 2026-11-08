@@ -20,8 +20,8 @@ test("assistant timing lives in bridge settings: defaults, validated writes, pre
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const post = (body: unknown) => fetch(`${base}/api/settings`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   try {
-    expect((await (await fetch(`${base}/api/settings`)).json()).settings.assistant).toEqual({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, journalRetentionDays: 30 });
-    const assistant = { quietMinutes: 45, fallbackTime: "04:30", catchUpDebounceMinutes: 5, journalRetentionDays: 14 };
+    expect((await (await fetch(`${base}/api/settings`)).json()).settings.assistant).toEqual({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30 });
+    const assistant = { quietMinutes: 45, fallbackTime: "04:30", catchUpDebounceMinutes: 5, urgentCatchUpSpacingMinutes: 3, journalRetentionDays: 14 };
     const saved = await post({ assistant });
     expect(saved.status).toBe(200);
     expect((await saved.json()).settings.assistant).toEqual(assistant);
@@ -29,6 +29,9 @@ test("assistant timing lives in bridge settings: defaults, validated writes, pre
     const bad = await post({ assistant: { ...assistant, quietMinutes: 10 } });
     expect(bad.status).toBe(400);
     expect(await bad.json()).toEqual({ error: "quietMinutes must be a whole number from 15 to 480", field: "quietMinutes", expected: "a whole number from 15 to 480" });
+    const badUrgent = await post({ assistant: { ...assistant, urgentCatchUpSpacingMinutes: 0 } });
+    expect(badUrgent.status).toBe(400);
+    expect(await badUrgent.json()).toMatchObject({ field: "urgentCatchUpSpacingMinutes", expected: "a whole number from 1 to 120" });
     const badTime = await post({ assistant: { ...assistant, fallbackTime: "4:30" } });
     expect(badTime.status).toBe(400);
     expect(await badTime.json()).toMatchObject({ field: "fallbackTime", expected: "HH:MM (00:00–23:59)" });

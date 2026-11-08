@@ -9,7 +9,7 @@ import {
   type FocusCoverage, type GitRepoLog, type InboxDay, type InboxMachine, type MachineCursor,
 } from "../focus-coverage.js";
 import {
-  ASSISTANT_TIMING_DEFAULTS, ROUTINE, STALE_AFTER_MS, activityDayOf, addDays, activityDayWindow, decideRoutines,
+  ASSISTANT_TIMING_DEFAULTS, ROUTINE, STALE_AFTER_MS, activityDayOf, addDays, activityDayWindow, decideRoutines, pendingNeedsInput,
   type AssistantTiming, type RoutineAction, type SchedulerMachine,
 } from "../focus-scheduler.js";
 import type { SendOutcome } from "../focus-send-queue.js";
@@ -28,6 +28,7 @@ const REVIEW_DAY_ROW_CAP = 2000;
 const REVIEW_ROW_CAP = 5000;
 type Page = ActivityPeerPage;
 type GitRepos = { repos: ActivityGitRepo[] };
+type PulledRows = { rows: ActivityRow[]; through: number; truncated: boolean; capped: boolean };
 
 /** One machine's journal: this server's own (direct) or a verified peer's `/api/activity`. */
 export interface ActivitySource {
@@ -172,15 +173,25 @@ export class FocusRoutines {
     // A busy live assistant without a routine is doing terminal work, not boot catch-up.
     // restartPending still requests the ordinary catch-up once it rests.
     if (sample.sessionId && !sample.idle && !coverage.inbox && !this.deps.queueBusy()) this.booting = false;
+    // Inspect the same bounded deltas used for catch-up, not a second session poll.
+    // Keep the pulls for execute so the decision and inbox see exactly the same rows.
+    const pending = new Map<string, PulledRows>();
+    if (idle && !coverage.inbox) await Promise.all(sources.filter(s => this.reached.has(s.id)).map(async source => {
+      const cursor = coverage.catchUpCursors[source.id]!;
+      if (cursor.headSeq <= cursor.seq) return;
+      const pulled = await this.tryPull(source, cursor.seq, CATCH_UP_ROW_CAP);
+      if (pulled) pending.set(source.id, pulled);
+    }));
     const machines: SchedulerMachine[] = Object.entries(coverage.catchUpCursors).map(([id, c]) => ({
       id, reachable: this.reached.has(id), pendingRows: c.headSeq > c.seq, lastRowAt: c.lastRowAt, lastInputAt: c.lastInputAt,
+      newlyNeedsInput: pendingNeedsInput(pending.get(id)?.rows ?? [], c.needsInputSessions ?? []).newlyNeedsInput,
     }));
     this.pending = machines.some(m => m.pendingRows);
     const inbox = coverage.inbox && { ...coverage.inbox, queued: this.queuedFile === coverage.inbox.file };
     const actions = decideRoutines({ now, timing, enabled: true, idle, booting: this.booting, restarted: this.restartPending, manual, machines,
-      reviewedThrough: coverage.reviewedThrough, provisional: coverage.provisional?.date ?? null, lastRun: coverage.lastRun, inbox });
+      reviewedThrough: coverage.reviewedThrough, provisional: coverage.provisional?.date ?? null, lastRun: coverage.lastRun, lastUrgentCatchUpAt: coverage.lastUrgentCatchUpAt, inbox });
     if (!actions.length && this.booting && idle && !coverage.inbox) this.booting = false;
-    for (const action of actions) coverage = await this.execute(action, coverage, sources, timing, manual);
+    for (const action of actions) coverage = await this.execute(action, coverage, sources, timing, manual, pending);
     this.save(coverage);
   }
 
@@ -199,7 +210,10 @@ export class FocusRoutines {
       if (cursor && (otherJournal || status.headSeq < recorded)) {
         log.warn("activity journal replaced; cursor restarted", { machine: source.name });
         cursor = undefined;
-        if (coverage.inbox) delete coverage.inbox.through[source.id];
+        if (coverage.inbox) {
+          delete coverage.inbox.through[source.id];
+          if (coverage.inbox.needsInputSessions) delete coverage.inbox.needsInputSessions[source.id];
+        }
         if (coverage.provisional) delete coverage.provisional.through[source.id];
       }
       if (!cursor) {
@@ -208,14 +222,29 @@ export class FocusRoutines {
         const first = (await source.read(0, 1, { from: today.start, to: today.end })).rows[0];
         cursor = { name: source.name, seq: first ? first.seq - 1 : status.headSeq, headSeq: status.headSeq, lastReachedAt: null, lastRowAt: null, lastInputAt: null };
       }
+      if (cursor.needsInputSessions === undefined) cursor.needsInputSessions = await this.restoreNeedsInput(source, cursor.seq);
       coverage.catchUpCursors[source.id] = { ...cursor, name: source.name, headSeq: status.headSeq, lastReachedAt: this.iso(), lastRowAt: status.lastRowAt, lastInputAt: status.lastInputAt,
         ...(status.journalId && { journalId: status.journalId }) };
       this.reached.add(source.id);
     } catch (error) { log.debug("activity source unreachable", { machine: source.name, error: errMsg(error) }); }
   }
 
+  /** One-time migration of pre-urgent coverage, using retained journal facts through the acknowledged cursor. */
+  private async restoreNeedsInput(source: ActivitySource, through: number): Promise<string[]> {
+    let since = 0, baseline: string[] = [];
+    while (since < through) {
+      const page = await source.read(since, ACTIVITY_PAGE_MAX);
+      const rows = page.rows.filter(row => row.seq <= through);
+      baseline = pendingNeedsInput(source.local ? withoutAssistantRows(rows) : rows, baseline).needsInputSessions;
+      if (page.next >= through || page.rows.length < ACTIVITY_PAGE_MAX) break;
+      if (page.next <= since) throw new Error("activity baseline cursor did not advance");
+      since = page.next;
+    }
+    return baseline;
+  }
+
   /** `capped`: the row cap stopped the pull; `truncated`: retention removed rows the cursor or window needed. */
-  private async pull(source: ActivitySource, since: number, cap: number, window?: { from: number; to: number }): Promise<{ rows: ActivityRow[]; through: number; truncated: boolean; capped: boolean }> {
+  private async pull(source: ActivitySource, since: number, cap: number, window?: { from: number; to: number }): Promise<PulledRows> {
     const rows: ActivityRow[] = [];
     let cursor = since, truncated = false;
     for (;;) {
@@ -261,21 +290,27 @@ export class FocusRoutines {
   }
 
   private writeInbox(coverage: FocusCoverage, routine: typeof ROUTINE[keyof typeof ROUTINE], doc: Omit<Parameters<typeof buildInbox>[0], "file" | "routine" | "createdAt">,
-    through: Record<string, number>, days?: string[], provisional?: string): FocusCoverage {
+    through: Record<string, number>, days?: string[], provisional?: string, urgent = false): FocusCoverage {
     const createdAt = this.iso();
     const file = inboxFileName(routine, this.now());
     mkdirSync(join(this.deps.folder, "inbox"), { recursive: true, mode: 0o700 });
     const path = join(this.deps.folder, "inbox", file);
     writePrivateJsonFile(path, buildInbox({ file, routine, createdAt, ...doc }));
+    const needsInputSessions: Record<string, string[]> = {};
+    for (const machine of doc.machines) if (machine.reached) {
+      const cursor = coverage.catchUpCursors[machine.installationId];
+      needsInputSessions[machine.installationId] = pendingNeedsInput(machine.rows.filter(row => row.seq > (cursor?.seq ?? 0)), cursor?.needsInputSessions ?? []).needsInputSessions;
+    }
     const next: FocusCoverage = { ...coverage, lastRun: { ...coverage.lastRun, [routine]: createdAt },
-      inbox: { file, routine, createdAt, sends: 0, lastSentAt: null, surfaced: false, through, ...(days?.length && { days }), ...(provisional && { provisional }) } };
+      ...(urgent && { lastUrgentCatchUpAt: createdAt }),
+      inbox: { file, routine, createdAt, sends: 0, lastSentAt: null, surfaced: false, through, needsInputSessions, ...(days?.length && { days }), ...(provisional && { provisional }) } };
     // The file is only reachable through coverage: a refused save must not leave it behind.
     try { this.save(next); } catch (error) { rmSync(path, { force: true }); throw error; }
     this.send(file);
     return next;
   }
 
-  private async execute(action: RoutineAction, coverage: FocusCoverage, sources: ActivitySource[], timing: AssistantTiming, manual: boolean): Promise<FocusCoverage> {
+  private async execute(action: RoutineAction, coverage: FocusCoverage, sources: ActivitySource[], timing: AssistantTiming, manual: boolean, pending: Map<string, PulledRows>): Promise<FocusCoverage> {
     const reachable = sources.filter(s => this.reached.has(s.id));
     switch (action.type) {
       case "drop-inbox":
@@ -294,7 +329,7 @@ export class FocusRoutines {
         const through: Record<string, number> = {};
         for (const source of reachable) {
           const cursor = coverage.catchUpCursors[source.id]!;
-          const pulled = await this.tryPull(source, cursor.seq, CATCH_UP_ROW_CAP);
+          const pulled = pending.get(source.id) ?? await this.tryPull(source, cursor.seq, CATCH_UP_ROW_CAP);
           if (!pulled) continue;
           through[source.id] = pulled.through;
           if (pulled.rows.length) blocks.push({ installationId: source.id, name: source.name, reached: true, from: cursor.seq, through: pulled.through, truncated: pulled.truncated, capped: pulled.capped, rows: pulled.rows });
@@ -304,7 +339,7 @@ export class FocusRoutines {
           if (manual) this.notice = "nothing new to catch up on";
           return coverage;
         }
-        return this.writeInbox(coverage, ROUTINE.CATCH_UP, { machines: [...blocks, ...this.unreachedBlocks(coverage)] }, through);
+        return this.writeInbox(coverage, ROUTINE.CATCH_UP, { machines: [...blocks, ...this.unreachedBlocks(coverage)] }, through, undefined, undefined, action.reason === "urgent");
       }
       case ROUTINE.DAY_REVIEW: case ROUTINE.GAP_REVIEW:
         return this.review(action.type, action.days, coverage, reachable, timing);
