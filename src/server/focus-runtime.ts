@@ -2,7 +2,7 @@ import { AGENT_KIND } from "../agent-kind.js";
 import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { ServerContext } from "./context.js";
 import { PinnedSessionService } from "./pinned-session-service.js";
-import { FocusSendQueue } from "../focus-send-queue.js";
+import { FocusSendQueue, sendDelivery } from "../focus-send-queue.js";
 import { genericHarness, piHarness } from "../focus-harness.js";
 import { programStatusSource } from "./agent-status.js";
 import { createLogger, errMsg } from "../log.js";
@@ -24,7 +24,7 @@ export class FocusRuntime {
       const { isAllowedSession } = await import("./http.js");
       if (!(await isAllowedSession("assistant", ctx.backend))) throw new Error("assistant session unavailable");
       const result = await ctx.backend.sendAndObserveSubmission(id, { text, noEnter: false, ensureSubmitted: true, observeMs: 1500 });
-      if (result.outcome !== "submitted") throw new Error(`send ${result.outcome}`);
+      return sendDelivery(result.outcome);
     });
     this.routines = new FocusRoutines({
       folder: ctx.assistantService.folder,

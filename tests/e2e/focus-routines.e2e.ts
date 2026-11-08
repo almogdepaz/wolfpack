@@ -120,6 +120,30 @@ test("an unverified routine send reads as delivery unconfirmed, never failed", a
   await shot(page, "unconfirmed", info.project.name === "desktop");
 });
 
+test("an assistant error beside a live session is a note, not a failed state; without a session it is", async ({ page }) => {
+  const live = { error: "assistant restarted; queued messages were not sent" };
+  const withAssistant = (patch: Record<string, unknown>) => page.route(url => url.pathname === "/api/focus", async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    body.assistant = { ...body.assistant, ...patch };
+    await route.fulfill({ response, json: body });
+  });
+  await withAssistant(live);
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  await expect(block).toContainText("assistant restarted; queued messages were not sent");
+  await expect(block.locator(".focus-header")).not.toContainText("failed");
+  await expect(block.locator(".dot.red")).toHaveCount(0);
+  await expect(page.locator("#sidebar-assistant")).not.toHaveText(/failed/);
+  await page.unroute(url => url.pathname === "/api/focus");
+  await withAssistant({ error: "pinned session failed repeatedly; disable and enable to retry", session: undefined, sessionId: undefined, state: "starting" });
+  await page.goto(server.baseUrl);
+  await expect(block.locator(".focus-header")).toContainText("failed");
+  await expect(block.locator(".focus-header > .dot")).toHaveClass(/red/);
+  await expect(page.locator("#sidebar-assistant")).toHaveText(/failed/);
+});
+
 test("the day-note button is disabled when the home server has no note for that day", async ({ page }) => {
   // A day that has not ended yet stays listed even after the earlier test marked a note read.
   const date = localDay(Date.now() + 864e5);

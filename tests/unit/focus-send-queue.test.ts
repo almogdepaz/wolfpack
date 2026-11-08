@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { FocusSendQueue, ROUTINE_FAILURE_FENCE_MS } from "../../src/focus-send-queue.ts";
+import { FocusSendQueue, ROUTINE_FAILURE_FENCE_MS, sendDelivery, type SendDelivery } from "../../src/focus-send-queue.ts";
 import { genericHarness, piHarness } from "../../src/focus-harness.ts";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
 test("pi semantic status distinguishes resting from input dialogs, rejects stale or fallback facts", () => {
@@ -49,7 +49,7 @@ test("fresh program/manifest non-resting states veto a generic quiet prompt, wit
 });
 test("one outstanding send; stale idle cannot release the next; queue bounded and incarnation pinned", async () => {
   const sent: string[] = [];
-  const queue = new FocusSendQueue(async (_id, text) => { sent.push(text); });
+  const queue = new FocusSendQueue(async (_id, text) => { sent.push(text); return "submitted"; });
   expect(queue.enqueue("a", "one")).toBe("queued");
   queue.enqueue("a", "two");
   await queue.tick({ id: "a", idle: true, token: "idle1" });
@@ -66,7 +66,7 @@ test("one outstanding send; stale idle cannot release the next; queue bounded an
 });
 test("a fast completed turn releases the queue via a new program timestamp even if working was not sampled", async () => {
   const sent: string[] = [];
-  const queue = new FocusSendQueue(async (_id, text) => { sent.push(text); });
+  const queue = new FocusSendQueue(async (_id, text) => { sent.push(text); return "submitted"; });
   queue.enqueue("a", "one"); queue.enqueue("a", "two");
   await queue.tick({ id: "a", idle: true, token: "program:1000" });
   await queue.tick({ id: "a", idle: true, token: "program:1001" });
@@ -83,7 +83,7 @@ test("send failure is surfaced, never blindly replayed", async () => {
 test("per-item outcomes: sent, failed, or dropped by a clear/restart; busy until the outstanding turn settles", async () => {
   const outcomes: string[] = [];
   let fail = false;
-  const queue = new FocusSendQueue(async () => { if (fail) throw new Error("pty gone"); });
+  const queue = new FocusSendQueue(async () => { if (fail) throw new Error("pty gone"); return "submitted"; });
   queue.enqueue("a", "one", o => outcomes.push(`one:${o}`));
   queue.enqueue("a", "two", o => outcomes.push(`two:${o}`));
   expect(queue.busy).toBe(true);
@@ -112,7 +112,7 @@ test("a routine send that cannot be verified settles failed without costing the 
   const outcomes: string[] = [];
   const sent: string[] = [];
   let fail = true;
-  const queue = new FocusSendQueue(async (_id, text) => { if (fail) throw new Error("send unverified"); sent.push(text); });
+  const queue = new FocusSendQueue(async (_id, text) => { if (fail) throw new Error("send not_delivered"); sent.push(text); return "submitted"; });
   queue.enqueue("a", "process inbox inbox/catch-up-20261106T100000Z.json", o => outcomes.push(`routine:${o}`), "routine");
   queue.enqueue("a", "what next?", o => outcomes.push(`ask:${o}`));
   await queue.tick({ id: "a", idle: true, token: "t1" });
@@ -128,7 +128,7 @@ test("after an unverified routine send the next item waits for a new idle token 
   let now = 1_000_000;
   const sent: string[] = [];
   let fail = true;
-  const queue = new FocusSendQueue(async (_id, text) => { if (fail) { fail = false; throw new Error("send unverified"); } sent.push(text); }, () => now);
+  const queue = new FocusSendQueue(async (_id, text) => { if (fail) { fail = false; throw new Error("send not_delivered"); } sent.push(text); return "submitted"; }, () => now);
   queue.enqueue("a", "process inbox inbox/catch-up-20261106T100000Z.json", undefined, "routine");
   queue.enqueue("a", "user ask");
   await queue.tick({ id: "a", idle: true, token: "idle1" });
@@ -139,7 +139,7 @@ test("after an unverified routine send the next item waits for a new idle token 
   await queue.tick({ id: "a", idle: true, token: "idle1" });
   expect(sent).toEqual(["user ask"]);
   // a changed idle token (the unverified line did start a turn) releases it without waiting
-  const second = new FocusSendQueue(async (_id, text) => { if (text.startsWith("process")) throw new Error("send unverified"); sent.push(text); }, () => now);
+  const second = new FocusSendQueue(async (_id, text) => { if (text.startsWith("process")) throw new Error("send not_delivered"); sent.push(text); return "submitted"; }, () => now);
   second.enqueue("a", "process inbox inbox/catch-up-20261106T110000Z.json", undefined, "routine");
   second.enqueue("a", "second ask");
   await second.tick({ id: "a", idle: true, token: "idle1" });
@@ -151,18 +151,56 @@ test("a clear during an in-flight routine send leaves no phantom slot: a later u
   const outcomes: string[] = [];
   let reject!: (error: Error) => void;
   const queue = new FocusSendQueue((_id, text) => {
-    if (text.startsWith("process")) return new Promise<void>((_resolve, fail) => { reject = fail; });
+    if (text.startsWith("process")) return new Promise<SendDelivery>((_resolve, fail) => { reject = fail; });
     sent.push(text);
-    return Promise.resolve();
+    return Promise.resolve<SendDelivery>("submitted");
   });
   queue.enqueue("a", "process inbox inbox/catch-up-20261106T100000Z.json", o => outcomes.push(`routine:${o}`), "routine");
   const inFlight = queue.tick({ id: "a", idle: true, token: "idle1" });
   queue.clear();
   queue.enqueue("a", "user ask", o => outcomes.push(`ask:${o}`));
-  reject(new Error("send unverified"));
+  reject(new Error("send not_delivered"));
   await inFlight;
   await queue.tick({ id: "a", idle: true, token: "idle1" });
   expect(sent).toEqual(["user ask"]);
   expect(outcomes).toEqual(["routine:failed", "ask:sent"]);
   expect(queue.error).toBeUndefined();
+});
+
+test("a user ask whose submission cannot be verified is unconfirmed, not failed: no error, the next item waits for a new idle token or the fence", async () => {
+  let now = 5_000_000;
+  const sent: string[] = [];
+  const outcomes: string[] = [];
+  const queue = new FocusSendQueue(async (_id, text) => { sent.push(text); return text === "whats up" ? "unverified" : "submitted"; }, () => now);
+  queue.enqueue("a", "whats up", o => outcomes.push(`ask:${o}`));
+  queue.enqueue("a", "and then?", o => outcomes.push(`next:${o}`));
+  await queue.tick({ id: "a", idle: true, token: "program:1" });
+  expect(sent).toEqual(["whats up"]);
+  expect(queue.error).toBeUndefined();
+  expect(queue.busy).toBe(true);
+  // the same idle sample cannot release the next ask: the line may have started a turn that was not sampled yet
+  await queue.tick({ id: "a", idle: true, token: "program:1" });
+  expect(sent).toEqual(["whats up"]);
+  // the assistant's turn was observed: the unverified ask did arrive, the next one goes out after it
+  await queue.tick({ id: "a", idle: false, token: "program:2" });
+  await queue.tick({ id: "a", idle: true, token: "program:3" });
+  expect(sent).toEqual(["whats up", "and then?"]);
+  expect(queue.error).toBeUndefined();
+  expect(outcomes).toEqual(["ask:failed", "next:sent"]);
+  // no turn seen at all: the fence releases the queue, still without a failure
+  const quiet = new FocusSendQueue(async () => "unverified", () => now);
+  quiet.enqueue("a", "anyone there?");
+  quiet.enqueue("a", "hello?");
+  await quiet.tick({ id: "a", idle: true, token: "idle" });
+  await quiet.tick({ id: "a", idle: true, token: "idle" });
+  expect(quiet.busy).toBe(true);
+  now += ROUTINE_FAILURE_FENCE_MS;
+  await quiet.tick({ id: "a", idle: true, token: "idle" });
+  expect(quiet.size).toBe(0);
+  expect(quiet.error).toBeUndefined();
+});
+test("sendDelivery maps the send contract: submitted and unverified are deliveries, anything else is a failure", () => {
+  expect(sendDelivery("submitted")).toBe("submitted");
+  expect(sendDelivery("unverified")).toBe("unverified");
+  for (const outcome of ["pasted_not_submitted", "delivered", "not_delivered"] as const) expect(() => sendDelivery(outcome)).toThrow(`send ${outcome}`);
 });

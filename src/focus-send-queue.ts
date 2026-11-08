@@ -1,9 +1,17 @@
+import { SESSION_SEND_OUTCOME, sessionSendOk, type SessionSendOutcome } from "./session-send-contract.js";
 export type SendOutcome = "sent" | "failed" | "dropped";
 /** `user`: an ask typed by the user; `routine`: a server-generated inbox line. */
 export type SendOrigin = "user" | "routine";
+/** What a write achieved: `submitted` was seen by the harness status, `unverified` was written but not seen within the window. */
+export type SendDelivery = "submitted" | "unverified";
+/** The session send contract decides: `unverified` cannot be disproven and is not a failure; anything else that is not `submitted` is. */
+export function sendDelivery(outcome: SessionSendOutcome): SendDelivery {
+  if (!sessionSendOk(false, outcome)) throw new Error(`send ${outcome}`);
+  return outcome === SESSION_SEND_OUTCOME.SUBMITTED ? "submitted" : "unverified";
+}
 interface QueueItem { id: string; text: string; origin: SendOrigin; settled?: (outcome: SendOutcome) => void }
 interface Outstanding { id: string; token: string; sawBusy: boolean; unverifiedAt?: number }
-/** After an unverified routine send, the next item waits for a new idle token or this long (it may have started a turn). */
+/** After an unverified or undelivered send, the next item waits for a new idle token or this long (it may have started a turn). */
 export const ROUTINE_FAILURE_FENCE_MS = 2500;
 /** Volatile, incarnation-pinned sends. Ambiguous delivery is surfaced, never replayed automatically. */
 export class FocusSendQueue {
@@ -11,7 +19,7 @@ export class FocusSendQueue {
   private outstanding?: Outstanding;
   private ticking = false;
   error?: string;
-  constructor(private readonly send: (id: string, text: string) => Promise<void>, private readonly now: () => number = Date.now) {}
+  constructor(private readonly send: (id: string, text: string) => Promise<SendDelivery>, private readonly now: () => number = Date.now) {}
   get size(): number { return this.pending.length; }
   /** Items waiting, or a sent turn not yet observed to finish. */
   get busy(): boolean { return this.pending.length > 0 || this.outstanding !== undefined; }
@@ -43,10 +51,18 @@ export class FocusSendQueue {
       if (!item) return;
       const slot: Outstanding = { id: item.id, token: sample.token, sawBusy: false };
       this.outstanding = slot;
-      try { await this.send(item.id, item.text); item.settled?.("sent"); }
+      try {
+        const delivery = await this.send(item.id, item.text);
+        if (delivery === "submitted") { item.settled?.("sent"); return; }
+        // Written but not seen submitted within the window (a slow first status change, pi's usual case): the line
+        // most likely arrived, so this is not a failure and nothing is reported as one. The routine counts it as a
+        // send (it may have been delivered); the next item waits for a new idle token (that turn ran) or the fence.
+        item.settled?.("failed");
+        if (this.outstanding === slot) slot.unverifiedAt = this.now();
+      }
       catch (error) {
         item.settled?.("failed");
-        // A routine's unverified send is reported by the routine (delivery unconfirmed); it must not
+        // A routine's undelivered send is reported by the routine (delivery unconfirmed); it must not
         // drop the user's asks queued behind it. The line may still have arrived, so the next item waits
         // for a new idle token (that turn ran) or a short fence (it never arrived), not the same sample.
         // Fence only the slot this send created: a clear() during the send already released it.

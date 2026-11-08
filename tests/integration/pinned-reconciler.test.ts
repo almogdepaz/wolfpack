@@ -79,6 +79,32 @@ test("assistant runtime drains fast completed turns using broker program timesta
   } finally { ctx.focusRuntime.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
+test("an ask whose submission cannot be verified is sent, not a failure; a send that is not delivered still is", async () => {
+  process.env.WOLFPACK_TEST = "1";
+  const root = mkdtempSync(join(tmpdir(), "focus-unverified-ask-"));
+  const { createServerContext } = await import("../../src/server/context.ts");
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const folder = join(root, "assistant");
+  const backend = new MockBackend();
+  await backend.createSession("assistant", folder, "pi", () => ({ agentCmd: "pi" }));
+  backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: 1000 });
+  // The mock backend's default observation is `unverified`: the line was written, pi's status did not move within the window.
+  const config = { devDir: root, port: 19791, pinnedSessions: [{ name: "assistant", cwd: folder, command: ["pi"], harness: "pi" }] };
+  const ctx = createServerContext({ backend, config, assistantService: new AssistantService({ root, readConfig: () => config }) });
+  try {
+    const asked = await ctx.focusRuntime.ask("whats up");
+    expect(asked.delivery).toBe("sent");
+    expect(asked.error).toBeUndefined();
+    expect((await ctx.focusRuntime.status()).error).toBeUndefined();
+    backend.sendObservation = { delivery: "not_delivered", outcome: "not_delivered", reason: "target_exited", observedMs: 0 };
+    // a new idle token: the unverified ask's slot is released without waiting for the fence
+    backend.setProgramStatus("assistant", { id: "", state: "done", updatedAtMs: 2000 });
+    const failed = await ctx.focusRuntime.ask("still there?");
+    expect(failed.delivery).toBe("failed");
+    expect(failed.error).toContain("not_delivered");
+  } finally { ctx.focusRuntime.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
 test.each(["done", "blocked", "working"] as const)("generic runtime samples a quiet prompt with structured %s status and respects busy state", async state => {
   process.env.WOLFPACK_TEST = "1";
   const root = mkdtempSync(join(tmpdir(), "focus-generic-runtime-"));

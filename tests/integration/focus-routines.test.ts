@@ -486,7 +486,7 @@ describe("focus routines: unverified routine sends (u2)", () => {
     await booted(t);
     let fail = true;
     const delivered: string[] = [];
-    const queue = new FocusSendQueue(async (_id, text) => { if (fail) throw new Error("send unverified"); delivered.push(text); });
+    const queue = new FocusSendQueue(async (_id, text) => { if (fail) throw new Error("send not_delivered"); delivered.push(text); return "submitted"; });
     const routines = new FocusRoutines({
       folder: join(t.root, "assistant"), enabled: () => true, sources: async () => [localActivitySource("home", "sgt", t.journal)],
       timing: async () => ASSISTANT_TIMING_DEFAULTS, assistant: async () => t.assistant, queueBusy: () => false,
