@@ -66,6 +66,8 @@ test("today intentions expand to their details; the checkbox and chips work with
   await linked.locator(".focus-card > summary").click();
   await expect(linked.locator(".focus-card-body")).toContainText("prompt-project");
   await expect(linked.locator(".focus-card-body")).toContainText("another-project");
+  // an open today card lists its sessions in the body; the chips beside it hide until it closes (Q2)
+  await expect(linked.locator(".focus-chips")).toBeHidden();
   // the next-row card for the same session is a separate card on this page; both stay open across a poll
   await view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator(".focus-card > summary").click();
   await expect(view.locator("details.focus-card[open]")).toHaveCount(3);
@@ -73,6 +75,8 @@ test("today intentions expand to their details; the checkbox and chips work with
   expect(await page.evaluate(noHorizontalScroll)).toBe(true);
   await page.waitForTimeout(6000);
   await expect(view.locator("details.focus-card[open]")).toHaveCount(3);
+  await linked.locator(".focus-card > summary").click();
+  await expect(linked.locator(".focus-chips")).toBeVisible();
   await linked.locator(".focus-chips").getByRole("button", { name: "another-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
@@ -220,4 +224,17 @@ test("a machine that answers not installed is not asked again every poll (N2)", 
   await page.waitForTimeout(11_000);
   expect(reads.length).toBe(1);
   await expect(row.locator(".focus-context")).toHaveCount(0);
+});
+
+test("disclosure markers are not the action's glyph and are silent to screen readers (C1, N5)", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const view = page.locator("#assistant-view");
+  await expect(view.locator(".focus-next details.focus-card").first()).toBeVisible();
+  const marker = (selector: string, pseudo: string) => view.locator(selector).first().evaluate((el, p) => getComputedStyle(el, p).content, pseudo);
+  // the card's marker is drawn, not a "›" beside the "start ›" action
+  expect(await marker(".focus-next details.focus-card > summary", "::after")).not.toContain("›");
+  expect(await marker(".focus-today details.focus-card > summary", "::after")).not.toContain("›");
+  // glyph markers carry empty alternative text
+  expect(await marker("details:not(.focus-card) > summary", "::before")).toBe('"›" / ""');
 });
