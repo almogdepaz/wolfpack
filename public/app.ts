@@ -5586,7 +5586,7 @@ function sidebarOwnsSessionChooser(): boolean {
   return isDesktop()
     && sidebarIsChooserSurface
     && !state.sessionsExpanded
-    && state.lastSessionGroups.some(group => withoutFocusAssistant(group.sessions).length > 0);
+    && (focusUi.enabled() || state.lastSessionGroups.some(group => withoutFocusAssistant(group.sessions).length > 0));
 }
 
 function syncSessionChooserOwnership(): boolean {
