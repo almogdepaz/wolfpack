@@ -109,16 +109,22 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   const aligned = (values: number[]) => Math.max(...values) - Math.min(...values);
   const today = await view.locator(".focus-today > li > .focus-card > summary").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(today), "QA-6 today chevrons share a column with 0, 1 and 2 chips").toBeLessThanOrEqual(1);
-  const chips = await view.locator(".focus-chips:not(:empty)").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
+  const chips = await view.locator(".focus-today > li > .focus-chips:not(:empty)").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(chips), "QA-6 chip groups share a right edge").toBeLessThanOrEqual(1);
   const next = await view.locator(".focus-next > li > .focus-card > summary").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(next), "QA-7 open and start share a disclosure column").toBeLessThanOrEqual(1);
+  expect.soft(aligned([...today, ...next]), "N1 next and today share one disclosure column").toBeLessThanOrEqual(1);
   if (!desktop) {
     const targets = view.locator("details:not(.focus-card) > summary, .focus-chips button, .focus-done button").filter({ visible: true });
     expect(await targets.count()).toBeGreaterThanOrEqual(5);
     for (const target of await targets.all()) {
       const box = (await target.boundingBox())!;
-      expect.soft(box.height, `QA-8 ${await target.textContent()} height`).toBeGreaterThanOrEqual(44);
+      const hitHeight = await target.evaluate(el => {
+        const after = getComputedStyle(el, "::after");
+        return Math.max(el.getBoundingClientRect().height, after.content !== "none" ? parseFloat(after.height) || 0 : 0);
+      });
+      expect.soft(hitHeight, `QA-8 ${await target.textContent()} hit height`).toBeGreaterThanOrEqual(44);
+      if (await target.evaluate(el => !!el.closest(".focus-chips"))) expect.soft(box.height, "SF2 phone chip stays a pill").toBeLessThanOrEqual(32);
       expect.soft(box.width, `QA-8 ${await target.textContent()} width`).toBeGreaterThanOrEqual(44);
     }
   }
@@ -139,6 +145,16 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
       return { radius: style.borderRadius, padding: style.padding };
     }));
     expect.soft(surfaces[1], "QA-16 filter and launcher share padding and radius tokens").toEqual(surfaces[0]);
+    const insets = await page.evaluate(() => {
+      const button = document.querySelector("#sidebar-session-filter .seg button")!;
+      const range = document.createRange();
+      range.selectNodeContents(button.firstChild!);
+      const outer = getComputedStyle(document.querySelector("#sidebar-session-filter .seg")!);
+      return { label: range.getBoundingClientRect().left, next: document.querySelector("#sidebar-assistant i")!.getBoundingClientRect().left,
+        outer: parseFloat(outer.borderRadius), inner: parseFloat(getComputedStyle(button).borderRadius), padding: parseFloat(outer.paddingLeft) };
+    });
+    expect.soft(Math.abs(insets.label - insets.next), "N2 card label inset matches filter").toBeLessThanOrEqual(1);
+    expect.soft(insets.outer, "N2 concentric filter shell").toBe(insets.inner + insets.padding);
   }
   await page.locator("#assistant-terminal-header").getByRole("button", { name: "Focus", exact: true }).click();
   await view.getByRole("button", { name: "Assistant settings" }).click();
@@ -152,12 +168,13 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
 test("S1: long session chips stay inside their column; six chips keep a compact desktop row", async ({ page }, info) => {
   const desktop = info.project.name === "desktop";
   const longName = `agent-${"x".repeat(70)}`;
-  const shortNames = Array.from({ length: 6 }, (_, index) => `agent-${index + 1}`);
+  const shortNames = ["agent-1", "agent-2", "agent-3", "test-project", "agent-5", "agent-6"];
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch();
     const body = await response.json();
     const template = body.sessions.find((s: { name: string }) => s.name === "another-project");
+    body.sessions = body.sessions.filter((s: { name: string }) => s.name !== "test-project");
     body.sessions.push(...[longName, ...shortNames].map(name => ({ ...template, name,
       identity: { ...template.identity, wolfpackSessionId: `mock:${name}` },
       runtimeState: { ...template.runtimeState, state: "working", authority: "program", stale: false },
@@ -181,13 +198,14 @@ test("S1: long session chips stay inside their column; six chips keep a compact 
     const today = page.locator("#assistant-content .focus-today");
     await expect(today.locator("li")).toHaveCount(2);
     const measurements = await today.locator("li").evaluateAll(rows => rows.map(row => {
-      const chips = row.querySelector(".focus-chips")!.getBoundingClientRect();
+      const chips = row.querySelector(":scope > .focus-chips")!.getBoundingClientRect();
       const summary = row.querySelector("summary")!.getBoundingClientRect();
-      const buttons = [...row.querySelectorAll(".focus-chips button")].filter(el => el.getBoundingClientRect().width > 0);
-      return { height: row.getBoundingClientRect().height, left: chips.left, right: chips.right, summaryRight: summary.right,
+      const title = row.querySelector("summary .focus-title")!.getBoundingClientRect();
+      const buttons = [...row.querySelectorAll(":scope > .focus-chips button")].filter(el => el.getBoundingClientRect().width > 0);
+      return { height: row.getBoundingClientRect().height, left: chips.left, right: chips.right, summaryRight: summary.right, titleRight: title.right,
         buttons: buttons.map(el => {
           const rect = el.getBoundingClientRect();
-          return { left: rect.left, right: rect.right, height: rect.height, sameLine: rect.top < summary.bottom && rect.bottom > summary.top,
+          return { left: rect.left, right: rect.right, height: rect.height, hitHeight: Math.max(rect.height, parseFloat(getComputedStyle(el, "::after").height) || 0), sameLine: rect.top < summary.bottom && rect.bottom > summary.top,
             truncated: !!el.querySelector(".focus-chip-name") && el.querySelector(".focus-chip-name")!.scrollWidth > el.querySelector(".focus-chip-name")!.clientWidth };
         }),
         sessions: buttons.filter(el => el.hasAttribute("data-focus-session")).length };
@@ -197,8 +215,11 @@ test("S1: long session chips stay inside their column; six chips keep a compact 
       if (desktop) expect.soft(row.height, `${width}: one desktop chip line`).toBeLessThanOrEqual(45);
       expect.soft(row.sessions, `${width}: bounded compact chips or full phone list`).toBeLessThanOrEqual(desktop ? 3 : 6);
       for (const button of row.buttons) {
-        if (!desktop) expect.soft(button.height, "phone chip tap target").toBeGreaterThanOrEqual(44);
-        expect.soft(button.left, `${width}: chip contained, never overlaps disclosure/title`).toBeGreaterThanOrEqual(Math.max(row.left, button.sameLine ? row.summaryRight : row.left) - 1);
+        if (!desktop) {
+          expect.soft(button.hitHeight, "phone chip hit target").toBeGreaterThanOrEqual(44);
+          expect.soft(button.height, "SF2 phone chip visual height").toBeLessThanOrEqual(32);
+        }
+        expect.soft(button.left, `${width}: chip contained, never overlaps disclosure/title`).toBeGreaterThanOrEqual(Math.max(row.left, button.sameLine ? row.titleRight : row.left) - 1);
         expect.soft(button.right, `${width}: chip right edge contained`).toBeLessThanOrEqual(row.right + 1);
       }
     }
@@ -223,6 +244,26 @@ test("S1: long session chips stay inside their column; six chips keep a compact 
   const expanded = today.locator("li").filter({ hasText: "Six linked sessions" });
   await expect(expanded.locator("details")).toHaveAttribute("open", "");
   for (const name of shortNames) await expect(expanded.locator(".focus-card-body")).toContainText(name);
+  await expanded.screenshot({ path: join(shots, `corrections3-sessions-${desktop ? 1440 : 390}.png`) });
+  const fourth = expanded.locator(".focus-card-body").getByRole("button", { name: shortNames[3], exact: true });
+  await expect(fourth).toBeVisible({ timeout: 1_000 });
+  const socket = page.waitForEvent("websocket", { predicate: ws => new URL(ws.url()).searchParams.get("session") === shortNames[3] });
+  await fourth.click();
+  await socket;
+  await expect(page.locator("#terminal-view")).toBeVisible();
+});
+
+test("SF2: the phone pill has a 44px hit area beyond its visual box", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "phone extended chip target");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const chip = page.locator("#assistant-content .focus-today > li > .focus-chips").getByRole("button", { name: "another-project", exact: true });
+  await chip.scrollIntoViewIfNeeded();
+  const box = (await chip.boundingBox())!;
+  expect.soft(box.height).toBeLessThanOrEqual(32);
+  await page.touchscreen.tap(box.x + box.width / 2, box.y - 7);
+  await expect(page.locator("#terminal-view")).toBeVisible({ timeout: 1_000 });
 });
 
 for (const change of ["resize", "linked sessions"] as const) test(`R1: revealed chips refit after ${change} while their card was open`, async ({ page }, info) => {
@@ -263,7 +304,7 @@ for (const change of ["resize", "linked sessions"] as const) test(`R1: revealed 
     else await expect(row.getByRole("button", { name: /^4 more sessions:/ })).toBeVisible();
     await summary.click();
     await expect(row.locator("details")).toHaveAttribute("open", "");
-    await expect(row.locator(".focus-chips")).toBeHidden();
+    await expect(row.locator(":scope > .focus-chips")).toBeHidden();
     if (change === "resize") await page.setViewportSize({ width: 1024, height: 900 });
     else {
       names = Array.from({ length: 6 }, (_, index) => `reviewer-worker-${index + 1}`);

@@ -115,7 +115,7 @@ test("today intentions expand to their details; the checkbox and chips work with
   await expect(linked.locator(".focus-card-body")).toContainText("prompt-project");
   await expect(linked.locator(".focus-card-body")).toContainText("another-project");
   // an open today card lists its sessions in the body; the chips beside it hide until it closes (Q2)
-  await expect(linked.locator(".focus-chips")).toBeHidden();
+  await expect(linked.locator(":scope > .focus-chips")).toBeHidden();
   // the next-row card for the same session is a separate card on this page; both stay open across a poll
   await view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator(".focus-card > summary").click();
   await expect(view.locator("details.focus-card[open]")).toHaveCount(3);
@@ -124,8 +124,8 @@ test("today intentions expand to their details; the checkbox and chips work with
   await page.waitForTimeout(6000);
   await expect(view.locator("details.focus-card[open]")).toHaveCount(3);
   await linked.locator(".focus-card > summary").click();
-  await expect(linked.locator(".focus-chips")).toBeVisible();
-  await linked.locator(".focus-chips").getByRole("button", { name: "another-project" }).click();
+  await expect(linked.locator(":scope > .focus-chips")).toBeVisible();
+  await linked.locator(":scope > .focus-chips").getByRole("button", { name: "another-project" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
 

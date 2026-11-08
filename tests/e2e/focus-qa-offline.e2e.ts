@@ -30,6 +30,8 @@ for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state
   localDown = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(view.locator(".focus-next button").first()).toBeDisabled({ timeout: 10_000 });
+  await view.locator(".focus-today summary").first().click();
+  await expect(view.locator(".focus-today .focus-card-body [data-focus-session]")).toHaveCount(2);
   for (const button of await view.locator("[data-focus-session]").all()) await expect(button).toBeDisabled();
   expect((await page.request.get(`${server.baseUrl}/api/focus`)).ok()).toBe(true);
   const input = view.getByRole("textbox", { name: "Add an intention" });

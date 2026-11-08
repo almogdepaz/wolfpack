@@ -2719,9 +2719,9 @@ body > header { height: 52px; min-height: 52px; }
 .session-heading h1 { color: var(--text-1); font-size: 28px; line-height: 1.1; font-weight: 700; letter-spacing: -.025em; }
 #session-summary { margin-top: 5px; color: var(--text-3); font-size: 13px; }
 #session-summary strong { color: var(--attn); font-weight: 500; }
-.seg.session-card-view-filter, .assistant-tile { padding: 3px; border-radius: var(--r-control); }
+.seg.session-card-view-filter, .assistant-tile { --chooser-padding: 3px; --chooser-inner-radius: 7px; padding: var(--chooser-padding); border-radius: calc(var(--chooser-inner-radius) + var(--chooser-padding)); }
 .seg.session-card-view-filter { display: inline-flex; gap: 2px; background: var(--surface-3); border: 0; }
-.seg .session-card-view-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 28px; padding: 5px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--text-3); font: 500 13px var(--font-ui); }
+.seg .session-card-view-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 28px; padding: 5px 10px; border: 0; border-radius: var(--chooser-inner-radius); background: transparent; color: var(--text-3); font: 500 13px var(--font-ui); }
 .seg .session-card-view-button.selected { background: rgba(255,255,255,.12); color: var(--text-1); box-shadow: 0 1px 3px rgba(0,0,0,.4); }
 .seg .n { display: inline-flex; justify-content: center; align-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: rgba(255,255,255,.1); color: var(--text-2); font-size: 11px; font-weight: 600; }
 /* Drawn from data-count so the chip's accessible name stays "<label> sessions" (WCAG 2.5.3); aria-description carries the count. */
@@ -2900,7 +2900,7 @@ body > header { height: 52px; min-height: 52px; }
 .assistant-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .assistant-tile[data-tone=attn] { --tile-glow: 246,195,92; }
 .assistant-tile[data-tone=failed] { --tile-glow: 255,138,128; }
-.assistant-tile-head { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 6px 8px 0; }
+.assistant-tile-head { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 6px var(--chooser-padding) 0; }
 .assistant-tile-mark { flex: none; width: 16px; height: 16px; fill: rgb(var(--tile-glow)); filter: drop-shadow(0 0 5px rgba(var(--tile-glow),.6)); }
 .assistant-tile[data-tone=busy] .assistant-tile-mark { animation: assistant-tile-pulse 2.4s ease-in-out infinite; }
 @keyframes assistant-tile-pulse { 50% { opacity: .5; transform: scale(.86) rotate(20deg); } }
@@ -2909,7 +2909,7 @@ body > header { height: 52px; min-height: 52px; }
 .assistant-tile[data-tone=attn] .assistant-tile-state { color: var(--attn); }
 .assistant-tile[data-tone=failed] .assistant-tile-state { color: var(--danger); }
 .assistant-tile .dot { width: 6px; height: 6px; box-shadow: none; }
-.assistant-tile-next { display: block; min-width: 0; padding: 0 8px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.assistant-tile-next { display: block; min-width: 0; padding: 0 var(--chooser-padding) 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
 .assistant-tile-next i { margin-right: 6px; color: var(--text-4); font: 600 10px var(--font-ui); font-style: normal; text-transform: uppercase; letter-spacing: .08em; }
 .focus-block { margin: 12px 16px; padding: 14px 18px 16px; border: 1px solid rgba(69,237,126,.3); border-radius: var(--r-group); background: var(--accent-faint); box-shadow: var(--gloss); }
 .focus-block button, .assistant-column button, .focus-terminal-header button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 34px; padding: 0 12px; border: 1px solid var(--hairline-strong); border-radius: var(--r-control); background: var(--surface-2); color: var(--text-2); font: 500 13px/1.2 var(--font-ui); white-space: nowrap; cursor: pointer; }
@@ -2937,21 +2937,21 @@ body > header { height: 52px; min-height: 52px; }
 .focus-next > li + li, .focus-today > li + li, .focus-done li + li { border-top: 1px solid var(--hairline); }
 .focus-done li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 12px; font-size: 13px; color: var(--text-2); }
 /* Cards: the summary is the 44px row (text only); the action, checkbox and chips sit beside it in the row grid; the body opens under the title. */
-/* One reserved action/chip column per list; content never moves its disclosure column. */
-.focus-next { --focus-aside-width: 52px; }
-.focus-today { --focus-aside-width: 256px; }
-.focus-next, .focus-today { --focus-row-gap: 10px; }
+/* Both lists end their disclosure in the same column before the action edge. */
+.focus-today { --focus-chips-width: 192px; }
+.focus-next, .focus-today { --focus-aside-width: 52px; --focus-row-gap: 10px; }
 .focus-next > li, .focus-today > li { display: grid; grid-template-columns: minmax(0, 1fr) var(--focus-aside-width); align-items: start; column-gap: var(--focus-row-gap); padding: 0 12px; font-size: 13px; color: var(--text-2); }
-.focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--focus-aside-width); }
+.focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--focus-chips-width) 12px var(--focus-aside-width); }
 .focus-next > li:has(> .focus-card:not([open]) > summary:hover), .focus-today > li:has(> .focus-card:not([open]) > summary:hover) { background: var(--surface-3); }
 .focus-next .focus-card, .focus-today .focus-card { min-width: 0; margin: 0; color: inherit; font-size: inherit; grid-row: 1; }
 .focus-next .focus-card[open] { grid-column: 1 / -1; }
-.focus-today .focus-card[open] { grid-column: 2 / -1; }
-.focus-next .focus-card[open] > summary, .focus-today .focus-card[open] > summary { width: calc(100% - var(--focus-aside-width) - var(--focus-row-gap)); }
+.focus-next .focus-card[open] > summary, .focus-today .focus-card > summary { width: calc(100% - var(--focus-aside-width) - var(--focus-row-gap)); }
 .focus-next .focus-action { grid-column: 2; grid-row: 1; justify-content: flex-end; }
 .focus-today .focus-check { grid-column: 1; grid-row: 1; }
-.focus-today .focus-card { grid-column: 2; }
-.focus-today .focus-chips { grid-column: 3; grid-row: 1; min-width: 0; }
+.focus-today .focus-card { grid-column: 2 / -1; }
+.focus-today .focus-card > summary { display: grid; grid-template-columns: minmax(0, 1fr) var(--focus-chips-width) 12px; }
+.focus-today .focus-card > summary::after { grid-column: 3; }
+.focus-today > li > .focus-chips { grid-column: 3; grid-row: 1; min-width: 0; }
 details.focus-card > summary { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 0; list-style: none; cursor: pointer; }
 details.focus-card > summary::-webkit-details-marker { display: none; }
 details.focus-card > summary::before { content: none; }
@@ -2997,6 +2997,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-today .done .focus-title { text-decoration: line-through; color: var(--text-3); }
 .focus-chips { display: flex; gap: 6px; flex-wrap: nowrap; justify-content: flex-end; }
 .focus-today .focus-chips { padding-top: 9px; }
+.focus-today .focus-session-chips { flex-wrap: wrap; justify-content: flex-start; padding: 0; }
 /* An open today card lists its sessions in the body; the chips return when it closes. */
 .focus-today > li:has(> .focus-card[open]) > .focus-chips { display: none; }
 .focus-chips:empty { display: none; }
@@ -3069,16 +3070,20 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-block .focus-next > li { padding-inline: 14px; }
   .focus-block button, .assistant-column button, .focus-terminal-header button { min-height: 44px; }
   .focus-notes button { min-height: 0; }
-  .focus-header > button:not(:last-child):not(.focus-attn), .focus-done button, .focus-yesterday button, .focus-chips button, .assistant-column summary { min-height: 44px; }
+  .focus-header > button:not(:last-child):not(.focus-attn), .focus-done button, .focus-yesterday button, .assistant-column summary { min-height: 44px; }
+  .focus-chips button { position: relative; min-height: 26px; min-width: 44px; }
+  .focus-chips button::after { content: ""; position: absolute; inset: -9px 0; }
   .focus-done button, .focus-yesterday button { min-width: 44px; }
   .focus-header > small { flex-basis: 100%; order: 1; }
   .focus-header > span:not(.dot) { flex: 1 1 auto; min-width: 0; }
   .focus-header > span.focus-header-actions { flex: none; }
   .focus-for, .focus-extra { display: none; }
   .focus-next .focus-action { min-height: 44px; margin-top: 0; padding-inline: 6px; }
-  .focus-today > li { grid-template-columns: auto minmax(0, 1fr); }
-  .focus-today .focus-card[open] > summary { width: 100%; }
-  .focus-today .focus-chips { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; justify-content: flex-start; padding: 0 0 8px 30px; }
+  .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--focus-aside-width); }
+  .focus-today .focus-card > summary { grid-template-columns: minmax(0, 1fr) 12px; }
+  .focus-today .focus-card > summary::after { grid-column: 2; }
+  .focus-today > li > .focus-chips { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; justify-content: flex-start; padding: 9px 0 17px 30px; row-gap: 18px; }
+  .focus-today .focus-session-chips { padding-block: 9px; row-gap: 18px; }
   .focus-chips > button.focus-chip-extra { display: inline-flex; }
   .focus-chips > button.focus-chip-more { display: none; }
   .focus-card-body { grid-template-columns: minmax(0, 1fr); gap: 1px; }

@@ -176,7 +176,7 @@ export function createAssistantView(deps: {
   }
   function intentionBody(intention: FocusIntention, reason?: string) {
     const linked = linkedFocusSessions(intention, sessions());
-    return field("sessions", linked.map(s => `<span class="focus-linked">${dot(s.state)}${esc(s.name)}</span>`).join(" ") || "none yet")
+    return field("sessions", linked.length ? `<span class="focus-chips focus-session-chips">${linked.map(session => sessionChip(session)).join("")}</span>` : "none yet")
       + field("project", project(intention.project)) + field("machine", esc(intention.machine ?? "")) + field("added", stamp(intention.createdAt))
       + field("done", intention.done && intention.doneAt ? stamp(intention.doneAt) : "") + field("why here", esc(reason ?? ""));
   }
@@ -198,13 +198,16 @@ export function createAssistantView(deps: {
       return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
     }).join("")}</ol>`;
   }
+  function sessionChip(session: FocusSession, hidden = false) {
+    return `<button type="button"${hidden ? ' class="focus-chip-extra"' : ""}${sessionLocked() ? " disabled" : ""} data-focus-session="${escAttr(session.id)}" title="${escAttr(session.name)}">${dot(session.state)}<span class="focus-chip-name">${esc(session.name)}</span></button>`;
+  }
   const COMPACT_CHIPS_MAX = 3;
   const compactChipCounts = new Map<string, number>();
   function chipsHtml(intention: FocusIntention) {
     const linked = linkedFocusSessions(intention, sessions());
     if (!linked.length) return '<span class="focus-chips"></span>';
     const count = Math.min(compactChipCounts.get(intention.id) ?? COMPACT_CHIPS_MAX, linked.length);
-    const chips = linked.map((session, index) => `<button type="button"${index >= count ? ' class="focus-chip-extra"' : ""}${sessionLocked() ? " disabled" : ""} data-focus-session="${escAttr(session.id)}" title="${escAttr(session.name)}">${dot(session.state)}<span class="focus-chip-name">${esc(session.name)}</span></button>`).join("");
+    const chips = linked.map((session, index) => sessionChip(session, index >= count)).join("");
     const rest = linked.slice(count);
     // Keep the hidden zero-count button as the native sizing probe when all chips fit.
     const more = `<button type="button" class="focus-chip-more${rest.length ? "" : " focus-chip-none"}" data-focus-expand="${escAttr(`intention:${intention.id}`)}" aria-label="${escAttr(`${rest.length} more sessions: ${rest.map(s => s.name).join(", ")}`)}" title="${escAttr(rest.map(s => s.name).join(", "))}">+${rest.length}</button>`;
