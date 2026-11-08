@@ -694,7 +694,6 @@ export const controlApiSource: ControlApiSource = {
       acknowledgedAt: string(),
       acknowledgedSequence: integer(),
       unseen: boolean(),
-      hasBeenBusy: { type: "boolean", deprecated: true, description: "Legacy cache compatibility only, not work-episode evidence." },
       workPending: boolean(),
       stoppedSequence: integer(),
       stoppedAt: string(),
@@ -839,7 +838,7 @@ export const controlApiSource: ControlApiSource = {
       pinned: boolean(),
       unseen: boolean(),
       stopped: boolean(),
-    }, ["state", "changedAt", "unseen", "stopped"], { description: "Last server-observed runtime facts, not terminal liveness. stopped means an unreviewed work episode; stoppedAt is its original end time, not a later metadata transition. pinned identifies server-owned processes excluded from focus ranking. Unknown with null changedAt means not yet observed." }),
+    }, ["state", "changedAt", "unseen", "stopped"], { description: "Last server-observed runtime facts, not terminal liveness. stopped means eligible unreviewed work, excluding pinned processes and shell fallback output; stoppedAt is its original end time, not a later metadata transition. pinned identifies server-owned processes excluded from focus ranking. Unknown with null changedAt means not yet observed." }),
     SessionStatus: object({
       ok: { const: true },
       selector: ref("SessionSelector"),

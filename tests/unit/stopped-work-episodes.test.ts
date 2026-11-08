@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntimeStateStore, deriveAgentRuntimeState, type AgentStatusSource } from "../../src/server/agent-status.ts";
 import type { AgentStatusState } from "../../src/agent-status-contract.ts";
-import { stoppedUnseen } from "../../src/focus-ranking.ts";
+import { stoppedUnseen, rankFocus } from "../../src/focus-ranking.ts";
+import { emptyFocus } from "../../src/focus-contract.ts";
 
 async function fixture(run: (f: ReturnType<typeof episodeFixture>) => Promise<void> | void) {
   const root = mkdtempSync(join(tmpdir(), "stop-episode-"));
@@ -14,10 +15,10 @@ async function fixture(run: (f: ReturnType<typeof episodeFixture>) => Promise<vo
 function episodeFixture(path: string) {
   let store = new AgentRuntimeStateStore(path);
   let tick = 0;
-  function step(state: AgentStatusState, authority: "manifest" | "program" | "fallback" = "manifest", options: { stale?: boolean; broker?: "alive" | "unavailable"; runId?: string } = {}) {
+  function step(state: AgentStatusState, authority: "manifest" | "program" | "fallback" = "manifest", options: { stale?: boolean; broker?: "alive" | "unavailable"; runId?: string; signalSequence?: number; agentKind?: string } = {}) {
     const observedAt = new Date(Date.parse("2026-11-08T10:00:00Z") + tick++ * 60_000).toISOString();
-    const source: AgentStatusSource = { state, authority, source: authority === "program" ? "program-status" : "local-manifest", freshness: options.stale ? "stale" : "fresh", stale: options.stale ?? false, label: state, observedAt, capabilities: ["semantic-state"], runId: options.runId ?? "run-1", runOrder: 1 };
-    return store.reduce({ sessionKey: "episode", broker: { state: options.broker ?? "alive", observedAt }, sources: authority === "fallback" ? [] : [source], fallback: { rawOutputChanged: state === "output", observedAt }, currentRun: { runId: options.runId ?? "run-1", runOrder: 1 } });
+    const source: AgentStatusSource = { state, authority, source: authority === "program" ? "program-status" : "local-manifest", freshness: options.stale ? "stale" : "fresh", stale: options.stale ?? false, label: state, observedAt, signalSequence: options.signalSequence, capabilities: ["semantic-state"], runId: options.runId ?? "run-1", runOrder: 1 };
+    return store.reduce({ sessionKey: "episode", agentKind: options.agentKind ?? "custom", broker: { state: options.broker ?? "alive", observedAt }, sources: authority === "fallback" ? [] : [source], fallback: { rawOutputChanged: state === "output", observedAt }, currentRun: { runId: options.runId ?? "run-1", runOrder: 1 } });
   }
   return { get store() { return store; }, step,
     ack: () => store.acknowledge("episode", store.get("episode")!.transitionSequence),
@@ -27,7 +28,7 @@ function episodeFixture(path: string) {
       // The legacy schema-v1 cache has runtime facts but no episode fields.
       const { workPending: _, stoppedSequence: __, stoppedAt: ___, stopObserved: ____, ...legacy } = done;
       await store.flushForShutdown();
-      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { episode: { ...legacy, hasBeenBusy: true } } }));
+      writeFileSync(path, JSON.stringify({ schemaVersion: 1, sessions: { episode: legacy } }));
       store = new AgentRuntimeStateStore(path);
     },
     reload: async () => { await store.flushForShutdown(); store = new AgentRuntimeStateStore(path); } };
@@ -103,14 +104,18 @@ test("acknowledging while busy does not hide a later real finish, including afte
   expect(stoppedUnseen(next)).toBe(true);
   expect(next.stoppedAt).not.toBe(first.stoppedAt);
 }));
-test("a reviewed legacy cache cannot rediscover its old done after metadata changes", () => {
+test("reviewed main-format idle can discover a finish once, because its history is ambiguous", () => {
   const at = "2026-11-08T10:00:00.000Z";
   const input = { sessionKey: "legacy", broker: { state: "alive" as const, observedAt: at }, sources: [], fallback: { rawOutputChanged: false, observedAt: at } };
   const { workPending: _, stoppedSequence: __, stoppedAt: ___, stopObserved: ____, ...seed } = deriveAgentRuntimeState(input);
-  const legacy = { ...seed, hasBeenBusy: true, transitionSequence: 2, acknowledgedSequence: 2, unseen: false };
+  const legacy = { ...seed, transitionSequence: 2, acknowledgedSequence: 2, unseen: false };
   const metadata = deriveAgentRuntimeState({ ...input, previous: legacy, currentRun: { runId: "new", runOrder: 2 } });
   const done: AgentStatusSource = { state: "done", authority: "program", source: "program-status", freshness: "fresh", stale: false, observedAt: at, label: "done", capabilities: ["semantic-state"] };
-  expect(stoppedUnseen(deriveAgentRuntimeState({ ...input, sources: [done], previous: metadata }))).toBe(false);
+  const first = deriveAgentRuntimeState({ ...input, sources: [done], previous: metadata });
+  expect(stoppedUnseen(first)).toBe(true);
+  const reviewed = { ...first, acknowledgedSequence: first.transitionSequence, unseen: false };
+  const idle = deriveAgentRuntimeState({ ...input, previous: reviewed });
+  expect(stoppedUnseen(deriveAgentRuntimeState({ ...input, sources: [done], previous: idle }))).toBe(false);
 });
 
 for (const order of ["before", "after"] as const) test(`legacy done acknowledged ${order} migration never rediscovers its finish`, () => fixture(async f => {
@@ -132,6 +137,44 @@ for (const order of ["before", "after"] as const) test(`legacy done acknowledged
   const next = f.step("done", "program");
   expect(stoppedUnseen(next)).toBe(true);
   expect(next.stoppedAt).toBe(next.changedAt);
+}));
+
+test("a turn ending during broker loss surfaces on authoritative recovery with its stop time", () => fixture(f => {
+  f.step("working");
+  f.step("done");
+  f.ack();
+  f.step("working");
+  f.step("idle", "fallback", { broker: "unavailable" });
+  const recovered = f.step("done");
+  expect(stoppedUnseen(recovered)).toBe(true);
+  expect(recovered.stoppedAt).toBe(recovered.changedAt);
+  expect(recovered.workPending).toBe(false);
+  expect(f.step("done").stoppedAt).toBe(recovered.stoppedAt);
+}));
+
+test("advanced structured done is a new stop even when the busy phase was not sampled", () => fixture(f => {
+  f.step("done", "manifest", { signalSequence: 1 });
+  f.ack();
+  const next = f.step("done", "manifest", { signalSequence: 2 });
+  expect(stoppedUnseen(next)).toBe(true);
+  expect(next.stoppedAt).toBe(next.changedAt);
+  expect(next.workPending).toBe(false);
+  f.ack();
+  expect(stoppedUnseen(f.step("done", "manifest", { signalSequence: 2 }))).toBe(false);
+}));
+
+for (const agentKind of ["shell", "claude", "codex", "pi", "gemini", "cursor", "custom"]) test(`fallback bursts rank as stopped work only for agents: ${agentKind}`, () => fixture(f => {
+  for (let burst = 0; burst < 2; burst++) {
+    f.step("output", "fallback", { agentKind });
+    const idle = f.step("idle", "fallback", { agentKind });
+    expect(stoppedUnseen(idle)).toBe(agentKind !== "shell");
+    expect(rankFocus(emptyFocus(), [{ ...idle, id: "episode", name: agentKind }])).toHaveLength(agentKind === "shell" ? 0 : 1);
+    f.ack();
+  }
+  f.step("working", "program", { agentKind });
+  expect(stoppedUnseen(f.step("done", "program", { agentKind }))).toBe(true);
+  f.step("working", "manifest", { agentKind });
+  expect(stoppedUnseen(f.step("done", "manifest", { agentKind }))).toBe(true);
 }));
 
 test("TTL loss of a busy semantic source is not an observed stop", () => fixture(f => {

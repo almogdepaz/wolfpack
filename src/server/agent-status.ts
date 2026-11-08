@@ -4,6 +4,7 @@ import {
 } from "node:fs";
 import { mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { AGENT_KIND } from "../agent-kind.js";
 import { createLogger, errMsg } from "../log.js";
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
 import { dirname, isAbsolute, normalize, resolve } from "node:path";
@@ -109,8 +110,6 @@ export interface AgentRuntimeState extends ProgramStatusFields {
   readonly unseen: boolean;
   /** Observed work awaiting a real turn end; acknowledging while busy does not end it. */
   readonly workPending?: boolean;
-  /** Legacy cache compatibility only; new reductions omit this lifetime-history field. */
-  readonly hasBeenBusy?: boolean;
   /** Transition watermark and time of the last observed stop, independent of metadata churn. */
   readonly stoppedSequence?: number;
   readonly stoppedAt?: string;
@@ -124,6 +123,8 @@ export interface AgentRuntimeState extends ProgramStatusFields {
 
 export interface AgentRuntimeStateInput {
   readonly sessionKey: string;
+  /** Session identity, not a terminal self-report; shell output is not agent work. */
+  readonly agentKind?: string;
   readonly broker: {
     readonly state: BrokerRuntimeLiveness;
     readonly observedAt: string;
@@ -581,21 +582,22 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
   const transitionSequence = changed ? (previous?.transitionSequence ?? 0) + 1 : previous?.transitionSequence ?? 1;
   const acknowledgedSequence = previous?.acknowledgedSequence;
   const acknowledgedAt = previous?.acknowledgedAt;
-  const pending = previous?.workPending ?? (previous !== undefined && BUSY_STATES.has(previous.state));
-  const previousStop = previous?.stoppedSequence
-    ?? (previous && !pending && (previous.hasBeenBusy || previous.state === AGENT_STATUS_STATE.DONE)
-      ? previous.acknowledgedSequence ?? 0 : 0);
+  const shell = input.agentKind === AGENT_KIND.SHELL.id;
+  const fallbackShell = shell && selected.authority === AGENT_STATUS_AUTHORITY.FALLBACK;
+  const pending = previous?.workPending ?? (previous !== undefined && BUSY_STATES.has(previous.state)
+    && !(shell && previous.authority === AGENT_STATUS_AUTHORITY.FALLBACK));
+  const previousStop = previous?.stoppedSequence ?? 0;
   const authoritativeDone = selected.state === AGENT_STATUS_STATE.DONE
     && selected.authority !== AGENT_STATUS_AUTHORITY.FALLBACK
     && selected.authority !== AGENT_STATUS_AUTHORITY.IDENTITY;
   const stopObserved = previous?.stopObserved === true || previousStop > 0 || previous?.state === AGENT_STATUS_STATE.DONE;
   const firstDone = authoritativeDone && !stopObserved;
-  // Loss/recovery of a source is not a turn end. Explicit done may cross authorities;
-  // fallback idle must follow actual activity from that same source, not TTL expiry.
+  // Source loss alone is not a turn end, but authoritative done confirms pending work
+  // even after broker loss. Fallback idle must follow activity from the same source.
   const endedWork = pending && previous !== undefined && previous.state !== selected.state
-    && previous.source !== AGENT_STATUS_SOURCE.BROKER_LIVENESS
     && (sameSourceAuthority(previous, selected) || authoritativeDone);
-  const stopped = (selected.state === AGENT_STATUS_STATE.IDLE || authoritativeDone) && (firstDone || endedWork);
+  const stopped = !fallbackShell && (selected.state === AGENT_STATUS_STATE.IDLE || authoritativeDone)
+    && (firstDone || endedWork || (authoritativeDone && sequenceAdvanced));
   const stoppedAt = stopped ? selected.observedAt : previous?.stoppedAt;
   return {
     state: selected.state,
@@ -610,7 +612,7 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
     ...(acknowledgedAt ? { acknowledgedAt } : {}),
     ...(typeof acknowledgedSequence === "number" ? { acknowledgedSequence } : {}),
     unseen: transitionSequence > (acknowledgedSequence ?? 0),
-    workPending: BUSY_STATES.has(selected.state) || (pending && !stopped),
+    workPending: (!fallbackShell && BUSY_STATES.has(selected.state)) || (pending && !stopped),
     stoppedSequence: stopped ? transitionSequence : previousStop,
     stopObserved: stopObserved || stopped,
     ...(stoppedAt ? { stoppedAt } : {}),
