@@ -116,6 +116,10 @@ describe("focus routines runtime", () => {
     t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "failed", sessionId: "failed-id", state: "failed", label: "Failed" }, t.clock.now);
     await t.routines.tick();
     expect(t.sends).toHaveLength(1);
+    t.append(needs("resolved"), t.clock.now);
+    t.append(state("resolved"), t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
     t.append(needs("new"), t.clock.now);
     await t.routines.tick();
     expect(t.sends).toHaveLength(2);

@@ -73,20 +73,20 @@ export function activityDayOf(ms: number, fallbackTime: string): string {
  */
 export function pendingNeedsInput(rows: readonly ActivityRow[], baseline: readonly string[]) {
   const needsInput = new Set(baseline);
-  let newlyNeedsInput = false;
+  const entered = new Set<string>();
   for (const row of rows) {
     if (!("sessionId" in row) && !("session" in row)) continue;
     const key = "sessionId" in row && row.sessionId ? `id:${row.sessionId}` : "session" in row && row.session ? `name:${row.session}` : null;
     if (!key) continue;
     if (row.kind === ACTIVITY_KIND.SESSION_EXITED) needsInput.delete(key);
-    else if ("state" in row && row.state !== undefined) {
+    else if ("state" in row && row.state !== undefined && row.state !== AGENT_STATUS_STATE.UNKNOWN) {
       if (row.state === AGENT_STATUS_STATE.NEEDS_INPUT) {
-        if (!needsInput.has(key)) newlyNeedsInput = true;
+        if (!needsInput.has(key)) entered.add(key);
         needsInput.add(key);
       } else needsInput.delete(key);
     }
   }
-  return { newlyNeedsInput, needsInputSessions: [...needsInput] };
+  return { newlyNeedsInput: [...entered].some(key => needsInput.has(key)), needsInputSessions: [...needsInput] };
 }
 
 export interface SchedulerMachine {

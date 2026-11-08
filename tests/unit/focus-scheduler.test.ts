@@ -76,6 +76,12 @@ describe("pending needs-input journal transitions", () => {
     expect(pendingNeedsInput([row("needs-input")], ["id:one"])).toEqual({ newlyNeedsInput: false, needsInputSessions: ["id:one"] });
     expect(pendingNeedsInput([row("failed")], [])).toEqual({ newlyNeedsInput: false, needsInputSessions: [] });
   });
+  test("resolved prompts do not wake the assistant; unknown rows preserve waiting state", () => {
+    expect(pendingNeedsInput([row("needs-input"), row("working")], []).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("needs-input"), { kind: "session.exited", sessionId: "one", reason: "exit", seq: 2, at: iso(at(6, 15)) }], []).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("unknown"), row("needs-input")], ["id:one"]).newlyNeedsInput).toBe(false);
+    expect(pendingNeedsInput([row("unknown")], ["id:one"]).needsInputSessions).toEqual(["id:one"]);
+  });
   test("a new incarnation or a genuine re-entry counts; exited sessions are forgotten", () => {
     expect(pendingNeedsInput([row("needs-input", "two")], ["id:one"]).newlyNeedsInput).toBe(true);
     expect(pendingNeedsInput([row("working"), row("needs-input")], ["id:one"]).newlyNeedsInput).toBe(true);
