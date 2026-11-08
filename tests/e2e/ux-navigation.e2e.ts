@@ -167,7 +167,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
 
   const cards = page.locator("#session-list .machine-group:not(.needs-you) .card");
   await expect(cards.locator(".card-name-text")).toHaveText(["wolfpack", "orphan-child", "unrelated"]);
-  await cards.getByRole("button", { name: "Expand 2 child agents", exact: true }).click();
+  await cards.getByRole("button", { name: "Expand 2 child agents; a descendant needs input", exact: true }).click();
   await expect(cards).toHaveCount(5);
   await expect(page.locator("#session-list .needs-you .card-name-text")).toHaveText(["wolfpack-sub-agent"]);
   await expect.poll(() => cards.locator(".card-name").evaluateAll((names) =>
@@ -206,7 +206,7 @@ test("desktop groups structured sub-agents directly under their parent", async (
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
 
   await expect(childSidebarCards).toHaveCount(0);
-  await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveAccessibleName("Expand 2 child agents");
+  await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveAccessibleName("Expand 2 child agents; a descendant needs input");
   await expect(parentSidebarCard.locator(".delegation-sidebar-toggle")).toHaveText(/2 agents$/);
   await parentSidebarCard.locator(".delegation-sidebar-toggle").click();
   await expect(childSidebarCards).toHaveCount(2);
@@ -313,7 +313,7 @@ test("desktop opens and refreshes an ephemeral delegation grid without changing 
   await expect(sidebarCard("delegation-parent").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("attention-child")).toHaveCount(0);
   await expect(sidebarCard("idle-child")).toHaveCount(0);
-  await expect(sidebarCard("delegation-parent").locator(".delegation-sidebar-toggle")).toHaveAccessibleName("Expand 2 child agents");
+  await expect(sidebarCard("delegation-parent").locator(".delegation-sidebar-toggle")).toHaveAccessibleName("Expand 2 child agents; a descendant needs input");
   await sidebarCard("delegation-parent").locator(".delegation-sidebar-toggle").click();
   await expect(sidebarCard("attention-child").locator(".grid-btn")).toHaveClass(/in-grid/);
   await expect(sidebarCard("idle-child").locator(".grid-btn")).toHaveClass(/in-grid/);

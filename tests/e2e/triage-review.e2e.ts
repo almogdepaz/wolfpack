@@ -136,6 +136,6 @@ test("A3 a waiting descendant pulls its idle parent tree ahead of working roots"
   await fixture(page, [session('worker', 'working', at.recent), session('parent', 'idle', at.old), session('child', 'needs-input', at.old, 'parent')]);
   await page.goto(server.baseUrl);
   await expect(machineRows(page).locator('.card-name-text')).toHaveText(['parent', 'worker']);
-  await machineRows(page).getByRole('button', { name: 'Expand 1 child agent', exact: true }).click();
+  await machineRows(page).getByRole('button', { name: 'Expand 1 child agent; a descendant needs input', exact: true }).click();
   await expect(machineRows(page).locator('.card-name-text')).toHaveText(['parent', 'child', 'worker']);
 });

@@ -187,10 +187,10 @@ test("N2 sidebar parents and solo sessions have equal two-line rows", async ({ p
     const preview = await card.locator('.card-preview').boundingBox();
     expect(preview!.y - (name!.y + name!.height)).toBeCloseTo(2, 2);
   }
-  const toggle = parent.getByRole('button', { name: 'Expand 1 child agent', exact: true });
+  const toggle = parent.getByRole('button', { name: 'Expand 1 child agent; all descendants idle', exact: true });
   await toggle.click();
   await expect(sidebar.locator('[data-session-order-id="child-id"]')).toBeVisible();
-  await parent.getByRole('button', { name: 'Collapse 1 child agent', exact: true }).click();
+  await parent.getByRole('button', { name: 'Collapse 1 child agent; all descendants idle', exact: true }).click();
   await expect(sidebar.locator('[data-session-order-id="child-id"]')).toHaveCount(0);
   await parent.getByRole('button', { name: 'Open test-project', exact: true }).click();
   await expect(page.locator('#delegation-grid-shell')).toBeVisible();

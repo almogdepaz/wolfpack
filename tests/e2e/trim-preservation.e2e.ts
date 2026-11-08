@@ -85,7 +85,7 @@ for (const width of [1440, 390]) {
     }
     const row = (name: string) => page.locator(`#sidebar-session-list [data-session-order-id="${name}"]`);
     await row("solo").getByRole("button", { name: "Add to grid: solo", exact: true }).click();
-    await row("parent").getByRole("button", { name: "Expand 1 child agent", exact: true }).click();
+    await row("parent").getByRole("button", { name: "Expand 1 child agent; a descendant is active (agent work or recent output)", exact: true }).click();
     await row("child").getByRole("button", { name: "Add to grid: child", exact: true }).click();
     await expect(page.locator("#desktop-grid-container .grid-cell")).toHaveCount(3);
     for (const name of ["waiting", "solo", "child"]) await expect(row(name).locator(".grid-btn")).toHaveAttribute("aria-pressed", "true");
