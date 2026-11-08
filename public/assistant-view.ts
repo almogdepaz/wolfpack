@@ -497,7 +497,11 @@ export function createAssistantView(deps: {
     // One enable: the assistant opens right away so its first run (and anything pi asks) is in view.
     if (enabled) deps.show("assistant");
   }); };
-  window.addEventListener("resize", render);
+  let resizeFrame: number | undefined;
+  window.addEventListener("resize", () => {
+    if (resizeFrame !== undefined) return;
+    resizeFrame = requestAnimationFrame(() => { resizeFrame = undefined; render(); });
+  });
   render();
   return { refresh, render, loadTiming,
     captureStart: (intentionId: string): FocusSessionStart => ({ intentionId, home: focus?.home ?? "" }),
