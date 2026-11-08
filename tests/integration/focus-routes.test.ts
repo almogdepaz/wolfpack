@@ -35,6 +35,17 @@ test("focus HTTP CAS, first write, invalid ops and corrupt-file protection", asy
     expect(replied.status).toBe(200);
     expect((await replied.json()).document.reply).toMatchObject({ text: "Answer prompt-project first.", author: "assistant", updatedAt: expect.any(String) });
     expect((await post({ expectedRevision: 2, ops: [{ type: "reply", text: "x".repeat(2001), author: "assistant" }] })).status).toBe(400);
+    // an ask is one line of at most 8000 characters (the queue adds the `ask: ` prefix under its own 8192 limit)
+    const ask = (text: unknown) => fetch(`${base}/api/focus/ask`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    for (const bad of ["x".repeat(8001), "two\nlines", "", "   "]) {
+      const refused = await ask(bad);
+      expect(refused.status).toBe(400);
+      expect((await refused.json()).error).toBe("ask must be one line of at most 8000 characters");
+    }
+    // a valid ask passes validation and reaches the runtime (the assistant is off here)
+    const off = await ask("x".repeat(8000));
+    expect(off.status).toBe(409);
+    expect((await off.json()).error).toBe("assistant is off");
     const dashboard = await (await fetch(`${base}/api/sessions`)).json();
     expect(dashboard.sessions[0].changedAt).toBe(dashboard.sessions[0].runtimeState.changedAt);
     writeFileSync(path, "corrupt");

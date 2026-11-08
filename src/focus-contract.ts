@@ -34,6 +34,9 @@ export type FocusOp =
   | { type: "day-summary"; summary: FocusDaySummary }
   | { type: "seen-day-note"; at: string };
 
+/** A dashboard ask: one line, at most this long (the server prefixes `ask: ` under the send queue's 8192 limit). */
+export const FOCUS_ASK_MAX_CHARS = 8000;
+export function isFocusAsk(v: unknown): v is string { return typeof v === "string" && v.trim().length > 0 && v.length <= FOCUS_ASK_MAX_CHARS && !/[\x00-\x1f\x7f]/.test(v); }
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const keys = (v: Record<string, unknown>, allowed: string[]) => Object.keys(v).every(k => allowed.includes(k));
 const text = (v: unknown, max: number, empty = false): v is string => typeof v === "string" && v.length <= max && (empty || v.trim().length > 0);

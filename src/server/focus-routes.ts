@@ -5,6 +5,7 @@ import { getInstallationId } from "../tailnet-machine-installation.js";
 import { FocusConflict, FocusValidationError } from "./focus-store.js";
 import { errMsg } from "../log.js";
 import { InvalidInboxFile, UnknownInboxFile } from "../focus-coverage.js";
+import { FOCUS_ASK_MAX_CHARS, isFocusAsk } from "../focus-contract.js";
 
 export function createFocusRoutes(ctx: ServerContext) {
   const identity = () => {
@@ -56,6 +57,7 @@ export function createFocusRoutes(ctx: ServerContext) {
       const body = await parseObjectBody(req, res);
       if (!body) return;
       if (!hasOnlyKeys(body, new Set(["text"])) || typeof body.text !== "string") return json(res, { error: "text required" }, 400);
+      if (!isFocusAsk(body.text)) return json(res, { error: `ask must be one line of at most ${FOCUS_ASK_MAX_CHARS} characters` }, 400);
       try { json(res, await ctx.focusRuntime.ask(body.text)); }
       catch (error) { json(res, { error: errMsg(error) }, 409); }
     },
