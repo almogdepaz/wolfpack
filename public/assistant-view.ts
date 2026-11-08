@@ -56,6 +56,8 @@ export function createAssistantView(deps: {
   // A routine send whose submission could not be verified: uncertain, not failed.
   const DELIVERY_UNCONFIRMED = "not confirmed yet";
   const button = (action: string, label: string, name = label, disabled = false) => `<button type="button" data-focus-action="${action}" aria-label="${escAttr(name)}"${disabled ? " disabled" : ""}>${esc(label.replace(" ›", ""))}${label.endsWith(" ›") ? '<span aria-hidden="true"> ›</span>' : ""}</button>`;
+  // The sidebar tile's mark: a four-point spark (decorative; the tile's label names it).
+  const TILE_MARK = '<svg class="assistant-tile-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l1.8 5.7 5.7 1.8-5.7 1.8L12 17.5l-1.8-5.7L4.5 10l5.7-1.8z"/><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" opacity=".65"/></svg>';
   const dot = (state: string) => `<span class="dot ${state === "needs-input" || state === "needs you" ? "yellow" : state === "working" ? "green" : state === "failed" ? "red" : "gray"}" aria-hidden="true"></span>`;
   function replace(id: string, html: string) {
     const host = document.getElementById(id);
@@ -157,12 +159,16 @@ export function createAssistantView(deps: {
       + field("project", project(intention.project)) + field("machine", esc(intention.machine ?? "")) + field("added", stamp(intention.createdAt))
       + field("done", intention.done && intention.doneAt ? stamp(intention.doneAt) : "") + field("why here", esc(reason ?? ""));
   }
+  // One wording for a next row: the row itself and the sidebar tile's "next" line.
+  const nextTitle = (row: FocusAction) => row.session
+    ? `${row.session.name} ${row.session.state === "needs-input" ? "needs you" : row.session.state === "done" ? "finished" : row.session.state}`
+    : `start “${row.intention!.title}”`;
   function nextHtml(cap: number) {
     const rows = rankFocus(doc(), deps.sessions(), cap);
     if (!rows.length) return `<p class="focus-empty">${doc().intentions.length && doc().intentions.every(i => i.done) ? "all intentions done — tell the assistant what's next" : "nothing waiting"}</p>`;
     return `<ol class="focus-next" aria-label="Next actions">${rows.map((row, index) => {
       const finished = row.session?.state === "done";
-      const title = row.session ? `${row.session.name} ${row.session.state === "needs-input" ? "needs you" : finished ? "finished" : row.session.state}` : `start “${row.intention!.title}”`;
+      const title = nextTitle(row);
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
       if (row.session) renderedSessions.set(key, row.session);
@@ -232,12 +238,21 @@ export function createAssistantView(deps: {
     if (closing && document.getElementById("assistant-view")?.classList.contains("visible")) deps.show("sessions");
     const tile = document.getElementById("sidebar-assistant");
     const tileStatus = !focus?.document ? "set focus" : offline ? "offline" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : `${next.length} next`;
-    if (tile) { tile.hidden = !enabled; tile.innerHTML = `<span>${tone}assistant</span> <small>${tileStatus}</small>`; tile.title = current.nudge?.text ?? info; tile.setAttribute("aria-label", `Assistant ${tileStatus}. ${state}. Open assistant`); }
+    if (tile) {
+      tile.hidden = !enabled;
+      // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
+      tile.dataset.tone = offline || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
+      const upNext = next[0] ? `<i>next</i>${esc(nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
+      tile.innerHTML = `<span class="assistant-tile-head">${TILE_MARK}<b>assistant</b><span class="assistant-tile-state">${tone}${tileStatus}</span></span><span class="assistant-tile-next">${upNext}</span>`;
+      tile.title = current.nudge?.text ?? info;
+      // The visible content (name, status, next) is the accessible name: an aria-label would hide what is shown (axe label-content-name-mismatch).
+      tile.removeAttribute("aria-label");
+    }
     const block = document.getElementById("dashboard-focus");
     if (block) block.hidden = !enabled;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk">${dot(state)} ${esc(info)} ›</button>` : "";
     replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>today · ${summary}${latest ?? ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error ? `<p role="status">${esc(error)}</p>` : ""}`);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${button("settings", "settings", "Assistant settings")}</div>${notes}<div class="focus-conversation"><button type="button" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk</button></div>${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2>${todayHtml(open)}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" aria-label="Talk to assistant"${offline || !focus?.assistant?.session ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next</h2>${nextHtml(5)}<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details><h2>today <small>${summary}</small></h2>${todayHtml(open)}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = error || focus?.assistant?.error || (focus?.assistant?.queued ? `${focus.assistant.queued} queued` : notice);
     const setting = document.getElementById("assistant-setting-status");

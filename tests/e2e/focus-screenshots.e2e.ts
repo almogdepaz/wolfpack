@@ -57,8 +57,10 @@ test("focus screenshot and layout evidence", async ({ page }, info) => {
       return { sidebar: box("#desktop-sidebar"), controls: box("#sidebar-session-controls"), filter: box("#sidebar-session-filter"), tile: box("#sidebar-assistant") };
     });
     writeFileSync(join(screenshots, "focus-layout-measurements.json"), JSON.stringify(measures, null, 2));
-    expect(measures.tile.height).toBe(measures.filter.height);
-    expect(measures.tile.y).toBe(measures.filter.y);
+    // the assistant card has its own full-width row under the filter
+    expect(measures.tile.y).toBeGreaterThanOrEqual(measures.filter.y + measures.filter.height);
+    expect(Math.round(measures.tile.width)).toBe(Math.round(measures.filter.width));
+    expect(measures.tile.height).toBeGreaterThanOrEqual(44);
     expect((await new AxeBuilder({ page }).include("#sidebar-session-controls").include("#assistant-terminal-header").analyze()).violations).toEqual([]);
   }
   await page.screenshot({ path: join(screenshots, `focus-terminal-${desktop ? 1440 : 390}.png`), fullPage: true });
