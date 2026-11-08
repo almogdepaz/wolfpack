@@ -254,12 +254,13 @@ export function createAssistantView(deps: {
     wasEnabled = enabled;
     if (closing && document.getElementById("assistant-view")?.classList.contains("visible")) deps.show("sessions");
     const tile = document.getElementById("sidebar-assistant");
-    const tileStatus = !focus?.document ? "set focus" : offline ? "offline" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : `${next.length} next`;
+    const tileState = !focus?.document ? "set focus" : offline ? "offline" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
+    const tileStatus = tileState ?? `${next.length} next`;
     if (tile) {
       tile.hidden = !enabled;
       // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
       tile.dataset.tone = offline || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
-      const countedNext = tileStatus.endsWith(" next");
+      const countedNext = tileState === null;
       const upNext = next[0] ? `${countedNext ? "" : "<i>next:</i> "}${esc(nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
       tile.innerHTML = `<span class="assistant-tile-head">${TILE_MARK}<b>assistant,</b><span class="assistant-tile-state">${tone}${tileStatus}${countedNext && next[0] ? ":" : ""}</span></span> <span class="assistant-tile-next">${upNext}</span>`;
       tile.title = current.nudge?.text ?? info;

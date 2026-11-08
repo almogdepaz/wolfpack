@@ -35,4 +35,3 @@ test("QA-5: the sidebar assistant remains reachable with no other sessions", asy
   await page.locator("#sidebar-assistant").click();
   await expect(page.locator("#assistant-view")).toBeVisible();
 });
-

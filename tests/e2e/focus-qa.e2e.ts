@@ -38,4 +38,3 @@ test("QA-10: a write announces focus updated then the notice expires, including 
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   await expect(status).toBeEmpty();
 });
-
