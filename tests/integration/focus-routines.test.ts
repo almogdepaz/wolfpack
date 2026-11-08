@@ -98,6 +98,41 @@ describe("focus routines runtime", () => {
     expect(t.routines.status().catchingUp).toBeNull();
   });
 
+  test("a restarted server leaves catching up as soon as its retained inbox is acked, even while the assistant works", async () => {
+    const t = setup();
+    t.peer.add(state("app"), at(6, 14));
+    await t.routines.tick();
+    await t.routines.tick();
+    const file = fileOf(t.sends[0]!.text);
+    t.sends[0]!.settle("sent");
+    await t.routines.tick();
+    const restarted = new FocusRoutines({
+      folder: join(t.root, "assistant"), enabled: () => true, sources: async () => [t.peer], timing: async () => ASSISTANT_TIMING_DEFAULTS,
+      assistant: async () => t.assistant, queueBusy: () => false, enqueue: () => {}, now: () => t.clock.now,
+    });
+    t.assistant.idle = false;
+    await restarted.tick();
+    expect(restarted.status().catchingUp).not.toBeNull();
+    await restarted.ack(file);
+    expect(restarted.status().catchingUp).toBeNull();
+    await restarted.tick();
+    expect(restarted.status().catchingUp).toBeNull();
+  });
+
+  test("boot does not claim reading activity while a live assistant is busy without a routine", async () => {
+    const t = setup();
+    t.assistant.idle = false;
+    await t.routines.tick();
+    expect(t.routines.status().catchingUp).toBeNull();
+    expect(t.sends).toEqual([]);
+    t.assistant.idle = true;
+    t.peer.add(state("app"));
+    await t.routines.tick();
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
+    expect(t.routines.status().catchingUp).not.toBeNull();
+  });
+
   test("the assistant's own rows never start a turn: the cursor advances without an inbox", async () => {
     const t = setup();
     await t.routines.tick();

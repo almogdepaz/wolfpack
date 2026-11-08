@@ -169,6 +169,9 @@ export class FocusRoutines {
     const sample = await this.deps.assistant();
     if (sample.sessionId && sample.sessionId !== this.lastSessionId) { this.lastSessionId = sample.sessionId; this.restartPending = true; }
     const idle = sample.idle && !this.deps.queueBusy();
+    // A busy live assistant without a routine is doing terminal work, not boot catch-up.
+    // restartPending still requests the ordinary catch-up once it rests.
+    if (sample.sessionId && !sample.idle && !coverage.inbox && !this.deps.queueBusy()) this.booting = false;
     const machines: SchedulerMachine[] = Object.entries(coverage.catchUpCursors).map(([id, c]) => ({
       id, reachable: this.reached.has(id), pendingRows: c.headSeq > c.seq, lastRowAt: c.lastRowAt, lastInputAt: c.lastInputAt,
     }));
@@ -419,6 +422,8 @@ export class FocusRoutines {
       const result = applyAck(this.read(), name, this.iso());
       if (!result.already) {
         this.save(result.coverage);
+        // An ack is progress even while the harness is busy with its next turn.
+        this.booting = false;
         rmSync(join(this.deps.folder, "inbox", name), { force: true });
         if (this.queuedFile === name) this.queuedFile = undefined;
       }
