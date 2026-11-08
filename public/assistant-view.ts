@@ -25,6 +25,8 @@ export function createAssistantView(deps: {
   let offline = false;
   // No answer from the home yet (first paint from the cache): show the cached copy as it was, write nothing.
   let answered = false;
+  // Saved writes; a poll started before one does not replace the document it saved.
+  let writes = 0;
   let error = "";
   let notice = "";
   let flight: Promise<void> | undefined;
@@ -242,6 +244,7 @@ export function createAssistantView(deps: {
     if (flight) return flight;
     opened = true;
     flight = (async () => {
+      const epoch = writes;
       try {
         let response = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, undefined, false);
         const home = response.local ? { key: "", name: "this machine" } : deps.homeMachine(response.home);
@@ -255,10 +258,12 @@ export function createAssistantView(deps: {
           response = remote;
         }
         if (response.document !== null && !isFocusDocument(response.document)) throw new Error("invalid focus document");
-        focus = response; offline = false; error = "";
+        // A write saved while this poll was in flight is newer than the document it carries: keep the written one.
+        focus = writes !== epoch && focus?.home === response.home ? { ...response, document: focus.document, revision: focus.revision } : response;
+        offline = false; error = "";
         pendingAsk = observePendingAsk(pendingAsk, activity(), Date.now());
         for (const session of openSessions()) void loadContext(session);
-        cache(response);
+        cache(focus);
       } catch (e) { offline = true; error = e instanceof Error ? e.message : "focus unavailable"; }
       answered = true;
       render();
@@ -272,6 +277,7 @@ export function createAssistantView(deps: {
       try {
         const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: [typeof op === "function" ? op() : op] }) }, machine);
         focus = { ...saved, assistant: focus?.assistant };
+        writes++;
         cache(focus);
         notice = "focus updated";
         return;

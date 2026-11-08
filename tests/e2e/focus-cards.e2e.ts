@@ -151,3 +151,37 @@ test("open cards refreshing their context do not drop a half-typed ask", async (
   await page.keyboard.type(" ask");
   await expect(box).toHaveValue("half typed ask");
 });
+
+test("a poll answered before a tick lands after it without reverting the tick (S2)", async ({ page }) => {
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const view = page.locator("#assistant-view");
+  await expect(view).toContainText("1 of 3 done");
+  let hold = false;
+  let arrived!: () => void;
+  const held = new Promise<void>(resolve => { arrived = resolve; });
+  let release!: () => void;
+  const released = new Promise<void>(resolve => { release = resolve; });
+  const conflicts: number[] = [];
+  page.on("response", response => { if (new URL(response.url()).pathname === "/api/focus" && response.request().method() === "POST" && response.status() === 409) conflicts.push(409); });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (route.request().method() !== "GET" || !hold) return route.continue();
+    hold = false;
+    // the server answers now (the older revision); the page sees it only after the tick
+    const response = await route.fetch();
+    arrived();
+    await released;
+    await route.fulfill({ response });
+  });
+  hold = true;
+  await held;
+  await view.getByRole("checkbox", { name: "Done: fix broker leak" }).check();
+  await expect(view).toContainText("2 of 3 done");
+  release();
+  await page.waitForTimeout(1000);
+  expect(await view.textContent()).toContain("2 of 3 done");
+  await view.locator(".focus-done").getByRole("button", { name: "Undo done: fix broker leak" }).click();
+  await expect(view).toContainText("1 of 3 done");
+  expect(conflicts).toEqual([]);
+  await page.unroute(url => url.pathname === "/api/focus");
+});
