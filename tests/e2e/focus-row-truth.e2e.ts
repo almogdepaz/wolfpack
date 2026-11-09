@@ -251,7 +251,8 @@ test("many stops: twelve unseen episodes remain capped without an hours cutoff",
     body.sessions = [...body.sessions.filter((s: { name: string }) => s.name === "assistant"), ...names.map((name, i) => ({ ...template, name,
       identity: { ...template.identity, wolfpackSessionId: `mock:${name}`, projectPath: `/work/research-${i % 3 + 1}` },
       runtimeState: { ...template.runtimeState, state: i % 2 ? "idle" : "done", unseen: true, stoppedSequence: 5,
-        acknowledgedSequence: 0, changedAt: new Date(Date.now() - (i + 2) * 864e5).toISOString() },
+        acknowledgedSequence: 0, stoppedAt: new Date(Date.now() - (i + 2) * 864e5).toISOString(),
+        changedAt: new Date(Date.now() - (12 - i) * 60_000).toISOString() },
     }))];
     await route.fulfill({ response, json: body });
   });
@@ -265,7 +266,7 @@ test("many stops: twelve unseen episodes remain capped without an hours cutoff",
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(3);
-  await expect(block.locator(".focus-next .focus-title").first()).toContainText("review-12 stopped · 13d");
+  await expect(block.locator(".focus-next .focus-title")).toHaveText(names.slice(0, 3).map((name, i) => `${name} stopped · ${i + 2}d`));
   const shots = process.env.WOLFPACK_FOCUS_SHOTS;
   if (shots) {
     mkdirSync(shots, { recursive: true });
@@ -275,7 +276,7 @@ test("many stops: twelve unseen episodes remain capped without an hours cutoff",
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-next > li")).toHaveCount(5);
   await expect(view.locator(".focus-next > li:visible")).toHaveCount(width === 390 ? 3 : 5);
-  await expect(view.locator(".focus-next .focus-title").first()).toContainText("review-12 stopped · 13d");
+  await expect(view.locator(".focus-next .focus-title")).toHaveText(names.slice(0, 5).map((name, i) => `${name} stopped · ${i + 2}d`));
   expect(await view.locator(".focus-next summary .focus-for span").first().evaluate(el => el.getClientRects().length), "project name stays one readable token beside the intention").toBe(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   if (shots) await page.screenshot({ path: join(shots, `old-stops-assistant-${width}.png`), fullPage: true });

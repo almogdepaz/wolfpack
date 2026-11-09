@@ -63,9 +63,50 @@ test("linked needs-you then stopped unseen then starts then unlinked needs-you t
   const focus = reduceFocus(doc(), [{ type: "edit", id: "a", patch: { sessions: ["linked", "busy", "stop1", "stop2"] } }], now);
   const stopped = (id: string, at: string, state = "done") => ({ ...session(id, state, at), unseen: true, stoppedSequence: 2 });
   const sessions = [stopped("stop2", "2020-01-02", "idle"), stopped("u-stop2", "2020-01-02"), session("linked", "failed", now), stopped("stop1", "2020-01-01"), session("u-needs", "needs-input", now), stopped("u-stop1", "2020-01-01")];
-  expect(rankFocus(focus, sessions, 10, Date.parse(now)).map(r => r.session?.id ?? r.intention?.id)).toEqual(["linked", "stop1", "stop2", "b", "u-needs", "u-stop1", "u-stop2"]);
-  expect(rankFocus(focus, sessions, 10, Date.parse(now))[1]?.reason).toMatch(/stopped.*not.*seen/i);
+  expect(rankFocus(focus, sessions, 10, Date.parse(now)).map(r => r.session?.id ?? r.intention?.id)).toEqual(["linked", "stop2", "stop1", "b", "u-needs", "u-stop2", "u-stop1"]);
+  const rows = rankFocus(focus, sessions, 10, Date.parse(now));
+  expect(rows[1]?.reason).toMatch(/stopped.*not.*seen.*newest first/i);
+  expect(rows[5]?.reason).toMatch(/stopped.*not.*seen.*newest first/i);
   expect(rankFocus(focus, sessions.map(s => ({ ...s, unseen: false })), 10, Date.parse(now)).map(r => r.session?.id ?? r.intention?.id)).toEqual(["linked", "b", "u-needs"]);
+});
+for (const linked of [true, false]) test(`${linked ? "linked" : "unlinked"} stops use stoppedAt, legacy fallback and ascending stable identity ties`, () => {
+  const stopped = (id: string, stoppedAt: string | undefined, changedAt: string, machine = "home") => ({
+    ...session(id, id === "old" ? "idle" : "done", changedAt), stoppedAt, machine, unseen: true, stoppedSequence: 2,
+  });
+  const sessions = [
+    stopped("old", "2020-01-01", now), // Later metadata must not promote an old stop.
+    stopped("b", "2026-11-04", now),
+    stopped("a", "2026-11-04", "2026-11-04", "zbox"),
+    stopped("newest", "2026-11-05", "2026-11-05"),
+    stopped("legacy", undefined, "2026-11-03"),
+    stopped("a", "2026-11-04", "2026-11-05", "abox"),
+  ];
+  const focus = linked ? reduceFocus(emptyFocus(), [{ type: "add", intention: { id: "work", title: "work", sessions: [...new Set(sessions.map(s => s.id))] } }], now) : emptyFocus();
+  for (const input of [sessions, [...sessions].reverse()]) {
+    const rows = rankFocus(focus, input, 10, Date.parse(now));
+    expect(rows.map(r => [r.session?.id, r.session?.machine])).toEqual([
+      ["newest", "home"], ["a", "abox"], ["a", "zbox"], ["b", "home"], ["legacy", "home"], ["old", "home"],
+    ]);
+    expect(rows.every(r => r.reason.includes("newest first"))).toBe(true);
+  }
+});
+test("intention and group order, oldest attention and seen-finish order stay unchanged", () => {
+  const focus = reduceFocus(emptyFocus(), [
+    { type: "add", intention: { id: "first", title: "first", sessions: ["first-stop", "attention-old", "attention-new", "finish-old", "finish-new"] } },
+    { type: "add", intention: { id: "second", title: "second", sessions: ["second-stop"] } },
+    { type: "add", intention: { id: "start", title: "start" } },
+  ], now);
+  const sessions = [
+    { ...session("second-stop", "done", "2026-11-06"), unseen: true, stoppedSequence: 2 },
+    { ...session("first-stop", "idle", "2020-01-01"), unseen: true, stoppedSequence: 2 },
+    { ...session("attention-new", "failed", "2026-11-05"), stoppedAt: "2026-11-01" },
+    { ...session("attention-old", "needs-input", "2026-11-04"), stoppedAt: "2026-11-03" },
+    session("finish-old", "done", "2026-11-06T10:00:00Z"),
+    session("finish-new", "done", "2026-11-06T11:00:00Z"),
+  ];
+  expect(rankFocus(focus, sessions, 10, Date.parse(now)).map(r => r.session?.id ?? r.intention?.id)).toEqual([
+    "attention-old", "attention-new", "first-stop", "second-stop", "start", "finish-new", "finish-old",
+  ]);
 });
 for (const state of ["needs-input", "failed"]) test(`done intentions do not claim ${state} sessions by project or explicit id`, () => {
   const focus = reduceFocus(emptyFocus(), [
