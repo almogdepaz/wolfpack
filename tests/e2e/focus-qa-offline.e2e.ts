@@ -94,6 +94,32 @@ for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state
   await expect(view.locator(".focus-header")).not.toContainText("sessions unavailable");
 });
 
+test("QA-18: broker-only outage leaves focus writable but terminal actions unavailable", async ({ page }) => {
+  await page.route("https://**", route => route.abort());
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [] } }));
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    body.assistant = { ...body.assistant, state: "unknown", unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  await expect(view.locator(".focus-header")).toContainText("sessions unavailable");
+  await expect(view.locator(".focus-header")).not.toContainText("offline");
+  await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeDisabled();
+  await expect(view.getByRole("button", { name: "Talk to assistant" })).toHaveAttribute("title", /reconnecting to the terminal broker/);
+  const input = view.getByRole("textbox", { name: "Add an intention" });
+  await expect(input).toBeEnabled();
+  const title = "QA18 local focus during broker outage";
+  await input.fill(title);
+  await input.press("Enter");
+  await view.getByRole("checkbox", { name: `Done: ${title}`, exact: true }).click();
+  await expect(view.locator(".focus-done")).toContainText(title);
+});
+
 test("S2: a retired peer installation leaves the offline snapshot before local recovery", async ({ page }) => {
   const origin = "https://focus-peer.example.ts.net";
   const oldId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
@@ -145,6 +171,7 @@ test("QA-14: self-offline keeps last known next rows, disabled, then recovers", 
   await context.setOffline(true);
   await expect(view).toContainText("offline · read-only", { timeout: 15_000 });
   await expect(view.locator(".focus-header")).not.toContainText("sessions unavailable");
+  await expect(page.locator("#focus-status")).toHaveText(""); // The header already explains the outage, not a bare fetch error.
   expect(await view.locator(".focus-next .focus-card > summary").allTextContents()).toEqual(summaries);
   for (const action of await view.locator(".focus-next button, .focus-chips [data-focus-session], .focus-done button").all()) await expect(action).toBeDisabled();
   await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeDisabled();

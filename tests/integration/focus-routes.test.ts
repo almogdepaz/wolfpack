@@ -97,6 +97,46 @@ test("peer clients use normal owner auth for focus reads and CAS writes; non-hom
   }
 });
 
+test("local focus stays readable and writable when the assistant's broker disconnects", async () => {
+  const root = mkdtempSync(join(tmpdir(), "focus-broker-down-"));
+  const { AssistantService } = await import("../../src/server/assistant-service.ts");
+  const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+  const assistantService = new AssistantService({ root, readConfig: () => null });
+  Object.defineProperty(assistantService, "enabled", { get: () => true });
+  const backend = new MockBackend({ sessions: ["assistant"] });
+  const facts = await backend.listSessionFacts();
+  const initial = facts[0]!;
+  const live = { ...initial, identity: { ...initial.identity!, projectPath: assistantService.folder } };
+  let down = false;
+  backend.listSessionFacts = async () => { if (down) throw new Error("broker not connected"); return [live]; };
+  const ctx = createServerContext({ backend, config: null, assistantService, focusStore: new FocusStore(join(root, "focus.json")), taskRelayRoot: join(root, "relay") });
+  const routes = createRoutes(ctx);
+  const server = createServer((req, res) => { void routes[`${req.method} ${new URL(req.url!, "http://localhost").pathname}`]!(req, res); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    __resetSessionObservationForTests();
+    expect((await fetch(`${base}/api/focus`)).status).toBe(200);
+    down = true;
+    await Bun.sleep(5_050); // Expire the harness sample so this traverses the formerly throwing live path.
+    const response = await fetch(`${base}/api/focus`);
+    expect(response.status).toBe(200);
+    const current = await response.json();
+    expect(current.assistant).toMatchObject({ enabled: true, state: "unknown", unavailableReason: "sessions unavailable; reconnecting to the terminal broker" });
+    expect(current.assistant.session).toBeUndefined();
+    const write = await fetch(`${base}/api/focus`, { method: "POST", body: JSON.stringify({ expectedRevision: 0, ops: [{ type: "add", intention: { id: "offline", title: "local focus still works" } }] }) });
+    expect(write.status).toBe(200);
+    expect((await (await fetch(`${base}/api/focus`)).json()).document.intentions[0].title).toBe("local focus still works");
+    down = false;
+    expect((await (await fetch(`${base}/api/focus`)).json()).assistant.unavailableReason).toBeUndefined();
+  } finally {
+    ctx.focusRuntime.stop();
+    await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
+    __resetSessionObservationForTests();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);
+
 test("focus config preserves home identity and refuses invalid home", async () => {
   const { parseConfig } = await import("../../src/config.ts");
   expect(parseConfig({ devDir: "/tmp", port: 19791, focus: { home: "home-install" } })?.focus).toEqual({ home: "home-install" });

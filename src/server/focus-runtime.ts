@@ -1,5 +1,5 @@
 import { AGENT_KIND } from "../agent-kind.js";
-import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
+import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { ServerContext } from "./context.js";
 import { PinnedSessionService } from "./pinned-session-service.js";
 import { FocusSendQueue, sendDelivery } from "../focus-send-queue.js";
@@ -60,11 +60,24 @@ export class FocusRuntime {
     const service = this.ctx.assistantService;
     const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
     const id = session?.identity?.wolfpackSessionId;
-    const verdict = id && service.enabled ? await this.verdict(id) : undefined;
+    // Focus is a local document; optional live terminal enrichment must not
+    // make its reads fail when the broker disconnects (including mid-sample).
+    let unavailable = this.ctx.supervisor?.isBrokerReady() === false
+      || (session?.runtimeState.authority === AGENT_STATUS_AUTHORITY.BROKER && session.runtimeState.state === AGENT_STATUS_STATE.UNKNOWN);
+    let verdict: { idle: boolean; needsInput: boolean } | undefined;
+    if (id && service.enabled && !unavailable) {
+      try { verdict = await this.verdict(id); }
+      catch (error) {
+        unavailable = true;
+        log.warn("assistant terminal status unavailable", { error: errMsg(error) });
+      }
+    }
+    if (unavailable) this.lastVerdict = undefined;
     // A harness dialog (pi's trust / login / resume selects) has no semantic status and reads as idle from the
     // screen fallback; the harness verdict is what the user needs to see, with the terminal as the action.
-    const state = verdict?.needsInput ? AGENT_STATUS_STATE.NEEDS_INPUT : session?.runtimeState.state ?? (service.enabled ? "starting" : "off");
-    return { enabled: service.enabled, folder: service.folder, session: session?.name, sessionId: session?.identity?.wolfpackSessionId,
+    const state = unavailable ? AGENT_STATUS_STATE.UNKNOWN : verdict?.needsInput ? AGENT_STATUS_STATE.NEEDS_INPUT : session?.runtimeState.state ?? (service.enabled ? "starting" : "off");
+    return { enabled: service.enabled, folder: service.folder, session: unavailable ? undefined : session?.name, sessionId: unavailable ? undefined : id,
+      ...(unavailable && { unavailableReason: "sessions unavailable; reconnecting to the terminal broker" }),
       state, idle: verdict?.idle ?? false, queued: this.queue.size,
       error: service.enabled ? this.queue.error ?? this.pins.errors.assistant : undefined };
   }
