@@ -258,6 +258,40 @@ describe("doctor Claude task integration checks", () => {
     expect(wake?.detail).toContain("1 on channel wake with pointer or inbox activity");
   });
 
+  /**
+   * The status file the companion plugin writes when the paste or submit command throws after an
+   * earlier inbox call: its nudge outer catch patches only `lastNudgeError`, and `requestPointer`
+   * reset `statusFailures` to 0. The field set copies a record the plugin's real wake controller and
+   * status file produced (re-review R2-2 probe).
+   */
+  const thrownPasteStatus = {
+    clientProtocolVersion: "2025-11-25", startedAt: 100, lastPointerAt: 200, lastInboxAt: 100, lastNudgeAt: null, fallbackAt: null,
+    lastNudgeError: "fixture paste command timed out", statusFailures: 0, wakeStalledAt: null, lastStatus: null, updatedAt: 20_000,
+  };
+
+  test("warns that a thrown paste error may belong to the outstanding pointer", () => {
+    const options = healthy();
+    writeStatus(options.statusDirectory, "thrown", thrownPasteStatus);
+    writeStatus(options.statusDirectory, "thrown-after-ack", { ...thrownPasteStatus, lastNudgeAt: 50 });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("warn");
+    for (const name of ["thrown", "thrown-after-ack"]) {
+      expect(wake?.detail).toContain(
+        `${name} (${name}, pid 4242): last nudge error may belong to the outstanding pointer from ${new Date(200).toISOString()}: fixture paste command timed out`,
+      );
+    }
+    expect(wake?.detail).not.toContain("with pointer or inbox activity");
+    expect(wake?.fixHint).toContain("wolfpack session status");
+  });
+
+  test("a thrown paste error followed by an inbox call is resolved", () => {
+    const options = healthy();
+    writeStatus(options.statusDirectory, "acknowledged", { ...thrownPasteStatus, lastInboxAt: 300 });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("pass");
+    expect(wake?.detail).toBe("1 on channel wake with pointer or inbox activity");
+  });
+
   test("counts channel pointer or inbox activity as evidence of delivery", () => {
     const options = healthy();
     writeStatus(options.statusDirectory, "pointer", { lastPointerAt: Date.now(), lastInboxAt: null, lastNudgeError: null, statusFailures: 0 });

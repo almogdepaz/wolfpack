@@ -114,7 +114,9 @@ and the reason, about each live Claude session whose wake stalled after its
 status checks ran out, that has a current nudge error, or that uses fallback
 wake instead of the channel. A nudge error stops counting once the session
 calls its inbox after that nudge (or, for a failed status check, after the
-pointer it retried). It warns about status files it cannot read. A channel
+pointer it retried). A thrown paste or submit records no nudge time, so while a
+pointer waits for an inbox call, doctor warns that the recorded nudge error
+may belong to that pointer. It warns about status files it cannot read. A channel
 session counts as delivered only after a pointer or inbox call; before that,
 doctor reports it as "channel configured, unverified".
 

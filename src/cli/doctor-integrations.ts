@@ -227,24 +227,34 @@ const plural = (count: number, noun: string): string => `${count} ${noun}${count
 
 type ClaudeWakeProblemKind = "stalled" | "fallback" | "error";
 
+/** Whether `lastNudgeError` is current: `uncertain` when it may belong to the outstanding pointer or to an earlier one. */
+type NudgeErrorState = "current" | "uncertain" | undefined;
+
 /**
- * The plugin never clears `lastNudgeError`, so doctor decides whether it is current. A failed paste
- * or submit sets `lastNudgeAt`; an inbox call after it means the model got the task. A failed status
- * check sets only the error and `statusFailures` while its pointer (`lastPointerAt`) waits; an inbox
- * call after that pointer acknowledges it. (`wakeStalledAt` needs no rule: the next inbox call clears it.)
+ * The plugin never clears `lastNudgeError`, so doctor decides whether it is current. A nonzero exit
+ * of the paste or submit command sets `lastNudgeAt` with the error; an inbox call after it means the
+ * model got the task. A failed status check sets the error and `statusFailures`, which the next
+ * pointer resets to 0, so a nonzero count belongs to the outstanding pointer (`lastPointerAt` later
+ * than `lastInboxAt`). A thrown paste or submit sets only the error: while a pointer is outstanding,
+ * the timestamps cannot tell that error from an earlier one, so it is `uncertain`. An inbox call
+ * after the pointer acknowledges all of them. (`wakeStalledAt` needs no rule: the next inbox call clears it.)
  */
-function nudgeErrorCurrent(file: ClaudeStatusFile): boolean {
-  if (file.lastNudgeError === undefined) return false;
-  if (file.lastInboxAt === undefined) return true;
-  if (file.statusFailures > 0 && file.lastPointerAt !== undefined && file.lastPointerAt > file.lastInboxAt) return true;
-  return file.lastNudgeAt !== undefined && file.lastInboxAt <= file.lastNudgeAt;
+function nudgeErrorState(file: ClaudeStatusFile): NudgeErrorState {
+  if (file.lastNudgeError === undefined) return undefined;
+  if (file.lastInboxAt === undefined) return "current";
+  if (file.lastNudgeAt !== undefined && file.lastInboxAt <= file.lastNudgeAt) return "current";
+  if (file.lastPointerAt === undefined || file.lastPointerAt <= file.lastInboxAt) return undefined;
+  return file.statusFailures > 0 ? "current" : "uncertain";
 }
 
 /** Why a live session's wake needs attention, or undefined when it is on channel wake without a current error. */
 function claudeWakeProblem(file: ClaudeStatusFile): { readonly detail: string; readonly kinds: readonly ClaudeWakeProblemKind[] } | undefined {
   const label = `${file.sessionName ?? file.sessionId} (${file.sessionId}, pid ${file.pid})`;
   const fallback = file.wake !== "channel";
-  const errorCurrent = nudgeErrorCurrent(file);
+  const errorState = nudgeErrorState(file);
+  const errorSubject = errorState === "uncertain"
+    ? `last nudge error may belong to the outstanding pointer from ${isoTime(file.lastPointerAt)}`
+    : "last nudge error";
   if (file.wakeStalledAt !== undefined) {
     const error = file.lastNudgeError ?? "no error recorded";
     return {
@@ -253,12 +263,12 @@ function claudeWakeProblem(file: ClaudeStatusFile): { readonly detail: string; r
     };
   }
   if (fallback) {
-    const lastError = errorCurrent ? `, last nudge error: ${file.lastNudgeError}` : "";
+    const lastError = errorState !== undefined ? `, ${errorSubject}: ${file.lastNudgeError}` : "";
     return { kinds: ["fallback"], detail: `${label}: fallback wake since ${isoTime(file.fallbackAt)} (protocol ${String(file.protocolVersion ?? "unknown")})${lastError}` };
   }
-  if (errorCurrent) {
+  if (errorState !== undefined) {
     const retrying = file.statusFailures > 0 ? ` (${plural(file.statusFailures, "failed status check")})` : "";
-    return { kinds: ["error"], detail: `${label}: last nudge error: ${file.lastNudgeError}${retrying}` };
+    return { kinds: ["error"], detail: `${label}: ${errorSubject}: ${file.lastNudgeError}${retrying}` };
   }
   return undefined;
 }
