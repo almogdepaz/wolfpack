@@ -634,7 +634,9 @@ async function applyAttachResize(
   size: { cols: number; rows: number },
 ): Promise<boolean> {
   try {
-    await ctx.viewerRedraw.begin(ctx.session);
+    // Every settle/finalizer await must revalidate its viewer before geometry.
+    if (bail(ctx)) return false;
+    ctx.viewerRedraw.begin(ctx.session);
     await ctx.backend.resize(ctx.session, size.cols, size.rows);
   } catch (error: unknown) {
     if (entryStillCurrent(ctx.entry, ctx.session, ctx.ws)) {
@@ -1524,8 +1526,10 @@ function setupNewPtyEntry(
             if (resizeTimer) clearTimeout(resizeTimer);
             resizeTimer = setTimeout(() => {
               resizeTimer = null;
-              if (!entry.alive || entry.exitDraining) return;
-              viewerRedraw.begin(session).then(() => streamingBackend.resize(session, cols, rows)).then(() => {
+              if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
+              viewerRedraw.begin(session);
+              // Send in debounce order, never behind optional attribution reads.
+              streamingBackend.resize(session, cols, rows).then(() => {
                 if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
                 if (resizeId !== undefined) {
                   safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", resizeId, cols, rows }));

@@ -16,10 +16,12 @@ import {
   type SessionBackend,
   type PtyBackendMethods,
   type SessionLifecycleEvent,
+  type SessionListFact,
 } from "../../src/server/backend";
 import { __getTestState } from "../../src/test-hooks";
 import { handlePtyWs, teardownPty } from "../../src/server/websocket";
 import { classifyDisconnect } from "../../src/take-control-logic";
+import { defaultServerContext } from "../../src/server/context";
 
 const BOUNDED_GRID_SCROLLBACK_ROWS = 200;
 
@@ -629,12 +631,9 @@ describe("broker WS attach: snapshot + subscribe path", () => {
   test("non-progress ack traffic cannot consume resize control admission", async () => {
     const ws = await attachWithClock(true);
     for (let index = 0; index < 100; index++) ws.pushJson({ type: "ack", bytes: 0 });
-    const resized = new Promise<void>(resolve => { ws.onSend = data => {
-      if (typeof data === "string" && JSON.parse(data).type === "resize_ack") resolve();
-    }; });
     ws.pushJson({ type: "resize", resizeId: 42, cols: 132, rows: 50 });
     jest.advanceTimersByTime(80);
-    await resized;
+    await Promise.resolve();
     expect(backend.resizeCalls.at(-1)).toEqual({ name: SESSION, cols: 132, rows: 50 });
     expect(ws.closeCode).toBeNull();
   });
@@ -1117,6 +1116,95 @@ describe("broker WS attach: snapshot + subscribe path", () => {
 
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 120, rows: 40 }]);
     expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 42, cols: 120, rows: 40 });
+  });
+
+  test("attribution reads cannot delay attach readiness or ordered resize acknowledgements", async () => {
+    defaultServerContext.viewerRedraw.prune([{ name: SESSION, alive: true, identity: { wolfpackSessionId: "resize-incarnation" } } as SessionListFact]);
+    const reads: Array<() => void> = [];
+    backend.listSessionFacts = () => new Promise(resolve => reads.push(() => resolve([{ name: SESSION, alive: true }])));
+    const ws = new FakeWs();
+    try {
+      attachWs(ws);
+      ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+      await wait(250);
+      expect(ws.hasJsonType("pty_ready")).toBe(true);
+      ws.pushJson({ type: "resize", resizeId: 41, cols: 132, rows: 50 });
+      await wait(250);
+      expect(backend.resizeCalls.at(-1)).toEqual({ name: SESSION, cols: 132, rows: 50 });
+      expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 41, cols: 132, rows: 50 });
+    } finally { for (const release of reads) release(); }
+  });
+
+  test("a held attribution read cannot delay an ordinary ordered resize acknowledgement", async () => {
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    await waitFor(() => ws.hasJsonType("pty_ready"));
+    defaultServerContext.viewerRedraw.prune([{ name: SESSION, alive: true, identity: { wolfpackSessionId: "resize-incarnation" } } as SessionListFact]);
+    const reads: Array<() => void> = [];
+    backend.listSessionFacts = () => new Promise(resolve => reads.push(() => resolve([{ name: SESSION, alive: true }])));
+    try {
+      ws.pushJson({ type: "resize", resizeId: 41, cols: 132, rows: 50 });
+      await wait(250);
+      expect(ws.jsonFrames()).toContainEqual({ type: "resize_ack", resizeId: 41, cols: 132, rows: 50 });
+    } finally { for (const release of reads) release(); }
+  });
+
+  test("detached viewer's attribution read cannot apply old geometry after replacement readiness", async () => {
+    defaultServerContext.viewerRedraw.prune([{ name: SESSION, alive: true, identity: { wolfpackSessionId: "resize-incarnation" } } as SessionListFact]);
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    await waitFor(() => ws.hasJsonType("pty_ready"));
+    await wait(1100); // Retire the initial geometry's attribution window.
+    const list = backend.listSessionFacts.bind(backend);
+    let release: (() => void) | undefined;
+    let held = false;
+    backend.listSessionFacts = async () => {
+      if (!held) { held = true; await new Promise<void>(resolve => { release = resolve; }); }
+      return list();
+    };
+    try {
+      ws.pushJson({ type: "resize", resizeId: 41, cols: 132, rows: 50 });
+      await wait(1200); // Includes asynchronous watermark capture after the corrected geometry send.
+      expect(held).toBe(true);
+      ws.pushBinary(Buffer.from("x"));
+      ws.close();
+      const replacement = new FakeWs();
+      attachWs(replacement);
+      replacement.pushJson({ type: "attach", cols: 100, rows: 24, prefillMode: "none" });
+      await waitFor(() => replacement.hasJsonType("pty_ready"));
+      expect(backend.resizeCalls.at(-1)).toEqual({ name: SESSION, cols: 100, rows: 24 });
+      release?.();
+      await wait(30);
+      expect(backend.resizeCalls.at(-1)).toEqual({ name: SESSION, cols: 100, rows: 24 });
+    } finally { release?.(); }
+  });
+
+  test("input between resizes cannot let a late attribution read reorder geometry", async () => {
+    defaultServerContext.viewerRedraw.prune([{ name: SESSION, alive: true, identity: { wolfpackSessionId: "resize-incarnation" } } as SessionListFact]);
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
+    await waitFor(() => ws.hasJsonType("pty_ready"));
+    await wait(1100);
+    const list = backend.listSessionFacts.bind(backend);
+    let release: (() => void) | undefined;
+    let held = false;
+    backend.listSessionFacts = async () => {
+      if (!held) { held = true; await new Promise<void>(resolve => { release = resolve; }); }
+      return list();
+    };
+    try {
+      ws.pushJson({ type: "resize", resizeId: 41, cols: 100, rows: 30 });
+      await wait(120);
+      ws.pushBinary(Buffer.from("x"));
+      ws.pushJson({ type: "resize", resizeId: 42, cols: 120, rows: 40 });
+      await waitFor(() => ws.jsonFrames().some(f => f.type === "resize_ack" && f.resizeId === 42));
+      release?.();
+      await wait(30);
+      expect(backend.resizeCalls.map(({ cols, rows }) => `${cols}x${rows}`)).toEqual(["80x24", "100x30", "120x40"]);
+    } finally { release?.(); }
   });
 
   test("resize after attach calls broker.resize (debounced ~80ms)", async () => {

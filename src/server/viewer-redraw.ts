@@ -13,29 +13,19 @@ interface Redraw {
   through?: bigint;
   timer: ReturnType<typeof setTimeout>;
 }
+
 export class ViewerRedrawTracker {
   private readonly redraws = new Map<string, Redraw>();
-  private readonly pending = new Map<string, object>();
   private readonly inputs = new Map<string, number>();
+  private identities = new Map<string, string>();
   constructor(private readonly backend: Pick<SessionBackend, "listSessionFacts">) {}
 
-  async begin(name: string): Promise<void> {
-    // Bind geometry attribution to the incarnation before applying the resize.
+  begin(name: string): void {
     this.cancel(name);
-    if (Date.now() - (this.inputs.get(name) ?? -Infinity) < VIEWER_REDRAW_MS) return;
-    const token = {};
-    this.pending.set(name, token);
-    let facts: SessionListFact[];
-    try { facts = await this.backend.listSessionFacts(); }
-    catch (error) {
-      if (this.pending.get(name) === token) this.pending.delete(name);
-      log.debug("viewer redraw attribution unavailable", { name, error: errMsg(error) });
-      return;
-    }
-    if (this.pending.get(name) !== token) return;
-    this.pending.delete(name);
-    const id = facts.find(f => f.name === name && f.alive)?.identity?.wolfpackSessionId;
-    if (!id) return;
+    // Only already-observed work can have a stop to preserve. Reuse that exact
+    // incarnation instead of putting an optional list RPC ahead of geometry.
+    const id = this.identities.get(name);
+    if (!id || Date.now() - (this.inputs.get(name) ?? -Infinity) < VIEWER_REDRAW_MS) return;
     const redraw: Redraw = { id, until: Date.now() + VIEWER_REDRAW_MS, timer: setTimeout(() => {
       void this.finish(name, redraw);
     }, VIEWER_REDRAW_MS) };
@@ -44,6 +34,7 @@ export class ViewerRedrawTracker {
   }
 
   private async finish(name: string, redraw: Redraw): Promise<void> {
+    if (this.redraws.get(name) !== redraw) return;
     try {
       const fact = (await this.backend.listSessionFacts()).find(f => f.identity?.wolfpackSessionId === redraw.id && f.alive);
       if (this.redraws.get(name) !== redraw) return;
@@ -62,7 +53,6 @@ export class ViewerRedrawTracker {
   }
 
   private cancel(name: string): void {
-    this.pending.delete(name);
     const previous = this.redraws.get(name);
     if (previous) clearTimeout(previous.timer);
     this.redraws.delete(name);
@@ -70,14 +60,18 @@ export class ViewerRedrawTracker {
 
   clear(): void {
     for (const name of this.redraws.keys()) this.cancel(name);
-    this.pending.clear();
+    this.identities.clear();
     this.inputs.clear();
   }
 
+  /** Adopt the completed canonical list; prune ended/replaced incarnations. */
   prune(facts: readonly SessionListFact[]): void {
-    const names = new Set(facts.filter(f => f.alive).map(f => f.name));
-    for (const name of this.redraws.keys()) if (!names.has(name)) this.cancel(name);
-    for (const [name, at] of this.inputs) if (!names.has(name) || Date.now() - at >= VIEWER_REDRAW_MS) this.inputs.delete(name);
+    const identities = new Map(facts.flatMap(f => f.alive && f.identity ? [[f.name, f.identity.wolfpackSessionId] as const] : []));
+    for (const [name, id] of this.identities) {
+      if (identities.get(name) !== id) { this.cancel(name); this.inputs.delete(name); }
+    }
+    for (const [name, at] of this.inputs) if (!identities.has(name) || Date.now() - at >= VIEWER_REDRAW_MS) this.inputs.delete(name);
+    this.identities = identities;
   }
 
   includes(fact: SessionListFact): boolean {

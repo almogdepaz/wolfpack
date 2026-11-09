@@ -13,7 +13,8 @@ test("context retires attribution, pending reads and input history on backend re
   const proxy = ctx.backend;
   const tracker = ctx.viewerRedraw;
   const fact = (await ctx.backend.listSessionFacts())[0]!;
-  await tracker.begin("work");
+  tracker.prune([fact]);
+  tracker.begin("work");
   expect(tracker.includes(fact)).toBe(true);
   supervisor.__setBrokerForTest(new MockBackend({ sessions: ["work"] }));
   expect(ctx.backend).toBe(proxy);
