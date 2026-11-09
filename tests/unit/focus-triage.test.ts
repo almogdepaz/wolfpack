@@ -69,6 +69,15 @@ test("unreachable peer refs are retained and disabled; reachable missing refs an
   expect(result.rows[0]).toMatchObject({ unavailable: true, source: "assistant", reason: "Reason for remote" });
   expect(result.rows[1]?.source).toBe("new-rules");
 });
+test("L4: equivalent episode timestamps match in reachable and cached paths", () => {
+  for (const reachable of [true, false]) {
+    const a = { ...session("a"), stoppedAt: "2026-11-09T14:00:00+02:00" };
+    expect(mergeFocus(doc([triage("a", "quiet")]), [a], { ...options, machineReachable: () => reachable }).rows).toEqual([]);
+    const suggestion = mergeFocus(doc([triage("a", "suggest")]), [a], { ...options, machineReachable: () => reachable });
+    expect(suggestion.rows[0]?.source).toBe("assistant");
+  }
+});
+
 test("L3: unknown installation ids cannot consume a placeholder slot", () => {
   const result = mergeFocus(doc([triage("remote", "suggest", "fabricated")]), [], options);
   expect(result.rows.every(row => !row.triage)).toBe(true);

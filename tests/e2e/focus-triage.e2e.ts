@@ -1,5 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { startTestServer, type TestServer } from "./helpers";
 let server: TestServer;
 const episode = "2026-11-09T12:00:00.000Z";
@@ -202,6 +205,29 @@ test("L3: unknown installation suggestions do not become permanent placeholders"
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.locator("#assistant-content .focus-next")).not.toContainText("Review the remote recommendation");
+});
+
+test("L4: actual list --json facts and the ui agree on the episode without session-route fixtures", async ({ page }, info) => {
+  // Populate the real observer first; the CLI must consume its bounded list projection.
+  await page.request.get(`${server.baseUrl}/api/sessions`);
+  const cliRoot = info.outputPath("cli-state"); mkdirSync(cliRoot, { recursive: true, mode: 0o700 });
+  writeFileSync(join(cliRoot, "config.json"), JSON.stringify({ devDir: server.home, port: server.port }), { mode: 0o600 });
+  const list = JSON.parse(execFileSync("bun", ["src/cli/index.ts", "list", "--json"], { cwd: process.cwd(), env: { ...process.env, WOLFPACK_TEST: "1", WOLFPACK_DIR: cliRoot }, encoding: "utf8" }));
+  const target = list.sessions.find((s: { session: string }) => s.session === "prompt-project");
+  expect(target.runtime.state).toBe("needs-input");
+  expect(target.lastLineTrust).toBe("untrusted-data");
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  await write(page, [
+    ...current.document.intentions.map((i: { id: string }) => ({ type: "drop", id: i.id })),
+    { type: "add", intention: { id: "list-goal", title: "List agreement", sessions: [target.sessionId] } },
+    { type: "next", author: "assistant", rows: [{ ref: { machine: target.machine, sessionId: target.sessionId }, stoppedAt: target.runtime.changedAt.replace("Z", "+00:00"), verdict: "needs-you", reason: "Bounded list episode agrees with the ui" }] },
+  ]);
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Bounded list episode agrees" });
+  await expect(row).toBeVisible();
+  await row.locator("summary").click();
+  await expect(row.locator(".focus-card-body")).toContainText(target.lastLine);
+  await expect(row).not.toContainText("new · by rules");
 });
 
 test("expired triage returns quiet stops to rules and names the expiry", async ({ page }) => {

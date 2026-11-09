@@ -121,13 +121,13 @@ export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[]
       if (!options.machineKnown(ref.machine)) continue;
       const session = sessions.find(s => s.id === ref.sessionId && s.machineInstallationId === ref.machine);
       // Availability must not revive a verdict for a different cached episode.
-      if (session && (session.stoppedAt ?? session.changedAt) !== triage.stoppedAt) continue;
+      if (session && Date.parse(session.stoppedAt ?? session.changedAt ?? "") !== Date.parse(triage.stoppedAt ?? "")) continue;
       // Quiet is never authority to hide attention, even when the assistant judged this exact episode.
       if (triage.verdict === "quiet" && (!session || needsYou(session))) continue;
       if (!options.machineReachable(ref.machine)) {
         // Keep the assistant's place and reason; no session action can use this placeholder.
         row = { kind: "open", reason: triage.reason, unavailable: true };
-      } else if (session && (session.stoppedAt ?? session.changedAt) === triage.stoppedAt) {
+      } else if (session) {
         const rule = rules.find(r => r.session === session);
         const done = triage.doneIntention && doc.intentions.find(i => i.id === triage.doneIntention && !i.done);
         if (rule) row = rule;
