@@ -145,6 +145,7 @@ test("R3: broker outage overrides a pending catch-up on every surface and recove
   await expect.soft(page.locator("#assistant-terminal-state")).toHaveText("sessions unavailable");
   await page.locator("#assistant-terminal-focus").click();
   await expect(view.locator(".focus-header")).toContainText("sessions unavailable");
+  await expect(page.locator("#focus-status")).toHaveText("3 queued · sends when the broker is back");
   await expect.soft(tile).not.toHaveAttribute("data-tone", "busy");
   await expect.soft(tile).toContainText("unavailable");
   await expect.soft(page.locator("#dashboard-focus .focus-spin, #assistant-content .focus-spin")).toHaveCount(0);
@@ -158,6 +159,7 @@ test("R3: broker outage overrides a pending catch-up on every surface and recove
   await expect(view.locator(".focus-header")).toContainText("reading activity");
   await expect(tile).toHaveAttribute("data-tone", "busy");
   await expect(tile).toContainText("reading");
+  await expect(page.locator("#focus-status")).toHaveText("3 queued");
   await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeEnabled();
 });
 
