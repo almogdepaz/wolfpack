@@ -40,7 +40,8 @@ import {
   json,
   parseObjectBody,
 } from "./http.js";
-import { listParentNotifications } from "./parent-inbox.js";
+import { listParentNotifications, PARENT_INBOX_BOOT_ID } from "./parent-inbox.js";
+import { noteChildInputDelivered } from "./child-events.js";
 import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
@@ -348,7 +349,7 @@ async function inspectSessionRoute(req: IncomingMessage, res: ServerResponse, in
         );
       }
       if (inbox) {
-        return json(res, { session: inspection.session, sessionId: inspection.sessionId, notifications: listParentNotifications(inspection.sessionId, since) });
+        return json(res, { session: inspection.session, sessionId: inspection.sessionId, bootId: PARENT_INBOX_BOOT_ID, notifications: listParentNotifications(inspection.sessionId, since) });
       }
       const relay = await sessionRegistrations([inspection.sessionId]);
       return json(res, inspectedSessionStatusPayload(selector, inspection, relay.registrations.get(inspection.sessionId), relay.taskRelay));
@@ -462,6 +463,7 @@ return {
       if (!streaming) {
         // Nothing to observe through: deliver as before and say so.
         await getBackend().send(session, body.text, noEnter);
+        if (!noEnter) noteChildInputDelivered(sessionId);
         return json(res, {
           ok: true,
           session,
@@ -482,7 +484,10 @@ return {
         // Same status a failed write always had; the body says nothing was written.
         return json(res, { ok: false, error: "backend unavailable", session, sessionId, ...result }, 503);
       }
-      json(res, { ok: sessionSendOk(noEnter, result.outcome), session, sessionId, ...result });
+      const ok = sessionSendOk(noEnter, result.outcome);
+      // A submitted task arms the child's heuristic `busy → idle` done event.
+      if (ok && !noEnter) noteChildInputDelivered(sessionId);
+      json(res, { ok, session, sessionId, ...result });
     } catch (e: unknown) {
       log.warn("session-control send failed", { session: resolved.name, error: errMsg(e) });
       json(res, { error: "backend unavailable" }, 503);

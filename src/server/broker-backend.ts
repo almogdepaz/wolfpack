@@ -73,6 +73,7 @@ import { taskWorkerHarness } from "./task-worker-readiness.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
 import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
+import { childSessionExited, reconcileChildEvents } from "./child-events.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { PROGRAM_STATUS_STATE, parseBrokerProgramStatusRecord } from "../program-status-contract.js";
@@ -644,6 +645,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       if (!liveIds.has(id)) this.idToAgentKind.delete(id);
     }
     reconcileParentInboxes(liveIds);
+    // A dead session still in the table may not have reported its exit yet.
+    reconcileChildEvents(new Set(sessions.map(s => s.id)));
     return facts;
   }
 
@@ -1628,11 +1631,18 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 
   private emitSessionExited(id: string, exit: PendingSessionExit, killed: boolean, killName: string | undefined): void {
     const name = exit.name ?? killName;
+    const reason = killed ? SESSION_EXIT_REASON.KILLED : SESSION_EXIT_REASON.EXIT;
+    // The parent learns about the exit through its inbox and the event stream.
+    childSessionExited(id, {
+      reason,
+      ...(exit.exitCode !== undefined && { exitCode: exit.exitCode }),
+      ...(exit.signal !== undefined && { signal: exit.signal }),
+    }, this.emitEvent);
     this.emitEvent({
       kind: WOLFPACK_EVENT_KIND.SESSION_EXITED,
       sessionId: id,
       ...(name !== undefined && { session: name }),
-      reason: killed ? SESSION_EXIT_REASON.KILLED : SESSION_EXIT_REASON.EXIT,
+      reason,
       ...(exit.exitCode !== undefined && { exitCode: exit.exitCode }),
       ...(exit.signal !== undefined && { signal: exit.signal }),
     });

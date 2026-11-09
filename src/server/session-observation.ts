@@ -47,6 +47,7 @@ import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import type { EventBus } from "../event-bus.js";
 let notificationContext: ServerContext = defaultServerContext;
 import { onProgramStatusChanged } from "./program-status-signal.js";
+import { observeChildSession } from "./child-events.js";
 
 const log = createLogger("session-observation");
 const SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS = 5_000;
@@ -675,6 +676,16 @@ async function observeSessionFact(
     },
   }, { persist: false });
   publishRuntimeTransition(name, identity?.wolfpackSessionId, previousTransitionSequence, runtimeState, events);
+  if (identity?.parentSession) {
+    observeChildSession({
+      sessionId: identity.wolfpackSessionId,
+      name,
+      parentSession: identity.parentSession,
+      alive: brokerState === "alive",
+      runtimeState,
+      ...(currentRendered !== undefined && { rendered: currentRendered }),
+    }, body => events.publishEvent(body));
+  }
   const summary = {
     ...displayProjection,
     name,
@@ -911,8 +922,19 @@ function schedulePeerNotificationObservation(): void {
   });
 }
 
+/**
+ * Child events reach the parent inbox even when nobody subscribes to push or
+ * the event stream, so a live child session keeps the observer running. This
+ * costs one session list per tick only while there are no subscribers.
+ */
+async function hasLiveChildSession(): Promise<boolean> {
+  const facts = await listAvailableSessionFacts(notificationContext);
+  return facts?.some(fact => fact.alive && fact.identity?.parentSession !== undefined) ?? false;
+}
+
 async function runSessionNotificationObservation(pass: ObservationPass = "full"): Promise<readonly ObservedSessionSummary[]> {
-  if (getSubscriptionCount() === 0 && notificationContext.events.eventSubscriberCount() === 0) return [];
+  if (getSubscriptionCount() === 0 && notificationContext.events.eventSubscriberCount() === 0
+    && !sessionNotificationObservationPromise && !await hasLiveChildSession()) return [];
   if (sessionNotificationObservationPromise) {
     if (pass !== "full" || sessionNotificationObservationPass === "full") return sessionNotificationObservationPromise;
     // A program-status pass does not measure output: a full pass asked for

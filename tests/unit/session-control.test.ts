@@ -954,7 +954,7 @@ describe("session control cli parsing", () => {
 });
 
 describe("unreachable server", () => {
-  function unreachableCli(args: string[], thrown: string): ReturnType<typeof Bun.spawnSync> {
+  function unreachableCli(args: string[], thrown: string): { exitCode: number; stdout: Buffer; stderr: Buffer } {
     const script = `
       globalThis.fetch = async () => { ${thrown} };
       const { runSessionCommand } = await import("./src/cli/session-control.ts");

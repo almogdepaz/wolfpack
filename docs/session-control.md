@@ -256,18 +256,32 @@ wolfpack agent inbox --json
 wolfpack agent inbox --since 12 --json
 wolfpack session inbox <parent-session-id> --since 12 --json
 # optional live follow (no replay)
-wolfpack events --session <parent-session-id> --kinds parent_notified --json
+wolfpack events --session <parent-session-id> --kinds parent_notified,child_event --json
 ```
 
 Both inbox commands call `GET /api/session-control/inbox?session=<name-or-id>[&since=<seq>]`, using the same selector and not-found/dead/ambiguous/unavailable envelopes as `session status`. `agent inbox` resolves the current agent session from its Wolfpack environment, preferring the injected stable ID; it uses the same missing/unsupported-context error path as spawn. Both support the verified `--machine` selector like status; this reads that host's inbox, not a cross-machine relay.
 
 Inbox reads are available to any caller with this host's ordinary API access, the same as `session status`. They are not parent-private and must not be treated as private child/parent messaging.
 
-The response is `{session, sessionId, notifications:[{seq, at, message, from?}]}`. `seq` starts at 1 per parent, `at` is an ISO timestamp, and `since` is a non-negative safe integer returning only entries with `seq > since`. Reads do not consume entries; retain the last sequence to avoid duplicates. Plain output is `seq at [from] message` per entry (sender omitted when absent); line breaks are replaced with spaces in human inbox/event lines, while JSON preserves the original text.
+The response is `{session, sessionId, bootId, notifications:[{seq, at, message, from?, childEvent?}]}`. `bootId` identifies the server process that assigned the sequences; when it changes, sequences restarted, so read again without `since`. `seq` starts at 1 per parent, `at` is an ISO timestamp, and `since` is a non-negative safe integer returning only entries with `seq > since`. Reads do not consume entries; retain the last sequence to avoid duplicates. Plain output is `seq at [from] message` per entry (sender omitted when absent); line breaks are replaced with spaces in human inbox/event lines, while JSON preserves the original text.
 
 Malformed inbox success replies exit `1`; JSON output is an `ok:false` error envelope with code `INVALID_INBOX_RESPONSE`, while plain output diagnoses the invalid inbox response on stderr. Both aliases validate identity, entries and limits before reporting success, including the exact stable self ID when known.
 
 The inbox is **memory-only**, retains only the newest **100** entries per parent, and is dropped on parent session exit. A server restart loses every inbox and resets sequences; slow/disconnected pollers may miss overwritten entries. It is not a durable task ledger or an acknowledgement protocol. Verify the child's actual work before cleanup. Pi coordinators keep using Pi Tasks `agent_task_done` / `agent_task_ack` for `--task-worker` endpoint children, which reject `--notify-parent`.
+
+#### Child events
+
+The server also tells a parent what its children did, with no child action. It derives events from the observed runtime state of every live session whose identity names a parent (`agent spawn` children), on this machine only. Each event is a parent inbox entry with a structured `childEvent` (kind `wolfpack.child_event/v1`) and a `child_event` live event:
+
+- `blocked`: the child's own status (OSC 7501 program status or the project status manifest) says it waits for input; carries `inputKind?` and the program's `message?`.
+- `error`: the child's own status says it failed.
+- `done`: the program reported `done`, or, for a child without program status, it went from busy to `idle` after a `session send` was submitted to it.
+- `exited`: the child session exited or was killed; carries `reason`, `exitCode?`/`signal?` and up to 5 `lastLines` of its last observed screen.
+- `message`: `agent notify-parent` from a sender whose unverified `from` name matches a live child of this parent. The entry keeps the message text; other senders stay plain notifications.
+
+`childEvent` fields: `kind`, `eventId` (child session ID, `bootId` and `seq`), `bootId`, `seq` (the entry's inbox sequence), `childSessionId`, `childName`, `parentSessionId`, `event`, `state` (the child's runtime state), optional `inputKind`, `message` (at most 500 code points), `lastLines`, `authority`, `reason`, `exitCode`, `signal`, and `observedAt`. New optional fields may be added; ignore unknown fields. The entry `message` is a one-line summary (for example `blocked (permission): run rm?`) and `from` is the child name.
+
+A child produces at most one event per entry into a state: repeated reports in the same state do not repeat the event. The first observation of a child after a server start is a baseline and produces no event, so events that happened while the server was down are lost. Screen heuristics alone never produce `blocked` or `error`. Program `blocked` children also raise the existing "Needs input" web push (see [phone-pwa-notifications.md](phone-pwa-notifications.md)); child events add no other push.
 
 ### Current session identity
 
@@ -295,6 +309,7 @@ Streams `GET /api/events` (server-sent events, ordinary API auth). Kinds:
 - `session.exited` — `sessionId`, `session` (when known), `reason` (`exit` or `killed`), `exitCode?`, `signal?`
 - `session.state` — `session`, `sessionId?`, `state`, `label`, `transitionSequence`, plus `inputKind?` and `message?` when the state comes from the program's own OSC 7501 status report; published when an agent's runtime state transitions, including a blocked program switching to a different request (new `inputKind` or `message`) while staying `needs-input`. Observed every ~5s, so expect up to that much latency.
 - `parent_notified` — parent `session`, `sessionId`, inbox `seq`, `message`, optional unverified `from`; emitted when a parent inbox entry is queued. `--session` matches the parent name or ID, not the sender.
+- `child_event` — parent `session`, `sessionId`, and the structured `childEvent` described in [Child events](#child-events); emitted with the inbox entry. `--session` matches the parent or the child name or ID.
 - `task.updated` — `taskId`, `eventId`, `eventType` (canonical task event, e.g. `task.completed`), `sequence`; emitted by the machine holding the task's sender ledger.
 
 Every event also carries a per-server-process monotonic `id` and an ISO `at`. `--session` matches a name or stable id and excludes task events. `--json` prints one event object per line; otherwise one human line per event.

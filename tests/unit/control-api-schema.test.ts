@@ -115,6 +115,41 @@ describe("control api schema", () => {
     expect(validate(event, { id: 9, kind: "parent_notified", ...entry }, artifact)).not.toEqual([]);
   });
 
+  test("documents structured child events in the inbox and the event stream", () => {
+    const inbox = httpResponse("getSessionInbox");
+    const childEvent = {
+      kind: "wolfpack.child_event/v1",
+      eventId: "child-id:boot:3",
+      bootId: "boot",
+      seq: 3,
+      childSessionId: "child-id",
+      childName: "worker",
+      parentSessionId: "parent-id",
+      event: "blocked",
+      state: "needs-input",
+      inputKind: "permission",
+      message: "run rm?",
+      observedAt: "2026-11-09T00:00:00.000Z",
+      authority: "program",
+    };
+    const entry = { seq: 3, at: childEvent.observedAt, message: "blocked (permission): run rm?", from: "worker", childEvent };
+    expect(validate(inbox.response, { session: "parent", sessionId: "parent-id", bootId: "boot", notifications: [entry] }, artifact)).toEqual([]);
+    const exited = { ...childEvent, event: "exited", state: "working", reason: "exit", exitCode: 1, lastLines: ["a", "b"] };
+    expect(validate({ $ref: "#/$defs/ChildEvent" }, exited, artifact)).toEqual([]);
+    for (const invalid of [
+      { ...childEvent, event: "finished" },
+      { ...childEvent, kind: "wolfpack.child_event/v2" },
+      { ...childEvent, seq: 0 },
+      { ...childEvent, lastLines: Array(6).fill("x") },
+      { ...childEvent, message: "x".repeat(501) },
+    ]) {
+      expect(validate({ $ref: "#/$defs/ChildEvent" }, invalid, artifact)).not.toEqual([]);
+    }
+    const stream = { $ref: "#/$defs/ChildEventStreamEvent" };
+    expect(validate(stream, { id: 4, at: childEvent.observedAt, kind: "child_event", session: "parent", sessionId: "parent-id", childEvent }, artifact)).toEqual([]);
+    expect(validate(stream, { id: 4, at: childEvent.observedAt, kind: "child_event", session: "parent", sessionId: "parent-id" }, artifact)).not.toEqual([]);
+  });
+
   test("documents endpoint-only push test delivery and its distinct failure envelope", () => {
     const operation = httpOperation("sendTestNotification");
     expect(operation).toMatchObject({ route: "POST /api/push/test", stable: true, auth: "jwt-when-configured" });

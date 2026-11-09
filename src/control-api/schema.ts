@@ -24,7 +24,8 @@ import {
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 import { SESSION_PLAN_MAX_PATH_LENGTH } from "../session-plan-contract.ts";
 import { NOTIFY_UNDELIVERED_REASON } from "../notify-contract.ts";
-import { WOLFPACK_EVENT_KIND } from "../events-contract.ts";
+import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND } from "../events-contract.ts";
+import { CHILD_EVENT_LIMITS, CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENTS } from "../child-event-contract.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
   QUIET_ALERT_KIND,
@@ -460,7 +461,47 @@ export const controlApiSource: ControlApiSource = {
     "relay profile metadata identifies the current RAM lifetime, not broker/worker readiness; restart loses active task state and never replays Pi session history",
   ],
   defs: {
-    ParentNotification: object(parentNotificationProperties, ["seq", "at", "message"]),
+    ParentNotification: object({
+      ...parentNotificationProperties,
+      childEvent: ref("ChildEvent"),
+    }, ["seq", "at", "message"]),
+    ChildEvent: object({
+      kind: { const: CHILD_EVENT_PAYLOAD_KIND },
+      eventId: { type: "string", minLength: 1 },
+      bootId: { type: "string", minLength: 1, description: "Server process that assigned seq; a different bootId restarts sequences." },
+      seq: parentNotificationProperties.seq,
+      childSessionId: ref("SessionId"),
+      childName: ref("SessionName"),
+      parentSessionId: ref("SessionId"),
+      event: { enum: [...CHILD_EVENTS] },
+      state: ref("AgentStatusState"),
+      inputKind: { enum: [...PROGRAM_STATUS_KINDS] },
+      message: { type: "string", maxLength: CHILD_EVENT_LIMITS.MESSAGE_CODE_POINTS },
+      lastLines: {
+        ...arrayOf({ type: "string", maxLength: CHILD_EVENT_LIMITS.LAST_LINE_CODE_POINTS }),
+        maxItems: CHILD_EVENT_LIMITS.LAST_LINES,
+      },
+      observedAt: { type: "string", description: "ISO timestamp" },
+      authority: ref("AgentStatusAuthority"),
+      reason: { enum: [SESSION_EXIT_REASON.EXIT, SESSION_EXIT_REASON.KILLED] },
+      exitCode: { type: "integer" },
+      signal: { type: "integer" },
+    }, [
+      "kind", "eventId", "bootId", "seq", "childSessionId", "childName", "parentSessionId", "event", "state", "observedAt",
+    ], {
+      description: "Server-derived child session event (wolfpack.child_event/v1). Clients must ignore unknown optional fields; existing fields keep their names.",
+      additionalProperties: true,
+    }),
+    ChildEventStreamEvent: object({
+      kind: { const: WOLFPACK_EVENT_KIND.CHILD_EVENT },
+      id: { type: "integer", minimum: 1 },
+      at: { type: "string", description: "ISO timestamp" },
+      session: ref("SessionName"),
+      sessionId: ref("SessionId"),
+      childEvent: ref("ChildEvent"),
+    }, ["id", "at", "kind", "session", "sessionId", "childEvent"], {
+      description: "Live GET /api/events child event; session/sessionId identify the parent.",
+    }),
     ParentNotifiedEvent: object({
       ...parentNotificationProperties,
       kind: { const: WOLFPACK_EVENT_KIND.PARENT_NOTIFIED },
@@ -1613,6 +1654,7 @@ export const controlApiSource: ControlApiSource = {
       response: object({
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
+        bootId: { type: "string", minLength: 1, description: "Server process that assigned seq; pass since only with the same bootId." },
         notifications: { ...arrayOf(ref("ParentNotification")), maxItems: 100 },
       }, ["session", "sessionId", "notifications"]),
       errors: [

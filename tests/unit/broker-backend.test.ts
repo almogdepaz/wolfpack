@@ -35,6 +35,7 @@ import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event
 import type { WolfpackEvent } from "../../src/events-contract";
 import { onProgramStatusChanged } from "../../src/server/program-status-signal";
 import { appendParentNotification, clearParentInbox, listParentNotifications } from "../../src/server/parent-inbox";
+import { __resetChildEventsForTests, observeChildSession } from "../../src/server/child-events";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -485,6 +486,45 @@ test("raw UUID lifecycle facts and inbox cleanup precede deferred public kill cl
   } finally {
     unsubscribe(); settleKill(okResp({ kind: "kill_session" })); await kill.catch(() => {});
     clearParentInbox(SESSION_UUID_1);
+  }
+});
+
+test("a tracked child's exit reaches its parent inbox before the public exit event, once, even after a dead listing", async () => {
+  const parentId = "22222222-2222-4222-8222-222222222222";
+  clearParentInbox(parentId);
+  __resetChildEventsForTests();
+  const kinds: string[] = [];
+  const childEvents: unknown[] = [];
+  const exactBackend = new BrokerBackend(client, event => {
+    kinds.push(event.kind);
+    if (event.kind === "child_event") childEvents.push(event.childEvent);
+  });
+  try {
+    observeChildSession({
+      sessionId: SESSION_UUID_1,
+      name: "worker",
+      parentSession: { wolfpackSessionId: parentId, wolfpackSessionName: "lead" },
+      alive: true,
+      runtimeState: {
+        state: "working", authority: "program", freshness: "fresh", source: "program-status", label: "working",
+        stale: false, observedAt: "t", changedAt: "t", transitionSequence: 1, unseen: false,
+      },
+      rendered: "compiling\nfailed: 2 tests",
+    }, () => {});
+    // The table can show the child dead before its exit frame is processed.
+    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "worker", id: SESSION_UUID_1, alive: false })] }));
+    await exactBackend.listSessionFacts();
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 3 });
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 3 });
+    expect(kinds.filter(kind => kind !== "session.created")).toEqual(["child_event", "session.exited", "session.exited"]);
+    expect(childEvents).toEqual([expect.objectContaining({
+      event: "exited", reason: "exit", exitCode: 3, state: "working", childSessionId: SESSION_UUID_1,
+      parentSessionId: parentId, lastLines: ["compiling", "failed: 2 tests"],
+    })]);
+    expect(listParentNotifications(parentId)).toEqual([expect.objectContaining({ message: "exited (exit code 3)", from: "worker" })]);
+  } finally {
+    clearParentInbox(parentId);
+    __resetChildEventsForTests();
   }
 });
 

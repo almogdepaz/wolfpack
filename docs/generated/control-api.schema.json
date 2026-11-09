@@ -2786,6 +2786,11 @@
           "sessionId": {
             "$ref": "#/$defs/SessionId"
           },
+          "bootId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Server process that assigned seq; pass since only with the same bootId."
+          },
           "notifications": {
             "type": "array",
             "items": {
@@ -3899,6 +3904,9 @@
           "type": "string",
           "maxLength": 100,
           "description": "Unverified, informational sender session name."
+        },
+        "childEvent": {
+          "$ref": "#/$defs/ChildEvent"
         }
       },
       "required": [
@@ -3907,6 +3915,136 @@
         "message"
       ],
       "additionalProperties": false
+    },
+    "ChildEvent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "wolfpack.child_event/v1"
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bootId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Server process that assigned seq; a different bootId restarts sequences."
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "childSessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "childName": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "parentSessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "event": {
+          "enum": [
+            "blocked",
+            "error",
+            "done",
+            "exited",
+            "message"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/AgentStatusState"
+        },
+        "inputKind": {
+          "enum": [
+            "permission",
+            "question",
+            "auth"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "lastLines": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "maxItems": 5
+        },
+        "observedAt": {
+          "type": "string",
+          "description": "ISO timestamp"
+        },
+        "authority": {
+          "$ref": "#/$defs/AgentStatusAuthority"
+        },
+        "reason": {
+          "enum": [
+            "exit",
+            "killed"
+          ]
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "signal": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "eventId",
+        "bootId",
+        "seq",
+        "childSessionId",
+        "childName",
+        "parentSessionId",
+        "event",
+        "state",
+        "observedAt"
+      ],
+      "additionalProperties": true,
+      "description": "Server-derived child session event (wolfpack.child_event/v1). Clients must ignore unknown optional fields; existing fields keep their names."
+    },
+    "ChildEventStreamEvent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "child_event"
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO timestamp"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "childEvent": {
+          "$ref": "#/$defs/ChildEvent"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "kind",
+        "session",
+        "sessionId",
+        "childEvent"
+      ],
+      "additionalProperties": false,
+      "description": "Live GET /api/events child event; session/sessionId identify the parent."
     },
     "ParentNotifiedEvent": {
       "type": "object",
