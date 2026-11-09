@@ -286,6 +286,32 @@ test("QA-26: assistant settings explain offline state without a bare transport e
   await context.setOffline(false);
 });
 
+for (const failure of ["HTTP 500", "invalid document"] as const) test(`S1: settings retain ${failure} diagnostics and clear them on recovery`, async ({ page }) => {
+  let failed = false;
+  const message = failure === "HTTP 500" ? "focus store unreadable: EACCES" : "invalid focus document";
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (!failed) return route.continue();
+    if (failure === "HTTP 500") return route.fulfill({ status: 500, json: { error: message } });
+    const response = await route.fetch();
+    const body = await response.json();
+    body.document.version = 999;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await (await opened).finished();
+  failed = true;
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
+  await expect(page.locator("#assistant-setting-status")).toContainText("offline · read-only");
+  await expect(page.locator("#assistant-setting-error")).toHaveText(message);
+  failed = false;
+  await page.locator("#assistant-setting-open").click();
+  await expect(page.locator("#assistant-content .focus-header")).not.toContainText("offline · read-only");
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
+  await expect(page.locator("#assistant-setting-error")).toHaveText("");
+});
+
 test("QA-14: self-offline keeps last known next rows, disabled, then recovers", async ({ page, context }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();

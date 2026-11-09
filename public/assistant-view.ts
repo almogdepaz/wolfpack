@@ -36,6 +36,7 @@ export function createAssistantView(deps: {
   // Saved writes; a poll started before one does not replace the document it saved.
   let writes = 0;
   let error = "";
+  let transportFailure = false;
   let notice = "";
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   const NOTICE_MS = 5_000;
@@ -372,7 +373,7 @@ export function createAssistantView(deps: {
     const setting = document.getElementById("assistant-setting-status");
     if (setting) setting.textContent = enabled ? `on · ${info}` : "off";
     const settingError = document.getElementById("assistant-setting-error");
-    if (settingError) settingError.textContent = offline ? "" : error || focus?.assistant?.error || "";
+    if (settingError) settingError.textContent = offline && transportFailure ? "" : error || focus?.assistant?.error || "";
     const settingHome = document.getElementById("assistant-setting-home");
     if (settingHome) settingHome.textContent = `Home: ${homeName}${focus?.assistant?.folder ? ` · ${focus.assistant.folder}` : ""}. Needs pi installed and logged in there (pi, then /login).`;
     const toggle = document.getElementById("assistant-setting-toggle") as HTMLButtonElement;
@@ -407,10 +408,14 @@ export function createAssistantView(deps: {
         if (response.document !== null && !isFocusDocument(response.document)) throw new Error("invalid focus document");
         // A write saved while this poll was in flight is newer than the document it carries: keep the written one.
         focus = writes !== epoch && focus?.home === response.home ? { ...response, document: focus.document, revision: focus.revision } : response;
-        offline = false; error = "";
+        offline = false; transportFailure = false; error = "";
         for (const session of openSessions()) void loadContext(session);
         cache(focus);
-      } catch (e) { offline = true; error = e instanceof Error ? e.message : "focus unavailable"; }
+      } catch (e) {
+        offline = true;
+        transportFailure = e instanceof TypeError || navigator.onLine === false;
+        error = e instanceof Error ? e.message : "focus unavailable";
+      }
       answered = true;
       render();
     })().finally(() => { flight = undefined; });
@@ -467,7 +472,10 @@ export function createAssistantView(deps: {
   async function run(action: () => Promise<void>) {
     if (busy) return;
     busy = true;
-    try { await action(); error = ""; } catch (e) { error = e instanceof Error ? e.message : "focus action failed"; }
+    try { await action(); error = ""; } catch (e) {
+      transportFailure = e instanceof TypeError || navigator.onLine === false;
+      error = e instanceof Error ? e.message : "focus action failed";
+    }
     finally { busy = false; render(); }
   }
   for (const id of ["dashboard-focus", "assistant-content"]) {
