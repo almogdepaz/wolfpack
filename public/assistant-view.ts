@@ -10,6 +10,7 @@ interface AssistantStatus { enabled: boolean; folder: string; state: string; ses
 interface RoutineStatus { catchingUp: { machines: number; since: string | null; unconfirmed?: true } | null; yesterday?: { date: string; note: boolean; endsAt: string }; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
 interface FocusResponse { home: string; installationId: string; local: boolean; document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
 interface Machine { key: string; name: string }
+class FocusOwnershipError extends Error {}
 export function createAssistantView(deps: {
   request: <T>(path: string, init?: RequestInit, machine?: string, interactive?: boolean) => Promise<T>;
   homeMachine: (id: string) => Machine | undefined;
@@ -33,6 +34,8 @@ export function createAssistantView(deps: {
   let machine = "";
   let homeName = "sgt";
   let focusUnavailable = false;
+  // A later store fault cannot revive an explicitly rejected owner.
+  let terminalOwner: "eligible" | "rejected" = "eligible";
   // No answer from the home yet (first paint from the cache): show the cached copy as it was, write nothing.
   let answered = false;
   // Saved writes; a poll started before one does not replace the document it saved.
@@ -55,13 +58,13 @@ export function createAssistantView(deps: {
   const pageNextCap = () => showAllNext ? Infinity : 5;
   let wasEnabled = false;
   const cacheKey = "wolfpack-focus-cache";
-  try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (typeof cached.machine === "string") machine = cached.machine; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
+  try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (cached.terminalOwner === "rejected") terminalOwner = "rejected"; if (typeof cached.machine === "string") machine = cached.machine; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
   const terminalUnavailable = () => focus?.assistant?.unavailableReason;
   const locked = () => focusUnavailable || busy || !answered;
   const sessionLocked = () => locked() || !deps.sessionsAvailable();
   function terminalTarget(): AssistantTerminalTarget | null {
     const assistant = focus?.assistant;
-    if (!answered || !assistant?.enabled || !assistant.session || offline() || (!focusUnavailable && terminalUnavailable())) return null;
+    if (!answered || terminalOwner === "rejected" || !assistant?.enabled || !assistant.session || offline() || (!focusUnavailable && terminalUnavailable())) return null;
     // A remote /focus response is local to its own server, not this browser.
     const home = machine || deps.homeMachine(focus!.home)?.key || "";
     if (home && !deps.sessionMachineKnown(home)) return null;
@@ -80,7 +83,7 @@ export function createAssistantView(deps: {
   };
   const nextRows = (cap: number) => !deps.sessionsAvailable() && !lastSessions.length ? [] : rankFocus(doc(), sessions(), cap);
   // The cached copy carries the home's resolved name, so an offline first answer names the right machine.
-  const cache = (value: FocusResponse) => { try { localStorage.setItem(cacheKey, JSON.stringify({ ...value, homeName, machine })); } catch { /* storage unavailable; live view still works */ } };
+  const cache = (value: FocusResponse) => { try { localStorage.setItem(cacheKey, JSON.stringify({ ...value, homeName, machine, terminalOwner })); } catch { /* storage unavailable; live view still works */ } };
   const doc = () => focus?.document ?? emptyFocus();
   const routines = () => focusUnavailable || terminalUnavailable() || !focus?.assistant?.enabled ? undefined : focus.routines;
   // An error beside a live session (a dropped queue, an unverified send) is a note under the live state; "failed" is the assistant not running.
@@ -428,16 +431,21 @@ export function createAssistantView(deps: {
         if (!response.local) {
           if (!home) { if (focus?.home !== response.home) focus = { ...response, document: null }; throw new Error(`${homeName} offline`); }
           const remote = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, machine, false);
-          if (!remote.local || remote.installationId !== response.home) throw new Error("focus home identity changed");
+          if (!remote.local || remote.installationId !== response.home) throw new FocusOwnershipError("focus home identity changed");
           response = remote;
         }
         if (response.document !== null && !isFocusDocument(response.document)) throw new Error("invalid focus document");
         // A write saved while this poll was in flight is newer than the document it carries: keep the written one.
         focus = writes !== epoch && focus?.home === response.home ? { ...response, document: focus.document, revision: focus.revision } : response;
+        terminalOwner = "eligible";
         focusUnavailable = false; transportFailure = false; error = "";
         for (const session of openSessions()) void loadContext(session);
         cache(focus);
       } catch (e) {
+        if (e instanceof FocusOwnershipError) {
+          terminalOwner = "rejected";
+          if (focus) cache(focus);
+        }
         focusUnavailable = true;
         transportFailure = e instanceof TypeError || navigator.onLine === false;
         error = e instanceof Error ? e.message : "focus unavailable";
