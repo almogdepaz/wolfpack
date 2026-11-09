@@ -17,8 +17,14 @@ receive no offer. Accepting copies the bundled control skill into Pi before it
 runs Pi's package manager with this command:
 
 ```bash
-pi install npm:@sgtbeatdown/pi-tasks
+pi install npm:@sgtbeatdown/wolfpack-tasks
 ```
+
+The package was published as `npm:@sgtbeatdown/pi-tasks` before it gained
+Claude Code support. When Pi still has the old package, setup offers a
+default-no migration that runs `pi remove npm:@sgtbeatdown/pi-tasks` and then
+the install command above, and `wolfpack doctor` reports the old package as a
+warning with the same commands.
 
 Wolfpack does not install the full `wolfpack-bridge` app inside Pi just to obtain
 the control skill.
@@ -29,9 +35,9 @@ The packages and resources have distinct ownership:
 | --- | --- | --- |
 | Wolfpack | `wolfpack-tailnet-control` | Creates and controls visible Wolfpack sessions through the canonical CLI. |
 | Pi Tasks extension | `agent_task_*` | Delivers assignments and stores structured task status/results; it does not spawn sessions. |
-| Pi Tasks skill | `wolfpack-pi-task-delegation` | Teaches Pi how to combine the session-control skill with task dispatch, completion, and parent-owned cleanup. |
+| Pi Tasks skill | `wolfpack-task-delegation` | Teaches Pi how to combine the session-control skill with task dispatch, completion, and parent-owned cleanup. |
 
-`npm:@sgtbeatdown/pi-tasks` contains both the extension and its matching
+`npm:@sgtbeatdown/wolfpack-tasks` contains both the extension and its matching
 delegation skill, so those two stay version-aligned. Every participating Pi
 session needs Pi Tasks loaded and a reachable local Wolfpack task gateway. The
 server-owned task store is machine-global, and trusted Tailnet peer routing uses

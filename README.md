@@ -101,7 +101,7 @@ The multi-machine dashboard and desktop sidebar show only local sessions and cur
 
 ## agent skills
 
-`wolfpack-tailnet-control` works with all agent harnesses that support Agent Skills. The opt-in Pi flow in `wolfpack setup` copies the bundled control skill, then installs Pi Tasks with `pi install npm:@sgtbeatdown/pi-tasks`. `wolfpack-tailnet-control` controls sessions; `wolfpack-pi-task-delegation` teaches Pi to use `agent_task_*` for durable task routing.
+`wolfpack-tailnet-control` works with all agent harnesses that support Agent Skills. The opt-in Pi flow in `wolfpack setup` copies the bundled control skill, then installs Pi Tasks with `pi install npm:@sgtbeatdown/wolfpack-tasks`. Setup migrates an older `npm:@sgtbeatdown/pi-tasks` install with `pi remove npm:@sgtbeatdown/pi-tasks` and then the install command; `wolfpack doctor` warns while the old package is installed. `wolfpack-tailnet-control` controls sessions; `wolfpack-task-delegation` teaches Pi to use `agent_task_*` for durable task routing.
 
 For a manual audited install, clone or update `https://github.com/almogdepaz/wolfpack`, review `skills/wolfpack-tailnet-control/SKILL.md`, then place the skill in `~/.pi/agent/skills/`, `~/.agents/skills/`, or `~/.claude/skills/`. Start a fresh agent context afterward. Platform binaries do not expose skills as files; detailed safe symlink and copy instructions are in [agent skills](docs/agent-skills.md).
 

@@ -335,6 +335,11 @@ describe("task-worker launch policy", () => {
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: mandatoryExtension,
       WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     }, root, { env: { WOLFPACK_PORT: "9999" } })).toThrow(TaskWorkerReadinessError);
+    expect(() => prepareTaskWorkerLaunch({
+      WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executable,
+      WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: mandatoryExtension,
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
+    }, root, { env: { WOLFPACK_TASK_WORKER: "0" } })).toThrow(TaskWorkerReadinessError);
 
     writeFileSync(policyPath, "{");
     expect(() => prepareTaskWorkerLaunch({

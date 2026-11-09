@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -71,6 +71,31 @@ describe("task worker launch preflight", () => {
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: join(root, "missing-extension.ts"),
       WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     })).toThrow("task-worker Pi Tasks extension is missing or unreadable");
+  });
+
+  test("resolves the installed wolfpack-tasks extension and tolerates the legacy pi-tasks install", () => {
+    const root = temporaryRoot();
+    const executable = join(root, "pi");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    const agent = join(root, "agent");
+    const installed = (name: string): string => {
+      const directory = join(agent, "npm", "node_modules", "@sgtbeatdown", name, "src");
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, "extension.ts"), "export default function () {}\n");
+      return join(directory, "extension.ts");
+    };
+    const env = {
+      WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executable,
+      PI_CODING_AGENT_DIR: agent,
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
+    };
+
+    expect(() => prepareTaskWorkerLaunch(env)).toThrow("task-worker Pi Tasks extension is missing or unreadable");
+    const legacy = installed("pi-tasks");
+    expect(prepareTaskWorkerLaunch(env).extension).toBe(legacy);
+    const renamed = installed("wolfpack-tasks");
+    expect(prepareTaskWorkerLaunch(env).extension).toBe(renamed);
   });
 
   test("rejects a regular file that is not executable by this process", () => {

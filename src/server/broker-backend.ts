@@ -674,7 +674,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);
     const taskWorkerEnv: Array<[string, string]> = [];
     if (taskWorker !== undefined) {
-      taskWorkerEnv.push(["PI_TASK_WORKER", "1"]);
+      // Older Pi Tasks releases read PI_TASK_WORKER; wolfpack-tasks reads either name.
+      taskWorkerEnv.push(["PI_TASK_WORKER", "1"], ["WOLFPACK_TASK_WORKER", "1"]);
       const port = process.env.WOLFPACK_PORT;
       if (port) taskWorkerEnv.push(["WOLFPACK_PORT", port]);
       const home = process.env.HOME;

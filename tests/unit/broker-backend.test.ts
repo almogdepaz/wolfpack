@@ -621,7 +621,7 @@ describe("BrokerBackend.createSession", () => {
     ["isolated", true],
   ] as const)("launches task workers with explicit %s extension policy argv and no initial prompt", async (extensionPolicy, expectsNoExtensions) => {
     const executable = "/opt/homebrew/bin/pi";
-    const extension = "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts";
+    const extension = "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/wolfpack-tasks/src/extension.ts";
     const model = "openai-codex/gpt-5.6-terra";
     client.setHandler("create_session", () => okResp({
       session: sessionInfo({ name: "worker", id: SESSION_UUID_1 }),
@@ -651,6 +651,7 @@ describe("BrokerBackend.createSession", () => {
     expect(shellCommand).not.toContain(executable);
     expect(shellCommand).not.toContain(extension);
     expect(params.env).toContainEqual(["PI_TASK_WORKER", "1"]);
+    expect(params.env).toContainEqual(["WOLFPACK_TASK_WORKER", "1"]);
   });
 
   test("persists parent identity in broker env and public session identity", async () => {

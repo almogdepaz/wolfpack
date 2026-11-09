@@ -5,8 +5,13 @@ import { join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { AGENT_KIND } from "../../src/agent-kind.ts";
 import {
+  LEGACY_PI_TASKS_PACKAGE,
   PI_INTEGRATION_PACKAGES,
+  PI_TASKS_MIGRATION_COMMANDS,
   acceptsPiIntegrationInstall,
+  findLegacyPiTasksSource,
+  migratePiTasksPackage,
+  piTasksMigrationDisclosureLines,
   installPiIntegration,
   piIntegrationDisclosureLines,
   planPiIntegrationSetup,
@@ -115,7 +120,7 @@ describe("Pi integration setup", () => {
     const disclosure = piIntegrationDisclosureLines().join("\n");
 
     expect(disclosure).toContain("wolfpack-tailnet-control");
-    expect(disclosure).toContain(`${AGENT_KIND.PI.cmd} install npm:@sgtbeatdown/pi-tasks`);
+    expect(disclosure).toContain(`${AGENT_KIND.PI.cmd} install npm:@sgtbeatdown/wolfpack-tasks`);
     expect(disclosure).toContain("Wolfpack will install the skill");
     expect(disclosure).not.toContain("Pi will install the skill");
     expect(disclosure).not.toContain("npm:wolfpack-bridge");
@@ -148,7 +153,7 @@ describe("Pi integration setup", () => {
       status: "installed",
       installedSources: PI_INTEGRATION_PACKAGES,
     });
-    expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/pi-tasks\n");
+    expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/wolfpack-tasks\n");
   });
 
   test("installs every local Markdown reference from the bundled control skill", () => {
@@ -219,17 +224,85 @@ describe("Pi integration setup", () => {
       piAgentDirectory,
       env: {
         CALL_LOG: pi.callLog,
-        FAIL_SOURCE: "npm:@sgtbeatdown/pi-tasks",
+        FAIL_SOURCE: "npm:@sgtbeatdown/wolfpack-tasks",
       },
     });
 
     expect(result).toEqual({
       status: "extension_failed",
       installedSources: [],
-      failedSource: "npm:@sgtbeatdown/pi-tasks",
-      retryCommand: `${AGENT_KIND.PI.cmd} install npm:@sgtbeatdown/pi-tasks`,
+      failedSource: "npm:@sgtbeatdown/wolfpack-tasks",
+      retryCommand: `${AGENT_KIND.PI.cmd} install npm:@sgtbeatdown/wolfpack-tasks`,
     });
     expect(existsSync(join(skillPath, "SKILL.md"))).toBe(true);
-    expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/pi-tasks\n");
+    expect(readFileSync(pi.callLog, "utf8")).toBe("install npm:@sgtbeatdown/wolfpack-tasks\n");
+  });
+});
+
+describe("Pi Tasks package migration", () => {
+  function agentWithPackages(packages: unknown): string {
+    const agent = tempDir();
+    writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages }));
+    return agent;
+  }
+
+  test("detects the legacy package as a plain, versioned, or object source", () => {
+    expect(LEGACY_PI_TASKS_PACKAGE).toBe("npm:@sgtbeatdown/pi-tasks");
+    expect(findLegacyPiTasksSource(agentWithPackages(["npm:@sgtbeatdown/pi-tasks"]))).toBe("npm:@sgtbeatdown/pi-tasks");
+    expect(findLegacyPiTasksSource(agentWithPackages([
+      "npm:other",
+      { source: "npm:@sgtbeatdown/pi-tasks@0.1.17", skills: ["!skills/x/**"] },
+    ]))).toBe("npm:@sgtbeatdown/pi-tasks@0.1.17");
+  });
+
+  test("ignores the renamed package, look-alike names, and missing or malformed settings", () => {
+    expect(findLegacyPiTasksSource(agentWithPackages(["npm:@sgtbeatdown/wolfpack-tasks"]))).toBeUndefined();
+    expect(findLegacyPiTasksSource(agentWithPackages(["npm:@sgtbeatdown/pi-tasks-extra"]))).toBeUndefined();
+    expect(findLegacyPiTasksSource(agentWithPackages("npm:@sgtbeatdown/pi-tasks"))).toBeUndefined();
+    expect(findLegacyPiTasksSource(tempDir())).toBeUndefined();
+    const malformed = tempDir();
+    writeFileSync(join(malformed, "settings.json"), "{");
+    expect(findLegacyPiTasksSource(malformed)).toBeUndefined();
+  });
+
+  test("discloses remove-then-install commands", () => {
+    expect(PI_TASKS_MIGRATION_COMMANDS).toEqual([
+      `${AGENT_KIND.PI.cmd} remove npm:@sgtbeatdown/pi-tasks`,
+      `${AGENT_KIND.PI.cmd} install npm:@sgtbeatdown/wolfpack-tasks`,
+    ]);
+    const disclosure = piTasksMigrationDisclosureLines("npm:@sgtbeatdown/pi-tasks@0.1.17").join("\n");
+    expect(disclosure).toContain("npm:@sgtbeatdown/pi-tasks@0.1.17");
+    for (const command of PI_TASKS_MIGRATION_COMMANDS) expect(disclosure).toContain(command);
+  });
+
+  test("removes the legacy package before installing the renamed one", () => {
+    const pi = fakePi();
+    expect(migratePiTasksPackage({ pathValue: pi.pathValue, env: { CALL_LOG: pi.callLog } }))
+      .toEqual({ status: "migrated" });
+    expect(readFileSync(pi.callLog, "utf8"))
+      .toBe("remove npm:@sgtbeatdown/pi-tasks\ninstall npm:@sgtbeatdown/wolfpack-tasks\n");
+  });
+
+  test("stops at the failed command and reports the remaining retry commands", () => {
+    const pi = fakePi();
+    expect(migratePiTasksPackage({
+      pathValue: pi.pathValue,
+      env: { CALL_LOG: pi.callLog, FAIL_SOURCE: "npm:@sgtbeatdown/pi-tasks" },
+    })).toEqual({
+      status: "failed",
+      failedCommand: PI_TASKS_MIGRATION_COMMANDS[0],
+      retryCommands: PI_TASKS_MIGRATION_COMMANDS,
+    });
+    expect(readFileSync(pi.callLog, "utf8")).toBe("remove npm:@sgtbeatdown/pi-tasks\n");
+
+    const second = fakePi();
+    expect(migratePiTasksPackage({
+      pathValue: second.pathValue,
+      env: { CALL_LOG: second.callLog, FAIL_SOURCE: "npm:@sgtbeatdown/wolfpack-tasks" },
+    })).toEqual({
+      status: "failed",
+      failedCommand: PI_TASKS_MIGRATION_COMMANDS[1],
+      retryCommands: [PI_TASKS_MIGRATION_COMMANDS[1]],
+    });
   });
 });

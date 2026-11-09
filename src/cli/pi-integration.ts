@@ -1,14 +1,96 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
 import { detectInstalledProviderCommands } from "../provider-readiness.js";
 import { WOLFPACK_PI_CONTROL_SKILL_FILES } from "./pi-skill.js";
 
-export const PI_INTEGRATION_PACKAGES = ["npm:@sgtbeatdown/pi-tasks"] as const;
+export const PI_TASKS_PACKAGE = "npm:@sgtbeatdown/wolfpack-tasks";
+/** The package's name before the Claude integration; setup and doctor migrate it to `PI_TASKS_PACKAGE`. */
+export const LEGACY_PI_TASKS_PACKAGE = "npm:@sgtbeatdown/pi-tasks";
+export const PI_INTEGRATION_PACKAGES = [PI_TASKS_PACKAGE] as const;
 const PI_CONTROL_SKILL_NAME = "wolfpack-tailnet-control";
 const PI_INSTALL_COMMAND_PREFIX = `${AGENT_KIND.PI.cmd} install`;
+const PI_REMOVE_COMMAND_PREFIX = `${AGENT_KIND.PI.cmd} remove`;
+
+/** Pi's user-scope agent directory: `PI_CODING_AGENT_DIR`, otherwise `~/.pi/agent`. */
+export function piAgentDirectory(env: Readonly<Record<string, string | undefined>> = process.env): string {
+  return env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+}
+
+/** The commands that replace the legacy package, in order. */
+export const PI_TASKS_MIGRATION_COMMANDS = [
+  `${PI_REMOVE_COMMAND_PREFIX} ${LEGACY_PI_TASKS_PACKAGE}`,
+  `${PI_INSTALL_COMMAND_PREFIX} ${PI_TASKS_PACKAGE}`,
+] as const;
+
+/** Pi identifies npm packages by name and ignores a version suffix, so match both forms. */
+function isLegacyPiTasksSource(source: string): boolean {
+  return source === LEGACY_PI_TASKS_PACKAGE || source.startsWith(`${LEGACY_PI_TASKS_PACKAGE}@`);
+}
+
+/**
+ * Reads Pi's user settings (`<agentDir>/settings.json`, `packages`) and returns the legacy
+ * package source when it is installed. A missing or unreadable file means not installed.
+ */
+export function findLegacyPiTasksSource(agentDirectory: string = piAgentDirectory()): string | undefined {
+  let settings: unknown;
+  try {
+    settings = JSON.parse(readFileSync(join(agentDirectory, "settings.json"), "utf8"));
+  } catch {
+    return undefined;
+  }
+  if (typeof settings !== "object" || settings === null) return undefined;
+  const packages = (settings as { packages?: unknown }).packages;
+  if (!Array.isArray(packages)) return undefined;
+  for (const entry of packages) {
+    const source = typeof entry === "string"
+      ? entry
+      : typeof entry === "object" && entry !== null && typeof (entry as { source?: unknown }).source === "string"
+        ? (entry as { source: string }).source
+        : undefined;
+    if (source !== undefined && isLegacyPiTasksSource(source)) return source;
+  }
+  return undefined;
+}
+
+export function piTasksMigrationDisclosureLines(legacySource: string): readonly string[] {
+  return [
+    `  Pi Tasks is now published as ${PI_TASKS_PACKAGE}; ${legacySource} is installed.`,
+    "  Pi will run:",
+    ...PI_TASKS_MIGRATION_COMMANDS.map((command) => `    ${command}`),
+    "  Extensions can execute commands with your user permissions. Review before accepting.",
+  ];
+}
+
+export type PiTasksMigrationResult =
+  | { readonly status: "migrated" }
+  | { readonly status: "failed"; readonly failedCommand: string; readonly retryCommands: readonly string[] };
+
+/** Removes the legacy package, then installs the renamed one; stops at the first failure. */
+export function migratePiTasksPackage(options: {
+  readonly pathValue: string | undefined;
+  readonly env?: Readonly<Record<string, string | undefined>>;
+}): PiTasksMigrationResult {
+  const env = { ...process.env, ...options.env, PATH: options.pathValue };
+  const steps = [
+    ["remove", LEGACY_PI_TASKS_PACKAGE],
+    ["install", PI_TASKS_PACKAGE],
+  ] as const;
+  for (const [index, args] of steps.entries()) {
+    try {
+      execFileSync(AGENT_KIND.PI.cmd, [...args], { env, stdio: "inherit" });
+    } catch {
+      return {
+        status: "failed",
+        failedCommand: PI_TASKS_MIGRATION_COMMANDS[index] ?? args.join(" "),
+        retryCommands: PI_TASKS_MIGRATION_COMMANDS.slice(index),
+      };
+    }
+  }
+  return { status: "migrated" };
+}
 
 export type PiIntegrationSetupMode = "hidden" | "prompt" | "guidance";
 

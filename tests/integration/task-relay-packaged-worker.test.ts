@@ -25,7 +25,7 @@ test.skipIf(!cli)("packaged CLI/native broker/installed Pi tool loop survives se
   let model: ReturnType<typeof Bun.serve> | undefined;
   try {
   const home = join(root, "home"), project = join(root, "project"), bin = join(root, "bin"), socket = join(home, ".wolfpack", "broker.sock");
-  const agent = join(home, ".pi", "agent"), installed = join(agent, "npm", "node_modules", "@sgtbeatdown", "pi-tasks");
+  const agent = join(home, ".pi", "agent"), installed = join(agent, "npm", "node_modules", "@sgtbeatdown", "wolfpack-tasks");
   for (const dir of [home, project, bin, installed, join(home, ".wolfpack")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Only extract a caller-pinned artifact; reject paths and special/link members first.
   const members = execFileSync("tar", ["-tzf", archive], { encoding: "utf8", maxBuffer: 128 * 1024 }).trim().split("\n");

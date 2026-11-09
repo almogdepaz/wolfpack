@@ -64,7 +64,7 @@ wolfpack session create --project-dir <path> [--harness <agent>] [--prompt|--pro
 
 Add `--task-worker` to `session create` or `agent spawn` only with `--project-dir <absolute-existing-worktree>`. It requires the child (or top-level session) to use the Pi harness; a child may select it with `--harness pi` regardless of the parent's supported harness. It accepts optional `--model` only for child Pi sessions, and rejects named-only project selection, `--prompt`, `--prompt-file`, `--plan`, and `--notify-parent`. `--readiness-timeout-ms <1..60000>` bounds the server gate (default 30000 ms); the CLI request deadline includes a small response grace period.
 
-Before creating anything, Wolfpack resolves and validates only the resources it will launch: `WOLFPACK_TASK_WORKER_PI_EXECUTABLE` (otherwise `pi` from `PATH`) and `WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION` (otherwise `$PI_CODING_AGENT_DIR/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts`, or `~/.pi/agent/...` when the Pi config directory is unset). Both configured paths must be absolute; the executable must be a regular executable file (working package-manager symlinks are accepted), and the extension must be a readable regular file.
+Before creating anything, Wolfpack resolves and validates only the resources it will launch: `WOLFPACK_TASK_WORKER_PI_EXECUTABLE` (otherwise `pi` from `PATH`) and `WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION` (otherwise `$PI_CODING_AGENT_DIR/npm/node_modules/@sgtbeatdown/wolfpack-tasks/src/extension.ts`, falling back to the pre-rename `@sgtbeatdown/pi-tasks` install path while it is the only one present, or `~/.pi/agent/...` when the Pi config directory is unset). Both configured paths must be absolute; the executable must be a regular executable file (working package-manager symlinks are accepted), and the extension must be a readable regular file.
 
 ### host-owned launch policy
 
@@ -100,7 +100,7 @@ Common examples:
 4. worker override `{ "env": { "PI_ASYNC_PREFIX_COMPACTION_START_RATIO": "0.5" }, "piOptions": { "thinking": "high", "offline": true } }`: safe worker env and bounded native Pi options.
 5. Tailnet preview: `wolfpack --machine host.tailnet.ts.net agent spawn --project-dir /absolute/worktree --task-worker --task-worker-dry-run --json`; this evaluates the remote host policy and creates nothing.
 
-The child launches Pi with the explicit extension and `PI_TASK_WORKER=1`; no startup assignment prompt runs. Success waits only for the exact live broker `sessionId`, exact canonical project root, Pi harness, and a lease-valid endpoint in the selected relay profile. The normal memory-owned profile also checks that endpoint and epoch have not changed before returning. It does not infer model readiness, task execution, or state from terminal output. A ready local success additionally returns `taskEndpoint: { relay, id }`.
+The child launches Pi with the explicit extension, `PI_TASK_WORKER=1` and `WOLFPACK_TASK_WORKER=1`; no startup assignment prompt runs. Success waits only for the exact live broker `sessionId`, exact canonical project root, Pi harness, and a lease-valid endpoint in the selected relay profile. The normal memory-owned profile also checks that endpoint and epoch have not changed before returning. It does not infer model readiness, task execution, or state from terminal output. A ready local success additionally returns `taskEndpoint: { relay, id }`.
 
 For a remote launch or exact `session status` selection, the CLI resolves that
 endpoint through the coordinator's **local** live registration and host-verified

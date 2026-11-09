@@ -169,9 +169,15 @@ export function prepareTaskWorkerLaunch(
   }
 
   const agentDirectory = env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+  // Pi installs user-scope npm packages under `<agentDir>/npm`. Prefer the renamed package and keep
+  // the legacy `pi-tasks` install working until setup migrates it.
+  const installedExtensions = ["wolfpack-tasks", "pi-tasks"].map((name) =>
+    join(agentDirectory, "npm", "node_modules", "@sgtbeatdown", name, "src", "extension.ts"));
+  const defaultExtension = installedExtensions.find((path) => canonicalReadableRegularFile(path) !== undefined)
+    ?? installedExtensions[0]!;
   const extension = configuredPath(
     env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION,
-    join(agentDirectory, "npm", "node_modules", "@sgtbeatdown", "pi-tasks", "src", "extension.ts"),
+    defaultExtension,
     "WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION",
   );
   if (canonicalReadableRegularFile(extension) === undefined) {

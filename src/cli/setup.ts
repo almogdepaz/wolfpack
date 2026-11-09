@@ -34,9 +34,13 @@ import {
 } from "../provider-readiness.js";
 import type { OpenableHarness } from "../agent-kind.js";
 import {
+  PI_TASKS_PACKAGE,
   acceptsPiIntegrationInstall,
+  findLegacyPiTasksSource,
   installPiIntegration,
+  migratePiTasksPackage,
   piIntegrationDisclosureLines,
+  piTasksMigrationDisclosureLines,
   planPiIntegrationSetup,
 } from "./pi-integration.js";
 import { configureTailscaleRemoteAccess, inspectTailscaleSelf } from "./tailscale-remote-setup.js";
@@ -201,8 +205,39 @@ function reconcileSetupService(
   return { serviceInstalled, serviceRunning };
 }
 
+/** Offers the legacy Pi Tasks package migration; returns true when the legacy package is installed. */
+function handlePiTasksMigration(interactive: boolean): boolean {
+  const legacySource = findLegacyPiTasksSource();
+  if (legacySource === undefined) return false;
+  print("");
+  print(bold("  Pi Tasks migration:"));
+  for (const line of piTasksMigrationDisclosureLines(legacySource)) {
+    print(dim(line));
+  }
+  if (!interactive) {
+    print(dim("  Non-interactive mode skipped the migration; run the commands above, or 'wolfpack setup' interactively."));
+    return true;
+  }
+  const migrate = ask("  Migrate Pi Tasks now? [y/N] ");
+  if (!acceptsPiIntegrationInstall(migrate)) {
+    print(dim("  Skipped the Pi Tasks migration."));
+    return true;
+  }
+  const result = migratePiTasksPackage({ pathValue: process.env.PATH });
+  if (result.status === "migrated") {
+    print(green(`  Migrated Pi Tasks to ${PI_TASKS_PACKAGE}.`));
+    print(dim("  Start a fresh Pi session, or run /reload in an existing session."));
+  } else {
+    print(red(`  Pi Tasks migration stopped at: ${result.failedCommand}`));
+    for (const command of result.retryCommands) print(dim(`  Retry: ${command}`));
+  }
+  return true;
+}
+
 function handleOptionalPiIntegration(interactive: boolean): void {
   const piIntegrationMode = planPiIntegrationSetup(process.env.PATH, interactive);
+  // An installed legacy package means the integration was already accepted once; migrate it instead.
+  if (piIntegrationMode !== "hidden" && handlePiTasksMigration(interactive)) return;
   if (piIntegrationMode === "prompt") {
     print("");
     print(bold("  Optional Pi integration:"));
