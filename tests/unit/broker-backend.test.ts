@@ -2270,6 +2270,106 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
       expect(result.delivery).toBe("delivered");
       expect(inputs()).toEqual(["run tests"]);
     });
+
+    describe("write guard (typed child-event notes, review A2-1)", () => {
+      let allowed: boolean;
+      let guardStates: (string | undefined)[];
+      const writeGuard = (root: { readonly state: string } | undefined): boolean => {
+        guardStates.push(root?.state);
+        return allowed && (root?.state === "idle" || root?.state === "done");
+      };
+
+      beforeEach(() => {
+        allowed = true;
+        guardStates = [];
+      });
+
+      test("a guard that holds is checked with a fresh root status before the text and before its Enter", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+          else client.emit(sessionId, data, 18n);
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note", "\r"]);
+        expect(guardStates).toEqual(["idle", "idle"]);
+        expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+        expect(result.writeRefused).toBeUndefined();
+      });
+
+      test("a parent that starts working after the baseline read gets nothing", async () => {
+        let reads = 0;
+        client.setHandler("session_info", () => okResp({
+          session: { ...sessionInfo({ name: "live", id: SESSION_UUID_1 }), program_status: status(++reads === 1 ? "idle" : "working", reads) },
+        }));
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual([]);
+        expect(result).toMatchObject({ delivery: "not_delivered", writeRefused: true });
+      });
+
+      test("a guard that fails while the note waits behind another write gets nothing", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (_sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+        };
+        const [, result] = await Promise.all([
+          backend.send("live", "viewer text"),
+          backend.sendAndObserveSubmission(SESSION_UUID_1, {
+            text: "note", noEnter: false, observeMs: 1_000, ensureSubmitted: true, writeGuard,
+          }),
+        ]);
+        expect(inputs()).toEqual(["viewer text", "\r"]);
+        expect(result).toMatchObject({ delivery: "not_delivered", writeRefused: true });
+      });
+
+      test("a guard that fails between the text and its Enter writes no Enter", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") return;
+          client.emit(sessionId, data, 18n);
+          allowed = false;
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note"]);
+        expect(result.writeRefused).toBe(true);
+        expect(result.delivery).not.toBe("not_delivered");
+      });
+
+      test("a status that leaves idle between the text and its Enter writes no Enter", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") return;
+          client.emit(sessionId, data, 18n);
+          pushStatus(afterWrite("blocked"));
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note"]);
+        expect(result.writeRefused).toBe(true);
+      });
+
+      test("a guard that fails before the ensureSubmitted retry writes no retry Enter", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 18n);
+          // The Enter is swallowed, then a viewer types before the retry.
+          else allowed = false;
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 30, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note", "\r"]);
+        expect(result).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted", writeRefused: true });
+        expect(result.retried).toBeUndefined();
+      });
+    });
   });
 
   test("releases its output subscription and status listener", async () => {

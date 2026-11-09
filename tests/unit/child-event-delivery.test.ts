@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
 import { CHILD_EVENT, CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENT_RELAY_PROTOCOL, type ChildEventPayload } from "../../src/child-event-contract.ts";
-import { SESSION_SEND_DELIVERY, SESSION_SEND_FAILURE_REASON, SESSION_SEND_OUTCOME, type SessionSendObservationResult } from "../../src/session-send-contract.ts";
+import {
+  SESSION_SEND_DELIVERY,
+  SESSION_SEND_FAILURE_REASON,
+  SESSION_SEND_OUTCOME,
+  type SessionSendObservationResult,
+  type SessionSendWriteGuard,
+} from "../../src/session-send-contract.ts";
+import { PROGRAM_STATUS_STATE, type ProgramStatusState } from "../../src/program-status-contract.ts";
 import {
   CHILD_EVENT_NOTE_LIMITS,
   createChildEventDelivery,
@@ -15,6 +22,13 @@ const START = Date.parse("2026-11-09T12:00:00Z");
 
 const SUBMITTED: SessionSendObservationResult = { delivery: SESSION_SEND_DELIVERY.DELIVERED, outcome: SESSION_SEND_OUTCOME.SUBMITTED, observedMs: 100 };
 const PASTED: SessionSendObservationResult = { delivery: SESSION_SEND_DELIVERY.DELIVERED, outcome: SESSION_SEND_OUTCOME.PASTED_NOT_SUBMITTED, observedMs: 1500, retried: true };
+const REFUSED_BEFORE_WRITE: SessionSendObservationResult = {
+  delivery: SESSION_SEND_DELIVERY.NOT_DELIVERED, outcome: SESSION_SEND_OUTCOME.NOT_DELIVERED, observedMs: 0,
+  reason: SESSION_SEND_FAILURE_REASON.TARGET_UNAVAILABLE, writeRefused: true,
+};
+const REFUSED_BEFORE_ENTER: SessionSendObservationResult = {
+  delivery: SESSION_SEND_DELIVERY.DELIVERED, outcome: SESSION_SEND_OUTCOME.PASTED_NOT_SUBMITTED, observedMs: 0, writeRefused: true,
+};
 const NOTHING_WRITTEN: SessionSendObservationResult = {
   delivery: SESSION_SEND_DELIVERY.NOT_DELIVERED, outcome: SESSION_SEND_OUTCOME.NOT_DELIVERED, observedMs: 0, reason: SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE,
 };
@@ -43,13 +57,15 @@ function harness(options: { relay?: VolatileHostEnvelopeResult; sends?: SessionS
   let viewerInputAt: number | undefined;
   const relayCalls: VolatileHostEnvelopeRequest[] = [];
   const sends: { sessionId: string; sessionName: string; text: string }[] = [];
+  const guards: SessionSendWriteGuard[] = [];
   const results = [...(options.sends ?? [])];
   let release: (() => void) | undefined;
   let hold = false;
   const deps: ChildEventDeliveryDeps = {
     hostEnvelope: async input => { relayCalls.push(input); return options.relay ?? { kind: "unsupported" }; },
-    send: async (sessionId, sessionName, text) => {
+    send: async (sessionId, sessionName, text, writeGuard) => {
       sends.push({ sessionId, sessionName, text });
+      guards.push(writeGuard);
       if (hold) await new Promise<void>(resolve => { release = resolve; });
       return results.shift() ?? SUBMITTED;
     },
@@ -69,6 +85,7 @@ function harness(options: { relay?: VolatileHostEnvelopeResult; sends?: SessionS
     delivery,
     relayCalls,
     sends,
+    guards,
     parent,
     advance: (ms: number) => { now += ms; },
     setEnabled: (value: boolean) => { enabled = value; },
@@ -245,6 +262,51 @@ describe("child-event delivery to the parent agent", () => {
     expect(h.delivery.hasPending()).toBe(false);
     await observe(h);
     expect(h.sends).toHaveLength(CHILD_EVENT_NOTE_LIMITS.ATTEMPTS);
+  });
+
+  test("a note the write guard refused before any write stays pending and uses no attempt (review A2-1)", async () => {
+    const refusals = CHILD_EVENT_NOTE_LIMITS.ATTEMPTS + 1;
+    const h = harness({ sends: Array.from({ length: refusals }, () => REFUSED_BEFORE_WRITE) });
+    await deliver(h, event({ childName: "first" }));
+    for (let attempt = 1; attempt <= refusals; attempt += 1) {
+      await observe(h);
+      expect(h.sends).toHaveLength(attempt);
+      expect(h.delivery.hasPending()).toBe(true);
+      h.advance(CHILD_EVENT_NOTE_LIMITS.MIN_INTERVAL_MS);
+    }
+    await observe(h);
+    expect(h.sends).toHaveLength(refusals + 1);
+    expect(new Set(h.sends.map(send => send.text)).size).toBe(1);
+    expect(h.delivery.hasPending()).toBe(false);
+  });
+
+  test("a note whose Enter the write guard refused is not typed again", async () => {
+    const h = harness({ sends: [REFUSED_BEFORE_ENTER] });
+    await deliver(h, event());
+    await observe(h);
+    h.advance(CHILD_EVENT_NOTE_LIMITS.MIN_INTERVAL_MS);
+    await observe(h);
+    expect(h.sends).toHaveLength(1);
+    expect(h.delivery.hasPending()).toBe(false);
+  });
+
+  test("the write guard re-checks status, viewer input and the setting at write time (review A2-1)", async () => {
+    const h = harness();
+    await deliver(h, event());
+    await observe(h);
+    const guard = h.guards[0]!;
+    const root = (state: ProgramStatusState) => ({ id: "", state, updatedAtMs: h.now() });
+    expect(guard(root(PROGRAM_STATUS_STATE.IDLE))).toBe(true);
+    expect(guard(root(PROGRAM_STATUS_STATE.DONE))).toBe(true);
+    expect(guard(root(PROGRAM_STATUS_STATE.WORKING))).toBe(false);
+    expect(guard(root(PROGRAM_STATUS_STATE.BLOCKED))).toBe(false);
+    expect(guard(undefined)).toBe(false);
+    h.setViewerInputAt(h.now() - 1_000);
+    expect(guard(root(PROGRAM_STATUS_STATE.IDLE))).toBe(false);
+    h.setViewerInputAt(h.now() - CHILD_EVENT_NOTE_LIMITS.VIEWER_QUIET_MS);
+    expect(guard(root(PROGRAM_STATUS_STATE.IDLE))).toBe(true);
+    h.setEnabled(false);
+    expect(guard(root(PROGRAM_STATUS_STATE.IDLE))).toBe(false);
   });
 
   test("a pasted but unsubmitted note is never typed again", async () => {

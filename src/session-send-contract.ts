@@ -1,3 +1,4 @@
+import type { ProgramStatusRecord } from "./program-status-contract.js";
 import { SESSION_PROMPT_OUTCOME } from "./session-prompt-contract.js";
 
 export const SESSION_SEND_DEFAULT_OBSERVE_MS = 1_500;
@@ -44,6 +45,13 @@ export const SESSION_SEND_FAILURE_REASON = {
 export type SessionSendFailureReason =
   (typeof SESSION_SEND_FAILURE_REASON)[keyof typeof SESSION_SEND_FAILURE_REASON];
 
+/**
+ * Decides, right before one write, whether that write may happen. It gets the
+ * session's root program status, read fresh after earlier writes to the session
+ * finished, or undefined when the read failed.
+ */
+export type SessionSendWriteGuard = (rootStatus: ProgramStatusRecord | undefined) => boolean;
+
 export interface SessionSendObservationOptions {
   readonly text: string;
   readonly noEnter: boolean;
@@ -57,6 +65,12 @@ export interface SessionSendObservationOptions {
    * returns. Not called for `noEnter` or a write that failed.
    */
   readonly onSubmitWritten?: () => void;
+  /**
+   * Automated senders only (typed child-event notes). Checked before each write:
+   * the text, its separate Enter and the `ensureSubmitted` retry Enter. A false
+   * result writes nothing more and sets `writeRefused` on the result.
+   */
+  readonly writeGuard?: SessionSendWriteGuard;
 }
 
 export interface SessionSendObservationResult {
@@ -68,6 +82,11 @@ export interface SessionSendObservationResult {
   readonly retried?: true;
   /** Present exactly when `delivery` is `not_delivered`. */
   readonly reason?: SessionSendFailureReason;
+  /**
+   * The `writeGuard` refused a write; nothing was written after that. With
+   * `not_delivered` nothing was written at all (`reason` is `target_unavailable`).
+   */
+  readonly writeRefused?: true;
 }
 
 /** `ok` for a send response: the caller's intent was met or cannot be disproven. */

@@ -90,6 +90,7 @@ import type {
   SessionSendObservationOptions,
   SessionSendObservationResult,
   SessionSendOutcome,
+  SessionSendWriteGuard,
 } from "../session-send-contract.js";
 import {
   plainLine,
@@ -490,6 +491,14 @@ interface ObservedInputSpec<T> {
   readonly bind?: (observation: InputObservation<T>) => void;
   /** Runs once the subscription is ready; a result settles the call without writing. */
   readonly beforeWrite?: () => T | undefined;
+  /**
+   * Awaited right before each write (the input and a separate Enter), after the
+   * wait for earlier writes; false writes nothing more and settles with `onRefused`.
+   */
+  readonly writeGuard?: {
+    readonly allows: () => Promise<boolean>;
+    readonly onRefused: () => T;
+  };
 }
 
 class BrokerRpcError extends Error {
@@ -1001,10 +1010,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       priorDelivered: false,
       sessionName: options.sessionName,
       onSubmitWritten: options.onSubmitWritten,
+      writeGuard: options.writeGuard,
     });
     if (
       options.noEnter
       || !options.ensureSubmitted
+      || first.writeRefused
       || first.outcome !== SESSION_SEND_OUTCOME.PASTED_NOT_SUBMITTED
     ) {
       return first;
@@ -1017,9 +1028,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       priorDelivered: true,
       sessionName: options.sessionName,
       onSubmitWritten: options.onSubmitWritten,
+      writeGuard: options.writeGuard,
     });
     // A retry that could not be written sent nothing: the first verdict stands.
-    if (retry.delivery === SESSION_SEND_DELIVERY.NOT_DELIVERED) return first;
+    if (retry.delivery === SESSION_SEND_DELIVERY.NOT_DELIVERED) {
+      return retry.writeRefused ? { ...first, writeRefused: true } : first;
+    }
     return {
       delivery: retry.delivery,
       outcome: retry.outcome,
@@ -1039,6 +1053,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       readonly priorDelivered: boolean;
       readonly sessionName: string | undefined;
       readonly onSubmitWritten: (() => void) | undefined;
+      readonly writeGuard: SessionSendWriteGuard | undefined;
     },
   ): Promise<SessionSendObservationResult> {
     // One deadline covers the baseline read, subscribe, write and final read;
@@ -1059,6 +1074,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     // room for the settle gap before it; past this, nothing is written.
     const writeByMs = deadlineMs - statusReadMs;
     const windowSpent = (): boolean => Date.now() >= writeByMs - settleMs;
+    let writeRefused = false;
+    const { writeGuard } = attempt;
+    const refusedMark = (): { readonly writeRefused?: true } => (writeRefused ? { writeRefused: true } : {});
     // Listen before reading the baseline so no pushed change falls between them.
     const unsubscribeStatus = this.onProgramStatusById(sessionId, (record) => {
       if (Date.now() > deadlineMs) return;
@@ -1090,13 +1108,25 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         // A failed Enter after a written text still delivered the text.
         onWriteError: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
         onSubmitWritten: attempt.onSubmitWritten,
+        // Read the root status again at each write: the baseline read can be
+        // stale after the wait for earlier writes or the settle gap.
+        writeGuard: writeGuard && {
+          allows: async () => {
+            const current = await this.rootProgramStatusWithin(sessionId, Math.min(writeByMs, Date.now() + statusReadMs), "guard");
+            return this.idToInfo.get(sessionId)?.alive === true && writeGuard(current?.record);
+          },
+          onRefused: () => {
+            writeRefused = true;
+            return stopUnlessWritten(SESSION_SEND_FAILURE_REASON.TARGET_UNAVAILABLE);
+          },
+        },
         onOutput: (frame, current) => {
           if (!current.inputSent || frame.data.length === 0 || Date.now() > deadlineMs) return;
           outputSeen = true;
           if (attempt.noEnter) current.finish(observed);
         },
       });
-      if (stop.kind === "not_delivered") return notDeliveredSend(stop.reason);
+      if (stop.kind === "not_delivered") return { ...notDeliveredSend(stop.reason), ...refusedMark() };
       const writtenAtMs = observation?.inputSentAtMs;
       let statusUnknown = false;
       if (!decided()) {
@@ -1114,6 +1144,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           priorDelivered: attempt.priorDelivered,
         }),
         observedMs: writtenAtMs === undefined ? 0 : Math.max(0, Math.min(Date.now(), deadlineMs) - writtenAtMs),
+        ...refusedMark(),
       };
     } finally {
       unsubscribeStatus();
@@ -1124,7 +1155,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   private async rootProgramStatusWithin(
     sessionId: string,
     untilMs: number,
-    phase: "baseline" | "final",
+    phase: "baseline" | "guard" | "final",
   ): Promise<{ readonly record: ProgramStatusRecord | undefined } | undefined> {
     const timeoutMs = untilMs - Date.now();
     if (timeoutMs <= 0) return undefined;
@@ -1349,9 +1380,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       pendingOutput.length = 0;
       if (settled) return await settle();
       const separateEnter = spec.submit && spec.separateEnter && spec.input !== "";
+      const guardAllows = async (): Promise<boolean> => {
+        if (!spec.writeGuard || await spec.writeGuard.allows()) return true;
+        observation.finish(spec.writeGuard.onRefused());
+        return false;
+      };
       const write = async (): Promise<void> => {
         // A call that settled or ran out of time while it waited in the queue writes nothing.
         if (settled) return;
+        if (!(await guardAllows()) || settled) return;
         const stop = spec.beforeWrite?.();
         if (stop !== undefined) {
           observation.finish(stop);
@@ -1378,8 +1415,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           if (spec.submit) spec.onSubmitWritten?.();
           return;
         }
-        // The text is delivered, so its Enter follows even if the call has settled meanwhile.
+        // The text is delivered, so its Enter follows even if the call has settled
+        // meanwhile, unless the write guard refuses it.
         await delay(SESSION_SUBMIT_SETTLE_MS);
+        if (!(await guardAllows())) return;
         observation.inputSentAtMs = Date.now();
         try {
           this.client.writeInput(sessionId, TEXT_ENCODER.encode(ENTER_INPUT));

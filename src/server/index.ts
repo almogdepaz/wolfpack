@@ -325,14 +325,14 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   ctx.backend.cleanupOrphans();
   const stopChildEventDelivery = startChildEventDelivery({
     hostEnvelope: input => taskRelay.hostEnvelope(input),
-    send: async (sessionId, sessionName, text) => {
+    send: async (sessionId, sessionName, text, writeGuard) => {
       const streaming = ctx.supervisor ? ctx.supervisor.backend() : ctx.backend;
       if (!streaming) {
         return { delivery: SESSION_SEND_DELIVERY.NOT_DELIVERED, outcome: SESSION_SEND_OUTCOME.NOT_DELIVERED, observedMs: 0,
           reason: SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE };
       }
       return streaming.sendAndObserveSubmission(sessionId, {
-        text, noEnter: false, observeMs: SESSION_SEND_DEFAULT_OBSERVE_MS, ensureSubmitted: true, sessionName,
+        text, noEnter: false, observeMs: SESSION_SEND_DEFAULT_OBSERVE_MS, ensureSubmitted: true, sessionName, writeGuard,
       });
     },
     typedNotesEnabled: childEventTypedNotesEnabled,

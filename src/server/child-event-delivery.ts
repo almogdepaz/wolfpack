@@ -15,8 +15,13 @@
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { AgentStatusAuthority, AgentStatusFreshness, AgentStatusState } from "../agent-status-contract.js";
 import { CHILD_EVENT, CHILD_EVENT_RELAY_PROTOCOL, type ChildEventPayload } from "../child-event-contract.js";
-import { PROGRAM_STATUS_KINDS } from "../program-status-contract.js";
-import { SESSION_SEND_OUTCOME, type SessionSendObservationResult } from "../session-send-contract.js";
+import { PROGRAM_STATUS_KINDS, PROGRAM_STATUS_STATE, type ProgramStatusState } from "../program-status-contract.js";
+import {
+  SESSION_SEND_DELIVERY,
+  SESSION_SEND_OUTCOME,
+  type SessionSendObservationResult,
+  type SessionSendWriteGuard,
+} from "../session-send-contract.js";
 import { createLogger, errMsg } from "../log.js";
 import type { VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult } from "../task-relay/volatile-protocol.js";
 import { onChildEvent, type ChildEventDelivery } from "./child-events.js";
@@ -45,6 +50,8 @@ const ENVELOPE_ID_PREFIX = "wolfpack.child_event:";
 const NOTE_PREFIX = "[wolfpack] child events:";
 const NOTE_SUFFIX = "(details: wolfpack agent inbox --json)";
 const NOTE_STATES: ReadonlySet<AgentStatusState> = new Set([AGENT_STATUS_STATE.IDLE, AGENT_STATUS_STATE.DONE]);
+/** The same states, judged at each write from the root program status (never `blocked`). */
+const NOTE_PROGRAM_STATES: ReadonlySet<ProgramStatusState> = new Set([PROGRAM_STATUS_STATE.IDLE, PROGRAM_STATUS_STATE.DONE]);
 
 export interface ParentObservation {
   readonly sessionId: string;
@@ -60,8 +67,11 @@ export interface ParentObservation {
 
 export interface ChildEventDeliveryDeps {
   hostEnvelope(input: VolatileHostEnvelopeRequest): Promise<VolatileHostEnvelopeResult>;
-  /** Types `text` and Enter into the session through the observed, serialized send path. */
-  send(sessionId: string, sessionName: string, text: string): Promise<SessionSendObservationResult>;
+  /**
+   * Types `text` and Enter into the session through the observed, serialized
+   * send path, checking `writeGuard` right before each write.
+   */
+  send(sessionId: string, sessionName: string, text: string, writeGuard: SessionSendWriteGuard): Promise<SessionSendObservationResult>;
   typedNotesEnabled(): boolean;
   lastViewerInputAt(sessionId: string): number | undefined;
   now(): number;
@@ -144,6 +154,20 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
     pending.set(sessionId, entry);
   };
 
+  const viewerQuiet = (sessionId: string, now: number): boolean => {
+    const viewerInputAt = deps.lastViewerInputAt(sessionId);
+    return viewerInputAt === undefined || now - viewerInputAt >= CHILD_EVENT_NOTE_LIMITS.VIEWER_QUIET_MS;
+  };
+
+  /**
+   * The observation guards, checked again at each write (review A2-1): the
+   * parent can start working, block or get viewer input after it was observed.
+   * The backend refuses a dead parent itself.
+   */
+  const writeGuard = (sessionId: string): SessionSendWriteGuard => rootStatus =>
+    rootStatus !== undefined && NOTE_PROGRAM_STATES.has(rootStatus.state)
+    && deps.typedNotesEnabled() && viewerQuiet(sessionId, deps.now());
+
   const flush = async (parent: ParentObservation, entry: PendingNotes) => {
     const batch = entry.items.slice();
     const text = childEventNoteText(batch.map(item => item.payload), entry.dropped);
@@ -151,11 +175,16 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
     lastNoteAt.set(parent.sessionId, deps.now());
     let result: SessionSendObservationResult | undefined;
     try {
-      result = await deps.send(parent.sessionId, parent.name, text);
+      result = await deps.send(parent.sessionId, parent.name, text, writeGuard(parent.sessionId));
     } catch (error) {
       log.warn("typed child-event note failed; not retyped", { parent: parent.name, error: errMsg(error) });
     } finally {
       entry.inFlight = false;
+    }
+    if (result?.writeRefused && result.delivery === SESSION_SEND_DELIVERY.NOT_DELIVERED) {
+      // The parent stopped waiting before anything was written: keep the note
+      // for a later observation without using an attempt.
+      return;
     }
     if (result?.reason !== undefined) {
       // Nothing was written: keep the events for a bounded number of attempts.
@@ -204,8 +233,7 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
       const { runtimeState } = parent;
       if (runtimeState.authority !== AGENT_STATUS_AUTHORITY.PROGRAM || !NOTE_STATES.has(runtimeState.state)
         || runtimeState.stale || runtimeState.freshness !== AGENT_STATUS_FRESHNESS.FRESH) return;
-      const viewerInputAt = deps.lastViewerInputAt(parent.sessionId);
-      if (viewerInputAt !== undefined && now - viewerInputAt < CHILD_EVENT_NOTE_LIMITS.VIEWER_QUIET_MS) return;
+      if (!viewerQuiet(parent.sessionId, now)) return;
       if (lastNoteAt.has(parent.sessionId)) return;
       void flush(parent, entry);
     },

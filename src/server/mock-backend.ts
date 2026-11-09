@@ -290,6 +290,15 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
         observedMs: 0,
       };
     }
+    if (options.writeGuard && !options.writeGuard(this._programStatus.get(identity.wolfpackSessionName))) {
+      return {
+        delivery: SESSION_SEND_DELIVERY.NOT_DELIVERED,
+        outcome: SESSION_SEND_OUTCOME.NOT_DELIVERED,
+        reason: SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE,
+        observedMs: 0,
+        writeRefused: true,
+      };
+    }
     await this.send(identity.wolfpackSessionName, options.text, options.noEnter);
     if (!options.noEnter) options.onSubmitWritten?.();
     await this.duringSendObservation?.();
