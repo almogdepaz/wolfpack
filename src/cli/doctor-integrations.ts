@@ -157,48 +157,129 @@ function checkOtherManagedSources(dropInDirectory: string): CheckResult {
   );
 }
 
+/** The fields doctor reads from the plugin's status file (`src/claude/status-file.ts` in wolfpack-tasks). */
 interface ClaudeStatusFile {
   readonly sessionId: string;
+  readonly sessionName: string | undefined;
   readonly pid: number;
   readonly wake: string;
   readonly protocolVersion: unknown;
+  readonly lastPointerAt: number | undefined;
+  readonly lastInboxAt: number | undefined;
+  readonly fallbackAt: number | undefined;
+  readonly lastNudgeError: string | undefined;
+  readonly statusFailures: number;
+  readonly wakeStalledAt: number | undefined;
 }
 
-function readClaudeStatusFiles(statusDirectory: string): { readonly files: ClaudeStatusFile[]; readonly unreadable: number } {
+interface ClaudeStatusFiles {
+  readonly files: ClaudeStatusFile[];
+  /** Paths of status files that cannot be read or parsed, or that lack the identity fields. */
+  readonly unreadable: string[];
+  /** Why the status directory cannot be listed; a missing directory is not a problem. */
+  readonly directoryError: string | undefined;
+}
+
+const optionalNumber = (value: unknown): number | undefined => (typeof value === "number" ? value : undefined);
+const optionalString = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+
+function readClaudeStatusFiles(statusDirectory: string): ClaudeStatusFiles {
   let names: string[] = [];
+  let directoryError: string | undefined;
   try {
     names = readdirSync(statusDirectory).filter(name => name.endsWith(".json")).sort();
-  } catch { /* expected: no claude session has written a status file yet */ }
+  } catch (error) {
+    // A missing directory only means no claude session has written a status file yet.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      directoryError = `cannot read ${statusDirectory}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   const files: ClaudeStatusFile[] = [];
-  let unreadable = 0;
+  const unreadable: string[] = [];
   for (const name of names) {
-    const status = readJsonRecord(join(statusDirectory, name));
+    const path = join(statusDirectory, name);
+    const status = readJsonRecord(path);
     if (status === undefined || typeof status.sessionId !== "string" || typeof status.pid !== "number" || typeof status.wake !== "string") {
-      unreadable++;
+      unreadable.push(path);
       continue;
     }
-    files.push({ sessionId: status.sessionId, pid: status.pid, wake: status.wake, protocolVersion: status.protocolVersion });
+    files.push({
+      sessionId: status.sessionId,
+      sessionName: optionalString(status.sessionName),
+      pid: status.pid,
+      wake: status.wake,
+      protocolVersion: status.protocolVersion,
+      lastPointerAt: optionalNumber(status.lastPointerAt),
+      lastInboxAt: optionalNumber(status.lastInboxAt),
+      fallbackAt: optionalNumber(status.fallbackAt),
+      lastNudgeError: optionalString(status.lastNudgeError),
+      statusFailures: optionalNumber(status.statusFailures) ?? 0,
+      wakeStalledAt: optionalNumber(status.wakeStalledAt),
+    });
   }
-  return { files, unreadable };
+  return { files, unreadable, directoryError };
 }
 
-function checkClaudeWake(options: ClaudeIntegrationDoctorOptions): CheckResult {
-  const { files, unreadable } = readClaudeStatusFiles(options.statusDirectory);
-  const live = files.filter(file => options.pidAlive(file.pid));
-  const fallback = live.filter(file => file.wake !== "channel");
-  const channel = live.length - fallback.length;
-  const unreadableNote = unreadable > 0 ? `; ${unreadable} unreadable status file(s)` : "";
-  if (fallback.length > 0) {
-    const sessions = fallback.map(file => `${file.sessionId} (pid ${file.pid}, protocol ${String(file.protocolVersion ?? "unknown")})`);
-    return claudeResult(
-      "claude wake",
-      "warn",
-      `fallback wake: ${sessions.join(", ")}; ${channel} on channel wake${unreadableNote}`,
-      `restart those sessions with --channels ${CLAUDE_INTEGRATION.channelSpec}`,
-    );
+const isoTime = (ms: number | undefined): string => (ms === undefined ? "an unknown time" : new Date(ms).toISOString());
+const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+/** Why a live session's wake needs attention, or undefined when it is on channel wake without errors. */
+function claudeWakeProblem(file: ClaudeStatusFile): { readonly detail: string; readonly kind: "stalled" | "fallback" | "error" } | undefined {
+  const label = `${file.sessionName ?? file.sessionId} (${file.sessionId}, pid ${file.pid})`;
+  const error = file.lastNudgeError ?? "no error recorded";
+  if (file.wakeStalledAt !== undefined) {
+    return { kind: "stalled", detail: `${label}: wake stalled at ${isoTime(file.wakeStalledAt)} after ${plural(file.statusFailures, "status check")}: ${error}` };
   }
-  const detail = live.length === 0 ? "no live claude sessions" : `${channel} on channel wake`;
-  return claudeResult("claude wake", "pass", `${detail}${unreadableNote}`);
+  if (file.wake !== "channel") {
+    const lastError = file.lastNudgeError === undefined ? "" : `, last nudge error: ${file.lastNudgeError}`;
+    return { kind: "fallback", detail: `${label}: fallback wake since ${isoTime(file.fallbackAt)} (protocol ${String(file.protocolVersion ?? "unknown")})${lastError}` };
+  }
+  if (file.lastNudgeError !== undefined) {
+    const retrying = file.statusFailures > 0 ? ` (${plural(file.statusFailures, "failed status check")})` : "";
+    return { kind: "error", detail: `${label}: last nudge error: ${file.lastNudgeError}${retrying}` };
+  }
+  return undefined;
+}
+
+/**
+ * Wake health per live Claude session from the plugin's status files. Channel wake counts as
+ * delivered only after a pointer or inbox call; before that it is configured but unverified.
+ */
+function checkClaudeWake(options: ClaudeIntegrationDoctorOptions): CheckResult {
+  const { files, unreadable, directoryError } = readClaudeStatusFiles(options.statusDirectory);
+  const problems: string[] = [];
+  const kinds = new Set<string>();
+  let delivered = 0;
+  let unverified = 0;
+  for (const file of files.filter(status => options.pidAlive(status.pid))) {
+    const problem = claudeWakeProblem(file);
+    if (problem !== undefined) {
+      problems.push(problem.detail);
+      kinds.add(problem.kind);
+    } else if (file.lastPointerAt !== undefined || file.lastInboxAt !== undefined) {
+      delivered++;
+    } else {
+      unverified++;
+    }
+  }
+  if (directoryError !== undefined) problems.push(directoryError);
+  if (unreadable.length > 0) problems.push(`unreadable status files: ${unreadable.join(", ")}`);
+
+  const summary: string[] = [];
+  if (delivered > 0) summary.push(`${delivered} on channel wake with pointer or inbox activity`);
+  if (unverified > 0) summary.push(`${unverified} channel configured, unverified (no pointer or inbox activity yet)`);
+  if (problems.length === 0) {
+    return claudeResult("claude wake", "pass", summary.length > 0 ? summary.join("; ") : "no live claude sessions");
+  }
+  const hints: string[] = [];
+  if (kinds.has("fallback")) hints.push(`restart fallback sessions with --channels ${CLAUDE_INTEGRATION.channelSpec}`);
+  if (kinds.has("stalled") || kinds.has("error")) {
+    hints.push("check that the wolfpack server answers wolfpack session status <session-id> --json; the next inbox call clears a stall");
+  }
+  if (directoryError !== undefined || unreadable.length > 0) {
+    hints.push(`check the permissions and content of ${options.statusDirectory}; remove status files of sessions that no longer run`);
+  }
+  return claudeResult("claude wake", "warn", [...problems, ...summary].join("; "), hints.join("; "));
 }
 
 /** Read-only checks for the opt-in Claude task integration; only `claude --version` is run. */

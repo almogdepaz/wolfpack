@@ -106,9 +106,13 @@ commands. It fails an old Claude version, a third-party provider, a missing
 user-scope plugin, and a missing or wrong drop-in. It warns when
 `managed-settings.json` or another drop-in sets `channelsEnabled: false` or an
 `allowedChannelPlugins` list without the plugin, and names that file. Doctor
-does not inspect MDM or server-managed settings. It also warns about each live
-Claude session that uses fallback wake instead of the channel, from the
-plugin's status files in `~/.wolfpack/wolfpack-tasks/claude/`.
+does not inspect MDM or server-managed settings. It also reads the plugin's
+status files in `~/.wolfpack/wolfpack-tasks/claude/` and warns, with the session
+and the reason, about each live Claude session whose wake stalled after its
+status checks ran out, that has a nudge error, or that uses fallback wake
+instead of the channel. It warns about status files it cannot read. A channel
+session counts as delivered only after a pointer or inbox call; before that,
+doctor reports it as "channel configured, unverified".
 
 ## Clone or update the auditable source
 

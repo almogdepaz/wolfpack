@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkClaudeTaskIntegration, checkPiTasksPackage, type ClaudeIntegrationDoctorOptions } from "../../src/cli/doctor-integrations.ts";
 import type { CheckResult } from "../../src/cli/doctor.ts";
+import { CLAUDE_INTEGRATION } from "../../src/claude-integration.ts";
 
 const roots: string[] = [];
 
@@ -159,19 +160,88 @@ describe("doctor Claude task integration checks", () => {
     expect(allowlist?.detail).toContain(shared);
   });
 
-  test("warns about each live session on fallback wake and ignores dead or malformed status files", () => {
+  test("warns about each live session on fallback wake and ignores dead sessions", () => {
     const options = healthy({ pidAlive: (pid) => pid !== 9999 });
-    writeStatus(options.statusDirectory, "live-channel", {});
-    writeStatus(options.statusDirectory, "live-fallback", { wake: "fallback", protocolVersion: "2025-06-18" });
+    const fallbackAt = Date.UTC(2026, 10, 9, 12, 0, 0);
+    writeStatus(options.statusDirectory, "live-channel", { lastPointerAt: fallbackAt - 1_000 });
+    writeStatus(options.statusDirectory, "live-fallback", { wake: "fallback", protocolVersion: "2025-06-18", fallbackAt });
     writeStatus(options.statusDirectory, "dead-fallback", { wake: "fallback", pid: 9999 });
-    writeFileSync(join(options.statusDirectory, "broken.json"), "{");
     const results = checkClaudeTaskIntegration(options);
     const wake = results.filter(result => result.name === "claude wake");
     expect(wake).toHaveLength(1);
     expect(wake[0]?.status).toBe("warn");
     expect(wake[0]?.detail).toContain("live-fallback");
     expect(wake[0]?.detail).toContain("2025-06-18");
+    expect(wake[0]?.detail).toContain(`fallback wake since ${new Date(fallbackAt).toISOString()}`);
     expect(wake[0]?.detail).not.toContain("dead-fallback");
-    expect(wake[0]?.detail).toContain("1 on channel wake");
+    expect(wake[0]?.detail).toContain("1 on channel wake with pointer or inbox activity");
+    expect(wake[0]?.fixHint).toContain(`--channels ${CLAUDE_INTEGRATION.channelSpec}`);
+  });
+
+  test("warns about a live session whose wake stalled after exhausted status checks", () => {
+    const options = healthy();
+    const stalledAt = Date.UTC(2026, 10, 9, 12, 5, 0);
+    const reason = "wolfpack session status exited 1; fallback given up after 3 status checks";
+    writeStatus(options.statusDirectory, "stalled", {
+      lastPointerAt: stalledAt - 10_000, statusFailures: 3, wakeStalledAt: stalledAt, lastNudgeError: reason,
+    });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("warn");
+    expect(wake?.detail).toContain("stalled (stalled, pid 4242)");
+    expect(wake?.detail).toContain(`wake stalled at ${new Date(stalledAt).toISOString()} after 3 status checks: ${reason}`);
+    expect(wake?.fixHint).toContain("wolfpack session status");
+  });
+
+  test("warns about a live session with a nudge error and names the reason", () => {
+    const options = healthy();
+    writeStatus(options.statusDirectory, "nudged", {
+      lastPointerAt: 1, statusFailures: 1, wakeStalledAt: null, lastNudgeError: "session submit exited 1",
+    });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("warn");
+    expect(wake?.detail).toContain("nudged (nudged, pid 4242)");
+    expect(wake?.detail).toContain("last nudge error: session submit exited 1");
+    expect(wake?.detail).toContain("1 failed status check");
+  });
+
+  test("counts channel pointer or inbox activity as evidence of delivery", () => {
+    const options = healthy();
+    writeStatus(options.statusDirectory, "pointer", { lastPointerAt: Date.now(), lastInboxAt: null, lastNudgeError: null, statusFailures: 0 });
+    writeStatus(options.statusDirectory, "inbox", { lastPointerAt: null, lastInboxAt: Date.now() });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("pass");
+    expect(wake?.detail).toBe("2 on channel wake with pointer or inbox activity");
+  });
+
+  test("reports a fresh channel session without activity as configured but unverified", () => {
+    const options = healthy();
+    writeStatus(options.statusDirectory, "fresh", { lastPointerAt: null, lastInboxAt: null, lastNudgeError: null, statusFailures: 0, wakeStalledAt: null });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("pass");
+    expect(wake?.detail).toBe("1 channel configured, unverified (no pointer or inbox activity yet)");
+    expect(wake?.detail).not.toContain("with pointer or inbox activity");
+  });
+
+  test("reports unreadable status files instead of skipping them", () => {
+    const options = healthy();
+    writeStatus(options.statusDirectory, "fresh", {});
+    const broken = join(options.statusDirectory, "broken.json");
+    const partial = join(options.statusDirectory, "partial.json");
+    writeFileSync(broken, "{");
+    writeFileSync(partial, JSON.stringify({ sessionId: "partial" }));
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("warn");
+    expect(wake?.detail).toContain(`unreadable status files: ${broken}, ${partial}`);
+    expect(wake?.detail).toContain("1 channel configured, unverified");
+    expect(wake?.fixHint).toContain(options.statusDirectory);
+  });
+
+  test("reports an unreadable status directory", () => {
+    const root = tempRoot();
+    const statusDirectory = join(root, "status-file");
+    writeFileSync(statusDirectory, "not a directory");
+    const wake = byName(checkClaudeTaskIntegration(healthy({ statusDirectory })), "claude wake");
+    expect(wake?.status).toBe("warn");
+    expect(wake?.detail).toContain(`cannot read ${statusDirectory}`);
   });
 });
