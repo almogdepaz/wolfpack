@@ -52,6 +52,7 @@ type State = "mailbox" | "acknowledged" | "forwarding" | "forwarded" | "unconfir
 interface Receipt {
   readonly id: string;
   readonly digest: string;
+  readonly createdAt: string;
   readonly source: RelayEndpoint;
   readonly target: RelayEndpoint;
   readonly bytes: number;
@@ -95,6 +96,7 @@ export class MemoryRelayStore {
   #metadataBytes = 0;
   #logDrops = 0;
   #registrationMutation = 0n;
+  #admissionFloor: number | null = null;
 
   constructor(options: { readonly limits?: Partial<Limits>; readonly investigation?: RelayInvestigationSink; readonly recoverable?: boolean; readonly rows?: readonly RecoveryRow[] } = {}) {
     const overrides = captured(options.limits ?? {}, 4096);
@@ -406,7 +408,7 @@ export class MemoryRelayStore {
 
   /** Persist primary state only. Caches, byte charges, mailbox and expiry indexes rebuild on reopen. */
   recoveryRows(): readonly RecoveryRow[] {
-    const rows: RecoveryRow[] = [{ bucket: "identity", key: "relay", value: JSON.stringify({ epoch: this.#epoch, mutation: this.#registrationMutation.toString() }) }];
+    const rows: RecoveryRow[] = [{ bucket: "identity", key: "relay", value: JSON.stringify({ epoch: this.#epoch, mutation: this.#registrationMutation.toString(), admissionFloor: this.#admissionFloor }) }];
     for (const [key, entry] of this.#registrations) rows.push({ bucket: "registrations", key, value: JSON.stringify({ value: entry.value, mutation: entry.mutation.toString(), cursor: entry.cursor.toString() }) });
     for (const [key, route] of this.#routes) rows.push({ bucket: "routes", key, value: JSON.stringify({ id: route.id, origin: route.origin, peerEpoch: route.peerEpoch }) });
     for (const [key, receipt] of this.#receipts) rows.push({ bucket: "receipts", key, value: JSON.stringify(receipt) });
@@ -419,8 +421,9 @@ export class MemoryRelayStore {
     const identity = rows.find(row => row.bucket === "identity" && row.key === "relay");
     if (!identity || rows.filter(row => row.bucket === "identity").length !== 1) invalid();
     const meta = JSON.parse(identity!.value);
-    if (!isOpaqueRelayId(meta.epoch) || !decimal(meta.mutation)) invalid();
-    this.#epoch = meta.epoch; this.#registrationMutation = BigInt(meta.mutation);
+    if (!isOpaqueRelayId(meta.epoch) || !decimal(meta.mutation)
+      || (meta.admissionFloor !== null && (!Number.isSafeInteger(meta.admissionFloor) || Math.abs(meta.admissionFloor) > 8_640_000_000_000_000))) invalid();
+    this.#epoch = meta.epoch; this.#registrationMutation = BigInt(meta.mutation); this.#admissionFloor = meta.admissionFloor;
     for (const row of rows) {
       if (row.bucket === "identity") continue;
       if (row.bucket === "registrations") {
@@ -442,7 +445,8 @@ export class MemoryRelayStore {
         this.#routes.set(row.key, { ...route, bytes: size, items: 0, payloadBytes: 0 }); this.#origins.set(key, row.key); this.#metadataBytes += size;
       } else if (row.bucket === "receipts") {
         const receipt = JSON.parse(row.value) as Receipt;
-        if (receipt.id !== row.key || !text(row.key) || !/^[a-f0-9]{64}$/.test(receipt.digest) || !["mailbox", "acknowledged", "forwarding", "forwarded", "unconfirmed"].includes(receipt.state)
+        if (receipt.id !== row.key || !text(row.key) || !/^[a-f0-9]{64}$/.test(receipt.digest) || !isRelayTimestamp(receipt.createdAt)
+          || !["mailbox", "acknowledged", "forwarding", "forwarded", "unconfirmed"].includes(receipt.state)
           || !Number.isSafeInteger(receipt.bytes) || receipt.bytes < 1 || !Number.isSafeInteger(receipt.payloadBytes) || receipt.payloadBytes < 1
           || !Number.isSafeInteger(receipt.deadline) || !Number.isSafeInteger(receipt.attempts) || receipt.attempts < 0 || !Number.isSafeInteger(receipt.nextAttemptAt)
           || (receipt.cursor !== undefined && !decimal(receipt.cursor)) || (receipt.acceptanceId !== undefined && !isOpaqueRelayId(receipt.acceptanceId))
@@ -465,7 +469,8 @@ export class MemoryRelayStore {
       if (receipt.state === "mailbox" || receipt.state === "forwarding") {
         if (!payload || receipt.expiresAt !== undefined || createHash("sha256").update(payload).digest("hex") !== receipt.digest || Buffer.byteLength(payload) !== receipt.payloadBytes) invalid();
         const envelope = JSON.parse(payload!);
-        if (canonicalJson(envelope.source) !== canonicalJson(receipt.source) || canonicalJson(envelope.target) !== canonicalJson(receipt.target)) invalid();
+        if (canonicalJson(envelope.source) !== canonicalJson(receipt.source) || canonicalJson(envelope.target) !== canonicalJson(receipt.target)
+          || envelope.createdAt !== receipt.createdAt) invalid();
         if (receipt.state === "mailbox") {
           const target = this.#registrations.get(receipt.target.id);
           if (receipt.target.relay !== RELAY_ID || !target || receipt.cursor === undefined || BigInt(receipt.cursor) > target.cursor || !receipt.acceptanceId) invalid();
@@ -543,7 +548,8 @@ export class MemoryRelayStore {
 
   #admit(envelope: RelayEnvelope, now: number, state: "mailbox" | "forwarding", cursor: string | undefined): Receipt {
     const created = Date.parse(envelope.createdAt);
-    if (created > now + this.#timing.clockSkewMs || now >= created + this.#timing.deadlineMs + this.#timing.clockSkewMs) {
+    if ((this.#admissionFloor !== null && created <= this.#admissionFloor)
+      || created > now + this.#timing.clockSkewMs || now >= created + this.#timing.deadlineMs + this.#timing.clockSkewMs) {
       this.#emit("rejected", now, envelope.envelopeId, undefined, "expired");
       fail("ENVELOPE_EXPIRED");
     }
@@ -560,7 +566,7 @@ export class MemoryRelayStore {
       this.#emit("rejected", now, envelope.envelopeId, undefined, "capacity");
       fail("RELAY_CAPACITY");
     }
-    const receipt: Receipt = { id: envelope.envelopeId, digest: createHash("sha256").update(encoded).digest("hex"),
+    const receipt: Receipt = { id: envelope.envelopeId, digest: createHash("sha256").update(encoded).digest("hex"), createdAt: envelope.createdAt,
       source: { ...envelope.source }, target: { ...envelope.target }, bytes: reservation, payloadBytes: size, cursor,
       acceptanceId: state === "mailbox" ? randomUUID() : undefined, state, attempts: 0, nextAttemptAt: now, token: undefined,
       deadline: Math.min(now + this.#timing.deadlineMs, created + this.#timing.deadlineMs + this.#timing.clockSkewMs), expiresAt: undefined };
@@ -596,6 +602,9 @@ export class MemoryRelayStore {
   }
 
   #forget(receipt: Receipt): void {
+    // Fixed-size durable cutoff, not per-ID tombstones or a wall-clock high-water mark.
+    // Existing retained receipts/payloads bypass new admission, including offline mail.
+    if (this.#recoverable) this.#admissionFloor = Math.max(this.#admissionFloor ?? -Infinity, Date.parse(receipt.createdAt));
     this.#receipts.delete(receipt.id); this.#receiptBytes -= receipt.bytes;
     this.#expiry.delete(`r:${receipt.id}`);
     for (const endpoint of [receipt.source, receipt.target]) {
