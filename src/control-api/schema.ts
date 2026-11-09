@@ -832,6 +832,10 @@ export const controlApiSource: ControlApiSource = {
       projectDir: string(),
       harness: string(),
       terminal: ref("SessionTerminalLiveness"),
+      runtimeState: {
+        ...ref("AgentRuntimeState"),
+        description: "Read-only last agent runtime state the session observer recorded (about every 5 seconds). Absent before the first observation. Advisory: not task readiness or completion evidence.",
+      },
       parentSession: ref("SessionControlIdentity"),
       taskEndpoint: ref("RelayEndpoint"),
       taskTransport: ref("TaskRelayRegistration"),

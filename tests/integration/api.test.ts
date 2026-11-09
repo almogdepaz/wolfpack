@@ -4063,6 +4063,30 @@ describe("session control API", () => {
     }
   });
 
+  test("status adds the last observed runtime state read-only and omits it before any observation", async () => {
+    mockBackend.setCapturePane(async () => {
+      throw new Error("status must not read terminal output");
+    });
+    const unobserved = await (await get("/api/session-control/status?session=wolf-1")).json();
+    expect(unobserved.ok).toBe(true);
+    expect(unobserved).not.toHaveProperty("runtimeState");
+
+    const observedAt = new Date().toISOString();
+    const runtimeState = getAgentRuntimeStateStore().reduce({
+      sessionKey: "mock:wolf-1",
+      broker: { state: "alive", observedAt },
+      sources: [],
+      fallback: { rawOutputChanged: true, observedAt },
+      currentRun: { runId: "mock:wolf-1" },
+    }, { persist: false });
+    const transitionSequence = runtimeState.transitionSequence;
+
+    const status = await (await get("/api/session-control/status?session=wolf-1")).json();
+    expect(status.runtimeState).toEqual(JSON.parse(JSON.stringify(runtimeState)));
+    expect(status.runtimeState).toMatchObject({ state: "output", authority: "fallback" });
+    expect(getAgentRuntimeStateStore().get("mock:wolf-1")?.transitionSequence).toBe(transitionSequence);
+  });
+
   test("status resolves stable ids and fails closed for dead listed sessions", async () => {
     mockBackend.setSessionAlive("wolf-2", false);
     const res = await get("/api/session-control/status?session=mock%3Awolf-2");

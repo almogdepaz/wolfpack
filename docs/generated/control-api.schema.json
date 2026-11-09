@@ -6626,6 +6626,10 @@
         "terminal": {
           "$ref": "#/$defs/SessionTerminalLiveness"
         },
+        "runtimeState": {
+          "$ref": "#/$defs/AgentRuntimeState",
+          "description": "Read-only last agent runtime state the session observer recorded (about every 5 seconds). Absent before the first observation. Advisory: not task readiness or completion evidence."
+        },
         "parentSession": {
           "$ref": "#/$defs/SessionControlIdentity"
         },
