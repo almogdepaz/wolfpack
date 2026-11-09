@@ -17,9 +17,9 @@ import { getAgentRuntimeStateStore } from "../../src/server/agent-status";
 import { stoppedUnseen } from "../../src/focus-ranking";
 
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
-async function until(check: () => Promise<boolean> | boolean, ms = 7000) {
+async function until(check: () => Promise<boolean> | boolean, ms = 7000, timeoutMessage = "condition timed out") {
   const end = Date.now() + ms;
-  while (!await check()) { if (Date.now() > end) throw new Error("condition timed out"); await wait(60); }
+  while (!await check()) { if (Date.now() > end) throw new Error(timeoutMessage); await wait(60); }
 }
 class Viewer extends EventEmitter {
   readyState = 1;
@@ -92,6 +92,9 @@ test.skipIf(!binary || !existsSync(binary))("production proxy shares PTY redraw 
     await ctx.viewerRedraw.begin(session);
     expect(ctx.viewerRedraw.includes(fact)).toBe(true);
     await backend.killSession(session);
+    // Kill acknowledgement precedes the broker's asynchronous exit observation.
+    await until(async () => !(await ctx.backend.listSessionFacts()).some(f => f.alive && f.identity?.wolfpackSessionId === identity.wolfpackSessionId),
+      7000, "killed session remained alive in broker facts before pruning");
     await observeDashboardSessions(ctx);
     expect(ctx.viewerRedraw.includes(fact)).toBe(false); // Production observation prunes that same owner.
   } finally {
