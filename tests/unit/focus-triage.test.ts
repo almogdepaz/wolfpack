@@ -32,6 +32,22 @@ test("quiet suppresses only the judged machine/session/episode, never acknowledg
   expect(ids(mergeFocus(focus, [{ ...a, stoppedAt: "2026-11-09T12:01:00.000Z" }], options))).toEqual(["a"]);
   expect(mergeFocus(focus, [{ ...a, state: "working" }], options).rows).toEqual([]);
 });
+for (const state of ["needs-input", "failed"]) for (const reachable of [true, false]) test(`M1/R1: quiet cannot hide ${state}, including cached unavailable episodes (${reachable})`, () => {
+  const a = session("a", state);
+  const result = mergeFocus(doc([triage("a", "quiet")]), [a], { ...options, machineReachable: () => reachable });
+  expect(ids(result)).toEqual(["a"]);
+  expect(result.rows[0]).toMatchObject({ source: "new-rules", session: a });
+  expect(result.rows[0]?.unavailable === true).toBe(!reachable);
+  expect(a.unseen).toBe(true);
+});
+for (const verdict of ["quiet", "suggest"] as const) test(`R1: stale ${verdict} cannot replace a newer cached episode during an outage`, () => {
+  const a = { ...session("a", "needs-input"), stoppedAt: "2026-11-09T12:01:00Z" };
+  const result = mergeFocus(doc([triage("a", verdict)]), [a], { ...options, machineReachable: () => false });
+  expect(result.rows).toHaveLength(1);
+  expect(result.rows[0]).toMatchObject({ session: a, source: "new-rules", unavailable: true });
+  expect(result.rows[0]?.triage).toBeUndefined();
+});
+
 test("ttl boundary, off and stale return rules alone with an honest order status", () => {
   const focus = doc([triage("a", "quiet")]);
   const sessions = [session("a")];

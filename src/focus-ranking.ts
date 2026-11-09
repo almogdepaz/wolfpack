@@ -96,7 +96,9 @@ export interface FocusMerge { rows: FocusAction[]; order: "assistant" | "rules" 
 export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[], options: FocusMergeOptions): FocusMerge {
   const now = options.now ?? Date.now();
   const cap = Math.max(0, options.cap ?? 5);
-  const rules = rankFocus(doc, sessions, Infinity, now);
+  const rules = rankFocus(doc, sessions, Infinity, now).map(row => ({ ...row,
+    ...(row.session?.machineInstallationId && !options.machineReachable(row.session.machineInstallationId) && { unavailable: true }),
+  }));
   const next = doc.next;
   const expired = !!next && now - Date.parse(next.updatedAt) >= (options.ttlHours ?? ASSISTANT_TIMING_DEFAULTS.nextOrderTtlHours) * 3600_000;
   if (!next || !options.enabled || options.stale || expired) return {
@@ -115,6 +117,10 @@ export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[]
     let row: FocusAction | undefined;
     if ("sessionId" in ref) {
       const session = sessions.find(s => s.id === ref.sessionId && s.machineInstallationId === ref.machine);
+      // Availability must not revive a verdict for a different cached episode.
+      if (session && (session.stoppedAt ?? session.changedAt) !== triage.stoppedAt) continue;
+      // Quiet is never authority to hide attention, even when the assistant judged this exact episode.
+      if (triage.verdict === "quiet" && (!session || needsYou(session))) continue;
       if (!options.machineReachable(ref.machine)) {
         // Keep the assistant's place and reason; no session action can use this placeholder.
         row = { kind: "open", reason: triage.reason, unavailable: true };
