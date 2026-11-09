@@ -95,6 +95,15 @@ for (const state of ["done", "idle"]) test(`unseen ${state} under a done intenti
   expect(rows.map(row => row.session?.id)).toEqual(["explicit-stop", "project-stop"]);
   expect(rows.every(row => !row.intention && row.reason.startsWith("Stopped unlinked"))).toBe(true);
 });
+test("stopped-unseen work is not a finished item in today's timeline until reviewed", () => {
+  const stopped = { ...session("linked", "done", now), unseen: true, stoppedSequence: 5, acknowledgedSequence: 0 };
+  expect(focusSessionLabel(stopped)).toBe("stopped");
+  expect(doneToday(doc(), [stopped], Date.parse(now), at => at.slice(0, 10)).filter(i => i.kind === "session")).toEqual([]);
+  const reviewed = { ...stopped, unseen: false, acknowledgedSequence: 5 };
+  expect(focusSessionLabel(reviewed)).toBe("finished");
+  expect(doneToday(doc(), [reviewed], Date.parse(now), at => at.slice(0, 10)).filter(i => i.kind === "session")).toMatchObject([{ session: { id: "linked" } }]);
+});
+
 test("done today lists ticked intentions and finished linked sessions of the day, newest first", () => {
   const nowMs = Date.parse(now);
   const ticked = reduceFocus(doc(), [{ type: "done", id: "a" }], "2026-11-06T10:05:00.000Z");

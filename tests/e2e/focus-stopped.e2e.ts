@@ -71,6 +71,24 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   await expect(page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
 });
 
+test("QA-28: unreviewed done work stays stopped in next, footer and timeline until reviewed", async ({ page }) => {
+  const f = await runtimeFixture(page, "done", "prompt-project");
+  f.stop(); // A stop newer than the fixture's completed intention must not lead its footer.
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  await expect(block.locator(".focus-next")).toContainText("prompt-project stopped");
+  await expect(block.locator(":scope > small").last()).not.toContainText("prompt-project finished");
+  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  await expect(view.locator(".focus-done")).not.toContainText("prompt-project");
+  await expect(view.getByRole("heading", { name: /done today/ })).toContainText("0 sessions");
+  f.review();
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(view.locator(".focus-done")).toContainText("prompt-project finished");
+  await expect(view.getByRole("heading", { name: /done today/ })).toContainText("1 session");
+  await expect(block.locator(":scope > small").last()).toContainText("prompt-project finished");
+});
+
 test("the seen 24-hour finished row uses the original stop time, not metadata time", async ({ page }) => {
   const f = await runtimeFixture(page, "done", "prompt-project");
   f.review();

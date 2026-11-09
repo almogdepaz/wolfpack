@@ -84,14 +84,14 @@ export function rankFocus(doc: FocusDocument, sessions: readonly FocusSession[],
   return [...attention, ...stopped, ...starts, ...finished, ...unlinked, ...unlinkedStopped].slice(0, Math.max(0, cap));
 }
 export type FocusDoneItem = { at: string; kind: "intention"; intention: FocusIntention } | { at: string; kind: "session"; intention: FocusIntention; session: FocusSession };
-/** Today's timeline, newest first: intentions ticked today and linked sessions that finished today. `day` maps a timestamp to its day label. */
+/** Today's timeline: ticked intentions and linked finishes, excluding stopped-unseen work until reviewed. `day` maps a timestamp to its day label. */
 export function doneToday(doc: FocusDocument, sessions: readonly FocusSession[], now: number, day: (at: string) => string): FocusDoneItem[] {
   const today = day(new Date(now).toISOString());
   const items: FocusDoneItem[] = [];
   for (const intention of doc.intentions) {
     if (intention.done && intention.doneAt && day(intention.doneAt) === today) items.push({ at: intention.doneAt, kind: "intention", intention });
     for (const session of linkedFocusSessions(intention, sessions)) {
-      if (session.state === AGENT_STATUS_STATE.DONE && session.changedAt && day(session.changedAt) === today && !items.some(i => i.kind === "session" && i.session === session)) items.push({ at: session.changedAt, kind: "session", intention, session });
+      if (session.state === AGENT_STATUS_STATE.DONE && !stoppedUnseen(session) && session.changedAt && day(session.changedAt) === today && !items.some(i => i.kind === "session" && i.session === session)) items.push({ at: session.changedAt, kind: "session", intention, session });
     }
   }
   return items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
