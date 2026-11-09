@@ -61,7 +61,7 @@ test("row context: project and remote machine stay visible on next and today", a
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary .focus-for")).toHaveText("focus-ui");
+  await expect(block.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary .focus-for")).toHaveText("ship the focus assistant · focus-ui");
   await expect(block.locator(".focus-next li").filter({ hasText: "fix broker leak" }).locator("summary .focus-for")).toHaveText("broker · remote-box");
   for (const context of await block.locator("summary .focus-for").all()) await expect(context).toBeVisible();
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
@@ -69,6 +69,9 @@ test("row context: project and remote machine stay visible on next and today", a
   await expect(view.locator(".focus-today li").filter({ hasText: "fix broker leak" }).locator("summary .focus-for")).toHaveText("broker · remote-box");
   await expect(view.locator(".focus-today li").filter({ hasText: "ship the focus assistant" }).locator("summary .focus-for")).toContainText("focus-ui");
   for (const context of await view.locator("summary .focus-for").all()) await expect(context).toBeVisible();
+  const linkedContext = view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary .focus-for");
+  await expect(linkedContext).toHaveText("ship the focus assistant · focus-ui");
+  expect(await linkedContext.evaluate(el => el.scrollWidth <= el.clientWidth), "intention and project fit without hiding the context").toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   if (width === 390) {
     for (const summary of await view.locator(".focus-next summary, .focus-today summary").all()) {
@@ -150,6 +153,7 @@ test("many stops: twelve unseen episodes remain capped without an hours cutoff",
   await expect(view.locator(".focus-next > li")).toHaveCount(5);
   await expect(view.locator(".focus-next > li:visible")).toHaveCount(width === 390 ? 3 : 5);
   await expect(view.locator(".focus-next .focus-title").first()).toContainText("review-12 stopped · 13d");
+  expect(await view.locator(".focus-next summary .focus-for span").first().evaluate(el => el.getClientRects().length), "project name stays one readable token beside the intention").toBe(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   if (shots) await page.screenshot({ path: join(shots, `old-stops-assistant-${width}.png`), fullPage: true });
 });

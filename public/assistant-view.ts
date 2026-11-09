@@ -118,7 +118,7 @@ export function createAssistantView(deps: {
   const stamp = (at: string) => new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const field = (label: string, value: string) => value ? `<div><dt>${label}</dt><dd>${value}</dd></div>` : "";
   const project = (path?: string) => path ? `<span title="${escAttr(path)}">${esc(path.replace(/\/+$/, "").split("/").pop() || path)}</span>` : "";
-  // Session project wins on next; today derives context from its linked sessions, or the start target.
+  // Linked rule rows keep their intention title beside the session's context; today and starts already name it.
   function rowContext(intention?: FocusIntention, session?: FocusSession) {
     const all = sessions();
     const local = all.find(s => !s.machineUrl)?.machine;
@@ -126,7 +126,8 @@ export function createAssistantView(deps: {
     const linked = session ? [session] : linkedFocusSessions(intention!, all);
     const targets = linked.length ? linked : [{ cwd: intention?.project, machine: intention?.machine, machineUrl: undefined }];
     const labels = [...new Set(targets.map(s => [project(s.cwd), s.machine && (manyMachines || s.machineUrl || s.machine !== local) ? esc(s.machine) : ""].filter(Boolean).join(" · ")).filter(Boolean))];
-    return labels.length ? `<small class="focus-for">${labels.join(", ")}</small>` : "";
+    const caption = [session && intention ? esc(intention.title) : "", labels.join(", ")].filter(Boolean).join(" · ");
+    return caption ? `<small class="focus-for">${caption}</small>` : "";
   }
   // `open=""` is how innerHTML serializes the attribute, so an unchanged render still compares equal in replace().
   const card = (key: string, summary: string, body: string, extra = "") => `<details class="focus-card" data-focus-card="${escAttr(key)}"${openCards.has(key) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${key}`)}">${summary}</summary><dl class="focus-card-body">${body}</dl>${extra}</details>`;

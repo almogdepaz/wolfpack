@@ -2991,6 +2991,8 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-title small, .focus-for { color: var(--text-3); font-size: 12px; font-weight: 400; }
 .focus-today .focus-for { margin-left: 10px; }
 .focus-for { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focus-next .focus-for { max-width: 320px; }
+.focus-next .focus-for > span { white-space: nowrap; }
 .focus-action { color: var(--accent); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .focus-today .focus-check { display: flex; align-items: center; min-height: 44px; padding-right: 2px; cursor: pointer; }
 .focus-today input { accent-color: var(--accent); width: 18px; height: 18px; margin: 0; flex: none; }
@@ -3083,7 +3085,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .assistant-column .focus-header > :first-child { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .focus-next > .focus-extra { display: none; }
   .focus-next summary { flex-wrap: wrap; }
-  .focus-next .focus-for { order: 1; flex-basis: 100%; max-width: none; padding-left: 42px; }
+  .focus-next .focus-for { order: 1; flex-basis: 100%; max-width: none; padding-left: 42px; white-space: normal; }
   .focus-today .focus-for { display: block; margin: 0; }
   .focus-next .focus-action { min-height: 44px; margin-top: 0; padding-inline: 6px; }
   .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--focus-aside-width); }
