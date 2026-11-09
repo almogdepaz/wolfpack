@@ -115,7 +115,7 @@ test("pane: two columns at 1100+, one column below, clean breakpoint remount and
   expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
 });
 
-for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage explains the empty pane and disables ineffective controls`, async ({ page }, info) => {
+for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage explains the empty pane and hides ineffective controls`, async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop pane only");
   let down = false;
   await page.route(url => url.pathname === "/api/focus", async route => {
@@ -128,13 +128,15 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
   });
   await openFocus(page);
   await hydrated(page);
-  const focus = pane(page).getByRole("button", { name: "Focus terminal", exact: true });
+  const focus = pane(page).locator("#assistant-pane-focus");
   await focus.click();
   expect(await page.locator("#assistant-pty-input").evaluate(el => el.contains(document.activeElement))).toBe(true);
   down = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(page.locator("#assistant-content .focus-header")).toContainText(outage === "home" ? "offline · read-only" : "sessions unavailable", { timeout: 15_000 });
-  await expect(focus).toBeDisabled();
+  await expect(focus).toBeHidden();
+  await expect(focus).toHaveAttribute("hidden", "");
+  expect(await focus.evaluate(el => getComputedStyle(el).display)).toBe("none");
   await expect(page.locator("#assistant-pane-empty")).toBeVisible();
   await expect(page.locator("#assistant-pane-empty")).toContainText(outage === "home" ? "offline" : "broker");
   await expect(pane(page).locator("canvas")).toHaveCount(0);
@@ -146,6 +148,7 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
   await hydrated(page);
   await expect(page.locator("#assistant-pane-empty")).toBeHidden();
   await expect(focus).toBeEnabled();
+  await expect(focus).toBeVisible();
 });
 
 test("pane: one-column opening preserves the existing focus behavior", async ({ page }, info) => {

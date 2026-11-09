@@ -49,6 +49,7 @@ export function createAssistantTerminal(deps: {
     // Availability and breakpoint changes can remove a focused header control too.
     if (active && document.visibilityState === "visible" && ((disabled && document.activeElement === focusButton) || (hideSkip && document.activeElement === skipButton))) backToList();
     focusButton.disabled = disabled;
+    focusButton.hidden = disabled;
     skipButton.hidden = hideSkip;
     empty.hidden = !!target;
     empty.textContent = unavailableMessage;
