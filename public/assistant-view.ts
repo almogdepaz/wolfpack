@@ -355,7 +355,7 @@ export function createAssistantView(deps: {
     const setting = document.getElementById("assistant-setting-status");
     if (setting) setting.textContent = enabled ? `on · ${info}` : "off";
     const settingError = document.getElementById("assistant-setting-error");
-    if (settingError) settingError.textContent = error || focus?.assistant?.error || "";
+    if (settingError) settingError.textContent = offline ? "" : error || focus?.assistant?.error || "";
     const settingHome = document.getElementById("assistant-setting-home");
     if (settingHome) settingHome.textContent = `Home: ${homeName}${focus?.assistant?.folder ? ` · ${focus.assistant.folder}` : ""}. Needs pi installed and logged in there (pi, then /login).`;
     const toggle = document.getElementById("assistant-setting-toggle") as HTMLButtonElement;

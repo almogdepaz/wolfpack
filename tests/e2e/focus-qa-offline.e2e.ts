@@ -272,6 +272,20 @@ test("S2: a retired peer installation leaves the offline snapshot before local r
   await expect(next.locator("button").first()).toBeEnabled();
 });
 
+test("QA-26: assistant settings explain offline state without a bare transport error", async ({ page, context }) => {
+  await page.goto(server.baseUrl);
+  const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await (await opened).finished();
+  await context.setOffline(true);
+  // Match QA's sequence: go offline, then open settings. Mobile settings do not poll focus.
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
+  await expect(page.locator("#assistant-setting-status")).toContainText("offline · read-only");
+  await expect(page.locator("#assistant-setting-error")).toHaveText("");
+  await expect(page.locator("#assistant-setting-toggle")).toBeDisabled();
+  await context.setOffline(false);
+});
+
 test("QA-14: self-offline keeps last known next rows, disabled, then recovers", async ({ page, context }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
