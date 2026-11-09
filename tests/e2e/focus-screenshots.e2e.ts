@@ -57,8 +57,8 @@ test("focus screenshot and layout evidence", async ({ page }, info) => {
       return { sidebar: box("#desktop-sidebar"), controls: box("#sidebar-session-controls"), filter: box("#sidebar-session-filter"), tile: box("#sidebar-assistant") };
     });
     writeFileSync(join(screenshots, "focus-layout-measurements.json"), JSON.stringify(measures, null, 2));
-    // the assistant card has its own full-width row under the filter
-    expect(measures.tile.y).toBeGreaterThanOrEqual(measures.filter.y + measures.filter.height);
+    // The navigation-only assistant launcher leads the sidebar controls.
+    expect(measures.filter.y).toBeGreaterThanOrEqual(measures.tile.y + measures.tile.height);
     expect(Math.round(measures.tile.width)).toBe(Math.round(measures.filter.width));
     expect(measures.tile.height).toBeGreaterThanOrEqual(44);
     expect((await new AxeBuilder({ page }).include("#sidebar-session-controls").include("#assistant-terminal-header").analyze()).violations).toEqual([]);

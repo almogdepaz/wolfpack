@@ -69,8 +69,9 @@
           <button id="sidebar-collapse-btn" type="button" title="Pin sidebar" aria-label="Pin sidebar"><span class="pin-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 6 6M14 3l7 7-4 1-4 4-1 4-7-7 4-1 4-4 1-4ZM5 19l4-4"/></svg></span></button>
         </div>
       </div>
+      <button id="sidebar-assistant" class="assistant-tile" type="button" hidden>assistant</button>
       <label class="session-search sidebar-search"><input id="sidebar-search" type="search" placeholder="Filter sessions" aria-label="Filter sessions"></label>
-      <div id="sidebar-session-controls" class="session-chooser-controls" hidden><div id="sidebar-session-filter"></div><button id="sidebar-assistant" class="assistant-tile" type="button" hidden>assistant</button></div>
+      <div id="sidebar-session-controls" class="session-chooser-controls" hidden><div id="sidebar-session-filter"></div></div>
       <div id="sidebar-session-list" class="sidebar-sessions"></div>
     </nav>
     <script src="/sidebar-bootstrap.js?v=__WOLFPACK_ASSET_VERSION__"></script>
@@ -132,12 +133,12 @@
           <button id="expanded-collapse-btn" type="button" title="Collapse sessions" aria-label="Collapse sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 9-5-5M4 9V4h5M15 9l5-5M15 4h5v5M9 15l-5 5M4 15v5h5M15 15l5 5M20 15v5h-5"/></svg></button>
         </div>
       </div>
+      <section id="dashboard-focus" class="focus-block" aria-label="Focus" hidden></section>
       <div id="session-dashboard-controls" class="session-chooser-controls">
         <div class="session-heading"><h1 class="visually-hidden">Sessions</h1><p id="session-summary"></p></div>
         <div id="dashboard-session-filter"></div>
         <details class="mobile-session-search"><summary aria-label="Search sessions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg></summary><label class="session-search"><input type="search" id="mobile-search" aria-label="Search sessions" placeholder="Search sessions"></label></details>
       </div>
-      <section id="dashboard-focus" class="focus-block" aria-label="Focus" hidden></section>
       <div id="session-list" class="list"></div>
     </div>
     <p id="session-order-instructions" class="visually-hidden">Drag the card to reorder it within its attention tier, or press Alt with an up or down arrow. Delegation trees move together.</p>
