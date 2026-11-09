@@ -281,6 +281,11 @@ describe("Pi Tasks package migration", () => {
     const disclosure = piTasksMigrationDisclosureLines("npm:@sgtbeatdown/pi-tasks@0.1.17").join("\n");
     expect(disclosure).toContain("npm:@sgtbeatdown/pi-tasks@0.1.17");
     for (const command of PI_TASKS_MIGRATION_COMMANDS) expect(disclosure).toContain(command);
+    expect(disclosure).not.toContain("settings.json");
+    const withFilters = piTasksMigrationDisclosureLines("npm:@sgtbeatdown/pi-tasks@0.1.17", { skills: ["!skills/x/**"] });
+    expect(withFilters).toContain(
+      "  Wolfpack will then move the old entry's resource filters to the new entry in Pi's settings.json.",
+    );
   });
 
   test("removes the legacy package before installing the renamed one", () => {

@@ -36,7 +36,7 @@ import type { OpenableHarness } from "../agent-kind.js";
 import {
   PI_TASKS_PACKAGE,
   acceptsPiIntegrationInstall,
-  findLegacyPiTasksSource,
+  findLegacyPiTasksEntry,
   installPiIntegration,
   migratePiTasksPackage,
   piTasksRestoreHintLines,
@@ -218,11 +218,11 @@ function reconcileSetupService(
 
 /** Offers the legacy Pi Tasks package migration; returns true when the legacy package is installed. */
 function handlePiTasksMigration(interactive: boolean): boolean {
-  const legacySource = findLegacyPiTasksSource();
-  if (legacySource === undefined) return false;
+  const legacy = findLegacyPiTasksEntry();
+  if (legacy === undefined) return false;
   print("");
   print(bold("  Pi Tasks migration:"));
-  for (const line of piTasksMigrationDisclosureLines(legacySource)) {
+  for (const line of piTasksMigrationDisclosureLines(legacy.source, legacy.filters)) {
     print(dim(line));
   }
   if (!interactive) {

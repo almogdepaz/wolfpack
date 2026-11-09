@@ -127,11 +127,17 @@ function restorePiTasksFilters(agentDirectory: string, filters: Readonly<Record<
   return true;
 }
 
-export function piTasksMigrationDisclosureLines(legacySource: string): readonly string[] {
+export function piTasksMigrationDisclosureLines(
+  legacySource: string,
+  legacyFilters: Readonly<Record<string, unknown>> = {},
+): readonly string[] {
   return [
     `  Pi Tasks is now published as ${PI_TASKS_PACKAGE}; ${legacySource} is installed.`,
     "  Pi will run:",
     ...PI_TASKS_MIGRATION_COMMANDS.map((command) => `    ${command}`),
+    ...(Object.keys(legacyFilters).length > 0
+      ? ["  Wolfpack will then move the old entry's resource filters to the new entry in Pi's settings.json."]
+      : []),
     "  Extensions can execute commands with your user permissions. Review before accepting.",
   ];
 }
