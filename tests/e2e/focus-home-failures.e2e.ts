@@ -41,3 +41,35 @@ for (const failure of ["identity", "not-owner"] as const) test(`C1: cached reloa
     await expect.poll(() => home.sockets.length).toBe(2);
   } finally { home.release(); }
 });
+
+for (const failure of ["candidate offline", "handshake abort", "home absent", "timeout"] as const) test(`F1: ${failure} reports the remote home offline, not a store fault`, async ({ page }, info) => {
+  test.setTimeout(45_000); // the timeout case exercises the real 15-second fetch deadline
+  const home = await remoteFocusHome(page, server);
+  try {
+    await home.openHealthy();
+    if (failure === "home absent") {
+      home.state.present = false;
+      await page.reload();
+      await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+    } else if (failure === "timeout") {
+      home.state.failure = "timeout";
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+      await expect.poll(home.held).toBeGreaterThan(0);
+    } else {
+      if (failure === "candidate offline") home.state.online = false;
+      else home.state.handshakeFails = true;
+      // Discovery's existing minimum refresh interval is one second.
+      await page.waitForTimeout(1_100);
+      await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+      await expect(page.locator(`.machine-group.offline[data-machine="${home.machine}"]`).first()).toBeVisible();
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+    await expect(page.locator("#assistant-content .focus-header")).toContainText("focus home offline · read-only", { timeout: failure === "timeout" ? 20_000 : 5_000 });
+    await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("offline");
+    await expect(page.locator("#assistant-pane-empty")).toContainText("focus home is offline. the terminal reconnects when it is back.");
+    await expect(page.locator("#assistant-content").getByRole("button", { name: "Talk to assistant" })).toBeDisabled();
+    await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();
+    expect(home.sockets).toHaveLength(1);
+    await page.screenshot({ path: info.outputPath(`f1-${failure.replaceAll(" ", "-")}.png`), fullPage: true });
+  } finally { home.release(); }
+});

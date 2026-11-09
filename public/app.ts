@@ -1215,7 +1215,7 @@ interface AgentRuntimeStateAcknowledgementResponse {
 
 async function api<TResponse = unknown>(path: string, opts?: RequestInit, machineIdentity?: string, interactive = true): Promise<TResponse> {
   const origin = resolveReadyMachineOrigin(machineIdentity);
-  if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new Error("selected peer is not ready");
+  if (machineIdentity && machineIdentity !== LOCAL_MACHINE_IDENTITY && !origin) throw new TypeError("selected peer is not ready");
   const base = origin ? new URL("/api" + path, origin).href : "/api" + path;
   const res = await authenticatedFetchWithTimeout(base, opts, { interactive });
   const body = await res.text();

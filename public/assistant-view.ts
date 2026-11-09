@@ -5,12 +5,15 @@ import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, t
 import type { AssistantTiming } from "../src/focus-scheduler";
 import type { AssistantTerminalTarget } from "./assistant-terminal";
 import { showAppDialog } from "./app-dialog";
+import { isRequestTimeout } from "./fetch-timeout";
 import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../src/focus-context";
 interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string; unavailableReason?: string }
 interface RoutineStatus { catchingUp: { machines: number; since: string | null; unconfirmed?: true } | null; yesterday?: { date: string; note: boolean; endsAt: string }; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
 interface FocusResponse { home: string; installationId: string; local: boolean; document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
 interface Machine { key: string; name: string }
 class FocusOwnershipError extends Error {}
+const isTransportFailure = (error: unknown) => !(error instanceof FocusOwnershipError)
+  && (error instanceof TypeError || isRequestTimeout(error) || navigator.onLine === false);
 export function createAssistantView(deps: {
   request: <T>(path: string, init?: RequestInit, machine?: string, interactive?: boolean) => Promise<T>;
   homeMachine: (id: string) => Machine | undefined;
@@ -425,11 +428,11 @@ export function createAssistantView(deps: {
       try {
         let response = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, undefined, false);
         const home = response.local ? { key: "", name: "this machine" } : deps.homeMachine(response.home);
+        homeName = home?.name ?? (focus?.home === response.home ? homeName : "sgt");
         if (focus && focus.home !== response.home) focus = { ...response, document: null };
         machine = home?.key ?? "";
-        homeName = home?.name ?? "sgt";
         if (!response.local) {
-          if (!home) { if (focus?.home !== response.home) focus = { ...response, document: null }; throw new Error(`${homeName} offline`); }
+          if (!home) { if (focus?.home !== response.home) focus = { ...response, document: null }; throw new TypeError(`${homeName} offline`); }
           const remote = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, machine, false);
           if (!remote.local || remote.installationId !== response.home) throw new FocusOwnershipError("focus home identity changed");
           response = remote;
@@ -447,7 +450,7 @@ export function createAssistantView(deps: {
           if (focus) cache(focus);
         }
         focusUnavailable = true;
-        transportFailure = e instanceof TypeError || navigator.onLine === false;
+        transportFailure = isTransportFailure(e);
         error = e instanceof Error ? e.message : "focus unavailable";
       }
       answered = true;
@@ -507,7 +510,7 @@ export function createAssistantView(deps: {
     if (busy) return;
     busy = true;
     try { await action(); error = ""; } catch (e) {
-      transportFailure = e instanceof TypeError || navigator.onLine === false;
+      transportFailure = isTransportFailure(e);
       error = e instanceof Error ? e.message : "focus action failed";
     }
     finally { busy = false; render(); }
