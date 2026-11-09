@@ -23,6 +23,42 @@ test("QA-4: an empty focus document has no today count or empty rule disclosure"
   await expect(view.getByRole("textbox", { name: "Add an intention" })).toBeVisible();
 });
 
+test("QA-19: phone header keeps actions on the first row across long status changes", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "phone geometry");
+  let long = false;
+  let offline = false;
+  await page.route("https://**", route => route.abort());
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [] } }));
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (offline) return route.abort();
+    const response = await route.fetch();
+    const body = await response.json();
+    body.routines.catchingUp = long ? { machines: 1, since: null, unconfirmed: true } : null;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const header = page.locator("#assistant-content .focus-header");
+  const actions = header.locator(".focus-header-actions");
+  const shortBox = (await header.boundingBox())!;
+  await page.screenshot({ path: info.outputPath("header-short.png") });
+  long = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(header).toContainText("reading activity · not confirmed yet");
+  const longBox = (await header.boundingBox())!;
+  const actionBox = (await actions.boundingBox())!;
+  expect(actionBox.y).toBeCloseTo(longBox.y, 0);
+  expect(longBox.height).toBeCloseTo(shortBox.height, 0);
+  await expect(header.locator(":scope > span").first()).toHaveAttribute("title", "reading activity · not confirmed yet");
+  await page.screenshot({ path: info.outputPath("header-long.png") });
+  offline = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(header).toContainText("offline · read-only");
+  expect((await header.boundingBox())!.height).toBeCloseTo(shortBox.height, 0);
+  expect((await actions.boundingBox())!.y).toBeCloseTo(shortBox.y, 0);
+  await expect(header.locator(":scope > span").first()).toHaveAttribute("title", /focus from .*offline · read-only/);
+});
+
 test("QA-10: a write announces focus updated then the notice expires, including after another render", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
