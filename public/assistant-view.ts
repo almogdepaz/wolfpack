@@ -65,8 +65,8 @@ export function createAssistantView(deps: {
   const routines = () => offline || terminalUnavailable() || !focus?.assistant?.enabled ? undefined : focus.routines;
   // An error beside a live session (a dropped queue, an unverified send) is a note under the live state; "failed" is the assistant not running.
   const status = () => offline ? `${homeName} offline` : terminalUnavailable() ? "unavailable" : focus?.assistant?.error && !focus.assistant.session ? "failed" : focus?.assistant?.enabled ? (focus.assistant.state === "needs-input" ? "needs you" : routines()?.catchingUp ? "catching up" : focus.assistant.state) : "off";
-  // `Tue 23:00`: the plan's copy for catching-up / stale / not-reached times.
-  const when = (at: string) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  // Today's times need no weekday; older catching-up / stale / not-reached times keep it.
+  const when = (at: string) => new Date(at).toLocaleString([], { weekday: localDay(Date.parse(at)) === localDay(Date.now()) ? undefined : "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const localDay = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
   const clock = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const doneDay = (at: string) => localDay(Date.parse(at));
@@ -285,6 +285,8 @@ export function createAssistantView(deps: {
     for (const id of compactChipCounts.keys()) if (!current.intentions.some(intention => intention.id === id)) compactChipCounts.delete(id);
     const enabled = !!focus?.assistant?.enabled;
     const state = status();
+    // The unavailable header already names the outage; keep transport diagnostics in settings.
+    const assistantError = terminalUnavailable() ? "" : focus?.assistant?.error;
     const next = nextRows(5);
     const nextCount = nextRows(Infinity).length;
     const summary = `${current.intentions.filter(i => i.done).length} of ${current.intentions.length} done`;
@@ -308,7 +310,7 @@ export function createAssistantView(deps: {
     const nudgeDay = current.nudge && localDay(Date.parse(current.nudge.updatedAt));
     const nudge = current.nudge?.text ? `<p class="focus-nudge${catching ? " from" : ""}">${esc(current.nudge.text)}${catching && nudgeDay !== localDay(Date.now()) ? ` <small>from ${dayName(nudgeDay!)}</small>` : ""}</p>` : "";
     const catchUp = button("catch-up", "catch up now", "catch up now", !!terminalUnavailable());
-    const noteItems = [...(r ? [...r.unreachable.map(m => esc(`${m.name} not reached ${m.since ? `since ${when(m.since)}` : "yet"} · its day is reviewed when it is back`)), ...(r.surfaced ? [`${r.stale ? `quiet since ${when(r.stale.since)} · ` : ""}look at its terminal, then ${catchUp}`] : []), ...(r.stale && !r.surfaced ? [catchUp] : []), ...[r.notice, r.error].filter(Boolean).map(t => esc(t!))] : []), ...(!offline && enabled && focus?.assistant?.error ? [esc(focus.assistant.error)] : [])].map(n => `<span>${n}</span>`).join("");
+    const noteItems = [...(r ? [...r.unreachable.map(m => esc(`${m.name} not reached ${m.since ? `since ${when(m.since)}` : "yet"} · its day is reviewed when it is back`)), ...(r.surfaced ? [`${r.stale ? `quiet since ${when(r.stale.since)} · ` : ""}look at its terminal, then ${catchUp}`] : []), ...(r.stale && !r.surfaced ? [catchUp] : []), ...[r.notice, r.error].filter(Boolean).map(t => esc(t!))] : []), ...(!offline && enabled && assistantError ? [esc(assistantError)] : [])].map(n => `<span>${n}</span>`).join("");
     const notes = noteItems ? `<p class="focus-notes">${noteItems}</p>` : "";
     const summaryDay = current.daySummary;
     // A day note stays listed until it is marked read after that activity day ended (its turn at the
@@ -345,7 +347,7 @@ export function createAssistantView(deps: {
     replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !offline ? `<p role="status">${esc(error)}</p>` : ""}`);
     replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${offline || terminalUnavailable() || !focus?.assistant?.session ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(5)}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
-    if (live) live.textContent = offline ? "" : error || focus?.assistant?.error || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
+    if (live) live.textContent = offline ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
     if (setting) setting.textContent = enabled ? `on · ${info}` : "off";
     const settingError = document.getElementById("assistant-setting-error");

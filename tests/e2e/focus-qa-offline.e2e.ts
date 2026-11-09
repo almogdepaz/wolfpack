@@ -1,9 +1,69 @@
 import { test, expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { startTestServer, type TestServer } from "./helpers";
 
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
+
+test("row truth: broker outage has one page-voice notice, not a raw transport error", async ({ page }, info) => {
+  await page.setViewportSize({ width: info.project.name === "desktop" ? 1440 : 390, height: 900 });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.assistant = { ...body.assistant, state: "unknown", error: "broker not connected", queued: 3,
+      unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(page.locator("#assistant-content .focus-header")).toContainText("sessions unavailable · focus is saved here");
+  await expect(page.locator("#assistant-content")).not.toContainText("broker not connected");
+  await expect(page.locator("#focus-status")).toHaveText("3 queued · sends when the broker is back");
+  if (process.env.WOLFPACK_FOCUS_SHOTS) {
+    mkdirSync(process.env.WOLFPACK_FOCUS_SHOTS, { recursive: true });
+    await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-offline-broker-${info.project.name === "desktop" ? 1440 : 390}.png`), fullPage: true });
+  }
+});
+
+for (const mode of ["catching", "stale", "cached"] as const) for (const today of [true, false])
+  test(`row truth: ${mode} ${today ? "today omits" : "another day keeps"} weekday`, async ({ page }, info) => {
+    await page.clock.install({ time: new Date("2026-11-09T12:30:00Z") });
+    await page.setViewportSize({ width: info.project.name === "desktop" ? 1440 : 390, height: 900 });
+    const at = `2026-11-${today ? "09" : "08"}T03:12:00Z`;
+    let down = false;
+    await page.route(url => url.pathname === "/api/focus", async route => {
+      if (down) return route.abort("failed");
+      const response = await route.fetch();
+      const body = await response.json();
+      body.document.updatedAt = at;
+      body.routines = { catchingUp: mode === "catching" ? { machines: 1, since: at } : null,
+        stale: mode === "stale" ? { since: at } : null, unreachable: [{ name: "laptop", since: at }], surfaced: null };
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(server.baseUrl);
+    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+    if (mode === "cached") {
+      down = true;
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+    const time = await page.evaluate(({ at, today }) => new Date(at).toLocaleString([], {
+      weekday: today ? undefined : "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }), { at, today });
+    const prefix = mode === "catching" ? "reading activity since" : mode === "stale" ? "quiet since" : "focus from";
+    await expect(page.locator("#assistant-content .focus-header > span").first()).toContainText(`${prefix} ${time}`);
+    if (mode !== "cached") await expect(page.locator("#assistant-content .focus-notes")).toContainText(`laptop not reached since ${time}`);
+    else {
+      await expect(page.locator("#assistant-content .focus-header")).toContainText("offline · read-only");
+      await expect(page.locator("#focus-status")).toHaveText("");
+      await expect(page.locator("#assistant-content")).not.toContainText("Failed to fetch");
+    }
+    if (process.env.WOLFPACK_FOCUS_SHOTS) {
+      mkdirSync(process.env.WOLFPACK_FOCUS_SHOTS, { recursive: true });
+      await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-time-${mode}-${today ? "today" : "other"}-${info.project.name === "desktop" ? 1440 : 390}.png`), fullPage: true });
+    }
+  });
 
 for (const firstFetchFails of [false, true]) test(`P1: cold ${firstFetchFails ? "failed" : "healthy"} session fetch is connecting until its first response`, async ({ page }) => {
   await page.addInitScript(() => {
