@@ -952,3 +952,80 @@ describe("session control cli parsing", () => {
     });
   });
 });
+
+describe("unreachable server", () => {
+  function unreachableCli(args: string[], thrown: string): ReturnType<typeof Bun.spawnSync> {
+    const script = `
+      globalThis.fetch = async () => { ${thrown} };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(${JSON.stringify(args)}));
+    `;
+    return Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  }
+
+  const refused = `throw Object.assign(new TypeError("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });`;
+  const blocked = `throw Object.assign(new TypeError("Was there a typo in the url or port?"), { code: "FailedToOpenSocket" });`;
+  const eperm = `throw Object.assign(new Error("connect EPERM 127.0.0.1"), { code: "EPERM" });`;
+
+  test("--json names the URL, the cause and the sandbox, and keeps the code and exit", () => {
+    for (const [thrown, cause] of [[refused, "ECONNREFUSED"], [blocked, "FailedToOpenSocket"], [eperm, "EPERM"]] as const) {
+      const child = unreachableCli(["inbox", "alpha", "--json"], thrown);
+      expect(child.exitCode, cause).toBe(SESSION_EXIT.GENERAL);
+      const body = JSON.parse(child.stdout.toString());
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("SESSION_COMMAND_FAILED");
+      expect(body.error.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/session-control\/inbox$/);
+      expect(body.error.cause).toBe(cause);
+      expect(body.error.message).toContain(body.error.url);
+      expect(body.error.message).toContain(cause);
+      expect(body.error.hint).toContain("sandbox");
+    }
+  });
+
+  test("plain output prints the reason and the sandbox hint on stderr", () => {
+    const child = unreachableCli(["status", "alpha"], refused);
+    expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+    const stderr = child.stderr.toString();
+    expect(stderr).toMatch(/cannot reach the Wolfpack server at http:\/\/127\.0\.0\.1:\d+\/api\/session-control\/status \(ECONNREFUSED\)/);
+    expect(stderr).toContain("sandbox");
+  });
+
+  test("a sandbox proxy's plain-text 403 is reported as a proxy denial", () => {
+    const child = unreachableCli(["inbox", "alpha", "--json"], `return new Response("Connection blocked by network allowlist", { status: 403 });`);
+    expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+    const body = JSON.parse(child.stdout.toString());
+    expect(body.error.code).toBe("SESSION_COMMAND_FAILED");
+    expect(body.error.cause).toBe("proxy denial (HTTP 403)");
+    expect(body.error.hint).toContain("sandbox");
+  });
+
+  test("a connect code carried on the error cause counts", () => {
+    const child = unreachableCli(["inbox", "alpha", "--json"], `throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect"), { code: "ECONNREFUSED" }) });`);
+    expect(JSON.parse(child.stdout.toString()).error.cause).toBe("ECONNREFUSED");
+  });
+
+  test("a local failure without a connect code keeps the generic message", () => {
+    for (const thrown of [`throw new SyntaxError("Unexpected token");`, `throw new Error("offline");`]) {
+      const child = unreachableCli(["inbox", "alpha", "--json"], thrown);
+      expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(JSON.parse(child.stdout.toString())).toEqual({
+        ok: false,
+        error: { code: "SESSION_COMMAND_FAILED", message: "session command failed" },
+      });
+    }
+  });
+
+  test("a request deadline is not reported as an unreachable server", () => {
+    const child = unreachableCli(["inbox", "alpha", "--json"], `throw new DOMException("The operation timed out.", "TimeoutError");`);
+    expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: { code: "SESSION_COMMAND_FAILED", message: "session command failed" },
+    });
+  });
+});

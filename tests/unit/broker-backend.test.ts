@@ -1536,6 +1536,51 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(inputs()).toEqual(["run tests\r"]);
   });
 
+  test("a program resting at done that starts working after the write took the input", async () => {
+    // Claude Code and Pi report `done` between turns instead of `idle`.
+    rootStatus = status("done", 1);
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, encoder.encode("run tests"), 18n);
+      pushStatus(afterWrite("working"));
+    };
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 1_000, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+  });
+
+  test("reports pasted_not_submitted when output arrives but a done status stays untouched", async () => {
+    rootStatus = status("done", 1);
+    client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("run tests"), 18n);
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+  });
+
+  test("a done baseline that moves to another waiting state is not submission", async () => {
+    for (const next of ["idle", "done"]) {
+      rootStatus = status("done", 1);
+      client.onWriteInput = (sessionId) => {
+        client.emit(sessionId, encoder.encode("hello"), 18n);
+        pushStatus(afterWrite(next));
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      }), next).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+    }
+  });
+
+  test("ensureSubmitted re-sends one carriage return after a paste onto a done status", async () => {
+    rootStatus = status("done", 1);
+    client.onWriteInput = (sessionId, data) => {
+      if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+      else client.emit(sessionId, encoder.encode("run tests"), 18n);
+    };
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: true,
+    })).toMatchObject({ delivery: "delivered", outcome: "submitted", retried: true });
+    expect(inputs()).toEqual(["run tests\r", "\r"]);
+  });
+
   test("events before the write move the baseline instead of counting as evidence", async () => {
     rootStatus = status("working", 1);
     let releaseSubscribe!: () => void;
@@ -1964,6 +2009,28 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
       client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("❯ say Q4"), 19n);
       expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
         text: "say Q4", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+    });
+
+    test("a done baseline that starts working after the separate Enter took the input", async () => {
+      // P0-2: Claude Code rests at `done` between turns; every submitted send read `unverified`.
+      rootStatus = status("done", 1);
+      client.onWriteInput = (sessionId, data) => {
+        if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+        else client.emit(sessionId, data, 18n);
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "reply with just the word PONG", noEnter: false, observeMs: 200, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+      expect(inputs()).toEqual(["reply with just the word PONG", "\r"]);
+
+      client.inputs.length = 0;
+      rootStatus = status("done", Date.now());
+      client.onWriteInput = (sessionId, data) => {
+        if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 19n);
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "draft", noEnter: false, observeMs: 30, ensureSubmitted: false,
       })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
     });
 

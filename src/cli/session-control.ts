@@ -59,7 +59,8 @@ import {
 } from "../session-plan-contract.js";
 import type { SessionPlanRequest } from "../session-plan-contract.js";
 import type { NotifyDelivery } from "../notify-contract.js";
-import { call as callApi } from "./api.js";
+import { baseUrl, call as callApi, proxyDenialFailure, serverTransportFailure } from "./api.js";
+import type { ServerTransportFailure } from "./api.js";
 import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
 import type { TaskWorkerPolicyDiagnostics, TaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
@@ -255,6 +256,8 @@ interface ApiError {
   readonly status: number;
   readonly body: string;
   readonly code?: string;
+  /** Status 0 only: the server could not be reached at all. */
+  readonly transport?: ServerTransportFailure;
 }
 
 function structuredErrorCode(body: string): string | undefined {
@@ -282,10 +285,14 @@ async function call(
       target,
     );
   } catch (e: unknown) {
-    throw { status: 0, body: e instanceof Error ? e.message : String(e) } satisfies ApiError;
+    const transport = serverTransportFailure(e, `${baseUrl(target)}${path}`, target);
+    throw { status: 0, body: e instanceof Error ? e.message : String(e), ...(transport && { transport }) } satisfies ApiError;
   }
   if (!resp.ok) {
     const body = await resp.text();
+    const transport = proxyDenialFailure(resp, `${baseUrl(target)}${path}`, target);
+    // The proxy's 403 is not a server answer: report it like an unreachable server.
+    if (transport) throw { status: 0, body, transport } satisfies ApiError;
     throw { status: resp.status, body, code: structuredErrorCode(body) } satisfies ApiError;
   }
   return resp.json();
@@ -695,6 +702,27 @@ function parseStructuredFailure(
   }
 }
 
+/**
+ * Report a server that could not be reached under the caller's usual code and exit,
+ * naming the URL, the cause and the sandbox hint instead of a bare generic message.
+ */
+function writeTransportError(
+  output: OutputMode,
+  code: string,
+  genericMessage: string,
+  exitCode: number,
+  transport: ServerTransportFailure,
+): number {
+  const message = `${genericMessage}: cannot reach the Wolfpack server at ${transport.url} (${transport.cause})`;
+  if (output === "json") {
+    jsonOut({ ok: false, error: { code, message, url: transport.url, cause: transport.cause, hint: transport.hint } });
+  } else {
+    printError(red(message));
+    printError(`hint: ${transport.hint}`);
+  }
+  return exitCode;
+}
+
 function mapApiError(e: unknown, output: OutputMode): number {
   const err = e as Partial<ApiError>;
   const failure = SESSION_API_FAILURES[err.status ?? 0] ?? {
@@ -702,6 +730,7 @@ function mapApiError(e: unknown, output: OutputMode): number {
     message: "session command failed",
     exitCode: SESSION_EXIT.GENERAL,
   };
+  if (err.transport) return writeTransportError(output, failure.code, failure.message, failure.exitCode, err.transport);
   const structured = output === "json" ? parseStructuredFailure(err.body, failure) : undefined;
   if (structured !== undefined) jsonOut(structured);
   else if (output === "json") jsonOut({ ok: false, error: { code: failure.code, message: failure.message } });
@@ -1007,6 +1036,9 @@ function mapCreateApiError(output: OutputMode, error: unknown): number {
       planPath,
     );
   }
+  if (apiError.transport) {
+    return writeTransportError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL, apiError.transport);
+  }
   return writeOpenError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
 }
 
@@ -1042,6 +1074,9 @@ function mapOpenApiError(output: OutputMode, error: unknown): number {
       "backend unavailable",
       SESSION_EXIT.BACKEND_UNAVAILABLE,
     );
+  }
+  if (apiError.transport) {
+    return writeTransportError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL, apiError.transport);
   }
   return writeOpenError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
 }

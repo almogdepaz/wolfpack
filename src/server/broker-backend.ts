@@ -322,6 +322,24 @@ const SESSION_SEND_STATUS_READ_MAX_MS = 200;
  * ambiguous and counts as before it. A clear carries no stamp, so its arrival
  * time stands in: a read that returns later may have been taken before it.
  */
+/**
+ * Root states in which a program waits for input. Claude Code and Pi report `done`
+ * between turns; a fresh Pi or a cancelled turn reports `idle`.
+ */
+function isWaitingState(record: ProgramStatusRecord | undefined): boolean {
+  return record?.state === PROGRAM_STATUS_STATE.IDLE || record?.state === PROGRAM_STATUS_STATE.DONE;
+}
+
+/**
+ * `idle` to any other state keeps its established meaning. `done` counts only when the
+ * next state is not waiting: `done` to `idle` or to a re-stamped `done` is not a new turn.
+ */
+function leftWaitingState(previous: ProgramStatusRecord | undefined, record: ProgramStatusRecord): boolean {
+  if (previous?.state === PROGRAM_STATUS_STATE.IDLE) return record.state !== PROGRAM_STATUS_STATE.IDLE;
+  if (previous?.state === PROGRAM_STATUS_STATE.DONE) return !isWaitingState(record);
+  return false;
+}
+
 class SendStatusTimeline {
   /** Latest record stamped at or before the write; undefined when none or unread. */
   baseline: ProgramStatusRecord | undefined;
@@ -368,14 +386,15 @@ class SendStatusTimeline {
     return this.after.some((record) => record !== undefined);
   }
 
-  /** An observed `idle` directly followed by a non-idle record stamped after the write. */
+  /**
+   * An observed waiting record directly followed by one stamped after the write that left it:
+   * `idle` followed by any other state, or `done` followed by a state that is not waiting.
+   */
   submitted(): boolean {
     if (this.ambiguous) return false;
     let previous = this.baseline;
     for (const record of this.after) {
-      if (previous?.state === PROGRAM_STATUS_STATE.IDLE && record !== undefined && record.state !== PROGRAM_STATUS_STATE.IDLE) {
-        return true;
-      }
+      if (record !== undefined && leftWaitingState(previous, record)) return true;
       previous = record;
     }
     return false;
@@ -407,11 +426,11 @@ function classifySendAttempt(
     return { delivery: SESSION_SEND_DELIVERY.DELIVERED, outcome: SESSION_SEND_OUTCOME.SUBMITTED };
   }
   if (!delivered) return unverified;
-  // Only an untouched idle record proves the program sat on the text:
-  // pacing can fold idle->working->idle into one idle with a new timestamp.
+  // Only an untouched waiting record proves the program sat on the text:
+  // pacing can fold idle->working->idle (or done->working->done) into one record with a new timestamp.
   const pasted = !evidence.statusUnknown
     && !status.ambiguous
-    && status.baseline?.state === PROGRAM_STATUS_STATE.IDLE
+    && isWaitingState(status.baseline)
     && status.after.length === 0;
   return {
     delivery: SESSION_SEND_DELIVERY.DELIVERED,

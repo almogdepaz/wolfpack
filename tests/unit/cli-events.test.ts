@@ -71,6 +71,41 @@ describe("eventsCommand exit codes", () => {
     expect(await eventsCommand([])).toBe(SESSION_EXIT.GENERAL);
   });
 
+  function captureStderr(): { text: () => string; restore: () => void } {
+    const realWrite = process.stderr.write;
+    const realError = console.error;
+    const lines: string[] = [];
+    process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+    return {
+      text: () => lines.join("\n"),
+      restore: () => { process.stderr.write = realWrite; console.error = realError; },
+    };
+  }
+
+  test("an unreachable server names the URL, the cause and the sandbox", async () => {
+    stubFetch(async () => { throw Object.assign(new TypeError("Was there a typo in the url or port?"), { code: "FailedToOpenSocket" }); });
+    const stderr = captureStderr();
+    try {
+      expect(await eventsCommand([])).toBe(SESSION_EXIT.GENERAL);
+    } finally {
+      stderr.restore();
+    }
+    expect(stderr.text()).toMatch(/cannot reach the Wolfpack server at http:\/\/127\.0\.0\.1:\d+\/api\/events \(FailedToOpenSocket\)/);
+    expect(stderr.text()).toContain("sandbox");
+  });
+
+  test("a sandbox proxy's plain-text 403 is reported as a proxy denial", async () => {
+    stubFetch(async () => new Response("Connection blocked by network allowlist", { status: 403 }));
+    const stderr = captureStderr();
+    try {
+      expect(await eventsCommand([])).toBe(SESSION_EXIT.GENERAL);
+    } finally {
+      stderr.restore();
+    }
+    expect(stderr.text()).toContain("(proxy denial (HTTP 403))");
+  });
+
   test("an established stream that ends exits with the general failure code", async () => {
     stubFetch(async () => new Response(new ReadableStream({ start: (controller) => controller.close() }), { headers: { "Content-Type": "text/event-stream" } }));
     expect(await eventsCommand([])).toBe(SESSION_EXIT.GENERAL);
