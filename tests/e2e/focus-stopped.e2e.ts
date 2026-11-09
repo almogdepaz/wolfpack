@@ -58,7 +58,7 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" });
   await expect(next.locator("summary")).toContainText("stopped · 12m");
-  await next.getByRole("button", { name: "open test-project stopped" }).click();
+  await next.getByRole("button", { name: "review test-project stopped" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect.poll(() => f.acknowledgements).toContainEqual({ sessionId: f.ids.get("test-project"), transitionSequence: 5 });
   await expect(page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
@@ -83,7 +83,7 @@ test("the seen 24-hour finished row uses the original stop time, not metadata ti
 test("reviewed work stays out of next when metadata becomes unseen again", async ({ page }) => {
   const f = await runtimeFixture(page, "done");
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" }).getByRole("button", { name: "open test-project stopped" }).click();
+  await page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" }).getByRole("button", { name: "review test-project stopped" }).click();
   await expect.poll(() => f.acknowledgements).toContainEqual({ sessionId: f.ids.get("test-project"), transitionSequence: 5 });
   f.metadata();
   await page.goto(server.baseUrl);

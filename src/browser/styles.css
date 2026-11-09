@@ -2939,7 +2939,7 @@ body > header { height: 52px; min-height: 52px; }
 /* Cards: the summary is the 44px row (text only); the action, checkbox and chips sit beside it in the row grid; the body opens under the title. */
 /* Both lists end their disclosure in the same column before the action edge. */
 .focus-today { --focus-chips-width: 192px; }
-.focus-next, .focus-today { --focus-aside-width: 52px; --focus-row-gap: 10px; }
+.focus-next, .focus-today { --focus-aside-width: 74px; --focus-row-gap: 10px; }
 .focus-next > li, .focus-today > li { display: grid; grid-template-columns: minmax(0, 1fr) var(--focus-aside-width); align-items: start; column-gap: var(--focus-row-gap); padding: 0 12px; font-size: 13px; color: var(--text-2); }
 .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--focus-chips-width) 12px var(--focus-aside-width); }
 .focus-next > li:has(> .focus-card:not([open]) > summary:hover), .focus-today > li:has(> .focus-card:not([open]) > summary:hover) { background: var(--surface-3); }

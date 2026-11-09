@@ -1,6 +1,6 @@
 import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
 import { esc, escAttr, isDesktop } from "./app-state";
-import { rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, type FocusAction, type FocusSession } from "../src/focus-ranking";
+import { rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { showAppDialog } from "./app-dialog";
@@ -175,7 +175,7 @@ export function createAssistantView(deps: {
   function sessionBody(row: FocusAction, session: FocusSession) {
     const stopped = stoppedUnseen(session);
     return field("machine", esc(session.machine ?? "")) + field("project", project(session.cwd))
-      + field("state", stopped ? `stopped${session.changedAt ? ` · ${age(session.changedAt)}` : ""}` : `${esc(session.state === "needs-input" ? "needs you" : session.state)}${session.changedAt ? ` · since ${age(session.changedAt)}` : ""}`)
+      + field("state", stopped ? `stopped${session.changedAt ? ` · ${age(session.changedAt)}` : ""}` : `${esc(focusSessionLabel(session))}${session.changedAt ? ` · since ${age(session.changedAt)}` : ""}`)
       + field("last line", session.lastLine ? `<code>${esc(session.lastLine)}</code>` : "") + field("why here", esc(row.reason)) + field("for", esc(row.intention?.title ?? ""));
   }
   function intentionBody(intention: FocusIntention, reason?: string) {
@@ -186,7 +186,7 @@ export function createAssistantView(deps: {
   }
   // One wording for a next row: the row itself and the sidebar tile's "next" line.
   const nextTitle = (row: FocusAction) => row.session
-    ? `${row.session.name} ${stoppedUnseen(row.session) ? "stopped" : row.session.state === "needs-input" ? "needs you" : row.session.state === "done" ? "finished" : row.session.state}`
+    ? `${row.session.name} ${focusSessionLabel(row.session)}`
     : `start “${row.intention!.title}”`;
   function nextHtml(cap: number) {
     const rows = nextRows(cap);
@@ -194,10 +194,11 @@ export function createAssistantView(deps: {
     return `<ol class="focus-next" aria-label="Next actions">${rows.map((row, index) => {
       const finished = row.session?.state === "done" && !stoppedUnseen(row.session);
       const title = nextTitle(row);
+      const verb = focusActionVerb(row);
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
       if (row.session) renderedSessions.set(key, row.session);
-      const action = `<button type="button" class="focus-action"${sessionLocked() ? " disabled" : ""} data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${row.kind} ${title}` : title)}">${row.kind}<span aria-hidden="true"> ›</span></button>`;
+      const action = `<button type="button" class="focus-action"${sessionLocked() ? " disabled" : ""} data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${verb} ${title}` : title)}">${verb}<span aria-hidden="true"> ›</span></button>`;
       const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span><small class="focus-for">${esc(row.intention?.title ?? row.session?.machine ?? "")}</small>`;
       return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
     }).join("")}</ol>`;

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, type FocusSession } from "../../src/focus-ranking.ts";
+import { rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSessionLabel, focusActionVerb, type FocusSession } from "../../src/focus-ranking.ts";
 import { emptyFocus, reduceFocus } from "../../src/focus-contract.ts";
 const now = "2026-11-06T12:00:00.000Z";
 const doc = () => reduceFocus(emptyFocus(), [
@@ -8,6 +8,19 @@ const doc = () => reduceFocus(emptyFocus(), [
   { type: "add", intention: { id: "c", title: "done" } }, { type: "done", id: "c" },
 ], now);
 const session = (id: string, state: string, changedAt: string, cwd = "/a"): FocusSession => ({ id, name: id, state, changedAt, cwd, machine: "home" });
+test("next labels and verbs describe the session state, not stale input metadata", () => {
+  for (const [inputKind, label, verb] of [["permission", "permission", "approve"], ["question", "question", "answer"], ["auth", "auth", "log in"], [undefined, "needs you", "open"]] as const) {
+    const s = { ...session("broker-leak", "needs-input", now), inputKind };
+    expect(focusSessionLabel(s)).toBe(label);
+    expect(focusActionVerb({ kind: "open", session: s, reason: "" })).toBe(verb);
+  }
+  for (const [state, unseen, label, verb] of [["failed", true, "failed", "retry"], ["done", true, "stopped", "review"], ["idle", true, "stopped", "review"], ["done", false, "finished", "open"]] as const) {
+    const s = { ...session("broker-leak", state, now), inputKind: "permission" as const, unseen, stoppedSequence: 2 };
+    expect(focusSessionLabel(s)).toBe(label);
+    expect(focusActionVerb({ kind: "open", session: s, reason: "" })).toBe(verb);
+  }
+  expect(focusActionVerb({ kind: "start", reason: "" })).toBe("start");
+});
 test("linked attention then starts then unlinked attention, oldest first; working omitted", () => {
   const sessions = [session("unlinked", "needs-input", "2026-01-01"), session("linked", "failed", "2026-11-01"), session("busy", "working", now)];
   expect(rankFocus(doc(), sessions, 5).map(row => [row.kind, row.session?.id ?? row.intention?.id])).toEqual([["open", "linked"], ["start", "b"], ["open", "unlinked"]]);
