@@ -18,8 +18,6 @@ export const CLAUDE_INTEGRATION = Object.freeze({
   minimumClaudeVersion: "2.1.319",
   /** Status files live here, relative to the wolfpack state directory (`WOLFPACK_DIR`). */
   statusDirectory: "wolfpack-tasks/claude",
-  /** Worker gate files sit beside status files as `<sessionId><gateFileSuffix>`. */
-  gateFileSuffix: ".gate.json",
 });
 
 /** Managed-settings drop-in directories per platform; other platforms are unsupported. */

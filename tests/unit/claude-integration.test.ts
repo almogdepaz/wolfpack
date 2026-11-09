@@ -19,7 +19,6 @@ describe("claude integration constants", () => {
       dropInFileName: "wolfpack.json",
       minimumClaudeVersion: "2.1.319",
       statusDirectory: "wolfpack-tasks/claude",
-      gateFileSuffix: ".gate.json",
     });
   });
 
