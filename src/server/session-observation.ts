@@ -499,6 +499,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
     const previous = store.get(sessionKey);
     const runtimeState = store.reduce({
       sessionKey,
+      agentKind: identity?.agentKind,
       broker: { state: "unavailable", observedAt },
       sources: [],
       fallback: { rawOutputChanged: false, observedAt, preview: lastLine },
@@ -657,6 +658,7 @@ async function observeSessionFact(
   });
   const runtimeState = store.reduce({
     sessionKey,
+    agentKind: identity?.agentKind,
     broker: { state: brokerState, observedAt },
     sources: [
       ...(programStatus ? [programStatus] : []),

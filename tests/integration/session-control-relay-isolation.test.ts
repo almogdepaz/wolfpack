@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
 import { RELAY_WORKER_LIMITS } from "../../src/task-relay/worker-protocol.ts";
+import { rankFocus } from "../../src/focus-ranking.ts";
+import { emptyFocus } from "../../src/focus-contract.ts";
 import { validateControlApiSchemaValue as validate } from "../control-api-schema-validator.ts";
 
 // Isolate production singleton imports before loading the route factory.
@@ -14,6 +16,7 @@ process.env.WOLFPACK_TEST = "1";
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { createSessionControlRoutes } = await import("../../src/server/session-control-routes.ts");
+const { AssistantService } = await import("../../src/server/assistant-service.ts");
 afterAll(() => {
   if (priorTest === undefined) delete process.env.WOLFPACK_TEST;
   else process.env.WOLFPACK_TEST = priorTest;
@@ -25,7 +28,8 @@ const schema = JSON.parse(readFileSync("docs/generated/control-api.schema.json",
 
 class BackendFacts extends MockBackend {
   unavailable = false;
-  constructor() { super({ sessions: ["live", "dead"] }); this.setSessionAlive("dead", false); }
+  agentKind = "pi";
+  constructor(readonly liveId = LIVE_ID) { super({ sessions: ["live", "dead"] }); this.setSessionAlive("dead", false); }
   override async list() {
     if (this.unavailable) throw new Error("private broker failure");
     return super.list();
@@ -33,9 +37,9 @@ class BackendFacts extends MockBackend {
   override async listIdentities() {
     const identities = await super.listIdentities();
     for (const identity of Object.values(identities)) {
-      identity.wolfpackSessionId = identity.wolfpackSessionName === "live" ? LIVE_ID : DEAD_ID;
+      identity.wolfpackSessionId = identity.wolfpackSessionName === "live" ? this.liveId : DEAD_ID;
       identity.projectPath = "/fixture";
-      identity.agentKind = "pi";
+      identity.agentKind = this.agentKind;
     }
     return identities;
   }
@@ -46,16 +50,19 @@ class BackendFacts extends MockBackend {
   }
 }
 
-async function fixture() {
+async function fixture(pinned = false, liveId = LIVE_ID) {
   const root = mkdtempSync(join(tmpdir(), "session-relay-isolation-"));
-  const backend = new BackendFacts();
+  const backend = new BackendFacts(liveId);
   let blocked = false, release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const gateway = new WorkerRelayGateway({ root, requestTimeoutMs: 1000, inspectSession: async selector => {
     if (blocked) await gate;
     return backend.inspectSession(selector);
   } });
-  const routes = createSessionControlRoutes(createServerContext({ backend, taskRelayGateway: gateway, config: null }));
+  const config = pinned ? { devDir: "/tmp", port: 19846, pinnedSessions: [{ name: "live", cwd: "/fixture", command: ["pi"], harness: "pi" }] } : null;
+  const ctx = createServerContext({ backend, taskRelayGateway: gateway, config,
+    assistantService: new AssistantService({ root, readConfig: () => config }) });
+  const routes = createSessionControlRoutes(ctx);
   const server = createServer((req, res) => {
     const route = routes[`GET ${new URL(req.url!, "http://localhost").pathname}`];
     if (!route) { res.writeHead(404).end(); return; }
@@ -71,7 +78,7 @@ async function fixture() {
   };
   const connect = () => gateway.volatile({ operation: "connect", profile: "volatile-v1", callerSession: "live", generation: "fixture", protocolVersions: [2] });
   return {
-    backend, gateway, read, connect,
+    backend, gateway, read, connect, ctx,
     block: () => { blocked = true; },
     release,
     close: async () => {
@@ -98,6 +105,63 @@ function assertDegraded(body: any) {
   expect(body).not.toHaveProperty("taskTransport");
   expect(validate({ $ref: "#/$defs/SessionStatus" }, body, schema)).toEqual([]);
 }
+
+test("list adds runtime stop facts without changing terminal or identity fields", async () => {
+  const { getAgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
+  const store = getAgentRuntimeStateStore();
+  const at = "2026-11-01T10:00:00.000Z";
+  const input = { sessionKey: LIVE_ID, broker: { state: "alive" as const, observedAt: at }, sources: [], fallback: { rawOutputChanged: true, observedAt: at } };
+  store.reduce(input);
+  const stopped = store.reduce({ ...input, fallback: { ...input.fallback, rawOutputChanged: false } });
+  const f = await fixture();
+  try {
+    const list = await f.read("list");
+    expect(list.status).toBe(200);
+    const live = list.body.sessions.find((s: any) => s.sessionId === LIVE_ID);
+    expect(live).toMatchObject({ ok: true, session: "live", sessionId: LIVE_ID, state: "active", projectDir: "/fixture", harness: "pi", terminal: { exists: true, alive: true, status: "ready" }, runtime: { state: "idle", changedAt: at, stoppedAt: at, unseen: true, stopped: true, pinned: false } });
+    expect(validate({ $ref: "#/$defs/SessionStatus" }, live, schema)).toEqual([]);
+    const { stoppedAt: _, pinned: __, ...olderRuntime } = live.runtime;
+    expect(validate({ $ref: "#/$defs/SessionStatus" }, { ...live, runtime: olderRuntime }, schema)).toEqual([]);
+    store.acknowledge(LIVE_ID, stopped.transitionSequence);
+    expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID).runtime).toMatchObject({ unseen: false, stopped: false });
+    expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === DEAD_ID).runtime).toEqual({ state: "unknown", changedAt: null, stoppedAt: null, unseen: false, stopped: false, pinned: false });
+  } finally { await f.close(); }
+});
+
+test("list runtime facts exclude server-owned pinned stops", async () => {
+  const { getAgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
+  const store = getAgentRuntimeStateStore();
+  const input = { sessionKey: LIVE_ID, broker: { state: "alive" as const, observedAt: "2026-11-08T10:00:00Z" }, sources: [], fallback: { rawOutputChanged: true, observedAt: "2026-11-08T10:00:00Z" } };
+  store.reduce(input);
+  store.reduce({ ...input, fallback: { ...input.fallback, rawOutputChanged: false } });
+  const f = await fixture(true);
+  try {
+    expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID).runtime).toMatchObject({ pinned: true, unseen: true, stopped: false });
+  } finally { await f.close(); }
+});
+
+test("observer identity gives focus ranking and CLI the same shell fallback eligibility", async () => {
+  const { observeDashboardSessions, __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+  for (const [agentKind, liveId] of [["shell", "33333333-3333-4333-8333-333333333333"], ["codex", "44444444-4444-4444-8444-444444444444"], ["custom", "55555555-5555-4555-8555-555555555555"]]) {
+    const f = await fixture(false, liveId);
+    __resetSessionObservationForTests();
+    try {
+      f.backend.agentKind = agentKind;
+      f.backend.setCapturePane(async () => "baseline\n");
+      f.backend.setOutputSequence("live", "1");
+      await observeDashboardSessions(f.ctx);
+      f.backend.setCapturePane(async () => "new log burst\n");
+      f.backend.setOutputSequence("live", "2");
+      const output = (await observeDashboardSessions(f.ctx)).find(s => s.name === "live")!;
+      expect(output.runtimeState.state).toBe("output");
+      const idle = (await observeDashboardSessions(f.ctx)).find(s => s.name === "live")!;
+      expect(idle.runtimeState.state).toBe("idle");
+      expect(idle.identity?.agentKind).toBe(agentKind);
+      expect(rankFocus(emptyFocus(), [{ ...idle.runtimeState, id: liveId, name: "live" }])).toHaveLength(agentKind === "shell" ? 0 : 1);
+      expect((await f.read("list")).body.sessions.find((s: any) => s.sessionId === liveId).runtime.stopped).toBe(agentKind !== "shell");
+    } finally { __resetSessionObservationForTests(); await f.close(); }
+  }
+});
 
 test("healthy reads distinguish a live registration from absent registration without changing payloads", async () => {
   const f = await fixture();

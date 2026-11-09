@@ -5,11 +5,19 @@ export interface FocusSession {
   name: string;
   state: string;
   changedAt?: string;
+  unseen?: boolean;
+  stoppedSequence?: number;
+  acknowledgedSequence?: number;
   cwd?: string;
   machine?: string;
   machineUrl?: string;
   /** Shown in the card body only; ranking ignores it. */
   lastLine?: string;
+}
+/** An unreviewed work episode, not merely an unseen metadata transition. */
+export function stoppedUnseen(session: { state: string; unseen?: boolean; stoppedSequence?: number; acknowledgedSequence?: number }): boolean {
+  return session.unseen === true && (session.state === AGENT_STATUS_STATE.DONE || session.state === AGENT_STATUS_STATE.IDLE)
+    && (session.stoppedSequence ?? 0) > (session.acknowledgedSequence ?? 0);
 }
 export interface FocusAction {
   kind: "open" | "start";
@@ -27,10 +35,13 @@ const at = (s: FocusSession) => Date.parse(s.changedAt ?? "") || 0;
 const oldest = (a: FocusSession, b: FocusSession) => at(a) - at(b) || a.id.localeCompare(b.id) || (a.machine ?? "").localeCompare(b.machine ?? "");
 /** A finished agent is worth a look for this long; after that it is a chip again. */
 export const FINISHED_WINDOW_MS = 24 * 60 * 60_000;
-/** Intention order is authoritative. Working/idle sessions remain chips, never next actions; a recent finish is a next action. */
+/** Linked needs-you → linked stopped-unseen → starts → recent seen linked finishes → unlinked needs-you → unlinked stopped-unseen.
+ * Intention order, then oldest stop first; unseen stops never expire. Working and fresh idle remain chips.
+ */
 export function rankFocus(doc: FocusDocument, sessions: readonly FocusSession[], cap = 5, now = Date.now()): FocusAction[] {
   const linked = new Set<FocusSession>();
   const attention: FocusAction[] = [];
+  const stopped: FocusAction[] = [];
   const starts: FocusAction[] = [];
   const finished: FocusAction[] = [];
   for (const intention of doc.intentions) {
@@ -40,13 +51,17 @@ export function rankFocus(doc: FocusDocument, sessions: readonly FocusSession[],
     for (const session of live.filter(needsYou).sort(oldest)) {
       if (!attention.some(row => row.session === session)) attention.push({ kind: "open", intention, session, reason: "Needs you for this intention; intention order, then oldest first." });
     }
+    for (const session of live.filter(stoppedUnseen).sort(oldest)) {
+      if (!stopped.some(row => row.session === session)) stopped.push({ kind: "open", intention, session, reason: "Stopped work on this intention you have not seen; intention order, then oldest first." });
+    }
     if (live.length === 0) starts.push({ kind: "start", intention, reason: "An unfinished intention with no live session, in your order." });
-    for (const session of live.filter(s => s.state === AGENT_STATUS_STATE.DONE && now - at(s) <= FINISHED_WINDOW_MS).sort(oldest).reverse()) {
+    for (const session of live.filter(s => s.state === AGENT_STATUS_STATE.DONE && !stoppedUnseen(s) && now - at(s) <= FINISHED_WINDOW_MS).sort(oldest).reverse()) {
       if (!finished.some(row => row.session === session)) finished.push({ kind: "open", intention, session, reason: "Finished work on this intention; look before it goes stale." });
     }
   }
   const unlinked = sessions.filter(s => !linked.has(s) && needsYou(s)).sort(oldest).map(session => ({ kind: "open" as const, session, reason: "Unlinked session needs you; oldest first." }));
-  return [...attention, ...starts, ...finished, ...unlinked].slice(0, Math.max(0, cap));
+  const unlinkedStopped = sessions.filter(s => !linked.has(s) && stoppedUnseen(s)).sort(oldest).map(session => ({ kind: "open" as const, session, reason: "Stopped unlinked work you have not seen; oldest first." }));
+  return [...attention, ...stopped, ...starts, ...finished, ...unlinked, ...unlinkedStopped].slice(0, Math.max(0, cap));
 }
 export type FocusDoneItem = { at: string; kind: "intention"; intention: FocusIntention } | { at: string; kind: "session"; intention: FocusIntention; session: FocusSession };
 /** Today's timeline, newest first: intentions ticked today and linked sessions that finished today. `day` maps a timestamp to its day label. */

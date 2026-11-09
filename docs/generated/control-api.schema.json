@@ -6385,6 +6385,50 @@
       ],
       "additionalProperties": false
     },
+    "StructuredStopSignal": {
+      "type": "object",
+      "properties": {
+        "authority": {
+          "$ref": "#/$defs/AgentStatusAuthority"
+        },
+        "source": {
+          "$ref": "#/$defs/AgentStatusSource"
+        },
+        "signalSequence": {
+          "type": "number"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "runOrder": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "authority",
+        "source",
+        "signalSequence"
+      ],
+      "additionalProperties": false,
+      "description": "Retained structured-signal high-water mark for stop detection, fenced by publisher and run identity.",
+      "allOf": [
+        {
+          "anyOf": [
+            {
+              "required": [
+                "runId"
+              ]
+            },
+            {
+              "required": [
+                "runOrder"
+              ]
+            }
+          ]
+        }
+      ]
+    },
     "AgentRuntimeState": {
       "type": "object",
       "properties": {
@@ -6423,6 +6467,21 @@
         },
         "unseen": {
           "type": "boolean"
+        },
+        "workPending": {
+          "type": "boolean"
+        },
+        "stoppedSequence": {
+          "type": "integer"
+        },
+        "stoppedAt": {
+          "type": "string"
+        },
+        "stopObserved": {
+          "type": "boolean"
+        },
+        "stopSignal": {
+          "$ref": "#/$defs/StructuredStopSignal"
         },
         "runId": {
           "type": "string"
@@ -6973,6 +7032,64 @@
         }
       ]
     },
+    "SessionRuntimeSummary": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "running",
+            "working",
+            "audit",
+            "cleanup",
+            "needs-input",
+            "done",
+            "failed",
+            "stopped",
+            "output",
+            "off",
+            "idle",
+            "unknown"
+          ]
+        },
+        "changedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stoppedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "unseen": {
+          "type": "boolean"
+        },
+        "stopped": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "state",
+        "changedAt",
+        "unseen",
+        "stopped"
+      ],
+      "additionalProperties": false,
+      "description": "Last server-observed runtime facts, not terminal liveness. stopped means eligible unreviewed work, excluding pinned processes and shell fallback output; stoppedAt is its original end time, not a later metadata transition. pinned identifies server-owned processes excluded from focus ranking. Unknown with null changedAt means not yet observed."
+    },
     "SessionStatus": {
       "type": "object",
       "properties": {
@@ -6990,6 +7107,9 @@
         },
         "state": {
           "const": "active"
+        },
+        "runtime": {
+          "$ref": "#/$defs/SessionRuntimeSummary"
         },
         "project": {
           "type": "string"

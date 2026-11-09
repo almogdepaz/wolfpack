@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { rankFocus, linkedFocusSessions, doneToday, type FocusSession } from "../../src/focus-ranking.ts";
+import { rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, type FocusSession } from "../../src/focus-ranking.ts";
 import { emptyFocus, reduceFocus } from "../../src/focus-contract.ts";
 const now = "2026-11-06T12:00:00.000Z";
 const doc = () => reduceFocus(emptyFocus(), [
@@ -34,6 +34,25 @@ test("a linked session that finished recently is a next action after attention a
   expect(rankFocus(doc(), sessions, 5, nowMs)[1]?.reason).toMatch(/finished/i);
   const stale = [session("linked", "done", "2026-11-04T11:40:00.000Z")];
   expect(rankFocus(doc(), stale, 5, nowMs).map(r => r.session?.id ?? r.intention?.id)).toEqual(["b"]);
+});
+test("stopped unseen excludes startup idle, seen work and busy/attention states", () => {
+  expect(stoppedUnseen({ state: "done", unseen: true, stoppedSequence: 2 })).toBe(true);
+  expect(stoppedUnseen({ state: "idle", unseen: true, stoppedSequence: 2 })).toBe(true);
+  expect(stoppedUnseen({ state: "idle", unseen: true })).toBe(false);
+  expect(stoppedUnseen({ state: "done", unseen: true })).toBe(false);
+  for (const state of ["done", "idle"]) {
+    expect(stoppedUnseen({ state, unseen: false, stoppedSequence: 2 })).toBe(false);
+    expect(stoppedUnseen({ state, unseen: true, stoppedSequence: 2, acknowledgedSequence: 2 })).toBe(false);
+  }
+  for (const state of ["working", "output", "needs-input", "failed", "off", "unknown"]) expect(stoppedUnseen({ state, unseen: true, stoppedSequence: 2 })).toBe(false);
+});
+test("linked needs-you then stopped unseen then starts then unlinked needs-you then stopped, without an age window", () => {
+  const focus = reduceFocus(doc(), [{ type: "edit", id: "a", patch: { sessions: ["linked", "busy", "stop1", "stop2"] } }], now);
+  const stopped = (id: string, at: string, state = "done") => ({ ...session(id, state, at), unseen: true, stoppedSequence: 2 });
+  const sessions = [stopped("stop2", "2020-01-02", "idle"), stopped("u-stop2", "2020-01-02"), session("linked", "failed", now), stopped("stop1", "2020-01-01"), session("u-needs", "needs-input", now), stopped("u-stop1", "2020-01-01")];
+  expect(rankFocus(focus, sessions, 10, Date.parse(now)).map(r => r.session?.id ?? r.intention?.id)).toEqual(["linked", "stop1", "stop2", "b", "u-needs", "u-stop1", "u-stop2"]);
+  expect(rankFocus(focus, sessions, 10, Date.parse(now))[1]?.reason).toMatch(/stopped.*not.*seen/i);
+  expect(rankFocus(focus, sessions.map(s => ({ ...s, unseen: false })), 10, Date.parse(now)).map(r => r.session?.id ?? r.intention?.id)).toEqual(["linked", "b", "u-needs"]);
 });
 test("done today lists ticked intentions and finished linked sessions of the day, newest first", () => {
   const nowMs = Date.parse(now);

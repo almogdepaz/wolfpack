@@ -1,4 +1,5 @@
 import { createAssistantView } from "./assistant-view";
+import { stoppedUnseen } from "../src/focus-ranking";
 import type { FocusSessionStart } from "../src/focus-start";
 import { isFocusAssistantSession, withoutFocusAssistant } from "../src/focus-session";
 import { sessionMetaHtml } from "./session-meta";
@@ -1242,7 +1243,7 @@ const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant? Its conversation and your
 const focusUi = createAssistantView({
   request: api,
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
-  sessions: () => state.lastSessionGroups.filter(g => g.online).flatMap(g => withoutFocusAssistant(g.sessions).map(s => ({ id: s.identity?.wolfpackSessionId ?? s.name, name: s.name, state: s.runtimeState?.state ?? "unknown", changedAt: s.runtimeState?.changedAt, cwd: s.identity?.projectPath, machine: g.machine.name, machineUrl: g.machine.url, lastLine: s.lastLine }))),
+  sessions: () => state.lastSessionGroups.filter(g => g.online).flatMap(g => withoutFocusAssistant(g.sessions).filter(s => s.pinned !== true).map(s => ({ id: s.identity?.wolfpackSessionId ?? s.name, name: s.name, state: s.runtimeState?.state ?? "unknown", changedAt: s.runtimeState?.state === "done" || s.runtimeState?.state === "idle" ? s.runtimeState.stoppedAt ?? s.runtimeState.changedAt : s.runtimeState?.changedAt, unseen: s.runtimeState?.unseen, stoppedSequence: s.runtimeState?.stoppedSequence, acknowledgedSequence: s.runtimeState?.acknowledgedSequence, cwd: s.identity?.projectPath, machine: g.machine.name, machineUrl: g.machine.url, lastLine: s.lastLine }))),
   sessionsAvailable: () => state.lastSessionGroups.some(g => !g.machine.url && g.online),
   sessionsUnavailable: () => state.lastSessionGroups.some(g => !g.machine.url && !g.online && !g.pending),
   sessionMachineKnown: identity => tailnetPeers.entries().some(peer => peer.identity === identity),
@@ -1616,6 +1617,24 @@ function showView(requested: string, skipAnimation?: boolean, refreshSessions = 
 
 // ── Sessions ──
 
+const pendingRuntimeAcknowledgements = new Set<string>();
+
+/** A turn ending in the foreground terminal was seen, including the focused (not every visible) grid cell. */
+function acknowledgeWatchedRuntimeState(): void {
+  if (state.currentView !== "terminal" || document.visibilityState !== "visible" || !document.hasFocus()) return;
+  const grid = activeGridTerminalSessions();
+  const focused = grid?.find(gs => gs.session === state.currentSession && (gs.machine || "") === state.currentMachine);
+  if (grid ? !focused?.controller?.isConnected || focused._collapsed || focused._displaced : !state.terminalController?.isConnected) return;
+  const session = state.lastSessionGroups.find(g => (g.machine.url || "") === state.currentMachine && g.online)
+    ?.sessions.find(s => s.name === state.currentSession);
+  const displayedId = grid ? focused?.sessionId : state.termTarget?.sessionId;
+  // Names are reusable: a connected old terminal has not shown a replacement's work.
+  if (!displayedId || !session || sessionIdentityId(session) !== displayedId) return;
+  if (session.runtimeState?.state && stoppedUnseen({ ...session.runtimeState, state: session.runtimeState.state })) {
+    void acknowledgeTerminalRuntimeState(state.currentSession, state.currentMachine);
+  }
+}
+
 async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdentity: string): Promise<void> {
   const machineUrl = machineIdentity || "";
   const group = state.lastSessionGroups.find((candidate) => (candidate.machine.url || "") === machineUrl);
@@ -1624,6 +1643,9 @@ async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdent
   const transitionSequence = session?.runtimeState?.transitionSequence;
   if (!session?.runtimeState?.unseen || !sessionId || !Number.isInteger(transitionSequence) || transitionSequence < 1) return;
 
+  const key = JSON.stringify([machineUrl, sessionId, transitionSequence]);
+  if (pendingRuntimeAcknowledgements.has(key)) return;
+  pendingRuntimeAcknowledgements.add(key);
   try {
     const acknowledged = await api<AgentRuntimeStateAcknowledgementResponse>("/agent-runtime-state/ack", {
       method: "POST",
@@ -1652,6 +1674,7 @@ async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdent
     state.lastSessionsHtml = "";
     renderSessionListFromState();
     renderSidebar();
+    focusUi.render();
     if (state.drawerOpen) renderDrawerList();
   } catch (error: unknown) {
     console.warn("[terminal] runtime transition acknowledgement failed", {
@@ -1659,6 +1682,8 @@ async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdent
       machine: machineUrl || "local",
       error: errorMessage(error),
     });
+  } finally {
+    pendingRuntimeAcknowledgements.delete(key);
   }
 }
 
@@ -2379,6 +2404,7 @@ function publishSessionProjection(): void {
   document.getElementById("assistant-terminal-header").hidden = !focusUi.isAssistant(state.currentSession, state.currentMachine);
   if (state.drawerOpen) renderDrawerList();
   syncDelegationWorkspace();
+  acknowledgeWatchedRuntimeState();
   checkStateTransitions(state.lastSessionGroups);
   renderDiscoveryHealth();
 }
@@ -2558,7 +2584,7 @@ function syncSessionRefreshTimer(refreshNow = false): void {
     state.sessionRefreshTimer = null;
   }
   if (document.visibilityState !== "visible") return;
-  if (!isDesktop() && state.currentView !== "sessions" && state.currentView !== "assistant" && !state.drawerOpen) return;
+  if (!isDesktop() && state.currentView !== "sessions" && state.currentView !== "assistant" && state.currentView !== "terminal" && !state.drawerOpen) return;
   if (refreshNow) void loadSessions(true);
   state.sessionRefreshTimer = setInterval(() => { void loadSessions(); }, SESSION_REFRESH_INTERVAL_MS);
 }
@@ -6337,6 +6363,7 @@ const onWidgetStorage = (event: StorageEvent) => {
 };
 window.addEventListener("storage", onWidgetStorage);
 document.addEventListener("wolfpack-extension-scope-change", () => {
+  acknowledgeWatchedRuntimeState();
   workspaceDocking.sync();
   if (state.currentView !== "terminal") workspaceShell?.closeMobileView();
   void extensionHost?.refresh();
