@@ -2933,6 +2933,14 @@ describe("agent-native top-level session control", () => {
       (session: { sessionId: string }) => session.sessionId === "mock:wolf-1",
     );
     expect(listed).toEqual({
+      runtime: {
+        changedAt: null,
+        pinned: false,
+        state: "unknown",
+        stopped: false,
+        stoppedAt: null,
+        unseen: false,
+      },
       ok: true,
       organization: { status: "unavailable" },
       selector: "wolf-1",
