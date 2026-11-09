@@ -217,7 +217,7 @@ for (const entry of ["source", "package"] as const) {
     rmSync(join(f.env.PATH!, "curl")); // declined setup and foreground need no curl
     rmSync(join(f.home, ".wolfpack", "config.json"));
     const args = entry === "source" ? [process.execPath, join(repository, "src/cli/index.ts")] : [process.execPath, runner];
-    const setup = spawnSync("/usr/bin/python3", ["-I", "-S", "-B", join(repository, "tests/fixtures/installation-setup-pty.py"), ...args, "setup"], { cwd: f.home, env: f.env, input: `\n${f.port}\nskip\nn\nn\n`, encoding: "utf8", timeout: 20000 });
+    const setup = spawnSync("/usr/bin/python3", ["-I", "-S", "-B", join(repository, "tests/fixtures/installation-setup-pty.py"), ...args, "setup"], { cwd: f.home, env: f.env, input: `\n${f.port}\nskip\nn\nn\nn\n`, encoding: "utf8", timeout: 20000 });
     writeFileSync(join(f.home, "setup.log"), setup.stdout + setup.stderr);
     receipt(f, { setupStatus: setup.status, error: setup.error?.message });
     expect(setup.status, setup.stdout + setup.stderr).toBe(0);
@@ -415,7 +415,7 @@ test("fresh bootstrap checks curl at service acceptance, after harmless binary s
   rmSync(join(f.env.PATH!, "curl"));
   rmSync(join(f.home, ".wolfpack", "config.json"));
   const result = spawnSync("/usr/bin/python3", ["-I", "-S", "-B", join(repository, "tests/fixtures/installation-setup-pty.py"), compiled, "install", join(suite, "package/wolfpack-broker")], {
-    cwd: f.home, env: f.env, input: `\n${f.port}\nskip\nn\ny\n`, encoding: "utf8", timeout: 20000,
+    cwd: f.home, env: f.env, input: `\n${f.port}\nskip\nn\nn\ny\n`, encoding: "utf8", timeout: 20000,
   });
   const output = result.stdout + result.stderr;
   writeFileSync(join(f.home, "setup.log"), output);
