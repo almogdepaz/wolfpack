@@ -86,24 +86,24 @@ async function fixture() {
   };
 }
 
-test("session registration uses the owning gateway profile, not a different process default", async () => {
-  const prior = process.env.WOLFPACK_TASK_RELAY_PROFILE;
-  process.env.WOLFPACK_TASK_RELAY_PROFILE = "restart-safe-v1";
+test("session registration remains volatile-v1 independently of the selected server storage", async () => {
+  const prior = process.env.WOLFPACK_TASK_RELAY_STORAGE;
+  process.env.WOLFPACK_TASK_RELAY_STORAGE = "sqlite";
   const f = await fixture();
   try {
     const connected = await f.connect(); expect(connected.ok).toBe(true);
     const status = await f.read("status?session=live");
     expect(status.body.taskTransport).toMatchObject({ profile: "volatile-v1" });
     expect(await f.rejectRelay()).toMatchObject({ profile: "volatile-v1", ok: false });
-  } finally { await f.close(); if (prior === undefined) delete process.env.WOLFPACK_TASK_RELAY_PROFILE; else process.env.WOLFPACK_TASK_RELAY_PROFILE = prior; }
+  } finally { await f.close(); if (prior === undefined) delete process.env.WOLFPACK_TASK_RELAY_STORAGE; else process.env.WOLFPACK_TASK_RELAY_STORAGE = prior; }
 });
 
 function assertDegraded(body: any) {
   expect(body).toMatchObject({ ok: true, session: "live", sessionId: LIVE_ID,
     terminal: { exists: true, alive: true, status: "ready" }, taskRelay: { status: "unavailable" } });
   expect(body.taskRelay.recovery).toContain("wolfpack service restart --server-only");
-  expect(body.taskRelay.recovery).toContain("restart-safe-v1 endpoints automatically resume");
-  expect(body.taskRelay.recovery).toContain("Explicit volatile-v1 loses state and requires rebind");
+  expect(body.taskRelay.recovery).toContain("preserves transport state for live RAM clients");
+  expect(body.taskRelay.recovery).toContain("memory-only server restart loses state and requires rebind");
   // Recovery must not turn optional relay failure into accidental terminal loss.
   expect(body.taskRelay.recovery).toMatch(/preserves sessions only with a verified independently owned broker/);
   expect(body.taskRelay.recovery).toMatch(/server child terminates an invocation-owned broker and its sessions/);

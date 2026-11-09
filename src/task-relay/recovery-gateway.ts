@@ -8,7 +8,7 @@ import { relayOwnerFailureResult, volatileFailure, type VolatileResult } from ".
  * a single-flight half-open replacement; each failed cycle backs off up to 30s. */
 export class RecoveryRelayGateway implements RelayGateway {
   readonly root: string;
-  readonly profile = "restart-safe-v1" as const;
+  readonly profile = "volatile-v1" as const;
   #worker: WorkerRelayGateway;
   #replacing: Promise<WorkerRelayGateway> | undefined;
   #closed = false;
@@ -19,7 +19,7 @@ export class RecoveryRelayGateway implements RelayGateway {
   readonly #options: GatewayOptions;
   constructor(options: GatewayOptions) {
     this.#options = captureOptions(options);
-    this.#worker = new WorkerRelayGateway({ ...this.#options, profile: this.profile });
+    this.#worker = new WorkerRelayGateway({ ...this.#options, storage: "sqlite" });
     this.root = this.#worker.root;
   }
   #remaining(): number { return Math.max(0, Math.ceil(this.#retryAt - performance.now())); }
@@ -51,7 +51,7 @@ export class RecoveryRelayGateway implements RelayGateway {
       if (this.#closed) throw new Error("relay gateway closed during recovery");
       let replacement: WorkerRelayGateway | undefined;
       try {
-        replacement = new WorkerRelayGateway({ ...this.#options, root: this.root, profile: this.profile });
+        replacement = new WorkerRelayGateway({ ...this.#options, root: this.root, storage: "sqlite" });
         this.#worker = replacement;
         await replacement.initialize();
         return replacement;

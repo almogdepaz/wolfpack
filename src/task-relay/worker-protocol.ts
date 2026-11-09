@@ -7,7 +7,7 @@ import type { VolatileResult } from "./volatile-protocol.ts";
 
 export interface RelayGateway {
   readonly root: string;
-  readonly profile: "volatile-v1" | "restart-safe-v1";
+  readonly profile: "volatile-v1";
   initialize(): Promise<void>;
   close(): Promise<void>;
   registrationsForSessions(ids: readonly string[]): Promise<ReadonlyMap<string, TaskRelayRegistration>>;
@@ -32,7 +32,7 @@ export const RELAY_WORKER_LIMITS = {
 
 export interface WorkerOptions {
   root: string;
-  profile?: "volatile-v1" | "restart-safe-v1";
+  storage?: "memory" | "sqlite";
   peerOrigin?: string;
   proxyPeerFetch: boolean;
 }

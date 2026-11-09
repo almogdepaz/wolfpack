@@ -5,15 +5,15 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { VolatileRelayGateway } from "../../src/task-relay/volatile-gateway.ts";
 
-const profile = "restart-safe-v1";
+const profile = "volatile-v1";
 test("cross-host accepted-before-confirmation survives both journals reopening and retries the original envelope", async () => {
   const root = mkdtempSync(join(tmpdir(), "cross-host-recovery-")), sourceId = randomUUID(), targetId = randomUUID(), generation = randomUUID();
   let now = Date.now(), lose = true, deliveries = 0;
   let source: VolatileRelayGateway, destination: VolatileRelayGateway;
   const inspectSession = async (selector: string) => ({ ok: true as const, session: "reusable-name", sessionId: selector, projectPath: root, harness: "pi", alive: true });
   const boot = () => {
-    destination = new VolatileRelayGateway({ root: join(root, "b"), profile, peerOrigin: "https://b.tail123.ts.net", inspectSession, now: () => now });
-    source = new VolatileRelayGateway({ root: join(root, "a"), profile, peerOrigin: "https://a.tail123.ts.net", inspectSession, now: () => now,
+    destination = new VolatileRelayGateway({ root: join(root, "b"), storage: "sqlite", peerOrigin: "https://b.tail123.ts.net", inspectSession, now: () => now });
+    source = new VolatileRelayGateway({ root: join(root, "a"), storage: "sqlite", peerOrigin: "https://a.tail123.ts.net", inspectSession, now: () => now,
       peerFetch: async (_url, init) => { deliveries++; const result = await destination.peer(JSON.parse(String(init?.body))); if (lose) { lose = false; throw new Error("accepted response lost"); } return Response.json(result); },
     });
   };
@@ -40,16 +40,18 @@ test("cross-host accepted-before-confirmation survives both journals reopening a
   } finally { await source!.close(); await destination!.close(); rmSync(root, { recursive: true, force: true }); }
 });
 
-test("same-name replacement cannot register or receive the old authoritative UUID's state", async () => {
+test("same-name replacement registers separately and cannot receive the old authoritative UUID's state", async () => {
   const root = mkdtempSync(join(tmpdir(), "relay-name-reuse-")), original = randomUUID(), replacement = randomUUID();
   let nameOwner = original;
-  const gateway = new VolatileRelayGateway({ root, profile, inspectSession: async selector => ({ ok: true, session: "same-name", sessionId: selector === "same-name" ? nameOwner : selector, projectPath: root, harness: "pi", alive: true }) });
+  const gateway = new VolatileRelayGateway({ root, storage: "sqlite", inspectSession: async selector => ({ ok: true, session: "same-name", sessionId: selector === "same-name" ? nameOwner : selector, projectPath: root, harness: "pi", alive: true }) });
   try {
     const generation = randomUUID();
     const registered = await gateway.request({ operation: "connect", profile, callerSession: original, generation, protocolVersions: [2] });
     expect(registered.ok).toBe(true); if (!registered.ok || registered.value.kind !== "connected") throw new Error("connect failed");
     nameOwner = replacement;
-    expect(await gateway.request({ operation: "connect", profile, callerSession: "same-name", generation, protocolVersions: [2] })).toMatchObject({ ok: false, error: { code: "SOURCE_MISMATCH" } });
+    const fresh = await gateway.request({ operation: "connect", profile, callerSession: "same-name", generation, protocolVersions: [2] });
+    expect(fresh.ok).toBe(true);
+    if (fresh.ok && fresh.value.kind === "connected") expect(fresh.value.endpoint).not.toEqual(registered.value.endpoint);
     expect(await gateway.request({ operation: "receive", profile, epoch: registered.epoch, callerSession: replacement, endpoint: registered.value.endpoint, cursor: "0" })).toMatchObject({ ok: false, error: { code: "SOURCE_MISMATCH" } });
   } finally { await gateway.close(); rmSync(root, { recursive: true, force: true }); }
 });

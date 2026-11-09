@@ -19,21 +19,6 @@ try {
  const selected = await g.endpointsForSessions(["probe"]);
  if (selected.get("probe")?.id !== registration.value.endpoint.id || "connect" in g) throw new Error("endpoint or retired-method mismatch");
 } finally { await g.close(); }
-const sessionId = crypto.randomUUID(), generation = crypto.randomUUID();
-const safeOptions = { root: process.argv[2] + "/durable", profile: "restart-safe-v1" as const, inspectSession: async (selector: string) => ({ok:true as const, session:selector, sessionId:selector, projectPath:process.argv[2]!, harness:AGENT_KIND.PI.id, alive:true}) };
-let durable = new WorkerRelayGateway(safeOptions);
-try {
- const connected = await durable.volatile({ profile: "restart-safe-v1", operation: "connect", callerSession: sessionId, generation, protocolVersions: [2] });
- if (!connected.ok || connected.value.kind !== "connected") throw new Error("compiled durable registration failed");
- const binding = { profile: "restart-safe-v1", epoch: connected.epoch, callerSession: sessionId, endpoint: connected.value.endpoint };
- const envelope = { envelopeId: crypto.randomUUID(), protocolVersion: 2, source: binding.endpoint, target: binding.endpoint, payload: { opaque: true }, createdAt: new Date().toISOString() };
- const sent = await durable.volatile({ ...binding, operation: "send", envelope });
- if (!sent.ok) throw new Error("compiled durable acceptance failed");
- await durable.close(); durable = new WorkerRelayGateway(safeOptions);
- const resumed = await durable.volatile({ profile: "restart-safe-v1", operation: "connect", callerSession: sessionId, generation, protocolVersions: [2] });
- const page = await durable.volatile({ ...binding, operation: "receive", cursor: "0" });
- if (!resumed.ok || resumed.epoch !== binding.epoch || !page.ok || page.value.kind !== "page" || page.value.deliveries[0]?.envelope.envelopeId !== envelope.envelopeId) throw new Error("compiled durable reopen lost accepted mail");
-} finally { await durable.close(); }
 const v = new WorkerRelayGateway({ root: process.argv[2] + "/volatile", profile: "volatile-v1", inspectSession: async selector => ({ok:true, session:selector, sessionId:selector, projectPath:process.argv[2], harness:AGENT_KIND.PI.id, alive:true}) });
 try {
  await v.initialize();
@@ -45,7 +30,7 @@ try {
  const page = await v.volatile({...binding,operation:"receive",cursor:"0"});
  const ack = await v.volatile({...binding,operation:"acknowledge",envelopeId:envelope.envelopeId});
  if (!sent.ok || !page.ok || page.value.kind !== "page" || page.value.deliveries[0]?.cursor !== "1" || !ack.ok) throw new Error("volatile compiled roundtrip failed");
- console.log(JSON.stringify({ok:true,compiled:import.meta.url.includes("/$bunfs/"),volatile:true,restartSafe:true}));
+ console.log(JSON.stringify({ok:true,compiled:import.meta.url.includes("/$bunfs/"),volatile:true}));
 } finally { await v.close(); }
 `);
     const build = Bun.spawn([process.execPath, "build", "--compile", "--entry-naming", "[name].js", entry,
@@ -54,9 +39,9 @@ try {
     expect(code, stdout + stderr).toBe(0);
     renameSync(entry, join(root, "source-hidden.txt"));
     const run = Bun.spawn([binary, join(root, "relay")], { cwd: runDir,
-      env: { HOME: runDir, WOLFPACK_DIR: join(runDir, "state"), PATH: "/usr/bin:/bin", WOLFPACK_TEST: "1" }, stdout: "pipe", stderr: "pipe", timeout: 15_000, killSignal: "SIGKILL" });
+      env: { HOME: runDir, PATH: "/usr/bin:/bin", WOLFPACK_TEST: "1" }, stdout: "pipe", stderr: "pipe", timeout: 15_000, killSignal: "SIGKILL" });
     const [exit, result, diagnostic] = await Promise.all([run.exited, new Response(run.stdout).text(), new Response(run.stderr).text()]);
     expect(exit, diagnostic).toBe(0);
-    expect(JSON.parse(result)).toEqual({ ok: true, compiled: true, volatile: true, restartSafe: true });
+    expect(JSON.parse(result)).toEqual({ ok: true, compiled: true, volatile: true });
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 120_000);

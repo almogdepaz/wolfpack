@@ -12,7 +12,7 @@ const root = () => mkdtempSync(join(tmpdir(), "relay-recovery-"));
 test("failed server-owned worker is replaced before the next request, retaining epoch without replaying a mutation", async () => {
   const directory = root(); let hang = false;
   const session = randomUUID();
-  const gateway = createTaskRelayGateway({ root: directory, profile: "restart-safe-v1", requestTimeoutMs: 1000,
+  const gateway = createTaskRelayGateway({ root: directory, storage: "sqlite", requestTimeoutMs: 1000,
     inspectSession: async selector => { if (hang) { hang = false; return new Promise(() => {}); } return { ok: true, session: "reused-name", sessionId: selector, projectPath: directory, harness: "pi", alive: true }; },
   } as GatewayOptions);
   try {
@@ -29,7 +29,7 @@ test("failed server-owned worker is replaced before the next request, retaining 
 
 test("a poisoned native commit fences RAM and replaces the stopped worker after storage becomes writable", async () => {
   const directory = root(), sessionId = randomUUID(), generation = randomUUID();
-  const options = { root: directory, profile: "restart-safe-v1" as const, inspectSession: async (selector: string) => ({ ok: true as const, session: "same-name", sessionId: selector, projectPath: directory, harness: "pi", alive: true }) };
+  const options = { root: directory, storage: "sqlite" as const, inspectSession: async (selector: string) => ({ ok: true as const, session: "same-name", sessionId: selector, projectPath: directory, harness: "pi", alive: true }) };
   let gateway = createTaskRelayGateway(options);
   const connect = () => gateway.volatile({ operation: "connect", profile: gateway.profile, callerSession: sessionId, generation, protocolVersions: [2] });
   try {
@@ -66,7 +66,7 @@ test("durable registrations fence stale generations; bounded receipt expiry neve
   } finally { owner.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("valid opaque envelope IDs round-trip recovery; invalid durable binding identities fail before persistence", () => {
+test("valid opaque envelope IDs round-trip recovery; invalid wire bindings fail before persistence", () => {
   const directory = root(), generation = randomUUID(), sessionId = randomUUID(), now = Date.now();
   let owner = createRecoveryStore({ root: directory });
   try {
@@ -75,7 +75,7 @@ test("valid opaque envelope IDs round-trip recovery; invalid durable binding ide
     const accepted = owner.store.accept(owner.store.epoch, envelope, now); owner.close(); owner = createRecoveryStore({ root: directory });
     expect(owner.store.inbox(owner.store.epoch, registered.endpoint.id, "0", now).deliveries[0]?.envelope).toEqual(envelope);
     expect(owner.store.accept(owner.store.epoch, envelope, now).acceptanceId).toBe(accepted.acceptanceId);
-    expect(() => owner.store.register({ sessionId: randomUUID(), generation: "name-not-incarnation", leaseMs: 60_000, protocolVersions: [2] }, now)).toThrow("INVALID_REQUEST");
+    expect(() => owner.store.register({ sessionId: randomUUID(), generation: "", leaseMs: 60_000, protocolVersions: [2] }, now)).toThrow("INVALID_REQUEST");
   } finally { owner.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 

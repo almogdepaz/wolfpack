@@ -82,6 +82,7 @@ import {
 } from "../task-worker-policy-contract.js";
 import { writePrivateJsonFile } from "./persistence.js";
 import { notifySubSessionOpened } from "./session-notifications.js";
+import { getTaskRelayProfile } from "../task-relay/gateway.js";
 import {
   DEFAULT_QUIET_ALERT_POLICY,
   isQuietAlertPolicy,
@@ -751,7 +752,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         ...(taskWorker !== undefined && {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,
-          relayProfile: ctx.taskRelayGateway.profile,
+          relayProfile: getTaskRelayProfile(),
           registrationForSession: async (sessionId) => (await ctx.taskRelayGateway.registrationsForSessions([sessionId])).get(sessionId),
         }),
         loadSettings: () => ({ agentCmd: configuredCommand }),
@@ -912,7 +913,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         ...(taskWorker !== undefined && {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,
-          relayProfile: ctx.taskRelayGateway.profile,
+          relayProfile: getTaskRelayProfile(),
           registrationForSession: async (sessionId) => (await ctx.taskRelayGateway.registrationsForSessions([sessionId])).get(sessionId),
         }),
         notify: (parent, session) => {

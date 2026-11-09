@@ -15,7 +15,7 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
   const peers = JSON.parse(readFileSync(mapping, "utf8")) as Record<string, string>;
   const loopback = peers[url.origin];
   if (!loopback || !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(loopback) || url.protocol !== "https:" || init?.redirect !== "error") throw new Error("fixture network denied");
-  const forward = url.pathname === "/api/task-relay/volatile-v1/peer" || url.pathname === "/api/task-relay/restart-safe-v1/peer";
+  const forward = url.pathname === "/api/task-relay/volatile-v1/peer";
   const modePath = join(root, "network-mode"), mode = existsSync(modePath) ? readFileSync(modePath, "utf8") : "";
   if (forward) {
     if (new Headers(init?.headers).has("x-wolfpack-relay-signature")) throw new Error("retired signature layer");
@@ -27,10 +27,9 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
   }
   return response;
 }, { preconnect: actualFetch.preconnect }) as typeof fetch;
-const sessionIds = JSON.parse(process.env.WOLFPACK_TEST_SESSION_IDS ?? '{"sender":"sender-id","receiver":"receiver-id"}') as Record<string, string>;
 class PiBackend extends MockBackend {
   override async listIdentities() {
-    return Object.fromEntries(["sender", "receiver"].map(name => [name, { wolfpackSessionId: sessionIds[name]!, wolfpackSessionName: name,
+    return Object.fromEntries(["sender", "receiver"].map(name => [name, { wolfpackSessionId: `${name}-id`, wolfpackSessionName: name,
       projectPath: root, agentKind: "pi" as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() }]));
   }
 }
@@ -45,6 +44,6 @@ process.on("SIGTERM", () => {
     wss.close(); await __resetTaskRelayGatewayForTests(); process.exit(0);
   })();
 });
-await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+await new Promise<void>(resolve => server.listen(Number(process.env.WOLFPACK_TEST_HTTP_PORT ?? 0), "127.0.0.1", resolve));
 writeFileSync(join(root, "ready.tmp"), JSON.stringify({ nonce, pid: process.pid, port: (server.address() as AddressInfo).port }), { mode: 0o600 });
 renameSync(join(root, "ready.tmp"), join(root, "ready.json"));

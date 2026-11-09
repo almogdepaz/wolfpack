@@ -9,7 +9,6 @@ import { RelayExpiryIndex } from "./expiry-index.ts";
 import type { RelayInvestigationEvent, RelayInvestigationSink } from "./investigation.ts";
 
 export const MEMORY_RELAY_PROFILE = "volatile-v1";
-export const RESTART_SAFE_RELAY_PROFILE = "restart-safe-v1";
 export const RESTART_SAFE_RELAY_TIMING = Object.freeze({ retryMs: 1000, clockSkewMs: 30_000, deadlineMs: 7 * 86_400_000, receiptMs: 8 * 86_400_000 });
 export const MEMORY_RELAY_LIMITS = Object.freeze({
   activeItems: 4096, activeBytes: 64 * 1024 * 1024,
@@ -72,11 +71,11 @@ export type ForwardAttempt = { readonly kind: "attempt"; readonly token: string;
   | { readonly kind: "unconfirmed"; readonly mayHaveBeenDelivered: true };
 
 /**
- * Worker-owned engine for the negotiated volatile profile. No filesystem/root,
- * timers, network calls, full-state snapshots or process-global store registry.
- * Methods linearize synchronously; the gateway still owns broker inspection and
- * trusted peer admission. Endpoint generation replacement explicitly loses its
- * unreachable obligations, while other live endpoints retain accepted mail.
+ * Worker-owned bounded engine for the unchanged volatile-v1 wire interface.
+ * No filesystem, timers, network calls or process-global store registry. The
+ * recovery wrapper commits primary rows; derived indexes remain RAM-only.
+ * Methods linearize synchronously; the gateway owns fresh broker inspection and
+ * trusted peer admission. Only memory-only generation replacement drops obligations.
  */
 export class MemoryRelayStore {
   #epoch: string = randomUUID();
@@ -129,8 +128,7 @@ export class MemoryRelayStore {
     if (!value || !keys(value, ["sessionId", "generation", "leaseMs", "protocolVersions"]) || !text(value.sessionId) || !text(value.generation)
       || !Number.isInteger(value.leaseMs) || value.leaseMs < 1 || value.leaseMs > RELAY_LIMITS.MAX_LEASE_MS
       || !Array.isArray(value.protocolVersions) || value.protocolVersions.length > 16 || !value.protocolVersions.every(Number.isInteger)
-      || !value.protocolVersions.includes(RELAY_PROTOCOL_VERSION)
-      || (this.#recoverable && (!isOpaqueRelayId(value.sessionId) || !isOpaqueRelayId(value.generation)))) fail("INVALID_REQUEST");
+      || !value.protocolVersions.includes(RELAY_PROTOCOL_VERSION)) fail("INVALID_REQUEST");
     // Renew the current generation even at lease expiry if it still owns state.
     const priorId = this.#sessions.get(value.sessionId);
     const prior = priorId === undefined ? undefined : this.#registrations.get(priorId);
@@ -172,6 +170,27 @@ export class MemoryRelayStore {
     this.checkEpoch(epoch);
     const entry = this.#recoverable ? this.#registrations.get(id) : undefined;
     return entry && this.#sessions.get(entry.value.sessionId) === id ? structuredClone(entry.value) : undefined;
+  }
+
+  /** Host-only capacity probe. Expiry is eligibility for inspection, never proof of death. */
+  retirementCandidate(epoch: string, now: number, after: string): { registration: RelayRegistration; mutation: string } | undefined {
+    this.checkEpoch(epoch); time(now);
+    if (!this.#recoverable) return;
+    const candidates = [...this.#registrations.values()].filter(entry => !entry.references && Date.parse(entry.value.leaseExpiresAt) <= now)
+      .sort((a, b) => a.value.endpoint.id.localeCompare(b.value.endpoint.id));
+    const entry = candidates.find(entry => entry.value.endpoint.id > after) ?? candidates[0];
+    return entry && { registration: structuredClone(entry.value), mutation: entry.mutation.toString() };
+  }
+
+  /** Caller freshly proved exact broker death/absence. Concurrent renewal invalidates that proof. */
+  retireRegistration(epoch: string, id: string, mutation: string, now: number): boolean {
+    this.checkEpoch(epoch); time(now);
+    const entry = this.#registrations.get(id);
+    if (!this.#recoverable || !entry || entry.references || entry.mutation.toString() !== mutation || Date.parse(entry.value.leaseExpiresAt) > now) return false;
+    this.#registrations.delete(id); this.#metadataBytes -= entry.bytes;
+    if (this.#sessions.get(entry.value.sessionId) === id) this.#sessions.delete(entry.value.sessionId);
+    this.#expiry.delete(`g:${id}`);
+    return true;
   }
 
   registrationForSession(epoch: string, sessionId: string, now: number): RelayRegistration | undefined {
@@ -404,7 +423,7 @@ export class MemoryRelayStore {
       if (row.bucket === "identity") continue;
       if (row.bucket === "registrations") {
         const entry = JSON.parse(row.value), value = entry.value as RelayRegistration;
-        if (!value || !isOpaqueRelayId(value.sessionId) || !isOpaqueRelayId(value.generation) || value.endpoint?.relay !== RELAY_ID || value.endpoint.id !== row.key || !isOpaqueRelayId(row.key)
+        if (!value || !text(value.sessionId) || !text(value.generation) || value.endpoint?.relay !== RELAY_ID || value.endpoint.id !== row.key || !isOpaqueRelayId(row.key)
           || !isRelayTimestamp(value.leaseExpiresAt) || !Array.isArray(value.protocolVersions) || !value.protocolVersions.includes(RELAY_PROTOCOL_VERSION)
           || !decimal(entry.mutation) || BigInt(entry.mutation) > this.#registrationMutation || !decimal(entry.cursor) || this.#sessions.has(value.sessionId)) invalid();
         const size = bytes(value) + 128;

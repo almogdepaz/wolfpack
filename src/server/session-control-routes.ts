@@ -45,6 +45,7 @@ import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
+import { getTaskRelayProfile } from "../task-relay/gateway.ts";
 import { isLiveTaskRelayRegistration } from "../task-relay/registration.ts";
 import type { TaskRelayRegistration } from "../task-relay/registration.ts";
 import type { RouteHandler } from "./route-handler.js";
@@ -211,7 +212,7 @@ function sessionStatusPayload(name: string, identity: PublicSessionIdentity, tas
         sessionId: identity.parentSession.wolfpackSessionId,
       },
     }),
-    ...(terminal.alive && taskTransport && isLiveTaskRelayRegistration(taskTransport, ctx.taskRelayGateway.profile) && { taskEndpoint: taskTransport.endpoint, taskTransport }),
+    ...(terminal.alive && taskTransport && isLiveTaskRelayRegistration(taskTransport, getTaskRelayProfile()) && { taskEndpoint: taskTransport.endpoint, taskTransport }),
   };
 }
 
@@ -240,7 +241,7 @@ function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulS
     ...(runtimeState && { runtimeState }),
     ...(taskRelay && { taskRelay }),
     ...(inspection.parentSession && { parentSession: inspection.parentSession }),
-    ...(terminal.alive && taskTransport && isLiveTaskRelayRegistration(taskTransport, ctx.taskRelayGateway.profile) && { taskEndpoint: taskTransport.endpoint, taskTransport }),
+    ...(terminal.alive && taskTransport && isLiveTaskRelayRegistration(taskTransport, getTaskRelayProfile()) && { taskEndpoint: taskTransport.endpoint, taskTransport }),
   };
 }
 

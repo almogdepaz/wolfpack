@@ -20,7 +20,7 @@ function poisonOneSession(root: string, blocked: string): string {
 test("repeated native owner failure admits only a bounded half-open replacement after cooldown", async () => {
   const root = mkdtempSync("/tmp/relay-owner-cooldown-"), blocked = randomUUID(); poisonOneSession(root, blocked);
   let inspections = 0;
-  const gateway = createTaskRelayGateway({ root, profile: "restart-safe-v1", inspectSession: async selector => {
+  const gateway = createTaskRelayGateway({ root, storage: "sqlite", inspectSession: async selector => {
     inspections++; return { ok: true, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true };
   } });
   const connect = () => gateway.volatile({ operation: "connect", profile: gateway.profile, callerSession: blocked, generation: randomUUID(), protocolVersions: [2] });
@@ -56,7 +56,7 @@ test("real competing process returns SQLITE_BUSY without takeover; SIGKILL relea
     const epoch = JSON.parse(readFileSync(ready, "utf8")).epoch;
     const hash = () => createHash("sha256").update(readFileSync(join(relayRoot, "restart-safe-v1.sqlite"))).digest("hex");
     const before = hash();
-    gateway = createTaskRelayGateway({ root: relayRoot, profile: "restart-safe-v1", inspectSession: async selector => ({ ok: true, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true }) });
+    gateway = createTaskRelayGateway({ root: relayRoot, storage: "sqlite", inspectSession: async selector => ({ ok: true, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true }) });
     const failure = await gateway.initialize().catch(error => error);
     expect(failure.code).toBe("RELAY_STORAGE_BUSY"); expect(failure.failure.ownerFatal).toBe(true);
     expect(failure.failure.mayHaveBeenDelivered).toBeUndefined(); expect(child.exitCode).toBeNull(); expect(hash()).toBe(before);
@@ -82,7 +82,7 @@ test("unsupported storage stays explicitly blocked instead of repeatedly reopeni
   const path = join(root, "restart-safe-v1.sqlite");
   const version = (value: number) => { const db = new Database(path); db.exec(`PRAGMA user_version=${value}`); db.close(); };
   version(99); let inspections = 0;
-  const options = { root, profile: "restart-safe-v1" as const, inspectSession: async (selector: string) => {
+  const options = { root, storage: "sqlite" as const, inspectSession: async (selector: string) => {
     inspections++; return { ok: true as const, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true };
   } };
   let gateway = createTaskRelayGateway(options);
@@ -108,7 +108,7 @@ test("unsupported storage stays explicitly blocked instead of repeatedly reopeni
 
 test("unconfirmed termination blocks replacement and retains the native root reservation", async () => {
   const root = mkdtempSync("/tmp/relay-owner-termination-"), blocked = randomUUID(); poisonOneSession(root, blocked);
-  const gateway = createTaskRelayGateway({ root, profile: "restart-safe-v1", inspectSession: async selector => ({ ok: true, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true }) });
+  const gateway = createTaskRelayGateway({ root, storage: "sqlite", inspectSession: async selector => ({ ok: true, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true }) });
   const original = Worker.prototype.terminate; let unconfirmed: Worker | undefined;
   await gateway.initialize();
   const terminate = spyOn(Worker.prototype, "terminate").mockImplementation(function(this: Worker) {
@@ -122,7 +122,7 @@ test("unconfirmed termination blocks replacement and retains the native root res
     const fenced = await gateway.volatile(request);
     expect(fenced.ok).toBe(false); if (fenced.ok) throw new Error("unconfirmed owner was replaced");
     expect(fenced.error.code).toBe("RELAY_STORAGE_RECOVERY_BLOCKED"); expect(fenced.error.retryable).toBe(false);
-    expect(() => createTaskRelayGateway({ root, profile: "restart-safe-v1" })).toThrow("already has a worker owner");
+    expect(() => createTaskRelayGateway({ root, storage: "sqlite" })).toThrow("already has a worker owner");
     expect(unconfirmed).toBeDefined();
   } finally {
     terminate.mockRestore();
@@ -133,7 +133,7 @@ test("unconfirmed termination blocks replacement and retains the native root res
 
 test("a delayed genuinely committed reply cannot clear a later owner's failure cooldown", async () => {
   const root = mkdtempSync("/tmp/relay-owner-late-reply-"), blocked = randomUUID(), first = randomUUID(); poisonOneSession(root, blocked);
-  const gateway = createTaskRelayGateway({ root, profile: "restart-safe-v1", inspectSession: async selector => ({ ok: true, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true }) });
+  const gateway = createTaskRelayGateway({ root, storage: "sqlite", inspectSession: async selector => ({ ok: true, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true }) });
   let committed!: () => void, release!: () => void;
   const didCommit = new Promise<void>(resolve => { committed = resolve; }), releaseReply = new Promise<void>(resolve => { release = resolve; });
   const native = WorkerRelayGateway.prototype.volatile;
@@ -159,7 +159,7 @@ test("a delayed genuinely committed reply cannot clear a later owner's failure c
 test("transient native open permission failure is not mislabeled as permanent invalid storage", async () => {
   const root = mkdtempSync("/tmp/relay-owner-open-"), seed = createRecoveryStore({ root }); const epoch = seed.store.epoch; seed.close();
   chmodSync(root, 0o000);
-  const gateway = createTaskRelayGateway({ root, profile: "restart-safe-v1", inspectSession: async selector => ({ ok: true, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true }) });
+  const gateway = createTaskRelayGateway({ root, storage: "sqlite", inspectSession: async selector => ({ ok: true, sessionId: selector, session: "fixture", projectPath: root, harness: "pi", alive: true }) });
   const request = { operation: "connect", profile: gateway.profile, callerSession: randomUUID(), generation: randomUUID(), protocolVersions: [2] };
   try {
     const unavailable = await gateway.volatile(request);
@@ -178,11 +178,11 @@ test("a scoped SQLite write failure reports typed uncertain owner death, then re
   const root = mkdtempSync("/tmp/relay-owner-failure-"), blocked = randomUUID(), healthy = randomUUID();
   const epoch = poisonOneSession(root, blocked);
   const inspections = new Map<string, number>();
-  const gateway = createTaskRelayGateway({ root, profile: "restart-safe-v1", inspectSession: async selector => {
+  const gateway = createTaskRelayGateway({ root, storage: "sqlite", inspectSession: async selector => {
     inspections.set(selector, (inspections.get(selector) ?? 0) + 1);
     return { ok: true, sessionId: selector, session: "reused-name", projectPath: root, harness: "pi", alive: true };
   } });
-  const connect = (callerSession: string) => gateway.volatile({ operation: "connect", profile: "restart-safe-v1", callerSession, generation: randomUUID(), protocolVersions: [2] });
+  const connect = (callerSession: string) => gateway.volatile({ operation: "connect", profile: "volatile-v1", callerSession, generation: randomUUID(), protocolVersions: [2] });
   try {
     await gateway.initialize();
     const failed = await connect(blocked);
@@ -197,3 +197,24 @@ test("a scoped SQLite write failure reports typed uncertain owner death, then re
     expect(await gateway.volatileEpoch()).toBe(epoch);
   } finally { await gateway.close(); rmSync(root, { recursive: true, force: true }); }
 }, 15_000);
+
+
+test("a native scheduled-maintenance commit failure reports typed uncertain owner death", async () => {
+  const root = mkdtempSync("/tmp/relay-owner-maintenance-"), seed = createRecoveryStore({ root });
+  const now = Date.now() - 8 * 86_400_000 + 1500;
+  const registration = seed.store.register({ sessionId: randomUUID(), generation: randomUUID(), leaseMs: 60_000, protocolVersions: [2] }, now);
+  const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: registration.endpoint, target: registration.endpoint,
+    createdAt: new Date(now).toISOString(), payload: { opaque: true } };
+  seed.store.accept(seed.store.epoch, envelope, now);
+  seed.store.acknowledge(seed.store.epoch, registration.endpoint.id, envelope.envelopeId, now); seed.close();
+  const db = new Database(join(root, "restart-safe-v1.sqlite"));
+  db.exec("CREATE TRIGGER fail_expiry BEFORE DELETE ON cells WHEN OLD.bucket='receipts' BEGIN SELECT RAISE(FAIL, 'private maintenance fault'); END;"); db.close();
+  const gateway = new WorkerRelayGateway({ root, storage: "sqlite" });
+  try {
+    await gateway.initialize();
+    const deadline = Date.now() + 5000;
+    while (!gateway.isClosed && Date.now() < deadline) await Bun.sleep(20);
+    expect(gateway.isClosed).toBe(true);
+    expect(gateway.ownerFailure).toMatchObject({ code: "RELAY_STORAGE_UNCERTAIN", ownerFatal: true, mayHaveBeenDelivered: true });
+  } finally { await gateway.close(); rmSync(root, { recursive: true, force: true }); }
+}, 10_000);

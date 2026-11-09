@@ -30,6 +30,6 @@ export async function call(
   const projected = pathname === "/api/session-control/list"
     ? value && typeof value === "object" && "sessions" in value && Array.isArray(value.sessions)
       ? { ...value, sessions: value.sessions.map(session => unqualifiedRemoteTaskEndpoint(session)) } : value
-    : await qualifyRemoteTaskEndpoint(value, { origin: target.origin, localBase: baseUrl(), callerSession: process.env.WOLFPACK_SESSION_ID ?? process.env.WOLFPACK_SESSION_NAME, headers });
+    : await qualifyRemoteTaskEndpoint(value, { origin: target.origin, localBase: baseUrl(), callerSession: process.env.WOLFPACK_SESSION_NAME, headers });
   return Response.json(projected, { status: response.status, headers: { "cache-control": "no-store" } });
 }

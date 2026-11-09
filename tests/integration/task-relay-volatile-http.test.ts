@@ -12,7 +12,7 @@ const names = ["WOLFPACK_TEST", "WOLFPACK_TASK_RELAY_ROOT", "WOLFPACK_TASK_RELAY
 const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
 process.env.WOLFPACK_TEST = "1";
 const root = mkdtempSync(join(tmpdir(), "wolfpack-volatile-http-"));
-const relayRoot = join(root, "relay"); mkdirSync(relayRoot, { mode: 0o700 }); mkdirSync(join(root, "project"));
+const relayRoot = join(root, "relay"); mkdirSync(relayRoot); mkdirSync(join(root, "project"));
 const sentinel = join(relayRoot, "relay-state.json");
 writeFileSync(sentinel, "not JSON: historical relay state must not be read or rewritten\n");
 const original = readFileSync(sentinel);
@@ -76,20 +76,20 @@ function envelope(source: { relay: string; id: string }, target: { relay: string
   return { source, target, envelopeId: randomUUID(), protocolVersion: 2, payload: { opaque: "synthetic payload" }, createdAt: new Date().toISOString() };
 }
 
-test("restart-safe default is distinct, explicit volatile remains available, and obsolete state is untouched", async () => {
+test("only memory-owned startup is allowed, selection is frozen and obsolete state is untouched", async () => {
   await __resetTaskRelayGatewayForTests(); delete process.env.WOLFPACK_TASK_RELAY_PROFILE;
-  expect(getTaskRelayProfile()).toBe("restart-safe-v1");
-  const defaultGateway = getTaskRelayGateway(); expect(defaultGateway.profile).toBe("restart-safe-v1");
-  await defaultGateway.initialize(); expect(await defaultGateway.volatileEpoch()).toBeString();
+  expect(getTaskRelayProfile()).toBe("volatile-v1");
+  const defaultBinding = await connect("sender");
+  expect(defaultBinding.epoch).toBeString();
   expect(readFileSync(sentinel)).toEqual(original);
   await __resetTaskRelayGatewayForTests(); process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
-  expect(() => getTaskRelayProfile()).toThrow("unsupported task relay profile");
-  expect(() => getTaskRelayGateway()).toThrow("unsupported task relay profile");
-  process.env.WOLFPACK_TASK_RELAY_PROFILE = "typo"; expect(() => getTaskRelayGateway()).toThrow("unsupported task relay profile");
+  expect(() => getTaskRelayProfile()).toThrow("only memory-owned volatile-v1 is supported");
+  expect(() => getTaskRelayGateway()).toThrow("only memory-owned volatile-v1 is supported");
+  process.env.WOLFPACK_TASK_RELAY_PROFILE = "typo"; expect(() => getTaskRelayGateway()).toThrow("only memory-owned volatile-v1 is supported");
   expect(readFileSync(sentinel)).toEqual(original);
   process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1"; gateway = getTaskRelayGateway() as typeof gateway;
   process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
-  expect(() => getTaskRelayProfile()).toThrow("unsupported task relay profile"); expect(getTaskRelayGateway()).toBe(gateway); expect(gateway.profile).toBe("volatile-v1");
+  expect(getTaskRelayProfile()).toBe("volatile-v1"); expect(getTaskRelayGateway()).toBe(gateway);
 });
 
 test("real middleware protects metadata and both ingress lanes; valid JWT does not authorize peers", async () => {

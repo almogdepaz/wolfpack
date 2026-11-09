@@ -23,6 +23,7 @@ function callback(request: { kind: "inspect"; selector: string } | { kind: "peer
 }
 const gatewayOptions = {
   ...options,
+  onOwnerFailure: (failure: RelayOwnerFailure) => { port.postMessage({ kind: "owner-failure", failure: failure.failure }); port.close(); },
   inspectSession: async (selector: string) => await callback({ kind: "inspect", selector }) as SessionInspectionResult,
   ...(options.proxyPeerFetch && { peerFetch: async (url: RequestInfo | URL, init?: RequestInit) => {
     const reply = await callback({ kind: "peer-fetch", url: String(url), body: String(init?.body) }) as { status: number; body: string };

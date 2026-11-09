@@ -11,7 +11,7 @@ export function getRelayPeerTransport(gateway: RelayGateway, origin?: string): R
   let transport = owners.get(gateway);
   if (!transport) {
     const config = loadConfig(), configuredOrigin = origin ?? (config ? remoteUrl(config) ?? undefined : undefined);
-    transport = new RelayPeerTransport({ profile: gateway.profile, topology: () => readRelayPeerTopology(configuredOrigin), epoch: () => gateway.volatileEpoch(), jwt: issueJwt });
+    transport = new RelayPeerTransport({ topology: () => readRelayPeerTopology(configuredOrigin), epoch: () => gateway.volatileEpoch(), jwt: issueJwt });
     owners.set(gateway, transport);
   }
   return transport;

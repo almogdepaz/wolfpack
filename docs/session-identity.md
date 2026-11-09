@@ -37,7 +37,7 @@ Launched sessions receive these context variables:
 - `WOLFPACK_PARENT_SESSION_ID` and `WOLFPACK_PARENT_SESSION_NAME` for child sessions
 - `WOLFPACK_EXTERNAL_AGENT_ID_FILE`
 
-restart-safe task registration freshly inspects the exact broker UUID, never a reusable name or identity sidecar alone. the endpoint journal keeps that UUID and its generation; a new broker session cannot adopt old assignments. see [task recovery](task-recovery.md) for the independent wire/storage contract.
+task registration freshly resolves the caller through broker inspection and persists the canonical broker UUID, not an identity sidecar alone. the relay retains its generation and endpoint while the same live plugin retains semantic state in RAM; a reused name cannot access another UUID\'s endpoint. plugin-process restart is not recovered. see [task recovery](task-recovery.md) for the independent wire/storage contract.
 
 Delete `$WOLFPACK_DEV_DIR/.wolfpack/session-identities.json` to remove stored identity metadata. This does not delete broker sessions, terminal snapshots, or projects.
 

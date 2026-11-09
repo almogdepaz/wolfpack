@@ -5,13 +5,13 @@ import { RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION, isLocalRelay, isOpaqueR
 import type { RelayEnvelope, RelayRegistration } from "./domain.ts";
 import { RelayOwnerFailure } from "./owner-failure.ts";
 import { createRecoveryStore } from "./recovery-store.ts";
-import { MEMORY_RELAY_LIMITS, MEMORY_RELAY_PROFILE, RESTART_SAFE_RELAY_PROFILE, MemoryRelayError, MemoryRelayStore } from "./memory-store.ts";
+import { MEMORY_RELAY_LIMITS, MEMORY_RELAY_PROFILE, MemoryRelayError, MemoryRelayStore } from "./memory-store.ts";
 import type { ForwardAttempt } from "./memory-store.ts";
 import type { TaskRelayRegistration } from "./registration.ts";
 import type { BoundedRelayInvestigation } from "./investigation.ts";
 import { createSuspensionInclusiveElapsedNow } from "./suspension-inclusive-clock.ts";
 import { captureRelayWire } from "./worker-protocol.ts";
-import { VOLATILE_GATEWAY_LIMITS as LIMIT, relayPeerPath, volatileFailure } from "./volatile-protocol.ts";
+import { VOLATILE_GATEWAY_LIMITS as LIMIT, VOLATILE_PEER_PATH, volatileFailure } from "./volatile-protocol.ts";
 import type { VolatileBinding, VolatileCode, VolatilePeerRequest, VolatileRequest, VolatileResult, VolatileValue, VolatileTopologyRequest } from "./volatile-protocol.ts";
 
 const log = createLogger("task-relay");
@@ -67,7 +67,8 @@ async function peerJson(response: Response, signal: AbortSignal): Promise<unknow
 
 export interface VolatileGatewayOptions {
   readonly root?: string;
-  readonly profile?: "volatile-v1" | "restart-safe-v1";
+  readonly storage?: "memory" | "sqlite";
+  readonly onOwnerFailure?: (failure: RelayOwnerFailure) => void;
   readonly peerOrigin?: string;
   readonly inspectSession: (selector: string) => Promise<SessionInspectionResult>;
   readonly peerFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -77,11 +78,14 @@ export interface VolatileGatewayOptions {
   readonly limits?: Partial<Record<keyof typeof MEMORY_RELAY_LIMITS, number>>;
 }
 
-/** Broker-authorized memory transport. Endpoint retries drive forwarding;
- * no disk history, recovery engine, replay or background spool. */
+/** Content-blind volatile-v1 ingress. Storage is server-owned and independent of
+ * endpoint task state; durable recovery never replays an interrupted mutation. */
 export class VolatileRelayGateway {
   readonly #store: MemoryRelayStore;
-  readonly #profile: "volatile-v1" | "restart-safe-v1";
+  readonly #profile = MEMORY_RELAY_PROFILE;
+  readonly #recoverable: boolean;
+  readonly #onOwnerFailure: VolatileGatewayOptions["onOwnerFailure"];
+  #retirementAfter = "";
   readonly #closeStore: (() => void) | undefined;
   readonly #now: () => number;
   readonly #elapsedNow: () => number;
@@ -108,8 +112,9 @@ export class VolatileRelayGateway {
     this.#elapsedNow = options.elapsedNow ?? createSuspensionInclusiveElapsedNow();
     // Explicit diagnostic injection only. The normal worker never writes task history.
     this.#investigation = options.investigation;
-    this.#profile = options.profile ?? MEMORY_RELAY_PROFILE;
-    if (this.#profile === RESTART_SAFE_RELAY_PROFILE) {
+    this.#recoverable = options.storage === "sqlite";
+    this.#onOwnerFailure = options.onOwnerFailure;
+    if (this.#recoverable) {
       if (!options.root) throw new TypeError("restart-safe relay requires an explicit private root");
       const recovery = createRecoveryStore({ root: options.root, peerOrigin: options.peerOrigin, limits: options.limits, investigation: this.#investigation });
       this.#store = recovery.store; this.#closeStore = recovery.close;
@@ -121,7 +126,14 @@ export class VolatileRelayGateway {
     if (this.#stop.signal.aborted) fail("RELAY_RESET");
     if (this.#timer) return;
     this.maintenance();
-    this.#timer = setInterval(() => this.maintenance(), MAINTENANCE_INTERVAL_MS); this.#timer.unref?.();
+    this.#timer = setInterval(() => {
+      try { this.maintenance(); }
+      catch (error) {
+        if (!(error instanceof RelayOwnerFailure) || !this.#onOwnerFailure) throw error;
+        this.#stop.abort(); clearInterval(this.#timer); this.#timer = undefined;
+        this.#onOwnerFailure(error);
+      }
+    }, MAINTENANCE_INTERVAL_MS); this.#timer.unref?.();
   }
   maintenance(): void {
     if (this.#stop.signal.aborted) return;
@@ -186,12 +198,17 @@ export class VolatileRelayGateway {
       if (Object.keys(value).some(key => !["profile", "operation", ...binding, ...allowed].includes(key))) fail("INVALID_REQUEST");
       if (value.operation === "connect") {
         if (value.epoch !== undefined) this.#store.checkEpoch(value.epoch);
-        if (this.#profile === RESTART_SAFE_RELAY_PROFILE && (!isOpaqueRelayId(value.callerSession) || !isOpaqueRelayId(value.generation))) fail("SOURCE_MISMATCH");
         const caller = await this.#caller(value.callerSession);
-        const registration = this.#store.register({ sessionId: caller.sessionId, generation: value.generation,
-          protocolVersions: value.protocolVersions, leaseMs: value.leaseMs ?? RELAY_LIMITS.LEASE_MS }, this.#now());
-        return this.#success({ kind: "connected", endpoint: registration.endpoint, leaseExpiresAt: registration.leaseExpiresAt,
-          ...(this.#profile === RESTART_SAFE_RELAY_PROFILE && { sessionId: caller.sessionId }) });
+        const input = { sessionId: caller.sessionId, generation: value.generation,
+          protocolVersions: value.protocolVersions, leaseMs: value.leaseMs ?? RELAY_LIMITS.LEASE_MS };
+        let registration: RelayRegistration;
+        try { registration = this.#store.register(input, this.#now()); }
+        catch (error) {
+          if (!(error instanceof MemoryRelayError) || error.code !== "RELAY_CAPACITY" || !this.#recoverable) throw error;
+          await this.#reclaimRegistration();
+          registration = this.#store.register(input, this.#now());
+        }
+        return this.#success({ kind: "connected", endpoint: registration.endpoint, leaseExpiresAt: registration.leaseExpiresAt });
       }
       if (!isOpaqueRelayId(value.epoch)) fail("INVALID_REQUEST");
       this.#store.checkEpoch(value.epoch);
@@ -240,6 +257,22 @@ export class VolatileRelayGateway {
     } finally { if (peer) this.#peers--; else this.#ordinary--; }
   }
 
+  async #reclaimRegistration(): Promise<void> {
+    // One fresh bounded inspection per capacity rejection. Round-robin avoids
+    // a permanently live/offline first candidate starving reclaimable entries.
+    const candidate = this.#store.retirementCandidate(this.epoch, this.#now(), this.#retirementAfter);
+    if (!candidate || !isOpaqueRelayId(candidate.registration.sessionId)) return;
+    this.#retirementAfter = candidate.registration.endpoint.id;
+    let inspected: SessionInspectionResult;
+    try { inspected = await bounded(() => this.#inspect(candidate.registration.sessionId), this.#stop.signal, LIMIT.inspectMs); }
+    catch { return; } // Unavailable is not authoritative absence.
+    if (this.#stop.signal.aborted) fail("RELAY_RESET");
+    if ((!inspected.ok && inspected.code === "NOT_FOUND")
+      || (inspected.ok && inspected.sessionId === candidate.registration.sessionId && !inspected.alive)) {
+      this.#store.retireRegistration(this.epoch, candidate.registration.endpoint.id, candidate.mutation, this.#now());
+    }
+  }
+
   #disconnect(value: VolatileBinding): VolatileResult {
     const registration = this.#store.registration(this.epoch, value.endpoint.id, this.#now());
     if (!registration) fail("REGISTRATION_EXPIRED");
@@ -251,7 +284,6 @@ export class VolatileRelayGateway {
     const inspected = await bounded(() => this.#inspect(selector), this.#stop.signal, LIMIT.inspectMs);
     if (this.#stop.signal.aborted) fail("RELAY_RESET");
     if (!inspected.ok) fail("CALLER_NOT_FOUND");
-    if (this.#profile === RESTART_SAFE_RELAY_PROFILE && (!isOpaqueRelayId(selector) || inspected.sessionId !== selector)) fail("SOURCE_MISMATCH");
     if (!inspected.alive) fail("CALLER_DEAD");
     return inspected;
   }
@@ -269,13 +301,13 @@ export class VolatileRelayGateway {
   }
   async #target(id: string): Promise<void> {
     const target = this.#store.registration(this.epoch, id, this.#now())
-      ?? (this.#profile === RESTART_SAFE_RELAY_PROFILE ? this.#store.retainedRegistration(this.epoch, id) : undefined);
+      ?? (this.#recoverable ? this.#store.retainedRegistration(this.epoch, id) : undefined);
     if (!target) fail("TARGET_NOT_REGISTERED");
     let caller: Extract<SessionInspectionResult, { ok: true }>;
     try { caller = await this.#caller(target.sessionId); }
     catch (error) { if (error instanceof GatewayError && ["CALLER_NOT_FOUND", "CALLER_DEAD"].includes(error.code)) fail("TARGET_NOT_REGISTERED"); throw error; }
     if (caller.sessionId !== target.sessionId) fail("TARGET_NOT_REGISTERED");
-    if (this.#profile === RESTART_SAFE_RELAY_PROFILE) {
+    if (this.#recoverable) {
       // An offline endpoint process may resume. Retain mail for the freshly proven broker incarnation,
       // without treating a stale lease alone as authority or replacing its generation.
       this.#store.register({ sessionId: target.sessionId, generation: target.generation, protocolVersions: target.protocolVersions, leaseMs: RELAY_LIMITS.LEASE_MS }, this.#now());
@@ -315,7 +347,7 @@ export class VolatileRelayGateway {
     let duplicate = false;
     try {
       const replyOutcome = await bounded(async signal => {
-        const response = await this.#fetch(`${attempt.origin}${relayPeerPath(this.#profile)}`, {
+        const response = await this.#fetch(`${attempt.origin}${VOLATILE_PEER_PATH}`, {
           method: "POST", headers: { "content-type": "application/json" }, redirect: "error", signal,
           body: JSON.stringify({ operation: "receivePeer", profile: this.#profile, epoch: peerEpoch, sourceEpoch: this.epoch,
             origin, envelope: { ...envelope, target: { ...envelope.target, relay: RELAY_ID } } } satisfies VolatilePeerRequest),

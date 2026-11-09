@@ -19,8 +19,8 @@ const log = createLogger("task-relay");
 const owners = new Map<string, symbol>();
 /** Ownership is released only after worker termination is confirmed. */
 export function hasRelayWorkerOwners(): boolean { return owners.size > 0; }
-type WorkerGatewayOptions = GatewayOptions & { requestTimeoutMs?: number; profile?: "volatile-v1" | "restart-safe-v1" };
-const optionNames = new Set(["profile", "root", "peerOrigin", "peerFetch", "inspectSession", "requestTimeoutMs"]);
+type WorkerGatewayOptions = GatewayOptions;
+const optionNames = new Set(["profile", "storage", "root", "peerOrigin", "peerFetch", "inspectSession", "requestTimeoutMs"]);
 
 /** Inspect original descriptors before any option read/spread can execute caller code. */
 export function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
@@ -40,7 +40,9 @@ export function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOption
     } else {
       if (value !== undefined) {
         if (key === "profile") {
-          if (value !== "volatile-v1" && value !== "restart-safe-v1") throw new TypeError("invalid relay worker profile");
+          if (value !== "volatile-v1") throw new TypeError("invalid relay worker profile");
+        } else if (key === "storage") {
+          if (value !== "memory" && value !== "sqlite") throw new TypeError("invalid relay worker storage");
         } else if (key === "root" || key === "peerOrigin") {
           if (typeof value !== "string") throw new TypeError("invalid relay worker string option");
         } else if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("invalid relay worker numeric option");
@@ -88,7 +90,8 @@ export class WorkerRelayGateway implements RelayGateway {
   get terminationConfirmed(): boolean { return this.#terminationConfirmed; }
   get ownerFailure(): RelayOwnerFailureData | undefined { return this.#ownerFailure; }
   #unavailable(): Error { return this.#ownerFailure ? new RelayOwnerFailure(this.#ownerFailure.code) : new WorkerUnavailable("relay worker unavailable; an interrupted mutation may have committed"); }
-  get profile(): "volatile-v1" | "restart-safe-v1" { return this.#options.profile ?? "volatile-v1"; }
+  readonly profile = "volatile-v1" as const;
+  get storage(): "memory" | "sqlite" { return this.#options.storage ?? "memory"; }
 
   constructor(suppliedOptions: WorkerGatewayOptions = { root: undefined }) {
     assertSupportedBunRuntime();
@@ -104,7 +107,7 @@ export class WorkerRelayGateway implements RelayGateway {
     void this.#ready.catch(() => undefined);
     // .js resolves to .ts in Bun source runs; build.ts embeds this named entry for compiled runs.
     const configuration = captureRelayWire({
-      root: this.root, peerOrigin: options.peerOrigin, profile: this.profile,
+      root: this.root, peerOrigin: options.peerOrigin, storage: this.storage,
       proxyPeerFetch: options.peerFetch !== undefined,
     }, LIMIT.requestBytes);
     // Reserve before constructing a worker. Release only this owner's token, and
@@ -160,7 +163,7 @@ export class WorkerRelayGateway implements RelayGateway {
         this.#fail(`relay owner failed: ${message.error.code}`); return;
       }
       pending.reject(new WorkerUnavailable("relay operation unavailable"));
-      if (this.profile === "restart-safe-v1") this.#fail("relay operation failed; fence uncertain worker state before reopening its journal");
+      if (this.storage === "sqlite") this.#fail("relay operation failed; fence uncertain worker state before reopening its journal");
     } else pending.resolve(message.value);
   }
 
@@ -201,7 +204,7 @@ export class WorkerRelayGateway implements RelayGateway {
 
   #fail(reason: string): void {
     if (this.#closed) return;
-    log.warn(reason, { recovery: this.profile === "restart-safe-v1" ? "replace terminated worker; reopen committed journal; caller retries stable protocol identities" : "explicit rebind after volatile epoch loss" });
+    log.warn(reason, { recovery: this.storage === "sqlite" ? "replace terminated worker; reopen committed journal; caller retries stable protocol identities" : "explicit rebind after volatile epoch loss" });
     void this.close();
   }
 
@@ -253,7 +256,7 @@ export class WorkerRelayGateway implements RelayGateway {
     try { return await this.#call(method, input); }
     catch (error) {
       if (error instanceof RelayOwnerFailure) return relayOwnerFailureResult(error.failure, this.profile);
-      return volatileFailure(error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed && this.profile === "volatile-v1" ? "RELAY_RESET" : "RELAY_UNAVAILABLE", undefined, undefined, this.profile);
+      return volatileFailure(error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed && this.storage === "memory" ? "RELAY_RESET" : "RELAY_UNAVAILABLE", undefined, undefined, this.profile);
     }
   }
   async volatileEpoch(): Promise<string | undefined> {

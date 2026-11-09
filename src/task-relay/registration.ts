@@ -5,7 +5,7 @@ import type { RelayEndpoint } from "./domain.ts";
 export type TaskRelayRegistration = {
   readonly endpoint: RelayEndpoint;
   readonly leaseExpiresAt: string;
-  readonly profile: "volatile-v1" | "restart-safe-v1";
+  readonly profile: "volatile-v1";
   readonly epoch: string;
 };
 

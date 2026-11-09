@@ -7,24 +7,27 @@ import { getRelayPeerTransport } from "../server/relay-peer-transport.ts";
 export interface GatewayOptions {
   readonly root?: string;
   readonly requestTimeoutMs?: number;
-  readonly profile?: "volatile-v1" | "restart-safe-v1";
+  readonly storage?: "memory" | "sqlite";
+  readonly profile?: "volatile-v1";
   readonly peerOrigin?: string;
   readonly peerFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   readonly inspectSession?: (selector: string) => Promise<SessionInspectionResult>;
 }
 
-/** Explicit profiles have different guarantees. There is no fallback or legacy durable API. */
-export function getTaskRelayProfile(): "volatile-v1" | "restart-safe-v1" {
-  const selected = process.env.WOLFPACK_TASK_RELAY_PROFILE ?? "restart-safe-v1";
-  if (selected !== "volatile-v1" && selected !== "restart-safe-v1") throw new TypeError("unsupported task relay profile");
-  return selected;
+/** Storage does not negotiate endpoint durability. Existing RAM clients speak the same wire protocol. */
+export function getTaskRelayProfile(): "volatile-v1" {
+  const selected = process.env.WOLFPACK_TASK_RELAY_PROFILE;
+  if (selected !== undefined && selected !== "volatile-v1") throw new TypeError("unsupported task relay profile");
+  return "volatile-v1";
 }
 export function createTaskRelayGateway(suppliedOptions: GatewayOptions): RelayGateway {
+  getTaskRelayProfile();
   const options = captureOptions(suppliedOptions);
-  const profile = options.profile ?? getTaskRelayProfile();
+  const storage = options.storage ?? process.env.WOLFPACK_TASK_RELAY_STORAGE ?? "sqlite";
+  if (storage !== "memory" && storage !== "sqlite") throw new TypeError("unsupported task relay storage");
   const peerFetch: NonNullable<GatewayOptions["peerFetch"]> = options.peerFetch ?? ((input, init) => getRelayPeerTransport(gateway, options.peerOrigin).forward(input, init));
-  const gateway: RelayGateway = profile === "restart-safe-v1"
-    ? new RecoveryRelayGateway({ ...options, profile, peerFetch })
-    : new WorkerRelayGateway({ ...options, profile, peerFetch });
+  const gateway: RelayGateway = storage === "sqlite"
+    ? new RecoveryRelayGateway({ ...options, storage, peerFetch })
+    : new WorkerRelayGateway({ ...options, storage, peerFetch });
   return gateway;
 }

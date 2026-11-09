@@ -38,24 +38,24 @@ Compatibility rules:
 
 Schema compatibility checks live in `tests/unit/control-api-schema.test.ts`; representative runtime response checks live in integration tests.
 
-## pi tasks relay (restart-safe-v1)
+## pi tasks relay (volatile-v1 wire, independent server storage)
 
 the durable task API (`/api/tasks/v1/*`) and the content-blind task relay remain separate contracts. endpoint-owned lifecycle, model incorporation and parent ACKs belong to wolfpack-tasks, not the relay.
 
-`restart-safe-v1` is the default. `WOLFPACK_TASK_RELAY_PROFILE=volatile-v1` explicitly selects the old memory-only profile; neither profile silently changes guarantees. negotiation:
+native SQLite is the default server storage; `WOLFPACK_TASK_RELAY_STORAGE=memory` explicitly selects weaker memory-only storage. both use the existing `volatile-v1` wire interface without endpoint durability negotiation:
 
-- `GET /api/task-relay/profile` returns `{ ok, profile, epoch, endpointPath, federation: "trusted-tailnet-v1" }`. restart-safe epochs identify the persisted relay store, not a process lifetime or worker readiness.
-- `POST /api/task-relay/restart-safe-v1` accepts the versioned `RestartSafeRequest`. `connect` requires exact broker session and generation UUIDs, supported envelope protocols and optional lease/epoch. fresh broker inspection must return that same UUID. the receipt includes `sessionId`, `endpoint` and `leaseExpiresAt`.
+- `GET /api/task-relay/profile` returns `{ ok, profile: "volatile-v1", epoch, endpointPath: "/api/task-relay/volatile-v1", federation: "trusted-tailnet-v1" }`. the epoch identifies the store, not worker readiness or endpoint durability.
+- `POST /api/task-relay/volatile-v1` accepts `VolatileRequest`. `connect` accepts the baseline caller selector, generation, supported protocols and optional lease/epoch. fresh broker inspection resolves the canonical UUID; the receipt retains `endpoint` and `leaseExpiresAt`.
 - later commands carry `profile`, `epoch`, `callerSession`, `endpoint` plus `resolve`, `send`, `receive`, individual `acknowledge`, `disconnect` or `health`.
 - `/resolve-peer` qualifies an endpoint only through host-verified current Tailnet topology. `/peer` is trusted relay ingress, not an endpoint route. immutable aliases bind both persisted epochs.
-- `volatile-v1` uses the corresponding `/api/task-relay/volatile-v1` paths and `VolatileRequest/Response` schemas. wrong paths/profiles and retired `durable-v2` fail explicitly.
+- wrong/retired profiles, including the removed WIP `restart-safe-v1` profile, are not negotiated or advertised.
 
-results remain `{ ok, profile, epoch, value }` or `{ ok: false, profile, epoch?, error: { code, message, retryable, mayHaveBeenDelivered?, retryAfterMs? } }`. see the generated schema and `src/task-relay/volatile-protocol.ts` for exact shapes.
+results remain `{ ok, profile, epoch, value }` or `{ ok: false, profile, epoch?, error: { code, message, retryable, mayHaveBeenDelivered?, retryAfterMs?, ownerFatal? } }`. see the generated schema and `src/task-relay/volatile-protocol.ts` for exact shapes.
 
-restart-safe recovery preserves accepted mail, receipts, registrations, forwarding state and the store epoch in a private versioned SQLite journal. generation/session-name reuse cannot take over prior state. commits precede acceptance and external forwarding. a failed worker is replaced only after confirmed termination; the caller retries the same recorded protocol identity, not task execution. unresolved outcomes remain explicit. the [storage and recovery contract](task-recovery.md) defines private permissions, bounded retention, corruption/version refusal, compatibility and verification limits.
+server SQLite recovery preserves accepted mail, receipts, registrations, forwarding state and the store epoch in a private versioned SQLite journal. session-name reuse cannot access a different canonical UUID's endpoint. live plugins keep semantic state and outbox in RAM; plugin-process recovery is excluded. commits precede acceptance and external forwarding. a failed worker is replaced only after confirmed termination; the caller retries the same recorded protocol identity, not task execution. unresolved outcomes remain explicit. the [storage and recovery contract](task-recovery.md) defines private permissions, bounded retention, corruption/version refusal, compatibility and verification limits.
 
 session reads continue to isolate optional relay metadata from broker truth. `taskRelay: { status: "unavailable", recovery }` omits endpoint/transport metadata without declaring a live broker session dead. missing registration alone is not degradation, and liveness is not model readiness. see [relay degradation and recovery](session-control.md#relay-degradation-and-recovery).
 
 the existing optional global JWT and trusted local/Tailnet boundary remain unchanged. exact UUID ownership checks are not new per-session credentials or signed principals. canonical TLS, topology and both epochs still gate federation. do not expose owner APIs through Funnel or untrusted proxies.
 
-no legacy store or API is migrated. `/api/task-relay/v2/*` remains absent; compatibility requires coordinated endpoint/server source versions. source tests do not establish installed or deployed behavior.
+no legacy store or API is migrated. `/api/task-relay/v2/*` remains absent. baseline RAM clients can use the new server without upgrading; new clients retain old servers' weaker restart-loss behavior. source tests do not establish installed or deployed behavior.
