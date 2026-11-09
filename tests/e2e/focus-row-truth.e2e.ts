@@ -85,6 +85,42 @@ test("row context: project and remote machine stay visible on next and today", a
   }
 });
 
+test("row context: local starts omit redundant machine names when only the assistant runs", async ({ page }, info) => {
+  const width = info.project.name === "desktop" ? 1440 : 390;
+  await page.setViewportSize({ width, height: 900 });
+  const localName = (await (await page.request.get(`${server.baseUrl}/api/info`)).json()).name;
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.sessions = body.sessions.filter((s: { name: string }) => s.name === "assistant");
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.document.intentions = [
+      { id: "local-start", title: "Local start", project: "/work/broker", machine: localName, createdAt: new Date().toISOString(), done: false },
+      { id: "remote-start", title: "Remote start", project: "/work/remote", machine: "remote-box", createdAt: new Date().toISOString(), done: false },
+    ];
+    delete body.routines;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  await expect(block.locator(".focus-next li").filter({ hasText: "Local start" }).locator("summary .focus-for")).toHaveText("broker");
+  await expect(block.locator(".focus-next li").filter({ hasText: "Remote start" }).locator("summary .focus-for")).toHaveText("remote · remote-box");
+  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  for (const list of [".focus-next", ".focus-today"]) {
+    await expect(view.locator(`${list} li`).filter({ hasText: "Local start" }).locator("summary .focus-for")).toHaveText("broker");
+    await expect(view.locator(`${list} li`).filter({ hasText: "Remote start" }).locator("summary .focus-for")).toHaveText("remote · remote-box");
+  }
+  if (process.env.WOLFPACK_FOCUS_SHOTS) {
+    mkdirSync(process.env.WOLFPACK_FOCUS_SHOTS, { recursive: true });
+    await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-local-only-assistant-${width}.png`), fullPage: true });
+  }
+});
+
 test("counts: validated needs-you population and uncapped next totals agree", async ({ page }) => {
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch();

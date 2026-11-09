@@ -12,6 +12,7 @@ interface Machine { key: string; name: string }
 export function createAssistantView(deps: {
   request: <T>(path: string, init?: RequestInit, machine?: string, interactive?: boolean) => Promise<T>;
   homeMachine: (id: string) => Machine | undefined;
+  localMachineName: () => string;
   sessions: () => FocusSession[];
   /** False means the local session projection is unavailable, not that every session stopped. */
   sessionsAvailable: () => boolean;
@@ -121,7 +122,7 @@ export function createAssistantView(deps: {
   // Linked rule rows keep their intention title beside the session's context; today and starts already name it.
   function rowContext(intention?: FocusIntention, session?: FocusSession) {
     const all = sessions();
-    const local = all.find(s => !s.machineUrl)?.machine;
+    const local = deps.localMachineName();
     const manyMachines = new Set(all.map(s => s.machine)).size > 1;
     const linked = session ? [session] : linkedFocusSessions(intention!, all);
     const targets = linked.length ? linked : [{ cwd: intention?.project, machine: intention?.machine, machineUrl: undefined }];
