@@ -36,6 +36,12 @@ export function createAssistantTerminal(deps: {
   document.getElementById("assistant-pane-list")!.onclick = backToList;
   document.getElementById("assistant-pane-focus")!.onclick = () => { inputRequested = true; controller?.focus(); };
   input.addEventListener("pointerdown", () => { inputRequested = true; });
+  pane.addEventListener("keydown", event => {
+    if (event.key !== "Escape" || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
+    event.preventDefault();
+    event.stopPropagation(); // Capture before Ghostty consumes the chord as stdin.
+    backToList();
+  }, true);
   list.addEventListener("focusin", () => { inputRequested = false; });
   // Ghostty.open() focuses its element, including a deferred focus, independently
   // of the controller's hydration shouldFocus. Gate that native mount focus here;

@@ -19,6 +19,30 @@ async function tabToOverlay(page: Page, action: string) {
   await expect(pane(page).getByRole("button", { name: action, exact: true })).toBeFocused();
 }
 
+test("pane keyboard: Shift+Escape returns from terminal input to the list without PTY bytes", async ({ page }) => {
+  const inputFrames: Buffer[] = [];
+  page.on("websocket", ws => {
+    if (ws.url().includes("/ws/pty")) ws.on("framesent", frame => {
+      if (typeof frame.payload !== "string") inputFrames.push(Buffer.from(frame.payload));
+    });
+  });
+  await openFocus(page);
+  await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+  await pane(page).getByRole("button", { name: "Focus terminal", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  expect(await pane(page).evaluate(el => el.contains(document.activeElement))).toBe(true);
+  // Ordinary Escape is still useful PTY input; only the advertised chord exits.
+  await page.keyboard.press("Escape");
+  await expect.poll(() => inputFrames.some(frame => frame.equals(Buffer.from([27])))).toBe(true);
+  const before = inputFrames.length;
+  await page.keyboard.press("Shift+Escape");
+  await expect(page.locator(".assistant-column")).toBeFocused();
+  expect(inputFrames.length).toBe(before);
+  await expect(pane(page)).toHaveAccessibleDescription("Press Shift+Escape to return to the focus list.");
+  await page.getByRole("textbox", { name: "Add an intention", exact: true }).pressSequentially("list only");
+  expect(inputFrames.length).toBe(before);
+});
+
 for (const key of ["Enter", "Space"]) {
   test(`pane keyboard: ${key} activates Take Control without terminal opt-in`, async ({ page, context }) => {
     const owner = await context.newPage();
