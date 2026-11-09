@@ -3,7 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { startTestServer, type TestServer } from "./helpers";
 let server: TestServer;
 const episode = "2026-11-09T12:00:00.000Z";
-const draft = "Continue with the approved plan; keep the scope unchanged.";
+const draft = "Continue with the approved plan;  keep the scope unchanged.";
 let machine: string;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
@@ -70,6 +70,7 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await expect(row.locator("summary")).not.toContainText("Ship the focus assistant");
   await expect(row.locator(".focus-draft")).toContainText(`to prompt-project`);
   await expect(row.locator(".focus-draft p")).toHaveText(draft);
+  expect(await row.locator(".focus-draft p").innerText(), "the visible draft preserves exact spacing").toBe(draft);
   await expect(view.locator(".focus-next")).toContainText("new · by rules");
   await expect(page.locator(".view.swiping")).toHaveCount(0);
   await page.locator("#assistant-view").evaluate(el => { el.scrollTop = 0; });

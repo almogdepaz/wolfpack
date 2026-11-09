@@ -2963,8 +2963,8 @@ details.focus-card > summary:focus-visible { outline: 2px solid var(--accent); o
 .focus-card-body dt { color: var(--text-3); }
 .focus-card-body dd { margin: 0; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
 .focus-draft { grid-column: 1 / -1; margin: 0 0 12px; overflow-wrap: anywhere; line-height: 1.5; }
-.focus-draft p { margin: 4px 0; }
-.focus-draft small { display: block; color: var(--text-3); }
+.focus-draft p { margin: 4px 0; white-space: pre-wrap; }
+.focus-draft small { display: block; }
 .focus-card-body code { font: 12px var(--font-mono); white-space: pre-wrap; }
 /* The agent-context document (extension `agent-context`) inside an open session card. */
 .focus-context { margin: -2px 0 12px; padding-top: 10px; border-top: 1px solid var(--hairline); }
