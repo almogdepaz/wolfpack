@@ -1,7 +1,7 @@
 import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
 import { esc, escAttr, isDesktop } from "./app-state";
 import { mergeFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
-import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
+import { emptyFocus, isFocusDocument, focusNextRefKey, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-send-contract";
 import { createFocusReceipts, focusSuggestionKey, type FocusSendReceipt } from "./focus-receipts";
@@ -279,6 +279,36 @@ export function createAssistantView(deps: {
     }
   }
   const doneSuggestion = (row: FocusAction) => doc().intentions.find(i => i.id === row.triage?.doneIntention && !i.done);
+  type RowAction = "send" | "done" | "open" | "start" | "intention";
+  const renderedActions = new Map<string, { kind: RowAction; row: FocusAction }>();
+  function describeAction(row: FocusAction, forceDone = false) {
+    const done = doneSuggestion(row);
+    if (forceDone && !done) return;
+    const kind: RowAction = forceDone ? "done" : row.triage?.suggestion ? "send" : done ? "done"
+      : row.session ? "open" : row.kind === "start" ? "start" : "intention";
+    const ref = row.triage?.ref ?? (row.session
+      ? { machine: row.session.machineInstallationId ?? "", sessionId: row.session.id }
+      : row.intention ? { intentionId: row.intention.id } : undefined);
+    if (!ref) return;
+    const key = JSON.stringify([focusNextRefKey(ref), Date.parse(row.triage?.stoppedAt ?? row.session?.stoppedAt ?? row.session?.changedAt ?? ""),
+      kind, kind === "send" ? row.triage?.suggestion : null, kind === "done" ? done?.id : null]);
+    return { key, kind, row };
+  }
+  function bindAction(row: FocusAction, forceDone = false): string {
+    const action = describeAction(row, forceDone);
+    if (!action) return "";
+    renderedActions.set(action.key, action);
+    return action.key;
+  }
+  function currentAction(key: string) {
+    const shown = renderedActions.get(key);
+    if (shown) for (const row of nextRows(Infinity)) {
+      const current = describeAction(row, shown.kind === "done");
+      if (current?.key === key && !row.unavailable) return current;
+    }
+    announce("This action changed; review the updated row.");
+    render();
+  }
   async function sendSuggestion(row: FocusAction) {
     if (!row.session || !row.triage?.suggestion || row.unavailable) return;
     const key = suggestionKey(row);
@@ -317,10 +347,10 @@ export function createAssistantView(deps: {
       const key = row.session ? `session:${row.session.machineInstallationId ?? ""}:${row.session.id}` : row.intention ? `start:${row.intention.id}` : `unavailable:${JSON.stringify(row.triage?.ref)}`;
       if (row.session) renderedSessions.set(key, row.session);
       const actionName = suggest ? `Send suggestion to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
-      const action = `<button type="button" class="focus-action"${sessionLocked() || row.unavailable || (suggest && receipt && receipt.state !== "retry") ? " disabled" : ""} data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(actionName)}">${verb}<span aria-hidden="true"> ›</span></button>`;
+      const action = `<button type="button" class="focus-action"${sessionLocked() || row.unavailable || (suggest && receipt && receipt.state !== "retry") ? " disabled" : ""} data-focus-next="${escAttr(bindAction(row))}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(actionName)}">${verb}<span aria-hidden="true"> ›</span></button>`;
       const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span>${rowContext(row.intention, row.session, row.session || row.unavailable ? row.triage?.reason : undefined)}`;
       const target = row.session ? `${row.session.name}${row.session.machine ? ` · ${row.session.machine}` : ""}` : title;
-      const draft = suggest ? `<small>to ${esc(target)}</small><p>${esc(row.triage!.suggestion!)}</p>${receipt ? `<small role="status">${esc(receipt.label)} · ${age(receipt.at)} ago</small>` : ""}${done ? `<button type="button" data-focus-mark-done="${index}"${sessionLocked() || row.unavailable ? " disabled" : ""}>done ›</button>` : ""}` : "";
+      const draft = suggest ? `<small>to ${esc(target)}</small><p>${esc(row.triage!.suggestion!)}</p>${receipt ? `<small role="status">${esc(receipt.label)} · ${age(receipt.at)} ago</small>` : ""}${done ? `<button type="button" data-focus-mark-done="${escAttr(bindAction(row, true))}"${sessionLocked() || row.unavailable ? " disabled" : ""}>done ›</button>` : ""}` : "";
       const marker = row.unavailable ? "not reached" : row.source === "new-rules" ? "new · by rules" : "";
       const body = row.session ? sessionBody(row, row.session) : row.intention ? intentionBody(row.intention, key, row.triage?.reason ?? "no live session") : field("reason", esc(row.reason));
       return `<li${index >= 3 && !expanded ? ' class="focus-extra"' : ""}>${card(key, summary, body, row.session ? contextHtml(row.session) : "")}${action}${draft || marker ? `<div class="focus-draft">${draft}${marker ? `<small>${marker}</small>` : ""}</div>` : ""}</li>`;
@@ -406,6 +436,7 @@ export function createAssistantView(deps: {
   function render() {
     foldOpenCards();
     renderedSessions.clear();
+    renderedActions.clear();
     const current = doc();
     for (const id of compactChips.keys()) if (!current.intentions.some(intention => intention.id === id && linkedFocusSessions(intention, sessions()).length > 0)) compactChips.delete(id);
     const enabled = !!focus?.assistant?.enabled;
@@ -616,21 +647,17 @@ export function createAssistantView(deps: {
       if (action === "catch-up") void run(async () => { const next = await deps.request<RoutineStatus>("/focus/catch-up", { method: "POST" }, machine); if (focus) focus.routines = next; });
       if (action === "day-note") void run(readDayNote);
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
-      if (target.dataset.focusNext !== undefined) {
+      const rowAction = target.dataset.focusNext ?? target.dataset.focusMarkDone;
+      if (rowAction !== undefined) {
         if (sessionLocked()) return;
-        const row = nextRows(id === "dashboard-focus" ? 3 : pageNextCap())[Number(target.dataset.focusNext)];
-        if (!row || row.unavailable) return;
-        if (row.triage?.suggestion) { void run(() => sendSuggestion(row)); return; }
-        const done = doneSuggestion(row);
-        if (done) { void run(() => write({ type: "done", id: done.id })); return; }
-        if (row.session) deps.open(row.session.name, row.session.machineUrl);
-        else if (row.intention && row.kind === "start") deps.start(row.intention);
+        const action = currentAction(rowAction);
+        if (!action) return;
+        const { row, kind } = action;
+        if (kind === "send") { void run(() => sendSuggestion(row)); return; }
+        if (kind === "done") { void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
+        if (kind === "open" && row.session) deps.open(row.session.name, row.session.machineUrl);
+        else if (kind === "start" && row.intention) deps.start(row.intention);
         else if (row.intention) { openCard(`start:${row.intention.id}`); render(); }
-      }
-      if (target.dataset.focusMarkDone !== undefined && !sessionLocked()) {
-        const row = nextRows(id === "dashboard-focus" ? 3 : pageNextCap())[Number(target.dataset.focusMarkDone)];
-        const done = row && !row.unavailable && doneSuggestion(row);
-        if (done) void run(() => write({ type: "done", id: done.id }));
       }
       if (target.dataset.focusSession) {
         if (sessionLocked()) return;

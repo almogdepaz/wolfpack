@@ -245,6 +245,46 @@ test("expired triage returns quiet stops to rules and names the expiry", async (
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 next:");
 });
 
+for (const mode of ["send", "done"] as const) test(`R4/L1: an expired visible ${mode} action cannot become another row's action`, async ({ page }) => {
+  await seed(page, mode === "done");
+  const mutations: string[] = [];
+  page.on("request", request => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && ["/api/session-control/send", "/api/focus", "/api/session-control/ack"].includes(path)) mutations.push(path);
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  const button = view.getByRole("button", { name: mode === "send" ? "Send suggestion to prompt-project" : "Mark done: Ship the focus assistant", exact: true });
+  await expect(button).toBeEnabled();
+  // One task advances the merge clock and taps the old DOM before a repaint/poll can run.
+  await button.evaluate(el => { const before = Date.now; Date.now = () => before() + 5 * 3600_000; (el as HTMLButtonElement).click(); });
+  await expect(page.locator("#assistant-view")).toBeVisible();
+  await expect(view).toContainText("by rules · order expired");
+  await expect(page.locator("#focus-status")).toContainText("action changed");
+  await expect(page.locator("#terminal-view")).not.toHaveClass(/visible/);
+  expect(mutations).toEqual([]);
+  const saved = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  expect(saved.document.intentions.find((i: { id: string }) => i.id === "ship").done).not.toBe(true);
+});
+
+test("R4: a newly reordered merge still sends only the target and draft on the tapped row", async ({ page }) => {
+  await seed(page);
+  let sent: unknown;
+  await page.route("**/api/session-control/send", async route => { sent = route.request().postDataJSON(); await route.fulfill({ json: { outcome: "submitted" } }); });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  await expect(block.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeEnabled();
+  await write(page, [{ type: "next", author: "assistant", rows: [
+    { ref: { intentionId: "later" }, verdict: "needs-you", reason: "Review tomorrow first" },
+    { ref: { machine, sessionId: "mock:prompt-project" }, stoppedAt: episode, verdict: "suggest", reason: "Continue second", suggestion: draft },
+  ] }]);
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(block).toContainText("Continue second");
+  await block.getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+  expect(sent).toMatchObject({ session: "mock:prompt-project", text: draft });
+});
+
 for (const outcome of ["submitted", "unverified"] as const) test(`R3: ${outcome} receipt survives reordered refs, equivalent timestamps and reload`, async ({ page }) => {
   await seed(page);
   let sends = 0;
