@@ -64,9 +64,10 @@ export function rankFocus(doc: FocusDocument, sessions: readonly FocusSession[],
   const starts: FocusAction[] = [];
   const finished: FocusAction[] = [];
   for (const intention of doc.intentions) {
+    // Completed intentions cannot hide later attention or unseen stops from the unlinked groups.
+    if (intention.done) continue;
     const live = linkedFocusSessions(intention, sessions);
     live.forEach(s => linked.add(s));
-    if (intention.done) continue;
     for (const session of live.filter(needsYou).sort(oldest)) {
       if (!attention.some(row => row.session === session)) attention.push({ kind: "open", intention, session, reason: "Needs you for this intention; intention order, then oldest first." });
     }

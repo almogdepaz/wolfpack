@@ -116,6 +116,38 @@ test("counts: validated needs-you population and uncapped next totals agree", as
   await expect(page.locator("#assistant-content .focus-next > li")).toHaveCount(5);
 });
 
+test("counts: sessions claimed only by done intentions fall through to unlinked next", async ({ page }) => {
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const prompt = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    prompt.identity.projectPath = "/repo";
+    body.sessions.push(...["blocked-explicit", "blocked-unlinked"].map(name => ({ ...prompt, name,
+      identity: { ...prompt.identity, wolfpackSessionId: `mock:${name}`, projectPath: "/other" } })));
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.document.intentions = [
+      { id: "done-project", title: "completed project", project: "/repo", done: true, createdAt: new Date().toISOString() },
+      { id: "done-explicit", title: "completed explicit", sessions: ["mock:blocked-explicit"], done: true, createdAt: new Date().toISOString() },
+    ];
+    delete body.routines;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await expect(page.locator('#sidebar-session-filter [data-session-card-view="need"] .n')).toHaveAttribute("data-count", "3");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 next:");
+  const block = page.locator("#dashboard-focus");
+  await expect(block.locator(".focus-next > li")).toHaveCount(3);
+  await expect(block.locator(":scope > small").last()).toContainText("3 next");
+  for (const name of ["prompt-project", "blocked-explicit", "blocked-unlinked"]) await expect(block.getByRole("button", { name: `answer ${name} question`, exact: true })).toBeVisible();
+  await block.getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(page.locator("#assistant-content .focus-next > li")).toHaveCount(3);
+  await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 3");
+});
+
 test("many stops: twelve unseen episodes remain capped without an hours cutoff", async ({ page }, info) => {
   const width = info.project.name === "desktop" ? 1440 : 390;
   await page.setViewportSize({ width, height: 900 });

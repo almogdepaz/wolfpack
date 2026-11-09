@@ -67,6 +67,34 @@ test("linked needs-you then stopped unseen then starts then unlinked needs-you t
   expect(rankFocus(focus, sessions, 10, Date.parse(now))[1]?.reason).toMatch(/stopped.*not.*seen/i);
   expect(rankFocus(focus, sessions.map(s => ({ ...s, unseen: false })), 10, Date.parse(now)).map(r => r.session?.id ?? r.intention?.id)).toEqual(["linked", "b", "u-needs"]);
 });
+for (const state of ["needs-input", "failed"]) test(`done intentions do not claim ${state} sessions by project or explicit id`, () => {
+  const focus = reduceFocus(emptyFocus(), [
+    { type: "add", intention: { id: "project", title: "completed project", project: "/repo" } },
+    { type: "add", intention: { id: "explicit", title: "completed explicit", sessions: ["s2"] } },
+    { type: "done", id: "project" }, { type: "done", id: "explicit" },
+  ], now);
+  const sessions = [session("s1", state, now, "/repo"), session("s2", state, now, "/other"), session("s3", state, now, "/other")];
+  const rows = rankFocus(focus, sessions, 5, Date.parse(now));
+  expect(rows.map(row => row.session?.id)).toEqual(["s1", "s2", "s3"]);
+  expect(rows.every(row => !row.intention && row.reason.startsWith("Unlinked session"))).toBe(true);
+  const active = reduceFocus(focus, [{ type: "add", intention: { id: "active", title: "still active", sessions: ["s2"] } }], now);
+  expect(rankFocus(active, sessions, 5, Date.parse(now)).map(row => [row.session?.id, row.intention?.id])).toEqual([["s2", "active"], ["s1", undefined], ["s3", undefined]]);
+});
+for (const state of ["done", "idle"]) test(`unseen ${state} under a done intention falls through to unlinked stops; seen finishes stay hidden`, () => {
+  const focus = reduceFocus(emptyFocus(), [
+    { type: "add", intention: { id: "project", title: "completed project", project: "/repo" } },
+    { type: "add", intention: { id: "explicit", title: "completed explicit", sessions: ["explicit-stop"] } },
+    { type: "done", id: "project" }, { type: "done", id: "explicit" },
+  ], now);
+  const sessions = [
+    { ...session("project-stop", state, now, "/repo"), unseen: true, stoppedSequence: 2 },
+    { ...session("explicit-stop", state, now, "/other"), unseen: true, stoppedSequence: 2 },
+    { ...session("seen", "done", now, "/repo"), unseen: false, stoppedSequence: 2, acknowledgedSequence: 2 },
+  ];
+  const rows = rankFocus(focus, sessions, 5, Date.parse(now));
+  expect(rows.map(row => row.session?.id)).toEqual(["explicit-stop", "project-stop"]);
+  expect(rows.every(row => !row.intention && row.reason.startsWith("Stopped unlinked"))).toBe(true);
+});
 test("done today lists ticked intentions and finished linked sessions of the day, newest first", () => {
   const nowMs = Date.parse(now);
   const ticked = reduceFocus(doc(), [{ type: "done", id: "a" }], "2026-11-06T10:05:00.000Z");
