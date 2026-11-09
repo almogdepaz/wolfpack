@@ -43,7 +43,10 @@ for (const mode of ["catching", "stale", "cached"] as const) for (const today of
       await route.fulfill({ response, json: body });
     });
     await page.goto(server.baseUrl);
+    const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
     await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+    // Opening refreshes focus; finish that healthy read before simulating a later outage.
+    await (await opened).finished();
     if (mode === "cached") {
       down = true;
       await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
