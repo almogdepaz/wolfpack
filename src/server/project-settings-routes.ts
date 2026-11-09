@@ -66,8 +66,11 @@ import { openSubSession, resolveSubSessionHarness, SessionOpenError } from "./se
 import type { SessionOpenBackend } from "./session-open.js";
 import {
   TaskWorkerReadinessError,
+  prepareClaudeTaskWorkerLaunch,
   prepareTaskWorkerLaunch,
 } from "./task-worker-readiness.js";
+import type { PreparedTaskWorkerLaunch, TaskWorkerLaunch } from "./task-worker-readiness.js";
+import { claudeTaskIntegrationEnabled } from "../config.js";
 import {
   readTaskWorkerHostPolicy,
   taskWorkerPolicyPath,
@@ -118,6 +121,28 @@ function validTaskWorkerReadinessTimeout(value: number | undefined): boolean {
     && value >= 1
     && value <= SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS
   );
+}
+
+/**
+ * Pi and Claude can run task workers. Spawn policy and its dry run are Pi-only: Claude workers get their task
+ * tools from the wolfpack-tasks plugin and take no Pi extensions, env or options.
+ */
+function validTaskWorkerHarness(
+  harness: string,
+  body: { readonly taskWorkerPolicy?: unknown; readonly taskWorkerDryRun?: unknown },
+): boolean {
+  if (harness === AGENT_KIND.PI.id) return true;
+  return harness === AGENT_KIND.CLAUDE.id && body.taskWorkerPolicy === undefined && body.taskWorkerDryRun === undefined;
+}
+
+function prepareHarnessTaskWorkerLaunch(
+  harness: string,
+  projectDir: string,
+  taskWorkerPolicy: unknown,
+): TaskWorkerLaunch | PreparedTaskWorkerLaunch {
+  return harness === AGENT_KIND.CLAUDE.id
+    ? prepareClaudeTaskWorkerLaunch(process.env, claudeTaskIntegrationEnabled())
+    : prepareTaskWorkerLaunch(process.env, projectDir, taskWorkerPolicy);
 }
 
 function taskWorkerFailureBody(error: TaskWorkerReadinessError): Record<string, unknown> {
@@ -647,7 +672,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     const { project, projectDir } = projectSelection.value;
 
     const configuredCommand = body.harness ?? effectiveAgentCmd(loadSettings());
-    if (body.taskWorker === true && configuredCommand !== AGENT_KIND.PI.id) {
+    if (body.taskWorker === true && !validTaskWorkerHarness(configuredCommand, body)) {
       return json(res, {
         error: "invalid session-create request",
         code: SESSION_CREATE_ERROR.INVALID_REQUEST,
@@ -669,7 +694,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     let taskWorker;
     try {
       taskWorker = body.taskWorker === true
-        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
+        ? prepareHarnessTaskWorkerLaunch(configuredCommand, projectDir, body.taskWorkerPolicy)
         : undefined;
     } catch (error: unknown) {
       if (error instanceof TaskWorkerReadinessError) {
@@ -678,7 +703,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       throw error;
     }
 
-    if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+    if (body.taskWorkerDryRun === true && taskWorker !== undefined && "diagnostics" in taskWorker) {
       return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
     }
 
@@ -727,8 +752,8 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       || !isValidSessionName(body.parentSession)
       || (body.sessionName !== undefined && !isValidSessionName(body.sessionName))
       || (body.harness !== undefined && !isOpenableHarness(body.harness))
-      || (body.harness !== undefined && body.harness !== AGENT_KIND.PI.id
-        && (body.model !== undefined || body.taskWorker === true))
+      || (body.harness !== undefined && body.harness !== AGENT_KIND.PI.id && body.model !== undefined)
+      || (body.harness !== undefined && body.taskWorker === true && !validTaskWorkerHarness(body.harness, body))
       || (
         body.model !== undefined
         && (!body.model.trim()
@@ -804,18 +829,17 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         inspectSession: backend.inspectSession?.bind(backend),
         killSessionById: backend.killSessionById.bind(backend),
       };
+      let taskWorker: TaskWorkerLaunch | PreparedTaskWorkerLaunch | undefined;
       if (body.taskWorker === true) {
         const childHarness = await resolveSubSessionHarness(
           sessionOpenBackend, body.parentSession, body.harness,
         );
-        if (childHarness !== AGENT_KIND.PI.id) {
+        if (!validTaskWorkerHarness(childHarness, body)) {
           throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
         }
+        taskWorker = prepareHarnessTaskWorkerLaunch(childHarness, projectDir, body.taskWorkerPolicy);
       }
-      const taskWorker = body.taskWorker === true
-        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
-        : undefined;
-      if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+      if (body.taskWorkerDryRun === true && taskWorker !== undefined && "diagnostics" in taskWorker) {
         return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
       }
 

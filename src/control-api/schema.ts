@@ -231,7 +231,10 @@ function sessionCreateRequestSchema(): JsonSchema {
   };
   const taskWorkerProperties = {
     projectDir: ref("ProjectDirectory"),
-    harness: { const: "pi" },
+    harness: {
+      enum: ["pi", "claude"],
+      description: "Task-worker harness. taskWorkerPolicy and taskWorkerDryRun apply only to pi.",
+    },
     taskWorker: { const: true },
     readinessTimeoutMs: {
       type: "integer",
@@ -247,7 +250,7 @@ function sessionCreateRequestSchema(): JsonSchema {
       project: ref("ProjectName"),
       ...ordinaryProperties,
       projectDir: ref("ProjectDirectory"),
-      taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
+      taskWorker: boolean("Opt into task endpoint readiness (Pi Tasks, or the Claude wolfpack-tasks plugin) before success is returned"),
       readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
       taskWorkerPolicy: taskWorkerProperties.taskWorkerPolicy,
       taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
@@ -265,7 +268,7 @@ function sessionOpenRequestSchema(): JsonSchema {
   const ordinaryProperties = {
     harness: {
       ...ref("OpenableHarness"),
-      description: "Child harness; defaults to the parent harness. model and taskWorker require a pi child.",
+      description: "Child harness; defaults to the parent harness. model requires a pi child; taskWorker requires a pi or claude child, and taskWorkerPolicy and taskWorkerDryRun require pi.",
     },
     parentSession: ref("SessionName"),
     sessionName: ref("SessionName"),
@@ -303,7 +306,7 @@ function sessionOpenRequestSchema(): JsonSchema {
       project: ref("ProjectName"),
       projectDir: ref("ProjectDirectory"),
       ...ordinaryProperties,
-      taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
+      taskWorker: boolean("Opt into task endpoint readiness (Pi Tasks, or the Claude wolfpack-tasks plugin) before success is returned"),
       readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
       taskWorkerPolicy: taskWorkerProperties.taskWorkerPolicy,
       taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,

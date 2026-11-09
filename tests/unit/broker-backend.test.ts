@@ -659,6 +659,90 @@ describe("BrokerBackend.createSession", () => {
     expect(params.env).toContainEqual(["WOLFPACK_TASK_WORKER", "1"]);
   });
 
+  describe("Claude task integration", () => {
+    const channelSpec = "plugin:wolfpack-tasks@wolfpack-tasks";
+    const priorPort = process.env.WOLFPACK_PORT;
+    beforeEach(() => {
+      process.env.WOLFPACK_PORT = "18790";
+      client.setHandler("create_session", () => okResp({
+        session: sessionInfo({ name: "claude-one", id: SESSION_UUID_1 }),
+      }));
+    });
+    afterEach(() => {
+      if (priorPort === undefined) delete process.env.WOLFPACK_PORT;
+      else process.env.WOLFPACK_PORT = priorPort;
+    });
+
+    function backendWithIntegration(enabled: boolean): BrokerBackend {
+      return new BrokerBackend(client, undefined, { claudeTaskIntegration: () => enabled });
+    }
+
+    function createParams(): { command: string[]; env: Array<[string, string]> } {
+      return client.requests.find((request) => request.method === "create_session")?.params as {
+        command: string[]; env: Array<[string, string]>;
+      };
+    }
+
+    test("off: the stock claude launch is unchanged", async () => {
+      await backendWithIntegration(false).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+      const params = createParams();
+      expect(params.command).toHaveLength(3);
+      expect(params.command[2]).toContain("; claude; exec");
+      expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_PORT");
+    });
+
+    test("on: the stock claude launch adds --channels as argv and WOLFPACK_PORT", async () => {
+      await backendWithIntegration(true).createSession("claude-one", "/tmp/proj", "claude", loadSettings, {
+        agentKind: "claude", initialPrompt: "review the diff",
+      });
+      const params = createParams();
+      expect(params.command[2]).toContain('; claude --channels "$1" "$2"; exec');
+      expect(params.command.slice(3)).toEqual(["wolfpack-agent", channelSpec, "review the diff"]);
+      expect(params.env).toContainEqual(["WOLFPACK_PORT", "18790"]);
+      expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_TASK_WORKER");
+    });
+
+    test("on: wrapper commands and other harnesses launch unchanged", async () => {
+      const enabled = backendWithIntegration(true);
+      await enabled.createSession("claude-one", "/tmp/proj", "claude-wrapper", loadSettings);
+      await enabled.createSession("claude-one", "/tmp/proj", "pi", loadSettings);
+      const creates = client.requests.filter((request) => request.method === "create_session")
+        .map((request) => request.params as { command: string[]; env: Array<[string, string]> });
+      expect(creates.map((params) => params.command.length)).toEqual([3, 3]);
+      expect(creates[0]!.command[2]).toContain("; claude-wrapper; exec");
+      expect(creates[1]!.command[2]).toContain("; pi; exec");
+      for (const params of creates) expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_PORT");
+    });
+
+    test("claude task workers get --channels, worker env and no prompt", async () => {
+      const executable = "/opt/homebrew/bin/claude";
+      await backendWithIntegration(true).createSession("claude-one", "/tmp/worktree", "claude", loadSettings, {
+        agentKind: "claude",
+        taskWorker: { harness: "claude", executable },
+      });
+      const params = createParams();
+      expect(params.command).toEqual([SHELL, "-lic", params.command[2], "wolfpack-agent", executable, "--channels", channelSpec]);
+      expect(params.command[2]).toContain('exec "$@"');
+      expect(params.env).toContainEqual(["WOLFPACK_TASK_WORKER", "1"]);
+      expect(params.env).toContainEqual(["PI_TASK_WORKER", "1"]);
+      expect(params.env).toContainEqual(["WOLFPACK_PORT", "18790"]);
+    });
+
+    test("claude task workers require the integration and the claude harness", async () => {
+      const claudeWorker = { harness: "claude" as const, executable: "/opt/homebrew/bin/claude" };
+      await expect(backendWithIntegration(false).createSession("claude-one", "/tmp/worktree", "claude", loadSettings, {
+        agentKind: "claude", taskWorker: claudeWorker,
+      })).rejects.toThrow("Claude task integration");
+      await expect(backendWithIntegration(true).createSession("claude-one", "/tmp/worktree", "pi", loadSettings, {
+        agentKind: "pi", taskWorker: claudeWorker,
+      })).rejects.toThrow("task worker");
+      await expect(backendWithIntegration(true).createSession("claude-one", "/tmp/worktree", "claude", loadSettings, {
+        agentKind: "claude", taskWorker: { executable: "/opt/homebrew/bin/pi", extension: "/tmp/extension.ts" },
+      })).rejects.toThrow("task worker");
+      expect(client.requests.filter((request) => request.method === "create_session")).toEqual([]);
+    });
+  });
+
   test("persists parent identity in broker env and public session identity", async () => {
     const parentSession = {
       wolfpackSessionId: SESSION_UUID_2,

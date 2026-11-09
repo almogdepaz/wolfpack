@@ -2855,6 +2855,80 @@ describe("agent-native top-level session control", () => {
     }
   });
 
+  test("gates Claude task workers on the integration opt-in and rejects Pi-only options", async () => {
+    const projectDir = createExplicitProjectDir("claude-task-worker-gate");
+    for (const body of [
+      { projectDir, harness: "claude", taskWorker: true, taskWorkerDryRun: true },
+      { projectDir, harness: "claude", taskWorker: true, taskWorkerPolicy: { extensionPolicy: "inherit" } },
+    ]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-create", body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(await res.json()).toMatchObject({ code: SESSION_CREATE_ERROR.INVALID_REQUEST });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+
+    mockBackend.lastCreateArgs = null;
+    const disabled = await post("/api/session-create", { projectDir, harness: "claude", taskWorker: true });
+    expect(disabled.status).toBe(503);
+    expect(await disabled.json()).toMatchObject({
+      code: SESSION_CREATE_ERROR.TASK_WORKER_PREFLIGHT_FAILED,
+      error: expect.stringContaining("wolfpack setup"),
+    });
+    expect(mockBackend.lastCreateArgs).toBeNull();
+  });
+
+  test("launches Claude task workers through create and open when the integration is enabled", async () => {
+    const root = createExplicitProjectDir("claude-task-worker");
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const executable = join(bin, "claude");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    const configPath = join(process.env.WOLFPACK_DIR!, "config.json");
+    const priorConfig = existsSync(configPath) ? readFileSync(configPath, "utf8") : undefined;
+    writeFileSync(configPath, JSON.stringify({ devDir: root, port: 18790, claudeTaskIntegration: true }));
+    const priorPath = process.env.PATH;
+    process.env.PATH = `${bin}:${priorPath ?? ""}`;
+    mockBackend.setSessions([]);
+    mockBackend.setOnBeforeCreate((name) => {
+      queueMicrotask(() => {
+        void getTaskRelayGateway().volatile({
+          profile: "volatile-v1", operation: "connect", callerSession: name,
+          generation: `test-${name}`,
+          protocolVersions: [2],
+        });
+      });
+    });
+    try {
+      for (const [path, body, operation] of [
+        ["/api/session-create", { projectDir: root, harness: "claude", taskWorker: true, readinessTimeoutMs: 500 }, "createTopLevelSession"],
+        ["/api/session-open", { projectDir: root, parentSession: "claude-parent", harness: "claude", taskWorker: true, readinessTimeoutMs: 500 }, "openSession"],
+      ] as const) {
+        if (path === "/api/session-open") {
+          await mockBackend.createSession("claude-parent", root, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+        }
+        mockBackend.lastCreateArgs = null;
+        const response = await post(path, body);
+        const responseBody = await response.json();
+        expect(response.ok, JSON.stringify(responseBody)).toBeTruthy();
+        expect(validateSchema(responseSchema(operation), responseBody, controlApiSchema)).toEqual([]);
+        expect(responseBody).toMatchObject({ ok: true, harness: "claude", taskEndpoint: { relay: "wolfpack-pi-tasks-v2" } });
+        expect(mockBackend.lastCreateArgs).toMatchObject({
+          cmd: "claude",
+          agentKind: "claude",
+          taskWorker: { harness: "claude", executable },
+        });
+      }
+    } finally {
+      mockBackend.setOnBeforeCreate(null);
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+      if (priorConfig === undefined) rmSync(configPath, { force: true });
+      else writeFileSync(configPath, priorConfig);
+    }
+  });
+
   test("publishes task-worker create/open success and recovery bodies that satisfy generated schemas", async () => {
     const root = createExplicitProjectDir("task-worker-public");
     const executable = join(root, "pi");
@@ -3399,22 +3473,35 @@ describe("POST /api/session-open", () => {
 
   test("gates model and task-worker options on the child harness before creation or preflight", async () => {
     const projectDir = createExplicitProjectDir("non-pi child");
-    for (const option of [{ model: "anthropic/claude-opus-4-1" }, { taskWorker: true }, { taskWorker: true, taskWorkerDryRun: true }]) {
+    for (const [harness, option] of [
+      ["claude", { model: "anthropic/claude-opus-4-1" }],
+      ["claude", { taskWorker: true, taskWorkerDryRun: true }],
+      ["claude", { taskWorker: true, taskWorkerPolicy: { extensionPolicy: "inherit" } }],
+      ["codex", { taskWorker: true }],
+    ] as const) {
+      mockBackend.lastCreateArgs = null;
       const res = await post("/api/session-open", {
-        projectDir, parentSession: "wolf-1", harness: "claude", ...option,
+        projectDir, parentSession: "wolf-1", harness, ...option,
       });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({
-        error: "invalid session-open request", code: SESSION_OPEN_ERROR.INVALID_REQUEST,
-      });
+      expect(res.status, JSON.stringify(option)).toBe(400);
+      expect(await res.json()).toMatchObject({ code: SESSION_OPEN_ERROR.INVALID_REQUEST });
       expect(mockBackend.lastCreateArgs).toBeNull();
     }
+    const disabled = await post("/api/session-open", {
+      projectDir, parentSession: "wolf-1", harness: "claude", taskWorker: true,
+    });
+    expect(disabled.status).toBe(503);
+    expect(await disabled.json()).toMatchObject({
+      code: SESSION_CREATE_ERROR.TASK_WORKER_PREFLIGHT_FAILED,
+      error: expect.stringContaining("wolfpack setup"),
+    });
+    expect(mockBackend.lastCreateArgs).toBeNull();
   });
 
   test.each(
     ["available", "missing-executable", "missing-extension"].flatMap(resource =>
       [false, true].map(dryRun => [resource, dryRun] as const)),
-  )("rejects inherited non-pi task workers with %s resources (dry-run: %s)", async (resource, dryRun) => {
+  )("routes inherited Claude task workers to the Claude preflight with %s Pi resources (dry-run: %s)", async (resource, dryRun) => {
     useParentHarness("claude");
     const projectDir = createExplicitProjectDir("inherited-worker-gate");
     const executable = join(projectDir, "pi");
@@ -3435,9 +3522,10 @@ describe("POST /api/session-open", () => {
         projectDir, parentSession: "wolf-1", taskWorker: true,
         ...(dryRun && { taskWorkerDryRun: true }),
       });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({
-        error: "invalid session-open request", code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      // Dry runs report Pi spawn policy only; a real Claude launch fails preflight while the opt-in is off.
+      expect(res.status).toBe(dryRun ? 400 : 503);
+      expect(await res.json()).toMatchObject({
+        code: dryRun ? SESSION_OPEN_ERROR.INVALID_REQUEST : SESSION_CREATE_ERROR.TASK_WORKER_PREFLIGHT_FAILED,
       });
       expect(mockBackend.lastCreateArgs).toBeNull();
     } finally {

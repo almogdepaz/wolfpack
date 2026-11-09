@@ -422,8 +422,12 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     selector?.kind === "projectDir"
     && promptSources.length === 0
     && !notifyParent
-    && (action !== "create" || harnessValue === null || harness === AGENT_KIND.PI.id)
+    && (action !== "create" || harnessValue === null || harness === AGENT_KIND.PI.id || harness === AGENT_KIND.CLAUDE.id)
   );
+  // An inherited child harness is resolved by the server, which applies the same rule.
+  if (taskWorker && harness === AGENT_KIND.CLAUDE.id && (taskWorkerPolicyFileValue !== null || taskWorkerDryRun)) {
+    return { ok: false, message: "--task-worker-policy-file and --task-worker-dry-run apply only to Pi task workers" };
+  }
   const validTaskWorkerPolicyFile = taskWorkerPolicyFileValue === null
     || (taskWorker && Boolean(taskWorkerPolicyFileValue.trim()));
   const validTaskWorkerDryRun = !taskWorkerDryRun || (taskWorker && output === "json");

@@ -191,6 +191,32 @@ describe("session control cli parsing", () => {
     expect(parseSessionCommand(["open", "--project-dir", "/worktree", "--task-worker", "--task-worker-dry-run"]).ok).toBe(false);
   });
 
+  test("parses Claude task workers and rejects Pi-only task-worker options for them", () => {
+    expect(parseSessionCommand([
+      "create", "--project-dir", "/worktrees/wolfpack", "--harness", "claude", "--task-worker", "--json",
+    ])).toEqual({
+      ok: true,
+      action: "create",
+      selector: { kind: "projectDir", projectDir: "/worktrees/wolfpack" },
+      harness: "claude",
+      prompt: undefined,
+      taskWorker: true,
+      output: "json",
+    });
+    expect(parseSessionCommand(["open", "--project-dir", "/worktree", "--harness", "claude", "--task-worker"]))
+      .toMatchObject({ ok: true, action: "open", harness: "claude", taskWorker: true });
+    for (const action of ["create", "open"] as const) {
+      for (const extra of [
+        ["--task-worker-policy-file", "/tmp/worker-policy.json"],
+        ["--task-worker-dry-run", "--json"],
+      ]) {
+        expect(parseSessionCommand([action, "--project-dir", "/worktree", "--harness", "claude", "--task-worker", ...extra]))
+          .toEqual({ ok: false, message: "--task-worker-policy-file and --task-worker-dry-run apply only to Pi task workers" });
+      }
+    }
+    expect(parseSessionCommand(["create", "--project-dir", "/worktree", "--harness", "codex", "--task-worker"]).ok).toBe(false);
+  });
+
   test("preserves task-worker recovery fields in create and spawn JSON failures", () => {
     for (const command of ["create", "spawn"] as const) {
       const child = taskWorkerFailureCli(command);

@@ -2,6 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { loadConfigFromText, parseConfig } from "../../src/cli/config.ts";
 
 describe("parseConfig", () => {
+  test("keeps the Claude task integration opt-in only when it is true", () => {
+    const base = { devDir: "/Users/home/Dev", port: 18790 };
+    expect(parseConfig({ ...base, claudeTaskIntegration: true })).toEqual({ ...base, claudeTaskIntegration: true });
+    expect(parseConfig({ ...base, claudeTaskIntegration: false })).toEqual(base);
+    expect(parseConfig({ ...base, claudeTaskIntegration: "yes" })).toEqual(base);
+    expect(parseConfig(base)).toEqual(base);
+  });
+
   test("accepts a valid config object", () => {
     expect(parseConfig({
       devDir: "/Users/home/Dev",

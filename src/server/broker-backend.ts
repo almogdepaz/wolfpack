@@ -67,6 +67,9 @@ import {
   resolveAgentCommand,
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
+import { CLAUDE_INTEGRATION } from "../claude-integration.js";
+import { claudeTaskIntegrationEnabled } from "../config.js";
+import { taskWorkerHarness } from "./task-worker-readiness.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
 import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
@@ -125,6 +128,11 @@ export const BROKER_UNAVAILABLE_GRACE_MS = 3_000;
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
+
+export interface BrokerBackendOptions {
+  /** Read at each session create; defaults to the `claudeTaskIntegration` config opt-in. */
+  readonly claudeTaskIntegration?: () => boolean;
+}
 
 /** Minimal subset of `BrokerClient` BrokerBackend depends on; eases test mocking. */
 export interface BrokerClientApi {
@@ -524,8 +532,14 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
    */
   private readonly killRequests = new Map<string, KillRequestState>();
   private brokerUnavailableTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly claudeTaskIntegration: () => boolean;
 
-  constructor(client: BrokerClientApi, private readonly emitEvent: typeof publishEvent = publishEvent) {
+  constructor(
+    client: BrokerClientApi,
+    private readonly emitEvent: typeof publishEvent = publishEvent,
+    options: BrokerBackendOptions = {},
+  ) {
+    this.claudeTaskIntegration = options.claudeTaskIntegration ?? claudeTaskIntegrationEnabled;
     this.client = client;
   }
 
@@ -654,14 +668,23 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI.id) {
       throw new Error("model selection requires the pi harness");
     }
-    if (taskWorker !== undefined && (agentCmd !== AGENT_KIND.PI.id || options?.initialPrompt !== undefined)) {
-      throw new Error("task worker requires the Pi harness without an initial prompt");
+    const workerHarness = taskWorker === undefined ? undefined : taskWorkerHarness(taskWorker);
+    if (taskWorker !== undefined && (agentCmd !== workerHarness || options?.initialPrompt !== undefined)) {
+      throw new Error("task worker requires a matching Pi or Claude harness without an initial prompt");
+    }
+    // Only the stock claude command is known to accept --channels; wrapper commands launch unchanged.
+    const claudeChannels = agentCmd === AGENT_KIND.CLAUDE.id && this.claudeTaskIntegration();
+    if (workerHarness === AGENT_KIND.CLAUDE.id && !claudeChannels) {
+      throw new Error("Claude task workers require the Claude task integration; run wolfpack setup");
     }
     if (agentCmd === AGENT_KIND.SHELL.id) {
       if (options?.initialPrompt !== undefined) {
         throw new Error("initial prompt requires an agent harness");
       }
       shellCmd = SHELL;
+    } else if (taskWorker !== undefined && taskWorker.harness === AGENT_KIND.CLAUDE.id) {
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
+      commandArgs = [taskWorker.executable, "--channels", CLAUDE_INTEGRATION.channelSpec];
     } else if (taskWorker !== undefined) {
       // Test and compatibility callers can provide the pre-policy launch shape;
       // route-owned launches always provide the resolved fields.
@@ -678,15 +701,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
       commandArgs = [taskWorker.executable, ...workerPiArgs];
     } else {
-      const modelArg = options?.model !== undefined ? ' --model "$1"' : "";
-      const promptArg = options?.initialPrompt !== undefined
-        ? ` "$${options.model !== undefined ? 2 : 1}"`
-        : "";
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${modelArg}${promptArg}; exec ${SHELL}`;
-      commandArgs = [
-        ...(options?.model !== undefined ? [options.model] : []),
-        ...(options?.initialPrompt !== undefined ? [options.initialPrompt] : []),
-      ];
+      // Values travel as positional argv ("$1", "$2", ...), never inside the shell text.
+      const positional = (value: string): string => {
+        commandArgs.push(value);
+        return `"$${commandArgs.length}"`;
+      };
+      const channelsArg = claudeChannels ? ` --channels ${positional(CLAUDE_INTEGRATION.channelSpec)}` : "";
+      const modelArg = options?.model !== undefined ? ` --model ${positional(options.model)}` : "";
+      const promptArg = options?.initialPrompt !== undefined ? ` ${positional(options.initialPrompt)}` : "";
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${channelsArg}${modelArg}${promptArg}; exec ${SHELL}`;
     }
 
     const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);
@@ -698,7 +721,11 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       if (port) taskWorkerEnv.push(["WOLFPACK_PORT", port]);
       const home = process.env.HOME;
       if (home) taskWorkerEnv.push(["HOME", home]);
-      taskWorkerEnv.push(...Object.entries(taskWorker.env ?? {}));
+      if (taskWorker.harness !== AGENT_KIND.CLAUDE.id) taskWorkerEnv.push(...Object.entries(taskWorker.env ?? {}));
+    } else if (claudeChannels) {
+      // The wolfpack-tasks plugin reaches the task relay through this port.
+      const port = process.env.WOLFPACK_PORT;
+      if (port) taskWorkerEnv.push(["WOLFPACK_PORT", port]);
     }
     const env: Array<[string, string]> = [
       ["TERM", "xterm-256color"],

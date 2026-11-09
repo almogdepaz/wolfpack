@@ -18,6 +18,8 @@ export interface Config {
   tailscaleHostname?: string;
   /** Host-owned machine display name; overrides the OS computer name in every handshake. */
   displayName?: string;
+  /** Opt-in written by `wolfpack setup` after the Claude task integration is installed; absent means off. */
+  claudeTaskIntegration?: boolean;
 }
 
 export function parseConfig(raw: unknown): Config | null {
@@ -32,7 +34,13 @@ export function parseConfig(raw: unknown): Config | null {
   const canonicalOrigin = configuredHostname ? canonicalTailnetOrigin(configuredHostname) : null;
   const tailscaleHostname = canonicalOrigin?.slice("https://".length);
   const displayName = typeof candidate.displayName === "string" ? candidate.displayName.trim() : undefined;
-  return { devDir, port, tailscaleHostname, ...(isMachineDisplayName(displayName) && { displayName }) };
+  return {
+    devDir,
+    port,
+    tailscaleHostname,
+    ...(isMachineDisplayName(displayName) && { displayName }),
+    ...(candidate.claudeTaskIntegration === true && { claudeTaskIntegration: true }),
+  };
 }
 
 export function loadConfigFromText(text: string): Config | null {
@@ -49,6 +57,11 @@ export function loadConfig(): Config | null {
   } catch { /* expected: config file doesn't exist yet */
     return null;
   }
+}
+
+/** Reads the opt-in on every call so `wolfpack setup` takes effect without a server restart. */
+export function claudeTaskIntegrationEnabled(): boolean {
+  return loadConfig()?.claudeTaskIntegration === true;
 }
 
 export function saveConfig(c: Config) {

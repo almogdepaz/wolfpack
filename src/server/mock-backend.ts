@@ -29,6 +29,7 @@ import { stripAnsi } from "./strip-ansi.js";
 import { trimRenderedPrefill } from "../broker/snapshot-render.js";
 import { inferAgentKind } from "./session-identity.js";
 import { CUSTOM_AGENT_KIND } from "../agent-kind.js";
+import type { TaskWorkerLaunch } from "./task-worker-readiness.js";
 import type {
   ParentSessionIdentity,
   PublicSessionIdentity,
@@ -67,6 +68,7 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
     parentSession?: ParentSessionIdentity;
     model?: string;
     initialPrompt?: string;
+    taskWorker?: TaskWorkerLaunch;
   } | null = null;
   /** Last arguments passed to resize (name, cols, rows). */
   lastResizeArgs: { name: string; cols: number; rows: number } | null = null;
@@ -195,6 +197,7 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
       parentSession: options?.parentSession,
       ...(options?.model !== undefined && { model: options.model }),
       initialPrompt: options?.initialPrompt,
+      ...(options?.taskWorker !== undefined && { taskWorker: options.taskWorker }),
     };
     if (this._onBeforeCreate) this._onBeforeCreate(name);
     if (this._sessions.has(name)) {

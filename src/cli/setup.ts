@@ -416,6 +416,7 @@ export async function setup(options: SetupOptions = {}) {
       tailscaleHostname: verifiedRemoteHostname ?? previousConfig?.tailscaleHostname,
     }),
     ...(displayName && { displayName }),
+    ...(previousConfig?.claudeTaskIntegration === true && { claudeTaskIntegration: true }),
   };
   saveConfig(config);
   // The plist/unit embeds config values, while the remote-origin policy is
