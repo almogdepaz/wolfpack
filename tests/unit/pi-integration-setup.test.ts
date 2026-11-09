@@ -12,6 +12,7 @@ import {
   findLegacyPiTasksSource,
   migratePiTasksPackage,
   piTasksMigrationDisclosureLines,
+  piTasksRestoreHintLines,
   installPiIntegration,
   piIntegrationDisclosureLines,
   planPiIntegrationSetup,
@@ -33,6 +34,13 @@ function fakePi(): { readonly pathValue: string; readonly callLog: string } {
 printf '%s\\n' "$*" >> "$CALL_LOG"
 if [ "\${FAIL_SOURCE:-}" = "$2" ]; then
   exit 42
+fi
+# Stand in for Pi's own settings.json update.
+if [ "$1" = remove ] && [ -n "\${PI_SETTINGS_AFTER_REMOVE:-}" ]; then
+  /bin/cp "$PI_SETTINGS_AFTER_REMOVE" "$PI_CODING_AGENT_DIR/settings.json"
+fi
+if [ "$1" = install ] && [ -n "\${PI_SETTINGS_AFTER_INSTALL:-}" ]; then
+  /bin/cp "$PI_SETTINGS_AFTER_INSTALL" "$PI_CODING_AGENT_DIR/settings.json"
 fi
 if [ -n "\${REQUIRE_SKILL_PATH:-}" ] && [ ! -f "$REQUIRE_SKILL_PATH/SKILL.md" ]; then
   exit 43
@@ -277,7 +285,7 @@ describe("Pi Tasks package migration", () => {
 
   test("removes the legacy package before installing the renamed one", () => {
     const pi = fakePi();
-    expect(migratePiTasksPackage({ pathValue: pi.pathValue, env: { CALL_LOG: pi.callLog } }))
+    expect(migratePiTasksPackage({ pathValue: pi.pathValue, env: { CALL_LOG: pi.callLog, PI_CODING_AGENT_DIR: tempDir() } }))
       .toEqual({ status: "migrated" });
     expect(readFileSync(pi.callLog, "utf8"))
       .toBe("remove npm:@sgtbeatdown/pi-tasks\ninstall npm:@sgtbeatdown/wolfpack-tasks\n");
@@ -287,7 +295,7 @@ describe("Pi Tasks package migration", () => {
     const pi = fakePi();
     expect(migratePiTasksPackage({
       pathValue: pi.pathValue,
-      env: { CALL_LOG: pi.callLog, FAIL_SOURCE: "npm:@sgtbeatdown/pi-tasks" },
+      env: { CALL_LOG: pi.callLog, FAIL_SOURCE: "npm:@sgtbeatdown/pi-tasks", PI_CODING_AGENT_DIR: tempDir() },
     })).toEqual({
       status: "failed",
       failedCommand: PI_TASKS_MIGRATION_COMMANDS[0],
@@ -298,11 +306,117 @@ describe("Pi Tasks package migration", () => {
     const second = fakePi();
     expect(migratePiTasksPackage({
       pathValue: second.pathValue,
-      env: { CALL_LOG: second.callLog, FAIL_SOURCE: "npm:@sgtbeatdown/wolfpack-tasks" },
+      env: { CALL_LOG: second.callLog, FAIL_SOURCE: "npm:@sgtbeatdown/wolfpack-tasks", PI_CODING_AGENT_DIR: tempDir() },
     })).toEqual({
       status: "failed",
       failedCommand: PI_TASKS_MIGRATION_COMMANDS[1],
       retryCommands: [PI_TASKS_MIGRATION_COMMANDS[1]],
+    });
+  });
+
+  describe("resource filters", () => {
+    const legacyEntry = {
+      source: "npm:@sgtbeatdown/pi-tasks@0.1.17",
+      skills: ["!skills/wolfpack-pi-task-delegation/**", "!skills/other/**"],
+      extensions: ["!extensions/legacy.ts"],
+    };
+
+    /** A fake Pi agent directory whose settings.json moves through `before`, `afterRemove`, `afterInstall`. */
+    function migrationFixture(settings: { before: unknown; afterRemove: unknown; afterInstall: unknown }) {
+      const agent = tempDir();
+      const settingsPath = join(agent, "settings.json");
+      writeFileSync(settingsPath, `${JSON.stringify(settings.before, null, 2)}\n`);
+      const afterRemove = join(tempDir(), "after-remove.json");
+      const afterInstall = join(tempDir(), "after-install.json");
+      writeFileSync(afterRemove, `${JSON.stringify(settings.afterRemove, null, 2)}\n`);
+      writeFileSync(afterInstall, `${JSON.stringify(settings.afterInstall, null, 2)}\n`);
+      const pi = fakePi();
+      const env = {
+        CALL_LOG: pi.callLog,
+        PI_CODING_AGENT_DIR: agent,
+        PI_SETTINGS_AFTER_REMOVE: afterRemove,
+        PI_SETTINGS_AFTER_INSTALL: afterInstall,
+      };
+      return { pi, env, settingsPath, afterInstall };
+    }
+
+    test("carry the legacy entry's filters to the new entry and rename the delegation skill path", () => {
+      const fixture = migrationFixture({
+        before: { theme: "dark", packages: ["npm:other", legacyEntry] },
+        afterRemove: { theme: "dark", packages: ["npm:other"] },
+        afterInstall: { theme: "dark", packages: ["npm:other", "npm:@sgtbeatdown/wolfpack-tasks"] },
+      });
+      expect(migratePiTasksPackage({ pathValue: fixture.pi.pathValue, env: fixture.env })).toEqual({ status: "migrated" });
+      expect(JSON.parse(readFileSync(fixture.settingsPath, "utf8"))).toEqual({
+        theme: "dark",
+        packages: [
+          "npm:other",
+          {
+            source: "npm:@sgtbeatdown/wolfpack-tasks",
+            skills: ["!skills/wolfpack-task-delegation/**", "!skills/other/**"],
+            extensions: ["!extensions/legacy.ts"],
+          },
+        ],
+      });
+    });
+
+    test("leave Pi's settings untouched when the legacy entry has no filters", () => {
+      const fixture = migrationFixture({
+        before: { packages: ["npm:@sgtbeatdown/pi-tasks"] },
+        afterRemove: { packages: [] },
+        afterInstall: { packages: ["npm:@sgtbeatdown/wolfpack-tasks"] },
+      });
+      expect(migratePiTasksPackage({ pathValue: fixture.pi.pathValue, env: fixture.env })).toEqual({ status: "migrated" });
+      expect(readFileSync(fixture.settingsPath, "utf8")).toBe(readFileSync(fixture.afterInstall, "utf8"));
+    });
+
+    test("report the entry to restore by hand when the new entry is missing after install", () => {
+      const fixture = migrationFixture({
+        before: { packages: [legacyEntry] },
+        afterRemove: { packages: [] },
+        afterInstall: { packages: [] },
+      });
+      const restoreEntry = {
+        source: "npm:@sgtbeatdown/wolfpack-tasks",
+        skills: ["!skills/wolfpack-task-delegation/**", "!skills/other/**"],
+        extensions: ["!extensions/legacy.ts"],
+      };
+      expect(migratePiTasksPackage({ pathValue: fixture.pi.pathValue, env: fixture.env })).toEqual({
+        status: "filters_not_restored",
+        settingsPath: fixture.settingsPath,
+        restoreEntry,
+      });
+      expect(JSON.parse(readFileSync(fixture.settingsPath, "utf8"))).toEqual({ packages: [] });
+    });
+
+    test("print the entry to restore with its settings path", () => {
+      const entry = { source: "npm:@sgtbeatdown/wolfpack-tasks", skills: ["!skills/wolfpack-task-delegation/**"] };
+      expect(piTasksRestoreHintLines({ settingsPath: "/agent/settings.json", restoreEntry: entry })).toEqual([
+        "  Pi Tasks resource filters were not kept. Replace the wolfpack-tasks entry in packages in /agent/settings.json with:",
+        `    ${JSON.stringify(entry)}`,
+      ]);
+    });
+
+    test("report the entry to restore by hand when install fails after the legacy entry is removed", () => {
+      const fixture = migrationFixture({
+        before: { packages: [legacyEntry] },
+        afterRemove: { packages: [] },
+        afterInstall: { packages: [] },
+      });
+      expect(migratePiTasksPackage({
+        pathValue: fixture.pi.pathValue,
+        env: { ...fixture.env, FAIL_SOURCE: "npm:@sgtbeatdown/wolfpack-tasks" },
+      })).toEqual({
+        status: "failed",
+        failedCommand: PI_TASKS_MIGRATION_COMMANDS[1],
+        retryCommands: [PI_TASKS_MIGRATION_COMMANDS[1]],
+        settingsPath: fixture.settingsPath,
+        restoreEntry: {
+          source: "npm:@sgtbeatdown/wolfpack-tasks",
+          skills: ["!skills/wolfpack-task-delegation/**", "!skills/other/**"],
+          extensions: ["!extensions/legacy.ts"],
+        },
+      });
     });
   });
 });

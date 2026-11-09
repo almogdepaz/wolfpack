@@ -24,7 +24,11 @@ The package was published as `npm:@sgtbeatdown/pi-tasks` before it gained
 Claude Code support. When Pi still has the old package, setup offers a
 default-no migration that runs `pi remove npm:@sgtbeatdown/pi-tasks` and then
 the install command above, and `wolfpack doctor` reports the old package as a
-warning with the same commands.
+warning with the same commands. The migration moves the old entry's resource
+filters in Pi's `settings.json` (for example a `skills` filter for a local skill
+overlay) to the new entry, and renames `skills/wolfpack-pi-task-delegation`
+paths to `skills/wolfpack-task-delegation`. If it cannot write the entry, setup
+prints the entry to restore by hand.
 
 Wolfpack does not install the full `wolfpack-bridge` app inside Pi just to obtain
 the control skill.

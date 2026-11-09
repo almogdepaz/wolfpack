@@ -39,6 +39,7 @@ import {
   findLegacyPiTasksSource,
   installPiIntegration,
   migratePiTasksPackage,
+  piTasksRestoreHintLines,
   piIntegrationDisclosureLines,
   piTasksMigrationDisclosureLines,
   planPiIntegrationSetup,
@@ -234,13 +235,21 @@ function handlePiTasksMigration(interactive: boolean): boolean {
     return true;
   }
   const result = migratePiTasksPackage({ pathValue: process.env.PATH });
-  if (result.status === "migrated") {
-    print(green(`  Migrated Pi Tasks to ${PI_TASKS_PACKAGE}.`));
-    print(dim("  Start a fresh Pi session, or run /reload in an existing session."));
-  } else {
+  if (result.status === "failed") {
     print(red(`  Pi Tasks migration stopped at: ${result.failedCommand}`));
     for (const command of result.retryCommands) print(dim(`  Retry: ${command}`));
+    if (result.settingsPath !== undefined && result.restoreEntry !== undefined) {
+      for (const line of piTasksRestoreHintLines({ settingsPath: result.settingsPath, restoreEntry: result.restoreEntry })) {
+        print(yellow(line));
+      }
+    }
+    return true;
   }
+  print(green(`  Migrated Pi Tasks to ${PI_TASKS_PACKAGE}.`));
+  if (result.status === "filters_not_restored") {
+    for (const line of piTasksRestoreHintLines(result)) print(yellow(line));
+  }
+  print(dim("  Start a fresh Pi session, or run /reload in an existing session."));
   return true;
 }
 
