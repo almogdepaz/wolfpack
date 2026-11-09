@@ -27,6 +27,7 @@ import { createRateLimiter } from "./http.js";
 import { registerSubSessionOpenedNotifier } from "./session-notifications.js";
 import { createLogger, errMsg } from "../log.js";
 import { INPUT_SOURCE } from "../activity-journal.js";
+import { viewerRedrawFor } from "./viewer-redraw.js";
 import { decideOutputCoalescing } from "../output-coalescing.js";
 import {
   isTerminalLoadTimingEnabled,
@@ -632,6 +633,7 @@ async function applyAttachResize(
   size: { cols: number; rows: number },
 ): Promise<boolean> {
   try {
+    await viewerRedrawFor(ctx.backend).begin(ctx.session);
     await ctx.backend.resize(ctx.session, size.cols, size.rows);
   } catch (error: unknown) {
     if (entryStillCurrent(ctx.entry, ctx.session, ctx.ws)) {
@@ -1389,6 +1391,7 @@ function setupNewPtyEntry(
     const queuedInput = pendingInput.splice(0);
     pendingInputBytes = 0;
     for (const data of queuedInput) {
+      viewerRedrawFor(backend).input(session);
       if (!backend.writeToTerminal(session, data)) {
         log.warn("terminal input write failed", { session });
         tryWsClose(ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED, "buffered input write close failed", session);
@@ -1519,7 +1522,7 @@ function setupNewPtyEntry(
             resizeTimer = setTimeout(() => {
               resizeTimer = null;
               if (!entry.alive || entry.exitDraining) return;
-              streamingBackend.resize(session, cols, rows).then(() => {
+              viewerRedrawFor(streamingBackend).begin(session).then(() => streamingBackend.resize(session, cols, rows)).then(() => {
                 if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
                 if (resizeId !== undefined) {
                   safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", resizeId, cols, rows }));
@@ -1545,6 +1548,7 @@ function setupNewPtyEntry(
           tryWsClose(ws, CLOSE_CODE_POLICY_VIOLATION, WS_CLOSE_REASONS.INPUT_RATE_LIMITED, "input rate limit viewer close failed", session);
           return;
         }
+        viewerRedrawFor(streamingBackend).input(session);
         if (inputGateActive) {
           pendingInput.push(Buffer.from(raw));
           pendingInputBytes += raw.length;

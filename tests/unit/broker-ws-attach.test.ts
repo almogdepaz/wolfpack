@@ -629,9 +629,12 @@ describe("broker WS attach: snapshot + subscribe path", () => {
   test("non-progress ack traffic cannot consume resize control admission", async () => {
     const ws = await attachWithClock(true);
     for (let index = 0; index < 100; index++) ws.pushJson({ type: "ack", bytes: 0 });
+    const resized = new Promise<void>(resolve => { ws.onSend = data => {
+      if (typeof data === "string" && JSON.parse(data).type === "resize_ack") resolve();
+    }; });
     ws.pushJson({ type: "resize", resizeId: 42, cols: 132, rows: 50 });
     jest.advanceTimersByTime(80);
-    await Promise.resolve();
+    await resized;
     expect(backend.resizeCalls.at(-1)).toEqual({ name: SESSION, cols: 132, rows: 50 });
     expect(ws.closeCode).toBeNull();
   });

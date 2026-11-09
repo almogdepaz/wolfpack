@@ -15,11 +15,11 @@ async function fixture(run: (f: ReturnType<typeof episodeFixture>) => Promise<vo
 function episodeFixture(path: string) {
   let store = new AgentRuntimeStateStore(path);
   let tick = 0;
-  function step(state: AgentStatusState, authority: "manifest" | "program" | "fallback" = "manifest", options: { stale?: boolean; broker?: "alive" | "unavailable"; runId?: string | null; signalSequence?: number; agentKind?: string; runOrder?: number } = {}) {
+  function step(state: AgentStatusState, authority: "manifest" | "program" | "fallback" = "manifest", options: { stale?: boolean; broker?: "alive" | "unavailable"; runId?: string | null; signalSequence?: number; agentKind?: string; runOrder?: number; viewerRedraw?: boolean } = {}) {
     const observedAt = new Date(Date.parse("2026-11-08T10:00:00Z") + tick++ * 60_000).toISOString();
     const runId = options.runId === null ? undefined : options.runId ?? "run-1";
     const source: AgentStatusSource = { state, authority, source: authority === "program" ? "program-status" : "local-manifest", freshness: options.stale ? "stale" : "fresh", stale: options.stale ?? false, label: state, observedAt, signalSequence: options.signalSequence, capabilities: ["semantic-state"], runId, runOrder: options.runOrder ?? 1 };
-    return store.reduce({ sessionKey: "episode", agentKind: options.agentKind ?? "custom", broker: { state: options.broker ?? "alive", observedAt }, sources: authority === "fallback" ? [] : [source], fallback: { rawOutputChanged: state === "output", observedAt }, currentRun: { runId, runOrder: options.runOrder ?? 1 } });
+    return store.reduce({ sessionKey: "episode", agentKind: options.agentKind ?? "custom", broker: { state: options.broker ?? "alive", observedAt }, sources: authority === "fallback" ? [] : [source], fallback: { rawOutputChanged: state === "output", observedAt, viewerRedraw: options.viewerRedraw }, currentRun: { runId, runOrder: options.runOrder ?? 1 } });
   }
   return { get store() { return store; }, step,
     ack: () => store.acknowledge("episode", store.get("episode")!.transitionSequence),
@@ -46,6 +46,30 @@ function episodeFixture(path: string) {
     },
     reload: async () => { await store.flushForShutdown(); store = new AgentRuntimeStateStore(path); } };
 }
+
+test("viewer redraw cannot reopen reviewed fallback work, but a later real turn can", () => fixture(f => {
+  f.step("output", "fallback");
+  const first = f.step("idle", "fallback");
+  f.ack();
+  f.step("output", "fallback", { viewerRedraw: true });
+  const reviewed = f.step("idle", "fallback");
+  expect(stoppedUnseen(reviewed)).toBe(false);
+  expect(reviewed.stoppedAt).toBe(first.stoppedAt);
+  f.step("output", "fallback");
+  const next = f.step("idle", "fallback");
+  expect(stoppedUnseen(next)).toBe(true);
+  expect(next.stoppedAt).not.toBe(first.stoppedAt);
+}));
+
+test("viewer redraw neither cancels pending work nor hides structured completion", () => fixture(f => {
+  f.step("output", "fallback");
+  f.ack();
+  f.step("output", "fallback", { viewerRedraw: true });
+  expect(stoppedUnseen(f.step("idle", "fallback"))).toBe(true);
+  f.ack();
+  f.step("working", "program", { viewerRedraw: true });
+  expect(stoppedUnseen(f.step("done", "program", { viewerRedraw: true }))).toBe(true);
+}));
 
 test("reviewed manifest idle does not resurface when its TTL selects fallback idle", () => fixture(f => {
   f.step("working");

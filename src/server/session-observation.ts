@@ -3,6 +3,7 @@ import type { SessionMeta } from "../session-meta-contract.js";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { AgentStatusState } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
+import { viewerRedrawFor } from "./viewer-redraw.js";
 import { createLogger, errMsg } from "../log.js";
 import { reduceActivityObservation } from "../session-activity.js";
 import { QUIET_ALERT_KIND, QUIET_SUPPRESSION_REASON, reduceQuietAlertPolicy } from "../quiet-alert-policy.js";
@@ -670,7 +671,7 @@ async function observeSessionFact(
     ],
     // Keep the unfiltered legacy preview on this existing runtime input;
     // display-only footer skipping and metadata must not become status evidence.
-    fallback: { rawOutputChanged: runtimeOutputChanged, observedAt, preview: legacyTerminalPreviewLine(currentRendered) },
+    fallback: { rawOutputChanged: runtimeOutputChanged, viewerRedraw: viewerRedrawFor(backend).includes(fact), observedAt, preview: legacyTerminalPreviewLine(currentRendered) },
     currentRun: {
       runId: identity?.wolfpackSessionId,
       runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
@@ -844,6 +845,7 @@ async function collectSessionObservation(
   const store = getAgentRuntimeStateStore();
   const authority = claimObservationAuthority(observationOwnership, policyEpoch);
   if (authority === undefined) return staleSessionProjection(sessionFacts);
+  viewerRedrawFor(backend).prune(sessionFacts);
 
   const activeNames = new Set<string>();
   const activeSessionKeys = new Set<string>();

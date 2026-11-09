@@ -142,6 +142,8 @@ export interface AgentRuntimeStateInput {
   readonly sources: readonly AgentStatusSource[];
   readonly fallback: {
     readonly rawOutputChanged: boolean;
+    /** Output attributable to viewer geometry, not evidence of a new work episode. */
+    readonly viewerRedraw?: boolean;
     readonly observedAt: string;
     readonly preview?: string;
   };
@@ -634,7 +636,8 @@ export function deriveAgentRuntimeState(input: AgentRuntimeStateInput): AgentRun
     && (sameSourceAuthority(previous, selected) || authoritativeDone);
   const stopped = !fallbackShell && !repeatedSignal && (selected.state === AGENT_STATUS_STATE.IDLE || authoritativeDone)
     && (firstDone || endedWork || structuredFinishAdvanced);
-  const busy = !fallbackShell && !repeatedSignal && BUSY_STATES.has(selected.state);
+  const viewerRedraw = selected.authority === AGENT_STATUS_AUTHORITY.FALLBACK && input.fallback.viewerRedraw === true;
+  const busy = !fallbackShell && !viewerRedraw && !repeatedSignal && BUSY_STATES.has(selected.state);
   // Unrelated metadata cannot replace the clock. Actual work/stop may establish a new
   // publisher context; a real non-structured stop retires the old structured episode.
   const refreshSignal = !!incomingSignal && ((sameSignalContext && signalAdvanced) || busy);
