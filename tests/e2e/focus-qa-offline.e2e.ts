@@ -5,6 +5,45 @@ let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
 
+for (const firstFetchFails of [false, true]) test(`P1: cold ${firstFetchFails ? "failed" : "healthy"} session fetch is connecting until its first response`, async ({ page }) => {
+  await page.addInitScript(() => {
+    const seen: string[] = [];
+    (window as unknown as { coldSessionNotices: string[] }).coldSessionNotices = seen;
+    new MutationObserver(() => {
+      for (const header of document.querySelectorAll("#dashboard-focus .focus-header, #assistant-content .focus-header")) {
+        if (header.textContent?.includes("sessions unavailable")) seen.push(header.parentElement!.id);
+      }
+    }).observe(document, { childList: true, subtree: true, characterData: true });
+  });
+  await page.route("https://**", route => route.abort());
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [] } }));
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route(`${server.baseUrl}/api/sessions`, async route => {
+    // Startup may issue more than one request; none has settled while this gate is held.
+    await gate;
+    if (firstFetchFails) return route.fulfill({ status: 503, json: { error: "sessions unavailable" } });
+    await route.continue();
+  });
+  const response = page.waitForResponse(res => res.url() === `${server.baseUrl}/api/sessions`);
+  try {
+    await page.goto(server.baseUrl);
+    await expect(page.locator("#dashboard-focus")).toBeVisible(); // focus answered before the gated sessions fetch
+    await page.waitForTimeout(800);
+    const duringPending = await page.evaluate(() => [...(window as unknown as { coldSessionNotices: string[] }).coldSessionNotices]);
+    release();
+    await response;
+    if (firstFetchFails) {
+      await expect(page.locator("#dashboard-focus .focus-header")).toContainText("sessions unavailable");
+      await expect(page.locator("#assistant-content .focus-header")).toContainText("sessions unavailable");
+    } else {
+      await expect(page.locator("#dashboard-focus .focus-next button").first()).toBeEnabled();
+      expect(await page.evaluate(() => (window as unknown as { coldSessionNotices: string[] }).coldSessionNotices)).toEqual([]);
+    }
+    expect(duringPending, "a pending first fetch is not an outage, including transient DOM mutations").toEqual([]);
+  } finally { release(); }
+});
+
 for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state === "idle" ? "talk" : "needs-you"} work while only the session list is unavailable`, async ({ page }) => {
   let localDown = false;
   await page.route(`${server.baseUrl}/api/sessions`, async route => {

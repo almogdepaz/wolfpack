@@ -15,6 +15,8 @@ export function createAssistantView(deps: {
   sessions: () => FocusSession[];
   /** False means the local session projection is unavailable, not that every session stopped. */
   sessionsAvailable: () => boolean;
+  /** A completed local session fetch failed; the initial pending fetch is not an outage. */
+  sessionsUnavailable: () => boolean;
   /** Unavailable peers may retain history; retired/replaced installations may not. */
   sessionMachineKnown: (identity: string) => boolean;
   open: (name: string, machine?: string) => void;
@@ -302,7 +304,7 @@ export function createAssistantView(deps: {
       ? `<div class="focus-yesterday"><h2>${dayName(summaryDay.date)}</h2><span>${summaryDay.done} done · ${summaryDay.carried} carried over · ${summaryDay.questions} question${summaryDay.questions === 1 ? "" : "s"}</span>${button("day-note", "read ›", `Read day note for ${summaryDay.date}`, noteDay?.note === false)}</div>` : "";
     // The dot follows the user's move: amber while a routine waits on its terminal, red while the home is unreachable.
     const tone = dot(offline ? "failed" : r?.surfaced ? "needs you" : state);
-    const sessionNotice = answered && !offline && !deps.sessionsAvailable() ? "<small>sessions unavailable</small>" : "";
+    const sessionNotice = answered && !offline && deps.sessionsUnavailable() ? "<small>sessions unavailable</small>" : "";
     // Nothing of the focus ui shows while the assistant is off: tile, block and page stay hidden; settings is the only door.
     // Disabled from another device while the page is open: leave it once, on the transition (show re-enters render).
     const closing = wasEnabled && !enabled;
