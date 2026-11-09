@@ -5,7 +5,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename } from "node:path";
 import { createLogger, errMsg } from "../log.js";
 import { INPUT_SOURCE } from "../activity-journal.js";
-import { viewerRedrawFor } from "./viewer-redraw.js";
 import {
   MAX_INITIAL_PROMPT_LENGTH,
 } from "../validation.js";
@@ -462,7 +461,7 @@ return {
     const session = resolved.name;
     const sessionId = resolved.identity.wolfpackSessionId;
     const noEnter = body.noEnter === true;
-    viewerRedrawFor(ctx.backend).input(session);
+    ctx.viewerRedraw.input(session);
     try {
       const streaming = streamingBackend();
       if (!streaming) {
@@ -527,7 +526,7 @@ return {
       });
     }
     try {
-      viewerRedrawFor(ctx.backend).input(session);
+      ctx.viewerRedraw.input(session);
       ctx.activityRecorder.notePresence(session, INPUT_SOURCE.CLI);
       const result = await streaming.promptAndWaitForOutput(sessionId, {
         prompt: body.prompt,

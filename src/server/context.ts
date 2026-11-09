@@ -1,5 +1,6 @@
 import { AssistantService } from "./assistant-service.js";
 import { FocusRuntime } from "./focus-runtime.js";
+import { ViewerRedrawTracker } from "./viewer-redraw.js";
 import { FocusStore } from "./focus-store.js";
 import { ActivityJournal } from "./activity-journal.js";
 import { ActivityRecorder } from "./activity-recorder.js";
@@ -36,6 +37,7 @@ export interface ServerContext {
   readonly focusRuntime: FocusRuntime;
   readonly activityJournal: ActivityJournal;
   readonly activityRecorder: ActivityRecorder;
+  readonly viewerRedraw: ViewerRedrawTracker;
 }
 
 // Context-owned lazy instances. Compatibility test hooks reset only the default
@@ -48,6 +50,7 @@ interface ServiceCache {
   focusRuntime?: FocusRuntime;
   activityJournal?: ActivityJournal;
   activityRecorder?: ActivityRecorder;
+  viewerRedraw?: { backend: ServerBackend | null; tracker: ViewerRedrawTracker };
 }
 const serviceCaches = new WeakMap<ServerContext, ServiceCache>();
 /** @internal Compatibility shim lookup; request handlers use context properties. */
@@ -83,6 +86,17 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     assistantService: overrides.assistantService ?? new AssistantService(),
     get focusRuntime() { return overrides.focusRuntime ?? (cache.focusRuntime ??= new FocusRuntime(context)); },
     get activityJournal() { return overrides.activityJournal ?? (cache.activityJournal ??= new ActivityJournal()); },
+    get viewerRedraw() {
+      if (overrides.viewerRedraw) return overrides.viewerRedraw;
+      // Observation/CLI retain a proxy while websocket viewers pin the raw backend.
+      // Give both one owner, and retire it when the underlying broker is replaced.
+      const incarnation = supervisor ? supervisor.backend() : backend;
+      if (!cache.viewerRedraw || cache.viewerRedraw.backend !== incarnation) {
+        cache.viewerRedraw?.tracker.clear();
+        cache.viewerRedraw = { backend: incarnation, tracker: new ViewerRedrawTracker(context.backend) };
+      }
+      return cache.viewerRedraw.tracker;
+    },
     get activityRecorder() {
       return overrides.activityRecorder ?? (cache.activityRecorder ??= new ActivityRecorder({ journal: context.activityJournal, events, facts: () => context.backend.listSessionFacts() }));
     },
@@ -130,4 +144,5 @@ export const defaultServerContext: ServerContext = {
   get focusRuntime() { return getDefaultServerContext().focusRuntime; },
   get activityJournal() { return getDefaultServerContext().activityJournal; },
   get activityRecorder() { return getDefaultServerContext().activityRecorder; },
+  get viewerRedraw() { return getDefaultServerContext().viewerRedraw; },
 };

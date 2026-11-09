@@ -13,13 +13,6 @@ interface Redraw {
   through?: bigint;
   timer: ReturnType<typeof setTimeout>;
 }
-const trackers = new WeakMap<SessionBackend, ViewerRedrawTracker>();
-export function viewerRedrawFor(backend: SessionBackend): ViewerRedrawTracker {
-  let tracker = trackers.get(backend);
-  if (!tracker) { tracker = new ViewerRedrawTracker(backend); trackers.set(backend, tracker); }
-  return tracker;
-}
-
 export class ViewerRedrawTracker {
   private readonly redraws = new Map<string, Redraw>();
   private readonly pending = new Map<string, object>();
@@ -73,6 +66,12 @@ export class ViewerRedrawTracker {
     const previous = this.redraws.get(name);
     if (previous) clearTimeout(previous.timer);
     this.redraws.delete(name);
+  }
+
+  clear(): void {
+    for (const name of this.redraws.keys()) this.cancel(name);
+    this.pending.clear();
+    this.inputs.clear();
   }
 
   prune(facts: readonly SessionListFact[]): void {

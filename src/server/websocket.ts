@@ -27,7 +27,7 @@ import { createRateLimiter } from "./http.js";
 import { registerSubSessionOpenedNotifier } from "./session-notifications.js";
 import { createLogger, errMsg } from "../log.js";
 import { INPUT_SOURCE } from "../activity-journal.js";
-import { viewerRedrawFor } from "./viewer-redraw.js";
+import type { ViewerRedrawTracker } from "./viewer-redraw.js";
 import { decideOutputCoalescing } from "../output-coalescing.js";
 import {
   isTerminalLoadTimingEnabled,
@@ -132,6 +132,7 @@ interface PtyEntryContext {
   readonly session: string;
   readonly ws: WebSocket;
   readonly backend: SessionBackend & PtyBackendMethods;
+  readonly viewerRedraw: ViewerRedrawTracker;
   readonly requestedSize: { current: { cols: number; rows: number } | null };
   readonly layoutStable: { current: { cols: number; rows: number } | null };
   readonly timing: ServerTerminalLoadTiming | null;
@@ -633,7 +634,7 @@ async function applyAttachResize(
   size: { cols: number; rows: number },
 ): Promise<boolean> {
   try {
-    await viewerRedrawFor(ctx.backend).begin(ctx.session);
+    await ctx.viewerRedraw.begin(ctx.session);
     await ctx.backend.resize(ctx.session, size.cols, size.rows);
   } catch (error: unknown) {
     if (entryStillCurrent(ctx.entry, ctx.session, ctx.ws)) {
@@ -1218,6 +1219,8 @@ function setupNewPtyEntry(
     return;
   }
 
+  const viewerRedraw = serverContext.viewerRedraw;
+
   /** Apply only finalizer-owned requests from the subscription boundary until
    * the newest matching acknowledgement has been sent. */
   async function finalizeAttachResizes(
@@ -1295,7 +1298,7 @@ function setupNewPtyEntry(
 
       if (!entryStillCurrent(entry, session, ws)) return;
 
-      const ctx: PtyEntryContext = { entry, session, ws, backend, requestedSize, layoutStable, timing: timing || null };
+      const ctx: PtyEntryContext = { entry, session, ws, backend, viewerRedraw, requestedSize, layoutStable, timing: timing || null };
 
       if (prefillMode === TERMINAL_PREFILL_MODE.NONE) {
         // Subscription is intentionally established before the first resize
@@ -1391,7 +1394,7 @@ function setupNewPtyEntry(
     const queuedInput = pendingInput.splice(0);
     pendingInputBytes = 0;
     for (const data of queuedInput) {
-      viewerRedrawFor(backend).input(session);
+      viewerRedraw.input(session);
       if (!backend.writeToTerminal(session, data)) {
         log.warn("terminal input write failed", { session });
         tryWsClose(ws, CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS.WRITE_FAILED, "buffered input write close failed", session);
@@ -1522,7 +1525,7 @@ function setupNewPtyEntry(
             resizeTimer = setTimeout(() => {
               resizeTimer = null;
               if (!entry.alive || entry.exitDraining) return;
-              viewerRedrawFor(streamingBackend).begin(session).then(() => streamingBackend.resize(session, cols, rows)).then(() => {
+              viewerRedraw.begin(session).then(() => streamingBackend.resize(session, cols, rows)).then(() => {
                 if (entry.exitDraining || !entryStillCurrent(entry, session, ws)) return;
                 if (resizeId !== undefined) {
                   safeViewerSend(entry, session, JSON.stringify({ type: "resize_ack", resizeId, cols, rows }));
@@ -1548,7 +1551,7 @@ function setupNewPtyEntry(
           tryWsClose(ws, CLOSE_CODE_POLICY_VIOLATION, WS_CLOSE_REASONS.INPUT_RATE_LIMITED, "input rate limit viewer close failed", session);
           return;
         }
-        viewerRedrawFor(streamingBackend).input(session);
+        viewerRedraw.input(session);
         if (inputGateActive) {
           pendingInput.push(Buffer.from(raw));
           pendingInputBytes += raw.length;

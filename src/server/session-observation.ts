@@ -3,7 +3,7 @@ import type { SessionMeta } from "../session-meta-contract.js";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import type { AgentStatusState } from "../agent-status-contract.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
-import { viewerRedrawFor } from "./viewer-redraw.js";
+import type { ViewerRedrawTracker } from "./viewer-redraw.js";
 import { createLogger, errMsg } from "../log.js";
 import { reduceActivityObservation } from "../session-activity.js";
 import { QUIET_ALERT_KIND, QUIET_SUPPRESSION_REASON, reduceQuietAlertPolicy } from "../quiet-alert-policy.js";
@@ -559,6 +559,7 @@ async function observeSessionFact(
   authority: ObservationAuthority,
   pass: ObservationPass,
   events: EventBus,
+  viewerRedraw: ViewerRedrawTracker,
 ): Promise<PendingSessionObservation | undefined> {
   if (!ownsObservationAuthority(authority)) return undefined;
   const name = fact.name;
@@ -671,7 +672,7 @@ async function observeSessionFact(
     ],
     // Keep the unfiltered legacy preview on this existing runtime input;
     // display-only footer skipping and metadata must not become status evidence.
-    fallback: { rawOutputChanged: runtimeOutputChanged, viewerRedraw: viewerRedrawFor(backend).includes(fact), observedAt, preview: legacyTerminalPreviewLine(currentRendered) },
+    fallback: { rawOutputChanged: runtimeOutputChanged, viewerRedraw: viewerRedraw.includes(fact), observedAt, preview: legacyTerminalPreviewLine(currentRendered) },
     currentRun: {
       runId: identity?.wolfpackSessionId,
       runOrder: identity?.createdAt ? Date.parse(identity.createdAt) : undefined,
@@ -845,7 +846,8 @@ async function collectSessionObservation(
   const store = getAgentRuntimeStateStore();
   const authority = claimObservationAuthority(observationOwnership, policyEpoch);
   if (authority === undefined) return staleSessionProjection(sessionFacts);
-  viewerRedrawFor(backend).prune(sessionFacts);
+  const viewerRedraw = ctx.viewerRedraw;
+  viewerRedraw.prune(sessionFacts);
 
   const activeNames = new Set<string>();
   const activeSessionKeys = new Set<string>();
@@ -861,6 +863,7 @@ async function collectSessionObservation(
     authority,
     pass,
     ctx.events,
+    viewerRedraw,
   )));
   if (!ownsObservationAuthority(authority)) return staleSessionProjection(sessionFacts);
 
