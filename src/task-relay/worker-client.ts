@@ -18,11 +18,11 @@ const log = createLogger("task-relay");
 const owners = new Map<string, symbol>();
 /** Ownership is released only after worker termination is confirmed. */
 export function hasRelayWorkerOwners(): boolean { return owners.size > 0; }
-type WorkerGatewayOptions = GatewayOptions & { requestTimeoutMs?: number; profile?: "volatile-v1" };
+type WorkerGatewayOptions = GatewayOptions & { requestTimeoutMs?: number; profile?: "volatile-v1" | "restart-safe-v1" };
 const optionNames = new Set(["profile", "root", "peerOrigin", "peerFetch", "inspectSession", "requestTimeoutMs"]);
 
 /** Inspect original descriptors before any option read/spread can execute caller code. */
-function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
+export function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
   if (!input || typeof input !== "object" || utilTypes.isProxy(input)) throw new TypeError("invalid relay worker options");
   const prototype = Object.getPrototypeOf(input);
   if (prototype !== Object.prototype && prototype !== null) throw new TypeError("invalid relay worker options");
@@ -39,7 +39,7 @@ function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
     } else {
       if (value !== undefined) {
         if (key === "profile") {
-          if (value !== "volatile-v1") throw new TypeError("invalid relay worker profile");
+          if (value !== "volatile-v1" && value !== "restart-safe-v1") throw new TypeError("invalid relay worker profile");
         } else if (key === "root" || key === "peerOrigin") {
           if (typeof value !== "string") throw new TypeError("invalid relay worker string option");
         } else if (typeof value !== "number" || !Number.isFinite(value)) throw new TypeError("invalid relay worker numeric option");
@@ -81,7 +81,8 @@ export class WorkerRelayGateway implements RelayGateway {
   #regularBytes = 0;
   #peerBytes = 0;
   #epoch: Promise<string | undefined> | undefined;
-  get profile(): "volatile-v1" { return "volatile-v1"; }
+  get isClosed(): boolean { return this.#closed; }
+  get profile(): "volatile-v1" | "restart-safe-v1" { return this.#options.profile ?? "restart-safe-v1"; }
 
   constructor(suppliedOptions: WorkerGatewayOptions = { root: undefined }) {
     assertSupportedBunRuntime();
@@ -97,7 +98,7 @@ export class WorkerRelayGateway implements RelayGateway {
     void this.#ready.catch(() => undefined);
     // .js resolves to .ts in Bun source runs; build.ts embeds this named entry for compiled runs.
     const configuration = captureRelayWire({
-      root: this.root, peerOrigin: options.peerOrigin,
+      root: this.root, peerOrigin: options.peerOrigin, profile: this.profile,
       proxyPeerFetch: options.peerFetch !== undefined,
     }, LIMIT.requestBytes);
     // Reserve before constructing a worker. Release only this owner's token, and
@@ -181,7 +182,7 @@ export class WorkerRelayGateway implements RelayGateway {
 
   #fail(reason: string): void {
     if (this.#closed) return;
-    log.warn(reason, { recovery: "restart server; explicitly rebind endpoints; no replay after epoch loss" });
+    log.warn(reason, { recovery: this.profile === "restart-safe-v1" ? "replace terminated worker; reopen committed journal; caller retries stable protocol identities" : "explicit rebind after volatile epoch loss" });
     void this.close();
   }
 
@@ -232,7 +233,7 @@ export class WorkerRelayGateway implements RelayGateway {
   async #volatileResult(method: "volatile" | "volatilePeer" | "volatileTopology", input: unknown): Promise<VolatileResult> {
     try { return await this.#call(method, input); }
     catch (error) {
-      return volatileFailure(error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed ? "RELAY_RESET" : "RELAY_UNAVAILABLE");
+      return volatileFailure(error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed && this.profile === "volatile-v1" ? "RELAY_RESET" : "RELAY_UNAVAILABLE", undefined, undefined, this.profile);
     }
   }
   async volatileEpoch(): Promise<string | undefined> {
