@@ -63,6 +63,19 @@ describe("focus document", () => {
     expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...rows[0], suggestion: undefined, doneIntention: undefined }], author: "assistant" }], now)).toThrow();
     expect(isFocusDocument({ ...next, next: { ...next.next, updatedAt: "bad" } })).toBe(false);
   });
+  test("M2/L2: suggestions and reasons cannot conceal text or invoke harness commands", () => {
+    const initial = reduceFocus(emptyFocus(), [add], now);
+    const row = { ref: { machine: "peer", sessionId: "session" }, stoppedAt: now, verdict: "suggest", reason: "Continue the approved plan", suggestion: "Continue the plan." };
+    for (const hidden of ["\u202e", "\u202a", "\u2066", "\u2069", "\u200e", "\u200f", "\u200b", "\u200c", "\u200d", "\ufeff", "\u00ad", "\u034f", "\ufe0f"]) {
+      for (const field of ["suggestion", "reason"] as const) {
+        expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...row, [field]: `continue${hidden} safely` }], author: "assistant" }], now)).toThrow();
+      }
+    }
+    for (const suggestion of ["/clear", "!git push", "   /clear", "  ! command"]) {
+      expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...row, suggestion }], author: "assistant" }], now)).toThrow();
+    }
+    expect(reduceFocus(initial, [{ type: "next", rows: [{ ...row, suggestion: "Continue — café 中文 😀;  keep scope." }], author: "assistant" }], now).next?.rows[0]?.suggestion).toBe("Continue — café 中文 😀;  keep scope.");
+  });
   test("there is no reply op and no reply field: the user talks to the assistant in its terminal", () => {
     expect(() => reduceFocus(emptyFocus(), [{ type: "reply", text: "Broker leak first.", author: "assistant" } as unknown as FocusOp], now)).toThrow();
     expect(isFocusDocument({ ...emptyFocus(), reply: { text: "hi", author: "assistant", updatedAt: now } })).toBe(false);

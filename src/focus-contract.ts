@@ -54,7 +54,7 @@ function intentionFields(v: Record<string, unknown>): boolean {
   return (v.title === undefined || text(v.title, 500)) && (v.project === undefined || text(v.project, 4096))
     && (v.machine === undefined || text(v.machine, 256)) && (v.sessions === undefined || strings(v.sessions, 100));
 }
-const oneLine = (v: unknown, max: number): v is string => text(v, max) && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(v);
+const oneLine = (v: unknown, max: number): v is string => text(v, max) && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}\p{Default_Ignorable_Code_Point}]/u.test(v);
 export function focusNextRefKey(ref: FocusNextRef): string {
   return "sessionId" in ref ? JSON.stringify([ref.machine, ref.sessionId]) : JSON.stringify([ref.intentionId]);
 }
@@ -64,7 +64,7 @@ function triage(v: unknown): v is FocusTriage {
   const intention = keys(v.ref, ["intentionId"]) && id(v.ref.intentionId);
   return (session ? timestamp(v.stoppedAt) : intention && v.stoppedAt === undefined)
     && typeof v.verdict === "string" && ["needs-you", "suggest", "quiet"].includes(v.verdict) && oneLine(v.reason, 300)
-    && (v.suggestion === undefined || (v.verdict === "suggest" && oneLine(v.suggestion, 200)))
+    && (v.suggestion === undefined || (v.verdict === "suggest" && oneLine(v.suggestion, 200) && !/^[\/!]/u.test(v.suggestion.trimStart())))
     && (v.doneIntention === undefined || (v.verdict === "suggest" && id(v.doneIntention)))
     && (v.verdict !== "suggest" || v.suggestion !== undefined || v.doneIntention !== undefined)
     && (v.suggestion === undefined || session);

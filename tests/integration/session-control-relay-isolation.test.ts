@@ -134,12 +134,13 @@ test("list exposes an incarnation-pinned bounded untrusted last line without rea
   const f = await fixture();
   __resetSessionObservationForTests();
   try {
-    f.backend.setCapturePane(async () => `untrusted ${"x".repeat(600)}\n`);
+    f.backend.setCapturePane(async () => `untrusted \u202e\u2066\u200b\ufeff${"x".repeat(600)}\n`);
     await observeDashboardSessions(f.ctx);
     const capture = spyOn(f.backend, "capturePane");
     capture.mockClear();
     const live = (await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID);
     expect(live.lastLine).toStartWith("untrusted ");
+    expect(live.lastLine).not.toMatch(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/u);
     expect(Array.from(live.lastLine).length).toBeLessThanOrEqual(300);
     expect(live.lastLineTrust).toBe("untrusted-data");
     expect(live.machine).toBe(getInstallationId());
