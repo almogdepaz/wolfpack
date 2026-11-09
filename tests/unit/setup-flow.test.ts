@@ -28,6 +28,13 @@ interface SetupFlowFixture {
     readonly deferServiceRestart?: boolean;
     readonly displayName?: string;
   };
+  readonly claude?: {
+    readonly interactive?: boolean;
+    /** Prompt substring → answer. */
+    readonly answers?: Readonly<Record<string, string>>;
+    /** What the mocked enableClaudeTaskIntegration returns. */
+    readonly enableResult?: Readonly<Record<string, unknown>>;
+  };
   readonly existingConfig?: {
     readonly devDir: string;
     readonly port: number;
@@ -88,7 +95,19 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
         },
       }));
     }
-    if (fixture?.failsTailscaleInstallation || fixture?.tailscale) {
+    if (fixture?.claude?.enableResult) {
+      const claudeSetup = await import("./src/cli/claude-integration-setup.ts");
+      await mock.module("./src/cli/claude-integration-setup.js", () => ({
+        ...claudeSetup,
+        enableClaudeTaskIntegration: (options) => {
+          console.log("CLAUDE_ENABLE");
+          options.confirmDropIn("/managed.d/wolfpack.json");
+          return fixture.claude.enableResult;
+        },
+      }));
+    }
+    const interactiveFixture = Boolean(fixture?.failsTailscaleInstallation || fixture?.tailscale || fixture?.claude?.interactive);
+    if (interactiveFixture) {
       Object.defineProperty(process.stdin, "isTTY", { value: true });
       Object.defineProperty(process.stdout, "isTTY", { value: true });
     }
@@ -99,7 +118,13 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
       IS_MACOS: fixture?.failsTailscaleInstallation ?? false,
       IS_LINUX: false,
       ask: (prompt) => {
-        if (!fixture?.failsTailscaleInstallation && !fixture?.tailscale) throw new Error("noninteractive setup must not prompt");
+        if (!interactiveFixture) throw new Error("noninteractive setup must not prompt");
+        for (const [promptPart, answer] of Object.entries(fixture?.claude?.answers ?? {})) {
+          if (prompt.includes(promptPart)) {
+            console.log("PROMPT=" + prompt.trim());
+            return answer;
+          }
+        }
         if (prompt.includes("Install it now")) return "y";
         if (prompt.includes("doesn't exist")) return "y";
         if (prompt.includes("press Enter to retry")) return "skip";
@@ -143,7 +168,7 @@ function runSetupFlow(home: string, fixture?: SetupFlowFixture): SetupFlowResult
 
     const { setup } = await import("./src/cli/setup.ts");
     await setup({
-      nonInteractive: !fixture?.failsTailscaleInstallation && !fixture?.tailscale,
+      nonInteractive: !interactiveFixture,
       ...(fixture?.setupOptions ?? {}),
     });
   `;
@@ -311,6 +336,65 @@ describe("first-run setup", () => {
     const result = runSetupFlow(home, { existingConfig, serviceInstalled: true, serviceRunning: true });
     expectSuccessfulSetup(result);
     expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual(existingConfig);
+  });
+
+  test("non-interactive setup only points claude users at the interactive opt-in", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const result = runSetupFlow(home, { providerCommands: ["claude"] });
+    expectSuccessfulSetup(result);
+    expect(result.stdout).toContain("Claude detected; non-interactive mode skipped the optional Claude task integration.");
+    expect(result.stdout).not.toContain("CLAUDE_ENABLE");
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).not.toHaveProperty("claudeTaskIntegration");
+  });
+
+  test.each([
+    ["persists the flag after every step succeeds", undefined, { "Enable the Claude task integration": "y", "Use sudo": "y" }, { status: "enabled" }, true],
+    ["clears the flag when a verification re-run fails", true, { "Disable it": "n", "Use sudo": "y" }, {
+      status: "failed",
+      reason: "could not install the wolfpack-tasks@wolfpack-tasks plugin",
+      failedCommand: "claude plugin install wolfpack-tasks@wolfpack-tasks",
+      retry: "claude plugin install wolfpack-tasks@wolfpack-tasks, then wolfpack setup",
+    }, false],
+  ] as const)("interactive Claude opt-in %s", (_name, existingFlag, answers, enableResult, flagAfter) => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const result = runSetupFlow(home, {
+      providerCommands: ["claude"],
+      claude: { interactive: true, answers, enableResult },
+      existingConfig: { devDir: home, port: 18790, ...(existingFlag && { claudeTaskIntegration: true }) },
+    });
+    expectSuccessfulSetup(result);
+    expect(result.stdout).toContain("CLAUDE_ENABLE");
+    expect(result.stdout).toContain("PROMPT=Use sudo to write /managed.d/wolfpack.json? [y/N]");
+    const config = JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"));
+    if (flagAfter) {
+      expect(config.claudeTaskIntegration).toBe(true);
+      expect(result.stdout).toContain("Enabled the Claude task integration.");
+      expect(result.stdout).toContain("--channels plugin:wolfpack-tasks@wolfpack-tasks");
+    } else {
+      expect(config).not.toHaveProperty("claudeTaskIntegration");
+      expect(result.stdout).toContain("Failed command: claude plugin install wolfpack-tasks@wolfpack-tasks");
+      expect(result.stdout).toContain("Retry: claude plugin install wolfpack-tasks@wolfpack-tasks, then wolfpack setup");
+      expect(result.stdout).toContain("The Claude task integration is off.");
+    }
+  });
+
+  test.each([
+    ["declining the offer changes nothing", undefined, { "Enable the Claude task integration": "n" }, "Skipped the optional Claude task integration."],
+    ["disabling clears the flag and prints the sudo removal command", true, { "Disable it": "y" }, "sudo rm "],
+  ] as const)("interactive Claude opt-in: %s", (_name, existingFlag, answers, expectedText) => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const result = runSetupFlow(home, {
+      providerCommands: ["claude"],
+      claude: { interactive: true, answers, enableResult: { status: "enabled" } },
+      existingConfig: { devDir: home, port: 18790, ...(existingFlag && { claudeTaskIntegration: true }) },
+    });
+    expectSuccessfulSetup(result);
+    expect(result.stdout).not.toContain("CLAUDE_ENABLE");
+    expect(result.stdout).toContain(expectedText);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).not.toHaveProperty("claudeTaskIntegration");
   });
 
   test.each([18790, 24444])("persists and presents both URLs below the verified remote QR with local port %p", (port) => {

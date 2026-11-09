@@ -52,6 +52,43 @@ can execute commands with the user's permissions, so review them before opting
 in. Start a fresh agent context afterward, or run `/reload` in an existing Pi
 session.
 
+## Claude task integration setup
+
+`wolfpack setup` checks for `claude` on `PATH`. Claude users receive one
+default-no, opt-in offer for the Claude task integration; users without Claude
+receive no offer. The integration lets Wolfpack task mail reach Claude sessions
+through the `wolfpack-tasks` Claude Code plugin and its channel. Accepting runs
+these steps in order and stops at the first failure:
+
+1. Check that `claude --version` is at least 2.1.319 and that Claude uses the
+   first-party provider (`CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX`
+   are unset).
+2. Run `claude plugin marketplace add almogdepaz/wolfpack-tasks`, unless the
+   marketplace is already known to Claude.
+3. Run `claude plugin install wolfpack-tasks@wolfpack-tasks` (user scope),
+   unless it is already installed.
+4. After an explicit confirmation, write the machine-wide managed-settings
+   drop-in `wolfpack.json` with `sudo mkdir -p` and `sudo install -m 0644`, unless
+   the file already has the expected content. The directory is
+   `/Library/Application Support/ClaudeCode/managed-settings.d` on macOS and
+   `/etc/claude-code/managed-settings.d` on Linux. The drop-in sets
+   `channelsEnabled: true` and `allowedChannelPlugins` to the `wolfpack-tasks`
+   plugin only. That allowlist replaces any lower-precedence allowlist, and the
+   highest-precedence managed source that sets `allowedChannelPlugins` wins, so
+   another managed source can block the channel.
+5. Save `claudeTaskIntegration: true` in `~/.wolfpack/config.json`.
+
+On a failure, setup prints the failed command and a retry hint, and leaves the
+flag off. Wolfpack writes only `wolfpack.json` and never edits other managed
+settings. Re-running setup while the integration is on offers to disable it; if
+you keep it, setup verifies every step again and repairs only what is missing.
+Disabling clears the flag and prints, but does not run, the commands that remove
+the drop-in (`sudo rm`) and the plugin (`claude plugin uninstall`).
+Non-interactive setup changes nothing and directs Claude users to rerun
+`wolfpack setup` interactively. While the flag is on, Wolfpack launches the stock
+`claude` command with `--channels plugin:wolfpack-tasks@wolfpack-tasks`; see
+[Claude task workers](session-control.md#claude-task-workers).
+
 ## Clone or update the auditable source
 
 Use a dedicated clone. Updating is fast-forward-only so this workflow does not
