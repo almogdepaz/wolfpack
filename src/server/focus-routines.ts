@@ -5,12 +5,12 @@ import {
 } from "../activity-journal.js";
 import {
   ASSISTANT_SESSION_NAME, InvalidInboxFile, applyAck, buildInbox, dayNoteMarkdown, dayNoteUpdateMarkdown, emptyCoverage, inboxFileName, inboxPrompt, isFocusCoverage,
-  isInboxFileName, settledProvisional, withoutAssistantRows,
+  isInboxFileName, isNeedsInputSnapshot, settledProvisional, withoutAssistantRows,
   type FocusCoverage, type GitRepoLog, type InboxDay, type InboxMachine, type MachineCursor,
 } from "../focus-coverage.js";
 import {
-  ASSISTANT_TIMING_DEFAULTS, ROUTINE, STALE_AFTER_MS, activityDayOf, addDays, activityDayWindow, decideRoutines,
-  type AssistantTiming, type RoutineAction, type SchedulerMachine,
+  ASSISTANT_TIMING_DEFAULTS, ROUTINE, STALE_AFTER_MS, activityDayOf, addDays, activityDayWindow, decideRoutines, pendingNeedsInput,
+  type AssistantTiming, type RoutineAction, type SchedulerMachine, type NeedsInputSnapshot,
 } from "../focus-scheduler.js";
 import type { SendOutcome } from "../focus-send-queue.js";
 import { readValidatedJsonFile, writePrivateFile, writePrivateJsonFile } from "../persistence.js";
@@ -28,6 +28,10 @@ const REVIEW_DAY_ROW_CAP = 2000;
 const REVIEW_ROW_CAP = 5000;
 type Page = ActivityPeerPage;
 type GitRepos = { repos: ActivityGitRepo[] };
+type PulledRows = { rows: ActivityRow[]; through: number; truncated: boolean; capped: boolean };
+type JournalPosition = Pick<MachineCursor, "journalId" | "seq" | "headSeq">;
+const positionOf = ({ journalId, seq, headSeq }: MachineCursor): JournalPosition => ({ journalId, seq, headSeq });
+const samePosition = (a: JournalPosition | undefined, b: JournalPosition) => !!a && a.journalId === b.journalId && a.seq === b.seq && a.headSeq === b.headSeq;
 
 /** One machine's journal: this server's own (direct) or a verified peer's `/api/activity`. */
 export interface ActivitySource {
@@ -103,6 +107,8 @@ export class FocusRoutines {
   private queuedFile?: string;
   private unconfirmedFile?: string;
   private reached = new Set<string>();
+  private pendingPulls = new Map<string, { position: JournalPosition; pulled: PulledRows }>();
+  private baselineAttempts = new Map<string, JournalPosition>();
   private snapshot: FocusCoverage = emptyCoverage();
   private pending = false;
   private notice?: string;
@@ -177,10 +183,27 @@ export class FocusRoutines {
     }));
     this.pending = machines.some(m => m.pendingRows);
     const inbox = coverage.inbox && { ...coverage.inbox, queued: this.queuedFile === coverage.inbox.file };
-    const actions = decideRoutines({ now, timing, enabled: true, idle, booting: this.booting, restarted: this.restartPending, manual, machines,
-      reviewedThrough: coverage.reviewedThrough, provisional: coverage.provisional?.date ?? null, lastRun: coverage.lastRun, inbox });
+    const input = { now, timing, enabled: true, idle, booting: this.booting, restarted: this.restartPending, manual, machines,
+      reviewedThrough: coverage.reviewedThrough, provisional: coverage.provisional?.date ?? null, lastRun: coverage.lastRun, lastUrgentCatchUpAt: coverage.lastUrgentCatchUpAt, inbox };
+    let actions = decideRoutines(input);
+    const pending = new Map<string, PulledRows>();
+    // Reviews and already-due catch-ups need no speculative pending pull. Only
+    // inspect for an early urgent run; unchanged journal positions reuse a pull.
+    if (!actions.length && idle && !coverage.inbox) {
+      await Promise.all(sources.filter(s => this.reached.has(s.id)).map(async source => {
+        const cursor = coverage.catchUpCursors[source.id]!;
+        if (cursor.headSeq <= cursor.seq) return;
+        await this.restoreNeedsInput(source, cursor, timing);
+        const pulled = await this.readPending(source, cursor);
+        if (!pulled) return;
+        pending.set(source.id, pulled);
+        const baseline = !pulled.truncated ? cursor.needsInputSnapshot : undefined;
+        machines.find(m => m.id === source.id)!.newlyNeedsInput = pendingNeedsInput(pulled.rows, baseline).newlyNeedsInput;
+      }));
+      actions = decideRoutines(input);
+    }
     if (!actions.length && this.booting && idle && !coverage.inbox) this.booting = false;
-    for (const action of actions) coverage = await this.execute(action, coverage, sources, timing, manual);
+    for (const action of actions) coverage = await this.execute(action, coverage, sources, timing, manual, pending);
     this.save(coverage);
   }
 
@@ -199,14 +222,19 @@ export class FocusRoutines {
       if (cursor && (otherJournal || status.headSeq < recorded)) {
         log.warn("activity journal replaced; cursor restarted", { machine: source.name });
         cursor = undefined;
-        if (coverage.inbox) delete coverage.inbox.through[source.id];
+        if (coverage.inbox) {
+          delete coverage.inbox.through[source.id];
+          if (coverage.inbox.needsInputSessions) delete coverage.inbox.needsInputSessions[source.id];
+          if (coverage.inbox.needsInputSnapshots) delete coverage.inbox.needsInputSnapshots[source.id];
+        }
         if (coverage.provisional) delete coverage.provisional.through[source.id];
       }
       if (!cursor) {
         // First contact: catch-ups start at today's first row; earlier days belong to reviews.
         const today = activityDayWindow(activityDayOf(this.now(), timing.fallbackTime), timing.fallbackTime);
         const first = (await source.read(0, 1, { from: today.start, to: today.end })).rows[0];
-        cursor = { name: source.name, seq: first ? first.seq - 1 : status.headSeq, headSeq: status.headSeq, lastReachedAt: null, lastRowAt: null, lastInputAt: null };
+        cursor = { name: source.name, seq: first ? first.seq - 1 : status.headSeq, headSeq: status.headSeq, lastReachedAt: null, lastRowAt: null, lastInputAt: null,
+          needsInputSnapshot: { complete: true, needsInputSessions: [], sessionIdentities: {} } };
       }
       coverage.catchUpCursors[source.id] = { ...cursor, name: source.name, headSeq: status.headSeq, lastReachedAt: this.iso(), lastRowAt: status.lastRowAt, lastInputAt: status.lastInputAt,
         ...(status.journalId && { journalId: status.journalId }) };
@@ -214,8 +242,39 @@ export class FocusRoutines {
     } catch (error) { log.debug("activity source unreachable", { machine: source.name, error: errMsg(error) }); }
   }
 
+  /** Best-effort cache recovery, never a liveness probe. Replay at most the
+   * previous/current activity days in one pass (one bounded page for a peer).
+   * A missing prefix leaves unobserved identities unknown, not non-waiting.
+   */
+  private async restoreNeedsInput(source: ActivitySource, cursor: MachineCursor, timing: AssistantTiming): Promise<void> {
+    if (cursor.needsInputSnapshot || samePosition(this.baselineAttempts.get(source.id), cursor)) return;
+    this.baselineAttempts.set(source.id, positionOf(cursor));
+    const today = activityDayOf(this.now(), timing.fallbackTime);
+    const from = activityDayWindow(addDays(today, -1), timing.fallbackTime).start;
+    const to = activityDayWindow(today, timing.fallbackTime).end;
+    try {
+      // Local reads already parse the selected files once; avoid re-parsing
+      // them page by page. Peer requests retain the public page-size bound.
+      const page = await source.read(0, source.local ? Number.MAX_SAFE_INTEGER : ACTIVITY_PAGE_MAX, { from, to });
+      if (page.next < cursor.seq) { log.debug("activity baseline incomplete", { machine: source.name }); return; }
+      const rows = page.rows.filter(row => row.seq <= cursor.seq);
+      const { newlyNeedsInput: _, ...snapshot } = pendingNeedsInput(source.local ? withoutAssistantRows(rows) : rows);
+      snapshot.complete = cursor.seq === 0 || (!page.truncated && rows[0]?.seq === 1);
+      if (isNeedsInputSnapshot(snapshot)) cursor.needsInputSnapshot = snapshot;
+      else log.debug("activity baseline exceeds cache bounds", { machine: source.name });
+    } catch (error) { log.warn("activity baseline unavailable; source remains reached", { machine: source.name, error: errMsg(error) }); }
+  }
+
+  private async readPending(source: ActivitySource, cursor: MachineCursor): Promise<PulledRows | null> {
+    const cached = this.pendingPulls.get(source.id);
+    if (cached && samePosition(cached.position, cursor)) return cached.pulled;
+    const pulled = await this.tryPull(source, cursor.seq, CATCH_UP_ROW_CAP);
+    if (pulled) this.pendingPulls.set(source.id, { position: positionOf(cursor), pulled });
+    return pulled;
+  }
+
   /** `capped`: the row cap stopped the pull; `truncated`: retention removed rows the cursor or window needed. */
-  private async pull(source: ActivitySource, since: number, cap: number, window?: { from: number; to: number }): Promise<{ rows: ActivityRow[]; through: number; truncated: boolean; capped: boolean }> {
+  private async pull(source: ActivitySource, since: number, cap: number, window?: { from: number; to: number }): Promise<PulledRows> {
     const rows: ActivityRow[] = [];
     let cursor = since, truncated = false;
     for (;;) {
@@ -261,21 +320,32 @@ export class FocusRoutines {
   }
 
   private writeInbox(coverage: FocusCoverage, routine: typeof ROUTINE[keyof typeof ROUTINE], doc: Omit<Parameters<typeof buildInbox>[0], "file" | "routine" | "createdAt">,
-    through: Record<string, number>, days?: string[], provisional?: string): FocusCoverage {
+    through: Record<string, number>, days?: string[], provisional?: string, urgent = false): FocusCoverage {
     const createdAt = this.iso();
     const file = inboxFileName(routine, this.now());
     mkdirSync(join(this.deps.folder, "inbox"), { recursive: true, mode: 0o700 });
     const path = join(this.deps.folder, "inbox", file);
     writePrivateJsonFile(path, buildInbox({ file, routine, createdAt, ...doc }));
+    const needsInputSnapshots: Record<string, NeedsInputSnapshot> = {};
+    // Day/gap windows can skip state rows between seq and through, even when a
+    // later day advances the watermark. Only contiguous catch-up rows qualify.
+    for (const machine of doc.machines) if (machine.reached && routine === ROUTINE.CATCH_UP && !machine.truncated) {
+      const cursor = coverage.catchUpCursors[machine.installationId];
+      if (machine.from !== (cursor?.seq ?? 0)) continue;
+      const baseline = cursor?.needsInputSnapshot;
+      const { newlyNeedsInput: _, ...snapshot } = pendingNeedsInput(machine.rows, baseline);
+      if (isNeedsInputSnapshot(snapshot)) needsInputSnapshots[machine.installationId] = snapshot;
+    }
     const next: FocusCoverage = { ...coverage, lastRun: { ...coverage.lastRun, [routine]: createdAt },
-      inbox: { file, routine, createdAt, sends: 0, lastSentAt: null, surfaced: false, through, ...(days?.length && { days }), ...(provisional && { provisional }) } };
+      ...(urgent && { lastUrgentCatchUpAt: createdAt }),
+      inbox: { file, routine, createdAt, sends: 0, lastSentAt: null, surfaced: false, through, needsInputSnapshots, ...(days?.length && { days }), ...(provisional && { provisional }) } };
     // The file is only reachable through coverage: a refused save must not leave it behind.
     try { this.save(next); } catch (error) { rmSync(path, { force: true }); throw error; }
     this.send(file);
     return next;
   }
 
-  private async execute(action: RoutineAction, coverage: FocusCoverage, sources: ActivitySource[], timing: AssistantTiming, manual: boolean): Promise<FocusCoverage> {
+  private async execute(action: RoutineAction, coverage: FocusCoverage, sources: ActivitySource[], timing: AssistantTiming, manual: boolean, pending: Map<string, PulledRows>): Promise<FocusCoverage> {
     const reachable = sources.filter(s => this.reached.has(s.id));
     switch (action.type) {
       case "drop-inbox":
@@ -294,7 +364,8 @@ export class FocusRoutines {
         const through: Record<string, number> = {};
         for (const source of reachable) {
           const cursor = coverage.catchUpCursors[source.id]!;
-          const pulled = await this.tryPull(source, cursor.seq, CATCH_UP_ROW_CAP);
+          await this.restoreNeedsInput(source, cursor, timing);
+          const pulled = pending.get(source.id) ?? await this.readPending(source, cursor);
           if (!pulled) continue;
           through[source.id] = pulled.through;
           if (pulled.rows.length) blocks.push({ installationId: source.id, name: source.name, reached: true, from: cursor.seq, through: pulled.through, truncated: pulled.truncated, capped: pulled.capped, rows: pulled.rows });
@@ -304,7 +375,7 @@ export class FocusRoutines {
           if (manual) this.notice = "nothing new to catch up on";
           return coverage;
         }
-        return this.writeInbox(coverage, ROUTINE.CATCH_UP, { machines: [...blocks, ...this.unreachedBlocks(coverage)] }, through);
+        return this.writeInbox(coverage, ROUTINE.CATCH_UP, { machines: [...blocks, ...this.unreachedBlocks(coverage)] }, through, undefined, undefined, action.reason === "urgent");
       }
       case ROUTINE.DAY_REVIEW: case ROUTINE.GAP_REVIEW:
         return this.review(action.type, action.days, coverage, reachable, timing);

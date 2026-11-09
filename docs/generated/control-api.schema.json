@@ -6310,6 +6310,11 @@
           "minimum": 1,
           "maximum": 120
         },
+        "urgentCatchUpSpacingMinutes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120
+        },
         "journalRetentionDays": {
           "type": "integer",
           "minimum": 1,
@@ -6320,6 +6325,7 @@
         "quietMinutes",
         "fallbackTime",
         "catchUpDebounceMinutes",
+        "urgentCatchUpSpacingMinutes",
         "journalRetentionDays"
       ],
       "additionalProperties": false

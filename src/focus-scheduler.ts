@@ -7,14 +7,17 @@
  * by default), so work that runs past midnight belongs to the day it started
  * and the fallback review fires exactly when that day ends.
  */
+import { ACTIVITY_KIND, type ActivityRow } from "./activity-journal.js";
+import { AGENT_STATUS_STATE } from "./agent-status-contract.js";
+
 export const ROUTINE = { CATCH_UP: "catch-up", DAY_REVIEW: "day-review", GAP_REVIEW: "gap-review" } as const;
 export type Routine = typeof ROUTINE[keyof typeof ROUTINE];
 export const ROUTINE_RESEND_CAP = 3;
 export const STALE_AFTER_MS = 24 * 60 * 60_000;
 
-export interface AssistantTiming { quietMinutes: number; fallbackTime: string; catchUpDebounceMinutes: number; journalRetentionDays: number }
-export const ASSISTANT_TIMING_DEFAULTS: AssistantTiming = Object.freeze({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, journalRetentionDays: 30 });
-const RANGES = { quietMinutes: [15, 480], catchUpDebounceMinutes: [1, 120], journalRetentionDays: [1, 365] } as const;
+export interface AssistantTiming { quietMinutes: number; fallbackTime: string; catchUpDebounceMinutes: number; urgentCatchUpSpacingMinutes: number; journalRetentionDays: number }
+export const ASSISTANT_TIMING_DEFAULTS: AssistantTiming = Object.freeze({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30 });
+const RANGES = { quietMinutes: [15, 480], catchUpDebounceMinutes: [1, 120], urgentCatchUpSpacingMinutes: [1, 120], journalRetentionDays: [1, 365] } as const;
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const MIN = 60_000;
 
@@ -26,10 +29,11 @@ export function parseAssistantTiming(raw: unknown): AssistantTiming {
     quietMinutes: inRange("quietMinutes", v.quietMinutes) ? v.quietMinutes : ASSISTANT_TIMING_DEFAULTS.quietMinutes,
     fallbackTime: typeof v.fallbackTime === "string" && TIME.test(v.fallbackTime) ? v.fallbackTime : ASSISTANT_TIMING_DEFAULTS.fallbackTime,
     catchUpDebounceMinutes: inRange("catchUpDebounceMinutes", v.catchUpDebounceMinutes) ? v.catchUpDebounceMinutes : ASSISTANT_TIMING_DEFAULTS.catchUpDebounceMinutes,
+    urgentCatchUpSpacingMinutes: inRange("urgentCatchUpSpacingMinutes", v.urgentCatchUpSpacingMinutes) ? v.urgentCatchUpSpacingMinutes : ASSISTANT_TIMING_DEFAULTS.urgentCatchUpSpacingMinutes,
     journalRetentionDays: inRange("journalRetentionDays", v.journalRetentionDays) ? v.journalRetentionDays : ASSISTANT_TIMING_DEFAULTS.journalRetentionDays,
   };
 }
-/** Strict validation of a settings write: all four fields, in range, nothing else. A field error names the field and what it expects, so a UI can word it with its own label. */
+/** Strict validation of a settings write: all timing fields, in range, nothing else. A field error names the field and what it expects, so a UI can word it with its own label. */
 export function validateAssistantTiming(raw: unknown): { ok: true; value: AssistantTiming } | { ok: false; error: string; field?: keyof AssistantTiming; expected?: string } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, error: "assistant settings must be an object" };
   const v = raw as Record<string, unknown>;
@@ -63,11 +67,86 @@ export function activityDayOf(ms: number, fallbackTime: string): string {
   return ms < window.start ? addDays(day, -1) : ms >= window.end ? addDays(day, 1) : day;
 }
 
+export interface NeedsInputSnapshot {
+  /** False when bounded recovery could not observe the whole earlier stream. */
+  complete: boolean;
+  needsInputSessions: string[];
+  /** Names map to UUID (or legacy name) keys whose state is known at the cursor. */
+  sessionIdentities: Record<string, string>;
+}
+
+/** Replay per-session facts. Missing cache entries are unknown, not proof of a
+ * transition. A new incarnation or an observed non-waiting state establishes
+ * that proof. Unknown observations and same-state questions do not.
+ */
+export function pendingNeedsInput(rows: readonly ActivityRow[], baseline?: NeedsInputSnapshot): NeedsInputSnapshot & { newlyNeedsInput: boolean } {
+  const complete = baseline?.complete ?? false;
+  const needsInput = new Set(baseline?.needsInputSessions);
+  const aliases = new Map(Object.entries(baseline?.sessionIdentities ?? {}));
+  const known = new Set([...aliases.values(), ...needsInput]);
+  const entered = new Set<string>();
+  const observedEntries = new Set<string>();
+  const forget = (key: string) => {
+    needsInput.delete(key); known.delete(key); entered.delete(key); observedEntries.delete(key);
+    for (const [name, identity] of aliases) if (identity === key) aliases.delete(name);
+  };
+  for (const row of rows) {
+    if (row.kind !== ACTIVITY_KIND.SESSION_STATE && row.kind !== ACTIVITY_KIND.SESSION_CREATED
+      && row.kind !== ACTIVITY_KIND.SESSION_LIVE && row.kind !== ACTIVITY_KIND.SESSION_EXITED) continue;
+    if ("state" in row && row.state === AGENT_STATUS_STATE.UNKNOWN) continue;
+    const name = row.session;
+    const fallback = name ? `name:${name}` : undefined;
+    const key = row.sessionId ? `id:${row.sessionId}` : (name ? aliases.get(name) : undefined) ?? fallback;
+    if (!key) continue;
+    if (row.kind === ACTIVITY_KIND.SESSION_EXITED) {
+      forget(key);
+      if (fallback) forget(fallback);
+      continue;
+    }
+    if (!name || (row.state === undefined && row.kind !== ACTIVITY_KIND.SESSION_CREATED)) continue;
+    const previous = aliases.get(name);
+    if (previous && previous !== key && previous !== fallback) {
+      forget(previous);
+      known.add(key); // A changed UUID is a newly observed incarnation.
+    }
+    // A UUID-bearing state can identify the same legacy waiting session;
+    // creation instead fences a replacement incarnation and clears that name.
+    if (fallback && fallback !== key) {
+      if (row.kind !== ACTIVITY_KIND.SESSION_CREATED) {
+        if (needsInput.has(fallback)) needsInput.add(key);
+        if (known.has(fallback)) known.add(key);
+        if (entered.has(fallback)) entered.add(key);
+        if (observedEntries.has(fallback)) observedEntries.add(key);
+      }
+      forget(fallback);
+    }
+    if (row.kind === ACTIVITY_KIND.SESSION_CREATED) {
+      // Creation enrichment may arrive after the first state row. It proves
+      // that a wait observed in this batch belongs to a fresh incarnation,
+      // but must not reopen a wait that was already in the acked baseline.
+      if (observedEntries.has(key) && needsInput.has(key)) entered.add(key);
+      known.add(key);
+    }
+    if (row.state === AGENT_STATUS_STATE.NEEDS_INPUT) {
+      if (!needsInput.has(key)) {
+        observedEntries.add(key);
+        if (complete || known.has(key)) entered.add(key);
+      }
+      needsInput.add(key);
+    } else if (row.state !== undefined) needsInput.delete(key);
+    known.add(key);
+    aliases.set(name, key);
+  }
+  return { complete, newlyNeedsInput: [...entered].some(key => needsInput.has(key)), needsInputSessions: [...needsInput], sessionIdentities: Object.fromEntries(aliases) };
+}
+
 export interface SchedulerMachine {
   id: string;
   reachable: boolean;
   /** Journal head is past this machine's catch-up cursor. */
   pendingRows: boolean;
+  /** Pending journal rows contain an entry into needs-input not already caught up. */
+  newlyNeedsInput?: boolean;
   lastRowAt: string | null;
   /** Last user input row (from the latest probe, else the last known value from the cursors). */
   lastInputAt: string | null;
@@ -90,12 +169,14 @@ export interface SchedulerInput {
   /** Day of a provisional quiet review already run: no further quiet review that day. */
   provisional?: string | null;
   lastRun: Partial<Record<Routine, string>>;
+  /** Independent spacing: ordinary catch-ups do not reset the urgent clock. */
+  lastUrgentCatchUpAt?: string;
   inbox: SchedulerInbox | null;
 }
 export type RoutineAction =
   | { type: typeof ROUTINE.GAP_REVIEW; days: string[] }
   | { type: typeof ROUTINE.DAY_REVIEW; days: string[]; reason: "quiet" | "fallback" }
-  | { type: typeof ROUTINE.CATCH_UP; reason: "activity" | "boot" | "restart" | "manual" }
+  | { type: typeof ROUTINE.CATCH_UP; reason: "activity" | "urgent" | "boot" | "restart" | "manual" }
   | { type: "resend" | "surface" | "drop-inbox"; file: string };
 
 const ms = (at: string | null | undefined) => at ? Date.parse(at) : NaN;
@@ -132,5 +213,8 @@ export function decideRoutines(input: SchedulerInput): RoutineAction[] {
   if (!input.machines.some(m => m.pendingRows)) return [];
   if (input.booting) return [{ type: ROUTINE.CATCH_UP, reason: "boot" }];
   if (input.restarted) return [{ type: ROUTINE.CATCH_UP, reason: "restart" }];
+  if (input.machines.some(m => m.pendingRows && m.newlyNeedsInput) && elapsed(now, input.lastUrgentCatchUpAt, timing.urgentCatchUpSpacingMinutes)) {
+    return [{ type: ROUTINE.CATCH_UP, reason: "urgent" }];
+  }
   return elapsed(now, input.lastRun[ROUTINE.CATCH_UP], timing.catchUpDebounceMinutes) ? [{ type: ROUTINE.CATCH_UP, reason: "activity" }] : [];
 }

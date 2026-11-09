@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ACTIVITY_KIND, pageActivity, type ActivityRow, type ActivityRowBody } from "../../src/activity-journal.ts";
+import { EventBus } from "../../src/event-bus.ts";
+import { WOLFPACK_EVENT_KIND } from "../../src/events-contract.ts";
+import { ActivityRecorder } from "../../src/server/activity-recorder.ts";
 import { ASSISTANT_TIMING_DEFAULTS } from "../../src/focus-scheduler.ts";
 import { FocusSendQueue, type SendOutcome } from "../../src/focus-send-queue.ts";
 import { ActivityJournal } from "../../src/server/activity-journal.ts";
@@ -40,13 +43,14 @@ function setup(now = at(6, 15)) {
   const clock = { now };
   const journal = new ActivityJournal({ dir: join(root, "activity"), now: () => clock.now });
   const peer = new FakePeer("laptop", "mac", () => clock.now);
+  const home = localActivitySource("home", "sgt", journal);
   const sends: { text: string; settle: (o: SendOutcome) => void }[] = [];
   const assistant = { sessionId: "assistant-1", idle: true };
   let busy = false;
   const routines = new FocusRoutines({
     folder: join(root, "assistant"),
     enabled: () => true,
-    sources: async () => [localActivitySource("home", "sgt", journal), peer],
+    sources: async () => [home, peer],
     timing: async () => ASSISTANT_TIMING_DEFAULTS,
     assistant: async () => assistant,
     queueBusy: () => busy,
@@ -56,11 +60,79 @@ function setup(now = at(6, 15)) {
   const append = (body: ActivityRowBody, when: number) => { const prior = clock.now; clock.now = when; journal.append(body); clock.now = prior; };
   const coverage = () => JSON.parse(readFileSync(join(root, "assistant", "routines.json"), "utf8"));
   const inbox = (file: string) => JSON.parse(readFileSync(join(root, "assistant", "inbox", file), "utf8"));
-  return { root, clock, journal, peer, sends, assistant, routines, append, coverage, inbox, setBusy: (b: boolean) => { busy = b; } };
+  return { root, clock, journal, home, peer, sends, assistant, routines, append, coverage, inbox, setBusy: (b: boolean) => { busy = b; } };
 }
 const state = (session: string, label = "Working"): ActivityRowBody => ({ kind: ACTIVITY_KIND.SESSION_STATE, session, sessionId: `${session}-id`, state: "working", label });
 const input = (session: string): ActivityRowBody => ({ kind: ACTIVITY_KIND.INPUT, session, source: "browser", bucket: new Date(at(6, 14, 50)).toISOString() });
 const fileOf = (text: string) => text.replace("process inbox inbox/", "");
+
+describe("urgent catch-up with real recorder enrichment", () => {
+  async function ack(t: ReturnType<typeof setup>) {
+    const send = t.sends.at(-1)!;
+    send.settle("sent");
+    await t.routines.ack(fileOf(send.text));
+  }
+  async function incompleteBaseline() {
+    const t = setup(at(4, 15));
+    t.append(state("app"), at(4, 14));
+    t.append(input("app"), at(4, 14, 50));
+    await t.routines.tick(); await t.routines.tick(); await ack(t);
+    t.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "later", eventType: "updated" }, at(5, 14));
+    t.clock.now = at(6, 15);
+    await t.routines.tick(); await ack(t); // gap review invalidates the earlier cache
+    t.append(input("app"), t.clock.now);
+    await t.routines.tick(); await ack(t); // bounded recovery cannot observe Nov 4
+    expect(t.coverage().catchUpCursors.home.needsInputSnapshot).toEqual({ complete: false, needsInputSessions: [], sessionIdentities: {} });
+    t.clock.now += MIN;
+    return t;
+  }
+
+  test.each(["created-first", "state-first", "resolved-before-created", "resolved-after-created", "ack-before-created"])("real recorder ordering: %s", async mode => {
+    const t = await incompleteBaseline();
+    const since = t.journal.status().headSeq;
+    const events = new EventBus();
+    let release!: () => void;
+    const enrichment = new Promise<void>(resolve => { release = resolve; });
+    const recorder = new ActivityRecorder({ journal: t.journal, events, facts: async () => [], now: () => t.clock.now,
+      git: async () => { await enrichment; return {}; } });
+    const publishState = (state: "needs-input" | "working", transitionSequence: number) => events.publishEvent({
+      kind: WOLFPACK_EVENT_KIND.SESSION_STATE, session: "new-app", sessionId: "new-id", state, label: state, transitionSequence,
+    });
+    recorder.start();
+    try {
+      events.publishEvent({ kind: WOLFPACK_EVENT_KIND.SESSION_CREATED, session: "new-app", sessionId: "new-id", cwd: "/repo" });
+      if (mode === "created-first") { release(); await recorder.settled(); }
+      publishState("needs-input", 1);
+      if (mode === "resolved-before-created") publishState("working", 2);
+      if (mode === "ack-before-created") {
+        const count = t.sends.length;
+        await t.routines.tick();
+        expect(t.sends).toHaveLength(count); // unknown old/new wait alone is not proof
+        await t.routines.tick({ manual: true }); await ack(t);
+      }
+      release(); await recorder.settled();
+      if (mode === "resolved-after-created") publishState("working", 2);
+      const kinds = t.journal.read(since, 10).rows.map(row => row.kind);
+      expect(kinds).toEqual(mode === "created-first" ? ["session.created", "session.state"]
+        : mode === "resolved-before-created" ? ["session.state", "session.state", "session.created"]
+        : mode === "resolved-after-created" ? ["session.state", "session.created", "session.state"]
+        : ["session.state", "session.created"]);
+      const count = t.sends.length;
+      const freshWaiting = mode === "created-first" || mode === "state-first";
+      await t.routines.tick();
+      expect(t.sends).toHaveLength(count + Number(freshWaiting));
+      if (freshWaiting) {
+        expect(t.coverage().lastUrgentCatchUpAt).toBe(new Date(t.clock.now).toISOString());
+        await ack(t);
+      }
+      const settledCount = t.sends.length;
+      t.clock.now += 3 * MIN; // beyond urgent spacing, still inside ordinary debounce
+      if (freshWaiting) publishState("needs-input", 2);
+      await t.routines.tick(); await t.routines.tick();
+      expect(t.sends).toHaveLength(settledCount);
+    } finally { release(); await recorder.settled(); recorder.stop(); }
+  });
+});
 
 describe("focus routines runtime", () => {
   test("boot: gap check, then catch-up inbox with untrusted rows (assistant filtered), cursors advance only on ack", async () => {
@@ -96,6 +168,265 @@ describe("focus routines runtime", () => {
     expect(t.coverage().catchUpCursors).toMatchObject({ home: { seq: 3 }, laptop: { seq: 1 } });
     expect(existsSync(join(t.root, "assistant", "inbox", file))).toBe(false);
     expect(t.routines.status().catchingUp).toBeNull();
+  });
+
+  test("journal needs-input transitions catch up urgently, persist spacing and never stack inboxes", async () => {
+    const t = setup();
+    const needs = (session: string): ActivityRowBody => ({ kind: ACTIVITY_KIND.SESSION_STATE, session, sessionId: `${session}-id`, state: "needs-input", label: "Needs you" });
+    t.append(needs("already"), at(6, 14));
+    t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick();
+    await t.routines.tick();
+    const ack = async () => {
+      const send = t.sends.at(-1)!;
+      send.settle("sent");
+      await t.routines.ack(fileOf(send.text));
+    };
+    await ack();
+    t.clock.now += MIN;
+    t.append(needs("already"), t.clock.now); // label/state repeat is not a new entry
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "failed", sessionId: "failed-id", state: "failed", label: "Failed" }, t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
+    t.append(needs("resolved"), t.clock.now);
+    t.append(state("resolved"), t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
+    t.append(needs("new"), t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(2);
+    const urgentAt = new Date(t.clock.now).toISOString();
+    expect(t.coverage().lastUrgentCatchUpAt).toBe(urgentAt);
+    expect(t.inbox(fileOf(t.sends[1]!.text)).machines[0].rows).toContainEqual(expect.objectContaining({ session: "new", state: "needs-input" }));
+    t.clock.now += MIN;
+    t.append(needs("burst"), t.clock.now);
+    await t.routines.tick(); // queued inbox still blocks
+    expect(t.sends).toHaveLength(2);
+    await ack();
+    await t.routines.tick(); // within urgent spacing
+    expect(t.sends).toHaveLength(2);
+    t.clock.now += MIN;
+    await t.routines.tick(); // exact spacing boundary, still within ordinary debounce
+    expect(t.sends).toHaveLength(3);
+    await ack();
+    t.clock.now += MIN;
+    t.append(needs("burst"), t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(3);
+    t.append(state("burst"), t.clock.now);
+    t.append(needs("burst"), t.clock.now);
+    t.clock.now += MIN;
+    await t.routines.tick(); // a genuine re-entry counts
+    expect(t.sends).toHaveLength(4);
+  });
+
+  test("pre-urgent coverage reconstructs already-needs-input in one bounded history pass", async () => {
+    const t = setup();
+    const needs: ActivityRowBody = { kind: ACTIVITY_KIND.SESSION_STATE, session: "old", sessionId: "old-id", state: "needs-input", label: "Needs you" };
+    t.append(needs, at(6, 14));
+    for (let i = 0; i < 1001; i++) t.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: `task-${i}`, eventType: "updated" }, at(6, 14, 30));
+    t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick();
+    await t.routines.tick();
+    t.sends[0]!.settle("sent");
+    await t.routines.ack(fileOf(t.sends[0]!.text));
+    const coverage = t.coverage();
+    delete coverage.catchUpCursors.home.needsInputSessions;
+    delete coverage.catchUpCursors.home.needsInputSnapshot;
+    writeFileSync(join(t.root, "assistant", "routines.json"), JSON.stringify(coverage));
+    const read = t.home.read;
+    const history: { limit: number; from: number }[] = [];
+    t.home.read = async (since, limit, window) => { if (window && limit > 1) history.push({ limit, from: window.from }); return read(since, limit, window); };
+    t.clock.now += MIN;
+    t.append(needs, t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
+    expect(history).toEqual([{ limit: Number.MAX_SAFE_INTEGER, from: at(5, 3) }]);
+    expect(t.coverage().catchUpCursors.home.needsInputSnapshot.needsInputSessions).toEqual(["id:old-id"]);
+    t.peer.add({ ...needs, sessionId: "peer-id" });
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(2);
+    expect(t.coverage().lastUrgentCatchUpAt).toBe(new Date(t.clock.now).toISOString());
+  });
+
+  test("legacy outstanding inboxes invalidate both transition directions, before or after an upgrade tick", async () => {
+    for (const oldState of ["working", "needs-input"]) for (const tickBeforeAck of [false, true]) {
+      const t = setup();
+      const nextState = oldState === "working" ? "needs-input" : "working";
+      t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", sessionId: "app-id", state: oldState, label: "" }, at(6, 14));
+      t.append(input("app"), at(6, 14, 50));
+      await t.routines.tick(); await t.routines.tick();
+      t.sends[0]!.settle("sent");
+      await t.routines.ack(fileOf(t.sends[0]!.text));
+      t.clock.now += MIN;
+      t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", sessionId: "app-id", state: nextState, label: "" }, t.clock.now);
+      await t.routines.tick({ manual: true });
+      t.sends[1]!.settle("sent");
+      await t.routines.tick(); // finish send bookkeeping before simulating an old file
+      const c = t.coverage();
+      delete c.inbox.needsInputSnapshots;
+      delete c.inbox.needsInputSessions;
+      delete c.catchUpCursors.home.needsInputSnapshot;
+      c.catchUpCursors.home.needsInputSessions = oldState === "needs-input" ? ["id:app-id"] : [];
+      writeFileSync(join(t.root, "assistant", "routines.json"), JSON.stringify(c));
+      if (tickBeforeAck) await t.routines.tick();
+      await t.routines.ack(fileOf(t.sends[1]!.text));
+      expect(t.coverage().catchUpCursors.home.needsInputSessions).toBeUndefined();
+      expect(t.coverage().catchUpCursors.home.needsInputSnapshot).toBeUndefined();
+      t.clock.now += MIN;
+      t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", sessionId: "app-id", state: "needs-input", label: "" }, t.clock.now);
+      await t.routines.tick();
+      expect(t.sends).toHaveLength(oldState === "needs-input" ? 3 : 2);
+    }
+  });
+
+  test("a capped multi-day review never saves a baseline across its omitted state row", async () => {
+    const t = setup(at(4, 15));
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", sessionId: "app-id", state: "needs-input", label: "" }, at(4, 14));
+    t.append(input("app"), at(4, 14, 50));
+    await t.routines.tick(); await t.routines.tick();
+    t.sends[0]!.settle("sent"); await t.routines.ack(fileOf(t.sends[0]!.text));
+    for (let i = 0; i < 1999; i++) t.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: `task-${i}`, eventType: "updated" }, at(4, 16));
+    t.append(state("app"), at(4, 17)); // omitted beyond the first day's cap
+    t.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "later", eventType: "updated" }, at(5, 14));
+    t.clock.now = at(6, 15);
+    await t.routines.tick();
+    const doc = t.inbox(fileOf(t.sends[1]!.text));
+    expect(doc.days.some((d: { capped: boolean }) => d.capped)).toBe(true);
+    expect(doc.machines[0].rows.some((r: ActivityRow) => r.seq === 2002)).toBe(false);
+    t.sends[1]!.settle("sent"); await t.routines.ack(fileOf(t.sends[1]!.text));
+    const cursor = t.coverage().catchUpCursors.home;
+    expect(cursor.seq).toBe(2003);
+    expect(cursor.needsInputSessions).toBeUndefined();
+    expect(cursor.needsInputSnapshot).toBeUndefined();
+  });
+
+  test("baseline reconstruction failure keeps the source reached and ordinary catch-ups working", async () => {
+    const t = setup();
+    t.append(state("app"), at(6, 14)); t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick(); await t.routines.tick();
+    t.sends[0]!.settle("sent"); await t.routines.ack(fileOf(t.sends[0]!.text));
+    const c = t.coverage(); delete c.catchUpCursors.home.needsInputSessions; delete c.catchUpCursors.home.needsInputSnapshot;
+    writeFileSync(join(t.root, "assistant", "routines.json"), JSON.stringify(c));
+    const read = t.home.read;
+    t.home.read = async (since, limit, window) => {
+      if (since === 0 && limit > 1) throw new Error("history unavailable");
+      return read(since, limit, window);
+    };
+    t.clock.now += MIN;
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", sessionId: "app-id", state: "needs-input", label: "" }, t.clock.now);
+    await t.routines.tick();
+    expect(t.routines.status().unreachable).toEqual([]);
+    expect(t.sends).toHaveLength(1); // unknown history cannot mint urgency
+    await t.routines.tick({ manual: true });
+    expect(t.sends).toHaveLength(2);
+    expect(t.inbox(fileOf(t.sends[1]!.text)).machines[0].reached).toBe(true);
+  });
+
+  test("first contact needs no historical reconstruction, even with an idle pre-today journal", async () => {
+    const t = setup();
+    t.append(state("old"), at(5, 14));
+    t.assistant.idle = false;
+    const read = t.home.read;
+    let historyReads = 0;
+    t.home.read = async (since, limit, window) => { if (limit > 1) historyReads++; return read(since, limit, window); };
+    await t.routines.tick();
+    expect(historyReads).toBe(0);
+    expect(t.routines.status().unreachable).toEqual([]);
+  });
+
+  test("unchanged pending heads reuse their journal pull, and changed heads refresh it", async () => {
+    const t = setup();
+    t.append(state("app"), at(6, 14)); t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick(); await t.routines.tick();
+    t.sends[0]!.settle("sent"); await t.routines.ack(fileOf(t.sends[0]!.text));
+    const read = t.home.read;
+    let pulls = 0;
+    t.home.read = async (since, limit, window) => { if (limit > 1 && !window) pulls++; return read(since, limit, window); };
+    t.clock.now += MIN; t.append(input("app"), t.clock.now);
+    await t.routines.tick(); const first = pulls;
+    expect(first).toBe(1);
+    await t.routines.tick(); await t.routines.tick();
+    expect(pulls).toBe(first);
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", sessionId: "app-id", state: "needs-input", label: "" }, t.clock.now);
+    await t.routines.tick();
+    expect(pulls).toBe(first + 1);
+    expect(t.sends).toHaveLength(2);
+    expect(t.inbox(fileOf(t.sends[1]!.text)).machines[0].rows).toHaveLength(2);
+  });
+
+  test("day/gap review ticks do not also pull pending catch-up rows", async () => {
+    const t = setup();
+    t.append(state("app"), at(5, 14)); t.append(state("app"), at(6, 14));
+    const read = t.home.read;
+    let pendingReads = 0;
+    t.home.read = async (since, limit, window) => { if (limit > 1 && !window) pendingReads++; return read(since, limit, window); };
+    await t.routines.tick();
+    expect(t.coverage().inbox.routine).toBe("gap-review");
+    expect(pendingReads).toBe(0);
+  });
+
+  test("mixed name-only/UUID journal rows preserve waiting identity and fence replacements", async () => {
+    const t = setup();
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", state: "needs-input", label: "" }, at(6, 14));
+    t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick(); await t.routines.tick();
+    t.sends[0]!.settle("sent"); await t.routines.ack(fileOf(t.sends[0]!.text));
+    t.clock.now += MIN;
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", sessionId: "old", state: "needs-input", label: "" }, t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
+    t.append({ kind: ACTIVITY_KIND.SESSION_EXITED, session: "app", sessionId: "old", reason: "exit" }, t.clock.now);
+    t.append({ kind: ACTIVITY_KIND.SESSION_CREATED, session: "app", sessionId: "new", cwd: "/repo", state: "working" }, t.clock.now);
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", state: "needs-input", label: "" }, t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(2);
+    t.sends[1]!.settle("sent"); await t.routines.ack(fileOf(t.sends[1]!.text));
+    expect(t.coverage().catchUpCursors.home.needsInputSnapshot.needsInputSessions).toEqual(["id:new"]);
+    t.clock.now += 2 * MIN;
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app", state: "needs-input", label: "another question" }, t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(2);
+  });
+
+  test("an oversized baseline is discarded, not saved or treated as an unreachable journal", async () => {
+    const t = setup();
+    for (let i = 0; i < 65; i++) t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: `app-${i}`, sessionId: `id-${i}`, state: "needs-input", label: "" }, at(6, 14));
+    t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick(); await t.routines.tick();
+    expect(t.coverage().inbox.needsInputSnapshots.home).toBeUndefined();
+    t.sends[0]!.settle("sent"); await t.routines.ack(fileOf(t.sends[0]!.text));
+    t.clock.now += MIN;
+    t.append({ kind: ACTIVITY_KIND.SESSION_STATE, session: "app-0", sessionId: "id-0", state: "needs-input", label: "" }, t.clock.now);
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(1);
+    expect(t.routines.status().unreachable).toEqual([]);
+    expect(t.routines.status().error).toBeUndefined();
+    expect(t.coverage().catchUpCursors.home.needsInputSnapshot).toBeUndefined();
+  });
+
+  test("a peer's capped historical recovery stays unknown without repeated reads or urgency from repeats", async () => {
+    const t = setup();
+    t.peer.add(state("peer"), at(6, 14));
+    for (let i = 0; i < 1001; i++) t.peer.add({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: `task-${i}`, eventType: "updated" }, at(6, 14, 30));
+    t.append(input("app"), at(6, 14, 50));
+    await t.routines.tick(); await t.routines.tick();
+    t.sends[0]!.settle("sent"); await t.routines.ack(fileOf(t.sends[0]!.text));
+    const c = t.coverage(); delete c.catchUpCursors.laptop.needsInputSnapshot;
+    writeFileSync(join(t.root, "assistant", "routines.json"), JSON.stringify(c));
+    const read = t.peer.read.bind(t.peer);
+    let historyReads = 0;
+    t.peer.read = async (since, limit, window) => { if (window && limit > 1) { expect(limit).toBe(1000); historyReads++; } return read(since, limit, window); };
+    t.clock.now += MIN;
+    t.peer.add({ kind: ACTIVITY_KIND.SESSION_STATE, session: "peer", sessionId: "peer-id", state: "needs-input", label: "" });
+    await t.routines.tick(); await t.routines.tick();
+    expect(historyReads).toBe(1);
+    expect(t.sends).toHaveLength(1);
+    expect(t.routines.status().unreachable).toEqual([]);
+    t.peer.add(state("peer"));
+    t.peer.add({ kind: ACTIVITY_KIND.SESSION_STATE, session: "peer", sessionId: "peer-id", state: "needs-input", label: "" });
+    await t.routines.tick();
+    expect(t.sends).toHaveLength(2);
   });
 
   test("a restarted server leaves catching up as soon as its retained inbox is acked, even while the assistant works", async () => {
