@@ -451,7 +451,11 @@ interface ObservedInputSpec<T> {
   readonly separateEnter: boolean;
   /** Bounds the whole call, subscribe and the wait for earlier writes included; once the text is written, its Enter is still written. */
   readonly timeoutMs: number;
-  readonly onTimeout: () => T;
+  /**
+   * The deadline passed. `subscribed` is false while the output subscription was not ready yet,
+   * and true once it was (the call then waited for earlier writes to a Claude session, or observed).
+   */
+  readonly onTimeout: (subscribed: boolean) => T;
   readonly onLifecycle: (event: SessionLifecycleEvent) => T;
   readonly onSubscribeError: (error: unknown) => T;
   readonly onWriteError: () => T;
@@ -1035,7 +1039,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         timeoutMs: writeByMs - Date.now(),
         bind: (bound) => { observation = bound; },
         beforeWrite: () => (windowSpent() ? notDelivered(SESSION_SEND_FAILURE_REASON.TIMED_OUT) : undefined),
-        onTimeout: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
+        // A subscribe that never became ready is a backend problem; a window spent in the queue is a timeout.
+        onTimeout: (subscribed) => stopUnlessWritten(subscribed
+          ? SESSION_SEND_FAILURE_REASON.TIMED_OUT
+          : SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
         onLifecycle: (event) => stopUnlessWritten(event.kind === "exited"
           ? SESSION_SEND_FAILURE_REASON.TARGET_EXITED
           : SESSION_SEND_FAILURE_REASON.REPLAY_GAP),
@@ -1260,7 +1267,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     spec.bind?.(observation);
     const deadlineMs = Date.now() + spec.timeoutMs;
     const timer = setTimeout(
-      () => observation.finish(spec.onTimeout()),
+      () => observation.finish(spec.onTimeout(boundaryEstablished)),
       spec.timeoutMs,
     );
     const lifecycleUnsubscribe = this.onSessionLifecycleById(sessionId, (event) => {
@@ -1310,7 +1317,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           return;
         }
         if (Date.now() >= deadlineMs) {
-          observation.finish(spec.onTimeout());
+          observation.finish(spec.onTimeout(true));
           return;
         }
         // Output can arrive while the write is still on the stack; it already

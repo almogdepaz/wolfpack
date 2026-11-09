@@ -2112,6 +2112,29 @@ describe("BrokerBackend Claude submit serialization", () => {
     expect(texts()).toEqual(["text1", "text2", "\r"]);
   });
 
+  test("an observed send whose deadline expires in the queue reports timed_out and writes nothing", async () => {
+    // Three earlier submits hold the queue ~300 ms; the observed send's timer (~115 ms) fires while it waits.
+    const [, , , result] = await Promise.all([
+      backend.send("a", "text1"),
+      backend.send("a", "text2"),
+      backend.send("a", "text3"),
+      backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "late", noEnter: false, observeMs: 20, ensureSubmitted: false,
+      }),
+    ]);
+    expect(result).toMatchObject({ delivery: "not_delivered", reason: "timed_out" });
+    expect(texts()).toEqual(["text1", "\r", "text2", "\r", "text3", "\r"]);
+  });
+
+  test("an observed send whose subscribe never becomes ready stays backend_unavailable", async () => {
+    client.subscribeGate = new Promise<void>(() => {});
+    const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "late", noEnter: false, observeMs: 20, ensureSubmitted: false,
+    });
+    expect(result).toMatchObject({ delivery: "not_delivered", reason: "backend_unavailable" });
+    expect(client.inputs).toEqual([]);
+  });
+
   test("a prompt whose deadline expires in the queue writes nothing", async () => {
     const [, result] = await Promise.all([backend.send("a", "text1"), prompt(SESSION_UUID_1, "text2", 30)]);
     expect(result.outcome).toBe("timed_out");
