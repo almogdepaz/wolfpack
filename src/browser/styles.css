@@ -3071,7 +3071,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 }
 @media (max-width: 768px) {
   .assistant-column { padding: 16px 16px 40px; }
-  .assistant-column > header { display: none; }
+  .assistant-column > header, .focus-next .focus-title small { display: none; }
   .focus-block { margin: 10px 16px 8px; padding: 14px; }
   .focus-block .focus-next { margin-inline: -14px; }
   .focus-block .focus-nudge { font-size: 16px; -webkit-line-clamp: 3; }

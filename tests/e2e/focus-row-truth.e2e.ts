@@ -7,6 +7,32 @@ test.beforeAll(async () => { server = await startTestServer({ focusAssistant: tr
 test.afterAll(async () => { await server?.close(); });
 test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: "wait" }); });
 
+for (const kind of ["question", "permission"] as const) test(`phone row time: ${kind} stays whole without a trailing timestamp`, async ({ page }, info) => {
+  const desktop = info.project.name === "desktop";
+  await page.setViewportSize({ width: desktop ? 1440 : 390, height: 900 });
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    session.runtimeState = { ...session.runtimeState, state: "needs-input", inputKind: kind, changedAt: new Date(Date.now() - 720_000).toISOString() };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  for (const surface of ["dashboard-focus", "assistant-content"]) {
+    if (surface === "assistant-content") await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+    await expect(page.locator(".view.swiping")).toHaveCount(0);
+    const title = page.locator(`#${surface} .focus-next li`).filter({ hasText: `prompt-project ${kind}` }).locator("summary .focus-title");
+    await expect(title).toContainText(`prompt-project ${kind}`);
+    if (desktop) await expect(title.locator("small")).toBeVisible();
+    else await expect(title.locator("small")).toBeHidden();
+    const size = await title.evaluate(el => {
+      const range = document.createRange(); range.selectNode(el.firstChild!);
+      return { available: el.clientWidth, label: range.getBoundingClientRect().width };
+    });
+    expect(size.available, `${surface}: the kind word is readable`).toBeGreaterThanOrEqual(size.label);
+    await page.screenshot({ path: info.outputPath(`row-time-${surface}-${desktop ? 1440 : 390}-${kind}.png`), fullPage: true });
+  }
+});
+
 for (const [state, inputKind, label, verb] of [
   ["needs-input", "permission", "permission", "approve"],
   ["needs-input", "question", "question", "answer"],
