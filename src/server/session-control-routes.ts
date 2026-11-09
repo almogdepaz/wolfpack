@@ -458,12 +458,14 @@ return {
     const session = resolved.name;
     const sessionId = resolved.identity.wolfpackSessionId;
     const noEnter = body.noEnter === true;
+    // A task written with Enter arms the child's heuristic `busy → idle` done event.
+    const armChild = () => noteChildInputDelivered(sessionId, session, resolved.identity.parentSession);
     try {
       const streaming = streamingBackend();
       if (!streaming) {
         // Nothing to observe through: deliver as before and say so.
         await getBackend().send(session, body.text, noEnter);
-        if (!noEnter) noteChildInputDelivered(sessionId);
+        if (!noEnter) armChild();
         return json(res, {
           ok: true,
           session,
@@ -479,14 +481,13 @@ return {
         observeMs,
         ensureSubmitted: body.ensureSubmitted === true,
         sessionName: session,
+        onSubmitWritten: armChild,
       });
       if (result.reason === SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE) {
         // Same status a failed write always had; the body says nothing was written.
         return json(res, { ok: false, error: "backend unavailable", session, sessionId, ...result }, 503);
       }
       const ok = sessionSendOk(noEnter, result.outcome);
-      // A submitted task arms the child's heuristic `busy → idle` done event.
-      if (ok && !noEnter) noteChildInputDelivered(sessionId);
       json(res, { ok, session, sessionId, ...result });
     } catch (e: unknown) {
       log.warn("session-control send failed", { session: resolved.name, error: errMsg(e) });

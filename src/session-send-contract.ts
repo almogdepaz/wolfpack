@@ -52,6 +52,11 @@ export interface SessionSendObservationOptions {
   /** Re-send one `\r` when the first write reads as `pasted_not_submitted`. */
   readonly ensureSubmitted: boolean;
   readonly sessionName?: string;
+  /**
+   * Runs once a text and its Enter are written, before the observation
+   * returns. Not called for `noEnter` or a write that failed.
+   */
+  readonly onSubmitWritten?: () => void;
 }
 
 export interface SessionSendObservationResult {

@@ -93,3 +93,26 @@ test("a submitted send arms a heuristic child; noEnter does not", async () => {
   observe("idle");
   expect(listParentNotifications(parent.wolfpackSessionId).map(entry => entry.childEvent?.event)).toEqual(["done"]);
 });
+
+test("a send right after spawn, before any observer pass, arms the child", async () => {
+  const sent = await call(routes["POST /api/session-control/send"] as Handler, { session: "worker", text: "do it" });
+  expect(sent.body.ok).toBe(true);
+  observe("working");
+  observe("idle");
+  expect(listParentNotifications(parent.wolfpackSessionId).map(entry => entry.childEvent?.event)).toEqual(["done"]);
+});
+
+test("a heuristic child that finishes while the send observation still waits is done", async () => {
+  observe("idle");
+  backend.duringSendObservation = () => {
+    observe("working");
+    observe("idle");
+  };
+  try {
+    const sent = await call(routes["POST /api/session-control/send"] as Handler, { session: "worker", text: "do it" });
+    expect(sent.body.ok).toBe(true);
+  } finally {
+    backend.duringSendObservation = null;
+  }
+  expect(listParentNotifications(parent.wolfpackSessionId).map(entry => entry.childEvent?.event)).toEqual(["done"]);
+});

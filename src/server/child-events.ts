@@ -205,10 +205,25 @@ export function noteChildCreated(sessionId: string, name: string, parent: Parent
   });
 }
 
-/** A verified `session send` reached this session; arm its `busy → idle` done event. */
-export function noteChildInputDelivered(sessionId: string): void {
+/**
+ * A `session send` wrote a task with Enter to this session: arm its
+ * `busy → idle` done event. Called at the write, so a child that finishes
+ * while the send is still observed is not missed. A child not yet observed is
+ * tracked from here; its first observation is still a baseline.
+ */
+export function noteChildInputDelivered(sessionId: string, name: string, parent: ParentSessionIdentity | undefined): void {
+  if (!parent) return;
   const child = children.get(sessionId);
-  if (child) child.armed = true;
+  if (child) {
+    child.armed = true;
+    return;
+  }
+  children.set(sessionId, {
+    name,
+    parentSessionId: parent.wolfpackSessionId,
+    parentName: parent.wolfpackSessionName,
+    armed: true,
+  });
 }
 
 /** The session lifecycle reported an exit. Emits once, then forgets the child. */

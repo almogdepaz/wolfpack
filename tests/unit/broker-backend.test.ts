@@ -2027,6 +2027,36 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(inputs()).toEqual(["hello\r"]);
   });
 
+  test("reports a written submit before the observation returns, and never for noEnter or a failed write", async () => {
+    rootStatus = status("idle", 1);
+    const marks: string[] = [];
+    client.onWriteInput = () => { marks.push("write"); };
+    const onSubmitWritten = () => { marks.push("submit-written"); };
+    // Nothing reaches the program status, so the observation waits out its window.
+    const submitted = backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 60, ensureSubmitted: false, onSubmitWritten,
+    }).then(result => { marks.push("returned"); return result; });
+    await submitted;
+    expect(marks).toEqual(["write", "submit-written", "returned"]);
+
+    marks.length = 0;
+    await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "draft", noEnter: true, observeMs: 30, ensureSubmitted: false, onSubmitWritten,
+    });
+    expect(marks).toEqual(["write"]);
+
+    marks.length = 0;
+    client.inputError = new Error("broker gone");
+    try {
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: false, onSubmitWritten,
+      })).toMatchObject({ delivery: "not_delivered" });
+    } finally {
+      client.inputError = null;
+    }
+    expect(marks).toEqual([]);
+  });
+
   describe("claude sessions", () => {
     beforeEach(async () => {
       client.setHandler("list_sessions", () => okResp({
@@ -2051,6 +2081,17 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
       expect(inputs()).toEqual([text, "\r"]);
       expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
       expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+    });
+
+    test("a separate Enter reports the written submit only after the Enter write", async () => {
+      rootStatus = status("idle", 1);
+      const marks: string[] = [];
+      client.onWriteInput = (_sessionId, data) => { marks.push(new TextDecoder().decode(data) === "\r" ? "enter" : "text"); };
+      await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: false,
+        onSubmitWritten: () => { marks.push("submit-written"); },
+      });
+      expect(marks).toEqual(["text", "enter", "submit-written"]);
     });
 
     test("a status record between the text and its Enter is baseline, not submission", async () => {

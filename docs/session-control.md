@@ -275,7 +275,7 @@ The server also tells a parent what its children did, with no child action. It d
 
 - `blocked`: the child's own status (OSC 7501 program status or the project status manifest) says it waits for input; carries `inputKind?` and the program's `message?`.
 - `error`: the child's own status says it failed.
-- `done`: the program reported `done`, or, for a child without program status, it went from busy to `idle` after a `session send` was submitted to it.
+- `done`: the program reported `done`, or, for a child without program status, it went from busy to `idle` after a `session send` wrote a task with Enter to it. The send arms this when the write succeeds, not when its observation returns, so a child that finishes while the send is still observed is reported. A `--no-enter` send or a failed write does not arm it.
 - `exited`: the child session exited or was killed; carries `reason`, `exitCode?`/`signal?` and up to 5 `lastLines` of its last observed screen.
 - `message`: `agent notify-parent` from a sender whose unverified `from` name matches a live child of this parent. The entry keeps the message text; other senders stay plain notifications.
 

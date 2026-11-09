@@ -78,6 +78,8 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
   lastSendObservationArgs: { sessionId: string; options: SessionSendObservationOptions } | null = null;
   /** Result sendAndObserveSubmission reports for a live session; null reports `unverified`. */
   sendObservation: SessionSendObservationResult | null = null;
+  /** Runs after the write, while sendAndObserveSubmission still observes. */
+  duringSendObservation: (() => void | Promise<void>) | null = null;
   private readonly _outputSubscribers = new Map<string, Set<(data: Uint8Array) => void>>();
   private readonly _outputHistory = new Map<string, Array<{ seq: bigint; data: Uint8Array }>>();
   private _nextOutputSeq = 1n;
@@ -289,6 +291,8 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
       };
     }
     await this.send(identity.wolfpackSessionName, options.text, options.noEnter);
+    if (!options.noEnter) options.onSubmitWritten?.();
+    await this.duringSendObservation?.();
     return this.sendObservation ?? {
       delivery: SESSION_SEND_DELIVERY.UNVERIFIED,
       outcome: SESSION_SEND_OUTCOME.UNVERIFIED,

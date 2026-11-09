@@ -4225,7 +4225,7 @@ describe("session control API", () => {
     expect(validateSchema(responseSchema("sendSessionInput"), data, controlApiSchema)).toEqual([]);
     expect(mockBackend.lastSendObservationArgs).toEqual({
       sessionId: "mock:wolf-1",
-      options: { text: "echo hi", noEnter: false, observeMs: 1_500, ensureSubmitted: false, sessionName: "wolf-1" },
+      options: { text: "echo hi", noEnter: false, observeMs: 1_500, ensureSubmitted: false, sessionName: "wolf-1", onSubmitWritten: expect.any(Function) },
     });
     expect(mockBackend.lastSendArgs).toEqual({ name: "wolf-1", text: "echo hi", noEnter: false });
   });

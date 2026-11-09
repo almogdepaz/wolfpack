@@ -484,6 +484,8 @@ interface ObservedInputSpec<T> {
   readonly onOutput: (frame: OutputBinaryFrame, observation: InputObservation<T>) => void;
   /** Runs after the first write, before a separate Enter. */
   readonly onInputSent?: (observation: InputObservation<T>) => void;
+  /** Runs after a successful submitting write: the text with Enter, or its separate Enter. */
+  readonly onSubmitWritten?: () => void;
   /** Runs synchronously before subscribing, for callers with other evidence sources. */
   readonly bind?: (observation: InputObservation<T>) => void;
   /** Runs once the subscription is ready; a result settles the call without writing. */
@@ -989,6 +991,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       observeMs: options.observeMs,
       priorDelivered: false,
       sessionName: options.sessionName,
+      onSubmitWritten: options.onSubmitWritten,
     });
     if (
       options.noEnter
@@ -1004,6 +1007,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       observeMs: options.observeMs,
       priorDelivered: true,
       sessionName: options.sessionName,
+      onSubmitWritten: options.onSubmitWritten,
     });
     // A retry that could not be written sent nothing: the first verdict stands.
     if (retry.delivery === SESSION_SEND_DELIVERY.NOT_DELIVERED) return first;
@@ -1025,6 +1029,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       readonly observeMs: number;
       readonly priorDelivered: boolean;
       readonly sessionName: string | undefined;
+      readonly onSubmitWritten: (() => void) | undefined;
     },
   ): Promise<SessionSendObservationResult> {
     // One deadline covers the baseline read, subscribe, write and final read;
@@ -1075,6 +1080,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         onSubscribeError: (error) => stopUnlessWritten(this.subscribeErrorOutcome(error, targetUnavailableOutcome)),
         // A failed Enter after a written text still delivered the text.
         onWriteError: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
+        onSubmitWritten: attempt.onSubmitWritten,
         onOutput: (frame, current) => {
           if (!current.inputSent || frame.data.length === 0 || Date.now() > deadlineMs) return;
           outputSeen = true;
@@ -1359,7 +1365,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           return;
         }
         spec.onInputSent?.(observation);
-        if (!separateEnter) return;
+        if (!separateEnter) {
+          if (spec.submit) spec.onSubmitWritten?.();
+          return;
+        }
         // The text is delivered, so its Enter follows even if the call has settled meanwhile.
         await delay(SESSION_SUBMIT_SETTLE_MS);
         observation.inputSentAtMs = Date.now();
@@ -1368,7 +1377,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         } catch {
           observation.inputSentAtMs = undefined;
           observation.finish(spec.onWriteError());
+          return;
         }
+        spec.onSubmitWritten?.();
       };
       if (!spec.separateEnter) {
         await write();
