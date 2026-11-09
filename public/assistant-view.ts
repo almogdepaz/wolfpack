@@ -15,7 +15,7 @@ export function createAssistantView(deps: {
   homeMachine: (id: string) => Machine | undefined;
   localMachineName: () => string;
   sessions: () => FocusSession[];
-  terminalTarget: (target: AssistantTerminalTarget | null) => void;
+  terminalTarget: (target: AssistantTerminalTarget | null, unavailableMessage?: string) => void;
   /** False means the local session projection is unavailable, not that every session stopped. */
   sessionsAvailable: () => boolean;
   /** A completed local session fetch failed; the initial pending fetch is not an outage. */
@@ -101,9 +101,14 @@ export function createAssistantView(deps: {
     const value = active?.value;
     const selection = active?.selectionStart;
     host.innerHTML = html;
-    if (key) {
-      const next = host.querySelector<HTMLInputElement>(`[data-focus-key="${CSS.escape(key)}"]`);
+    if (active) {
+      const next = key ? host.querySelector<HTMLInputElement>(`[data-focus-key="${CSS.escape(key)}"]`) : null;
       if (next) { if (next.type !== "checkbox" && value !== undefined) next.value = value; next.focus({ preventScroll: true }); if (selection !== null && selection !== undefined && next.type === "text") next.setSelectionRange(selection, selection); }
+      else if (host.closest(".view")?.classList.contains("visible")) {
+        // A completed/removed control has no replacement key. Keep keyboard users
+        // in the visible list; a terminal navigation owns focus in its new view.
+        (host.closest<HTMLElement>(".assistant-column") ?? host.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled), summary"))?.focus({ preventScroll: true });
+      }
     }
   }
   function addForm(first = false) {
@@ -370,7 +375,8 @@ export function createAssistantView(deps: {
     if (terminalState) terminalState.textContent = terminalUnavailable() ? "sessions unavailable" : focus?.assistant?.queued ? `${focus.assistant.queued} queued` : focus?.assistant?.error ?? state;
     // The existing focus/session refresh owns this projection; the pane never polls or watches work.
     deps.terminalTarget(answered && enabled && !offline && !terminalUnavailable() && focus?.assistant?.session
-      ? { session: focus.assistant.session, machine, sessionId: focus.assistant.sessionId } : null);
+      ? { session: focus.assistant.session, machine, sessionId: focus.assistant.sessionId } : null,
+      offline ? `${homeName} is offline. the terminal reconnects when it is back.` : terminalUnavailable() ? "the terminal is unavailable while the broker reconnects." : "the assistant terminal is not running yet.");
     if (fitChips()) render();
   }
   async function refresh(open = !opened) {

@@ -19,6 +19,41 @@ async function tabToOverlay(page: Page, action: string) {
   await expect(pane(page).getByRole("button", { name: action, exact: true })).toBeFocused();
 }
 
+test("QA-24: the pane has a short keyboard path before all focus cards", async ({ page, context }) => {
+  const owner = await context.newPage();
+  try {
+    await openFocus(owner);
+    await owner.getByRole("button", { name: "Talk to assistant", exact: true }).click();
+    await expect(owner.locator("#desktop-terminal-container")).toHaveClass(/hydrated/);
+    await openFocus(page);
+    await expect(pane(page).getByRole("button", { name: "Take Control", exact: true })).toBeVisible();
+    await expect(page.locator(".assistant-column")).toBeFocused();
+    await page.keyboard.press("Tab"); // Sessions.
+    await page.keyboard.press("Tab"); // Skip the card list, not dozens of controls.
+    await expect(page.getByRole("button", { name: "Go to assistant terminal", exact: true })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(pane(page).getByRole("button", { name: "Take Control", exact: true })).toBeFocused();
+  } finally { await owner.close(); }
+});
+
+test("QA-24: hiding the focused pane shortcut at the breakpoint returns focus to the list", async ({ page }) => {
+  await openFocus(page);
+  await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+  await page.getByRole("button", { name: "Go to assistant terminal", exact: true }).focus();
+  await page.setViewportSize({ width: 1099, height: 900 });
+  await expect(pane(page)).toBeHidden();
+  await expect(page.locator(".assistant-column")).toBeFocused();
+});
+
+test("QA-24: a completed checkbox leaves keyboard focus on the list rather than body", async ({ page }) => {
+  await openFocus(page);
+  const checkbox = page.getByRole("checkbox", { name: "Done: ship the focus assistant", exact: true });
+  await checkbox.focus();
+  await page.keyboard.press("Space");
+  await expect(page.locator("#assistant-content .focus-done")).toContainText("ship the focus assistant");
+  await expect(page.locator(".assistant-column")).toBeFocused();
+});
+
 test("pane keyboard: Shift+Escape returns from terminal input to the list without PTY bytes", async ({ page }) => {
   const inputFrames: Buffer[] = [];
   page.on("websocket", ws => {
@@ -81,6 +116,7 @@ for (const key of ["Enter", "Space"]) {
       await page.keyboard.press(key);
       await expect(overlay).toHaveCount(0);
       await expect.poll(() => granted).toBe(1);
+      await expect(page.locator(".assistant-column")).toBeFocused();
       expect(takeovers).toBe(1);
       await expect(owner.locator("#desktop-conflict-overlay")).toBeVisible();
     } finally { await owner.close(); }
@@ -115,6 +151,7 @@ for (const key of ["Enter", "Space"]) {
     await page.keyboard.press(key);
     await expect(overlay).toHaveCount(0);
     await expect.poll(() => connections).toBe(2);
+    await expect(page.locator(".assistant-column")).toBeFocused();
     await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
     expect(takeovers).toBe(0);
   });

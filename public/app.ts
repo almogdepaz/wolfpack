@@ -1244,7 +1244,7 @@ const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant? Its conversation and your
 const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, scrollback: DESKTOP_TERMINAL_SCROLLBACK, createConflictOverlay });
 const focusUi = createAssistantView({
   request: api,
-  terminalTarget: target => assistantPane.setTarget(target),
+  terminalTarget: (target, reason) => assistantPane.setTarget(target, reason),
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
   localMachineName: () => state.selfName || "this machine",
   // Pinned helpers can need attention, but their routine idle/done turns are not next actions.

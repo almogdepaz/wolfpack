@@ -115,6 +115,39 @@ test("pane: two columns at 1100+, one column below, clean breakpoint remount and
   expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
 });
 
+for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage explains the empty pane and disables ineffective controls`, async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "desktop pane only");
+  let down = false;
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    if (down && outage === "home") return route.abort();
+    const response = await route.fetch();
+    const body = await response.json();
+    if (down) body.assistant = { ...body.assistant, state: "unknown", session: undefined, sessionId: undefined, unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    await route.fulfill({ response, json: body });
+  });
+  await openFocus(page);
+  await hydrated(page);
+  const focus = pane(page).getByRole("button", { name: "Focus terminal", exact: true });
+  await focus.click();
+  expect(await page.locator("#assistant-pty-input").evaluate(el => el.contains(document.activeElement))).toBe(true);
+  down = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#assistant-content .focus-header")).toContainText(outage === "home" ? "offline · read-only" : "sessions unavailable", { timeout: 15_000 });
+  await expect(focus).toBeDisabled();
+  await expect(page.locator("#assistant-pane-empty")).toBeVisible();
+  await expect(page.locator("#assistant-pane-empty")).toContainText(outage === "home" ? "offline" : "broker");
+  await expect(pane(page).locator("canvas")).toHaveCount(0);
+  await expect(pane(page).getByRole("button", { name: "Back to list", exact: true })).toBeEnabled();
+  await expect(page.locator(".assistant-column")).toBeFocused();
+  await page.screenshot({ path: info.outputPath(`pane-${outage}-unavailable.png`), animations: "disabled" });
+  down = false;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await hydrated(page);
+  await expect(page.locator("#assistant-pane-empty")).toBeHidden();
+  await expect(focus).toBeEnabled();
+});
+
 test("pane: one-column opening preserves the existing focus behavior", async ({ page }, info) => {
   await page.setViewportSize({ width: info.project.name === "desktop" ? 1099 : 390, height: 900 });
   await page.addInitScript(() => {

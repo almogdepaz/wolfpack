@@ -58,11 +58,13 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" });
   await expect(next.locator("summary")).toContainText("stopped · 12m");
-  await next.getByRole("button", { name: "review test-project stopped" }).click();
+  await next.getByRole("button", { name: "review test-project stopped" }).focus();
+  await page.keyboard.press("Enter");
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect.poll(() => f.acknowledgements).toContainEqual({ sessionId: f.ids.get("test-project"), transitionSequence: 5 });
   await expect(page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
   if (info.project.name === "desktop") {
+    await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest("#desktop-terminal-container, #terminal-view"))).toBe(true);
     await expect(page.locator("#sidebar-assistant")).not.toContainText("test-project stopped");
     await page.locator("#sidebar-assistant").click();
   } else {

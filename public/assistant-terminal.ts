@@ -21,6 +21,11 @@ export function createAssistantTerminal(deps: {
   const input = document.getElementById("assistant-pty-input")!;
   const list = document.querySelector<HTMLElement>(".assistant-column")!;
   const status = document.getElementById("assistant-pane-status")!;
+  const focusButton = document.getElementById("assistant-pane-focus") as HTMLButtonElement;
+  const listButton = document.getElementById("assistant-pane-list") as HTMLButtonElement;
+  const skipButton = document.getElementById("assistant-pane-skip")!;
+  const empty = document.getElementById("assistant-pane-empty")!;
+  let unavailableMessage = "the assistant terminal is not running yet.";
   const wide = matchMedia("(min-width: 1100px)");
   let active = false;
   let target: AssistantTerminalTarget | null = null;
@@ -33,8 +38,22 @@ export function createAssistantTerminal(deps: {
     a?.session === b?.session && a?.machine === b?.machine && a?.sessionId === b?.sessionId;
   let inputRequested = false;
   const backToList = () => { inputRequested = false; list.focus({ preventScroll: true }); };
-  document.getElementById("assistant-pane-list")!.onclick = backToList;
-  document.getElementById("assistant-pane-focus")!.onclick = () => { inputRequested = true; controller?.focus(); };
+  listButton.onclick = backToList;
+  focusButton.onclick = () => { inputRequested = true; controller?.focus(); };
+  skipButton.onclick = () => {
+    (overlay?.querySelector<HTMLButtonElement>("button") ?? (focusButton.disabled ? listButton : focusButton)).focus();
+  };
+  function updateControls() {
+    const disabled = !target || !controller?.term || !!overlay;
+    const hideSkip = !visible() || !target;
+    // Availability and breakpoint changes can remove a focused header control too.
+    if (active && document.visibilityState === "visible" && ((disabled && document.activeElement === focusButton) || (hideSkip && document.activeElement === skipButton))) backToList();
+    focusButton.disabled = disabled;
+    skipButton.hidden = hideSkip;
+    empty.hidden = !!target;
+    empty.textContent = unavailableMessage;
+    input.hidden = !target;
+  }
   input.addEventListener("pointerdown", () => { inputRequested = true; });
   pane.addEventListener("keydown", event => {
     // Tab is an explicit keyboard opt-in too; native mount focus is not.
@@ -51,11 +70,14 @@ export function createAssistantTerminal(deps: {
   input.addEventListener("focusin", () => { if (!inputRequested) backToList(); });
 
   function clearOverlay() {
+    const hadFocus = overlay?.contains(document.activeElement);
     clearTimeout(takeoverTimer);
     takeoverTimer = undefined;
     overlay?.remove();
     overlay = null;
     input.inert = false;
+    if (hadFocus && active && document.visibilityState === "visible") backToList();
+    updateControls();
   }
   function release() {
     const hadFocus = pane.contains(document.activeElement);
@@ -67,6 +89,7 @@ export function createAssistantTerminal(deps: {
     old?.dispose(); // cancels an in-flight mount, socket, hydration, resize observer and renderer
     input.replaceChildren();
     container.classList.remove("hydrating", "hydrated");
+    updateControls();
     if (hadFocus && active && document.visibilityState === "visible") backToList();
   }
   function appendOverlay(element: HTMLElement) {
@@ -74,6 +97,7 @@ export function createAssistantTerminal(deps: {
     element.removeAttribute("aria-modal");
     input.inert = true;
     container.append(element);
+    updateControls();
   }
   function showConflict(owner: PtyTerminalController) {
     clearOverlay();
@@ -118,7 +142,7 @@ export function createAssistantTerminal(deps: {
       shouldFocus: () => false,
       shouldReconnect: () => controller === owner && visible(),
       onOpen: () => { if (controller === owner) { clearOverlay(); status.textContent = "connecting"; } },
-      onHydrated: () => { if (controller === owner && !overlay) status.textContent = "click to talk"; },
+      onHydrated: () => { if (controller === owner) { if (!overlay) status.textContent = "click to talk"; updateControls(); } },
       onViewerConflict: () => { if (controller === owner) showConflict(owner); },
       onControlGranted: () => { if (controller === owner) { clearOverlay(); status.textContent = "connecting"; } },
       onReconnecting: () => { if (controller === owner) status.textContent = "reconnecting"; },
@@ -139,6 +163,7 @@ export function createAssistantTerminal(deps: {
       if (controller !== owner) return;
       if (!owner.term) { showFailure(owner, "terminal unavailable"); return; }
       owner.connect();
+      updateControls();
     } catch (error) {
       if (controller !== owner) return;
       console.error("[assistant-pane] terminal mount failed", error);
@@ -152,6 +177,7 @@ export function createAssistantTerminal(deps: {
     if (!show || !target) {
       if (controller) release();
       status.textContent = "assistant unavailable";
+      updateControls();
       return;
     }
     if (controller && sameTarget(mounted, target)) return;
@@ -161,7 +187,7 @@ export function createAssistantTerminal(deps: {
   wide.addEventListener("change", sync);
   document.addEventListener("visibilitychange", sync);
   return {
-    setTarget(next: AssistantTerminalTarget | null) { target = next; sync(); },
+    setTarget(next: AssistantTerminalTarget | null, reason = "the assistant terminal is not running yet.") { target = next; unavailableMessage = reason; sync(); },
     setActive(next: boolean) {
       const opening = next && !active;
       active = next;
