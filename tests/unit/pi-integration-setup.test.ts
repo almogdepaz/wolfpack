@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -41,6 +41,16 @@ if [ "$1" = remove ] && [ -n "\${PI_SETTINGS_AFTER_REMOVE:-}" ]; then
 fi
 if [ "$1" = install ] && [ -n "\${PI_SETTINGS_AFTER_INSTALL:-}" ]; then
   /bin/cp "$PI_SETTINGS_AFTER_INSTALL" "$PI_CODING_AGENT_DIR/settings.json"
+fi
+# Stand in for another Pi process that holds Pi's settings lock (a directory) after install.
+if [ "$1" = install ] && [ -n "\${PI_HOLD_SETTINGS_LOCK:-}" ]; then
+  /bin/mkdir "$PI_CODING_AGENT_DIR/settings.json.lock"
+fi
+if [ "$1" = install ] && [ -n "\${PI_COMPETING_SETTINGS:-}" ]; then
+  /bin/mkdir "$PI_CODING_AGENT_DIR/settings.json.lock"
+  ( /bin/sleep 0.3
+    /bin/cp "$PI_COMPETING_SETTINGS" "$PI_CODING_AGENT_DIR/settings.json"
+    /bin/rmdir "$PI_CODING_AGENT_DIR/settings.json.lock" ) </dev/null >/dev/null 2>&1 &
 fi
 if [ -n "\${REQUIRE_SKILL_PATH:-}" ] && [ ! -f "$REQUIRE_SKILL_PATH/SKILL.md" ]; then
   exit 43
@@ -363,6 +373,57 @@ describe("Pi Tasks package migration", () => {
           },
         ],
       });
+    });
+
+    const restoredEntry = {
+      source: "npm:@sgtbeatdown/wolfpack-tasks",
+      skills: ["!skills/wolfpack-task-delegation/**", "!skills/other/**"],
+      extensions: ["!extensions/legacy.ts"],
+    };
+
+    test("wait for Pi's settings lock and keep a competing writer's change", () => {
+      const fixture = migrationFixture({
+        before: { theme: "dark", packages: [legacyEntry] },
+        afterRemove: { theme: "dark", packages: [] },
+        afterInstall: { theme: "dark", packages: ["npm:@sgtbeatdown/wolfpack-tasks"] },
+      });
+      const competing = join(tempDir(), "competing.json");
+      writeFileSync(competing, `${JSON.stringify({ theme: "light", packages: ["npm:@sgtbeatdown/wolfpack-tasks"] }, null, 2)}\n`);
+      expect(migratePiTasksPackage({
+        pathValue: fixture.pi.pathValue,
+        env: { ...fixture.env, PI_COMPETING_SETTINGS: competing },
+      })).toEqual({ status: "migrated" });
+      expect(JSON.parse(readFileSync(fixture.settingsPath, "utf8"))).toEqual({ theme: "light", packages: [restoredEntry] });
+      expect(existsSync(`${fixture.settingsPath}.lock`)).toBe(false);
+    });
+
+    test("report the entry to restore by hand and leave the file unchanged while another process holds the lock", () => {
+      const fixture = migrationFixture({
+        before: { packages: [legacyEntry] },
+        afterRemove: { packages: [] },
+        afterInstall: { packages: ["npm:@sgtbeatdown/wolfpack-tasks"] },
+      });
+      expect(migratePiTasksPackage({
+        pathValue: fixture.pi.pathValue,
+        env: { ...fixture.env, PI_HOLD_SETTINGS_LOCK: "1" },
+      })).toEqual({ status: "filters_not_restored", settingsPath: fixture.settingsPath, restoreEntry: restoredEntry });
+      expect(readFileSync(fixture.settingsPath, "utf8")).toBe(readFileSync(fixture.afterInstall, "utf8"));
+      expect(existsSync(`${fixture.settingsPath}.lock`)).toBe(true);
+    });
+
+    test("take over a stale settings lock", () => {
+      const fixture = migrationFixture({
+        before: { packages: [legacyEntry] },
+        afterRemove: { packages: [] },
+        afterInstall: { packages: ["npm:@sgtbeatdown/wolfpack-tasks"] },
+      });
+      const lock = `${fixture.settingsPath}.lock`;
+      mkdirSync(lock);
+      const staleSeconds = Date.now() / 1000 - 20;
+      utimesSync(lock, staleSeconds, staleSeconds);
+      expect(migratePiTasksPackage({ pathValue: fixture.pi.pathValue, env: fixture.env })).toEqual({ status: "migrated" });
+      expect(JSON.parse(readFileSync(fixture.settingsPath, "utf8"))).toEqual({ packages: [restoredEntry] });
+      expect(existsSync(lock)).toBe(false);
     });
 
     test("leave Pi's settings untouched when the legacy entry has no filters", () => {

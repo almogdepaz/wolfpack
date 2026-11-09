@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
 import { detectInstalledProviderCommands } from "../provider-readiness.js";
+import { sleepSync } from "./config.js";
 import { WOLFPACK_PI_CONTROL_SKILL_FILES } from "./pi-skill.js";
 
 export const PI_TASKS_PACKAGE = "npm:@sgtbeatdown/wolfpack-tasks";
@@ -103,28 +104,93 @@ function migratedPiTasksFilters(filters: Readonly<Record<string, unknown>>): Rec
 }
 
 /**
- * Puts `filters` on the new package's entry, which `pi install` wrote as a plain source.
- * Returns false when the settings or the entry are missing or the write fails.
+ * Pi guards settings.json with proper-lockfile (`lockSync(path, { realpath: false })`): the lock is
+ * the directory `<path>.lock`, and a lock whose mtime is older than proper-lockfile's default stale
+ * time is abandoned. This is the same protocol without the dependency.
+ */
+const PI_SETTINGS_LOCK_STALE_MS = 10_000;
+/** Pi itself waits ~200 ms; a migration is rare, so it waits longer before it reports the hint. */
+const PI_SETTINGS_LOCK_WAIT_MS = 1_000;
+const PI_SETTINGS_LOCK_RETRY_MS = 20;
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
+}
+
+/** Creates `<path>.lock`; a stale lock is removed once. Returns false when the lock stays held or mkdir fails. */
+function tryAcquirePiSettingsLock(lockPath: string): boolean {
+  for (let staleCheck = true; ; staleCheck = false) {
+    try {
+      mkdirSync(lockPath);
+      return true;
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") return false;
+    }
+    if (!staleCheck) return false;
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(lockPath).mtimeMs;
+    } catch (error) {
+      // The holder released it between mkdir and stat.
+      if (errorCode(error) === "ENOENT") continue;
+      return false;
+    }
+    if (mtimeMs >= Date.now() - PI_SETTINGS_LOCK_STALE_MS) return false;
+    try {
+      rmdirSync(lockPath);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") return false;
+    }
+  }
+}
+
+/** Runs `update` while holding Pi's settings lock; false when the lock is not acquired in the retry bound. */
+function withPiSettingsLock(settingsPath: string, update: () => boolean): boolean {
+  const lockPath = `${settingsPath}.lock`;
+  const deadline = Date.now() + PI_SETTINGS_LOCK_WAIT_MS;
+  while (!tryAcquirePiSettingsLock(lockPath)) {
+    if (Date.now() >= deadline) return false;
+    sleepSync(PI_SETTINGS_LOCK_RETRY_MS);
+  }
+  try {
+    return update();
+  } finally {
+    try {
+      rmdirSync(lockPath);
+    } catch {
+      // Only this process created the lock; a missing lock leaves nothing to release.
+    }
+  }
+}
+
+/**
+ * Puts `filters` on the new package's entry, which `pi install` wrote as a plain source. Under Pi's
+ * settings lock it re-reads the file and changes only that entry, so a concurrent Pi write is kept.
+ * Returns false when the lock is held, the settings or the entry are missing, or the write fails.
  */
 function restorePiTasksFilters(agentDirectory: string, filters: Readonly<Record<string, unknown>>): boolean {
-  const settings = readPiSettings(agentDirectory);
-  const packages = settings?.packages;
-  if (settings === undefined || !Array.isArray(packages)) return false;
-  const index = packages.findIndex((entry: unknown) => {
-    const source = packageEntrySource(entry);
-    return source !== undefined && isPiTasksSource(source);
+  const settingsPath = piSettingsPath(agentDirectory);
+  if (!existsSync(settingsPath)) return false;
+  return withPiSettingsLock(settingsPath, () => {
+    const settings = readPiSettings(agentDirectory);
+    const packages = settings?.packages;
+    if (settings === undefined || !Array.isArray(packages)) return false;
+    const index = packages.findIndex((entry: unknown) => {
+      const source = packageEntrySource(entry);
+      return source !== undefined && isPiTasksSource(source);
+    });
+    if (index === -1) return false;
+    const entry: unknown = packages[index];
+    const current = typeof entry === "string" ? { source: entry } : entry as Record<string, unknown>;
+    const nextPackages = [...packages];
+    nextPackages[index] = { ...current, ...filters };
+    try {
+      writeFileSync(settingsPath, `${JSON.stringify({ ...settings, packages: nextPackages }, null, 2)}\n`);
+    } catch {
+      return false;
+    }
+    return true;
   });
-  if (index === -1) return false;
-  const entry: unknown = packages[index];
-  const current = typeof entry === "string" ? { source: entry } : entry as Record<string, unknown>;
-  const nextPackages = [...packages];
-  nextPackages[index] = { ...current, ...filters };
-  try {
-    writeFileSync(piSettingsPath(agentDirectory), `${JSON.stringify({ ...settings, packages: nextPackages }, null, 2)}\n`);
-  } catch {
-    return false;
-  }
-  return true;
 }
 
 export function piTasksMigrationDisclosureLines(
