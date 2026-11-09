@@ -2989,6 +2989,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-rank { min-width: 14px; color: var(--text-4); font: 12px var(--font-mono); text-align: right; }
 .focus-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: 500; }
 .focus-title small, .focus-for { color: var(--text-3); font-size: 12px; font-weight: 400; }
+.focus-today .focus-for { margin-left: 10px; }
 .focus-for { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .focus-action { color: var(--accent); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .focus-today .focus-check { display: flex; align-items: center; min-height: 44px; padding-right: 2px; cursor: pointer; }
@@ -3080,7 +3081,10 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   /* Status yields width, never the actions' first row; notices wrap below both. */
   .assistant-column .focus-header { flex-wrap: wrap; min-height: 44px; }
   .assistant-column .focus-header > :first-child { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .focus-for, .focus-extra { display: none; }
+  .focus-next > .focus-extra { display: none; }
+  .focus-next summary { flex-wrap: wrap; }
+  .focus-next .focus-for { order: 1; flex-basis: 100%; max-width: none; padding-left: 42px; }
+  .focus-today .focus-for { display: block; margin: 0; }
   .focus-next .focus-action { min-height: 44px; margin-top: 0; padding-inline: 6px; }
   .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--focus-aside-width); }
   .focus-today .focus-check { min-width: 44px; padding: 0; justify-content: center; }

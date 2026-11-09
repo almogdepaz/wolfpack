@@ -118,6 +118,16 @@ export function createAssistantView(deps: {
   const stamp = (at: string) => new Date(at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const field = (label: string, value: string) => value ? `<div><dt>${label}</dt><dd>${value}</dd></div>` : "";
   const project = (path?: string) => path ? `<span title="${escAttr(path)}">${esc(path.replace(/\/+$/, "").split("/").pop() || path)}</span>` : "";
+  // Session project wins on next; today derives context from its linked sessions, or the start target.
+  function rowContext(intention?: FocusIntention, session?: FocusSession) {
+    const all = sessions();
+    const local = all.find(s => !s.machineUrl)?.machine;
+    const manyMachines = new Set(all.map(s => s.machine)).size > 1;
+    const linked = session ? [session] : linkedFocusSessions(intention!, all);
+    const targets = linked.length ? linked : [{ cwd: intention?.project, machine: intention?.machine, machineUrl: undefined }];
+    const labels = [...new Set(targets.map(s => [project(s.cwd), s.machine && (manyMachines || s.machineUrl || s.machine !== local) ? esc(s.machine) : ""].filter(Boolean).join(" · ")).filter(Boolean))];
+    return labels.length ? `<small class="focus-for">${labels.join(", ")}</small>` : "";
+  }
   // `open=""` is how innerHTML serializes the attribute, so an unchanged render still compares equal in replace().
   const card = (key: string, summary: string, body: string, extra = "") => `<details class="focus-card" data-focus-card="${escAttr(key)}"${openCards.has(key) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${key}`)}">${summary}</summary><dl class="focus-card-body">${body}</dl>${extra}</details>`;
   // The agent-context extension's document for a session, fetched only for open session cards (local and peer
@@ -199,7 +209,7 @@ export function createAssistantView(deps: {
       const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
       if (row.session) renderedSessions.set(key, row.session);
       const action = `<button type="button" class="focus-action"${sessionLocked() ? " disabled" : ""} data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${verb} ${title}` : title)}">${verb}<span aria-hidden="true"> ›</span></button>`;
-      const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span><small class="focus-for">${esc(row.intention?.title ?? row.session?.machine ?? "")}</small>`;
+      const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span>${rowContext(row.intention, row.session)}`;
       return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
     }).join("")}</ol>`;
   }
@@ -253,7 +263,7 @@ export function createAssistantView(deps: {
     return changed;
   }
   function todayHtml(items: FocusIntention[]) {
-    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}</span>`, intentionBody(i))}${chipsHtml(i)}</li>`).join("")}</ul>`;
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i)}</span>`, intentionBody(i))}${chipsHtml(i)}</li>`).join("")}</ul>`;
   }
   // The live dom holds the newest open state: a tap sets `open` at once, but the browser queues its toggle event, and a
   // render in between would rebuild the card from `openCards` and the toggle would then fire on the detached node (N6).
@@ -276,6 +286,7 @@ export function createAssistantView(deps: {
     const enabled = !!focus?.assistant?.enabled;
     const state = status();
     const next = nextRows(5);
+    const nextCount = nextRows(Infinity).length;
     const summary = `${current.intentions.filter(i => i.done).length} of ${current.intentions.length} done`;
     // "know when items are done": today's ticks and finishes carry a time; the rest of the list stays as it was.
     const done = doneToday(current, sessions(), Date.now(), doneDay);
@@ -316,7 +327,7 @@ export function createAssistantView(deps: {
     if (closing && document.getElementById("assistant-view")?.classList.contains("visible")) deps.show("sessions");
     const tile = document.getElementById("sidebar-assistant");
     const tileState = !focus?.document ? "set focus" : offline ? "offline" : terminalUnavailable() ? "unavailable" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
-    const tileStatus = tileState ?? `${next.length} next`;
+    const tileStatus = tileState ?? `${nextCount} next`;
     if (tile) {
       tile.hidden = !enabled;
       // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
@@ -331,8 +342,8 @@ export function createAssistantView(deps: {
     const block = document.getElementById("dashboard-focus");
     if (block) block.hidden = !enabled;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk">${dot(state)} ${esc(info)} ›</button>` : "";
-    replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + (current.intentions.length ? `<small>today · ${summary}${latest ?? ""}</small>` : "") : `<p>Set your focus</p>${addForm(true)}`}${error && !offline ? `<p role="status">${esc(error)}</p>` : ""}`);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${offline || terminalUnavailable() || !focus?.assistant?.session ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next</h2>${nextHtml(5)}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !offline ? `<p role="status">${esc(error)}</p>` : ""}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${offline || terminalUnavailable() || !focus?.assistant?.session ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(5)}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = offline ? "" : error || focus?.assistant?.error || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
