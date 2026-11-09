@@ -166,6 +166,7 @@ interface ClaudeStatusFile {
   readonly protocolVersion: unknown;
   readonly lastPointerAt: number | undefined;
   readonly lastInboxAt: number | undefined;
+  readonly lastNudgeAt: number | undefined;
   readonly fallbackAt: number | undefined;
   readonly lastNudgeError: string | undefined;
   readonly statusFailures: number;
@@ -211,6 +212,7 @@ function readClaudeStatusFiles(statusDirectory: string): ClaudeStatusFiles {
       protocolVersion: status.protocolVersion,
       lastPointerAt: optionalNumber(status.lastPointerAt),
       lastInboxAt: optionalNumber(status.lastInboxAt),
+      lastNudgeAt: optionalNumber(status.lastNudgeAt),
       fallbackAt: optionalNumber(status.fallbackAt),
       lastNudgeError: optionalString(status.lastNudgeError),
       statusFailures: optionalNumber(status.statusFailures) ?? 0,
@@ -223,20 +225,40 @@ function readClaudeStatusFiles(statusDirectory: string): ClaudeStatusFiles {
 const isoTime = (ms: number | undefined): string => (ms === undefined ? "an unknown time" : new Date(ms).toISOString());
 const plural = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`;
 
-/** Why a live session's wake needs attention, or undefined when it is on channel wake without errors. */
-function claudeWakeProblem(file: ClaudeStatusFile): { readonly detail: string; readonly kind: "stalled" | "fallback" | "error" } | undefined {
+type ClaudeWakeProblemKind = "stalled" | "fallback" | "error";
+
+/**
+ * The plugin never clears `lastNudgeError`, so doctor decides whether it is current. A failed paste
+ * or submit sets `lastNudgeAt`; an inbox call after it means the model got the task. A failed status
+ * check sets only the error and `statusFailures` while its pointer (`lastPointerAt`) waits; an inbox
+ * call after that pointer acknowledges it. (`wakeStalledAt` needs no rule: the next inbox call clears it.)
+ */
+function nudgeErrorCurrent(file: ClaudeStatusFile): boolean {
+  if (file.lastNudgeError === undefined) return false;
+  if (file.lastInboxAt === undefined) return true;
+  if (file.statusFailures > 0 && file.lastPointerAt !== undefined && file.lastPointerAt > file.lastInboxAt) return true;
+  return file.lastNudgeAt !== undefined && file.lastInboxAt <= file.lastNudgeAt;
+}
+
+/** Why a live session's wake needs attention, or undefined when it is on channel wake without a current error. */
+function claudeWakeProblem(file: ClaudeStatusFile): { readonly detail: string; readonly kinds: readonly ClaudeWakeProblemKind[] } | undefined {
   const label = `${file.sessionName ?? file.sessionId} (${file.sessionId}, pid ${file.pid})`;
-  const error = file.lastNudgeError ?? "no error recorded";
+  const fallback = file.wake !== "channel";
+  const errorCurrent = nudgeErrorCurrent(file);
   if (file.wakeStalledAt !== undefined) {
-    return { kind: "stalled", detail: `${label}: wake stalled at ${isoTime(file.wakeStalledAt)} after ${plural(file.statusFailures, "status check")}: ${error}` };
+    const error = file.lastNudgeError ?? "no error recorded";
+    return {
+      kinds: fallback ? ["stalled", "fallback"] : ["stalled"],
+      detail: `${label}: ${file.wake} wake stalled at ${isoTime(file.wakeStalledAt)} after ${plural(file.statusFailures, "status check")}: ${error}`,
+    };
   }
-  if (file.wake !== "channel") {
-    const lastError = file.lastNudgeError === undefined ? "" : `, last nudge error: ${file.lastNudgeError}`;
-    return { kind: "fallback", detail: `${label}: fallback wake since ${isoTime(file.fallbackAt)} (protocol ${String(file.protocolVersion ?? "unknown")})${lastError}` };
+  if (fallback) {
+    const lastError = errorCurrent ? `, last nudge error: ${file.lastNudgeError}` : "";
+    return { kinds: ["fallback"], detail: `${label}: fallback wake since ${isoTime(file.fallbackAt)} (protocol ${String(file.protocolVersion ?? "unknown")})${lastError}` };
   }
-  if (file.lastNudgeError !== undefined) {
+  if (errorCurrent) {
     const retrying = file.statusFailures > 0 ? ` (${plural(file.statusFailures, "failed status check")})` : "";
-    return { kind: "error", detail: `${label}: last nudge error: ${file.lastNudgeError}${retrying}` };
+    return { kinds: ["error"], detail: `${label}: last nudge error: ${file.lastNudgeError}${retrying}` };
   }
   return undefined;
 }
@@ -248,14 +270,14 @@ function claudeWakeProblem(file: ClaudeStatusFile): { readonly detail: string; r
 function checkClaudeWake(options: ClaudeIntegrationDoctorOptions): CheckResult {
   const { files, unreadable, directoryError } = readClaudeStatusFiles(options.statusDirectory);
   const problems: string[] = [];
-  const kinds = new Set<string>();
+  const kinds = new Set<ClaudeWakeProblemKind>();
   let delivered = 0;
   let unverified = 0;
   for (const file of files.filter(status => options.pidAlive(status.pid))) {
     const problem = claudeWakeProblem(file);
     if (problem !== undefined) {
       problems.push(problem.detail);
-      kinds.add(problem.kind);
+      for (const kind of problem.kinds) kinds.add(kind);
     } else if (file.lastPointerAt !== undefined || file.lastInboxAt !== undefined) {
       delivered++;
     } else {

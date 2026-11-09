@@ -188,20 +188,74 @@ describe("doctor Claude task integration checks", () => {
     const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
     expect(wake?.status).toBe("warn");
     expect(wake?.detail).toContain("stalled (stalled, pid 4242)");
-    expect(wake?.detail).toContain(`wake stalled at ${new Date(stalledAt).toISOString()} after 3 status checks: ${reason}`);
+    expect(wake?.detail).toContain(`channel wake stalled at ${new Date(stalledAt).toISOString()} after 3 status checks: ${reason}`);
     expect(wake?.fixHint).toContain("wolfpack session status");
+    expect(wake?.fixHint).not.toContain("--channels");
+  });
+
+  test("names the wake mode of a stalled fallback session and adds the restart hint", () => {
+    const options = healthy();
+    const stalledAt = Date.UTC(2026, 10, 9, 12, 5, 0);
+    writeStatus(options.statusDirectory, "stalled", {
+      wake: "fallback", fallbackAt: stalledAt - 60_000, lastPointerAt: stalledAt - 10_000,
+      statusFailures: 3, wakeStalledAt: stalledAt, lastNudgeError: "status unreadable; fallback given up after 3 status checks",
+    });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("warn");
+    expect(wake?.detail).toContain(`fallback wake stalled at ${new Date(stalledAt).toISOString()}`);
+    expect(wake?.fixHint).toContain("wolfpack session status");
+    expect(wake?.fixHint).toContain(`--channels ${CLAUDE_INTEGRATION.channelSpec}`);
   });
 
   test("warns about a live session with a nudge error and names the reason", () => {
     const options = healthy();
     writeStatus(options.statusDirectory, "nudged", {
-      lastPointerAt: 1, statusFailures: 1, wakeStalledAt: null, lastNudgeError: "session submit exited 1",
+      lastPointerAt: 1, statusFailures: 1, wakeStalledAt: null, lastNudgeError: "wolfpack session status exited 1",
     });
     const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
     expect(wake?.status).toBe("warn");
     expect(wake?.detail).toContain("nudged (nudged, pid 4242)");
-    expect(wake?.detail).toContain("last nudge error: session submit exited 1");
+    expect(wake?.detail).toContain("last nudge error: wolfpack session status exited 1");
     expect(wake?.detail).toContain("1 failed status check");
+  });
+
+  test("a nudge error followed by a later inbox call is resolved", () => {
+    const options = healthy();
+    const nudgedAt = Date.UTC(2026, 10, 9, 12, 0, 0);
+    writeStatus(options.statusDirectory, "recovered", {
+      lastPointerAt: nudgedAt - 5_000, lastNudgeAt: nudgedAt, lastNudgeError: "session send exited 1", lastInboxAt: nudgedAt + 1_000,
+    });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("pass");
+    expect(wake?.detail).toBe("1 on channel wake with pointer or inbox activity");
+  });
+
+  test("a nudge error without a later inbox call is current", () => {
+    const options = healthy();
+    const nudgedAt = Date.UTC(2026, 10, 9, 12, 0, 0);
+    writeStatus(options.statusDirectory, "failing", {
+      lastPointerAt: nudgedAt - 5_000, lastNudgeAt: nudgedAt, lastNudgeError: "session send exited 1", lastInboxAt: nudgedAt - 60_000,
+    });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("warn");
+    expect(wake?.detail).toContain("failing (failing, pid 4242): last nudge error: session send exited 1");
+  });
+
+  test("a failed status check is current while its pointer has no later inbox call", () => {
+    // Failed status checks set lastNudgeError without lastNudgeAt; the pointer they retry is lastPointerAt.
+    const options = healthy();
+    const inboxAt = Date.UTC(2026, 10, 9, 12, 0, 0);
+    writeStatus(options.statusDirectory, "retrying", {
+      lastInboxAt: inboxAt, lastPointerAt: inboxAt + 5_000, lastNudgeAt: null, statusFailures: 2, lastNudgeError: "wolfpack session status exited 1",
+    });
+    writeStatus(options.statusDirectory, "acknowledged", {
+      lastPointerAt: inboxAt, lastInboxAt: inboxAt + 5_000, lastNudgeAt: null, statusFailures: 2, lastNudgeError: "wolfpack session status exited 1",
+    });
+    const wake = byName(checkClaudeTaskIntegration(options), "claude wake");
+    expect(wake?.status).toBe("warn");
+    expect(wake?.detail).toContain("retrying (retrying, pid 4242): last nudge error: wolfpack session status exited 1 (2 failed status checks)");
+    expect(wake?.detail).not.toContain("acknowledged (");
+    expect(wake?.detail).toContain("1 on channel wake with pointer or inbox activity");
   });
 
   test("counts channel pointer or inbox activity as evidence of delivery", () => {

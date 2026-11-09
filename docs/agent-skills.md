@@ -109,8 +109,10 @@ user-scope plugin, and a missing or wrong drop-in. It warns when
 does not inspect MDM or server-managed settings. It also reads the plugin's
 status files in `~/.wolfpack/wolfpack-tasks/claude/` and warns, with the session
 and the reason, about each live Claude session whose wake stalled after its
-status checks ran out, that has a nudge error, or that uses fallback wake
-instead of the channel. It warns about status files it cannot read. A channel
+status checks ran out, that has a current nudge error, or that uses fallback
+wake instead of the channel. A nudge error stops counting once the session
+calls its inbox after that nudge (or, for a failed status check, after the
+pointer it retried). It warns about status files it cannot read. A channel
 session counts as delivered only after a pointer or inbox call; before that,
 doctor reports it as "channel configured, unverified".
 
