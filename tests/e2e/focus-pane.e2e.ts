@@ -38,6 +38,44 @@ async function visibility(page: Page, state: "hidden" | "visible") {
   }, state);
 }
 
+test("QA-22/23: narrow pane rows yield context before kind text and pane controls stay on one row", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "desktop pane geometry");
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    session.name = "broker-leak";
+    session.identity.projectPath = "/work/broker-leak";
+    session.runtimeState = { ...session.runtimeState, state: "needs-input", inputKind: "permission" };
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.document.intentions.find((i: { id: string }) => i.id === "ship").title = "fix the broker fd leak";
+    await route.fulfill({ response, json: body });
+  });
+  await openFocus(page);
+  await hydrated(page);
+  const title = page.locator("#assistant-content .focus-next .focus-title").first();
+  await expect(title).toContainText("broker-leak permission");
+  const measure = await title.evaluate(el => {
+    const range = document.createRange();
+    range.setStart(el.firstChild!, 0);
+    range.setEnd(el.firstChild!, "broker-leak permission".length);
+    return { available: el.clientWidth, label: range.getBoundingClientRect().width };
+  });
+  await page.screenshot({ path: info.outputPath("pane-1100.png"), animations: "disabled" });
+  expect.soft(measure.available).toBeGreaterThanOrEqual(measure.label);
+  const focus = (await pane(page).getByRole("button", { name: "Focus terminal", exact: true }).boundingBox())!;
+  const back = (await pane(page).getByRole("button", { name: "Back to list", exact: true }).boundingBox())!;
+  expect.soft(back.y).toBeCloseTo(focus.y, 0);
+  expect((await pane(page).boundingBox())!.width).toBeGreaterThan(250); // No pane sizing change.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
 test("pane: two columns at 1100+, one column below, clean breakpoint remount and captures", async ({ page }, info) => {
   const stats = transport(page);
   await page.setViewportSize({ width: info.project.name === "desktop" ? 1440 : 390, height: 900 });

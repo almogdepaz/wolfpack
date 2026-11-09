@@ -2989,7 +2989,8 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-title small, .focus-for { color: var(--text-3); font-size: 12px; font-weight: 400; }
 .focus-today .focus-for { margin-left: 10px; }
 .focus-for { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.focus-next .focus-for { max-width: 320px; }
+/* Context absorbs contraction before the title's state/kind word; titles can still shrink once context runs out. */
+.focus-next .focus-for { max-width: 320px; flex-shrink: 100; }
 .focus-next .focus-for > span { white-space: nowrap; }
 .focus-today .focus-check { display: flex; align-items: center; min-height: 44px; padding-right: 2px; cursor: pointer; }
 .focus-today input { accent-color: var(--accent); width: 18px; height: 18px; margin: 0; flex: none; }
@@ -3028,7 +3029,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   #assistant-view { flex-direction: row; }
   #assistant-view .assistant-column { flex: 0 0 clamp(520px, 65%, 760px); min-width: 0; overflow: auto; }
   #assistant-pane:not([hidden]) { display: flex; flex: 1; min-width: 0; flex-direction: column; margin: 24px 20px 24px 0; }
-  #assistant-pane .focus-terminal-header { flex-wrap: wrap; }
+  #assistant-pane .focus-terminal-header { flex-wrap: nowrap; }
   #assistant-pty { position: relative; flex: 1; min-height: 0; overflow: hidden; }
   #assistant-pty.hydrating canvas { visibility: hidden; }
 }
@@ -3067,6 +3068,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .app-dialog .app-dialog-scroll { max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--font-mono); }
 .session-pin { width: 12px; height: 12px; color: var(--text-3); flex: none; }
 @media (min-width: 769px) {
+  .focus-next .focus-title { flex-basis: auto; }
   body.sessions-expanded #dashboard-focus { width: calc(100% - 96px); max-width: 1200px; margin: 12px auto 0; }
 }
 @media (max-width: 768px) {
