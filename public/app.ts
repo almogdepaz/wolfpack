@@ -1611,14 +1611,20 @@ function showView(requested: string, skipAnimation?: boolean, refreshSessions = 
   if (viewName === "settings") void focusUi.loadTiming();
   document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   applyViewVisibility(previousElement, nextElement, animate, goingForward);
-  if (viewName === "assistant") assistantPane.setActive(true);
 
   // Stop timers immediately (don't defer these).
   if (state.sessionRefreshTimer) { clearInterval(state.sessionRefreshTimer); state.sessionRefreshTimer = null; }
   if (!isMobile) {
     applyDesktopViewNavigation(viewName);
+    if (viewName === "assistant") {
+      // Like openSession(), settle the pinned sidebar before the first fit:
+      // a menu-width attach would resize the shared PTY again after the slide.
+      if (state.sidebarPinned) setSidebarCollapsedImmediately(false);
+      assistantPane.setActive(true);
+    }
     return;
   }
+  if (viewName === "assistant") assistantPane.setActive(true);
   applyMobileViewNavigation(name);
   if (name === "sessions" && refreshSessions) void loadSessions(); // immediate refresh on entering sessions view
   syncSessionRefreshTimer();

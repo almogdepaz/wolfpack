@@ -45,8 +45,19 @@ const pane = (page: Page) => page.getByRole("region", { name: "Assistant termina
 test("real broker pane handover preserves input and never conflicts with its own full-screen viewer", async ({ page }, info) => {
   test.skip(skipIfNoBroker.condition, skipIfNoBroker.reason);
   test.skip(info.project.name !== "desktop", "desktop embedded surface");
+  const geometry: string[] = [];
+  page.on("websocket", ws => {
+    if (!ws.url().includes("/ws/pty")) return;
+    ws.on("framesent", frame => {
+      if (typeof frame.payload !== "string") return;
+      const message = JSON.parse(frame.payload);
+      if (["attach", "resize", "layout_stable"].includes(message.type)) geometry.push(`${message.cols}x${message.rows}`);
+    });
+  });
   await focus(page);
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+  expect(new Set(geometry).size, "real broker receives only the settled first-open geometry").toBe(1);
+  expect(await pane(page).locator("canvas").evaluate(el => el.getBoundingClientRect().width <= el.parentElement!.clientWidth)).toBe(true);
   await pane(page).locator("canvas").click();
   await page.keyboard.type("printf 'pane-before-%s\\n' handover\n");
   await expect.poll(() => screen(page)).toContain("pane-before-handover");
