@@ -57,6 +57,16 @@ for (const width of [1440, 1280, 1279, 390]) test(`assistant banner leads sessio
     await expect(page.locator("#desktop-sidebar")).toHaveClass(/collapsed/);
     await expect(page.locator("#desktop-sidebar")).toHaveAttribute("inert", "");
     await page.screenshot({ path: info.outputPath(`banner-${width}-collapsed.png`), fullPage: true });
+    // F2: a hover over Sessions does not transfer the chooser from the main
+    // banner/filter to the sidebar, unlike a hover over the Assistant page.
+    await page.mouse.move(width - 10, 500);
+    await page.mouse.move(1, 500);
+    await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
+    await expect(page.locator("#dashboard-focus")).toBeVisible();
+    await expect(page.locator("#sidebar-session-controls")).toBeHidden();
+    await expect(page.locator("#sidebar-assistant")).toBeHidden();
+    await expect(page.locator("#sidebar-assistant")).toHaveAttribute("hidden", "");
+    await page.screenshot({ path: info.outputPath(`banner-${width}-hover-sessions.png`), fullPage: true });
     await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
     // The edge disappears as soon as it opens the sidebar; move the pointer
     // rather than asking locator.hover() to keep that transient target actionable.

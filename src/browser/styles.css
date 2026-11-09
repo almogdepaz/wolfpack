@@ -2889,7 +2889,7 @@ body > header { height: 52px; min-height: 52px; }
   body:has(#sessions-view.visible) #mobile-sessions, body:has(#settings-view.visible) #mobile-settings { color: var(--accent); }
   body:has(#terminal-view.visible) :is(#mobile-tab-bar, #mobile-discover-status) { display: none; }
 }
-/* Focus inherits the session surfaces and attention colors. The filter and the assistant card each take a full row. */
+/* Focus inherits the session surfaces and attention colors. The sidebar filter fills its chooser row. */
 #sidebar-session-filter { flex: 1 1 100%; }
 /* Focus: one row treatment (44px, 12px inset, hairline separators) and three button weights: bordered secondary, amber attention, inline link. */
 /* The sidebar assistant card leads search and filters, with a soft glow keyed to its tone. */

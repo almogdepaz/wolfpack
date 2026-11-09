@@ -60,6 +60,11 @@ export function createAssistantView(deps: {
   let showAllNext = false;
   const pageNextCap = () => showAllNext ? Infinity : 5;
   let wasEnabled = false;
+  let sidebarOwnsChooser = false;
+  function updateSidebarVisibility() {
+    const tile = document.getElementById("sidebar-assistant");
+    if (tile) tile.hidden = !sidebarOwnsChooser || !focus?.assistant?.enabled;
+  }
   const cacheKey = "wolfpack-focus-cache";
   try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (cached.terminalOwner === "rejected") terminalOwner = "rejected"; if (typeof cached.machine === "string") machine = cached.machine; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
   const terminalUnavailable = () => focus?.assistant?.unavailableReason;
@@ -386,7 +391,7 @@ export function createAssistantView(deps: {
     const tileState = focusUnavailable ? (offline() ? "offline" : "focus unavailable") : !focus?.document ? "set focus" : terminalUnavailable() ? "unavailable" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
     const tileStatus = tileState ?? `${nextCount} next`;
     if (tile) {
-      tile.hidden = !enabled;
+      updateSidebarVisibility();
       // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
       tile.dataset.tone = focusUnavailable || terminalUnavailable() || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
       const countedNext = tileState === null;
@@ -603,6 +608,7 @@ export function createAssistantView(deps: {
   });
   render();
   return { refresh, render, loadTiming,
+    setSidebarOwner(owns: boolean) { sidebarOwnsChooser = owns; updateSidebarVisibility(); },
     captureStart: (intentionId: string): FocusSessionStart => ({ intentionId, home: focus?.home ?? "" }),
     linkStartedSession: async (start: FocusSessionStart, session: StartedFocusSession) => {
       await write(() => {

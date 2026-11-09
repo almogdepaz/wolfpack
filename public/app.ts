@@ -5630,6 +5630,7 @@ function sidebarOwnsSessionChooser(): boolean {
 
 function syncSessionChooserOwnership(): boolean {
   const sidebarOwns = sidebarOwnsSessionChooser();
+  focusUi.setSidebarOwner(sidebarOwns);
   const sessionDashboardControls = document.getElementById("session-dashboard-controls");
   const sessionList = document.getElementById("session-list");
   if (sessionDashboardControls) sessionDashboardControls.hidden = sidebarOwns;
