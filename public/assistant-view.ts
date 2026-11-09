@@ -4,6 +4,7 @@ import { mergeFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSession
 import { emptyFocus, isFocusDocument, focusNextRefKey, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-send-contract";
+import { focusLastLine } from "../src/focus-text";
 import { createFocusReceipts, focusSuggestionKey, type FocusSendReceipt } from "./focus-receipts";
 import type { AssistantTerminalTarget } from "./assistant-terminal";
 import { showAppDialog } from "./app-dialog";
@@ -89,7 +90,7 @@ export function createAssistantView(deps: {
   // All session actions are disabled until the local projection is available again.
   let lastSessions: FocusSession[] = [];
   const sessions = () => {
-    const fresh = deps.sessions().map(session => ({ ...session, machineInstallationId: session.machineInstallationId || (!session.machineUrl ? localInstallationId : undefined) }));
+    const fresh = deps.sessions().map(session => ({ ...session, lastLine: focusLastLine(session.lastLine ?? ""), machineInstallationId: session.machineInstallationId || (!session.machineUrl ? localInstallationId : undefined) }));
     // A failed/pending list is not an authoritative empty list. Preserve its last episode
     // facts, but never retain a retired installation or revive a deleted reachable session.
     const retained = lastSessions.filter(session => session.machineUrl

@@ -306,6 +306,24 @@ for (const outcome of ["submitted", "unverified"] as const) test(`R3: ${outcome}
   expect(sends).toBe(1);
 });
 
+test("focus-only lastLine stripping preserves the normal session preview", async ({ page }) => {
+  await seed(page);
+  const preview = "👩‍💻 ✔️ review\u202e now\u200b";
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    const s = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    s.lastLine = preview;
+    s.runtimeState = { ...s.runtimeState, state: "needs-input", changedAt: episode, stoppedAt: episode };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await expect(page.locator('#session-list .card').filter({ has: page.locator('.card-open[data-session="prompt-project"]') }).first().locator('.card-preview')).toHaveText(preview);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "The approved plan" });
+  await row.locator("summary").click();
+  const line = row.locator(".focus-card-body code");
+  await expect(line).toHaveText("👩💻 ✔ review now");
+});
+
 test("an uncertain user send stays visible and cannot be tapped again", async ({ page }) => {
   await seed(page);
   await page.route("**/api/session-control/send", route => route.fulfill({ json: { ok: true, outcome: "unverified", delivery: "unverified", observedMs: 1 } }));

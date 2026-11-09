@@ -1,3 +1,4 @@
+import { focusLastLine } from "../focus-text.js";
 import { randomUUID } from "node:crypto";
 import type { SessionMeta } from "../session-meta-contract.js";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
@@ -186,7 +187,7 @@ const knownSessionSummaries = new Map<string, KnownSessionSummary>();
  * Names may be reused: only an exact observed incarnation can supply its last line. */
 export function observedSessionLastLine(sessionId: string): string {
   for (const summary of knownSessionSummaries.values()) {
-    if (summary.identity?.wolfpackSessionId === sessionId) return Array.from(cleanPreviewLine(summary.lastLine)).slice(0, 300).join("");
+    if (summary.identity?.wolfpackSessionId === sessionId) return focusLastLine(summary.lastLine);
   }
   return "";
 }
@@ -196,7 +197,7 @@ let latestAuthoritativeObservation = 0;
 const SESSION_PREVIEW_MAX_CHARS = 240;
 
 function cleanPreviewLine(line: string): string {
-  return line.replace(/[\u0000-\u001f\u007f-\u009f\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "").trim();
+  return line.replace(/[\u0000-\u001f\u007f]/g, "").trim();
 }
 
 function legacyTerminalPreviewLine(rendered: string | undefined): string {
