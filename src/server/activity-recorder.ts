@@ -1,5 +1,6 @@
+import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { ACTIVITY_KIND, presenceBucket, type ActivityRowBody, type InputSource } from "../activity-journal.js";
+import { ACTIVITY_KIND, presenceBucket, type ActivityRowBody, type InputSource, type ActivityGitRepo } from "../activity-journal.js";
 import type { EventBus } from "../event-bus.js";
 import { WOLFPACK_EVENT_KIND, type WolfpackEvent } from "../events-contract.js";
 import type { SessionListFact } from "./backend-contract.js";
@@ -124,7 +125,7 @@ const GIT_LOG_MAX_COMMITS = 50;
 const GIT_LOG_MAX_REPOS = 20;
 /** Commits on any ref in [from, to) for one repository; `error` when it is not a readable repository. */
 export function readGitLog(cwd: string, from: number, to: number): Promise<{ commits: GitCommit[]; error?: string }> {
-  const args = ["-C", cwd, "log", "--all", "--no-merges", "--no-show-signature", `--since=${new Date(from).toISOString()}`, `--until=${new Date(to).toISOString()}`, "--format=%h%x09%cI%x09%s", "-n", String(GIT_LOG_MAX_COMMITS)];
+  const args = ["-C", cwd, "log", "--all", "--no-merges", "--no-show-signature", `--since=${new Date(from).toISOString()}`, `--until=${new Date(to).toISOString()}`, "--format=%H%x09%cI%x09%s", "-n", String(GIT_LOG_MAX_COMMITS)];
   return new Promise(resolve => {
     execFile("git", args, { timeout: GIT_TIMEOUT_MS, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }, (error, stdout) => {
       if (error) return resolve({ commits: [], error: "not a readable git repository" });
@@ -133,7 +134,20 @@ export function readGitLog(cwd: string, from: number, to: number): Promise<{ com
     });
   });
 }
-/** Distinct repositories (by cwd), bounded; cwds always come from this machine's own journal. */
-export async function readGitLogs(cwds: readonly string[], from: number, to: number): Promise<{ cwd: string; commits: GitCommit[]; error?: string }[]> {
-  return Promise.all(cwds.slice(0, GIT_LOG_MAX_REPOS).map(async cwd => ({ cwd, ...(await readGitLog(cwd, from, to)) })));
+/** Canonical identity shared by linked worktrees, resolved only on the machine owning the cwd. */
+function readGitCommonDir(cwd: string): Promise<string | undefined> {
+  return new Promise(resolve => {
+    execFile("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { timeout: GIT_TIMEOUT_MS, maxBuffer: 16 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }, (error, stdout) => {
+      if (error) return resolve(undefined);
+      try { resolve(realpathSync(stdout.trim())); } catch { resolve(undefined); }
+    });
+  });
+}
+/** Bounded cwd inputs from this machine's journal; commonDir lets day notes collapse worktrees. */
+export async function readGitLogs(cwds: readonly string[], from: number, to: number): Promise<ActivityGitRepo[]> {
+  return Promise.all(cwds.slice(0, GIT_LOG_MAX_REPOS).map(async cwd => {
+    const [log, commonDir] = await Promise.all([readGitLog(cwd, from, to), readGitCommonDir(cwd)]);
+    return { cwd, ...log, ...(commonDir && { commonDir }),
+      ...(!commonDir && !log.error && { error: "git common directory unavailable; worktree grouping may be incomplete" }) };
+  }));
 }

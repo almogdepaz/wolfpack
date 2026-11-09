@@ -136,10 +136,12 @@ describe("day note facts", () => {
     ], [{ machine: "sgt", cwd: "/dev/app", commits: [{ sha: "abc1234", at, subject: "ship\nit" }] }, { machine: "mac", cwd: "/dev/x", commits: [], error: "unreachable" }]);
     expect(text).toStartWith("# 2026-11-06\n");
     expect(text).toContain("untrusted");
-    expect(text).toContain("- app (/dev/app, pi, main) · 1 state changes · input in 1 five-minute buckets · exited");
+    expect(text).toContain("- app: 1 session (1 pi), 1 exited");
+    expect(text).not.toMatch(/state changes|five-minute buckets/);
     expect(text).toContain("`git log --since=2026-11-06T02:00:00.000Z --until=2026-11-07T02:00:00.000Z`");
     expect(text).toContain("- abc1234 ship it");
-    expect(text).toContain("/dev/x (mac): unreachable");
+    expect(text).toContain("worktrees: /dev/x");
+    expect(text).toContain("- unreachable");
     expect(text).toEndWith("## assistant\n\n");
   });
 });

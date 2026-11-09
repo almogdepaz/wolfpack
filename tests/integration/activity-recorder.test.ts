@@ -111,6 +111,19 @@ test("git log per repository within a time window", async () => {
   expect((await readGitLogs([repo], Date.parse("2026-11-07T03:00:00Z"), Date.parse("2026-11-08T03:00:00Z")))[0]!.commits).toEqual([]);
 });
 
+test("day-note git facts identify real linked worktrees by the common git directory", async () => {
+  const { readGitLogs } = await import("../../src/server/activity-recorder.ts");
+  const repo = root(), linked = join(root(), "linked");
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  const env = { ...process.env, GIT_COMMITTER_DATE: "2026-11-06T10:00:00Z", GIT_AUTHOR_DATE: "2026-11-06T10:00:00Z" };
+  execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "one outcome"], { env });
+  execFileSync("git", ["-C", repo, "worktree", "add", "-q", "-b", "linked", linked]);
+  const logs = await readGitLogs([repo, linked], Date.parse("2026-11-06T03:00:00Z"), Date.parse("2026-11-07T03:00:00Z"));
+  expect(logs.map(log => log.commonDir)).toEqual([join(repo, ".git"), join(repo, ".git")]);
+  expect(logs[0]!.commits[0]!.sha).toHaveLength(40);
+  expect(logs[0]!.commits).toEqual(logs[1]!.commits);
+});
+
 const hasSshKeygen = (() => { try { execFileSync("ssh-keygen", ["-?"], { stdio: "ignore" }); return true; } catch (error) { return (error as { status?: number }).status !== undefined; } })();
 test.skipIf(!hasSshKeygen)("git log ignores a repository's log.showSignature: signature lines never become commits", async () => {
   const { readGitLog } = await import("../../src/server/activity-recorder.ts");
