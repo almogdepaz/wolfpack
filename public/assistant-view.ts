@@ -62,9 +62,9 @@ export function createAssistantView(deps: {
   // The cached copy carries the home's resolved name, so an offline first answer names the right machine.
   const cache = (value: FocusResponse) => { try { localStorage.setItem(cacheKey, JSON.stringify({ ...value, homeName })); } catch { /* storage unavailable; live view still works */ } };
   const doc = () => focus?.document ?? emptyFocus();
-  const routines = () => offline || !focus?.assistant?.enabled ? undefined : focus.routines;
+  const routines = () => offline || terminalUnavailable() || !focus?.assistant?.enabled ? undefined : focus.routines;
   // An error beside a live session (a dropped queue, an unverified send) is a note under the live state; "failed" is the assistant not running.
-  const status = () => offline ? `${homeName} offline` : focus?.assistant?.error && !focus.assistant.session ? "failed" : focus?.assistant?.enabled ? (focus.assistant.state === "needs-input" ? "needs you" : routines()?.catchingUp ? "catching up" : focus.assistant.state) : "off";
+  const status = () => offline ? `${homeName} offline` : terminalUnavailable() ? "unavailable" : focus?.assistant?.error && !focus.assistant.session ? "failed" : focus?.assistant?.enabled ? (focus.assistant.state === "needs-input" ? "needs you" : routines()?.catchingUp ? "catching up" : focus.assistant.state) : "off";
   // `Tue 23:00`: the plan's copy for catching-up / stale / not-reached times.
   const when = (at: string) => new Date(at).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const localDay = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
@@ -314,12 +314,12 @@ export function createAssistantView(deps: {
     wasEnabled = enabled;
     if (closing && document.getElementById("assistant-view")?.classList.contains("visible")) deps.show("sessions");
     const tile = document.getElementById("sidebar-assistant");
-    const tileState = !focus?.document ? "set focus" : offline ? "offline" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
+    const tileState = !focus?.document ? "set focus" : offline ? "offline" : terminalUnavailable() ? "unavailable" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
     const tileStatus = tileState ?? `${next.length} next`;
     if (tile) {
       tile.hidden = !enabled;
       // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
-      tile.dataset.tone = offline || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
+      tile.dataset.tone = offline || terminalUnavailable() || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
       const countedNext = tileState === null;
       const upNext = next[0] ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
       tile.innerHTML = `<span class="assistant-tile-head">${TILE_MARK}<b>assistant<span class="visually-hidden">,</span></b><span class="assistant-tile-state">${tone}${tileStatus}${countedNext && next[0] ? '<span class="visually-hidden">:</span>' : ""}</span></span> <span class="assistant-tile-next">${upNext}</span>`;
@@ -345,7 +345,7 @@ export function createAssistantView(deps: {
     const settingOpen = document.getElementById("assistant-setting-open");
     if (settingOpen) settingOpen.hidden = !enabled;
     const terminalState = document.getElementById("assistant-terminal-state");
-    if (terminalState) terminalState.textContent = focus?.assistant?.queued ? `${focus.assistant.queued} queued` : focus?.assistant?.error ?? state;
+    if (terminalState) terminalState.textContent = terminalUnavailable() ? "sessions unavailable" : focus?.assistant?.queued ? `${focus.assistant.queued} queued` : focus?.assistant?.error ?? state;
     if (fitChips()) render();
   }
   async function refresh(open = !opened) {

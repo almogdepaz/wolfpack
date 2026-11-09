@@ -120,6 +120,47 @@ test("QA-18: broker-only outage leaves focus writable but terminal actions unava
   await expect(view.locator(".focus-done")).toContainText(title);
 });
 
+test("R3: broker outage overrides a pending catch-up on every surface and recovers without losing it", async ({ page }, info) => {
+  let down = false;
+  await page.route("https://**", route => route.abort());
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [] } }));
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    body.routines.catchingUp = { machines: 1, since: null, unconfirmed: true };
+    body.assistant.queued = 3;
+    if (down) body.assistant = { ...body.assistant, state: "unknown", unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  const tile = page.locator("#sidebar-assistant");
+  await expect(view.locator(".focus-header")).toContainText("reading activity");
+  await view.getByRole("button", { name: "Talk to assistant" }).click();
+  await expect(page.locator("#assistant-terminal-header")).toBeVisible();
+  down = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect.soft(page.locator("#assistant-terminal-state")).toHaveText("sessions unavailable");
+  await page.locator("#assistant-terminal-focus").click();
+  await expect(view.locator(".focus-header")).toContainText("sessions unavailable");
+  await expect.soft(tile).not.toHaveAttribute("data-tone", "busy");
+  await expect.soft(tile).toContainText("unavailable");
+  await expect.soft(page.locator("#dashboard-focus .focus-spin, #assistant-content .focus-spin")).toHaveCount(0);
+  await expect.soft(view.locator(".focus-nudge")).not.toHaveClass(/\bfrom\b/);
+  const cached = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!));
+  expect(cached.routines.catchingUp).toMatchObject({ machines: 1, unconfirmed: true });
+  expect(cached.assistant.queued).toBe(3);
+  await page.screenshot({ path: info.outputPath("broker-down-pending-catchup.png") });
+  down = false;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(view.locator(".focus-header")).toContainText("reading activity");
+  await expect(tile).toHaveAttribute("data-tone", "busy");
+  await expect(tile).toContainText("reading");
+  await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeEnabled();
+});
+
 test("S2: a retired peer installation leaves the offline snapshot before local recovery", async ({ page }) => {
   const origin = "https://focus-peer.example.ts.net";
   const oldId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
