@@ -77,3 +77,52 @@ test("QA-20: chips use remaining title space on render and resize, with an exact
   } else await row.locator("summary").click();
   await expect(row.locator(".focus-card-body [data-focus-session]")).toHaveText(names);
 });
+
+for (const transition of ["unlink", "sessions disappear"] as const) test(`C2: ${transition} clears the fitted reservation before rendering a longer title`, async ({ page }, info) => {
+  const desktop = info.project.name === "desktop";
+  const names = Array.from({ length: 12 }, (_, i) => `s${i}`);
+  const replacement = "Review the updated deployment checklist";
+  let removed = false;
+  await page.setViewportSize({ width: desktop ? 1440 : 390, height: 900 });
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    const template = body.sessions.find((s: { name: string }) => s.name === "another-project");
+    if (!removed || transition === "unlink") body.sessions.push(...names.map(name => ({ ...template, name,
+      identity: { ...template.identity, wolfpackSessionId: `mock:${name}` },
+    })));
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    body.document.intentions = [{ id: "changing-links", title: removed ? replacement : "Ship", done: false,
+      createdAt: new Date().toISOString(), sessions: removed && transition === "unlink" ? [] : names.map(name => `mock:${name}`) }];
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const row = page.locator("#assistant-content .focus-today > li");
+  const chips = row.locator(":scope > .focus-chips");
+  await expect.poll(() => chips.locator("[data-focus-session]:visible").count()).toBeGreaterThan(3);
+  if (desktop) expect(await row.evaluate(el => parseFloat(getComputedStyle(el).getPropertyValue("--focus-chips-width")))).toBeGreaterThan(200);
+  removed = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  const title = row.locator("summary .focus-title");
+  await expect(title).toHaveText(replacement);
+  await expect(chips.locator("[data-focus-session]")).toHaveCount(0);
+  for (const width of desktop ? [1440, 1280, 1440] : [390]) {
+    await page.setViewportSize({ width, height: 900 });
+    if (desktop) {
+      const size = await title.evaluate(el => {
+        const range = document.createRange(); range.selectNode(el.firstChild!);
+        return { available: el.clientWidth, text: range.getBoundingClientRect().width };
+      });
+      expect.soft(size.available, `${width}: no empty reservation truncates the replacement title`).toBeGreaterThanOrEqual(size.text);
+      expect.soft(await row.evaluate(el => getComputedStyle(el).getPropertyValue("--focus-chips-width"))).toBe("0px");
+    }
+  }
+  await page.screenshot({ path: info.outputPath(`c2-${transition.replaceAll(" ", "-")}.png`), fullPage: true });
+  removed = false;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(title).toHaveText("Ship");
+  await expect.poll(() => chips.locator("[data-focus-session]:visible").count()).toBeGreaterThan(3);
+});

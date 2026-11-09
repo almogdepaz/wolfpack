@@ -334,7 +334,7 @@ export function createAssistantView(deps: {
     foldOpenCards();
     renderedSessions.clear();
     const current = doc();
-    for (const id of compactChips.keys()) if (!current.intentions.some(intention => intention.id === id)) compactChips.delete(id);
+    for (const id of compactChips.keys()) if (!current.intentions.some(intention => intention.id === id && linkedFocusSessions(intention, sessions()).length > 0)) compactChips.delete(id);
     const enabled = !!focus?.assistant?.enabled;
     const state = status();
     // The unavailable header already names the outage; keep transport diagnostics in settings.
