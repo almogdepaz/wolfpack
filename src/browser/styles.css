@@ -3026,6 +3026,15 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-block > small { display: block; margin-top: 10px; font-size: 12px; color: var(--text-3); }
 .focus-empty { margin: 8px 0; font-size: 13px; color: var(--text-3); }
 #assistant-view { overflow-y: auto; }
+#assistant-pane { display: none; }
+@media (min-width: 1100px) {
+  #assistant-view { flex-direction: row; }
+  #assistant-view .assistant-column { flex: 0 0 clamp(520px, 65%, 760px); min-width: 0; overflow: auto; }
+  #assistant-pane:not([hidden]) { display: flex; flex: 1; min-width: 0; flex-direction: column; margin: 24px 20px 24px 0; }
+  #assistant-pane .focus-terminal-header { flex-wrap: wrap; }
+  #assistant-pty { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+  #assistant-pty.hydrating canvas { visibility: hidden; }
+}
 .assistant-column { flex-shrink: 0; width: 100%; max-width: 760px; margin: 0 auto; padding: 24px 20px 48px; }
 .assistant-column > header { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; border: 0; background: none; padding: 0; }
 .assistant-column h1 { font: 600 20px var(--font-ui); margin: 0; letter-spacing: -.01em; text-transform: none; color: var(--text-1); }
