@@ -55,16 +55,16 @@ describe("activity day boundary", () => {
 
 describe("assistant timing settings", () => {
   test("defaults and ranges", () => {
-    expect(ASSISTANT_TIMING_DEFAULTS).toEqual({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30 });
+    expect(ASSISTANT_TIMING_DEFAULTS).toEqual({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30, nextOrderTtlHours: 4 });
     expect(parseAssistantTiming(undefined)).toEqual(ASSISTANT_TIMING_DEFAULTS);
     expect(parseAssistantTiming({ quietMinutes: 5, fallbackTime: "25:00", catchUpDebounceMinutes: 30 })).toEqual({ ...ASSISTANT_TIMING_DEFAULTS, catchUpDebounceMinutes: 30 });
-    const edge = { quietMinutes: 15, fallbackTime: "23:59", catchUpDebounceMinutes: 120, urgentCatchUpSpacingMinutes: 120, journalRetentionDays: 365 };
+    const edge = { quietMinutes: 15, fallbackTime: "23:59", catchUpDebounceMinutes: 120, urgentCatchUpSpacingMinutes: 120, journalRetentionDays: 365, nextOrderTtlHours: 24 };
     expect(validateAssistantTiming(edge)).toEqual({ ok: true, value: edge });
     for (const urgentCatchUpSpacingMinutes of [0, 121, 1.5, "2", null]) {
       expect(validateAssistantTiming({ ...ASSISTANT_TIMING_DEFAULTS, urgentCatchUpSpacingMinutes }).ok).toBe(false);
       expect(parseAssistantTiming({ urgentCatchUpSpacingMinutes }).urgentCatchUpSpacingMinutes).toBe(2);
     }
-    for (const bad of [{ quietMinutes: 14 }, { quietMinutes: 481 }, { fallbackTime: "3:00" }, { fallbackTime: "24:00" }, { catchUpDebounceMinutes: 0 }, { catchUpDebounceMinutes: 121 }, { journalRetentionDays: 0 }, { quietMinutes: 20.5 }, { other: 1 }]) {
+    for (const bad of [{ quietMinutes: 14 }, { quietMinutes: 481 }, { fallbackTime: "3:00" }, { fallbackTime: "24:00" }, { catchUpDebounceMinutes: 0 }, { catchUpDebounceMinutes: 121 }, { nextOrderTtlHours: 0 }, { nextOrderTtlHours: 25 }, { nextOrderTtlHours: 1.5 }, { journalRetentionDays: 0 }, { quietMinutes: 20.5 }, { other: 1 }]) {
       expect(validateAssistantTiming({ ...ASSISTANT_TIMING_DEFAULTS, ...bad }).ok).toBe(false);
     }
   });

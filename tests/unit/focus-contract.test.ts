@@ -35,6 +35,33 @@ describe("focus document", () => {
     expect(doc.seenDayNoteAt).toBe(now);
     expect(isFocusDocument(doc)).toBe(true);
   });
+  test("next stores bounded ordered triage without changing intentions or acknowledging sessions", () => {
+    const initial = reduceFocus(emptyFocus(), [add], now);
+    const rows = [
+      { ref: { machine: "installation-a", sessionId: "session-a" }, stoppedAt: now, verdict: "suggest", reason: "Continue the approved plan", suggestion: "Go ahead with the plan.", doneIntention: "ship" },
+      { ref: { intentionId: "ship" }, verdict: "needs-you", reason: "Choose the product direction" },
+      { ref: { machine: "offline-peer", sessionId: "session-b" }, stoppedAt: now, verdict: "quiet", reason: "Nothing for you" },
+    ];
+    const next = reduceFocus(initial, [{ type: "next", rows, author: "assistant" }], now);
+    expect(next.next).toEqual({ rows, author: "assistant", updatedAt: now });
+    expect(next.intentions).toEqual(initial.intentions);
+    expect(initial).not.toHaveProperty("next");
+    expect(isFocusDocument(next)).toBe(true);
+    expect(reduceFocus(next, [{ type: "note", text: "no triage change" }], now).next).toEqual(next.next);
+    expect(reduceFocus(next, [{ type: "next", rows: [], author: "assistant" }], now).next?.rows).toEqual([]);
+    for (const patch of [
+      { verdict: "sent" }, { reason: "two\nlines" }, { reason: "x".repeat(301) },
+      { suggestion: "x".repeat(201) }, { suggestion: "two\rline" }, { suggestion: "\u001b[31m" },
+      { verdict: "quiet", suggestion: "go" }, { verdict: "needs-you", doneIntention: "ship" },
+      { stoppedAt: undefined }, { stoppedAt: "bad" }, { ref: { sessionId: "a" } },
+      { ref: { machine: "a", sessionId: "a", intentionId: "ship" } }, { extra: true },
+    ]) expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...rows[0], ...patch }], author: "assistant" }], now)).toThrow();
+    expect(() => reduceFocus(initial, [{ type: "next", rows: [rows[0], rows[0]], author: "assistant" }], now)).toThrow();
+    expect(() => reduceFocus(initial, [{ type: "next", rows: Array(201).fill(rows[0]), author: "assistant" }], now)).toThrow();
+    expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...rows[0], doneIntention: "missing" }], author: "assistant" }], now)).toThrow();
+    expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...rows[0], suggestion: undefined, doneIntention: undefined }], author: "assistant" }], now)).toThrow();
+    expect(isFocusDocument({ ...next, next: { ...next.next, updatedAt: "bad" } })).toBe(false);
+  });
   test("there is no reply op and no reply field: the user talks to the assistant in its terminal", () => {
     expect(() => reduceFocus(emptyFocus(), [{ type: "reply", text: "Broker leak first.", author: "assistant" } as unknown as FocusOp], now)).toThrow();
     expect(isFocusDocument({ ...emptyFocus(), reply: { text: "hi", author: "assistant", updatedAt: now } })).toBe(false);
