@@ -26,7 +26,8 @@ test("a next row expands to its session details; the action acts without togglin
   await expect(body.locator("[title='/home/dev/demo-app']")).toHaveText("demo-app");
   await expect(body).toContainText(/question · since \d+[mhd]|question · since now/);
   await expect(body).toContainText("Do you want to continue? (y/n)");
-  await expect(body).toContainText("Needs you for this intention");
+  await expect(body).toContainText(/by rules\s*question/);
+  await expect(body).not.toContainText("why here");
   await expect(body).toContainText("ship the focus assistant");
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   expect(await page.evaluate(noHorizontalScroll)).toBe(true);

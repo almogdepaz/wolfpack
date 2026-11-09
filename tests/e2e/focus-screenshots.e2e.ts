@@ -84,7 +84,8 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
     const permission = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
     permission.runtimeState.inputKind = "permission";
     const session = body.sessions.find((s: { name: string }) => s.name === "another-project");
-    session.runtimeState = { ...session.runtimeState, state: "done", changedAt: new Date().toISOString(), authority: "program", stale: false };
+    // QA-33: a reviewed finish no longer ranks. Keep this geometry fixture actionable.
+    session.runtimeState = { ...session.runtimeState, state: "done", changedAt: new Date().toISOString(), stoppedAt: new Date().toISOString(), unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, authority: "program", stale: false };
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);

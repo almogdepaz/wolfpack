@@ -103,7 +103,7 @@ for (const transition of ["unlink", "sessions disappear"] as const) test(`C2: ${
   const row = page.locator("#assistant-content .focus-today > li");
   const chips = row.locator(":scope > .focus-chips");
   await expect.poll(() => chips.locator("[data-focus-session]:visible").count()).toBeGreaterThan(3);
-  if (desktop) expect(await row.evaluate(el => parseFloat(getComputedStyle(el).getPropertyValue("--focus-chips-width")))).toBeGreaterThan(200);
+  if (desktop) expect(await row.evaluate(el => parseFloat(getComputedStyle(el).getPropertyValue("--f-chips")))).toBeGreaterThan(200);
   removed = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   const title = row.locator("summary .focus-title");
@@ -117,7 +117,7 @@ for (const transition of ["unlink", "sessions disappear"] as const) test(`C2: ${
         return { available: el.clientWidth, text: range.getBoundingClientRect().width };
       });
       expect.soft(size.available, `${width}: no empty reservation truncates the replacement title`).toBeGreaterThanOrEqual(size.text);
-      expect.soft(await row.evaluate(el => getComputedStyle(el).getPropertyValue("--focus-chips-width"))).toBe("0px");
+      expect.soft(await row.evaluate(el => getComputedStyle(el).getPropertyValue("--f-chips"))).toBe("0px");
     }
   }
   await page.screenshot({ path: info.outputPath(`c2-${transition.replaceAll(" ", "-")}.png`), fullPage: true });

@@ -1,0 +1,166 @@
+import { test, expect, type Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+import { startTestServer, type TestServer } from "./helpers";
+let server: TestServer;
+const episode = "2026-11-09T12:00:00.000Z";
+const draft = "Continue with the approved plan; keep the scope unchanged.";
+let machine: string;
+test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
+test.afterAll(async () => { await server?.close(); });
+test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: "wait" }); });
+async function write(page: Page, ops: unknown[]) {
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  const response = await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops } });
+  expect(response.ok()).toBe(true);
+  return response.json();
+}
+async function seed(page: Page, done = false) {
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  machine = current.installationId;
+  await write(page, [
+    ...current.document.intentions.map((i: { id: string }) => ({ type: "drop", id: i.id })),
+    { type: "add", intention: { id: "ship", title: "Ship the focus assistant", project: "/work/focus", sessions: ["mock:prompt-project", "mock:another-project"] } },
+    { type: "add", intention: { id: "later", title: "Plan tomorrow" } },
+    { type: "next", author: "assistant", rows: [
+      { ref: { machine, sessionId: "mock:prompt-project" }, stoppedAt: episode, verdict: "suggest", reason: done ? "Looks finished — mark the intention done?" : "The approved plan is ready to continue", ...(done ? { doneIntention: "ship" } : { suggestion: draft }) },
+      { ref: { machine, sessionId: "mock:another-project" }, stoppedAt: episode, verdict: "quiet", reason: "Nothing here needs your input" },
+    ] },
+  ]);
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch(); const body = await response.json();
+    delete body.routines;
+    await route.fulfill({ response, json: body });
+  });
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    body.sessions = body.sessions.filter((s: { name: string }) => ["assistant", "prompt-project", "another-project"].includes(s.name));
+    for (const s of body.sessions) if (s.name !== "assistant") {
+      s.identity.projectPath = "/work/focus";
+      s.runtimeState = { ...s.runtimeState, state: done || s.name === "another-project" ? "done" : "needs-input", inputKind: done ? undefined : "question", changedAt: episode, stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, stale: false, freshness: "fresh" };
+    }
+    await route.fulfill({ response, json: body });
+  });
+}
+
+for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reason, quiet suppression and consistent surfaces; user tap sends once`, async ({ page }, info) => {
+  test.skip(info.project.name === "desktop" ? width === 390 : width !== 390, "viewport belongs to the matching project");
+  await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
+  await seed(page);
+  const sends: { session: string; text: string }[] = [];
+  await page.route("**/api/session-control/send", async route => {
+    sends.push(route.request().postDataJSON());
+    await route.fulfill({ json: { ok: true, session: "prompt-project", sessionId: "mock:prompt-project", delivery: "delivered", outcome: "submitted", observedMs: 10 } });
+  });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  await expect(block.locator(".focus-next > li")).toHaveCount(2);
+  await expect(block.locator(".focus-next > li").first()).toContainText(draft);
+  await expect(block.locator(".focus-next")).not.toContainText("another-project");
+  await expect(block).toContainText(/ordered (now|\d+m) ago/);
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("2 next:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-next")).toContainText("The approved plan is ready to continue");
+  expect(sends).toEqual([]);
+  await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  await expect(view.locator(":scope > h2").first()).toHaveText("next 2");
+  const row = view.locator(".focus-next > li").first();
+  await expect(row.locator("summary")).toContainText("The approved plan is ready to continue");
+  await expect(row.locator("summary")).not.toContainText("Ship the focus assistant");
+  await expect(row.locator(".focus-draft")).toContainText(`to prompt-project`);
+  await expect(row.locator(".focus-draft p")).toHaveText(draft);
+  await expect(view.locator(".focus-next")).toContainText("new · by rules");
+  await expect(page.locator(".view.swiping")).toHaveCount(0);
+  await page.locator("#assistant-view").evaluate(el => { el.scrollTop = 0; });
+  expect((await new AxeBuilder({ page }).include("#assistant-content").analyze()).violations).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath(`triage-${width}-suggest-quiet.png`), fullPage: true });
+  await row.locator("summary").click();
+  await expect(row.locator(".focus-card-body")).toContainText("Ship the focus assistant");
+  await row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+  await expect(row).toContainText("sent to prompt-project");
+  await expect(row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+  expect(sends).toHaveLength(1);
+  expect(sends[0]).toMatchObject({ session: "mock:prompt-project", text: draft });
+  await write(page, [{ type: "note", text: "force a fresh focus revision" }]);
+  await page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus" && response.request().method() === "GET");
+  await expect(row).toContainText("sent to prompt-project");
+  await expect(row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+  expect(sends).toHaveLength(1);
+});
+
+test("done suggestion uses the existing done/undo operations, never sends", async ({ page }) => {
+  await seed(page, true);
+  const sends: unknown[] = [];
+  page.on("request", request => { if (new URL(request.url()).pathname === "/api/session-control/send") sends.push(request.postDataJSON()); });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  await view.getByRole("button", { name: "Mark done: Ship the focus assistant", exact: true }).click();
+  await expect(view.locator(".focus-done")).toContainText("Ship the focus assistant");
+  await view.getByRole("button", { name: "Undo done: Ship the focus assistant", exact: true }).click();
+  const saved = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  expect(saved.document.intentions.find((i: { id: string }) => i.id === "ship").done).toBe(false);
+  expect(sends).toEqual([]);
+});
+
+test("intention-ref suggestions put the reason on the row and the intention inside the card", async ({ page }) => {
+  await seed(page);
+  await write(page, [{ type: "next", author: "assistant", rows: [{ ref: { intentionId: "later" }, verdict: "suggest", reason: "Tomorrow is ready — mark the plan done?", doneIntention: "later" }] }]);
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const row = page.locator("#assistant-content .focus-next > li").filter({ hasText: "Tomorrow is ready" });
+  await expect(row.locator("summary")).not.toContainText("Plan tomorrow");
+  await row.locator("summary").click();
+  await expect(row.locator(".focus-card-body")).toContainText("Plan tomorrow");
+  await row.getByRole("button", { name: "Mark done: Plan tomorrow", exact: true }).click();
+  await expect(page.locator("#assistant-content .focus-done")).toContainText("Plan tomorrow");
+});
+
+test("a user-tap suggestion traverses the real session-send route and reports its unverified outcome", async ({ page }) => {
+  await seed(page);
+  await page.goto(server.baseUrl);
+  const response = page.waitForResponse(r => new URL(r.url()).pathname === "/api/session-control/send");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+  const sent = await response;
+  expect(sent.request().postDataJSON()).toMatchObject({ session: "mock:prompt-project", text: draft });
+  expect(sent.status()).toBe(200);
+  expect(await sent.json()).toMatchObject({ session: "prompt-project", sessionId: "mock:prompt-project", outcome: "unverified" });
+  await expect(page.locator("#dashboard-focus")).toContainText("delivery unconfirmed · check the session");
+});
+
+test("unreachable peer suggestions keep their place but cannot send", async ({ page }) => {
+  await seed(page);
+  await write(page, [{ type: "next", author: "assistant", rows: [{ ref: { machine: "unreachable-peer", sessionId: "remote-session" }, stoppedAt: episode, verdict: "suggest", reason: "Review the remote recommendation when it reconnects", suggestion: draft }] }]);
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const row = page.locator("#assistant-content .focus-next > li").filter({ hasText: "Review the remote recommendation" });
+  await expect(row).toContainText("not reached");
+  await expect(row.locator(".focus-action")).toBeDisabled();
+  await expect(row).toContainText(draft);
+});
+
+test("expired triage returns quiet stops to rules and names the expiry", async ({ page }) => {
+  await seed(page);
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    delete body.routines;
+    body.document.next.updatedAt = new Date(Date.now() - 5 * 3600_000).toISOString();
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await expect(page.locator("#dashboard-focus")).toContainText("by rules · order expired");
+  await expect(page.locator("#dashboard-focus .focus-next")).toContainText("another-project");
+  await expect(page.locator("#dashboard-focus .focus-next")).not.toContainText(draft);
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 next:");
+});
+
+test("an uncertain user send stays visible and cannot be tapped again", async ({ page }) => {
+  await seed(page);
+  await page.route("**/api/session-control/send", route => route.fulfill({ json: { ok: true, outcome: "unverified", delivery: "unverified", observedMs: 1 } }));
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+  await expect(page.locator("#dashboard-focus")).toContainText("delivery unconfirmed · check the session");
+  await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+});
