@@ -203,8 +203,11 @@ test("R-N1: compact chips keep attention first and hide the least urgent session
   const row = page.locator("#assistant-content .focus-today > li");
   const chips = row.locator(":scope > .focus-chips");
   await expect(chips.locator("[data-focus-session]")).toHaveText(["f", "n", "w", "x", "i", "r"]);
-  await expect(chips.locator("[data-focus-session]").filter({ visible: true })).toHaveText(desktop ? ["f", "n", "w"] : ["f", "n", "w", "x", "i", "r"]);
-  if (desktop) await chips.getByRole("button", { name: "3 more sessions: x, i, r", exact: true }).click();
+  const visible = await chips.locator("[data-focus-session]").filter({ visible: true }).allTextContents();
+  expect(visible).toEqual(["f", "n", "w", "x", "i", "r"].slice(0, visible.length));
+  if (!desktop) expect(visible).toHaveLength(6);
+  const more = chips.getByRole("button", { name: /^\d+ more sessions:/ });
+  if (desktop && await more.isVisible()) await more.click();
   else await row.locator("summary").click();
   // Only the compact presentation is sorted; expanded details retain the original link order.
   await expect(row.locator(".focus-card-body [data-focus-session]")).toHaveText(linked.map(s => s.name));
@@ -258,7 +261,7 @@ test("S1: long session chips stay inside their column; six chips keep a compact 
     if (desktop) for (const chip of measurements[1]!.buttons) expect.soft(chip.truncated, "short chips are shown only if they fit without losing their identifying suffix").toBe(false);
     for (const row of measurements) {
       if (desktop) expect.soft(row.height, `${width}: one desktop chip line`).toBeLessThanOrEqual(45);
-      expect.soft(row.sessions, `${width}: bounded compact chips or full phone list`).toBeLessThanOrEqual(desktop ? 3 : 6);
+      expect.soft(row.sessions, `${width}: visible sessions never exceed linked sessions`).toBeLessThanOrEqual(6);
       for (const button of row.buttons) {
         if (!desktop) {
           expect.soft(button.hitHeight, "phone chip hit target").toBeGreaterThanOrEqual(44);
@@ -274,8 +277,12 @@ test("S1: long session chips stay inside their column; six chips keep a compact 
       const label = el.querySelector(".focus-chip-name");
       return label ? getComputedStyle(label).textOverflow : null;
     })).toBe("ellipsis");
-    if (desktop) await expect.soft(today.getByRole("button", { name: `4 more sessions: ${shortNames.slice(2).join(", ")}`, exact: true })).toBeVisible({ timeout: 1_000 });
-    else {
+    if (desktop) {
+      const row = today.locator("li").last();
+      const visible = await row.locator(":scope > .focus-chips [data-focus-session]:visible").allTextContents();
+      expect(visible).toEqual(shortNames.slice(0, visible.length));
+      await expect(row.getByRole("button", { name: `${6 - visible.length} more sessions: ${shortNames.slice(visible.length).join(", ")}`, exact: true })).toBeVisible();
+    } else {
       await expect(today.locator(".focus-chip-more").filter({ visible: true })).toHaveCount(0);
       await expect(today.locator("li").last().getByRole("button")).toHaveCount(6);
       await today.scrollIntoViewIfNeeded();
@@ -346,8 +353,8 @@ for (const change of ["resize", "linked sessions"] as const) test(`R1: revealed 
     const row = page.locator("#assistant-content .focus-today > li");
     const summary = row.locator("summary");
     if (change === "resize") await expect(row.getByRole("button")).toHaveCount(6);
-    else await expect(row.getByRole("button", { name: /^4 more sessions:/ })).toBeVisible();
-    await summary.click();
+    else await expect(row.getByRole("button", { name: /^\d+ more sessions:/ })).toBeVisible();
+    await summary.locator(".focus-title").click();
     await expect(row.locator("details")).toHaveAttribute("open", "");
     await expect(row.locator(":scope > .focus-chips")).toBeHidden();
     if (change === "resize") await page.setViewportSize({ width: 1024, height: 900 });
@@ -357,12 +364,13 @@ for (const change of ["resize", "linked sessions"] as const) test(`R1: revealed 
       await expect(row.locator("details")).toHaveAttribute("open", "");
     }
     hold = true;
-    await summary.click();
+    await summary.locator(".focus-title").click();
     await expect(row.locator("details")).not.toHaveAttribute("open", /.*/);
-    const expectedRest = change === "resize" ? 4 : 5;
-    await expect.soft(row.locator(".focus-chip-more")).toHaveText(`+${expectedRest}`, { timeout: 1_000 });
     const labels = row.locator("[data-focus-session]:visible .focus-chip-name");
-    expect.soft(await labels.count()).toBe(6 - expectedRest);
+    const visible = await labels.allTextContents();
+    expect(visible.length).toBeGreaterThan(0);
+    expect(visible).toEqual(names.slice(0, visible.length));
+    await expect.soft(row.locator(".focus-chip-more")).toHaveText(`+${6 - visible.length}`, { timeout: 1_000 });
     const readable = await labels.evaluateAll(els => els.every(el => el.scrollWidth <= el.clientWidth));
     expect.soft(readable, "revealed short names keep their identifying suffixes").toBe(true);
     await expect(summary).toBeFocused();

@@ -236,14 +236,13 @@ export function createAssistantView(deps: {
   function sessionChip(session: FocusSession, key: string, hidden = false) {
     return `<button type="button"${hidden ? ' class="focus-chip-extra"' : ""}${sessionLocked() ? " disabled" : ""} data-focus-key="${escAttr(`${key}:${session.id}`)}" data-focus-session="${escAttr(session.id)}" title="${escAttr(session.name)}">${dot(session.state)}<span class="focus-chip-name">${esc(session.name)}</span></button>`;
   }
-  const COMPACT_CHIPS_MAX = 3;
-  const compactChipCounts = new Map<string, number>();
+  const compactChips = new Map<string, { count: number; width: number }>();
   // Compact presentation only: preserve link order within each attention tier.
   const chipAttention = (session: FocusSession) => session.state === "needs-input" || session.state === "failed" ? 0 : session.state === "working" ? 1 : 2;
   function chipsHtml(intention: FocusIntention) {
     const linked = linkedFocusSessions(intention, sessions()).sort((a, b) => chipAttention(a) - chipAttention(b));
     if (!linked.length) return '<span class="focus-chips"></span>';
-    const count = Math.min(compactChipCounts.get(intention.id) ?? COMPACT_CHIPS_MAX, linked.length);
+    const count = Math.min(compactChips.get(intention.id)?.count ?? linked.length, linked.length);
     const chips = linked.map((session, index) => sessionChip(session, `chip:${intention.id}`, index >= count)).join("");
     const rest = linked.slice(count);
     // Keep the hidden zero-count button as the native sizing probe when all chips fit.
@@ -256,34 +255,47 @@ export function createAssistantView(deps: {
     if (!isDesktop()) return false;
     let changed = false;
     for (const chips of document.querySelectorAll<HTMLElement>("[data-focus-chips]")) {
-      if (!chips.clientWidth) continue;
-      const style = getComputedStyle(chips);
-      const available = chips.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-      const gap = parseFloat(style.columnGap);
+      const row = chips.parentElement!;
+      const summary = row.querySelector<HTMLElement>("summary")!;
+      if (!summary.clientWidth || row.querySelector(".focus-card[open]")) continue;
+      const title = summary.querySelector(".focus-title")!;
+      const range = document.createRange();
+      range.selectNode(title.firstChild!);
+      // Reserve the intention's own text before chips; its context may yield.
+      const disclosure = getComputedStyle(summary, "::after");
+      const endWidth = parseFloat(disclosure.width) + parseFloat(disclosure.marginLeft) + parseFloat(disclosure.marginRight);
+      const titleSpace = summary.clientWidth - endWidth - 2 * parseFloat(getComputedStyle(summary).columnGap);
+      const gap = parseFloat(getComputedStyle(chips).columnGap);
       const more = chips.querySelector<HTMLButtonElement>(".focus-chip-more")!;
       const original = more.textContent;
       chips.classList.add("focus-chip-measure");
       const widths = [...chips.querySelectorAll<HTMLElement>("[data-focus-session]")].map(el => el.getBoundingClientRect().width);
-      let count = Math.min(COMPACT_CHIPS_MAX, widths.length);
-      while (count > 1) {
+      more.textContent = `+${widths.length}`;
+      const available = Math.max(Math.ceil(more.getBoundingClientRect().width), Math.floor(titleSpace - range.getBoundingClientRect().width));
+      let count = widths.length;
+      let width = 0;
+      while (count >= 0) {
         const remaining = widths.length - count;
         more.textContent = `+${remaining}`;
-        const used = widths.slice(0, count).reduce((sum, width) => sum + width, 0) + (count - 1) * gap
-          + (remaining ? gap + more.getBoundingClientRect().width : 0);
-        if (used <= available) break;
+        width = widths.slice(0, count).reduce((sum, width) => sum + width, 0) + Math.max(0, count - 1) * gap
+          + (remaining ? (count ? gap : 0) + more.getBoundingClientRect().width : 0);
+        // Preserve the existing lone long-name ellipsis, with the full name in its title.
+        if (width <= available || widths.length === 1) break;
         count--;
       }
+      width = Math.min(available, Math.ceil(width));
       more.textContent = original;
       chips.classList.remove("focus-chip-measure");
-      if (compactChipCounts.get(chips.dataset.focusChips!) !== count) {
-        compactChipCounts.set(chips.dataset.focusChips!, count);
+      const previous = compactChips.get(chips.dataset.focusChips!);
+      if (previous?.count !== count || previous.width !== width) {
+        compactChips.set(chips.dataset.focusChips!, { count, width });
         changed = true;
       }
     }
     return changed;
   }
   function todayHtml(items: FocusIntention[]) {
-    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i)}</span>`, intentionBody(i, `intention:${i.id}`))}${chipsHtml(i)}</li>`).join("")}</ul>`;
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li style="--focus-chips-width:${compactChips.get(i.id)?.width ?? 0}px"${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i)}</span>`, intentionBody(i, `intention:${i.id}`))}${chipsHtml(i)}</li>`).join("")}</ul>`;
   }
   // The live dom holds the newest open state: a tap sets `open` at once, but the browser queues its toggle event, and a
   // render in between would rebuild the card from `openCards` and the toggle would then fire on the detached node (N6).
@@ -302,7 +314,7 @@ export function createAssistantView(deps: {
     foldOpenCards();
     renderedSessions.clear();
     const current = doc();
-    for (const id of compactChipCounts.keys()) if (!current.intentions.some(intention => intention.id === id)) compactChipCounts.delete(id);
+    for (const id of compactChips.keys()) if (!current.intentions.some(intention => intention.id === id)) compactChips.delete(id);
     const enabled = !!focus?.assistant?.enabled;
     const state = status();
     // The unavailable header already names the outage; keep transport diagnostics in settings.

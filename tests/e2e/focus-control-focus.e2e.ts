@@ -65,7 +65,7 @@ for (const [name, selector, dashboard = false, expand = false] of [
   test(`N1: ${name} keeps its own focus across a changed render`, async ({ page }, info) => {
     test.skip(name === "chip more" && info.project.name !== "desktop", "phone shows all compact chips");
     let render = 0;
-    const extras = ["r", "s", "t", "u"];
+    const extras = name === "chip more" ? Array.from({ length: 12 }, (_, i) => `linked-worker-${i}`) : ["r", "s", "t", "u"];
     await page.route("**/api/sessions", async route => {
       const response = await route.fetch();
       const body = await response.json();
@@ -91,7 +91,7 @@ for (const [name, selector, dashboard = false, expand = false] of [
     if (dashboard) await page.goto(server.baseUrl);
     else await openFocus(page);
     const host = page.locator(dashboard ? "#dashboard-focus" : "#assistant-content");
-    if (expand) await host.locator(".focus-today > li:first-child summary").click();
+    if (expand) await host.locator(".focus-today > li:first-child summary .focus-title").click();
     const control = page.locator(selector).first();
     await expect(control).toBeVisible();
     await control.focus();
