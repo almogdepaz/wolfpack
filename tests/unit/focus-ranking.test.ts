@@ -40,11 +40,10 @@ test("an explicitly empty sessions list wins over cwd fallback", () => {
 test("idle sessions are live chips, not next actions or starts", () => {
   expect(rankFocus(doc(), [session("linked", "idle", now)], 5).map(r => r.intention?.id)).toEqual(["b"]);
 });
-test("a linked session that finished recently is a next action after attention and starts; older finishes are chips", () => {
+test("QA-33: seen linked finishes stay chips and never duplicate done today in next", () => {
   const nowMs = Date.parse(now);
   const sessions = [session("linked", "done", "2026-11-06T11:40:00.000Z"), session("busy", "working", now), session("unlinked", "needs-input", "2026-11-06T09:00:00.000Z")];
-  expect(rankFocus(doc(), sessions, 5, nowMs).map(row => [row.kind, row.session?.id ?? row.intention?.id])).toEqual([["start", "b"], ["open", "linked"], ["open", "unlinked"]]);
-  expect(rankFocus(doc(), sessions, 5, nowMs)[1]?.reason).toMatch(/finished/i);
+  expect(rankFocus(doc(), sessions, 5, nowMs).map(row => [row.kind, row.session?.id ?? row.intention?.id])).toEqual([["start", "b"], ["open", "unlinked"]]);
   const stale = [session("linked", "done", "2026-11-04T11:40:00.000Z")];
   expect(rankFocus(doc(), stale, 5, nowMs).map(r => r.session?.id ?? r.intention?.id)).toEqual(["b"]);
 });
