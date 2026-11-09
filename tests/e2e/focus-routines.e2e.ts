@@ -113,7 +113,7 @@ test("assistant timing settings validate and save to the home machine's bridge s
   await form.getByRole("button", { name: "Save timing" }).click();
   await expect(page.locator("#assistant-timing-status")).toHaveText("Routine timing saved.");
   await expect(quiet).toHaveAttribute("aria-invalid", "false");
-  expect((await (await page.request.get(`${server.baseUrl}/api/settings`)).json()).settings.assistant).toEqual({ quietMinutes: 45, fallbackTime: "03:00", catchUpDebounceMinutes: 5, urgentCatchUpSpacingMinutes: 3, journalRetentionDays: 30 });
+  expect((await (await page.request.get(`${server.baseUrl}/api/settings`)).json()).settings.assistant).toEqual({ quietMinutes: 45, fallbackTime: "03:00", catchUpDebounceMinutes: 5, urgentCatchUpSpacingMinutes: 3, journalRetentionDays: 30, nextOrderTtlHours: 4 });
 });
 
 test("an unverified routine send reads as delivery unconfirmed, never failed", async ({ page }, info) => {

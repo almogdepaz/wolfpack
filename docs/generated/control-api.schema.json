@@ -1669,7 +1669,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "Validated by src/focus-contract.ts; add/edit/done/undo/drop/reorder/nudge/note/day-summary/seen-day-note"
+              "description": "Validated by src/focus-contract.ts; add/edit/done/undo/drop/reorder/next/nudge/note/day-summary/seen-day-note"
             }
           }
         },
@@ -6310,6 +6310,11 @@
           "minimum": 1,
           "maximum": 120
         },
+        "nextOrderTtlHours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 24
+        },
         "urgentCatchUpSpacingMinutes": {
           "type": "integer",
           "minimum": 1,
@@ -6326,7 +6331,8 @@
         "fallbackTime",
         "catchUpDebounceMinutes",
         "urgentCatchUpSpacingMinutes",
-        "journalRetentionDays"
+        "journalRetentionDays",
+        "nextOrderTtlHours"
       ],
       "additionalProperties": false
     },
@@ -7057,6 +7063,13 @@
             "unknown"
           ]
         },
+        "inputKind": {
+          "enum": [
+            "permission",
+            "question",
+            "auth"
+          ]
+        },
         "changedAt": {
           "anyOf": [
             {
@@ -7116,6 +7129,17 @@
         },
         "runtime": {
           "$ref": "#/$defs/SessionRuntimeSummary"
+        },
+        "machine": {
+          "type": "string"
+        },
+        "lastLine": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Untrusted bounded last line from the existing session observer; empty means no summary yet, not success."
+        },
+        "lastLineTrust": {
+          "const": "untrusted-data"
         },
         "project": {
           "type": "string"

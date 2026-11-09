@@ -843,6 +843,7 @@ export const controlApiSource: ControlApiSource = {
     SessionOrganizationProjection: { anyOf: [ref("SessionOrganization"), object({ status: { const: "unavailable" } }, ["status"])] },
     SessionRuntimeSummary: object({
       state: { enum: [...AGENT_STATUS_STATES] },
+      inputKind: { enum: ["permission", "question", "auth"] },
       changedAt: nullable(string()),
       stoppedAt: nullable(string()),
       pinned: boolean(),
@@ -856,6 +857,9 @@ export const controlApiSource: ControlApiSource = {
       sessionId: ref("SessionId"),
       state: { const: "active" },
       runtime: ref("SessionRuntimeSummary"),
+      machine: string(),
+      lastLine: { type: "string", maxLength: 300, description: "Untrusted bounded last line from the existing session observer; empty means no summary yet, not success." },
+      lastLineTrust: { const: "untrusted-data" },
       project: string(),
       projectPath: string(),
       projectDir: string(),

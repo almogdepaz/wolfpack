@@ -182,6 +182,14 @@ function withoutQuietAlerts(sessions: readonly ObservedSessionSummary[]): readon
 }
 
 const knownSessionSummaries = new Map<string, KnownSessionSummary>();
+/** Bounded manager input from the existing observer, never an on-demand screen read.
+ * Names may be reused: only an exact observed incarnation can supply its last line. */
+export function observedSessionLastLine(sessionId: string): string {
+  for (const summary of knownSessionSummaries.values()) {
+    if (summary.identity?.wolfpackSessionId === sessionId) return Array.from(summary.lastLine).slice(0, 300).join("");
+  }
+  return "";
+}
 let nextObservationOwnership = 0;
 let latestAuthoritativeObservation = 0;
 
