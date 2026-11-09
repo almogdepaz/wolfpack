@@ -2017,6 +2017,108 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
   });
 });
 
+describe("BrokerBackend Claude submit serialization", () => {
+  // Regression: a second submit to one Claude session wrote its text in the first one's settle gap,
+  // so the first Enter submitted both texts together and the second Enter submitted nothing.
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const writes = (): Array<[string, string]> =>
+    client.inputs.map((input) => [input.sessionId, decoder.decode(input.data)]);
+  const texts = (): string[] => writes().map(([, text]) => text);
+  const prompt = (sessionId: string, text: string, timeoutMs: number) =>
+    (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      sessionId,
+      { prompt: text, outputContains: `${text} done`, noEnter: false, timeoutMs },
+    );
+
+  beforeEach(async () => {
+    const claudeEnv: Array<[string, string]> = [["WOLFPACK_AGENT_KIND", "claude"]];
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [
+        sessionInfo({ name: "a", id: SESSION_UUID_1, env: claudeEnv }),
+        sessionInfo({ name: "b", id: SESSION_UUID_2, env: claudeEnv }),
+      ],
+    }));
+    client.setHandler("session_info", (params) => okResp({
+      session: sessionInfo({ name: "a", id: (params as { session_id: string }).session_id, env: claudeEnv }),
+    }));
+    await backend.list();
+  });
+
+  test("two overlapping sends to one session write each text with its own Enter", async () => {
+    await Promise.all([backend.send("a", "text1"), backend.send("a", "text2")]);
+    expect(texts()).toEqual(["text1", "\r", "text2", "\r"]);
+  });
+
+  test("a prompt that overlaps a send waits for the send's Enter", async () => {
+    let enters = 0;
+    client.onWriteInput = (sessionId, data) => {
+      if (decoder.decode(data) === "\r" && ++enters === 2) client.emit(sessionId, encoder.encode("text2 done"), 18n);
+    };
+    const [, result] = await Promise.all([backend.send("a", "text1"), prompt(SESSION_UUID_1, "text2", 2_000)]);
+    expect(texts()).toEqual(["text1", "\r", "text2", "\r"]);
+    expect(result.outcome).toBe("matched");
+  });
+
+  test("an observed send that overlaps a send waits for the send's Enter", async () => {
+    await Promise.all([
+      backend.send("a", "text1"),
+      backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "text2", noEnter: false, observeMs: 1_000, ensureSubmitted: false,
+      }),
+    ]);
+    expect(texts()).toEqual(["text1", "\r", "text2", "\r"]);
+  });
+
+  test("a no-Enter text does not land in another submit's settle gap", async () => {
+    await Promise.all([backend.send("a", "text1"), backend.send("a", "draft", true)]);
+    expect(texts()).toEqual(["text1", "\r", "draft"]);
+  });
+
+  test("submits to two different sessions do not wait for each other", async () => {
+    await Promise.all([backend.send("a", "text1"), backend.send("b", "text2")]);
+    expect(writes()).toEqual([
+      [SESSION_UUID_1, "text1"],
+      [SESSION_UUID_2, "text2"],
+      [SESSION_UUID_1, "\r"],
+      [SESSION_UUID_2, "\r"],
+    ]);
+  });
+
+  test("a failed first submit releases the session for the next one", async () => {
+    const writeInput = client.writeInput.bind(client);
+    let failed = false;
+    client.writeInput = (sessionId, data) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("input plane down");
+      }
+      writeInput(sessionId, data);
+    };
+    const settled = await Promise.allSettled([backend.send("a", "text1"), backend.send("a", "text2")]);
+    expect(settled.map((entry) => entry.status)).toEqual(["rejected", "fulfilled"]);
+    expect(texts()).toEqual(["text2", "\r"]);
+  });
+
+  test("a failed Enter releases the session for the next submit", async () => {
+    let calls = 0;
+    const writeInput = client.writeInput.bind(client);
+    client.writeInput = (sessionId, data) => {
+      if (++calls === 2) throw new Error("input plane down");
+      writeInput(sessionId, data);
+    };
+    const settled = await Promise.allSettled([backend.send("a", "text1"), backend.send("a", "text2")]);
+    expect(settled.map((entry) => entry.status)).toEqual(["rejected", "fulfilled"]);
+    expect(texts()).toEqual(["text1", "text2", "\r"]);
+  });
+
+  test("a prompt whose deadline expires in the queue writes nothing", async () => {
+    const [, result] = await Promise.all([backend.send("a", "text1"), prompt(SESSION_UUID_1, "text2", 30)]);
+    expect(result.outcome).toBe("timed_out");
+    expect(texts()).toEqual(["text1", "\r"]);
+  });
+});
+
 describe("BrokerBackend.onSessionData (refcounted broker subscribe)", () => {
   // Tests below that don't care about subscribe-error semantics still need
   // to satisfy the now-required onSubscribeError contract. This noop is

@@ -300,7 +300,9 @@ type SendAttemptStop =
  * Claude Code reads text and Enter that arrive in one chunk as a paste and
  * keeps the Enter as a newline (seen with 2.1.319 for text over ~51
  * characters), so Enter is a separate write once the text has been read.
- * Other harnesses keep text and Enter in one write.
+ * Other harnesses keep text and Enter in one write. Writes to one Claude
+ * session are serialized (`BrokerBackend.serializeClaudeWrite`) so another
+ * input cannot land between a text and its Enter.
  */
 export const SESSION_SUBMIT_SETTLE_MS = 100;
 const ENTER_INPUT = "\r";
@@ -442,9 +444,12 @@ interface ObservedInputSpec<T> {
   readonly input: string;
   /** Follow `input` with Enter. */
   readonly submit: boolean;
-  /** Write a submitted, non-empty `input`'s Enter on its own after `SESSION_SUBMIT_SETTLE_MS`; otherwise in the same write. */
+  /**
+   * Claude session: write a submitted, non-empty `input`'s Enter on its own after `SESSION_SUBMIT_SETTLE_MS`
+   * (otherwise in the same write), after earlier writes to the session have finished.
+   */
   readonly separateEnter: boolean;
-  /** Bounds the whole call, subscribe included; once the text is written, its Enter is still written. */
+  /** Bounds the whole call, subscribe and the wait for earlier writes included; once the text is written, its Enter is still written. */
   readonly timeoutMs: number;
   readonly onTimeout: () => T;
   readonly onLifecycle: (event: SessionLifecycleEvent) => T;
@@ -528,6 +533,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   private readonly idToInfo = new Map<string, BrokerSessionInfo>();
   /** Harness of each live session, keyed by session UUID; decides how Enter is written. */
   private readonly idToAgentKind = new Map<string, AgentKind | string>();
+  /** Last queued write to each Claude session, keyed by session UUID; see `serializeClaudeWrite`. */
+  private readonly claudeWriteTails = new Map<string, Promise<void>>();
   /** Refcount of active onSessionData subscribers, keyed by session UUID. */
   private readonly subscriberRefs = new Map<string, SubscriberRef>();
   /** Lifecycle subscribers keyed by session UUID. */
@@ -892,18 +899,45 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   async send(name: string, text: string, noEnter?: boolean): Promise<void> {
     const id = await this.resolveId(name);
     if (!id) return;
-    if (noEnter || text === "" || !this.separateEnter(id)) {
-      this.client.writeInput(id, TEXT_ENCODER.encode(noEnter ? text : text + ENTER_INPUT));
+    const writeSingle = () => this.client.writeInput(id, TEXT_ENCODER.encode(noEnter ? text : text + ENTER_INPUT));
+    if (!this.separateEnter(id)) {
+      writeSingle();
       return;
     }
-    this.client.writeInput(id, TEXT_ENCODER.encode(text));
-    await delay(SESSION_SUBMIT_SETTLE_MS);
-    this.client.writeInput(id, TEXT_ENCODER.encode(ENTER_INPUT));
+    await this.serializeClaudeWrite(id, async () => {
+      if (noEnter || text === "") {
+        writeSingle();
+        return;
+      }
+      this.client.writeInput(id, TEXT_ENCODER.encode(text));
+      await delay(SESSION_SUBMIT_SETTLE_MS);
+      this.client.writeInput(id, TEXT_ENCODER.encode(ENTER_INPUT));
+    });
   }
 
   /** Claude sessions get Enter as its own write; see `SESSION_SUBMIT_SETTLE_MS`. */
   private separateEnter(sessionId: string): boolean {
     return this.idToAgentKind.get(sessionId) === AGENT_KIND.CLAUDE.id;
+  }
+
+  /**
+   * Runs `write` after every earlier write queued for the Claude session `sessionId`, so a
+   * text, its settle gap and its Enter stay together. Other sessions do not wait. A write
+   * that throws still releases the queue.
+   */
+  private async serializeClaudeWrite<T>(sessionId: string, write: () => Promise<T>): Promise<T> {
+    const previous = this.claudeWriteTails.get(sessionId);
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => { release = resolve; });
+    this.claudeWriteTails.set(sessionId, tail);
+    try {
+      // Tails only resolve, so an earlier failure cannot reject this wait.
+      await previous;
+      return await write();
+    } finally {
+      release();
+      if (this.claudeWriteTails.get(sessionId) === tail) this.claudeWriteTails.delete(sessionId);
+    }
   }
 
   /**
@@ -1224,6 +1258,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       }
     };
     spec.bind?.(observation);
+    const deadlineMs = Date.now() + spec.timeoutMs;
     const timer = setTimeout(
       () => observation.finish(spec.onTimeout()),
       spec.timeoutMs,
@@ -1265,26 +1300,33 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       for (const pending of pendingOutput) appendOutput(pending);
       pendingOutput.length = 0;
       if (settled) return await settle();
-      const stop = spec.beforeWrite?.();
-      if (stop !== undefined) {
-        observation.finish(stop);
-        return await settle();
-      }
-      // Output can arrive while the write is still on the stack; it already
-      // follows the input.
       const separateEnter = spec.submit && spec.separateEnter && spec.input !== "";
-      observation.inputSent = true;
-      if (!separateEnter) observation.inputSentAtMs = Date.now();
-      try {
-        this.client.writeInput(sessionId, TEXT_ENCODER.encode(spec.submit && !separateEnter ? spec.input + ENTER_INPUT : spec.input));
-      } catch {
-        observation.inputSent = false;
-        observation.inputSentAtMs = undefined;
-        observation.finish(spec.onWriteError());
-        return await settle();
-      }
-      spec.onInputSent?.(observation);
-      if (separateEnter) {
+      const write = async (): Promise<void> => {
+        // A call that settled or ran out of time while it waited in the queue writes nothing.
+        if (settled) return;
+        const stop = spec.beforeWrite?.();
+        if (stop !== undefined) {
+          observation.finish(stop);
+          return;
+        }
+        if (Date.now() >= deadlineMs) {
+          observation.finish(spec.onTimeout());
+          return;
+        }
+        // Output can arrive while the write is still on the stack; it already
+        // follows the input.
+        observation.inputSent = true;
+        if (!separateEnter) observation.inputSentAtMs = Date.now();
+        try {
+          this.client.writeInput(sessionId, TEXT_ENCODER.encode(spec.submit && !separateEnter ? spec.input + ENTER_INPUT : spec.input));
+        } catch {
+          observation.inputSent = false;
+          observation.inputSentAtMs = undefined;
+          observation.finish(spec.onWriteError());
+          return;
+        }
+        spec.onInputSent?.(observation);
+        if (!separateEnter) return;
         // The text is delivered, so its Enter follows even if the call has settled meanwhile.
         await delay(SESSION_SUBMIT_SETTLE_MS);
         observation.inputSentAtMs = Date.now();
@@ -1293,9 +1335,17 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         } catch {
           observation.inputSentAtMs = undefined;
           observation.finish(spec.onWriteError());
-          return await settle();
         }
+      };
+      if (!spec.separateEnter) {
+        await write();
+        return await settle();
       }
+      // The timer keeps running while earlier writes to this Claude session finish.
+      const queued = this.serializeClaudeWrite(sessionId, write);
+      await Promise.race([queued, terminal]);
+      // Once the text is written, the call returns only after its Enter.
+      if (observation.inputSent) await queued;
       return await settle();
     } finally {
       clearTimeout(timer);
