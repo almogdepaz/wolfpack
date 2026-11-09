@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkPiTasksPackage } from "../../src/cli/doctor-integrations.ts";
+import { checkClaudeTaskIntegration, checkPiTasksPackage, type ClaudeIntegrationDoctorOptions } from "../../src/cli/doctor-integrations.ts";
+import type { CheckResult } from "../../src/cli/doctor.ts";
 
 const roots: string[] = [];
 
@@ -28,5 +29,149 @@ describe("doctor Pi Tasks package check", () => {
 
   test("reports nothing when the legacy package is absent", () => {
     expect(checkPiTasksPackage(agentWithPackages(["npm:@sgtbeatdown/wolfpack-tasks"]))).toEqual([]);
+  });
+});
+
+describe("doctor Claude task integration checks", () => {
+  const DROP_IN = `${JSON.stringify({ channelsEnabled: true, allowedChannelPlugins: [{ plugin: "wolfpack-tasks", marketplace: "wolfpack-tasks" }] }, null, 2)}\n`;
+
+  function tempRoot(): string {
+    const root = mkdtempSync(join(tmpdir(), "wolfpack-doctor-claude-"));
+    roots.push(root);
+    return root;
+  }
+
+  function healthy(overrides: Partial<ClaudeIntegrationDoctorOptions> = {}): ClaudeIntegrationDoctorOptions {
+    const root = tempRoot();
+    const claudeConfigDirectory = join(root, "claude");
+    mkdirSync(join(claudeConfigDirectory, "plugins"), { recursive: true });
+    writeFileSync(join(claudeConfigDirectory, "plugins", "installed_plugins.json"), JSON.stringify({
+      version: 2,
+      plugins: { "wolfpack-tasks@wolfpack-tasks": [{ scope: "user" }] },
+    }));
+    const dropInDirectory = join(root, "managed-settings.d");
+    mkdirSync(dropInDirectory);
+    writeFileSync(join(dropInDirectory, "wolfpack.json"), DROP_IN);
+    const statusDirectory = join(root, "status");
+    mkdirSync(statusDirectory);
+    return {
+      enabled: true,
+      claudeDetected: true,
+      run: () => ({ ok: true, stdout: "2.1.319 (Claude Code)\n" }),
+      env: {},
+      claudeConfigDirectory,
+      dropInDirectory,
+      statusDirectory,
+      pidAlive: () => true,
+      ...overrides,
+    };
+  }
+
+  function byName(results: readonly CheckResult[], name: string): CheckResult | undefined {
+    return results.find(result => result.name === name);
+  }
+
+  function writeStatus(directory: string, sessionId: string, fields: Record<string, unknown>): void {
+    writeFileSync(join(directory, `${sessionId}.json`), JSON.stringify({
+      version: 1, sessionId, sessionName: sessionId, pid: 4242, wake: "channel", protocolVersion: "2025-11-25", ...fields,
+    }));
+  }
+
+  test("reports nothing without claude and one short line while the flag is off", () => {
+    expect(checkClaudeTaskIntegration(healthy({ claudeDetected: false, enabled: false }))).toEqual([]);
+    const off = checkClaudeTaskIntegration(healthy({ enabled: false, run: () => { throw new Error("must not run claude"); } }));
+    expect(off).toHaveLength(1);
+    expect(off[0]).toMatchObject({ group: "Integrations", status: "pass" });
+    expect(off[0]!.detail).toContain("off");
+    expect(off[0]!.fixHint).toContain("wolfpack setup");
+  });
+
+  test("passes a healthy installation without fixes that run commands", () => {
+    const results = checkClaudeTaskIntegration(healthy());
+    expect(results.filter(result => result.status !== "pass")).toEqual([]);
+    expect(results.map(result => result.name)).toEqual([
+      "claude version",
+      "claude provider",
+      "claude plugin",
+      "claude channel drop-in",
+      "claude channel allowlist",
+      "claude wake",
+    ]);
+    expect(results.every(result => result.fix === undefined)).toBe(true);
+  });
+
+  test("fails an old or unreadable claude version and a third-party provider", () => {
+    expect(byName(checkClaudeTaskIntegration(healthy({ run: () => ({ ok: true, stdout: "2.1.318 (Claude Code)" }) })), "claude version")?.status).toBe("fail");
+    expect(byName(checkClaudeTaskIntegration(healthy({ run: () => ({ ok: false, stdout: "" }) })), "claude version")?.status).toBe("fail");
+    const provider = byName(checkClaudeTaskIntegration(healthy({ env: { CLAUDE_CODE_USE_VERTEX: "1" } })), "claude provider");
+    expect(provider?.status).toBe("fail");
+    expect(provider?.detail).toContain("CLAUDE_CODE_USE_VERTEX");
+  });
+
+  test("fails a missing plugin with the install command", () => {
+    const options = healthy();
+    rmSync(join(options.claudeConfigDirectory, "plugins", "installed_plugins.json"));
+    const plugin = byName(checkClaudeTaskIntegration(options), "claude plugin");
+    expect(plugin?.status).toBe("fail");
+    expect(plugin?.fixHint).toContain("claude plugin install wolfpack-tasks@wolfpack-tasks");
+  });
+
+  test.each([
+    ["missing", null],
+    ["unparseable", "{"],
+    ["channels disabled", JSON.stringify({ channelsEnabled: false, allowedChannelPlugins: [{ plugin: "wolfpack-tasks", marketplace: "wolfpack-tasks" }] })],
+    ["without the plugin", JSON.stringify({ channelsEnabled: true, allowedChannelPlugins: [] })],
+  ] as const)("fails a drop-in that is %s", (_name, content) => {
+    const options = healthy();
+    const path = join(options.dropInDirectory!, "wolfpack.json");
+    if (content === null) rmSync(path);
+    else writeFileSync(path, content);
+    const dropIn = byName(checkClaudeTaskIntegration(options), "claude channel drop-in");
+    expect(dropIn?.status).toBe("fail");
+    expect(dropIn?.detail).toContain(path);
+    expect(dropIn?.fixHint).toContain("wolfpack setup");
+  });
+
+  test("names other managed sources that set the allowlist or disable channels", () => {
+    const options = healthy();
+    const directory = options.dropInDirectory!;
+    const managedSettings = join(directory, "..", "managed-settings.json");
+    writeFileSync(managedSettings, JSON.stringify({ allowedChannelPlugins: [{ plugin: "other", marketplace: "corp" }] }));
+    writeFileSync(join(directory, "90-corp.json"), JSON.stringify({ channelsEnabled: false }));
+    writeFileSync(join(directory, "10-shared.json"), JSON.stringify({ allowedChannelPlugins: [{ plugin: "wolfpack-tasks", marketplace: "wolfpack-tasks" }] }));
+    writeFileSync(join(directory, ".hidden.json"), JSON.stringify({ allowedChannelPlugins: [] }));
+    writeFileSync(join(directory, "notes.txt"), "allowedChannelPlugins");
+    const allowlist = byName(checkClaudeTaskIntegration(options), "claude channel allowlist");
+    expect(allowlist?.status).toBe("warn");
+    expect(allowlist?.detail).toContain(managedSettings);
+    expect(allowlist?.detail).toContain("90-corp.json");
+    expect(allowlist?.detail).not.toContain("10-shared.json");
+    expect(allowlist?.detail).not.toContain(".hidden.json");
+    expect(allowlist?.detail).not.toContain("notes.txt");
+  });
+
+  test("passes and names another managed source whose allowlist includes the channel", () => {
+    const options = healthy();
+    const shared = join(options.dropInDirectory!, "10-shared.json");
+    writeFileSync(shared, JSON.stringify({ allowedChannelPlugins: [{ plugin: "wolfpack-tasks", marketplace: "wolfpack-tasks" }] }));
+    const allowlist = byName(checkClaudeTaskIntegration(options), "claude channel allowlist");
+    expect(allowlist?.status).toBe("pass");
+    expect(allowlist?.detail).toContain(shared);
+  });
+
+  test("warns about each live session on fallback wake and ignores dead or malformed status files", () => {
+    const options = healthy({ pidAlive: (pid) => pid !== 9999 });
+    writeStatus(options.statusDirectory, "live-channel", {});
+    writeStatus(options.statusDirectory, "live-fallback", { wake: "fallback", protocolVersion: "2025-06-18" });
+    writeStatus(options.statusDirectory, "dead-fallback", { wake: "fallback", pid: 9999 });
+    writeFileSync(join(options.statusDirectory, "broken.json"), "{");
+    const results = checkClaudeTaskIntegration(options);
+    const wake = results.filter(result => result.name === "claude wake");
+    expect(wake).toHaveLength(1);
+    expect(wake[0]?.status).toBe("warn");
+    expect(wake[0]?.detail).toContain("live-fallback");
+    expect(wake[0]?.detail).toContain("2025-06-18");
+    expect(wake[0]?.detail).not.toContain("dead-fallback");
+    expect(wake[0]?.detail).toContain("1 on channel wake");
   });
 });

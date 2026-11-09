@@ -26,10 +26,14 @@ export type ClaudeSetupRunner = (
   options: { readonly interactive: boolean },
 ) => ClaudeCommandResult;
 
+const NON_INTERACTIVE_TIMEOUT_MS = 15_000;
+
 export const defaultClaudeSetupRunner: ClaudeSetupRunner = (file, args, options) => {
   const result = spawnSync(file, [...args], {
     encoding: "utf8",
     stdio: options.interactive ? "inherit" : ["ignore", "pipe", "pipe"],
+    // captured probes (`claude --version`) must not hang setup or doctor; interactive steps may wait for sudo
+    ...(!options.interactive && { timeout: NON_INTERACTIVE_TIMEOUT_MS }),
   });
   return { ok: result.error === undefined && result.status === 0, stdout: result.stdout ?? "" };
 };
@@ -41,6 +45,10 @@ const CLAUDE = AGENT_KIND.CLAUDE.cmd;
 const MARKETPLACE_ADD_ARGS = ["plugin", "marketplace", "add", CLAUDE_INTEGRATION.marketplaceSource] as const;
 const PLUGIN_INSTALL_ARGS = ["plugin", "install", CLAUDE_INTEGRATION.pluginSpec] as const;
 const RERUN_SETUP = "wolfpack setup";
+
+/** Printed commands that add the marketplace and install the plugin, in order. */
+export const CLAUDE_MARKETPLACE_ADD_COMMAND = [CLAUDE, ...MARKETPLACE_ADD_ARGS].join(" ");
+export const CLAUDE_PLUGIN_INSTALL_COMMAND = [CLAUDE, ...PLUGIN_INSTALL_ARGS].join(" ");
 
 function commandLine(file: string, args: readonly string[]): string {
   return [file, ...args].join(" ");
@@ -113,7 +121,8 @@ export function claudeProviderOverride(env: Readonly<Record<string, string | und
   return CLAUDE_THIRD_PARTY_PROVIDER_ENV.find(name => truthyEnv(env[name]));
 }
 
-function readJsonRecord(path: string): Record<string, unknown> | undefined {
+/** A JSON object file, or undefined when it is missing, malformed or not an object. */
+export function readJsonRecord(path: string): Record<string, unknown> | undefined {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
