@@ -38,6 +38,24 @@ async function visibility(page: Page, state: "hidden" | "visible") {
   }, state);
 }
 
+test("QA-29: the pane status remains a whole instruction at the supported breakpoint", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "desktop pane status");
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  await openFocus(page);
+  for (const width of [1440, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await hydrated(page);
+    const status = pane(page).getByRole("status");
+    await expect(status).toHaveText("click to talk");
+    const size = await status.evaluate(el => {
+      const range = document.createRange(); range.selectNodeContents(el);
+      return { available: el.clientWidth, text: range.getBoundingClientRect().width };
+    });
+    expect(size.available, `${width}: instruction fits without ellipsis`).toBeGreaterThanOrEqual(size.text);
+    await page.screenshot({ path: info.outputPath(`qa29-status-${width}.png`), animations: "disabled" });
+  }
+});
+
 test("QA-22/23: narrow pane rows yield context before kind text and pane controls stay on one row", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop pane geometry");
   await page.setViewportSize({ width: 1280, height: 900 });
