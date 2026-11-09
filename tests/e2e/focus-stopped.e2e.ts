@@ -8,7 +8,7 @@ test.afterAll(async () => { await server?.close(); });
 test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: "wait" }); });
 
 async function runtimeFixture(page: Page, initial: string, target = "test-project", pinned = false) {
-  let runtime = { state: initial, authority: "fallback", source: "screen-fallback", freshness: "fresh", stale: false,
+  let runtime = { state: initial, authority: initial === "done" ? "program" : "fallback", source: initial === "done" ? "program-status" : "screen-fallback", freshness: "fresh", stale: false,
     changedAt: new Date().toISOString(), stoppedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
     transitionSequence: 5, unseen: true, stoppedSequence: initial === "output" ? 0 : 5, acknowledgedSequence: 0 };
   const acknowledgements: { sessionId: string; transitionSequence: number }[] = [];
