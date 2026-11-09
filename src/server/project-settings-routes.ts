@@ -65,6 +65,7 @@ import { createTopLevelSession } from "./session-create.js";
 import { openSubSession, resolveSubSessionHarness, SessionOpenError } from "./session-open.js";
 import type { SessionOpenBackend } from "./session-open.js";
 import {
+  CLAUDE_TASK_INTEGRATION_OFF_ERROR,
   TaskWorkerReadinessError,
   prepareClaudeTaskWorkerLaunch,
   prepareTaskWorkerLaunch,
@@ -144,6 +145,11 @@ function claudeTaskWorkerWithPiOptions(harness: string, body: TaskWorkerPiOption
 function validTaskWorkerHarness(harness: string, body: TaskWorkerPiOptions): boolean {
   if (harness === AGENT_KIND.PI.id) return true;
   return harness === AGENT_KIND.CLAUDE.id && !claudeTaskWorkerWithPiOptions(harness, body);
+}
+
+/** Checked before launch preparation so the request fails as a 400, not a retryable preflight 503. */
+function claudeTaskIntegrationOff(harness: string): boolean {
+  return harness === AGENT_KIND.CLAUDE.id && !claudeTaskIntegrationEnabled();
 }
 
 function prepareHarnessTaskWorkerLaunch(
@@ -695,6 +701,12 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         code: SESSION_CREATE_ERROR.INVALID_REQUEST,
       }, 400);
     }
+    if (body.taskWorker === true && claudeTaskIntegrationOff(configuredCommand)) {
+      return json(res, {
+        error: CLAUDE_TASK_INTEGRATION_OFF_ERROR,
+        code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+      }, 400);
+    }
     if ((body.initialPrompt !== undefined || body.plan !== undefined) && inferAgentKind(configuredCommand) === AGENT_KIND.SHELL.id) {
       return json(res, {
         error: "initial prompt requires an agent harness",
@@ -870,6 +882,12 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         }
         if (!validTaskWorkerHarness(childHarness, body)) {
           throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
+        }
+        if (claudeTaskIntegrationOff(childHarness)) {
+          return json(res, {
+            error: CLAUDE_TASK_INTEGRATION_OFF_ERROR,
+            code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+          }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
         }
         taskWorker = prepareHarnessTaskWorkerLaunch(childHarness, projectDir, body.taskWorkerPolicy);
       }
