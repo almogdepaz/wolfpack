@@ -63,7 +63,7 @@ function triage(v: unknown): v is FocusTriage {
   const session = keys(v.ref, ["machine", "sessionId"]) && id(v.ref.machine) && oneLine(v.ref.sessionId, 128);
   const intention = keys(v.ref, ["intentionId"]) && id(v.ref.intentionId);
   return (session ? timestamp(v.stoppedAt) : intention && v.stoppedAt === undefined)
-    && ["needs-you", "suggest", "quiet"].includes(String(v.verdict)) && oneLine(v.reason, 300)
+    && typeof v.verdict === "string" && ["needs-you", "suggest", "quiet"].includes(v.verdict) && oneLine(v.reason, 300)
     && (v.suggestion === undefined || (v.verdict === "suggest" && oneLine(v.suggestion, 200)))
     && (v.doneIntention === undefined || (v.verdict === "suggest" && id(v.doneIntention)))
     && (v.verdict !== "suggest" || v.suggestion !== undefined || v.doneIntention !== undefined)

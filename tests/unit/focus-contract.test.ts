@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { emptyFocus, isFocusDocument, reduceFocus, type FocusOp } from "../../src/focus-contract.ts";
+import { emptyFocus, isFocusDocument, reduceFocus, type FocusOp, type FocusTriage } from "../../src/focus-contract.ts";
 
 const now = "2026-11-06T12:00:00.000Z";
 const add = { type: "add", intention: { id: "ship", title: "ship focus", project: "/dev/app", machine: "sgt", sessions: ["id-1"] } } as const;
@@ -37,7 +37,7 @@ describe("focus document", () => {
   });
   test("next stores bounded ordered triage without changing intentions or acknowledging sessions", () => {
     const initial = reduceFocus(emptyFocus(), [add], now);
-    const rows = [
+    const rows: FocusTriage[] = [
       { ref: { machine: "installation-a", sessionId: "session-a" }, stoppedAt: now, verdict: "suggest", reason: "Continue the approved plan", suggestion: "Go ahead with the plan.", doneIntention: "ship" },
       { ref: { intentionId: "ship" }, verdict: "needs-you", reason: "Choose the product direction" },
       { ref: { machine: "offline-peer", sessionId: "session-b" }, stoppedAt: now, verdict: "quiet", reason: "Nothing for you" },
@@ -50,12 +50,13 @@ describe("focus document", () => {
     expect(reduceFocus(next, [{ type: "note", text: "no triage change" }], now).next).toEqual(next.next);
     expect(reduceFocus(next, [{ type: "next", rows: [], author: "assistant" }], now).next?.rows).toEqual([]);
     for (const patch of [
-      { verdict: "sent" }, { reason: "two\nlines" }, { reason: "x".repeat(301) },
+      { verdict: "sent" }, { verdict: ["quiet"] }, { verdict: { toString: () => "quiet" } }, { reason: "two\nlines" }, { reason: "x".repeat(301) },
       { suggestion: "x".repeat(201) }, { suggestion: "two\rline" }, { suggestion: "\u001b[31m" },
       { verdict: "quiet", suggestion: "go" }, { verdict: "needs-you", doneIntention: "ship" },
       { stoppedAt: undefined }, { stoppedAt: "bad" }, { ref: { sessionId: "a" } },
       { ref: { machine: "a", sessionId: "a", intentionId: "ship" } }, { extra: true },
     ]) expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...rows[0], ...patch }], author: "assistant" }], now)).toThrow();
+    expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ref: { machine: "peer", sessionId: "session" }, stoppedAt: now, verdict: ["quiet"], reason: "No user action" }], author: "assistant" }], now)).toThrow();
     expect(() => reduceFocus(initial, [{ type: "next", rows: [rows[0], rows[0]], author: "assistant" }], now)).toThrow();
     expect(() => reduceFocus(initial, [{ type: "next", rows: Array(201).fill(rows[0]), author: "assistant" }], now)).toThrow();
     expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...rows[0], doneIntention: "missing" }], author: "assistant" }], now)).toThrow();

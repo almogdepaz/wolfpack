@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { FocusTriage } from "../../src/focus-contract.ts";
 import { parseFocusCommand, updateFocusWithRetry } from "../../src/cli/focus.ts";
 
 test("focus CLI parses every operation with explicit link/project/machine fields", () => {
@@ -19,7 +20,7 @@ test("focus next parses a JSON input file through the same reducer validation", 
   const { join } = require("node:path");
   const root = mkdtempSync(join(tmpdir(), "focus-next-"));
   const file = join(root, "next.json");
-  const rows = [{ ref: { machine: "peer-id", sessionId: "session-id" }, stoppedAt: "2026-11-06T12:00:00Z", verdict: "quiet", reason: "Nothing for you" }];
+  const rows: FocusTriage[] = [{ ref: { machine: "peer-id", sessionId: "session-id" }, stoppedAt: "2026-11-06T12:00:00Z", verdict: "quiet", reason: "Nothing for you" }];
   try {
     writeFileSync(file, JSON.stringify(rows));
     expect(parseFocusCommand(["next", file, "--json"])).toEqual({ json: true, op: { type: "next", rows, author: "assistant" } });
