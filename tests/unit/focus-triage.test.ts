@@ -66,6 +66,15 @@ test("QA-33: seen finishes disappear from next, but an explicit done suggestion 
   const row = { ...triage("a", "suggest"), doneIntention: "goal" };
   expect(ids(mergeFocus(doc([row]), [a], options))).toEqual(["a"]);
 });
+test("a completed done-only suggestion expires; any unseen stop returns to rules without the stale recommendation", () => {
+  const focus = doc([{ ...triage("a", "suggest"), suggestion: undefined, doneIntention: "goal" }]);
+  const completed = reduceFocus(focus, [{ type: "done", id: "goal" }], at);
+  const result = mergeFocus(completed, [session("a")], options);
+  expect(ids(result)).toEqual(["a"]);
+  expect(result.rows[0]?.source).toBe("new-rules");
+  expect(result.rows[0]?.triage).toBeUndefined();
+});
+
 test("an intention quiet verdict cannot suppress a session's unjudged input episode", () => {
   const focus = doc([{ ref: { intentionId: "goal" }, verdict: "quiet", reason: "No start needed" }]);
   expect(ids(mergeFocus(focus, [session("a", "needs-input")], options))).toEqual(["a"]);

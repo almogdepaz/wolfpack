@@ -100,6 +100,7 @@ test("done suggestion uses the existing done/undo operations, never sends", asyn
   const view = page.locator("#assistant-content");
   await view.getByRole("button", { name: "Mark done: Ship the focus assistant", exact: true }).click();
   await expect(view.locator(".focus-done")).toContainText("Ship the focus assistant");
+  await expect(view.locator(".focus-next")).not.toContainText("Looks finished — mark the intention done?");
   await view.getByRole("button", { name: "Undo done: Ship the focus assistant", exact: true }).click();
   const saved = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   expect(saved.document.intentions.find((i: { id: string }) => i.id === "ship").done).toBe(false);

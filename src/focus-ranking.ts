@@ -109,6 +109,8 @@ export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[]
     ? focusNextRefKey({ machine: row.session.machineInstallationId ?? "", sessionId: row.session.id })
     : focusNextRefKey({ intentionId: row.intention!.id });
   for (const triage of next.rows) {
+    // A user tick/drop invalidates a done-only proposal, not the unseen session episode.
+    if (triage.doneIntention && !triage.suggestion && !doc.intentions.some(i => i.id === triage.doneIntention && !i.done)) continue;
     const ref = triage.ref;
     let row: FocusAction | undefined;
     if ("sessionId" in ref) {
