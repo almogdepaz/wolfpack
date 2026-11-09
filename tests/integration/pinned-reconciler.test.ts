@@ -312,6 +312,11 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(readFileSync(skill, "utf8")).toContain("wolfpack focus next next.json");
     expect(readFileSync(skill, "utf8")).toContain("never use `wolfpack session read` for triage");
     expect(readFileSync(skill, "utf8")).toContain("session creation are forbidden");
+    expect(readFileSync(skill, "utf8")).toContain("5–8 bullets total");
+    expect(readFileSync(skill, "utf8")).toContain("### done");
+    expect(readFileSync(skill, "utf8")).toContain("### still open");
+    expect(readFileSync(skill, "utf8")).toContain("### needs you tomorrow");
+    expect(readFileSync(skill, "utf8")).toContain("no commit hashes, paths, branch names or session ids");
     service.unpin("assistant");
     writeFileSync(skill, "phase 1 skill");
     service.refreshSkill();
