@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyFocus } from "../../src/focus-contract";
@@ -112,4 +112,66 @@ test("real broker pane waits for explicit takeover and frees the slot while hidd
     await expect(owner.locator("#assistant-pty")).toHaveClass(/hydrated/);
     expect(ownerTakeovers).toBe(0);
   } finally { await owner.close(); }
+});
+
+for (const motion of ["normal", "fallback race"] as const) test(`real broker pane restores exact unpinned geometry: ${motion}`, async ({ page }, info) => {
+  test.skip(skipIfNoBroker.condition, skipIfNoBroker.reason);
+  test.skip(info.project.name !== "desktop", "desktop sidebar layout");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "0"));
+  let sockets = 0;
+  const geometry: { type: string; cols: number; rows: number; resizeId?: number }[] = [];
+  const acknowledgements: { cols: number; rows: number; resizeId: number }[] = [];
+  page.on("websocket", ws => {
+    if (!ws.url().includes("/ws/pty")) return;
+    sockets++;
+    ws.on("framesent", frame => {
+      if (typeof frame.payload !== "string") return;
+      const message = JSON.parse(frame.payload);
+      if (["attach", "resize", "layout_stable"].includes(message.type)) geometry.push(message);
+    });
+    ws.on("framereceived", frame => {
+      if (typeof frame.payload !== "string") return;
+      const message = JSON.parse(frame.payload);
+      if (message.type === "resize_ack") acknowledgements.push(message);
+    });
+  });
+  await focus(page);
+  await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+  const bounds = () => pane(page).locator("canvas").evaluate(canvas => ({ canvas: canvas.getBoundingClientRect().width, mount: canvas.parentElement!.clientWidth }));
+  const initial = await bounds();
+  const initialGeometry = geometry.at(-1)!;
+  if (motion === "fallback race") await page.evaluate(() => { document.getElementById("desktop-sidebar")!.style.transition = "margin-left 600ms ease"; });
+  const stages = [];
+  try {
+    for (const action of ["Pin sidebar", "Unpin sidebar"]) {
+      if (action === "Pin sidebar") await page.mouse.move(1, 100);
+      const before = geometry.length;
+      await page.getByRole("button", { name: action, exact: true }).click();
+      await expect.poll(() => geometry.length - before).toBe(1);
+      const sent = geometry[before]!;
+      expect(sent.type).toBe("resize");
+      expect(sent.resizeId).toBeGreaterThan(0);
+      await expect.poll(() => acknowledgements.some(ack => ack.resizeId === sent.resizeId && ack.cols === sent.cols && ack.rows === sent.rows)).toBe(true);
+      stages.push({ action, geometry: sent, box: await bounds() });
+      await expect.poll(async () => { const box = await bounds(); return box.canvas <= box.mount; }).toBe(true);
+      if (action === "Unpin sidebar") {
+        await expect.poll(bounds, { message: "the same mount and font regain the original fitted canvas" }).toEqual(initial);
+        expect(sent).toMatchObject({ cols: initialGeometry.cols, rows: initialGeometry.rows });
+      }
+      expect(geometry.slice(before)).toHaveLength(1);
+    }
+    // Settlement must also release observer suppression, without reconnecting.
+    const before = geometry.length;
+    await page.setViewportSize({ width: 1360, height: 900 });
+    await expect.poll(() => geometry.length).toBeGreaterThan(before);
+    await expect.poll(async () => { const box = await bounds(); return box.canvas <= box.mount; }).toBe(true);
+    await pane(page).locator("canvas").click();
+    const marker = crypto.randomUUID();
+    await page.keyboard.type(`printf 'pane-unpin-%s\\n' ${marker}\n`);
+    await expect.poll(() => screen(page)).toContain(`pane-unpin-${marker}`);
+    expect(sockets).toBe(1);
+  } finally {
+    writeFileSync(info.outputPath("native-unpin.json"), JSON.stringify({ initial, initialGeometry, motion, stages, final: await bounds(), sockets, geometry, acknowledgements }, null, 2));
+  }
 });

@@ -5929,6 +5929,16 @@ function initSidebar() {
     }
     const transitionId = sidebarLayoutTransitionId;
     if (sidebarLayoutSettlementTransitionId === transitionId) return;
+    // The timer can beat the CSS transition. Do not consume the pane's single
+    // resize until its real margin animation finishes (or is cancelled).
+    const paneController = assistantPane.layoutController;
+    const marginTransition = paneController && sidebar.getAnimations().find(animation =>
+      animation instanceof CSSTransition && animation.transitionProperty === "margin-left" && animation.playState !== "finished");
+    if (marginTransition) {
+      const retry = () => { if (transitionId === sidebarLayoutTransitionId) finishSidebarLayoutTransition(); };
+      void marginTransition.finished.then(retry, retry);
+      return;
+    }
     sidebarLayoutSettlementTransitionId = transitionId;
     const complete = (acknowledged = true) => {
       if (transitionId !== sidebarLayoutTransitionId) return;
@@ -5937,7 +5947,6 @@ function initSidebar() {
       if (acknowledged) revealGridCellsWithoutResize();
     };
     // The pane is outside the main/grid pool but shares resize suppression.
-    const paneController = assistantPane.layoutController;
     if (!paneController && activeGridTerminalSessions() !== null) {
       scheduleGridStabilizedFit(complete);
       return;

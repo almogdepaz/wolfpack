@@ -74,7 +74,7 @@ for (const width of [1440, 1280]) for (const entry of ["dashboard", "cached firs
   await page.screenshot({ path: info.outputPath(`first-fit-${entry.replaceAll(" ", "-")}.png`), fullPage: true });
 });
 
-for (const width of [1440, 1280]) test(`pane pin refit: pin then unpin at ${width} settles once without hidden columns`, async ({ page }, info) => {
+for (const width of [1440, 1280]) for (const motion of ["normal", "fallback race", "no transition", "cancelled transition"] as const) test(`pane pin refit: pin then unpin at ${width}, ${motion}, restores exact geometry once`, async ({ page }, info) => {
   await page.setViewportSize({ width, height: 900 });
   await page.addInitScript(() => {
     localStorage.setItem("wolfpack-sidebar-pinned", "0");
@@ -96,28 +96,39 @@ for (const width of [1440, 1280]) test(`pane pin refit: pin then unpin at ${widt
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
   // Sample beyond the normal resize settlement window, rather than accepting
   // one transiently fitting frame or missing a delayed duplicate resize.
-  const sample = () => page.evaluate(() => new Promise<{ mount: number; canvas: number; right: number; mountRight: number }[]>(resolve => {
-    const frames: { mount: number; canvas: number; right: number; mountRight: number }[] = [];
+  const sample = () => page.evaluate(() => new Promise<{ t: number; mount: number; canvas: number; right: number; mountRight: number }[]>(resolve => {
+    const frames: { t: number; mount: number; canvas: number; right: number; mountRight: number }[] = [];
     const start = performance.now();
     const tick = () => {
       const canvas = document.querySelector<HTMLCanvasElement>("#assistant-pane canvas")!;
       const box = canvas.getBoundingClientRect();
       const mount = canvas.parentElement!.getBoundingClientRect();
-      frames.push({ mount: mount.width, canvas: box.width, right: box.right, mountRight: mount.right });
+      frames.push({ t: performance.now() - start, mount: mount.width, canvas: box.width, right: box.right, mountRight: mount.right });
       if (performance.now() - start >= 2_500) resolve(frames);
       else requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
   }));
   const initial = (await sample()).at(-1)!;
+  const initialGeometry = geometry.at(-1)!;
+  if (motion !== "normal") await page.evaluate(motion => {
+    document.getElementById("desktop-sidebar")!.style.transition = motion === "no transition" ? "none" : "margin-left 600ms ease";
+  }, motion);
   const stages = [];
   for (const action of ["Pin sidebar", "Unpin sidebar"]) {
     if (action === "Pin sidebar") await page.mouse.move(1, 100);
     const before = geometry.length;
     await page.getByRole("button", { name: action, exact: true }).click();
+    if (motion === "cancelled transition" && action === "Unpin sidebar") await page.evaluate(() => {
+      // Cancel after the fallback has encountered the still-running animation.
+      setTimeout(() => { document.getElementById("desktop-sidebar")!.style.transition = "none"; }, 300);
+    });
     const frames = await sample();
     const sent = geometry.slice(before);
     stages.push({ action, frames, geometry: sent });
+    if (motion === "fallback race" && action === "Unpin sidebar") {
+      expect.soft(frames.some(f => f.t >= 200 && f.mount < initial.mount - 1), "the 200ms fallback races an unfinished margin transition").toBe(true);
+    }
     expect.soft(frames.slice(-10).every(f => f.canvas > 0 && f.canvas <= f.mount + 1 && f.right <= f.mountRight + 1), `${action}: canvas fits the settled mount`).toBe(true);
     expect.soft(sent, `${action}: exactly one geometry frame, without reattach`).toHaveLength(1);
     expect.soft(sent[0]?.type).toBe("resize");
@@ -125,7 +136,9 @@ for (const width of [1440, 1280]) test(`pane pin refit: pin then unpin at ${widt
   }
   expect.soft(stages[0]!.frames.at(-1)!.mount).toBeLessThan(initial.mount);
   expect.soft(stages[1]!.frames.at(-1)!.mount).toBeCloseTo(initial.mount, 0);
+  expect.soft(stages[1]!.frames.at(-1)!.canvas, "the same mount and font regain the initial fitted canvas").toBe(initial.canvas);
+  expect.soft(stages[1]!.geometry[0], "unpin sends the initial fitted columns and rows, not an intermediate size").toMatchObject({ cols: initialGeometry.cols, rows: initialGeometry.rows });
   expect.soft(stages[0]!.geometry[0]?.cols).toBeLessThan(stages[1]!.geometry[0]?.cols ?? 0);
   expect.soft(sockets, "pin/unpin must refit the same connection").toBe(1);
-  writeFileSync(info.outputPath("pin-refit.json"), JSON.stringify({ initial, stages, sockets, geometry, trace: await page.evaluate(() => window.__wf_dumpTrace?.("assistant")) }, null, 2));
+  writeFileSync(info.outputPath("pin-refit.json"), JSON.stringify({ initial, initialGeometry, motion, stages, sockets, geometry, trace: await page.evaluate(() => window.__wf_dumpTrace?.("assistant")) }, null, 2));
 });
