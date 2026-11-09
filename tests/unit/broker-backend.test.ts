@@ -5,7 +5,7 @@
  * and produces canned ControlResponse values. No real socket, no real broker.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -28,6 +28,8 @@ import {
 import { sessionIdentityStorePath } from "../../src/server/session-identity";
 import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
 import { SHELL } from "../../src/server/shell";
+import { claudeChannelDropInContent } from "../../src/claude-integration";
+import { __setClaudeManagedSettingsDropInDirectory } from "../../src/test-hooks";
 import { renderSnapshotToAnsi } from "../../src/broker/snapshot-render";
 import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event-bus";
 import type { WolfpackEvent } from "../../src/events-contract";
@@ -682,6 +684,44 @@ describe("BrokerBackend.createSession", () => {
         command: string[]; env: Array<[string, string]>;
       };
     }
+
+    describe("default gate: config flag and current managed drop-in", () => {
+      const configPath = join(process.env.WOLFPACK_DIR!, "config.json");
+      let dropInRoot = "";
+      beforeEach(() => {
+        dropInRoot = mkdtempSync(join(tmpdir(), "wolfpack-claude-dropin-"));
+        __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
+        writeFileSync(configPath, JSON.stringify({ devDir: "/tmp", port: 18790, claudeTaskIntegration: true }));
+      });
+      afterEach(() => {
+        __setClaudeManagedSettingsDropInDirectory(undefined);
+        rmSync(configPath, { force: true });
+        rmSync(dropInRoot, { recursive: true, force: true });
+      });
+
+      test("a valid drop-in adds --channels", async () => {
+        writeFileSync(join(dropInRoot, "wolfpack.json"), claudeChannelDropInContent());
+        await new BrokerBackend(client).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+        expect(createParams().command.slice(3)).toEqual(["wolfpack-agent", channelSpec]);
+        expect(createParams().env).toContainEqual(["WOLFPACK_PORT", "18790"]);
+      });
+
+      for (const [name, content] of [
+        ["absent", undefined],
+        ["malformed", "{not json"],
+        ["channels disabled", JSON.stringify({ channelsEnabled: false, allowedChannelPlugins: [{ plugin: "wolfpack-tasks", marketplace: "wolfpack-tasks" }] })],
+        ["wrong allowlist", JSON.stringify({ channelsEnabled: true, allowedChannelPlugins: [] })],
+      ] as const) {
+        test(`a ${name} drop-in launches claude without --channels`, async () => {
+          if (content !== undefined) writeFileSync(join(dropInRoot, "wolfpack.json"), content);
+          await new BrokerBackend(client).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+          const params = createParams();
+          expect(params.command).toHaveLength(3);
+          expect(params.command[2]).toContain("; claude; exec");
+          expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_PORT");
+        });
+      }
+    });
 
     test("off: the stock claude launch is unchanged", async () => {
       await backendWithIntegration(false).createSession("claude-one", "/tmp/proj", "claude", loadSettings);

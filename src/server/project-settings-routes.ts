@@ -65,13 +65,12 @@ import { createTopLevelSession } from "./session-create.js";
 import { openSubSession, resolveSubSessionHarness, SessionOpenError } from "./session-open.js";
 import type { SessionOpenBackend } from "./session-open.js";
 import {
-  CLAUDE_TASK_INTEGRATION_OFF_ERROR,
   TaskWorkerReadinessError,
   prepareClaudeTaskWorkerLaunch,
   prepareTaskWorkerLaunch,
 } from "./task-worker-readiness.js";
 import type { PreparedTaskWorkerLaunch, TaskWorkerLaunch } from "./task-worker-readiness.js";
-import { claudeTaskIntegrationEnabled } from "../config.js";
+import { claudeTaskIntegrationState } from "../config.js";
 import {
   readTaskWorkerHostPolicy,
   taskWorkerPolicyPath,
@@ -147,9 +146,14 @@ function validTaskWorkerHarness(harness: string, body: TaskWorkerPiOptions): boo
   return harness === AGENT_KIND.CLAUDE.id && !claudeTaskWorkerWithPiOptions(harness, body);
 }
 
-/** Checked before launch preparation so the request fails as a 400, not a retryable preflight 503. */
-function claudeTaskIntegrationOff(harness: string): boolean {
-  return harness === AGENT_KIND.CLAUDE.id && !claudeTaskIntegrationEnabled();
+/**
+ * Checked before launch preparation so the request fails as a 400, not a retryable preflight 503.
+ * Returns the public error while the integration is effectively off for a Claude worker.
+ */
+function claudeTaskIntegrationOffError(harness: string): string | undefined {
+  if (harness !== AGENT_KIND.CLAUDE.id) return undefined;
+  const integration = claudeTaskIntegrationState();
+  return integration.on ? undefined : integration.error;
 }
 
 function prepareHarnessTaskWorkerLaunch(
@@ -158,7 +162,7 @@ function prepareHarnessTaskWorkerLaunch(
   taskWorkerPolicy: unknown,
 ): TaskWorkerLaunch | PreparedTaskWorkerLaunch {
   return harness === AGENT_KIND.CLAUDE.id
-    ? prepareClaudeTaskWorkerLaunch(process.env, claudeTaskIntegrationEnabled())
+    ? prepareClaudeTaskWorkerLaunch(process.env, claudeTaskIntegrationState())
     : prepareTaskWorkerLaunch(process.env, projectDir, taskWorkerPolicy);
 }
 
@@ -701,9 +705,10 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         code: SESSION_CREATE_ERROR.INVALID_REQUEST,
       }, 400);
     }
-    if (body.taskWorker === true && claudeTaskIntegrationOff(configuredCommand)) {
+    const integrationOffError = body.taskWorker === true ? claudeTaskIntegrationOffError(configuredCommand) : undefined;
+    if (integrationOffError !== undefined) {
       return json(res, {
-        error: CLAUDE_TASK_INTEGRATION_OFF_ERROR,
+        error: integrationOffError,
         code: SESSION_CREATE_ERROR.INVALID_REQUEST,
       }, 400);
     }
@@ -883,9 +888,10 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         if (!validTaskWorkerHarness(childHarness, body)) {
           throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
         }
-        if (claudeTaskIntegrationOff(childHarness)) {
+        const integrationOffError = claudeTaskIntegrationOffError(childHarness);
+        if (integrationOffError !== undefined) {
           return json(res, {
-            error: CLAUDE_TASK_INTEGRATION_OFF_ERROR,
+            error: integrationOffError,
             code: SESSION_OPEN_ERROR.INVALID_REQUEST,
           }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
         }

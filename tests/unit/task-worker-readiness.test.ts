@@ -122,7 +122,7 @@ describe("claude task worker launch preflight", () => {
     writeFileSync(executable, "#!/bin/sh\nexit 0\n");
     chmodSync(executable, 0o755);
 
-    expect(prepareClaudeTaskWorkerLaunch({ PATH: `${join(root, "empty")}:${root}` }, true))
+    expect(prepareClaudeTaskWorkerLaunch({ PATH: `${join(root, "empty")}:${root}` }, { on: true }))
       .toEqual({ harness: "claude", executable });
   });
 
@@ -132,13 +132,14 @@ describe("claude task worker launch preflight", () => {
     writeFileSync(executable, "#!/bin/sh\nexit 0\n");
     chmodSync(executable, 0o755);
 
-    expect(() => prepareClaudeTaskWorkerLaunch({ PATH: root }, false)).toThrow(
-      expect.objectContaining({ code: "TASK_WORKER_PREFLIGHT_FAILED", message: expect.stringContaining("wolfpack setup") }),
+    const error = "the managed-settings drop-in is missing; run wolfpack setup";
+    expect(() => prepareClaudeTaskWorkerLaunch({ PATH: root }, { on: false, error })).toThrow(
+      expect.objectContaining({ code: "TASK_WORKER_PREFLIGHT_FAILED", message: error }),
     );
   });
 
   test("fails preflight when claude is not on PATH", () => {
-    expect(() => prepareClaudeTaskWorkerLaunch({ PATH: temporaryRoot() }, true)).toThrow(
+    expect(() => prepareClaudeTaskWorkerLaunch({ PATH: temporaryRoot() }, { on: true })).toThrow(
       expect.objectContaining({ code: "TASK_WORKER_PREFLIGHT_FAILED", message: expect.stringContaining("claude executable") }),
     );
   });

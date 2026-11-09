@@ -2,10 +2,15 @@
  * `wolfpack doctor` checks for agent integrations (Pi Tasks, Claude Code channels).
  * Every probe is read-only; fixes are printed commands, never run by `--fix`.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
-import { CLAUDE_INTEGRATION, claudeManagedSettingsDropInDirectory } from "../claude-integration.js";
+import {
+  CLAUDE_INTEGRATION,
+  allowsWolfpackChannel,
+  claudeChannelDropInProblem,
+  claudeManagedSettingsDropInDirectory,
+} from "../claude-integration.js";
 import { WOLFPACK_DIR, claudeTaskIntegrationEnabled } from "../config.js";
 import { detectInstalledProviderCommands } from "../provider-readiness.js";
 import {
@@ -83,13 +88,6 @@ function claudeResult(name: string, status: CheckResult["status"], detail: strin
   return { name, group: GROUP, status, detail, ...(fixHint !== undefined && { fixHint }) };
 }
 
-function allowsWolfpackChannel(value: unknown): boolean {
-  return Array.isArray(value) && value.some(entry =>
-    typeof entry === "object" && entry !== null
-    && (entry as { plugin?: unknown }).plugin === CLAUDE_INTEGRATION.plugin
-    && (entry as { marketplace?: unknown }).marketplace === CLAUDE_INTEGRATION.marketplace);
-}
-
 function checkClaudeVersion(options: ClaudeIntegrationDoctorOptions): CheckResult {
   const result = options.run(AGENT_KIND.CLAUDE.cmd, ["--version"], { interactive: false });
   const minimum = CLAUDE_INTEGRATION.minimumClaudeVersion;
@@ -118,14 +116,10 @@ function checkClaudePlugin(options: ClaudeIntegrationDoctorOptions): CheckResult
 }
 
 function checkClaudeDropIn(dropInPath: string): CheckResult {
-  if (!existsSync(dropInPath)) return claudeResult("claude channel drop-in", "fail", `${dropInPath} is missing`, SETUP);
-  const settings = readJsonRecord(dropInPath);
-  if (settings === undefined) return claudeResult("claude channel drop-in", "fail", `${dropInPath} is not a JSON object`, SETUP);
-  if (settings.channelsEnabled !== true) return claudeResult("claude channel drop-in", "fail", `${dropInPath} does not set channelsEnabled to true`, SETUP);
-  if (!allowsWolfpackChannel(settings.allowedChannelPlugins)) {
-    return claudeResult("claude channel drop-in", "fail", `${dropInPath} does not allow the ${CLAUDE_INTEGRATION.channelSpec} channel`, SETUP);
-  }
-  return claudeResult("claude channel drop-in", "pass", dropInPath);
+  const problem = claudeChannelDropInProblem(dropInPath);
+  return problem === undefined
+    ? claudeResult("claude channel drop-in", "pass", dropInPath)
+    : claudeResult("claude channel drop-in", "fail", problem, SETUP);
 }
 
 /**

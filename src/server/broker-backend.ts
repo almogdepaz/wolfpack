@@ -68,7 +68,7 @@ import {
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
 import { CLAUDE_INTEGRATION } from "../claude-integration.js";
-import { claudeTaskIntegrationEnabled } from "../config.js";
+import { claudeTaskIntegrationState } from "../config.js";
 import { taskWorkerHarness } from "./task-worker-readiness.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
@@ -130,7 +130,7 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
 
 export interface BrokerBackendOptions {
-  /** Read at each session create; defaults to the `claudeTaskIntegration` config opt-in. */
+  /** Read at each session create; defaults to the effective gate (config flag and current managed drop-in). */
   readonly claudeTaskIntegration?: () => boolean;
 }
 
@@ -548,7 +548,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     private readonly emitEvent: typeof publishEvent = publishEvent,
     options: BrokerBackendOptions = {},
   ) {
-    this.claudeTaskIntegration = options.claudeTaskIntegration ?? claudeTaskIntegrationEnabled;
+    this.claudeTaskIntegration = options.claudeTaskIntegration ?? (() => claudeTaskIntegrationState().on);
     this.client = client;
   }
 

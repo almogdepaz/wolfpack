@@ -84,6 +84,11 @@ these steps in order and stops at the first failure:
    another managed source can block the channel.
 5. Save `claudeTaskIntegration: true` in `~/.wolfpack/config.json`.
 
+Wolfpack treats the integration as on only while the flag is set and the
+drop-in is current. If the drop-in is later removed or changed, new Claude
+sessions launch without the channel and Claude task-worker requests fail until
+setup repairs it.
+
 On a failure, setup prints the failed command and a retry hint, and leaves the
 flag off. Wolfpack writes only `wolfpack.json` and never edits other managed
 settings. Re-running setup while the integration is on offers to disable it; if

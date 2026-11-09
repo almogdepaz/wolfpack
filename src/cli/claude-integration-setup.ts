@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { coerce, gte } from "semver";
 import { AGENT_KIND } from "../agent-kind.js";
-import { CLAUDE_INTEGRATION, claudeChannelDropInContent } from "../claude-integration.js";
+import { CLAUDE_INTEGRATION, claudeChannelDropInContent, readJsonRecord } from "../claude-integration.js";
 import { detectInstalledProviderCommands } from "../provider-readiness.js";
 
 export interface ClaudeCommandResult {
@@ -121,17 +121,7 @@ export function claudeProviderOverride(env: Readonly<Record<string, string | und
   return CLAUDE_THIRD_PARTY_PROVIDER_ENV.find(name => truthyEnv(env[name]));
 }
 
-/** A JSON object file, or undefined when it is missing, malformed or not an object. */
-export function readJsonRecord(path: string): Record<string, unknown> | undefined {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : undefined;
-  } catch { /* expected: claude has not written this state file, or it is malformed */
-    return undefined;
-  }
-}
+export { readJsonRecord };
 
 /** Reads `plugins/known_marketplaces.json` (keyed by marketplace name). */
 export function claudeMarketplaceInstalled(configDirectory: string): boolean {

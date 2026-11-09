@@ -2,6 +2,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
+import type { ClaudeTaskIntegrationGate } from "../claude-integration.js";
 import { canonicalReadableRegularFile } from "./task-worker-resource.js";
 import {
   resolveTaskWorkerPolicy,
@@ -216,21 +217,14 @@ export function prepareTaskWorkerLaunch(
 
 /**
  * Resolves the claude executable for a Claude task worker. Spawn policies are Pi-only, so none is read.
- * `integrationEnabled` is the `claudeTaskIntegration` opt-in that `wolfpack setup` writes.
+ * `integration` is the effective gate: the `claudeTaskIntegration` flag and the current managed drop-in.
  */
-/** A Claude task-worker request while the integration is off: a non-retryable precondition that setup fixes. */
-export const CLAUDE_TASK_INTEGRATION_OFF_ERROR =
-  "Claude task workers need claudeTaskIntegration in ~/.wolfpack/config.json; run wolfpack setup to enable the Claude task integration";
-
 export function prepareClaudeTaskWorkerLaunch(
   env: Readonly<Record<string, string | undefined>>,
-  integrationEnabled: boolean,
+  integration: ClaudeTaskIntegrationGate,
 ): ClaudeTaskWorkerLaunch {
-  if (!integrationEnabled) {
-    throw new TaskWorkerReadinessError(
-      TASK_WORKER_ERROR.PREFLIGHT_FAILED,
-      CLAUDE_TASK_INTEGRATION_OFF_ERROR,
-    );
+  if (!integration.on) {
+    throw new TaskWorkerReadinessError(TASK_WORKER_ERROR.PREFLIGHT_FAILED, integration.error);
   }
   return { harness: AGENT_KIND.CLAUDE.id, executable: executableFromPath(env.PATH, AGENT_KIND.CLAUDE.cmd) };
 }

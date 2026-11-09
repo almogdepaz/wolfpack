@@ -22,6 +22,7 @@ import {
   SESSION_PROMPT_SELECTOR_MAX_CHARS,
 } from "../../src/session-prompt-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../../src/validation.ts";
+import { claudeChannelDropInContent } from "../../src/claude-integration.ts";
 import { TASK_WORKER_POLICY_MAX_BYTES } from "../../src/task-worker-policy-contract.ts";
 import {
   createTailnetOriginServerFixture,
@@ -74,7 +75,7 @@ process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = TEST_TASK_WORKER_POLICY_PATH;
 
 const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/server/task-gateways.ts");
 await __resetTaskRelayGatewayForTests();
-const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
+const { __resetJwtAuthConfig, __setDevDir, __setClaudeManagedSettingsDropInDirectory } = await import("../../src/test-hooks.ts");
 const { DuplicateSessionError } = await import("../../src/server/backend-contract.ts");
 const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
 const { EventBus } = await import("../../src/event-bus.ts");
@@ -2890,6 +2891,34 @@ describe("agent-native top-level session control", () => {
       });
       expect(mockBackend.lastCreateArgs).toBeNull();
     }
+
+    // The flag is on but the managed drop-in is missing: the integration is still off.
+    const dropInRoot = mkdtempSync(join(tmpdir(), "wolfpack-claude-dropin-"));
+    const configPath = join(process.env.WOLFPACK_DIR!, "config.json");
+    const priorConfig = existsSync(configPath) ? readFileSync(configPath, "utf8") : undefined;
+    writeFileSync(configPath, JSON.stringify({ devDir: projectDir, port: 18790, claudeTaskIntegration: true }));
+    __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
+    try {
+      for (const [path, body, code] of [
+        ["/api/session-create", { projectDir, harness: "claude", taskWorker: true }, SESSION_CREATE_ERROR.INVALID_REQUEST],
+        ["/api/session-open", { projectDir, parentSession: "claude-gate-parent", harness: "claude", taskWorker: true }, SESSION_OPEN_ERROR.INVALID_REQUEST],
+      ] as const) {
+        mockBackend.lastCreateArgs = null;
+        const missing = await post(path, body);
+        expect(missing.status, path).toBe(400);
+        const missingBody = await missing.json() as { error: string; code: string };
+        expect(missingBody.code).toBe(code);
+        expect(missingBody.error).toContain(`${join(dropInRoot, "wolfpack.json")} is missing`);
+        expect(missingBody.error).toContain("wolfpack setup");
+        expect(missingBody.error).toContain("wolfpack doctor");
+        expect(mockBackend.lastCreateArgs).toBeNull();
+      }
+    } finally {
+      __setClaudeManagedSettingsDropInDirectory(undefined);
+      rmSync(dropInRoot, { recursive: true, force: true });
+      if (priorConfig === undefined) rmSync(configPath, { force: true });
+      else writeFileSync(configPath, priorConfig);
+    }
   });
 
   test("launches Claude task workers through create and open when the integration is enabled", async () => {
@@ -2902,6 +2931,10 @@ describe("agent-native top-level session control", () => {
     const configPath = join(process.env.WOLFPACK_DIR!, "config.json");
     const priorConfig = existsSync(configPath) ? readFileSync(configPath, "utf8") : undefined;
     writeFileSync(configPath, JSON.stringify({ devDir: root, port: 18790, claudeTaskIntegration: true }));
+    const dropInRoot = join(root, "managed-settings.d");
+    mkdirSync(dropInRoot);
+    writeFileSync(join(dropInRoot, "wolfpack.json"), claudeChannelDropInContent());
+    __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
     const priorPath = process.env.PATH;
     process.env.PATH = `${bin}:${priorPath ?? ""}`;
     mockBackend.setSessions([]);
@@ -2935,6 +2968,7 @@ describe("agent-native top-level session control", () => {
         });
       }
     } finally {
+      __setClaudeManagedSettingsDropInDirectory(undefined);
       mockBackend.setOnBeforeCreate(null);
       if (priorPath === undefined) delete process.env.PATH;
       else process.env.PATH = priorPath;
