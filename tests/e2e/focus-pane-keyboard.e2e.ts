@@ -40,7 +40,7 @@ test("QA-24: hiding the focused pane shortcut at the breakpoint returns focus to
   await openFocus(page);
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
   await page.getByRole("button", { name: "Go to assistant terminal", exact: true }).focus();
-  await page.setViewportSize({ width: 1099, height: 900 });
+  await page.setViewportSize({ width: 1279, height: 900 });
   await expect(pane(page)).toBeHidden();
   await expect(page.locator(".assistant-column")).toBeFocused();
 });

@@ -3025,7 +3025,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-empty { margin: 8px 0; font-size: 13px; color: var(--text-3); }
 #assistant-view { overflow-y: auto; }
 #assistant-pane { display: none; }
-@media (min-width: 1100px) {
+@media (min-width: 1280px) {
   #assistant-view { flex-direction: row; }
   #assistant-view .assistant-column { flex: 0 0 clamp(520px, 65%, 760px); min-width: 0; overflow: auto; }
   #assistant-pane:not([hidden]) { display: flex; flex: 1; min-width: 0; flex-direction: column; margin: 24px 20px 24px 0; }

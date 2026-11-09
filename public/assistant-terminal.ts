@@ -3,6 +3,9 @@ import { classifyDisconnect, handleTakeControlClick } from "../src/take-control-
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { revealTerminalConflict } from "./terminal-loading-ui";
 
+// Keep in sync with the pane media query in src/browser/styles.css.
+const ASSISTANT_PANE_MIN_WIDTH = 1280;
+
 export interface AssistantTerminalTarget {
   readonly session: string;
   readonly machine: string;
@@ -26,7 +29,7 @@ export function createAssistantTerminal(deps: {
   const skipButton = document.getElementById("assistant-pane-skip")!;
   const empty = document.getElementById("assistant-pane-empty")!;
   let unavailableMessage = "the assistant terminal is not running yet.";
-  const wide = matchMedia("(min-width: 1100px)");
+  const wide = matchMedia(`(min-width: ${ASSISTANT_PANE_MIN_WIDTH}px)`);
   let active = false;
   let target: AssistantTerminalTarget | null = null;
   let mounted: AssistantTerminalTarget | null = null;

@@ -40,7 +40,7 @@ async function visibility(page: Page, state: "hidden" | "visible") {
 
 test("QA-22/23: narrow pane rows yield context before kind text and pane controls stay on one row", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop pane geometry");
-  await page.setViewportSize({ width: 1100, height: 900 });
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch();
@@ -67,7 +67,7 @@ test("QA-22/23: narrow pane rows yield context before kind text and pane control
     range.setEnd(el.firstChild!, "broker-leak permission".length);
     return { available: el.clientWidth, label: range.getBoundingClientRect().width };
   });
-  await page.screenshot({ path: info.outputPath("pane-1100.png"), animations: "disabled" });
+  await page.screenshot({ path: info.outputPath("pane-1280.png"), animations: "disabled" });
   expect.soft(measure.available).toBeGreaterThanOrEqual(measure.label);
   const focus = (await pane(page).getByRole("button", { name: "Focus terminal", exact: true }).boundingBox())!;
   const back = (await pane(page).getByRole("button", { name: "Back to list", exact: true }).boundingBox())!;
@@ -76,12 +76,12 @@ test("QA-22/23: narrow pane rows yield context before kind text and pane control
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-test("pane: two columns at 1100+, one column below, clean breakpoint remount and captures", async ({ page }, info) => {
+test("pane: two columns at 1280+, one column below, clean breakpoint remount and captures", async ({ page }, info) => {
   const stats = transport(page);
   await page.setViewportSize({ width: info.project.name === "desktop" ? 1440 : 390, height: 900 });
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
   await openFocus(page);
-  const shots = join(process.cwd(), ".plans/screenshots/slice-c");
+  const shots = process.env.WOLFPACK_FOCUS_SHOTS ?? join(process.cwd(), ".plans/screenshots/slice-c");
   mkdirSync(shots, { recursive: true });
   if (info.project.name !== "desktop") {
     await expect(pane(page)).toBeHidden();
@@ -93,7 +93,7 @@ test("pane: two columns at 1100+, one column below, clean breakpoint remount and
     return;
   }
   await hydrated(page);
-  for (const width of [1440, 1100]) {
+  for (const width of [1440, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await hydrated(page);
     // Resize settlement is asynchronous; capture the fitted terminal, not the old-width canvas.
@@ -106,10 +106,14 @@ test("pane: two columns at 1100+, one column below, clean breakpoint remount and
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: join(shots, `assistant-${width}.png`), fullPage: true });
   }
-  await page.setViewportSize({ width: 1099, height: 900 });
-  await expect(pane(page)).toBeHidden();
-  await expect.poll(() => stats.live).toBe(0);
-  await page.setViewportSize({ width: 1100, height: 900 });
+  for (const width of [1279, 1100]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(pane(page)).toBeHidden();
+    await expect(page.locator("#assistant-pane-skip")).toBeHidden();
+    await expect.poll(() => stats.live).toBe(0);
+    await page.screenshot({ path: join(shots, `assistant-${width}.png`), fullPage: true });
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
   await hydrated(page);
   await expect.poll(() => stats.live).toBe(1);
   expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
@@ -152,7 +156,7 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
 });
 
 test("pane: one-column opening preserves the existing focus behavior", async ({ page }, info) => {
-  await page.setViewportSize({ width: info.project.name === "desktop" ? 1099 : 390, height: 900 });
+  await page.setViewportSize({ width: info.project.name === "desktop" ? 1279 : 390, height: 900 });
   await page.addInitScript(() => {
     const state = window as unknown as { listFocuses: number };
     state.listFocuses = 0;
