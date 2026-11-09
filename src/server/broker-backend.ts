@@ -287,6 +287,19 @@ type SendAttemptStop =
   | { readonly kind: "observed" }
   | { readonly kind: "not_delivered"; readonly reason: SessionSendFailureReason };
 
+/**
+ * Pause between a submitted input's text and its Enter. Claude Code reads text
+ * and Enter that arrive in one chunk as a paste and keeps the Enter as a
+ * newline (seen with 2.1.319 for text over ~51 characters), so Enter is a
+ * separate write once the text has been read.
+ */
+export const SESSION_SUBMIT_SETTLE_MS = 100;
+const ENTER_INPUT = "\r";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Each status read inside a send's observation window gets at most this much of it. */
 const SESSION_SEND_STATUS_READ_MAX_MS = 200;
 
@@ -406,8 +419,9 @@ function notDeliveredSend(reason: SessionSendFailureReason): SessionSendObservat
 
 /** Live state of one `writeObservedInput` call, handed to its callbacks. */
 interface InputObservation<T> {
+  /** Set just before the first write. */
   inputSent: boolean;
-  /** Wall clock taken just before the write; set with `inputSent`. */
+  /** Wall clock taken just before the submitting write: the Enter when there is one, else the input. */
   inputSentAtMs: number | undefined;
   /** Settle the observation; only the first call counts. */
   finish(result: T): void;
@@ -415,8 +429,11 @@ interface InputObservation<T> {
 
 interface ObservedInputSpec<T> {
   readonly sessionName: string;
+  /** Text to write, without Enter. */
   readonly input: string;
-  /** Bounds the whole call, subscribe included. */
+  /** Follow `input` with Enter, as its own write after `SESSION_SUBMIT_SETTLE_MS` when `input` is not empty. */
+  readonly submit: boolean;
+  /** Bounds the whole call, subscribe included; once the text is written, its Enter is still written. */
   readonly timeoutMs: number;
   readonly onTimeout: () => T;
   readonly onLifecycle: (event: SessionLifecycleEvent) => T;
@@ -424,6 +441,7 @@ interface ObservedInputSpec<T> {
   readonly onWriteError: () => T;
   /** Output after the boundary; `observation.inputSent` separates pre-write frames. */
   readonly onOutput: (frame: OutputBinaryFrame, observation: InputObservation<T>) => void;
+  /** Runs after the first write, before a separate Enter. */
   readonly onInputSent?: (observation: InputObservation<T>) => void;
   /** Runs synchronously before subscribing, for callers with other evidence sources. */
   readonly bind?: (observation: InputObservation<T>) => void;
@@ -830,8 +848,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   async send(name: string, text: string, noEnter?: boolean): Promise<void> {
     const id = await this.resolveId(name);
     if (!id) return;
-    const payload = noEnter ? text : text + "\r";
-    this.client.writeInput(id, TEXT_ENCODER.encode(payload));
+    if (noEnter || text === "") {
+      this.client.writeInput(id, TEXT_ENCODER.encode(noEnter ? text : ENTER_INPUT));
+      return;
+    }
+    this.client.writeInput(id, TEXT_ENCODER.encode(text));
+    await delay(SESSION_SUBMIT_SETTLE_MS);
+    this.client.writeInput(id, TEXT_ENCODER.encode(ENTER_INPUT));
   }
 
   /**
@@ -847,7 +870,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       return notDeliveredSend(this.targetUnavailableOutcome(sessionId, options.sessionName ?? info?.name));
     }
     const first = await this.observeSendAttempt(sessionId, info.name, {
-      input: options.noEnter ? options.text : `${options.text}\r`,
+      input: options.text,
       noEnter: options.noEnter,
       observeMs: options.observeMs,
       priorDelivered: false,
@@ -861,7 +884,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       return first;
     }
     const retry = await this.observeSendAttempt(sessionId, info.name, {
-      input: "\r",
+      input: "",
       noEnter: false,
       observeMs: options.observeMs,
       priorDelivered: true,
@@ -889,8 +912,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     },
   ): Promise<SessionSendObservationResult> {
     // One deadline covers the baseline read, subscribe, write and final read;
-    // nothing after it is evidence.
-    const deadlineMs = Date.now() + attempt.observeMs;
+    // nothing after it is evidence. The settle gap before a separate Enter is
+    // added so the window after Enter stays `observeMs`.
+    const settleMs = !attempt.noEnter && attempt.input !== "" ? SESSION_SUBMIT_SETTLE_MS : 0;
+    const deadlineMs = Date.now() + attempt.observeMs + settleMs;
     const statusReadMs = Math.min(SESSION_SEND_STATUS_READ_MAX_MS, Math.floor(attempt.observeMs / 4));
     const status = new SendStatusTimeline();
     let outputSeen = false;
@@ -900,9 +925,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const stopUnlessWritten = (reason: SessionSendFailureReason): SendAttemptStop =>
       observation?.inputSent ? observed : notDelivered(reason);
     const decided = (): boolean => (attempt.noEnter ? outputSeen || status.changed() : status.submitted());
-    // The write must leave room for the final read; past this, nothing is written.
+    // The submitting write must leave room for the final read, and the text
+    // room for the settle gap before it; past this, nothing is written.
     const writeByMs = deadlineMs - statusReadMs;
-    const windowSpent = (): boolean => Date.now() >= writeByMs;
+    const windowSpent = (): boolean => Date.now() >= writeByMs - settleMs;
     // Listen before reading the baseline so no pushed change falls between them.
     const unsubscribeStatus = this.onProgramStatusById(sessionId, (record) => {
       if (Date.now() > deadlineMs) return;
@@ -918,6 +944,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       const { result: stop } = await this.writeObservedInput<SendAttemptStop>(sessionId, {
         sessionName: name,
         input: attempt.input,
+        submit: !attempt.noEnter,
         timeoutMs: writeByMs - Date.now(),
         bind: (bound) => { observation = bound; },
         beforeWrite: () => (windowSpent() ? notDelivered(SESSION_SEND_FAILURE_REASON.TIMED_OUT) : undefined),
@@ -926,7 +953,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           ? SESSION_SEND_FAILURE_REASON.TARGET_EXITED
           : SESSION_SEND_FAILURE_REASON.REPLAY_GAP),
         onSubscribeError: (error) => stopUnlessWritten(this.subscribeErrorOutcome(error, targetUnavailableOutcome)),
-        onWriteError: () => notDelivered(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
+        // A failed Enter after a written text still delivered the text.
+        onWriteError: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
         onOutput: (frame, current) => {
           if (!current.inputSent || frame.data.length === 0 || Date.now() > deadlineMs) return;
           outputSeen = true;
@@ -950,7 +978,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           outputSeen,
           priorDelivered: attempt.priorDelivered,
         }),
-        observedMs: writtenAtMs === undefined ? 0 : Math.min(Date.now(), deadlineMs) - writtenAtMs,
+        observedMs: writtenAtMs === undefined ? 0 : Math.max(0, Math.min(Date.now(), deadlineMs) - writtenAtMs),
       };
     } finally {
       unsubscribeStatus();
@@ -1030,7 +1058,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     let bufferCodePoints = 0;
     const { result, outputBoundarySeq } = await this.writeObservedInput<SessionPromptWaitResult["outcome"]>(sessionId, {
       sessionName: info.name,
-      input: options.noEnter ? options.prompt : `${options.prompt}\r`,
+      input: options.prompt,
+      submit: !options.noEnter,
       timeoutMs: options.timeoutMs,
       onTimeout: () => SESSION_PROMPT_OUTCOME.TIMED_OUT,
       onLifecycle: (event) => event.kind === "exited"
@@ -1189,10 +1218,11 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       }
       // Output can arrive while the write is still on the stack; it already
       // follows the input.
+      const separateEnter = spec.submit && spec.input !== "";
       observation.inputSent = true;
-      observation.inputSentAtMs = Date.now();
+      if (!separateEnter) observation.inputSentAtMs = Date.now();
       try {
-        this.client.writeInput(sessionId, TEXT_ENCODER.encode(spec.input));
+        this.client.writeInput(sessionId, TEXT_ENCODER.encode(spec.submit && !separateEnter ? ENTER_INPUT : spec.input));
       } catch {
         observation.inputSent = false;
         observation.inputSentAtMs = undefined;
@@ -1200,6 +1230,18 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         return await settle();
       }
       spec.onInputSent?.(observation);
+      if (separateEnter) {
+        // The text is delivered, so its Enter follows even if the call has settled meanwhile.
+        await delay(SESSION_SUBMIT_SETTLE_MS);
+        observation.inputSentAtMs = Date.now();
+        try {
+          this.client.writeInput(sessionId, TEXT_ENCODER.encode(ENTER_INPUT));
+        } catch {
+          observation.inputSentAtMs = undefined;
+          observation.finish(spec.onWriteError());
+          return await settle();
+        }
+      }
       return await settle();
     } finally {
       clearTimeout(timer);
