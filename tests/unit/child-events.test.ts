@@ -18,6 +18,7 @@ import {
   __resetChildEventsForTests,
   childMessageEvent,
   childSessionExited,
+  noteChildCreated,
   noteChildInputDelivered,
   observeChildSession,
   onChildEvent,
@@ -105,11 +106,34 @@ describe("child events", () => {
     expect(inbox[0]).toEqual({ seq: event!.seq, at: event!.observedAt, message: "done: tests pass", from: "worker", childEvent: event });
   });
 
-  test("the first sight of a child is a baseline, even in an event state", () => {
+  test("a child created in this boot reports its first event state exactly once", () => {
+    noteChildCreated("blocked-id", "blocked", PARENT);
+    noteChildCreated("failed-id", "failed", PARENT);
+    noteChildCreated("done-id", "done", PARENT);
+    for (let pass = 0; pass < 2; pass++) {
+      observe(AGENT_STATUS_STATE.NEEDS_INPUT, AGENT_STATUS_AUTHORITY.PROGRAM, { inputKind: PROGRAM_STATUS_KIND.PERMISSION }, { id: "blocked-id", name: "blocked" });
+      observe(AGENT_STATUS_STATE.FAILED, AGENT_STATUS_AUTHORITY.MANIFEST, {}, { id: "failed-id", name: "failed" });
+      observe(AGENT_STATUS_STATE.DONE, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "done-id", name: "done" });
+    }
+    expect(events().map(event => [event.childName, event.event])).toEqual([["blocked", "blocked"], ["failed", "error"], ["done", "done"]]);
+    expect(listParentNotifications(PARENT.wolfpackSessionId)).toHaveLength(3);
+  });
+
+  test("a child first seen through restart recovery is a baseline, even in an event state", () => {
     observe(AGENT_STATUS_STATE.DONE);
     observe(AGENT_STATUS_STATE.NEEDS_INPUT, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "other", name: "other" });
+    observe(AGENT_STATUS_STATE.FAILED, AGENT_STATUS_AUTHORITY.MANIFEST, {}, { id: "third", name: "third" });
     expect(published).toEqual([]);
     expect(listParentNotifications(PARENT.wolfpackSessionId)).toEqual([]);
+  });
+
+  test("a created child that starts idle or working emits nothing until an event state", () => {
+    noteChildCreated(CHILD, "worker", PARENT);
+    observe(AGENT_STATUS_STATE.IDLE);
+    observe(AGENT_STATUS_STATE.WORKING);
+    expect(published).toEqual([]);
+    observe(AGENT_STATUS_STATE.DONE);
+    expect(events().map(event => event.event)).toEqual(["done"]);
   });
 
   test("repeated reports in the same state coalesce into one event", () => {

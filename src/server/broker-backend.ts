@@ -74,7 +74,7 @@ import { taskWorkerHarness } from "./task-worker-readiness.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
 import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
-import { childSessionExited, reconcileChildEvents } from "./child-events.js";
+import { childSessionExited, noteChildCreated, reconcileChildEvents } from "./child-events.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { PROGRAM_STATUS_STATE, parseBrokerProgramStatusRecord } from "../program-status-contract.js";
@@ -830,6 +830,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       parentSession: options?.parentSession,
       externalAgent: options?.externalAgent,
     });
+    // Same synchronous step as the identity capture: no observer pass can see
+    // this child's lineage before it is tracked as created in this boot.
+    if (options?.parentSession) noteChildCreated(session.id, session.name, options.parentSession);
     log.info("session created", { name: session.name, id: session.id, cwd, cmd: agentCmd });
     return toPublicSessionIdentity(identity);
   }

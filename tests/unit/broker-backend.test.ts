@@ -529,6 +529,28 @@ test("a tracked child's exit reaches its parent inbox before the public exit eve
   }
 });
 
+test("a child created through the backend reports its first event state, but a restored child does not", async () => {
+  const parentId = "22222222-2222-4222-8222-222222222222";
+  clearParentInbox(parentId);
+  __resetChildEventsForTests();
+  const parentSession = { wolfpackSessionId: parentId, wolfpackSessionName: "lead" };
+  const blocked = {
+    state: "needs-input", authority: "program", freshness: "fresh", source: "program-status", label: "needs input",
+    stale: false, observedAt: "t", changedAt: "t", transitionSequence: 1, unseen: false,
+  } as const;
+  try {
+    client.setHandler("create_session", () => okResp({ session: sessionInfo({ name: "fresh-child", id: SESSION_UUID_1 }) }));
+    await backend.createSession("fresh-child", "/tmp/proj", "claude", loadSettings, { agentKind: "claude", parentSession });
+    observeChildSession({ sessionId: SESSION_UUID_1, name: "fresh-child", parentSession, alive: true, runtimeState: blocked }, () => {});
+    // Not created by this process (restart recovery): the first sight is a baseline.
+    observeChildSession({ sessionId: SESSION_UUID_2, name: "restored-child", parentSession, alive: true, runtimeState: blocked }, () => {});
+    expect(listParentNotifications(parentId)).toEqual([expect.objectContaining({ from: "fresh-child", message: expect.stringContaining("blocked") })]);
+  } finally {
+    clearParentInbox(parentId);
+    __resetChildEventsForTests();
+  }
+});
+
 describe("BrokerBackend.inspectSession", () => {
   test("resolves a dead session from the broker-authoritative table before active-list filtering", async () => {
     client.setHandler("list_sessions", () => okResp({

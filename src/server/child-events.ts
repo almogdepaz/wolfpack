@@ -9,9 +9,10 @@
  *
  * Coalescing is state based: a child produces at most one event per entry into
  * an event state. Repeated reports in the same state (another blocked request,
- * a broker blip that re-reports `done`) do not produce another event. The
- * first sight of a child in this process is a baseline, never an event, so a
- * server restart does not flood parents.
+ * a broker blip that re-reports `done`) do not produce another event. A child
+ * created by this process starts from `unknown`, so its first event state is
+ * reported. A child first seen through restart recovery uses its first sight
+ * as a baseline, never an event, so a server restart does not flood parents.
  */
 import {
   AGENT_STATUS_AUTHORITY,
@@ -186,6 +187,22 @@ export function observeChildSession(observation: ChildSessionObservation, publis
   if (!derived) return;
   if (derived.event === CHILD_EVENT.DONE || derived.event === CHILD_EVENT.ERROR) child.armed = false;
   emit(observation.sessionId, child, derived, publish);
+}
+
+/**
+ * The backend created this child in this process. Call it before the session
+ * can be observed: the first observed event state (blocked, error, done) is
+ * then compared with `unknown` and reported, not taken as a baseline.
+ */
+export function noteChildCreated(sessionId: string, name: string, parent: ParentSessionIdentity): void {
+  if (children.has(sessionId)) return;
+  children.set(sessionId, {
+    name,
+    parentSessionId: parent.wolfpackSessionId,
+    parentName: parent.wolfpackSessionName,
+    state: AGENT_STATUS_STATE.UNKNOWN,
+    armed: false,
+  });
 }
 
 /** A verified `session send` reached this session; arm its `busy → idle` done event. */
