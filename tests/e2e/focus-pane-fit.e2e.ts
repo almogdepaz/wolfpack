@@ -69,6 +69,7 @@ for (const width of [1440, 1280]) for (const entry of ["dashboard", "cached firs
   expect.soft(frames.filter(f => f.canvas > f.mount + 1 || f.right > f.mountRight + 1), "every visible frame fits from the first reveal").toEqual([]);
   expect.soft(sockets, "no reconnect is needed to repair the first fit").toBe(1);
   expect.soft(geometry.filter(g => g.type === "attach")).toHaveLength(1);
+  expect.soft(geometry.find(g => g.type === "attach")!.cols, "the wider pane has useful default-font columns").toBeGreaterThanOrEqual(width === 1440 ? 60 : 50);
   expect.soft(new Set(geometry.map(g => `${g.cols}x${g.rows}`)).size, "attach and resize/stability frames share the pane's settled geometry").toBe(1);
   await page.screenshot({ path: info.outputPath(`first-fit-${entry.replaceAll(" ", "-")}.png`), fullPage: true });
 });

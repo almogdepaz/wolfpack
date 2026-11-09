@@ -146,10 +146,10 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   }
   await page.screenshot({ path: join(shots, `qa-layout-assistant-${width}.png`), fullPage: true });
   // Opening one intention must not move its disclosure, and its body may span the chip column.
-  await view.locator(".focus-today summary").first().click();
+  await view.locator(".focus-today summary .focus-title").first().click();
   const openToday = await view.locator(".focus-today > li > .focus-card > summary").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(openToday), "QA-6 open and closed today disclosures align").toBeLessThanOrEqual(1);
-  await view.locator(".focus-today summary").first().click();
+  await view.locator(".focus-today summary .focus-title").first().click();
   await page.getByRole("button", { name: "Talk to assistant" }).click();
   if (desktop) {
     const surfaces = await page.evaluate(() => ["#sidebar-session-filter .seg", "#sidebar-assistant"].map(selector => {
@@ -208,7 +208,7 @@ test("R-N1: compact chips keep attention first and hide the least urgent session
   if (!desktop) expect(visible).toHaveLength(6);
   const more = chips.getByRole("button", { name: /^\d+ more sessions:/ });
   if (desktop && await more.isVisible()) await more.click();
-  else await row.locator("summary").click();
+  else await row.locator("summary .focus-title").click();
   // Only the compact presentation is sorted; expanded details retain the original link order.
   await expect(row.locator(".focus-card-body [data-focus-session]")).toHaveText(linked.map(s => s.name));
 });
@@ -403,7 +403,7 @@ test("focus card captures: a session card open with and without the agent's cont
   const view = page.locator("#assistant-view");
   // open state is per card, shared by the dashboard block and the page: the card opened above is open here too
   await expect(view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("details.focus-card")).toHaveAttribute("open", "");
-  await view.locator(".focus-today li").filter({ hasText: "ship the focus assistant" }).locator(".focus-card > summary").click();
+  await view.locator(".focus-today li").filter({ hasText: "ship the focus assistant" }).locator(".focus-card > summary .focus-title").click();
   await expect(view.locator(".focus-context")).toBeVisible();
   await expect(view.locator(".focus-context")).toContainText("Wire the context block");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

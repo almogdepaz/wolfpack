@@ -90,7 +90,7 @@ test("QA-22/23: narrow pane rows yield context before kind text and pane control
   const focus = (await pane(page).getByRole("button", { name: "Focus terminal", exact: true }).boundingBox())!;
   const back = (await pane(page).getByRole("button", { name: "Back to list", exact: true }).boundingBox())!;
   expect.soft(back.y).toBeCloseTo(focus.y, 0);
-  expect((await pane(page).boundingBox())!.width).toBeGreaterThan(250); // No pane sizing change.
+  expect((await pane(page).boundingBox())!.width).toBeGreaterThanOrEqual(420);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
@@ -119,7 +119,9 @@ test("pane: two columns at 1280+, one column below, clean breakpoint remount and
     const list = (await page.locator(".assistant-column").boundingBox())!;
     const terminal = (await pane(page).boundingBox())!;
     expect(terminal.x).toBeGreaterThanOrEqual(list.x + list.width - 1);
-    expect(terminal.width).toBeGreaterThan(250);
+    expect(terminal.width).toBeGreaterThanOrEqual(width === 1440 ? 480 : 420);
+    expect(list.width).toBeLessThanOrEqual(640);
+    expect(list.width).toBeGreaterThanOrEqual(520);
     expect(await page.locator('#assistant-content .focus-today .focus-title').first().evaluate(el => el.clientWidth)).toBeGreaterThan(90);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: join(shots, `assistant-${width}.png`), fullPage: true });
