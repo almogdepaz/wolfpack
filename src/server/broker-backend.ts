@@ -721,7 +721,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       };
       const channelsArg = claudeChannels ? ` --channels ${positional(CLAUDE_INTEGRATION.channelSpec)}` : "";
       const modelArg = options?.model !== undefined ? ` --model ${positional(options.model)}` : "";
-      const promptArg = options?.initialPrompt !== undefined ? ` ${positional(options.initialPrompt)}` : "";
+      // claude's --channels takes several values; `--` keeps it from consuming the prompt.
+      const endOfOptions = claudeChannels ? " --" : "";
+      const promptArg = options?.initialPrompt !== undefined ? `${endOfOptions} ${positional(options.initialPrompt)}` : "";
       shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${channelsArg}${modelArg}${promptArg}; exec ${SHELL}`;
     }
 

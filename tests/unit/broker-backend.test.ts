@@ -691,12 +691,29 @@ describe("BrokerBackend.createSession", () => {
       expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_PORT");
     });
 
+    test("off: a stock claude prompt stays one positional argument", async () => {
+      await backendWithIntegration(false).createSession("claude-one", "/tmp/proj", "claude", loadSettings, {
+        agentKind: "claude", initialPrompt: "review the diff",
+      });
+      const params = createParams();
+      expect(params.command[2]).toContain('; clear; claude "$1"; exec');
+      expect(params.command.slice(3)).toEqual(["wolfpack-agent", "review the diff"]);
+    });
+
+    test("on: the stock claude launch without a prompt adds only --channels", async () => {
+      await backendWithIntegration(true).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+      const params = createParams();
+      expect(params.command[2]).toContain('; clear; claude --channels "$1"; exec');
+      expect(params.command.slice(3)).toEqual(["wolfpack-agent", channelSpec]);
+    });
+
     test("on: the stock claude launch adds --channels as argv and WOLFPACK_PORT", async () => {
+      // --channels takes several values, so `--` stops it from consuming the prompt.
       await backendWithIntegration(true).createSession("claude-one", "/tmp/proj", "claude", loadSettings, {
         agentKind: "claude", initialPrompt: "review the diff",
       });
       const params = createParams();
-      expect(params.command[2]).toContain('; claude --channels "$1" "$2"; exec');
+      expect(params.command[2]).toContain('; clear; claude --channels "$1" -- "$2"; exec');
       expect(params.command.slice(3)).toEqual(["wolfpack-agent", channelSpec, "review the diff"]);
       expect(params.env).toContainEqual(["WOLFPACK_PORT", "18790"]);
       expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_TASK_WORKER");
