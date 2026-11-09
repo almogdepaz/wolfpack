@@ -2965,8 +2965,6 @@ details.focus-card > summary:focus-visible { outline: 2px solid var(--accent); o
 .focus-card-body dt { color: var(--text-3); }
 .focus-card-body dd { margin: 0; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
 .focus-card-body code { font: 12px var(--font-mono); color: var(--text-2); white-space: pre-wrap; }
-.focus-linked { display: inline-flex; align-items: center; gap: 5px; margin-right: 10px; }
-.focus-linked .dot { width: 7px; height: 7px; box-shadow: none; }
 /* The agent-context document (extension `agent-context`) inside an open session card. */
 .focus-context { margin: -2px 0 12px; padding-top: 10px; border-top: 1px solid var(--hairline); }
 .focus-context .focus-card-body { margin: 0; padding: 0; border: 0; }
@@ -2979,7 +2977,7 @@ details.focus-card > summary:focus-visible { outline: 2px solid var(--accent); o
 .focus-context-more { margin: 4px 0 0; color: var(--text-3); font-size: 12px; }
 details.focus-context-more > summary { display: inline-flex; align-items: center; gap: 6px; min-height: 28px; list-style: none; cursor: pointer; }
 details.focus-context-more > summary::-webkit-details-marker { display: none; }
-details.focus-context-more > summary::before { content: "›"; content: "›" / ""; display: inline-block; width: 8px; color: var(--text-4); transition: transform .15s; }
+details.focus-context-more > summary::before, .assistant-column summary::before { content: "›"; content: "›" / ""; display: inline-block; width: 8px; color: var(--text-4); transition: transform .15s; }
 details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-next .focus-action { min-height: 34px; margin-top: 5px; padding: 0 2px; border: 0; background: none; color: var(--accent); font-size: 12px; font-weight: 500; }
 .focus-next .focus-action:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
@@ -2993,7 +2991,6 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-for { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .focus-next .focus-for { max-width: 320px; }
 .focus-next .focus-for > span { white-space: nowrap; }
-.focus-action { color: var(--accent); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .focus-today .focus-check { display: flex; align-items: center; min-height: 44px; padding-right: 2px; cursor: pointer; }
 .focus-today input { accent-color: var(--accent); width: 18px; height: 18px; margin: 0; flex: none; }
 .focus-today .focus-title { white-space: normal; overflow-wrap: anywhere; font-weight: 400; }
@@ -3045,7 +3042,6 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .assistant-column details { margin-top: 4px; color: var(--text-3); font-size: 12px; }
 .assistant-column summary { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; list-style: none; cursor: pointer; }
 .assistant-column summary::-webkit-details-marker { display: none; }
-.assistant-column summary::before { content: "›"; content: "›" / ""; display: inline-block; width: 8px; color: var(--text-4); transition: transform .15s; }
 .assistant-column details[open] > summary::before { transform: rotate(90deg); }
 .assistant-column details ol { margin: 0 0 4px; padding-left: 26px; line-height: 1.6; }
 .focus-yesterday { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 24px; color: var(--text-2); font-size: 13px; }
