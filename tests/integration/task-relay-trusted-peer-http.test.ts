@@ -15,7 +15,9 @@ const signed = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ exp: Math.floor(Dat
 const headers = { "content-type": "application/json", authorization: `Bearer ${signed}.${createHmac("sha256", secret).update(signed).digest("base64url")}` };
 const origin = (name: string) => `https://${name}.tail123.ts.net`;
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-async function fixture(ownerAuth = true) {
+async function fixture(ownerAuth = true, profile: "volatile-v1" | "restart-safe-v1" = "volatile-v1") {
+  const route = `/api/task-relay/${profile}`;
+  const sessionIds: Record<string, string> = Object.fromEntries(["sender", "receiver"].map(name => [name, profile === "restart-safe-v1" ? randomUUID() : `${name}-id`]));
   const root = mkdtempSync(join(tmpdir(), "trusted-peer-http-")), mapping = join(root, "network.json");
   writeFileSync(mapping, "{}", { mode: 0o600 });
   const children: ReturnType<typeof Bun.spawn>[] = [], roots: Record<string, string> = {}, bases: Record<string, string> = {};
@@ -40,7 +42,7 @@ async function fixture(ownerAuth = true) {
       const status = { BackendState: "Running", Self: node(name), Peer: { other: node(name === "a" ? "b" : "a"), guest: { ...node("guest"), UserID: 2 } } };
       const nonce = randomUUID();
       const child = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures/volatile-peer-http.ts"), home, mapping, nonce], {
-        cwd: home, env: { PATH: process.env.PATH, HOME: home, WOLFPACK_TEST: "1",
+        cwd: home, env: { PATH: process.env.PATH, HOME: home, WOLFPACK_DIR: join(home, ".wolfpack"), WOLFPACK_TEST: "1", WOLFPACK_TASK_RELAY_PROFILE: profile, WOLFPACK_TEST_SESSION_IDS: JSON.stringify(sessionIds),
           WOLFPACK_TASK_RELAY_ROOT: join(home, "relay"), WOLFPACK_BROKER_SOCKET: join(home, "no-broker.sock"), ...(ownerAuth && { WOLFPACK_JWT_SECRET: secret }),
           WOLFPACK_TAILSCALE_STATUS_JSON: JSON.stringify(status) }, stdin: "ignore", stdout: Bun.file(join(home, "stdout.log")), stderr: Bun.file(join(home, "stderr.log")),
       }); children.push(child);
@@ -54,10 +56,11 @@ async function fixture(ownerAuth = true) {
     const post = async (name: string, body: unknown, path = route) => {
       const response = await fetch(bases[name] + path, { method: "POST", headers, body: JSON.stringify(body) });
       const value = await response.json() as any;
-      expect(validate({ $ref: "#/$defs/VolatileResponse" }, value, schema)).toEqual([]);
+      expect(validate({ $ref: profile === "restart-safe-v1" ? "#/$defs/RestartSafeResponse" : "#/$defs/VolatileResponse" }, value, schema)).toEqual([]);
       return { status: response.status, body: value };
     };
-    const connect = async (name: string, callerSession: string) => {
+    const connect = async (name: string, selector: string) => {
+      const callerSession = profile === "restart-safe-v1" ? sessionIds[selector]! : selector;
       const result = await post(name, { profile, operation: "connect", callerSession, generation: randomUUID(), protocolVersions: [2] }); expect(result.status).toBe(200);
       return { profile, epoch: result.body.epoch, callerSession, endpoint: result.body.value.endpoint };
     };
@@ -65,8 +68,9 @@ async function fixture(ownerAuth = true) {
   } catch (error) { await close(); throw error; }
 }
 
-for (const ownerAuth of [false, true]) test(`production trusted-Tailnet HTTP accepts other-user tagged peers without signatures (optional JWT=${ownerAuth})`, async () => {
-  const f = await fixture(ownerAuth);
+for (const profile of ["volatile-v1", "restart-safe-v1"] as const) for (const ownerAuth of [false, true]) test(`production ${profile} trusted-Tailnet HTTP accepts other-user tagged peers without signatures (optional JWT=${ownerAuth})`, async () => {
+  const route = `/api/task-relay/${profile}`;
+  const f = await fixture(ownerAuth, profile);
   try {
     const a = await f.connect("a", "sender"), b = await f.connect("b", "receiver");
     const resolved = await f.post("a", { ...a, origin: origin("b"), target: b.endpoint }, route + "/resolve-peer"); expect(resolved.status).toBe(200);
@@ -108,7 +112,7 @@ test.skipIf(!piSource)("normal pinned RAM cores authenticate locally and complet
   try {
     for (const name of ["a", "b"]) {
       // No authenticated fetch injection: the normal factory must mint its local JWT.
-      cores.push(await createConfiguredTaskCore({ sessionName: name === "a" ? "sender" : "receiver", baseUrl: f.bases[name] }));
+      cores.push(await createConfiguredTaskCore({ profile: "volatile-v1", sessionName: name === "a" ? "sender" : "receiver", baseUrl: f.bases[name] }));
     }
     const [a, b] = cores;
     const selected = await qualifyRemoteTaskEndpoint({ ok: true, sessionId: "receiver-id", taskEndpoint: b.endpoint }, {

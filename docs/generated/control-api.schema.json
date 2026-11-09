@@ -33,7 +33,7 @@
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
     "extension blob binary HTTP bodies use string/contentMediaType schema descriptions, not JSON encoding; runtime enforces declared byte ceilings, SHA-256 identity, installation+extension quotas and exact live-local session write authority",
     "the Pi Tasks relay inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
-    "volatile-v1 is the only task relay; all relay HTTP routes require loopback or trusted Tailnet access and inherit optional configured global auth; all visible online Tailnet peers are assumed honest, with canonical TLS routing and current epochs but no signatures, user/tag filtering, or key discovery (up to 1s local topology cache)",
+    "restart-safe-v1 is the default task relay, with private native SQLite recovery and exact broker UUID ownership; explicit volatile-v1 remains memory-only and never upgrades or downgrades implicitly; all relay HTTP routes require loopback or trusted Tailnet access and inherit optional configured global auth; all visible online Tailnet peers are assumed honest, with canonical TLS routing and current epochs but no signatures, user/tag filtering, or key discovery (up to 1s local topology cache)",
     "relay profile metadata identifies the current RAM lifetime, not broker/worker readiness; restart loses active task state and never replays Pi session history"
   ],
   "http": {
@@ -898,9 +898,9 @@
         "$ref": "#/$defs/TaskRelayProfileResponse"
       },
       "errors": [
-        "400 VolatileErrorEnvelope",
-        "403 VolatileErrorEnvelope",
-        "503 VolatileErrorEnvelope"
+        "400 TaskRelayErrorEnvelope",
+        "403 TaskRelayErrorEnvelope",
+        "503 TaskRelayErrorEnvelope"
       ]
     },
     "operateVolatileTaskRelay": {
@@ -982,6 +982,87 @@
         "409 VolatileErrorEnvelope",
         "413 VolatileErrorEnvelope",
         "503 VolatileErrorEnvelope"
+      ]
+    },
+    "operateRestartSafeTaskRelay": {
+      "route": "POST /api/task-relay/restart-safe-v1",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:operateRestartSafeTaskRelay:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "operateRestartSafeTaskRelay request",
+        "$ref": "#/$defs/RestartSafeRequest"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:operateRestartSafeTaskRelay:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "operateRestartSafeTaskRelay response",
+        "$ref": "#/$defs/RestartSafeResponse"
+      },
+      "errors": [
+        "400 RestartSafeErrorEnvelope",
+        "403 RestartSafeErrorEnvelope",
+        "404 RestartSafeErrorEnvelope",
+        "408 RestartSafeErrorEnvelope",
+        "409 RestartSafeErrorEnvelope",
+        "410 RestartSafeErrorEnvelope",
+        "413 RestartSafeErrorEnvelope",
+        "503 RestartSafeErrorEnvelope"
+      ]
+    },
+    "resolveVerifiedRestartSafePeer": {
+      "route": "POST /api/task-relay/restart-safe-v1/resolve-peer",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:resolveVerifiedRestartSafePeer:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resolveVerifiedRestartSafePeer request",
+        "$ref": "#/$defs/RestartSafePeerResolveRequest"
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:resolveVerifiedRestartSafePeer:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "resolveVerifiedRestartSafePeer response",
+        "$ref": "#/$defs/RestartSafeResponse"
+      },
+      "errors": [
+        "400 RestartSafeErrorEnvelope",
+        "403 RestartSafeErrorEnvelope",
+        "408 RestartSafeErrorEnvelope",
+        "409 RestartSafeErrorEnvelope",
+        "413 RestartSafeErrorEnvelope",
+        "503 RestartSafeErrorEnvelope"
+      ]
+    },
+    "receiveVerifiedRestartSafePeer": {
+      "route": "POST /api/task-relay/restart-safe-v1/peer",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:receiveVerifiedRestartSafePeer:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "receiveVerifiedRestartSafePeer request",
+        "$ref": "#/$defs/RestartSafePeerRequest",
+        "description": "Trusted Tailnet ingress only; optional owner authentication, both durable store epochs and current online topology are required. No signatures or volatile fallback."
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:receiveVerifiedRestartSafePeer:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "receiveVerifiedRestartSafePeer response",
+        "$ref": "#/$defs/RestartSafeResponse"
+      },
+      "errors": [
+        "400 RestartSafeErrorEnvelope",
+        "403 RestartSafeErrorEnvelope",
+        "408 RestartSafeErrorEnvelope",
+        "409 RestartSafeErrorEnvelope",
+        "413 RestartSafeErrorEnvelope",
+        "503 RestartSafeErrorEnvelope"
       ]
     },
     "sendTask": {
@@ -4861,10 +4942,884 @@
         }
       ]
     },
+    "RestartSafeEnvelope": {
+      "type": "object",
+      "properties": {
+        "envelopeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "protocolVersion": {
+          "const": 2
+        },
+        "source": {
+          "$ref": "#/$defs/RelayEndpoint"
+        },
+        "target": {
+          "$ref": "#/$defs/RelayEndpoint"
+        },
+        "payload": {
+          "description": "Opaque JSON. Runtime enforces the 48 KiB encoded payload and 64 KiB HTTP body bounds."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "envelopeId",
+        "protocolVersion",
+        "source",
+        "target",
+        "payload",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "RestartSafePeerResolveRequest": {
+      "type": "object",
+      "properties": {
+        "profile": {
+          "const": "restart-safe-v1"
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "callerSession": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "endpoint": {
+          "type": "object",
+          "properties": {
+            "relay": {
+              "const": "wolfpack-pi-tasks-v2"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "relay",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        "origin": {
+          "$ref": "#/$defs/TailnetOrigin"
+        },
+        "target": {
+          "type": "object",
+          "properties": {
+            "relay": {
+              "const": "wolfpack-pi-tasks-v2"
+            },
+            "id": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          "required": [
+            "relay",
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "profile",
+        "epoch",
+        "callerSession",
+        "endpoint",
+        "origin",
+        "target"
+      ],
+      "additionalProperties": false
+    },
+    "RestartSafePeerRequest": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "const": "receivePeer"
+        },
+        "profile": {
+          "const": "restart-safe-v1"
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sourceEpoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "origin": {
+          "$ref": "#/$defs/TailnetOrigin"
+        },
+        "envelope": {
+          "$ref": "#/$defs/RestartSafeEnvelope"
+        }
+      },
+      "required": [
+        "operation",
+        "profile",
+        "epoch",
+        "sourceEpoch",
+        "origin",
+        "envelope"
+      ],
+      "additionalProperties": false
+    },
+    "RestartSafeRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "restart-safe-v1"
+            },
+            "operation": {
+              "const": "connect"
+            },
+            "callerSession": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "generation": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "protocolVersions": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 1,
+              "maxItems": 16
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "leaseMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 300000
+            }
+          },
+          "required": [
+            "profile",
+            "operation",
+            "callerSession",
+            "generation",
+            "protocolVersions"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "restart-safe-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "resolve"
+            },
+            "target": {
+              "$ref": "#/$defs/RelayEndpoint"
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation",
+            "target"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "restart-safe-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "send"
+            },
+            "envelope": {
+              "$ref": "#/$defs/RestartSafeEnvelope"
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation",
+            "envelope"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "restart-safe-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "receive"
+            },
+            "cursor": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,31})$"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation",
+            "cursor"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "restart-safe-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "acknowledge"
+            },
+            "envelopeId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation",
+            "envelopeId"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "restart-safe-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "disconnect"
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "profile": {
+              "const": "restart-safe-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "callerSession": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpoint": {
+              "type": "object",
+              "properties": {
+                "relay": {
+                  "const": "wolfpack-pi-tasks-v2"
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                }
+              },
+              "required": [
+                "relay",
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "operation": {
+              "const": "health"
+            }
+          },
+          "required": [
+            "profile",
+            "epoch",
+            "callerSession",
+            "endpoint",
+            "operation"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "RestartSafeErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "const": false
+        },
+        "profile": {
+          "const": "restart-safe-v1"
+        },
+        "epoch": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "enum": [
+                "RELAY_CAPACITY",
+                "RELAY_RESET",
+                "INVALID_REQUEST",
+                "INVALID_CURSOR",
+                "REGISTRATION_EXPIRED",
+                "TARGET_NOT_REGISTERED",
+                "CROSS_RELAY_ENDPOINT",
+                "ENVELOPE_CONFLICT",
+                "ENVELOPE_EXPIRED",
+                "RELAY_PROFILE_REQUIRED",
+                "CALLER_NOT_FOUND",
+                "CALLER_DEAD",
+                "SOURCE_MISMATCH",
+                "RELAY_UNAVAILABLE",
+                "PEER_UNREACHABLE",
+                "DELIVERY_UNCONFIRMED",
+                "PEER_POLICY_REQUIRED"
+              ]
+            },
+            "message": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "mayHaveBeenDelivered": {
+              "const": true
+            },
+            "retryAfterMs": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "retryable"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "ok",
+        "profile",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "RestartSafeResponse": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/RestartSafeErrorEnvelope"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "profile": {
+              "const": "restart-safe-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "value": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "connected"
+                    },
+                    "endpoint": {
+                      "type": "object",
+                      "properties": {
+                        "relay": {
+                          "const": "wolfpack-pi-tasks-v2"
+                        },
+                        "id": {
+                          "type": "string",
+                          "format": "uuid"
+                        }
+                      },
+                      "required": [
+                        "relay",
+                        "id"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "leaseExpiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "sessionId": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "endpoint",
+                    "leaseExpiresAt",
+                    "sessionId"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "resolved"
+                    },
+                    "endpoint": {
+                      "$ref": "#/$defs/RelayEndpoint"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "endpoint"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "accepted"
+                    },
+                    "envelopeId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "acceptanceId": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "duplicate": {
+                      "type": "boolean"
+                    },
+                    "forwarding": {
+                      "enum": [
+                        "local",
+                        "forwarded"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "envelopeId",
+                    "acceptanceId",
+                    "duplicate",
+                    "forwarding"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "page"
+                    },
+                    "deliveries": {
+                      "type": "array",
+                      "maxItems": 50,
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "cursor": {
+                            "type": "string",
+                            "pattern": "^(0|[1-9][0-9]{0,31})$"
+                          },
+                          "envelope": {
+                            "$ref": "#/$defs/RestartSafeEnvelope"
+                          }
+                        },
+                        "required": [
+                          "cursor",
+                          "envelope"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "nextCursor": {
+                      "type": "string",
+                      "pattern": "^(0|[1-9][0-9]{0,31})$"
+                    },
+                    "hasMore": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "deliveries",
+                    "nextCursor",
+                    "hasMore"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "acknowledged"
+                    },
+                    "duplicate": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "duplicate"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "disconnected"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": "health"
+                    },
+                    "store": {
+                      "type": "object",
+                      "properties": {
+                        "activeItems": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "activeBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "receipts": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "receiptBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "registrations": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "sessions": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "routes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "metadataBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "expiryEntries": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "logDrops": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "investigationEnabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "activeItems",
+                        "activeBytes",
+                        "receipts",
+                        "receiptBytes",
+                        "registrations",
+                        "sessions",
+                        "routes",
+                        "metadataBytes",
+                        "expiryEntries",
+                        "logDrops",
+                        "investigationEnabled"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "investigation": {
+                      "type": "object",
+                      "properties": {
+                        "queuedItems": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "queuedBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "written": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "droppedRecords": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "droppedBytes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "invalidRecords": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "writeFailures": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "maintenanceFailures": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "degraded": {
+                          "type": "boolean"
+                        },
+                        "closed": {
+                          "type": "boolean"
+                        },
+                        "lastFailure": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "queuedItems",
+                        "queuedBytes",
+                        "written",
+                        "droppedRecords",
+                        "droppedBytes",
+                        "invalidRecords",
+                        "writeFailures",
+                        "maintenanceFailures",
+                        "degraded",
+                        "closed"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "store"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "ok",
+            "profile",
+            "epoch",
+            "value"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "TaskRelayErrorEnvelope": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/VolatileErrorEnvelope"
+        },
+        {
+          "$ref": "#/$defs/RestartSafeErrorEnvelope"
+        }
+      ]
+    },
     "TaskRelayProfileResponse": {
       "oneOf": [
         {
           "$ref": "#/$defs/VolatileErrorEnvelope"
+        },
+        {
+          "$ref": "#/$defs/RestartSafeErrorEnvelope"
         },
         {
           "type": "object",
@@ -4881,6 +5836,35 @@
             },
             "endpointPath": {
               "const": "/api/task-relay/volatile-v1"
+            },
+            "federation": {
+              "const": "trusted-tailnet-v1"
+            }
+          },
+          "required": [
+            "ok",
+            "profile",
+            "epoch",
+            "endpointPath",
+            "federation"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "profile": {
+              "const": "restart-safe-v1"
+            },
+            "epoch": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "endpointPath": {
+              "const": "/api/task-relay/restart-safe-v1"
             },
             "federation": {
               "const": "trusted-tailnet-v1"
@@ -6834,7 +7818,10 @@
           "type": "object",
           "properties": {
             "profile": {
-              "const": "volatile-v1"
+              "enum": [
+                "volatile-v1",
+                "restart-safe-v1"
+              ]
             },
             "epoch": {
               "type": "string",

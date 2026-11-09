@@ -1,5 +1,6 @@
 import { canonicalTailnetOrigin } from "../tailnet-machine-contract.ts";
 import { isOpaqueRelayId, isRelayEndpoint, isPeerRelayId } from "../task-relay/domain.ts";
+import { relayEndpointPath, type RelayProfile } from "../task-relay/volatile-protocol.ts";
 import { isLiveTaskRelayRegistration } from "../task-relay/registration.ts";
 import type { TaskRelayRegistration } from "../task-relay/registration.ts";
 
@@ -61,20 +62,23 @@ export async function qualifyRemoteTaskEndpoint(value: unknown, options: RemoteE
       const local = new URL(options.localBase);
       if (local.protocol !== "http:" || !["127.0.0.1", "[::1]", "localhost"].includes(local.hostname) || local.username || local.password || local.search || local.hash || local.pathname !== "/") throw new Error("local origin required");
       const remote = await request(`${options.origin}/api/session-control/status?session=${encodeURIComponent(value.sessionId as string)}`);
+      const profile = record(remote) && record(remote.taskTransport) ? remote.taskTransport.profile : undefined;
+      if (profile !== "volatile-v1" && profile !== "restart-safe-v1") throw new Error("unsupported peer relay profile");
       if (!record(remote) || remote.sessionId !== value.sessionId || !same(remote.taskEndpoint, value.taskEndpoint) || !record(remote.taskTransport)
-        || !isLiveTaskRelayRegistration(remote.taskTransport as unknown as TaskRelayRegistration, "volatile-v1") || !same(remote.taskTransport.endpoint, value.taskEndpoint)) throw new Error("remote transport changed");
+        || !isLiveTaskRelayRegistration(remote.taskTransport as unknown as TaskRelayRegistration, profile) || !same(remote.taskTransport.endpoint, value.taskEndpoint)) throw new Error("remote transport changed");
       const source = await request(`${local.origin}/api/session-control/status?session=${encodeURIComponent(options.callerSession!)}`);
-      if (!record(source) || !record(source.taskTransport) || !isLiveTaskRelayRegistration(source.taskTransport as unknown as TaskRelayRegistration, "volatile-v1")
+      if (!record(source) || !record(source.taskTransport) || !isLiveTaskRelayRegistration(source.taskTransport as unknown as TaskRelayRegistration, profile)
         || !same(source.taskEndpoint, source.taskTransport.endpoint)) throw new Error("local task transport unavailable");
+      if (profile === "restart-safe-v1" && source.sessionId !== options.callerSession) throw new Error("authoritative caller UUID required");
       const binding = source.taskTransport;
-      const resolved = await request(`${local.origin}/api/task-relay/volatile-v1/resolve-peer`, { method: "POST", body: JSON.stringify({ profile: binding.profile, epoch: binding.epoch,
+      const resolved = await request(`${local.origin}${relayEndpointPath(profile as RelayProfile)}/resolve-peer`, { method: "POST", body: JSON.stringify({ profile: binding.profile, epoch: binding.epoch,
         callerSession: options.callerSession, endpoint: binding.endpoint, origin: options.origin, target: value.taskEndpoint }) });
-      if (!record(resolved) || !resolved.ok || resolved.profile !== "volatile-v1" || resolved.epoch !== binding.epoch || !record(resolved.value)
+      if (!record(resolved) || !resolved.ok || resolved.profile !== profile || resolved.epoch !== binding.epoch || !record(resolved.value)
         || resolved.value.kind !== "resolved" || !isRelayEndpoint(resolved.value.endpoint) || !isPeerRelayId(resolved.value.endpoint.relay)
         || resolved.value.endpoint.id !== (value.taskEndpoint as { id: string }).id) throw new Error("invalid local peer route");
       const { taskTransport: _transport, taskEndpoint: _endpoint, ...rest } = value;
       return { ...rest, taskEndpoint: resolved.value.endpoint, remoteTaskTransport: remote.taskTransport,
-        taskRouting: { profile: "volatile-v1", sourceEpoch: binding.epoch, destinationOrigin: options.origin } };
+        taskRouting: { profile, sourceEpoch: binding.epoch, destinationOrigin: options.origin } };
     })()]);
   } catch { return unavailable; }
   finally { clearTimeout(timer); controller.abort(); }

@@ -1,5 +1,5 @@
 import { RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION } from "../task-relay/domain.ts";
-import type { VolatileCode } from "../task-relay/volatile-protocol.ts";
+import type { RelayProfile, VolatileCode } from "../task-relay/volatile-protocol.ts";
 
 type Schema = Record<string, unknown>;
 const object = (properties: Record<string, Schema>, required = Object.keys(properties)): Schema => ({ type: "object", properties, required, additionalProperties: false });
@@ -9,13 +9,7 @@ const uuid = { type: "string", format: "uuid" };
 const cursor = { type: "string", pattern: "^(0|[1-9][0-9]{0,31})$" };
 const boolean = { type: "boolean" };
 const count = { type: "integer", minimum: 0 };
-const profile = { const: "volatile-v1" };
 const localEndpoint = object({ relay: { const: RELAY_ID }, id: uuid });
-const binding = { profile, epoch: uuid, callerSession: text, endpoint: localEndpoint };
-const bound = (operation: string, fields: Record<string, Schema> = {}, optional: string[] = []): Schema => {
-  const properties = { ...binding, operation: { const: operation }, ...fields };
-  return object(properties, Object.keys(properties).filter(key => !optional.includes(key)));
-};
 const value = (kind: string, fields: Record<string, Schema> = {}, optional: string[] = []): Schema => {
   const properties = { kind: { const: kind }, ...fields };
   return object(properties, Object.keys(properties).filter(key => !optional.includes(key)));
@@ -29,35 +23,51 @@ const codes = {
   PEER_UNREACHABLE: true, DELIVERY_UNCONFIRMED: true, PEER_POLICY_REQUIRED: true,
 } satisfies Record<VolatileCode | "PEER_POLICY_REQUIRED", true>;
 
+/** Shared envelope operations, but distinct named wire contracts and identity requirements. */
+function relayDefinitions(wireProfile: RelayProfile, prefix: "Volatile" | "RestartSafe"): Record<string, Schema> {
+  const profile = { const: wireProfile }, caller = wireProfile === "restart-safe-v1" ? uuid : text;
+  const r = (name: string) => ref(`${prefix}${name}`);
+  const binding = { profile, epoch: uuid, callerSession: caller, endpoint: localEndpoint };
+  const bound = (operation: string, fields: Record<string, Schema> = {}, optional: string[] = []): Schema => {
+    const properties = { ...binding, operation: { const: operation }, ...fields };
+    return object(properties, Object.keys(properties).filter(key => !optional.includes(key)));
+  };
+  return {
+    [`${prefix}Envelope`]: object({ envelopeId: text, protocolVersion: { const: RELAY_PROTOCOL_VERSION }, source: ref("RelayEndpoint"), target: ref("RelayEndpoint"),
+      payload: { description: "Opaque JSON. Runtime enforces the 48 KiB encoded payload and 64 KiB HTTP body bounds." }, createdAt: { type: "string", format: "date-time" } }),
+    [`${prefix}PeerResolveRequest`]: object({ ...binding, origin: ref("TailnetOrigin"), target: localEndpoint }),
+    [`${prefix}PeerRequest`]: object({ operation: { const: "receivePeer" }, profile, epoch: uuid, sourceEpoch: uuid, origin: ref("TailnetOrigin"), envelope: r("Envelope") }),
+    [`${prefix}Request`]: { oneOf: [
+      object({ profile, operation: { const: "connect" }, callerSession: caller, generation: caller,
+        protocolVersions: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 16 },
+        epoch: uuid, leaseMs: { type: "integer", minimum: 1, maximum: RELAY_LIMITS.MAX_LEASE_MS } }, ["profile", "operation", "callerSession", "generation", "protocolVersions"]),
+      bound("resolve", { target: ref("RelayEndpoint") }), bound("send", { envelope: r("Envelope") }),
+      bound("receive", { cursor, limit: { type: "integer", minimum: 1, maximum: 50 } }, ["limit"]),
+      bound("acknowledge", { envelopeId: text }), bound("disconnect"), bound("health"),
+    ] },
+    [`${prefix}ErrorEnvelope`]: object({ ok: { const: false }, profile, epoch: uuid,
+      error: object({ code: { enum: Object.keys(codes) }, message: { type: "string" }, retryable: boolean,
+        mayHaveBeenDelivered: { const: true }, retryAfterMs: count }, ["code", "message", "retryable"]) }, ["ok", "profile", "error"]),
+    [`${prefix}Response`]: { oneOf: [r("ErrorEnvelope"), object({ ok: { const: true }, profile, epoch: uuid, value: { oneOf: [
+      value("connected", { endpoint: localEndpoint, leaseExpiresAt: { type: "string", format: "date-time" }, ...(wireProfile === "restart-safe-v1" && { sessionId: uuid }) }),
+      value("resolved", { endpoint: ref("RelayEndpoint") }),
+      value("accepted", { envelopeId: text, acceptanceId: uuid, duplicate: boolean, forwarding: { enum: ["local", "forwarded"] } }),
+      value("page", { deliveries: { type: "array", maxItems: 50, items: object({ cursor, envelope: r("Envelope") }) }, nextCursor: cursor, hasMore: boolean }),
+      value("acknowledged", { duplicate: boolean }), value("disconnected"),
+      value("health", {
+        store: object({ ...counters(["activeItems", "activeBytes", "receipts", "receiptBytes", "registrations", "sessions", "routes", "metadataBytes", "expiryEntries", "logDrops"]), investigationEnabled: boolean }),
+        investigation: object({ ...counters(["queuedItems", "queuedBytes", "written", "droppedRecords", "droppedBytes", "invalidRecords", "writeFailures", "maintenanceFailures"]), degraded: boolean, closed: boolean, lastFailure: { type: "string" } },
+          ["queuedItems", "queuedBytes", "written", "droppedRecords", "droppedBytes", "invalidRecords", "writeFailures", "maintenanceFailures", "degraded", "closed"]),
+      }, ["investigation"]),
+    ] } })] },
+  };
+}
 export const volatileRelayDefinitions: Record<string, Schema> = {
-  VolatileEnvelope: object({ envelopeId: text, protocolVersion: { const: RELAY_PROTOCOL_VERSION }, source: ref("RelayEndpoint"), target: ref("RelayEndpoint"),
-    payload: { description: "Opaque JSON. Runtime enforces the 48 KiB encoded payload and 64 KiB HTTP body bounds." }, createdAt: { type: "string", format: "date-time" } }),
-  VolatilePeerResolveRequest: object({ ...binding, origin: ref("TailnetOrigin"), target: localEndpoint }),
-  VolatilePeerRequest: object({ operation: { const: "receivePeer" }, profile, epoch: uuid, sourceEpoch: uuid, origin: ref("TailnetOrigin"), envelope: ref("VolatileEnvelope") }),
-  VolatileRequest: { oneOf: [
-    object({ profile, operation: { const: "connect" }, callerSession: text, generation: text,
-      protocolVersions: { type: "array", items: { type: "integer" }, minItems: 1, maxItems: 16 },
-      epoch: uuid, leaseMs: { type: "integer", minimum: 1, maximum: RELAY_LIMITS.MAX_LEASE_MS } }, ["profile", "operation", "callerSession", "generation", "protocolVersions"]),
-    bound("resolve", { target: ref("RelayEndpoint") }), bound("send", { envelope: ref("VolatileEnvelope") }),
-    bound("receive", { cursor, limit: { type: "integer", minimum: 1, maximum: 50 } }, ["limit"]),
-    bound("acknowledge", { envelopeId: text }), bound("disconnect"), bound("health"),
-  ] },
-  VolatileErrorEnvelope: object({ ok: { const: false }, profile, epoch: uuid,
-    error: object({ code: { enum: Object.keys(codes) }, message: { type: "string" }, retryable: boolean,
-      mayHaveBeenDelivered: { const: true }, retryAfterMs: count }, ["code", "message", "retryable"]) }, ["ok", "profile", "error"]),
-  VolatileResponse: { oneOf: [ref("VolatileErrorEnvelope"), object({ ok: { const: true }, profile, epoch: uuid, value: { oneOf: [
-    value("connected", { endpoint: localEndpoint, leaseExpiresAt: { type: "string", format: "date-time" } }),
-    value("resolved", { endpoint: ref("RelayEndpoint") }),
-    value("accepted", { envelopeId: text, acceptanceId: uuid, duplicate: boolean, forwarding: { enum: ["local", "forwarded"] } }),
-    value("page", { deliveries: { type: "array", maxItems: 50, items: object({ cursor, envelope: ref("VolatileEnvelope") }) }, nextCursor: cursor, hasMore: boolean }),
-    value("acknowledged", { duplicate: boolean }), value("disconnected"),
-    value("health", {
-      store: object({ ...counters(["activeItems", "activeBytes", "receipts", "receiptBytes", "registrations", "sessions", "routes", "metadataBytes", "expiryEntries", "logDrops"]), investigationEnabled: boolean }),
-      investigation: object({ ...counters(["queuedItems", "queuedBytes", "written", "droppedRecords", "droppedBytes", "invalidRecords", "writeFailures", "maintenanceFailures"]), degraded: boolean, closed: boolean, lastFailure: { type: "string" } },
-        ["queuedItems", "queuedBytes", "written", "droppedRecords", "droppedBytes", "invalidRecords", "writeFailures", "maintenanceFailures", "degraded", "closed"]),
-    }, ["investigation"]),
-  ] } })] },
-  TaskRelayProfileResponse: { oneOf: [ref("VolatileErrorEnvelope"),
-    object({ ok: { const: true }, profile, epoch: uuid, endpointPath: { const: "/api/task-relay/volatile-v1" }, federation: { const: "trusted-tailnet-v1" } }),
+  ...relayDefinitions("volatile-v1", "Volatile"),
+  ...relayDefinitions("restart-safe-v1", "RestartSafe"),
+  TaskRelayErrorEnvelope: { oneOf: [ref("VolatileErrorEnvelope"), ref("RestartSafeErrorEnvelope")] },
+  TaskRelayProfileResponse: { oneOf: [ref("VolatileErrorEnvelope"), ref("RestartSafeErrorEnvelope"),
+    object({ ok: { const: true }, profile: { const: "volatile-v1" }, epoch: uuid, endpointPath: { const: "/api/task-relay/volatile-v1" }, federation: { const: "trusted-tailnet-v1" } }),
+    object({ ok: { const: true }, profile: { const: "restart-safe-v1" }, epoch: uuid, endpointPath: { const: "/api/task-relay/restart-safe-v1" }, federation: { const: "trusted-tailnet-v1" } }),
   ] },
 };

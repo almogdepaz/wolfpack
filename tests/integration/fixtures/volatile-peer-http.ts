@@ -15,7 +15,7 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
   const peers = JSON.parse(readFileSync(mapping, "utf8")) as Record<string, string>;
   const loopback = peers[url.origin];
   if (!loopback || !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(loopback) || url.protocol !== "https:" || init?.redirect !== "error") throw new Error("fixture network denied");
-  const forward = url.pathname === "/api/task-relay/volatile-v1/peer";
+  const forward = url.pathname === "/api/task-relay/volatile-v1/peer" || url.pathname === "/api/task-relay/restart-safe-v1/peer";
   const modePath = join(root, "network-mode"), mode = existsSync(modePath) ? readFileSync(modePath, "utf8") : "";
   if (forward) {
     if (new Headers(init?.headers).has("x-wolfpack-relay-signature")) throw new Error("retired signature layer");
@@ -27,9 +27,10 @@ globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: Request
   }
   return response;
 }, { preconnect: actualFetch.preconnect }) as typeof fetch;
+const sessionIds = JSON.parse(process.env.WOLFPACK_TEST_SESSION_IDS ?? '{"sender":"sender-id","receiver":"receiver-id"}') as Record<string, string>;
 class PiBackend extends MockBackend {
   override async listIdentities() {
-    return Object.fromEntries(["sender", "receiver"].map(name => [name, { wolfpackSessionId: `${name}-id`, wolfpackSessionName: name,
+    return Object.fromEntries(["sender", "receiver"].map(name => [name, { wolfpackSessionId: sessionIds[name]!, wolfpackSessionName: name,
       projectPath: root, agentKind: "pi" as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() }]));
   }
 }

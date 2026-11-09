@@ -3,7 +3,7 @@ import { RELAY_LIMITS, isRelayEndpoint, isLocalRelay } from "../task-relay/domai
 import { getRelayPeerTransport, trustedRelayClient } from "./relay-peer-transport.ts";
 import { RelayPeerPolicyError } from "../task-relay/peer-transport.ts";
 import { getTaskRelayProfile } from "../task-relay/gateway.ts";
-import { VOLATILE_RELAY_PATH, VOLATILE_PEER_PATH } from "../task-relay/volatile-protocol.ts";
+import { VOLATILE_RELAY_PATH, VOLATILE_PEER_PATH, RESTART_SAFE_RELAY_PATH, RESTART_SAFE_PEER_PATH, relayEndpointPath, type RelayProfile } from "../task-relay/volatile-protocol.ts";
 import { json } from "./http.ts";
 import { defaultServerContext, type ServerContext } from "./context.js";
 
@@ -14,10 +14,10 @@ type Handler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 class BodyError extends Error { constructor(readonly status: number) { super("invalid volatile relay body"); } }
 
-function reject(res: ServerResponse, code: string, status: number, epoch?: string): void {
+function rejectWithProfile(res: ServerResponse, code: string, status: number, epoch: string | undefined, profile: RelayProfile): void {
   if (res.destroyed) return;
   res.setHeader("Cache-Control", "no-store");
-  json(res, { ok: false, profile: getTaskRelayProfile(), ...(epoch && { epoch }), error: { code, message: code, retryable: code === "RELAY_CAPACITY" || code === "RELAY_UNAVAILABLE" || code === "PEER_UNREACHABLE" } }, status);
+  json(res, { ok: false, profile, ...(epoch && { epoch }), error: { code, message: code, retryable: code === "RELAY_CAPACITY" || code === "RELAY_UNAVAILABLE" || code === "PEER_UNREACHABLE" } }, status);
 }
 function discard(req: IncomingMessage, res: ServerResponse): void {
   req.once("error", () => undefined); // Destroying an incomplete request may emit a final reset error.
@@ -46,6 +46,12 @@ function read(req: IncomingMessage): Promise<string> {
 }
 
 export function createVolatileRelayRoutes(ctx: ServerContext): Record<string, Handler> {
+const reject = (res: ServerResponse, code: string, status: number, epoch?: string): void => {
+  let profile: RelayProfile;
+  try { profile = ctx.taskRelayGateway.profile; }
+  catch { profile = getTaskRelayProfile(); } // Error labeling only; never changes the engine or retries a request.
+  rejectWithProfile(res, code, status, epoch, profile);
+};
 const handlers: Record<string, Handler> = {
   "GET /api/task-relay/profile": async (req, res) => {
     if (new URL(req.url ?? "/", "http://localhost").search) return reject(res, "INVALID_REQUEST", 400);
@@ -57,7 +63,7 @@ const handlers: Record<string, Handler> = {
       if (!epoch) return reject(res, "RELAY_UNAVAILABLE", 503);
       if (res.destroyed) return;
       res.setHeader("Cache-Control", "no-store");
-      json(res, { ok: true, profile: getTaskRelayProfile(), ...(epoch && { epoch }), endpointPath: VOLATILE_RELAY_PATH, federation: "trusted-tailnet-v1" });
+      json(res, { ok: true, profile: gateway!.profile, ...(epoch && { epoch }), endpointPath: relayEndpointPath(gateway!.profile), federation: "trusted-tailnet-v1" });
     } catch { reject(res, "RELAY_UNAVAILABLE", 503); }
     finally { active--; }
   },
@@ -130,9 +136,16 @@ const handlers: Record<string, Handler> = {
   },
 };
 
+handlers[`POST ${RESTART_SAFE_RELAY_PATH}`] = handlers[`POST ${VOLATILE_RELAY_PATH}`]!;
+handlers[`POST ${RESTART_SAFE_PEER_PATH}`] = handlers[`POST ${VOLATILE_PEER_PATH}`]!;
+handlers[`POST ${RESTART_SAFE_RELAY_PATH}/resolve-peer`] = handlers[`POST ${VOLATILE_RELAY_PATH}/resolve-peer`]!;
 return Object.fromEntries(Object.entries(handlers).map(([path, handler]) => [path, async (req: IncomingMessage, res: ServerResponse) => {
   if (!trustedRelayClient(req.socket.remoteAddress, req.headers["x-forwarded-for"])) {
     discard(req, res); return reject(res, "PEER_POLICY_REQUIRED", 403);
+  }
+  const profile = ctx.taskRelayGateway?.profile ?? getTaskRelayProfile();
+  if (req.method === "POST" && !new URL(req.url ?? "/", "http://localhost").pathname.startsWith(`${relayEndpointPath(profile)}`)) {
+    discard(req, res); return reject(res, "RELAY_PROFILE_REQUIRED", 409);
   }
   await handler(req, res);
 }]));

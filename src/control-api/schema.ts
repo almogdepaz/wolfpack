@@ -456,7 +456,7 @@ export const controlApiSource: ControlApiSource = {
     "task schema maxLength values are character ceilings; runtime validates UTF-8 byte limits and returns PAYLOAD_TOO_LARGE",
     "extension blob binary HTTP bodies use string/contentMediaType schema descriptions, not JSON encoding; runtime enforces declared byte ceilings, SHA-256 identity, installation+extension quotas and exact live-local session write authority",
     "the Pi Tasks relay inherits trusted local-process and trusted Tailnet-machine admission; it is content-blind and does not provide per-Pi-session authorization",
-    "volatile-v1 is the only task relay; all relay HTTP routes require loopback or trusted Tailnet access and inherit optional configured global auth; all visible online Tailnet peers are assumed honest, with canonical TLS routing and current epochs but no signatures, user/tag filtering, or key discovery (up to 1s local topology cache)",
+    "restart-safe-v1 is the default task relay, with private native SQLite recovery and exact broker UUID ownership; explicit volatile-v1 remains memory-only and never upgrades or downgrades implicitly; all relay HTTP routes require loopback or trusted Tailnet access and inherit optional configured global auth; all visible online Tailnet peers are assumed honest, with canonical TLS routing and current epochs but no signatures, user/tag filtering, or key discovery (up to 1s local topology cache)",
     "relay profile metadata identifies the current RAM lifetime, not broker/worker readiness; restart loses active task state and never replays Pi session history",
   ],
   defs: {
@@ -899,7 +899,7 @@ export const controlApiSource: ControlApiSource = {
       id: { type: "string", format: "uuid" },
     }, ["relay", "id"], { description: "Opaque local or locally-routed peer endpoint. It never contains a machine name or origin." }),
     TaskRelayRegistration: { description: "Request-local lease observation for a live session, not model execution or restart recovery. Re-inspect after expiry or reset.", oneOf: [
-      object({ profile: { const: "volatile-v1" }, epoch: { type: "string", format: "uuid" }, endpoint: ref("RelayEndpoint"), leaseExpiresAt: { type: "string", format: "date-time" } }, ["profile", "epoch", "endpoint", "leaseExpiresAt"]),
+      object({ profile: { enum: ["volatile-v1", "restart-safe-v1"] }, epoch: { type: "string", format: "uuid" }, endpoint: ref("RelayEndpoint"), leaseExpiresAt: { type: "string", format: "date-time" } }, ["profile", "epoch", "endpoint", "leaseExpiresAt"]),
     ] },
     RelayEnvelope: object({
       envelopeId: { type: "string", minLength: 1, maxLength: 512 },
@@ -1183,7 +1183,7 @@ export const controlApiSource: ControlApiSource = {
     },
     "GET /api/task-relay/profile": {
       operationId: "getTaskRelayProfile", stable: false, auth: "jwt-when-configured",
-      response: ref("TaskRelayProfileResponse"), errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
+      response: ref("TaskRelayProfileResponse"), errors: ["400 TaskRelayErrorEnvelope", "403 TaskRelayErrorEnvelope", "503 TaskRelayErrorEnvelope"],
     },
     "POST /api/task-relay/volatile-v1": {
       operationId: "operateVolatileTaskRelay", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
@@ -1199,6 +1199,21 @@ export const controlApiSource: ControlApiSource = {
       operationId: "receiveVerifiedVolatilePeer", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
       request: { ...ref("VolatilePeerRequest"), description: "Trusted Tailnet ingress only; optional configured owner authentication still applies. Checks current source/destination epochs and online local topology. No request signatures." }, response: ref("VolatileResponse"),
       errors: ["400 VolatileErrorEnvelope", "403 VolatileErrorEnvelope", "408 VolatileErrorEnvelope", "409 VolatileErrorEnvelope", "413 VolatileErrorEnvelope", "503 VolatileErrorEnvelope"],
+    },
+    "POST /api/task-relay/restart-safe-v1": {
+      operationId: "operateRestartSafeTaskRelay", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: ref("RestartSafeRequest"), response: ref("RestartSafeResponse"),
+      errors: ["400 RestartSafeErrorEnvelope", "403 RestartSafeErrorEnvelope", "404 RestartSafeErrorEnvelope", "408 RestartSafeErrorEnvelope", "409 RestartSafeErrorEnvelope", "410 RestartSafeErrorEnvelope", "413 RestartSafeErrorEnvelope", "503 RestartSafeErrorEnvelope"],
+    },
+    "POST /api/task-relay/restart-safe-v1/resolve-peer": {
+      operationId: "resolveVerifiedRestartSafePeer", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: ref("RestartSafePeerResolveRequest"), response: ref("RestartSafeResponse"),
+      errors: ["400 RestartSafeErrorEnvelope", "403 RestartSafeErrorEnvelope", "408 RestartSafeErrorEnvelope", "409 RestartSafeErrorEnvelope", "413 RestartSafeErrorEnvelope", "503 RestartSafeErrorEnvelope"],
+    },
+    "POST /api/task-relay/restart-safe-v1/peer": {
+      operationId: "receiveVerifiedRestartSafePeer", stable: false, auth: "jwt-when-configured", requestContentType: "application/json",
+      request: { ...ref("RestartSafePeerRequest"), description: "Trusted Tailnet ingress only; optional owner authentication, both durable store epochs and current online topology are required. No signatures or volatile fallback." }, response: ref("RestartSafeResponse"),
+      errors: ["400 RestartSafeErrorEnvelope", "403 RestartSafeErrorEnvelope", "408 RestartSafeErrorEnvelope", "409 RestartSafeErrorEnvelope", "413 RestartSafeErrorEnvelope", "503 RestartSafeErrorEnvelope"],
     },
     "POST /api/tasks/v1/send": {
       operationId: "sendTask",

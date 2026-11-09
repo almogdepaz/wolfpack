@@ -30,11 +30,14 @@ to call `/api/sessions` can see the absolute project path for each session.
 
 Launched sessions receive these context variables:
 
+- `WOLFPACK_SESSION_ID` — the broker injects its UUID and overrides caller-supplied values; this pins task-recovery ownership
 - `WOLFPACK_SESSION_NAME`
 - `WOLFPACK_PROJECT_DIR`
 - `WOLFPACK_AGENT_KIND`
 - `WOLFPACK_PARENT_SESSION_ID` and `WOLFPACK_PARENT_SESSION_NAME` for child sessions
 - `WOLFPACK_EXTERNAL_AGENT_ID_FILE`
+
+restart-safe task registration freshly inspects the exact broker UUID, never a reusable name or identity sidecar alone. the endpoint journal keeps that UUID and its generation; a new broker session cannot adopt old assignments. see [task recovery](task-recovery.md) for the independent wire/storage contract.
 
 Delete `$WOLFPACK_DEV_DIR/.wolfpack/session-identities.json` to remove stored identity metadata. This does not delete broker sessions, terminal snapshots, or projects.
 
