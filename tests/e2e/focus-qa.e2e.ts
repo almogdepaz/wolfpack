@@ -59,6 +59,28 @@ test("QA-19: phone header keeps actions on the first row across long status chan
   await expect(header.locator(":scope > span").first()).toHaveAttribute("title", /focus from .*offline · read-only/);
 });
 
+test("QA-21: phone done target is 44 square without enlarging the box or covering the summary", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "phone touch target");
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  const row = view.locator(".focus-today > li").first();
+  const label = row.locator(".focus-check");
+  const target = (await label.boundingBox())!;
+  const box = (await label.locator("input").boundingBox())!;
+  const summary = (await row.locator("summary").boundingBox())!;
+  expect(target.width).toBeGreaterThanOrEqual(44);
+  expect(target.height).toBeGreaterThanOrEqual(44);
+  expect(box.width).toBe(18);
+  expect(box.height).toBe(18);
+  expect(summary.x).toBeGreaterThanOrEqual(target.x + target.width);
+  const title = (await row.locator(".focus-title").textContent())!;
+  await page.screenshot({ path: info.outputPath("done-target.png") });
+  // Tap padding, not the visible 18px box: ticks done rather than opening details.
+  await label.click({ position: { x: target.width - 2, y: target.height / 2 } });
+  await expect(view.locator(".focus-done")).toContainText(title);
+});
+
 test("QA-10: a write announces focus updated then the notice expires, including after another render", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();

@@ -3083,9 +3083,10 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-for, .focus-extra { display: none; }
   .focus-next .focus-action { min-height: 44px; margin-top: 0; padding-inline: 6px; }
   .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--focus-aside-width); }
+  .focus-today .focus-check { min-width: 44px; padding: 0; justify-content: center; }
   .focus-today .focus-card > summary { grid-template-columns: minmax(0, 1fr) 12px; }
   .focus-today .focus-card > summary::after { grid-column: 2; }
-  .focus-today > li > .focus-chips { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; justify-content: flex-start; padding: 9px 0 17px 30px; row-gap: 18px; }
+  .focus-today > li > .focus-chips { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; justify-content: flex-start; padding: 9px 0 17px 54px; row-gap: 18px; }
   .focus-today .focus-session-chips { padding-block: 9px; row-gap: 18px; }
   .focus-chips > button.focus-chip-extra { display: inline-flex; }
   .focus-chips > button.focus-chip-more { display: none; }
