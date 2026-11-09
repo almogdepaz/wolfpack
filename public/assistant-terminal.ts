@@ -1,5 +1,4 @@
 import type { PtyTerminalController, PtyTerminalControllerOpts } from "./pty-terminal-controller";
-import { DESKTOP_TERMINAL_SCROLLBACK } from "./app-state";
 import { classifyDisconnect, handleTakeControlClick } from "../src/take-control-logic";
 import { scheduleTakeControlFallback } from "./take-control-coordinator";
 import { revealTerminalConflict } from "./terminal-loading-ui";
@@ -14,6 +13,7 @@ export interface AssistantTerminalTarget {
  * terminal pool, currentSession, grid, acknowledgements and refresh cadence. */
 export function createAssistantTerminal(deps: {
   createController: (opts: PtyTerminalControllerOpts) => PtyTerminalController;
+  scrollback: number;
   createConflictOverlay: (message: string, label: string, click: () => void) => HTMLElement;
 }) {
   const pane = document.getElementById("assistant-pane")!;
@@ -94,7 +94,7 @@ export function createAssistantTerminal(deps: {
     const owner = deps.createController({
       session: next.session,
       machine: next.machine,
-      scrollback: DESKTOP_TERMINAL_SCROLLBACK,
+      scrollback: deps.scrollback,
       // Hydration/reconnect must never move keyboard focus from the list.
       shouldFocus: () => false,
       shouldReconnect: () => controller === owner && visible(),

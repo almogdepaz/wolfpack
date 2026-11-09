@@ -1241,7 +1241,7 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
 let pendingFocusStart: FocusSessionStart | undefined;
 // One copy for the settings toggle and the terminal header / kill path.
 const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant? Its conversation and your focus list are kept; enable it again any time.";
-const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, createConflictOverlay });
+const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, scrollback: DESKTOP_TERMINAL_SCROLLBACK, createConflictOverlay });
 const focusUi = createAssistantView({
   request: api,
   terminalTarget: target => assistantPane.setTarget(target),
