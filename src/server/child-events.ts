@@ -171,14 +171,17 @@ function deriveStateEvent(previous: AgentStatusState, child: ChildRecord, runtim
   return undefined;
 }
 
-/** Feed one observed session. Sessions without a parent are ignored. */
-export function observeChildSession(observation: ChildSessionObservation, publish: PublishEvent): void {
+/**
+ * Feed one observed session. Sessions without a parent are ignored. Returns
+ * the event this observation produced, if any.
+ */
+export function observeChildSession(observation: ChildSessionObservation, publish: PublishEvent): ChildEventPayload | undefined {
   const parent = observation.parentSession;
-  if (!parent) return;
+  if (!parent) return undefined;
   let child = children.get(observation.sessionId);
   // A dead first sight is not tracked: there is no live child to report on,
   // and a record would make a later table read report a stale exit.
-  if (!child && !observation.alive) return;
+  if (!child && !observation.alive) return undefined;
   child ??= track(observation.sessionId, {
     name: observation.name, parentSessionId: parent.wolfpackSessionId, parentName: parent.wolfpackSessionName, armed: false,
   });
@@ -190,15 +193,15 @@ export function observeChildSession(observation: ChildSessionObservation, publis
   // (`reconcileChildEvents`). A dead or stale observation is not a fresh
   // claim about the child's state, and leaves the baseline unchanged.
   const { runtimeState } = observation;
-  if (!observation.alive || runtimeState.stale) return;
+  if (!observation.alive || runtimeState.stale) return undefined;
   const previous = child.state;
   child.state = runtimeState.state;
   child.authority = runtimeState.authority;
-  if (previous === undefined) return;
+  if (previous === undefined) return undefined;
   const derived = deriveStateEvent(previous, child, runtimeState);
-  if (!derived) return;
+  if (!derived) return undefined;
   if (derived.event === CHILD_EVENT.DONE || derived.event === CHILD_EVENT.ERROR) child.armed = false;
-  emit(observation.sessionId, child, derived, publish);
+  return emit(observation.sessionId, child, derived, publish);
 }
 
 /**

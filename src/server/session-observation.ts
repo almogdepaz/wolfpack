@@ -47,6 +47,7 @@ import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import type { EventBus } from "../event-bus.js";
 let notificationContext: ServerContext = defaultServerContext;
 import { onProgramStatusChanged } from "./program-status-signal.js";
+import { CHILD_EVENT } from "../child-event-contract.js";
 import { observeChildSession } from "./child-events.js";
 import { hasPendingChildEventNotes, observeChildEventParent } from "./child-event-delivery.js";
 
@@ -678,7 +679,7 @@ async function observeSessionFact(
   }, { persist: false });
   publishRuntimeTransition(name, identity?.wolfpackSessionId, previousTransitionSequence, runtimeState, events);
   if (identity?.parentSession) {
-    observeChildSession({
+    const childEvent = observeChildSession({
       sessionId: identity.wolfpackSessionId,
       name,
       parentSession: identity.parentSession,
@@ -686,6 +687,9 @@ async function observeSessionFact(
       runtimeState,
       ...(currentRendered !== undefined && { rendered: currentRendered }),
     }, body => events.publishEvent(body));
+    if (childEvent?.event === CHILD_EVENT.BLOCKED && quietContinuity === "fresh") {
+      openBlockedQuietEpisode(sessionKey, identity.wolfpackSessionId, observedAtMs, authority);
+    }
   }
   if (identity) {
     // Any session can be a parent; queued typed notes flush only when it is quiet.
@@ -711,9 +715,31 @@ async function observeSessionFact(
   };
 }
 
-/** The program itself says it waits on the user; that alert is never withheld. */
-function needsInputAlert(runtimeState: AgentRuntimeState): QuietAlertKindFields | undefined {
-  if (runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT || runtimeState.authority !== AGENT_STATUS_AUTHORITY.PROGRAM) {
+/**
+ * A blocked child event starts a quiet episode at the moment the child became
+ * blocked, so the needs-input push needs no rendered screen change. An open
+ * episode (for example one a screen change started) already alerts as
+ * needs-input when due, so it is kept: one push per blocked episode.
+ */
+function openBlockedQuietEpisode(sessionKey: string, sessionId: string, observedAtMs: number, authority: ObservationAuthority): void {
+  if (authority.policyEpoch !== quietAlertPolicyEpoch()) return;
+  const episode = quietAlertHistory.get(sessionKey);
+  if (episode && !episode.emitted) return;
+  reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, "fresh", observedAtMs, randomUUID());
+}
+
+/** Authorities whose needs-input state is the session's own claim. */
+const NEEDS_INPUT_AUTHORITIES: ReadonlySet<AgentRuntimeState["authority"]> = new Set([AGENT_STATUS_AUTHORITY.PROGRAM]);
+/** A child's manifest status also raises `blocked` child events, so it alerts the same way. */
+const CHILD_NEEDS_INPUT_AUTHORITIES: ReadonlySet<AgentRuntimeState["authority"]> = new Set([
+  AGENT_STATUS_AUTHORITY.PROGRAM,
+  AGENT_STATUS_AUTHORITY.MANIFEST,
+]);
+
+/** The session itself says it waits on the user; that alert is never withheld. */
+function needsInputAlert(runtimeState: AgentRuntimeState, child: boolean): QuietAlertKindFields | undefined {
+  const authorities = child ? CHILD_NEEDS_INPUT_AUTHORITIES : NEEDS_INPUT_AUTHORITIES;
+  if (runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT || !authorities.has(runtimeState.authority)) {
     return undefined;
   }
   return {
@@ -792,7 +818,9 @@ function reduceCollectedQuietAlerts(
   return pending.map(({ sessionKey, observedAtMs, quietContinuity, summary }) => {
     if (quietContinuity === undefined) return summary;
     const sessionId = summary.identity?.wolfpackSessionId;
-    const alert = quietContinuity === "fresh" ? needsInputAlert(summary.runtimeState) : undefined;
+    const alert = quietContinuity === "fresh"
+      ? needsInputAlert(summary.runtimeState, summary.identity?.parentSession !== undefined)
+      : undefined;
     const busy = quietContinuity === "fresh" && alert === undefined && sessionId !== undefined
       ? findBusyDescendant(sessionId, childrenByParentId, observedAtMs - quietAfterMs)
       : undefined;
