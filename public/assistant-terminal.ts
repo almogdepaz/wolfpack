@@ -95,8 +95,16 @@ export function createAssistantTerminal(deps: {
   function appendOverlay(element: HTMLElement) {
     // Pane dialogs do not make the adjacent focus list modal/inert.
     element.removeAttribute("aria-modal");
-    input.inert = true;
+    const moveFocus = visible() && input.contains(document.activeElement);
     container.append(element);
+    // A displaced viewer must leave the input before it becomes inert. A user
+    // already working in the adjacent list keeps that keyboard position.
+    if (moveFocus) {
+      const action = element.querySelector<HTMLButtonElement>("button:not(:disabled)");
+      action?.focus({ preventScroll: true });
+      if (!action || document.activeElement !== action) backToList();
+    }
+    input.inert = true;
     updateControls();
   }
   function showConflict(owner: PtyTerminalController) {

@@ -94,6 +94,38 @@ test("pane keyboard: Tab from Back to list explicitly enters terminal input", as
   await expect(page.locator(".assistant-column")).toBeFocused();
 });
 
+for (const origin of ["terminal input", "list"] as const) {
+  test(`R2: a displaced viewer moves ${origin} focus only when it would become inert`, async ({ page, context }) => {
+    await openFocus(page);
+    await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+    const add = page.getByRole("textbox", { name: "Add an intention", exact: true });
+    if (origin === "terminal input") {
+      await pane(page).getByRole("button", { name: "Focus terminal", exact: true }).click();
+      expect(await page.locator("#assistant-pty-input").evaluate(el => el.contains(document.activeElement))).toBe(true);
+    } else {
+      await add.fill("keep this draft");
+      await expect(add).toBeFocused();
+    }
+    const other = await context.newPage();
+    try {
+      await openFocus(other);
+      const takeControl = pane(other).getByRole("button", { name: "Take Control", exact: true });
+      await expect(takeControl).toBeVisible();
+      await takeControl.focus();
+      await other.keyboard.press("Enter");
+      const displaced = pane(page).getByRole("button", { name: "Take Control", exact: true });
+      await expect(displaced).toBeVisible();
+      await page.bringToFront();
+      if (origin === "terminal input") await expect(displaced).toBeFocused();
+      else {
+        await expect(add).toBeFocused();
+        await expect(add).toHaveValue("keep this draft");
+      }
+      expect(await page.evaluate(() => !!document.activeElement?.closest("[inert]"))).toBe(false);
+    } finally { await other.close(); }
+  });
+}
+
 for (const key of ["Enter", "Space"]) {
   test(`pane keyboard: ${key} activates Take Control without terminal opt-in`, async ({ page, context }) => {
     const owner = await context.newPage();
