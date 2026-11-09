@@ -121,6 +121,35 @@ test("row context: local starts omit redundant machine names when only the assis
   }
 });
 
+test("QA-25: phone next count is reachable with one show-more action, including rows beyond five", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "phone next disclosure");
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.sessions = body.sessions.filter((s: { name: string }) => s.name === "assistant");
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.document.intentions = Array.from({ length: 7 }, (_, i) => ({ id: `goal-${i + 1}`, title: `Goal ${i + 1}`, createdAt: new Date().toISOString() }));
+    delete body.routines;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  await expect(view.getByRole("heading", { name: "next 7", exact: true })).toBeVisible();
+  await expect(view.locator(".focus-next > li:visible")).toHaveCount(3);
+  await page.screenshot({ path: info.outputPath("phone-next-more.png"), animations: "disabled" });
+  await view.getByRole("button", { name: "show 4 more", exact: true }).click();
+  await expect(view.locator(".focus-next > li:visible")).toHaveCount(7);
+  await expect(view.locator(".focus-next .focus-title")).toHaveText(Array.from({ length: 7 }, (_, i) => `start “Goal ${i + 1}”`));
+  await expect(view.locator(".focus-next > li").nth(3).locator("summary")).toBeFocused();
+  await view.getByRole("button", { name: "start “Goal 7”", exact: true }).click();
+  await expect(page.locator("#projects-view")).toBeVisible();
+});
+
 test("counts: validated needs-you population and uncapped next totals agree", async ({ page }) => {
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch();

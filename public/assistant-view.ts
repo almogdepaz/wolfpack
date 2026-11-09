@@ -47,6 +47,8 @@ export function createAssistantView(deps: {
   let flight: Promise<void> | undefined;
   let busy = false;
   let opened = false;
+  let showAllNext = false;
+  const pageNextCap = () => showAllNext ? Infinity : 5;
   let wasEnabled = false;
   const cacheKey = "wolfpack-focus-cache";
   try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
@@ -202,7 +204,7 @@ export function createAssistantView(deps: {
   const nextTitle = (row: FocusAction) => row.session
     ? `${row.session.name} ${focusSessionLabel(row.session)}`
     : `start “${row.intention!.title}”`;
-  function nextHtml(cap: number) {
+  function nextHtml(cap: number, expanded = false) {
     const rows = nextRows(cap);
     if (!rows.length) return `<p class="focus-empty">${doc().intentions.length && doc().intentions.every(i => i.done) ? "all intentions done — tell the assistant what's next" : "nothing waiting"}</p>`;
     return `<ol class="focus-next" aria-label="Next actions">${rows.map((row, index) => {
@@ -214,7 +216,7 @@ export function createAssistantView(deps: {
       if (row.session) renderedSessions.set(key, row.session);
       const action = `<button type="button" class="focus-action"${sessionLocked() ? " disabled" : ""} data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${verb} ${title}` : title)}">${verb}<span aria-hidden="true"> ›</span></button>`;
       const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span>${rowContext(row.intention, row.session)}`;
-      return `<li${index >= 3 ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
+      return `<li${index >= 3 && !expanded ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
     }).join("")}</ol>`;
   }
   function sessionChip(session: FocusSession, hidden = false) {
@@ -291,8 +293,10 @@ export function createAssistantView(deps: {
     const state = status();
     // The unavailable header already names the outage; keep transport diagnostics in settings.
     const assistantError = terminalUnavailable() ? "" : focus?.assistant?.error;
-    const next = nextRows(5);
+    const next = nextRows(pageNextCap());
     const nextCount = nextRows(Infinity).length;
+    const visibleNext = isDesktop() ? 5 : 3;
+    const moreNext = !showAllNext && nextCount > visibleNext ? `<p>${button("more-next", `show ${nextCount - visibleNext} more`)}</p>` : "";
     const summary = `${current.intentions.filter(i => i.done).length} of ${current.intentions.length} done`;
     // "know when items are done": today's ticks and finishes carry a time; the rest of the list stays as it was.
     const done = doneToday(current, sessions(), Date.now(), doneDay);
@@ -349,7 +353,7 @@ export function createAssistantView(deps: {
     if (block) block.hidden = !enabled;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk">${dot(state)} ${esc(info)} ›</button>` : "";
     replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !offline ? `<p role="status">${esc(error)}</p>` : ""}`);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${offline || terminalUnavailable() || !focus?.assistant?.session ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(5)}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${offline || terminalUnavailable() || !focus?.assistant?.session ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = offline ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -460,6 +464,13 @@ export function createAssistantView(deps: {
       const action = target.dataset.focusAction;
       if (action === "view") deps.show("assistant");
       if (action === "settings") deps.show("settings");
+      if (action === "more-next") {
+        const firstNew = isDesktop() ? 5 : 3;
+        showAllNext = true;
+        render();
+        host.querySelectorAll<HTMLElement>(".focus-next > li > details > summary")[firstNew]?.focus();
+        return;
+      }
       const expand = target.dataset.focusExpand;
       if (expand) {
         openCard(expand);
@@ -474,7 +485,7 @@ export function createAssistantView(deps: {
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
       if (target.dataset.focusNext !== undefined) {
         if (sessionLocked()) return;
-        const row = nextRows(id === "dashboard-focus" ? 3 : 5)[Number(target.dataset.focusNext)];
+        const row = nextRows(id === "dashboard-focus" ? 3 : pageNextCap())[Number(target.dataset.focusNext)];
         if (row?.session) deps.open(row.session.name, row.session.machineUrl); else if (row?.intention) deps.start(row.intention);
       }
       if (target.dataset.focusSession) {
