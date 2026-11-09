@@ -18,6 +18,7 @@ export function createAssistantTerminal(deps: {
 }) {
   const pane = document.getElementById("assistant-pane")!;
   const container = document.getElementById("assistant-pty")!;
+  const input = document.getElementById("assistant-pty-input")!;
   const list = document.querySelector<HTMLElement>(".assistant-column")!;
   const status = document.getElementById("assistant-pane-status")!;
   const wide = matchMedia("(min-width: 1100px)");
@@ -34,18 +35,19 @@ export function createAssistantTerminal(deps: {
   const backToList = () => { inputRequested = false; list.focus({ preventScroll: true }); };
   document.getElementById("assistant-pane-list")!.onclick = backToList;
   document.getElementById("assistant-pane-focus")!.onclick = () => { inputRequested = true; controller?.focus(); };
-  container.addEventListener("pointerdown", () => { inputRequested = true; });
+  input.addEventListener("pointerdown", () => { inputRequested = true; });
   list.addEventListener("focusin", () => { inputRequested = false; });
   // Ghostty.open() focuses its element, including a deferred focus, independently
   // of the controller's hydration shouldFocus. Gate that native mount focus here;
   // explicit pointer / Focus terminal actions still use Ghostty's real input.
-  container.addEventListener("focusin", () => { if (!inputRequested) backToList(); });
+  input.addEventListener("focusin", () => { if (!inputRequested) backToList(); });
 
   function clearOverlay() {
     clearTimeout(takeoverTimer);
     takeoverTimer = undefined;
     overlay?.remove();
     overlay = null;
+    input.inert = false;
   }
   function release() {
     const hadFocus = pane.contains(document.activeElement);
@@ -55,7 +57,7 @@ export function createAssistantTerminal(deps: {
     controller = null;
     mounted = null;
     old?.dispose(); // cancels an in-flight mount, socket, hydration, resize observer and renderer
-    container.replaceChildren();
+    input.replaceChildren();
     container.classList.remove("hydrating", "hydrated");
     if (hadFocus && active && document.visibilityState === "visible") backToList();
   }
@@ -76,6 +78,9 @@ export function createAssistantTerminal(deps: {
       } else owner.reconnect({ takeControl: true });
       // Only control_granted dismisses the gate; no automatic reclaim.
     });
+    // Keep dialog controls outside Ghostty's focus/keydown boundary. While
+    // blocked, skip the terminal input rather than bouncing Tab back to the list.
+    input.inert = true;
     container.append(overlay);
   }
   function showFailure(owner: PtyTerminalController, message: string) {
@@ -87,6 +92,7 @@ export function createAssistantTerminal(deps: {
       release();
       sync();
     });
+    input.inert = true;
     container.append(overlay);
   }
   async function mount(next: AssistantTerminalTarget) {
@@ -95,6 +101,7 @@ export function createAssistantTerminal(deps: {
       session: next.session,
       machine: next.machine,
       scrollback: deps.scrollback,
+      getHydrationElement: () => container,
       // Hydration/reconnect must never move keyboard focus from the list.
       shouldFocus: () => false,
       shouldReconnect: () => controller === owner && visible(),
@@ -116,7 +123,7 @@ export function createAssistantTerminal(deps: {
     controller = owner;
     mounted = next;
     try {
-      await owner.mount(container);
+      await owner.mount(input);
       if (controller !== owner) return;
       if (!owner.term) { showFailure(owner, "terminal unavailable"); return; }
       owner.connect();
