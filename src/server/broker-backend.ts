@@ -296,10 +296,11 @@ type SendAttemptStop =
   | { readonly kind: "not_delivered"; readonly reason: SessionSendFailureReason };
 
 /**
- * Pause between a submitted input's text and its Enter. Claude Code reads text
- * and Enter that arrive in one chunk as a paste and keeps the Enter as a
- * newline (seen with 2.1.319 for text over ~51 characters), so Enter is a
- * separate write once the text has been read.
+ * Pause between a submitted input's text and its Enter in a Claude session.
+ * Claude Code reads text and Enter that arrive in one chunk as a paste and
+ * keeps the Enter as a newline (seen with 2.1.319 for text over ~51
+ * characters), so Enter is a separate write once the text has been read.
+ * Other harnesses keep text and Enter in one write.
  */
 export const SESSION_SUBMIT_SETTLE_MS = 100;
 const ENTER_INPUT = "\r";
@@ -439,8 +440,10 @@ interface ObservedInputSpec<T> {
   readonly sessionName: string;
   /** Text to write, without Enter. */
   readonly input: string;
-  /** Follow `input` with Enter, as its own write after `SESSION_SUBMIT_SETTLE_MS` when `input` is not empty. */
+  /** Follow `input` with Enter. */
   readonly submit: boolean;
+  /** Write a submitted, non-empty `input`'s Enter on its own after `SESSION_SUBMIT_SETTLE_MS`; otherwise in the same write. */
+  readonly separateEnter: boolean;
   /** Bounds the whole call, subscribe included; once the text is written, its Enter is still written. */
   readonly timeoutMs: number;
   readonly onTimeout: () => T;
@@ -502,6 +505,10 @@ function commandAgent(command: string[] | undefined): string | undefined {
   return detectAgentKindFromCommandArgs(command);
 }
 
+function brokerSessionAgentKind(session: Pick<BrokerSessionInfo, "env" | "command">): AgentKind | string {
+  return inferAgentKind(envValue(session.env, "WOLFPACK_AGENT_KIND") || commandAgent(session.command));
+}
+
 interface PendingSessionExit {
   readonly name: string | undefined;
   readonly exitCode: number | undefined;
@@ -519,6 +526,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   private readonly client: BrokerClientApi;
   private readonly nameToId = new Map<string, string>();
   private readonly idToInfo = new Map<string, BrokerSessionInfo>();
+  /** Harness of each live session, keyed by session UUID; decides how Enter is written. */
+  private readonly idToAgentKind = new Map<string, AgentKind | string>();
   /** Refcount of active onSessionData subscribers, keyed by session UUID. */
   private readonly subscriberRefs = new Map<string, SubscriberRef>();
   /** Lifecycle subscribers keyed by session UUID. */
@@ -567,7 +576,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       wolfpackSessionId: s.id,
       wolfpackSessionName: s.name,
       projectPath: s.cwd,
-      agentKind: inferAgentKind(envValue(s.env, "WOLFPACK_AGENT_KIND") || commandAgent(s.command)),
+      agentKind: brokerSessionAgentKind(s),
       parentSession: extractParentSessionFromEnv(s.env),
       externalAgent: extractExternalAgentFromEnv(s.env, "broker_env"),
     }));
@@ -591,6 +600,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       if (!s.alive) continue;
       this.nameToId.set(s.name, s.id);
       this.idToInfo.set(s.id, { id: s.id, name: s.name, cwd: s.cwd, alive: s.alive });
+      this.idToAgentKind.set(s.id, identity?.agentKind ?? brokerSessionAgentKind(s));
       liveIds.add(s.id);
       liveNames.add(s.name);
     }
@@ -599,6 +609,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     }
     for (const id of this.idToInfo.keys()) {
       if (!liveIds.has(id)) this.idToInfo.delete(id);
+    }
+    for (const id of this.idToAgentKind.keys()) {
+      if (!liveIds.has(id)) this.idToAgentKind.delete(id);
     }
     reconcileParentInboxes(liveIds);
     return facts;
@@ -772,6 +785,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       cwd: session.cwd,
       alive: session.alive,
     });
+    this.idToAgentKind.set(session.id, agentKind);
     const identity = getSessionIdentityStore().capture({
       wolfpackSessionId: session.id,
       wolfpackSessionName: session.name,
@@ -815,6 +829,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const name = this.idToInfo.get(id)?.name;
     if (name !== undefined && this.nameToId.get(name) === id) this.nameToId.delete(name);
     this.idToInfo.delete(id);
+    this.idToAgentKind.delete(id);
     getSessionIdentityStore().deleteById(id);
   }
 
@@ -875,13 +890,18 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   async send(name: string, text: string, noEnter?: boolean): Promise<void> {
     const id = await this.resolveId(name);
     if (!id) return;
-    if (noEnter || text === "") {
-      this.client.writeInput(id, TEXT_ENCODER.encode(noEnter ? text : ENTER_INPUT));
+    if (noEnter || text === "" || !this.separateEnter(id)) {
+      this.client.writeInput(id, TEXT_ENCODER.encode(noEnter ? text : text + ENTER_INPUT));
       return;
     }
     this.client.writeInput(id, TEXT_ENCODER.encode(text));
     await delay(SESSION_SUBMIT_SETTLE_MS);
     this.client.writeInput(id, TEXT_ENCODER.encode(ENTER_INPUT));
+  }
+
+  /** Claude sessions get Enter as its own write; see `SESSION_SUBMIT_SETTLE_MS`. */
+  private separateEnter(sessionId: string): boolean {
+    return this.idToAgentKind.get(sessionId) === AGENT_KIND.CLAUDE.id;
   }
 
   /**
@@ -899,6 +919,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const first = await this.observeSendAttempt(sessionId, info.name, {
       input: options.text,
       noEnter: options.noEnter,
+      separateEnter: this.separateEnter(sessionId),
       observeMs: options.observeMs,
       priorDelivered: false,
       sessionName: options.sessionName,
@@ -913,6 +934,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const retry = await this.observeSendAttempt(sessionId, info.name, {
       input: "",
       noEnter: false,
+      separateEnter: this.separateEnter(sessionId),
       observeMs: options.observeMs,
       priorDelivered: true,
       sessionName: options.sessionName,
@@ -933,6 +955,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     attempt: {
       readonly input: string;
       readonly noEnter: boolean;
+      readonly separateEnter: boolean;
       readonly observeMs: number;
       readonly priorDelivered: boolean;
       readonly sessionName: string | undefined;
@@ -941,7 +964,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     // One deadline covers the baseline read, subscribe, write and final read;
     // nothing after it is evidence. The settle gap before a separate Enter is
     // added so the window after Enter stays `observeMs`.
-    const settleMs = !attempt.noEnter && attempt.input !== "" ? SESSION_SUBMIT_SETTLE_MS : 0;
+    const settleMs = attempt.separateEnter && !attempt.noEnter && attempt.input !== "" ? SESSION_SUBMIT_SETTLE_MS : 0;
     const deadlineMs = Date.now() + attempt.observeMs + settleMs;
     const statusReadMs = Math.min(SESSION_SEND_STATUS_READ_MAX_MS, Math.floor(attempt.observeMs / 4));
     const status = new SendStatusTimeline();
@@ -972,6 +995,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         sessionName: name,
         input: attempt.input,
         submit: !attempt.noEnter,
+        separateEnter: attempt.separateEnter,
         timeoutMs: writeByMs - Date.now(),
         bind: (bound) => { observation = bound; },
         beforeWrite: () => (windowSpent() ? notDelivered(SESSION_SEND_FAILURE_REASON.TIMED_OUT) : undefined),
@@ -1087,6 +1111,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       sessionName: info.name,
       input: options.prompt,
       submit: !options.noEnter,
+      separateEnter: this.separateEnter(sessionId),
       timeoutMs: options.timeoutMs,
       onTimeout: () => SESSION_PROMPT_OUTCOME.TIMED_OUT,
       onLifecycle: (event) => event.kind === "exited"
@@ -1245,11 +1270,11 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       }
       // Output can arrive while the write is still on the stack; it already
       // follows the input.
-      const separateEnter = spec.submit && spec.input !== "";
+      const separateEnter = spec.submit && spec.separateEnter && spec.input !== "";
       observation.inputSent = true;
       if (!separateEnter) observation.inputSentAtMs = Date.now();
       try {
-        this.client.writeInput(sessionId, TEXT_ENCODER.encode(spec.submit && !separateEnter ? ENTER_INPUT : spec.input));
+        this.client.writeInput(sessionId, TEXT_ENCODER.encode(spec.submit && !separateEnter ? spec.input + ENTER_INPUT : spec.input));
       } catch {
         observation.inputSent = false;
         observation.inputSentAtMs = undefined;

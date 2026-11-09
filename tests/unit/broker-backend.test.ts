@@ -1032,18 +1032,38 @@ describe("BrokerBackend send/sendKey/writeToTerminal route through input_binary"
     await backend.list();
   });
 
-  test("send writes the text, then Enter in its own write after the settle gap", async () => {
-    // Claude Code reads one chunk of text plus Enter as a paste and keeps the Enter as a newline.
-    const writtenAt: number[] = [];
-    client.onWriteInput = () => { writtenAt.push(Date.now()); };
+  test("send appends \\r by default", async () => {
     await backend.send("live", "ls");
-    expect(client.inputs.map((input) => input.sessionId)).toEqual([SESSION_UUID_1, SESSION_UUID_1]);
-    expect(client.inputs.map((input) => new TextDecoder().decode(input.data))).toEqual(["ls", "\r"]);
-    expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
+    expect(client.inputs.length).toBe(1);
+    expect(client.inputs[0].sessionId).toBe(SESSION_UUID_1);
+    expect(new TextDecoder().decode(client.inputs[0].data)).toBe("ls\r");
   });
 
-  test("send with empty text writes only Enter", async () => {
-    await backend.send("live", "");
+  test("send to a pi session keeps text and Enter in one write", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "pi-live", id: SESSION_UUID_2, env: [["WOLFPACK_AGENT_KIND", "pi"]] })],
+    }));
+    await backend.list();
+    await backend.send("pi-live", "a prompt that is longer than fifty-one characters in total");
+    expect(client.inputs.map((input) => new TextDecoder().decode(input.data)))
+      .toEqual(["a prompt that is longer than fifty-one characters in total\r"]);
+  });
+
+  test("send to a claude session writes the text, then Enter in its own write after the settle gap", async () => {
+    // Claude Code reads one chunk of text plus Enter as a paste and keeps the Enter as a newline.
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "claude-live", id: SESSION_UUID_2, env: [["WOLFPACK_AGENT_KIND", "claude"]] })],
+    }));
+    await backend.list();
+    const writtenAt: number[] = [];
+    client.onWriteInput = () => { writtenAt.push(Date.now()); };
+    await backend.send("claude-live", "ls");
+    expect(client.inputs.map((input) => input.sessionId)).toEqual([SESSION_UUID_2, SESSION_UUID_2]);
+    expect(client.inputs.map((input) => new TextDecoder().decode(input.data))).toEqual(["ls", "\r"]);
+    expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
+
+    client.inputs.length = 0;
+    await backend.send("claude-live", "");
     expect(client.inputs.map((input) => new TextDecoder().decode(input.data))).toEqual(["\r"]);
   });
 
@@ -1174,8 +1194,28 @@ describe("BrokerBackend.promptAndWaitForOutput", () => {
 
     releaseSubscribe();
     expect(await operation).toEqual({ outcome: "matched", outputBoundarySeq: "17" });
-    expect(client.inputs.map((input) => input.sessionId)).toEqual([SESSION_UUID_1, SESSION_UUID_1]);
+    expect(client.inputs).toHaveLength(1);
+    expect(client.inputs[0]?.sessionId).toBe(SESSION_UUID_1);
+    expect(new TextDecoder().decode(client.inputs[0]?.data)).toBe("run now\r");
+  });
+
+  test("writes a claude prompt's Enter separately after the settle gap", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1, env: [["WOLFPACK_AGENT_KIND", "claude"]] })],
+    }));
+    await backend.list();
+    const writtenAt: number[] = [];
+    client.onWriteInput = (sessionId, data) => {
+      writtenAt.push(Date.now());
+      if (new TextDecoder().decode(data) === "\r") client.emit(sessionId, new TextEncoder().encode("READY"), 18n);
+    };
+    const result = await (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run now", outputContains: "READY", noEnter: false, timeoutMs: 1_000 },
+    );
+    expect(result).toEqual({ outcome: "matched", outputBoundarySeq: "17" });
     expect(client.inputs.map((input) => new TextDecoder().decode(input.data))).toEqual(["run now", "\r"]);
+    expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
   });
 
   test("matches UTF-8 output split across post-boundary frames", async () => {
@@ -1414,9 +1454,9 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
 
   test("reports submitted as soon as program status leaves idle after the write", async () => {
     rootStatus = status("idle", 1);
-    client.onWriteInput = (sessionId, data) => {
-      if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
-      else client.emit(sessionId, encoder.encode("run tests"), 18n);
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, encoder.encode("run tests"), 18n);
+      pushStatus(afterWrite("working"));
     };
     const started = Date.now();
     const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
@@ -1425,56 +1465,7 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted" });
     expect(result.retried).toBeUndefined();
-    expect(inputs()).toEqual(["run tests", "\r"]);
-  });
-
-  test("writes Enter separately after the settle gap and observes the window after it", async () => {
-    // Regression: claude 2.1.319 kept a same-write Enter as a newline for text over ~51 characters.
-    rootStatus = status("idle", 1);
-    const text = "reply with just the word PONGA and nothing else, do not use tools ok";
-    const writtenAt: number[] = [];
-    client.onWriteInput = (sessionId, data) => {
-      writtenAt.push(Date.now());
-      if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
-      else client.emit(sessionId, data, 18n);
-    };
-    const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
-      text, noEnter: false, observeMs: 30, ensureSubmitted: false,
-    });
-    expect(inputs()).toEqual([text, "\r"]);
-    expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
-    expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted" });
-  });
-
-  test("judges submission from program status, not from input-like screen text", async () => {
-    // Claude shows a dim suggestion (for example "❯ say Q3") in an empty input after a turn.
-    rootStatus = status("idle", 1);
-    client.onWriteInput = (sessionId, data) => {
-      if (new TextDecoder().decode(data) !== "\r") return;
-      pushStatus(afterWrite("working"));
-      client.emit(sessionId, encoder.encode("\n❯ say Q3\n"), 18n);
-    };
-    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
-      text: "say Q2", noEnter: false, observeMs: 200, ensureSubmitted: false,
-    })).toMatchObject({ delivery: "delivered", outcome: "submitted" });
-
-    client.inputs.length = 0;
-    rootStatus = status("idle", Date.now());
-    client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("❯ say Q4"), 19n);
-    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
-      text: "say Q4", noEnter: false, observeMs: 30, ensureSubmitted: false,
-    })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
-  });
-
-  test("an empty text with Enter is one write with no settle gap", async () => {
-    rootStatus = status("idle", 1);
-    client.onWriteInput = () => pushStatus(afterWrite("working"));
-    const started = Date.now();
-    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
-      text: "", noEnter: false, observeMs: 5_000, ensureSubmitted: false,
-    })).toMatchObject({ outcome: "submitted" });
-    expect(inputs()).toEqual(["\r"]);
-    expect(Date.now() - started).toBeLessThan(SESSION_SUBMIT_SETTLE_MS);
+    expect(inputs()).toEqual(["run tests\r"]);
   });
 
   test("reports pasted_not_submitted when output arrives but an idle status stays untouched", async () => {
@@ -1485,7 +1476,7 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     });
     expect(result).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
     expect(result.observedMs).toBeGreaterThanOrEqual(0);
-    expect(inputs()).toEqual(["run tests", "\r"]);
+    expect(inputs()).toEqual(["run tests\r"]);
   });
 
   test("events before the write move the baseline instead of counting as evidence", async () => {
@@ -1728,9 +1719,9 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     });
     const elapsed = Date.now() - started;
     await slowRead;
-    expect(elapsed).toBeLessThan(150 + SESSION_SUBMIT_SETTLE_MS);
+    expect(elapsed).toBeLessThan(150);
     expect(result.observedMs).toBeLessThanOrEqual(40);
-    expect(inputs()).toEqual(["hello", "\r"]);
+    expect(inputs()).toEqual(["hello\r"]);
   });
 
   test("is unverified when nothing observable follows the write", async () => {
@@ -1738,7 +1729,7 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
       text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
     })).toMatchObject({ delivery: "unverified", outcome: "unverified" });
-    expect(inputs()).toEqual(["hello", "\r"]);
+    expect(inputs()).toEqual(["hello\r"]);
   });
 
   test("is unverified without a program status record even when output arrives", async () => {
@@ -1813,17 +1804,15 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
 
   test("ensureSubmitted re-sends one carriage return after a paste and reports the retry", async () => {
     rootStatus = status("idle", 1);
-    let enters = 0;
     client.onWriteInput = (sessionId, data) => {
-      // The first Enter is swallowed; the re-sent one submits.
-      if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, encoder.encode("run tests"), 18n);
-      else if (++enters === 2) pushStatus(afterWrite("working"));
+      if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+      else client.emit(sessionId, encoder.encode("run tests"), 18n);
     };
     const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
       text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: true,
     });
     expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted", retried: true });
-    expect(inputs()).toEqual(["run tests", "\r", "\r"]);
+    expect(inputs()).toEqual(["run tests\r", "\r"]);
   });
 
   test("ensureSubmitted retries exactly once when the retry is swallowed too", async () => {
@@ -1835,7 +1824,7 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
       text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: true,
     });
     expect(result).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted", retried: true });
-    expect(inputs()).toEqual(["run tests", "\r", "\r"]);
+    expect(inputs()).toEqual(["run tests\r", "\r"]);
   });
 
   test("ensureSubmitted keeps the first verdict and claims no retry when Enter could not be re-sent", async () => {
@@ -1850,14 +1839,115 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(result).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
     expect(result.retried).toBeUndefined();
     expect(result.reason).toBeUndefined();
-    expect(inputs()).toEqual(["go", "\r"]);
+    expect(inputs()).toEqual(["go\r"]);
   });
 
   test("ensureSubmitted does not retry a submitted or unverified send", async () => {
     expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
       text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: true,
     })).toMatchObject({ outcome: "unverified" });
-    expect(inputs()).toEqual(["hello", "\r"]);
+    expect(inputs()).toEqual(["hello\r"]);
+  });
+
+  describe("claude sessions", () => {
+    beforeEach(async () => {
+      client.setHandler("list_sessions", () => okResp({
+        sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1, env: [["WOLFPACK_AGENT_KIND", "claude"]] })],
+      }));
+      await backend.list();
+    });
+
+    test("writes Enter separately after the settle gap and observes the window after it", async () => {
+      // Regression: claude 2.1.319 kept a same-write Enter as a newline for text over ~51 characters.
+      rootStatus = status("idle", 1);
+      const text = "reply with just the word PONGA and nothing else, do not use tools ok";
+      const writtenAt: number[] = [];
+      client.onWriteInput = (sessionId, data) => {
+        writtenAt.push(Date.now());
+        if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+        else client.emit(sessionId, data, 18n);
+      };
+      const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text, noEnter: false, observeMs: 30, ensureSubmitted: false,
+      });
+      expect(inputs()).toEqual([text, "\r"]);
+      expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
+      expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+    });
+
+    test("a status record between the text and its Enter is baseline, not submission", async () => {
+      rootStatus = status("idle", 1);
+      client.onWriteInput = (sessionId, data) => {
+        if (new TextDecoder().decode(data) !== "\r") {
+          client.emit(sessionId, data, 18n);
+          pushStatus(afterWrite("working"));
+          pushStatus(afterWrite("idle", 2));
+        }
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "draft", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+      expect(inputs()).toEqual(["draft", "\r"]);
+    });
+
+    test("judges submission from program status, not from input-like screen text", async () => {
+      // Claude shows a dim suggestion (for example "❯ say Q3") in an empty input after a turn.
+      rootStatus = status("idle", 1);
+      client.onWriteInput = (sessionId, data) => {
+        if (new TextDecoder().decode(data) !== "\r") return;
+        pushStatus(afterWrite("working"));
+        client.emit(sessionId, encoder.encode("\n❯ say Q3\n"), 18n);
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "say Q2", noEnter: false, observeMs: 200, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+
+      client.inputs.length = 0;
+      rootStatus = status("idle", Date.now());
+      client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("❯ say Q4"), 19n);
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "say Q4", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+    });
+
+    test("an empty text with Enter is one write with no settle gap", async () => {
+      rootStatus = status("idle", 1);
+      client.onWriteInput = () => pushStatus(afterWrite("working"));
+      const started = Date.now();
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "", noEnter: false, observeMs: 5_000, ensureSubmitted: false,
+      })).toMatchObject({ outcome: "submitted" });
+      expect(inputs()).toEqual(["\r"]);
+      expect(Date.now() - started).toBeLessThan(SESSION_SUBMIT_SETTLE_MS);
+    });
+
+    test("ensureSubmitted re-sends one carriage return after a swallowed Enter", async () => {
+      rootStatus = status("idle", 1);
+      let enters = 0;
+      client.onWriteInput = (sessionId, data) => {
+        // The first Enter is swallowed; the re-sent one submits.
+        if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, encoder.encode("run tests"), 18n);
+        else if (++enters === 2) pushStatus(afterWrite("working"));
+      };
+      const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: true,
+      });
+      expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted", retried: true });
+      expect(inputs()).toEqual(["run tests", "\r", "\r"]);
+    });
+
+    test("a failed Enter after a written text still reports the text as delivered", async () => {
+      rootStatus = status("idle", 1);
+      client.onWriteInput = (sessionId) => {
+        client.emit(sessionId, encoder.encode("run tests"), 18n);
+        client.inputError = new Error("input plane down");
+      };
+      const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      });
+      expect(result.delivery).toBe("delivered");
+      expect(inputs()).toEqual(["run tests"]);
+    });
   });
 
   test("releases its output subscription and status listener", async () => {
