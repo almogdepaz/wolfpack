@@ -178,6 +178,31 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
   await expect(focus).toBeVisible();
 });
 
+test("QA-32: fallback focus visibly belongs inside the list, not on the pane boundary", async ({ page }, info) => {
+  await openFocus(page);
+  const checkbox = page.getByRole("checkbox", { name: "Done: ship the focus assistant", exact: true });
+  await checkbox.focus();
+  await page.keyboard.press("Space");
+  const list = page.locator(".assistant-column");
+  await expect(list).toBeFocused();
+  for (const width of info.project.name === "desktop" ? [1440, 1280] : [390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await expect(list).toBeFocused();
+    const cue = await list.evaluate(el => {
+      const style = getComputedStyle(el);
+      return { visible: el.matches(":focus-visible"), offset: parseFloat(style.outlineOffset), width: parseFloat(style.outlineWidth), style: style.outlineStyle };
+    });
+    expect(cue.visible).toBe(true);
+    expect(cue.style).toBe("solid");
+    expect(cue.width).toBeGreaterThanOrEqual(2);
+    expect(cue.offset, "the complete cue is inset in the list, away from its scroll/pane edges").toBeLessThanOrEqual(-8);
+    await page.screenshot({ path: info.outputPath(`qa32-list-focus-${width}.png`), animations: "disabled" });
+  }
+  await page.keyboard.press("Tab");
+  await expect(list).not.toBeFocused();
+  expect(await list.evaluate(el => el.matches(":focus-visible"))).toBe(false);
+});
+
 test("pane: one-column opening preserves the existing focus behavior", async ({ page }, info) => {
   await page.setViewportSize({ width: info.project.name === "desktop" ? 1279 : 390, height: 900 });
   await page.addInitScript(() => {

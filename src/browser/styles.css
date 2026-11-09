@@ -2979,7 +2979,6 @@ details.focus-context-more > summary::-webkit-details-marker { display: none; }
 details.focus-context-more > summary::before, .assistant-column summary::before { content: "›"; content: "›" / ""; display: inline-block; width: 8px; color: var(--text-4); transition: transform .15s; }
 details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-next .focus-action { min-height: 34px; margin-top: 5px; padding: 0 2px; border: 0; background: none; color: var(--accent); font-size: 12px; font-weight: 500; }
-.focus-next .focus-action:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .focus-block .focus-next { margin: 4px -18px 0; border: 0; border-block: 1px solid var(--hairline); border-radius: 0; background: transparent; box-shadow: none; }
 .focus-block .focus-next + small { margin-top: 12px; }
 .focus-block .focus-next > li { padding-inline: 18px; }
@@ -3032,6 +3031,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   #assistant-pty.hydrating canvas { visibility: hidden; }
 }
 .assistant-column { flex-shrink: 0; width: 100%; max-width: 760px; margin: 0 auto; padding: 24px 20px 48px; }
+.assistant-column:focus-visible { outline-offset: -12px; }
 .assistant-column > header { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; border: 0; background: none; padding: 0; }
 .assistant-column h1 { font: 600 20px var(--font-ui); margin: 0; letter-spacing: -.01em; text-transform: none; color: var(--text-1); }
 .assistant-column h2 { display: flex; align-items: baseline; gap: 10px; margin: 24px 0 8px; color: var(--text-3); font: 600 11.5px var(--font-ui); text-transform: uppercase; letter-spacing: .07em; }
@@ -3057,7 +3057,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .focus-spin::before, .assistant-tile[data-tone=busy] .assistant-tile-mark { animation: none; } .assistant-tile { transition: none; } .assistant-column summary::before, details.focus-card > summary::after, details.focus-context-more > summary::before { transition: none; } }
 /* Inline link weight: names, notes verbs, undo, read, back. Declared last so it wins the shared button rule. */
 .focus-header > button:not(:last-child):not(.focus-attn), .focus-notes button, .focus-done button, .focus-yesterday button, .assistant-column > header button { min-height: 0; padding: 2px 0; border: 0; border-radius: 4px; background: none; color: var(--accent); font-size: 12px; }
-.focus-header > button:not(:last-child):not(.focus-attn):hover, .focus-notes button:hover, .focus-done button:hover, .focus-yesterday button:hover, .assistant-column > header button:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.focus-next .focus-action:hover, .focus-header > button:not(:last-child):not(.focus-attn):hover, .focus-notes button:hover, .focus-done button:hover, .focus-yesterday button:hover, .assistant-column > header button:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .focus-header > button:not(:last-child):not(.focus-attn) { color: var(--text-1); font-size: 13px; font-weight: 600; }
 .focus-header > button:not(:last-child):not(.focus-attn):hover { color: var(--text-1); }
 .assistant-column > header button { color: var(--text-3); font-size: 13px; }
