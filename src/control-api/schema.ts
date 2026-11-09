@@ -1,4 +1,4 @@
-import { CREATABLE_HARNESSES } from "../agent-kind.ts";
+import { AGENT_KIND, CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
 import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
@@ -232,7 +232,7 @@ function sessionCreateRequestSchema(): JsonSchema {
   const taskWorkerProperties = {
     projectDir: ref("ProjectDirectory"),
     harness: {
-      enum: ["pi", "claude"],
+      enum: [AGENT_KIND.PI.id, AGENT_KIND.CLAUDE.id],
       description: "Task-worker harness. taskWorkerPolicy and taskWorkerDryRun apply only to pi.",
     },
     taskWorker: { const: true },
