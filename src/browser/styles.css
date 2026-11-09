@@ -2935,7 +2935,7 @@ body > header { height: 52px; min-height: 52px; }
 .focus-nudge small { font-size: 12px; color: var(--text-3); }
 .focus-next, .focus-today, .focus-done { list-style: none; margin: 0; padding: 0; border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--surface-2); box-shadow: var(--gloss); overflow: hidden; }
 .focus-next > li + li, .focus-today > li + li, .focus-done li + li { border-top: 1px solid var(--hairline); }
-.focus-done li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 12px; font-size: 13px; color: var(--text-2); }
+.focus-done li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 12px; font-size: 13px; color: var(--text-3); }
 /* Cards: the summary is the 44px row (text only); the action, checkbox and chips sit beside it in the row grid; the body opens under the title. */
 /* Both lists end their disclosure in the same column before the action edge. */
 .focus-next, .focus-today { --focus-aside-width: 74px; --focus-row-gap: 10px; }
@@ -3008,12 +3008,10 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 /* Synchronous sizing only; the measurement class is removed before paint. */
 .focus-chips.focus-chip-measure > button { display: inline-flex; flex: none; max-width: none; }
 .focus-chips .dot { flex: none; width: 7px; height: 7px; box-shadow: none; }
-.focus-done li { color: var(--text-3); }
 .focus-time { min-width: 40px; color: var(--text-4); font: 12px var(--font-mono); }
 .focus-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .focus-what b { color: var(--text-2); font-weight: 500; }
-.focus-add { display: flex; gap: 8px; min-width: 0; }
-.focus-add { margin-top: 10px; }
+.focus-add { display: flex; gap: 8px; min-width: 0; margin-top: 10px; }
 .focus-add input { min-width: 0; width: 100%; min-height: 36px; padding: 0 12px; border: 1px solid var(--hairline-strong); border-radius: var(--r-control); color: var(--text-1); background: var(--surface-1); font: 400 13px var(--font-ui); }
 .focus-add input:focus { border-color: var(--accent-border); }
 .focus-block > p:not([class]) { margin: 14px 0 0; font: 600 15px var(--font-ui); color: var(--text-1); }
@@ -3024,6 +3022,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-empty { margin: 8px 0; font-size: 13px; color: var(--text-3); }
 #assistant-view { overflow-y: auto; }
 #assistant-pane { display: none; }
+#assistant-pane-empty { padding: 0 14px; }
 @media (min-width: 1280px) {
   #assistant-view { flex-direction: row; }
   #assistant-view .assistant-column { flex: 0 0 clamp(520px, 65%, 760px); min-width: 0; overflow: auto; }

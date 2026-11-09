@@ -165,6 +165,11 @@ for (const outage of ["home", "broker"] as const) test(`QA-27: ${outage} outage 
   await expect(pane(page).getByRole("button", { name: "Back to list", exact: true })).toBeEnabled();
   await expect(page.locator(".assistant-column")).toBeFocused();
   await page.screenshot({ path: info.outputPath(`pane-${outage}-unavailable.png`), animations: "disabled" });
+  const reasonInset = await page.locator("#assistant-pane-empty").evaluate(el => {
+    const range = document.createRange(); range.setStart(el.firstChild!, 0); range.setEnd(el.firstChild!, 1);
+    return range.getBoundingClientRect().left - document.getElementById("assistant-pane-status")!.getBoundingClientRect().left;
+  });
+  expect.soft(Math.abs(reasonInset), "QA-31: empty reason aligns with the pane header status").toBeLessThanOrEqual(1);
   down = false;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await hydrated(page);
