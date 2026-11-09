@@ -1,0 +1,116 @@
+import { afterEach, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AGENT_KIND } from "../../src/agent-kind.ts";
+import { CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENT_RELAY_PROTOCOL } from "../../src/child-event-contract.ts";
+import { RELAY_ID, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
+import type { RelayEndpoint, RelayEnvelope } from "../../src/task-relay/domain.ts";
+import { MEMORY_RELAY_PROFILE as profile } from "../../src/task-relay/memory-store.ts";
+import { VolatileRelayGateway } from "../../src/task-relay/volatile-gateway.ts";
+import type { VolatileBinding, VolatileResult, VolatileValue } from "../../src/task-relay/volatile-protocol.ts";
+import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
+
+const NOW = Date.parse("2026-11-09T00:00:00Z");
+const gateways: { close(): Promise<void> }[] = [];
+afterEach(async () => { await Promise.all(gateways.splice(0).map(gateway => gateway.close())); });
+
+function take<K extends VolatileValue["kind"]>(result: VolatileResult, kind: K): Extract<VolatileValue, { kind: K }> {
+  if (!result.ok) throw new Error(result.error.code);
+  expect(result.value.kind).toBe(kind);
+  return result.value as Extract<VolatileValue, { kind: K }>;
+}
+
+function fixture() {
+  const people = new Map(["parent", "child", "mallory"].map(name => [name, { id: randomUUID(), alive: true }]));
+  const gateway = new VolatileRelayGateway({ now: () => NOW, elapsedNow: () => 0, inspectSession: async selector => {
+    const found = [...people.entries()].find(([name, person]) => name === selector || person.id === selector);
+    return found ? { ok: true, session: found[0], sessionId: found[1].id, projectPath: "/fixture", harness: "pi", alive: found[1].alive }
+      : { ok: false, code: "NOT_FOUND" };
+  } });
+  gateways.push(gateway);
+  const connect = async (callerSession: string, protocolVersions: number[] = [RELAY_PROTOCOL_VERSION]): Promise<VolatileBinding> => {
+    const result = await gateway.request({ operation: "connect", profile, callerSession, generation: "g", protocolVersions, leaseMs: 300_000 });
+    return { profile, epoch: gateway.epoch, callerSession, endpoint: take(result, "connected").endpoint };
+  };
+  return { gateway, people, connect, id: (name: string) => people.get(name)!.id };
+}
+
+function childEvent(seq = 1) {
+  return { kind: CHILD_EVENT_PAYLOAD_KIND, eventId: `child:boot:${seq}`, bootId: "boot", seq, event: "done", state: "idle" };
+}
+
+function hostInput(targetSession: string, seq = 1) {
+  return {
+    targetSession,
+    requiredProtocol: CHILD_EVENT_RELAY_PROTOCOL,
+    envelopeId: `wolfpack.child_event:child:boot:${seq}`,
+    payload: childEvent(seq),
+    createdAt: new Date(NOW).toISOString(),
+  };
+}
+
+test("a server-owned envelope reaches only endpoints that advertise the child-event protocol", async () => {
+  const f = fixture();
+  const legacy = await f.connect("parent");
+  // A current adapter advertises only the wire version: it would reject the
+  // whole inbox page on an unknown payload, so nothing is sent to it.
+  expect(await f.gateway.hostEnvelope(hostInput(f.id("parent")))).toEqual({ kind: "unsupported" });
+  expect(take(await f.gateway.request({ ...legacy, operation: "receive", cursor: "0" }), "page").deliveries).toEqual([]);
+  // No registration at all is also unsupported.
+  expect(await f.gateway.hostEnvelope(hostInput(f.id("child")))).toEqual({ kind: "unsupported" });
+
+  const capable = await f.connect("mallory", [RELAY_PROTOCOL_VERSION, CHILD_EVENT_RELAY_PROTOCOL]);
+  expect(await f.gateway.hostEnvelope(hostInput(f.id("mallory")))).toEqual({ kind: "accepted", duplicate: false });
+  expect(await f.gateway.hostEnvelope(hostInput(f.id("mallory")))).toEqual({ kind: "accepted", duplicate: true });
+  const page = take(await f.gateway.request({ ...capable, operation: "receive", cursor: "0" }), "page");
+  expect(page.deliveries).toHaveLength(1);
+  const delivered = page.deliveries[0]!.envelope;
+  expect(delivered).toMatchObject({
+    envelopeId: "wolfpack.child_event:child:boot:1",
+    protocolVersion: RELAY_PROTOCOL_VERSION,
+    target: capable.endpoint,
+    payload: childEvent(1),
+    createdAt: new Date(NOW).toISOString(),
+  });
+  expect(delivered.source.relay).toBe(RELAY_ID);
+  expect(delivered.source.id).not.toBe(capable.endpoint.id);
+  expect(delivered.source.id).not.toBe(legacy.endpoint.id);
+  take(await f.gateway.request({ ...capable, operation: "acknowledge", envelopeId: delivered.envelopeId }), "acknowledged");
+
+  // Nobody can address the server source: it belongs to no inspectable session.
+  const toServer: RelayEnvelope = { envelopeId: randomUUID(), protocolVersion: RELAY_PROTOCOL_VERSION, source: capable.endpoint,
+    target: delivered.source, payload: { text: "hello" }, createdAt: new Date(NOW).toISOString() };
+  expect(await f.gateway.request({ ...capable, operation: "send", envelope: toServer })).toMatchObject({ ok: false, error: { code: "TARGET_NOT_REGISTERED" } });
+});
+
+test("only the server may send child-event payloads", async () => {
+  const f = fixture();
+  const child = await f.connect("child");
+  const parent = await f.connect("parent", [RELAY_PROTOCOL_VERSION, CHILD_EVENT_RELAY_PROTOCOL]);
+  const spoof = (target: RelayEndpoint, payload: unknown): RelayEnvelope => ({ envelopeId: randomUUID(), protocolVersion: RELAY_PROTOCOL_VERSION,
+    source: child.endpoint, target, payload, createdAt: new Date(NOW).toISOString() });
+  expect(await f.gateway.request({ ...child, operation: "send", envelope: spoof(parent.endpoint, childEvent()) }))
+    .toMatchObject({ ok: false, error: { code: "SOURCE_MISMATCH" } });
+  // The same envelope with an ordinary payload is accepted, so the kind is the reason.
+  take(await f.gateway.request({ ...child, operation: "send", envelope: spoof(parent.endpoint, { text: "ordinary" }) }), "accepted");
+
+  const peer = (payload: unknown) => ({ operation: "receivePeer", profile, epoch: f.gateway.epoch, sourceEpoch: randomUUID(),
+    origin: "https://sender.tail123.ts.net", envelope: { ...spoof(parent.endpoint, payload), source: { relay: RELAY_ID, id: randomUUID() } } });
+  expect(await f.gateway.peer(peer(childEvent()))).toMatchObject({ ok: false, error: { code: "SOURCE_MISMATCH" } });
+  take(await f.gateway.peer(peer({ text: "ordinary" })), "accepted");
+});
+
+test("the relay worker exposes the host envelope operation", async () => {
+  const inspect = async (selector: string) => ({ ok: true as const, session: selector, sessionId: selector, projectPath: "/tmp", harness: AGENT_KIND.PI.id, alive: true });
+  const gateway = new WorkerRelayGateway({ root: mkdtempSync(join(tmpdir(), "relay-host-envelope-")), inspectSession: inspect });
+  gateways.push(gateway);
+  await gateway.initialize();
+  const connected = await gateway.volatile({ profile, operation: "connect", callerSession: "parent", generation: "g",
+    protocolVersions: [RELAY_PROTOCOL_VERSION, CHILD_EVENT_RELAY_PROTOCOL] });
+  if (!connected.ok || connected.value.kind !== "connected") throw new Error(JSON.stringify(connected));
+  const input = { ...hostInput("parent"), createdAt: new Date().toISOString() };
+  expect(await gateway.hostEnvelope(input)).toEqual({ kind: "accepted", duplicate: false });
+  expect(await gateway.hostEnvelope({ ...input, targetSession: "nobody" })).toEqual({ kind: "unsupported" });
+});

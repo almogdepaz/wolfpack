@@ -36,6 +36,21 @@ export interface VolatilePeerRequest {
   readonly origin: string;
   readonly envelope: RelayEnvelope;
 }
+/** Host-only: the server sends one envelope from its own source endpoint. */
+export interface VolatileHostEnvelopeRequest {
+  /** Stable wolfpack session id of the target endpoint's owner. */
+  readonly targetSession: string;
+  /** The target registration must advertise this protocol number. */
+  readonly requiredProtocol: number;
+  readonly envelopeId: string;
+  readonly payload: unknown;
+  readonly createdAt: string;
+}
+export type VolatileHostEnvelopeResult =
+  | { readonly kind: "accepted"; readonly duplicate: boolean }
+  /** No live registration for the target, or it does not advertise the protocol. */
+  | { readonly kind: "unsupported" }
+  | { readonly kind: "failed"; readonly code: VolatileCode };
 export type VolatileCode = MemoryRelayCode | "RELAY_PROFILE_REQUIRED" | "CALLER_NOT_FOUND" | "CALLER_DEAD"
   | "SOURCE_MISMATCH" | "RELAY_UNAVAILABLE" | "PEER_UNREACHABLE" | "DELIVERY_UNCONFIRMED";
 export type VolatileValue =

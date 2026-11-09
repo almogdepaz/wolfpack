@@ -36,6 +36,7 @@ import type { WolfpackEvent } from "../../src/events-contract";
 import { onProgramStatusChanged } from "../../src/server/program-status-signal";
 import { appendParentNotification, clearParentInbox, listParentNotifications } from "../../src/server/parent-inbox";
 import { __resetChildEventsForTests, observeChildSession } from "../../src/server/child-events";
+import { __resetViewerInputForTests, lastViewerInputAt } from "../../src/server/viewer-input";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -1208,6 +1209,19 @@ describe("BrokerBackend send/sendKey/writeToTerminal route through input_binary"
     expect(backend.writeToTerminal("live", Buffer.from([0x01, 0x02, 0x03]))).toBe(true);
     expect(client.inputs[0].sessionId).toBe(SESSION_UUID_1);
     expect(Array.from(client.inputs[0].data)).toEqual([0x01, 0x02, 0x03]);
+  });
+
+  test("writeToTerminal records viewer input for the session id; a failed write records nothing", () => {
+    __resetViewerInputForTests();
+    const before = Date.now();
+    client.inputError = new Error("input plane down");
+    expect(backend.writeToTerminal("live", "x")).toBe(false);
+    expect(lastViewerInputAt(SESSION_UUID_1)).toBeUndefined();
+    client.inputError = null;
+    expect(backend.writeToTerminal("live", "x")).toBe(true);
+    expect(lastViewerInputAt(SESSION_UUID_1)).toBeGreaterThanOrEqual(before);
+    expect(backend.writeToTerminal("ghost", "x")).toBe(false);
+    __resetViewerInputForTests();
   });
 
   test("writeToTerminal reports false for unknown sessions", () => {

@@ -241,7 +241,7 @@ wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] 
 
 ### Notify and poll the parent inbox
 
-`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for full-startup children launched with `--notify-parent`. The CLI sends the parent ID/name from `WOLFPACK_PARENT_SESSION_ID` / `WOLFPACK_PARENT_SESSION_NAME` and an optional informational `from` from `WOLFPACK_SESSION_NAME`. The server queues the message only for that exact live parent ID **and** name, and still sends web push to the human's devices enrolled on this host (see [phone-pwa-notifications.md](phone-pwa-notifications.md)). Nothing is injected into the parent terminal.
+`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for full-startup children launched with `--notify-parent`. The CLI sends the parent ID/name from `WOLFPACK_PARENT_SESSION_ID` / `WOLFPACK_PARENT_SESSION_NAME` and an optional informational `from` from `WOLFPACK_SESSION_NAME`. The server queues the message only for that exact live parent ID **and** name, and still sends web push to the human's devices enrolled on this host (see [phone-pwa-notifications.md](phone-pwa-notifications.md)). The message itself is never typed into the parent terminal; a matching child's message becomes a [child event](#child-events), and only its enumerated fields can reach the parent as a [typed note](#delivery-to-the-parent-agent).
 
 - `POST /api/notify` retains `ok: true` for acceptance, `sent`, `failed`, `pruned`, `delivered` (`sent > 0`), and push-only `reason` when not delivered: `no_subscriptions` or `delivery_failed`. Rate limiting and push subscription handling are unchanged.
 - It also returns `parentInbox: {queued:true, seq}` or `{queued:false, reason:"no_parent"|"parent_not_found"}`. `no_parent` means no session target; `parent_not_found` means the exact live ID/name could not be confirmed (including backend unavailability). A same-name replacement is never substituted.
@@ -282,6 +282,22 @@ The server also tells a parent what its children did, with no child action. It d
 `childEvent` fields: `kind`, `eventId` (child session ID, `bootId` and `seq`), `bootId`, `seq` (the entry's inbox sequence), `childSessionId`, `childName`, `parentSessionId`, `event`, `state` (the child's runtime state), optional `inputKind`, `message` (at most 500 code points), `lastLines`, `authority`, `reason`, `exitCode`, `signal`, and `observedAt`. New optional fields may be added; ignore unknown fields. The entry `message` is a one-line summary (for example `blocked (permission): run rm?`) and `from` is the child name.
 
 A child produces at most one event per entry into a state: repeated reports in the same state do not repeat the event. The first observation of a child after a server start is a baseline and produces no event, so events that happened while the server was down are lost. Screen heuristics alone never produce `blocked` or `error`. Program `blocked` children also raise the existing "Needs input" web push (see [phone-pwa-notifications.md](phone-pwa-notifications.md)); child events add no other push.
+
+#### Delivery to the parent agent
+
+The server also delivers each child event to the parent agent. The first available path wins:
+
+1. **Relay envelope.** If the parent session holds a live task-relay registration whose connect `protocolVersions` include `1001` (the child-event capability marker), the server accepts one envelope into that endpoint's inbox. The envelope keeps the relay wire version, comes from a server-owned source endpoint, has `envelopeId` `wolfpack.child_event:<eventId>`, and its `payload` is the `childEvent` object itself (`kind: "wolfpack.child_event/v1"`). Endpoints and peers cannot send a payload of that kind (`SOURCE_MISMATCH`), so one in a local inbox came from this server. Endpoints without the marker receive nothing, because a current adapter rejects a whole inbox page that holds an unknown payload.
+2. **Typed note.** Otherwise the server types one tagged line into the parent terminal, for example `[wolfpack] child events: worker-1 done; worker-2 blocked (permission) (details: wolfpack agent inbox --json)`. It types only when all of these hold:
+   - the parent's own OSC 7501 program status is fresh and `idle` or `done` (never `blocked`, `working` or `failed`, and never for manifest or screen-heuristic status);
+   - no viewer typed into the parent terminal in the last 60 s;
+   - at least 15 s passed since the previous note to that parent;
+   - `childEventTypedNotes` is not `false` in `~/.wolfpack/config.json` (read on each use; no restart needed).
+
+   Events that wait coalesce into one note: at most 8 are listed and the rest are counted as `+k more`. A note carries only the child name (reduced to `[A-Za-z0-9._-]`, at most 40 characters), the event, the input kind and exit details. It never carries `message` or `lastLines`, so a child cannot type instructions into its parent. The note uses the observed send path with `ensureSubmitted`. When nothing was written, the events wait for up to 3 attempts. When the outcome is not `submitted`, the note is not typed again. Queued events are dropped after 30 minutes, when the parent exits, or when the setting turns notes off. The server checks the guards on each observation (about every 5 s), so a note can lag the event by that interval.
+3. **Inbox only.** Without either path the event stays in the parent inbox and on the event stream.
+
+Only interactive terminal input counts as viewer input; `session send` and typed notes do not. A viewer's own unsent text that is older than 60 s can be submitted together with a note.
 
 ### Current session identity
 

@@ -25,6 +25,8 @@ export interface Config {
   displayName?: string;
   /** Opt-in written by `wolfpack setup` after the Claude task integration is installed; absent means off. */
   claudeTaskIntegration?: boolean;
+  /** `false` stops the server from typing child-event notes into parent terminals; absent means on. */
+  childEventTypedNotes?: false;
 }
 
 export function parseConfig(raw: unknown): Config | null {
@@ -45,6 +47,7 @@ export function parseConfig(raw: unknown): Config | null {
     tailscaleHostname,
     ...(isMachineDisplayName(displayName) && { displayName }),
     ...(candidate.claudeTaskIntegration === true && { claudeTaskIntegration: true }),
+    ...(candidate.childEventTypedNotes === false && { childEventTypedNotes: false as const }),
   };
 }
 
@@ -67,6 +70,11 @@ export function loadConfig(): Config | null {
 /** Reads the opt-in on every call so `wolfpack setup` takes effect without a server restart. */
 export function claudeTaskIntegrationEnabled(): boolean {
   return loadConfig()?.claudeTaskIntegration === true;
+}
+
+/** Read on every call so a config edit takes effect without a server restart. */
+export function childEventTypedNotesEnabled(): boolean {
+  return loadConfig()?.childEventTypedNotes !== false;
 }
 
 /**

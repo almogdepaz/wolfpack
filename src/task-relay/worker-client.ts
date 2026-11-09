@@ -8,7 +8,7 @@ import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
 import { volatileFailure, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
 import { readPeerResponse, withPeerAbort } from "./peer-response.ts";
-import type { VolatileResult } from "./volatile-protocol.ts";
+import type { VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult, VolatileResult } from "./volatile-protocol.ts";
 import {
   RELAY_WORKER_LIMITS as LIMIT, captureRelayWire, RelayWireBudgetError,
   type RelayGateway, type RelayWorkerGateway, type RelayWorkerMethod, type WorkerMessage, type CallbackRequest,
@@ -249,6 +249,12 @@ export class WorkerRelayGateway implements RelayGateway {
   volatile(input: unknown) { return this.#volatileResult("volatile", input); }
   volatilePeer(input: unknown) { return this.#volatileResult("volatilePeer", input); }
   volatileTopology(input: unknown) { return this.#volatileResult("volatileTopology", input); }
+  async hostEnvelope(input: VolatileHostEnvelopeRequest): Promise<VolatileHostEnvelopeResult> {
+    try { return await this.#call("hostEnvelope", input); }
+    catch (error) {
+      return { kind: "failed", code: error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed ? "RELAY_RESET" : "RELAY_UNAVAILABLE" };
+    }
+  }
   initialize() { return this.#call("initialize"); }
   registrationsForSessions(...args: Parameters<RelayGateway["registrationsForSessions"]>) { return this.#call("registrationsForSessions", ...args); }
   async endpointForSession(id: string): Promise<RelayEndpoint | undefined> { return (await this.registrationsForSessions([id])).get(id)?.endpoint; }

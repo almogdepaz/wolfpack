@@ -22,6 +22,7 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
+import { noteViewerInput } from "./viewer-input.js";
 import { DuplicateSessionError, UnsupportedTerminalKeyError } from "./backend-contract.js";
 import type {
   CapturePaneOptions,
@@ -1447,6 +1448,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     if (!id) return false;
     try {
       this.client.writeInput(id, toBytes(data));
+      // Only interactive viewers use this path; typed child-event notes wait for a quiet viewer.
+      noteViewerInput(id);
       return true;
     } catch (e: unknown) {
       log.warn("writeToTerminal failed", { name, error: errMsg(e) });

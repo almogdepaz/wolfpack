@@ -338,6 +338,15 @@ describe("first-run setup", () => {
     expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual(existingConfig);
   });
 
+  test("preserves the child-event typed-note opt-out when it rewrites the config", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const existingConfig = { devDir: home, port: 18790, childEventTypedNotes: false };
+    const result = runSetupFlow(home, { existingConfig, serviceInstalled: true, serviceRunning: true });
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual(existingConfig);
+  });
+
   test("non-interactive setup only points claude users at the interactive opt-in", () => {
     const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
     temporaryHomes.push(home);

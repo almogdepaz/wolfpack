@@ -10,6 +10,13 @@ describe("parseConfig", () => {
     expect(parseConfig(base)).toEqual(base);
   });
 
+  test("keeps the child-event typed-note setting only when it turns notes off", () => {
+    const base = { devDir: "/Users/home/Dev", port: 18790 };
+    expect(parseConfig({ ...base, childEventTypedNotes: false })).toEqual({ ...base, childEventTypedNotes: false });
+    expect(parseConfig({ ...base, childEventTypedNotes: true })).toEqual(base);
+    expect(parseConfig({ ...base, childEventTypedNotes: "off" })).toEqual(base);
+  });
+
   test("accepts a valid config object", () => {
     expect(parseConfig({
       devDir: "/Users/home/Dev",

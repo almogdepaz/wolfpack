@@ -10,6 +10,15 @@ import type { ProgramStatusKind } from "./program-status-contract.js";
 
 export const CHILD_EVENT_PAYLOAD_KIND = "wolfpack.child_event/v1";
 
+/**
+ * A relay endpoint that lists this number in its connect `protocolVersions`
+ * decodes `wolfpack.child_event/v1` payloads. It is a capability marker, not an
+ * envelope version: envelopes keep the relay wire version. The server sends
+ * child events by relay only to such endpoints, because an adapter that cannot
+ * decode a payload rejects its whole inbox page.
+ */
+export const CHILD_EVENT_RELAY_PROTOCOL = 1001;
+
 export const CHILD_EVENT = {
   BLOCKED: "blocked",
   ERROR: "error",

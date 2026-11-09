@@ -28,7 +28,12 @@ import { handlePtyWs } from "./websocket.js";
 import { createLogger, errMsg } from "../log.js";
 import { isValidSessionName } from "../validation.js";
 import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
-import { loadConfig, WOLFPACK_DIR } from "../config.js";
+import { childEventTypedNotesEnabled, loadConfig, WOLFPACK_DIR } from "../config.js";
+import {
+  SESSION_SEND_DEFAULT_OBSERVE_MS, SESSION_SEND_DELIVERY, SESSION_SEND_FAILURE_REASON, SESSION_SEND_OUTCOME,
+} from "../session-send-contract.js";
+import { startChildEventDelivery } from "./child-event-delivery.js";
+import { lastViewerInputAt } from "./viewer-input.js";
 import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
@@ -318,8 +323,25 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   const taskRelay = ctx.taskRelayGateway;
   await taskRelay.initialize();
   ctx.backend.cleanupOrphans();
+  const stopChildEventDelivery = startChildEventDelivery({
+    hostEnvelope: input => taskRelay.hostEnvelope(input),
+    send: async (sessionId, sessionName, text) => {
+      const streaming = ctx.supervisor ? ctx.supervisor.backend() : ctx.backend;
+      if (!streaming) {
+        return { delivery: SESSION_SEND_DELIVERY.NOT_DELIVERED, outcome: SESSION_SEND_OUTCOME.NOT_DELIVERED, observedMs: 0,
+          reason: SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE };
+      }
+      return streaming.sendAndObserveSubmission(sessionId, {
+        text, noEnter: false, observeMs: SESSION_SEND_DEFAULT_OBSERVE_MS, ensureSubmitted: true, sessionName,
+      });
+    },
+    typedNotesEnabled: childEventTypedNotesEnabled,
+    lastViewerInputAt,
+    now: Date.now,
+  });
   startSessionNotificationObserver(ctx);
   server.once("close", () => {
+    stopChildEventDelivery();
     taskRelay.close();
     stopSessionNotificationObserver();
   });
