@@ -2864,7 +2864,10 @@ describe("agent-native top-level session control", () => {
       mockBackend.lastCreateArgs = null;
       const res = await post("/api/session-create", body);
       expect(res.status, JSON.stringify(body)).toBe(400);
-      expect(await res.json()).toMatchObject({ code: SESSION_CREATE_ERROR.INVALID_REQUEST });
+      expect(await res.json()).toEqual({
+        error: "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers",
+        code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+      });
       expect(mockBackend.lastCreateArgs).toBeNull();
     }
 
@@ -3473,18 +3476,20 @@ describe("POST /api/session-open", () => {
 
   test("gates model and task-worker options on the child harness before creation or preflight", async () => {
     const projectDir = createExplicitProjectDir("non-pi child");
-    for (const [harness, option] of [
-      ["claude", { model: "anthropic/claude-opus-4-1" }],
-      ["claude", { taskWorker: true, taskWorkerDryRun: true }],
-      ["claude", { taskWorker: true, taskWorkerPolicy: { extensionPolicy: "inherit" } }],
-      ["codex", { taskWorker: true }],
+    const piOnly = "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers";
+    for (const [harness, option, error] of [
+      ["claude", { model: "anthropic/claude-opus-4-1" }, "invalid session-open request"],
+      ["claude", { taskWorker: true, model: "anthropic/claude-opus-4-1" }, piOnly],
+      ["claude", { taskWorker: true, taskWorkerDryRun: true }, piOnly],
+      ["claude", { taskWorker: true, taskWorkerPolicy: { extensionPolicy: "inherit" } }, piOnly],
+      ["codex", { taskWorker: true }, "invalid session-open request"],
     ] as const) {
       mockBackend.lastCreateArgs = null;
       const res = await post("/api/session-open", {
         projectDir, parentSession: "wolf-1", harness, ...option,
       });
       expect(res.status, JSON.stringify(option)).toBe(400);
-      expect(await res.json()).toMatchObject({ code: SESSION_OPEN_ERROR.INVALID_REQUEST });
+      expect(await res.json()).toEqual({ error, code: SESSION_OPEN_ERROR.INVALID_REQUEST });
       expect(mockBackend.lastCreateArgs).toBeNull();
     }
     const disabled = await post("/api/session-open", {
@@ -3524,9 +3529,9 @@ describe("POST /api/session-open", () => {
       });
       // Dry runs report Pi spawn policy only; a real Claude launch fails preflight while the opt-in is off.
       expect(res.status).toBe(dryRun ? 400 : 503);
-      expect(await res.json()).toMatchObject({
-        code: dryRun ? SESSION_OPEN_ERROR.INVALID_REQUEST : SESSION_CREATE_ERROR.TASK_WORKER_PREFLIGHT_FAILED,
-      });
+      expect(await res.json()).toMatchObject(dryRun
+        ? { error: "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers", code: SESSION_OPEN_ERROR.INVALID_REQUEST }
+        : { code: SESSION_CREATE_ERROR.TASK_WORKER_PREFLIGHT_FAILED });
       expect(mockBackend.lastCreateArgs).toBeNull();
     } finally {
       if (priorExecutable === undefined) delete process.env.WOLFPACK_TASK_WORKER_PI_EXECUTABLE;

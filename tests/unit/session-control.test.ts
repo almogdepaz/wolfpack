@@ -209,9 +209,10 @@ describe("session control cli parsing", () => {
       for (const extra of [
         ["--task-worker-policy-file", "/tmp/worker-policy.json"],
         ["--task-worker-dry-run", "--json"],
+        ...(action === "open" ? [["--model", "anthropic/claude-opus-4-1"]] : []),
       ]) {
         expect(parseSessionCommand([action, "--project-dir", "/worktree", "--harness", "claude", "--task-worker", ...extra]))
-          .toEqual({ ok: false, message: "--task-worker-policy-file and --task-worker-dry-run apply only to Pi task workers" });
+          .toEqual({ ok: false, message: "--model, --task-worker-policy-file and --task-worker-dry-run apply only to Pi task workers" });
       }
     }
     expect(parseSessionCommand(["create", "--project-dir", "/worktree", "--harness", "codex", "--task-worker"]).ok).toBe(false);
