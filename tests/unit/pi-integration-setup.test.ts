@@ -426,6 +426,103 @@ describe("Pi Tasks package migration", () => {
       expect(existsSync(lock)).toBe(false);
     });
 
+    /**
+     * Runs the migration in a child process that pauses it right after it reads settings.json under
+     * the lock. `takeover`: a successor reclaims the (aged) lock and saves another key. `expired`: the
+     * migration's clock moves past the stale time and nobody takes the lock.
+     */
+    function migrateWithPausedLease(mode: "takeover" | "expired", fixture: ReturnType<typeof migrationFixture>, successorSettings: unknown) {
+      const script = String.raw`
+        import { mock } from "bun:test";
+        const fs = await import("node:fs");
+        const realReadFileSync = fs.readFileSync;
+        const { mode, settingsPath, env, successorSettings } = JSON.parse(process.env.LEASE_PROBE);
+        const lockPath = settingsPath + ".lock";
+        let successorIno = null;
+        let paused = false;
+        await mock.module("node:fs", () => ({
+          ...fs,
+          readFileSync(file, ...args) {
+            const content = realReadFileSync(file, ...args);
+            if (paused || String(file) !== settingsPath || !fs.existsSync(lockPath)) return content;
+            paused = true;
+            if (mode === "takeover") {
+              const stale = Date.now() / 1000 - 20;
+              fs.utimesSync(lockPath, stale, stale);
+              // The successor removes the stale lock and creates its own. It builds the directory
+              // first and renames it into place, so its inode differs even where inodes are reused.
+              const successor = lockPath + ".successor";
+              fs.mkdirSync(successor);
+              fs.rmdirSync(lockPath);
+              fs.renameSync(successor, lockPath);
+              successorIno = fs.statSync(lockPath).ino;
+              fs.writeFileSync(settingsPath, JSON.stringify(successorSettings, null, 2) + "\n");
+            } else {
+              const realNow = Date.now;
+              Date.now = () => realNow() + 10_000;
+            }
+            return content;
+          },
+        }));
+        const { migratePiTasksPackage } = await import("./src/cli/pi-integration.ts");
+        const result = migratePiTasksPackage({ pathValue: env.PATH_VALUE, env });
+        const lockIno = fs.existsSync(lockPath) ? fs.statSync(lockPath).ino : null;
+        console.log(JSON.stringify({ paused, result, settings: JSON.parse(realReadFileSync(settingsPath, "utf8")), lockIno, successorIno }));
+      `;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          LEASE_PROBE: JSON.stringify({
+            mode,
+            settingsPath: fixture.settingsPath,
+            env: { ...fixture.env, PATH_VALUE: fixture.pi.pathValue },
+            successorSettings,
+          }),
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(child.stderr.toString()).toBe("");
+      expect(child.exitCode).toBe(0);
+      return JSON.parse(child.stdout.toString()) as {
+        paused: boolean;
+        result: unknown;
+        settings: unknown;
+        lockIno: number | null;
+        successorIno: number | null;
+      };
+    }
+
+    test("keep a successor's write and lock when the lock is taken over during the update", () => {
+      const fixture = migrationFixture({
+        before: { theme: "original", packages: [legacyEntry] },
+        afterRemove: { theme: "original", packages: [] },
+        afterInstall: { theme: "original", packages: ["npm:@sgtbeatdown/wolfpack-tasks"] },
+      });
+      const successorSettings = { theme: "successor-save", packages: ["npm:@sgtbeatdown/wolfpack-tasks"] };
+      const probe = migrateWithPausedLease("takeover", fixture, successorSettings);
+      expect(probe.paused).toBe(true);
+      expect(probe.result).toEqual({ status: "filters_not_restored", settingsPath: fixture.settingsPath, restoreEntry: restoredEntry });
+      expect(probe.settings).toEqual(successorSettings);
+      expect(probe.successorIno).not.toBeNull();
+      expect(probe.lockIno).toBe(probe.successorIno);
+    });
+
+    test("fail closed without writing when the lease expires during the update", () => {
+      const fixture = migrationFixture({
+        before: { packages: [legacyEntry] },
+        afterRemove: { packages: [] },
+        afterInstall: { packages: ["npm:@sgtbeatdown/wolfpack-tasks"] },
+      });
+      const probe = migrateWithPausedLease("expired", fixture, undefined);
+      expect(probe.paused).toBe(true);
+      expect(probe.result).toEqual({ status: "filters_not_restored", settingsPath: fixture.settingsPath, restoreEntry: restoredEntry });
+      expect(probe.settings).toEqual({ packages: ["npm:@sgtbeatdown/wolfpack-tasks"] });
+      // The lock is still this process's own directory, so it is released.
+      expect(probe.lockIno).toBeNull();
+    });
+
     test("leave Pi's settings untouched when the legacy entry has no filters", () => {
       const fixture = migrationFixture({
         before: { packages: ["npm:@sgtbeatdown/pi-tasks"] },

@@ -30,7 +30,9 @@ overlay) to the new entry, and renames `skills/wolfpack-pi-task-delegation`
 paths to `skills/wolfpack-task-delegation`. It holds Pi's settings lock
 (`settings.json.lock`) while it re-reads the file and changes only that entry, so
 a concurrent Pi settings write is kept. If the lock stays held for about one
-second or it cannot write the entry, setup prints the entry to restore by hand.
+second, another process takes the lock over before the write, or it cannot write
+the entry, setup prints the entry to restore by hand. It removes the lock only
+while the lock is still its own.
 
 Wolfpack does not install the full `wolfpack-bridge` app inside Pi just to obtain
 the control skill.

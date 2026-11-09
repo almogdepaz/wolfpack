@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
@@ -117,61 +117,120 @@ function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
 }
 
-/** Creates `<path>.lock`; a stale lock is removed once. Returns false when the lock stays held or mkdir fails. */
-function tryAcquirePiSettingsLock(lockPath: string): boolean {
+/** The lock directory this process created: its identity and when its lease started or was last refreshed. */
+interface PiSettingsLease {
+  readonly lockPath: string;
+  readonly dev: number;
+  readonly ino: number;
+  refreshedAt: number;
+}
+
+function sameDirectory(lease: PiSettingsLease): boolean {
+  try {
+    const stats = statSync(lease.lockPath);
+    return stats.dev === lease.dev && stats.ino === lease.ino;
+  } catch {
+    return false;
+  }
+}
+
+/** Creates `<path>.lock`; a stale lock is removed once. Returns undefined when the lock stays held or mkdir fails. */
+function tryAcquirePiSettingsLock(lockPath: string): PiSettingsLease | undefined {
   for (let staleCheck = true; ; staleCheck = false) {
     try {
+      const acquiredAt = Date.now();
       mkdirSync(lockPath);
-      return true;
+      const { dev, ino } = statSync(lockPath);
+      return { lockPath, dev, ino, refreshedAt: acquiredAt };
     } catch (error) {
-      if (errorCode(error) !== "EEXIST") return false;
+      if (errorCode(error) !== "EEXIST") return undefined;
     }
-    if (!staleCheck) return false;
+    if (!staleCheck) return undefined;
     let mtimeMs: number;
     try {
       mtimeMs = statSync(lockPath).mtimeMs;
     } catch (error) {
       // The holder released it between mkdir and stat.
       if (errorCode(error) === "ENOENT") continue;
-      return false;
+      return undefined;
     }
-    if (mtimeMs >= Date.now() - PI_SETTINGS_LOCK_STALE_MS) return false;
+    if (mtimeMs >= Date.now() - PI_SETTINGS_LOCK_STALE_MS) return undefined;
     try {
       rmdirSync(lockPath);
     } catch (error) {
-      if (errorCode(error) !== "ENOENT") return false;
-    }
-  }
-}
-
-/** Runs `update` while holding Pi's settings lock; false when the lock is not acquired in the retry bound. */
-function withPiSettingsLock(settingsPath: string, update: () => boolean): boolean {
-  const lockPath = `${settingsPath}.lock`;
-  const deadline = Date.now() + PI_SETTINGS_LOCK_WAIT_MS;
-  while (!tryAcquirePiSettingsLock(lockPath)) {
-    if (Date.now() >= deadline) return false;
-    sleepSync(PI_SETTINGS_LOCK_RETRY_MS);
-  }
-  try {
-    return update();
-  } finally {
-    try {
-      rmdirSync(lockPath);
-    } catch {
-      // Only this process created the lock; a missing lock leaves nothing to release.
+      if (errorCode(error) !== "ENOENT") return undefined;
     }
   }
 }
 
 /**
+ * Call right before the write. False when the lease is compromised: the directory at the lock path
+ * is not the one this process created, or the lease is old enough that another client may take it
+ * as stale. Otherwise it refreshes the lock's mtime, as proper-lockfile's update does.
+ *
+ * Residual window (proper-lockfile has the same limit): a client can still take the lock between
+ * this check and the end of the write if the write itself takes longer than the stale time. The
+ * identity check also cannot tell a successor whose directory reuses this directory's inode.
+ */
+function confirmPiSettingsLease(lease: PiSettingsLease): boolean {
+  const now = Date.now();
+  if (now - lease.refreshedAt >= PI_SETTINGS_LOCK_STALE_MS || !sameDirectory(lease)) return false;
+  try {
+    const seconds = now / 1000;
+    utimesSync(lease.lockPath, seconds, seconds);
+  } catch {
+    return false;
+  }
+  lease.refreshedAt = now;
+  return true;
+}
+
+/** Removes the lock only while it is still this process's directory; false when ownership was lost. */
+function releasePiSettingsLock(lease: PiSettingsLease): boolean {
+  if (!sameDirectory(lease)) return false;
+  try {
+    rmdirSync(lease.lockPath);
+  } catch {
+    // The write already finished under the lease; a lock left behind becomes stale for other clients.
+  }
+  return true;
+}
+
+/**
+ * Runs `update` while holding Pi's settings lock; false when the lock is not acquired in the retry
+ * bound, when `update` fails, or when the lock is no longer this process's at release. `update`
+ * must call `confirmLease` right before it writes and give up when it returns false.
+ */
+function withPiSettingsLock(settingsPath: string, update: (confirmLease: () => boolean) => boolean): boolean {
+  const lockPath = `${settingsPath}.lock`;
+  const deadline = Date.now() + PI_SETTINGS_LOCK_WAIT_MS;
+  let lease = tryAcquirePiSettingsLock(lockPath);
+  while (lease === undefined) {
+    if (Date.now() >= deadline) return false;
+    sleepSync(PI_SETTINGS_LOCK_RETRY_MS);
+    lease = tryAcquirePiSettingsLock(lockPath);
+  }
+  const owned = lease;
+  let updated = false;
+  try {
+    updated = update(() => confirmPiSettingsLease(owned));
+  } finally {
+    // Never remove a lock another client took; losing it before release also fails the update.
+    if (!releasePiSettingsLock(owned)) updated = false;
+  }
+  return updated;
+}
+
+/**
  * Puts `filters` on the new package's entry, which `pi install` wrote as a plain source. Under Pi's
  * settings lock it re-reads the file and changes only that entry, so a concurrent Pi write is kept.
- * Returns false when the lock is held, the settings or the entry are missing, or the write fails.
+ * Returns false when the lock is held or lost before the write, the settings or the entry are missing,
+ * or the write fails.
  */
 function restorePiTasksFilters(agentDirectory: string, filters: Readonly<Record<string, unknown>>): boolean {
   const settingsPath = piSettingsPath(agentDirectory);
   if (!existsSync(settingsPath)) return false;
-  return withPiSettingsLock(settingsPath, () => {
+  return withPiSettingsLock(settingsPath, (confirmLease) => {
     const settings = readPiSettings(agentDirectory);
     const packages = settings?.packages;
     if (settings === undefined || !Array.isArray(packages)) return false;
@@ -184,6 +243,7 @@ function restorePiTasksFilters(agentDirectory: string, filters: Readonly<Record<
     const current = typeof entry === "string" ? { source: entry } : entry as Record<string, unknown>;
     const nextPackages = [...packages];
     nextPackages[index] = { ...current, ...filters };
+    if (!confirmLease()) return false;
     try {
       writeFileSync(settingsPath, `${JSON.stringify({ ...settings, packages: nextPackages }, null, 2)}\n`);
     } catch {
