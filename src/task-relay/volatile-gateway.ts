@@ -308,6 +308,10 @@ export class VolatileRelayGateway {
     catch (error) { if (error instanceof GatewayError && ["CALLER_NOT_FOUND", "CALLER_DEAD"].includes(error.code)) fail("TARGET_NOT_REGISTERED"); throw error; }
     if (caller.sessionId !== target.sessionId) fail("TARGET_NOT_REGISTERED");
     if (this.#recoverable) {
+      // Inspection awaited: a deliberate fresh generation may now own the session.
+      // Recheck the exact predecessor before renewal; never resurrect its generation.
+      const current = this.#store.retainedRegistration(this.epoch, id);
+      if (!current || current.generation !== target.generation || current.sessionId !== target.sessionId) fail("TARGET_NOT_REGISTERED");
       // An offline endpoint process may resume. Retain mail for the freshly proven broker incarnation,
       // without treating a stale lease alone as authority or replacing its generation.
       this.#store.register({ sessionId: target.sessionId, generation: target.generation, protocolVersions: target.protocolVersions, leaseMs: RELAY_LIMITS.LEASE_MS }, this.#now());

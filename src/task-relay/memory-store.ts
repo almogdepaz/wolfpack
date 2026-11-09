@@ -146,7 +146,9 @@ export class MemoryRelayStore {
     // Preflight before discarding anything. A different generation cannot ever
     // ACK its predecessor's mail or resume its forwarding attempts.
     if (prior && !existing) {
-      if (this.#recoverable) fail("RELAY_RESET");
+      // This synchronous lookup/check/retirement is one journaled mutation.
+      // A fresh generation never inherits mail, receipts or forwarding authority.
+      if (this.#recoverable && prior.references) fail("RELAY_RESET");
       this.#retire(prior);
     }
     const entry = existing ?? { value: registration, mutation: 0n, mailbox: new Map(), cursor: 0n, mailboxBytes: 0, references: 0, bytes: 0 };
