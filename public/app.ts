@@ -1249,7 +1249,8 @@ const focusUi = createAssistantView({
     && g.sessions.some(s => isFocusAssistantSession(s) && s.name === target.session && s.identity?.wolfpackSessionId === target.sessionId)),
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
   localMachineName: () => state.selfName || "this machine",
-  machineReachable: id => getMachines().some(machine => machine.ready && machine.url.endsWith(":" + id)),
+  machineReachable: id => getMachines().some(machine => machine.ready && machine.url.endsWith(":" + id)
+    && state.lastSessionGroups.some(group => group.machine.url === machine.url && group.online)),
   // Pinned helpers can need attention, but their routine idle/done turns are not next actions.
   sessions: () => state.lastSessionGroups.filter(g => g.online).flatMap(g => withoutFocusAssistant(g.sessions).filter(s => s.pinned !== true || sessionTier(s) === SESSION_CARD_VIEW.NEED || sessionTier(s) === SESSION_CARD_VIEW.FAIL).map(s => ({ id: s.identity?.wolfpackSessionId ?? s.name, name: s.name, state: sessionRuntimeState(s), inputKind: s.runtimeState?.inputKind, machineInstallationId: g.machine.url ? g.machine.url.split(":").at(-1) : undefined, stoppedAt: s.runtimeState?.state === "done" || s.runtimeState?.state === "idle" ? s.runtimeState.stoppedAt ?? s.runtimeState.changedAt : s.runtimeState?.changedAt, changedAt: s.runtimeState?.state === "done" || s.runtimeState?.state === "idle" ? s.runtimeState.stoppedAt ?? s.runtimeState.changedAt : s.runtimeState?.changedAt, unseen: s.runtimeState?.unseen, stoppedSequence: s.runtimeState?.stoppedSequence, acknowledgedSequence: s.runtimeState?.acknowledgedSequence, cwd: s.identity?.projectPath, machine: g.machine.name, machineUrl: g.machine.url, lastLine: s.lastLine }))),
   sessionsAvailable: () => state.lastSessionGroups.some(g => !g.machine.url && g.online),

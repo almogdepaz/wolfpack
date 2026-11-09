@@ -132,15 +132,76 @@ test("a user-tap suggestion traverses the real session-send route and reports it
   await expect(page.locator("#dashboard-focus")).toContainText("delivery unconfirmed · check the session");
 });
 
-test("unreachable peer suggestions keep their place but cannot send", async ({ page }) => {
+async function triagePeer(page: Page) {
+  const id = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
+  const origin = "https://focus-peer.example.ts.net";
+  const state = { listing: "ready" as "ready" | "unavailable" | "empty" };
+  const json = (body: unknown) => ({ json: body, headers: { "Access-Control-Allow-Origin": "*" } });
+  await page.route("https://**", route => route.abort());
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill(json({ candidates: [{ hostname: "focus-peer.example.ts.net", tailnetNodeId: "n-peer", origin, online: true }] })));
+  await page.route(`${origin}/api/machine`, route => route.fulfill(json({ protocol: { name: "wolfpack-machine", major: 1, minor: 0 }, machine: { tailnetNodeId: "n-peer", installationId: id, displayName: "focus peer", origin }, wolfpack: { version: "1.7.0" }, capabilities: ["sessions", "terminal-websocket", "push-subscription"] })));
+  await page.route(`${origin}/api/backend`, async route => {
+    const response = await route.fetch({ url: `${server.baseUrl}/api/backend` });
+    await route.fulfill({ response, ...json(await response.json()) });
+  });
+  await page.route(`${origin}/api/sessions`, async route => {
+    if (state.listing === "unavailable") return route.fulfill({ status: 503, ...json({ error: "broker not connected" }) });
+    const response = await route.fetch({ url: `${server.baseUrl}/api/sessions` }); const body = await response.json();
+    const s = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    s.name = "remote-worker"; s.identity.wolfpackSessionId = "mock:remote-session";
+    s.runtimeState = { ...s.runtimeState, state: "done", changedAt: episode, stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0 };
+    await route.fulfill({ response, ...json({ sessions: state.listing === "empty" ? [] : [s] }) });
+  });
+  return { id, state };
+}
+
+test("R2: known peer suggestions survive a broker/list outage, but not an authoritative empty list", async ({ page }) => {
+  await seed(page);
+  const peer = await triagePeer(page);
+  await write(page, [{ type: "next", author: "assistant", rows: [{ ref: { machine: peer.id, sessionId: "mock:remote-session" }, stoppedAt: episode, verdict: "suggest", reason: "Remote recommendation", suggestion: draft }] }]);
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Remote recommendation" });
+  await expect(row.getByRole("button", { name: "Send suggestion to remote-worker", exact: true })).toBeEnabled();
+  peer.state.listing = "unavailable";
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator(`.machine-group.offline[data-machine="n-peer:${peer.id}"]`).first()).toBeVisible();
+  await expect(row).toContainText("not reached");
+  await expect(row.locator(".focus-action")).toBeDisabled();
+  peer.state.listing = "empty";
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(row).toHaveCount(0);
+});
+
+test("R1: a newer needs-you episode stays visible and disabled when the local list fails", async ({ page }) => {
+  await seed(page);
+  await write(page, [{ type: "next", author: "assistant", rows: [{ ref: { machine, sessionId: "mock:prompt-project" }, stoppedAt: episode, verdict: "quiet", reason: "No input needed on the old stop" }] }]);
+  let phase: "stopped" | "attention" | "unavailable" = "stopped";
+  await page.route("**/api/sessions", async route => {
+    if (phase === "unavailable") return route.fulfill({ status: 503, json: { error: "broker not connected" } });
+    const response = await route.fetch(); const body = await response.json();
+    const s = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    s.runtimeState = { ...s.runtimeState, state: phase === "stopped" ? "done" : "needs-input", changedAt: phase === "stopped" ? episode : "2026-11-09T12:01:00Z", stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0 };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  const rows = page.locator("#dashboard-focus .focus-next");
+  await expect(rows).not.toContainText("prompt-project");
+  phase = "attention";
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  const row = rows.locator("li").filter({ hasText: "prompt-project" });
+  await expect(row.locator(".focus-action")).toBeEnabled();
+  phase = "unavailable";
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(row.locator(".focus-action")).toBeDisabled();
+  await expect(row).toContainText("question");
+});
+
+test("L3: unknown installation suggestions do not become permanent placeholders", async ({ page }) => {
   await seed(page);
   await write(page, [{ type: "next", author: "assistant", rows: [{ ref: { machine: "unreachable-peer", sessionId: "remote-session" }, stoppedAt: episode, verdict: "suggest", reason: "Review the remote recommendation when it reconnects", suggestion: draft }] }]);
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
-  const row = page.locator("#assistant-content .focus-next > li").filter({ hasText: "Review the remote recommendation" });
-  await expect(row).toContainText("not reached");
-  await expect(row.locator(".focus-action")).toBeDisabled();
-  await expect(row).toContainText(draft);
+  await expect(page.locator("#assistant-content .focus-next")).not.toContainText("Review the remote recommendation");
 });
 
 test("expired triage returns quiet stops to rules and names the expiry", async ({ page }) => {

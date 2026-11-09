@@ -89,7 +89,9 @@ export interface FocusMergeOptions {
   ttlHours?: number;
   now?: number;
   cap?: number;
-  /** Stable installation identity. Offline/unknown peers are retained, never routed by display name. */
+  /** A verified installation, not an arbitrary assistant-authored id. */
+  machineKnown: (installationId: string) => boolean;
+  /** True only for a current successful session listing, not merely a ready handshake. */
   machineReachable: (installationId: string) => boolean;
 }
 export interface FocusMerge { rows: FocusAction[]; order: "assistant" | "rules" | "expired"; updatedAt?: string }
@@ -116,6 +118,7 @@ export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[]
     const ref = triage.ref;
     let row: FocusAction | undefined;
     if ("sessionId" in ref) {
+      if (!options.machineKnown(ref.machine)) continue;
       const session = sessions.find(s => s.id === ref.sessionId && s.machineInstallationId === ref.machine);
       // Availability must not revive a verdict for a different cached episode.
       if (session && (session.stoppedAt ?? session.changedAt) !== triage.stoppedAt) continue;

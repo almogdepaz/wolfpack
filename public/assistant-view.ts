@@ -88,16 +88,25 @@ export function createAssistantView(deps: {
   // All session actions are disabled until the local projection is available again.
   let lastSessions: FocusSession[] = [];
   const sessions = () => {
-    if (deps.sessionsAvailable()) lastSessions = deps.sessions();
-    lastSessions = lastSessions.filter(session => !session.machineUrl || deps.sessionMachineKnown(session.machineUrl));
-    return lastSessions.map(session => ({ ...session, machineInstallationId: session.machineInstallationId || (!session.machineUrl ? localInstallationId : undefined) }));
+    const fresh = deps.sessions().map(session => ({ ...session, machineInstallationId: session.machineInstallationId || (!session.machineUrl ? localInstallationId : undefined) }));
+    // A failed/pending list is not an authoritative empty list. Preserve its last episode
+    // facts, but never retain a retired installation or revive a deleted reachable session.
+    const retained = lastSessions.filter(session => session.machineUrl
+      ? deps.sessionMachineKnown(session.machineUrl) && !deps.machineReachable(session.machineInstallationId ?? "")
+      : !deps.sessionsAvailable());
+    lastSessions = [...fresh, ...retained.filter(old => !fresh.some(s => s.id === old.id && s.machineInstallationId === old.machineInstallationId))];
+    return lastSessions;
   };
   const nextOrder = (cap: number) => mergeFocus(doc(), sessions(), {
     cap, enabled: !!focus?.assistant?.enabled, stale: !!routines()?.stale,
     ttlHours: focus?.nextOrderTtlHours,
+    machineKnown: id => id === localInstallationId || !!deps.homeMachine(id),
     machineReachable: id => id === localInstallationId ? deps.sessionsAvailable() : deps.machineReachable(id),
   });
-  const nextRows = (cap: number) => !deps.sessionsAvailable() && !lastSessions.length ? [] : nextOrder(cap).rows;
+  const nextRows = (cap: number) => {
+    const rows = nextOrder(cap).rows;
+    return !deps.sessionsAvailable() && !lastSessions.length ? rows.filter(row => row.source === "assistant") : rows;
+  };
   const orderLabel = () => {
     const order = nextOrder(0);
     return order.order === "assistant" ? `ordered ${age(order.updatedAt!)} ago` : order.order === "expired" ? "by rules · order expired" : "by rules";

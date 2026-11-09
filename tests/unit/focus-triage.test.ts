@@ -9,7 +9,7 @@ const doc = (rows: FocusTriage[]) => reduceFocus(emptyFocus(), [
   { type: "add", intention: { id: "goal", title: "Ship focus", sessions: ["a", "b", "c"] } },
   { type: "next", rows, author: "assistant" },
 ], at);
-const options = { enabled: true, now, machineReachable: (id: string) => id === "home" };
+const options = { enabled: true, now, machineReachable: (id: string) => id === "home", machineKnown: (id: string) => ["home", "peer", "other"].includes(id) };
 const ids = (result: ReturnType<typeof mergeFocus>) => result.rows.map(r => r.session?.id ?? r.intention?.id ?? (r.triage && "sessionId" in r.triage.ref ? r.triage.ref.sessionId : ""));
 
 test("assistant order survives merge; unjudged needs-you above, other new rules below; cap after merge", () => {
@@ -69,6 +69,12 @@ test("unreachable peer refs are retained and disabled; reachable missing refs an
   expect(result.rows[0]).toMatchObject({ unavailable: true, source: "assistant", reason: "Reason for remote" });
   expect(result.rows[1]?.source).toBe("new-rules");
 });
+test("L3: unknown installation ids cannot consume a placeholder slot", () => {
+  const result = mergeFocus(doc([triage("remote", "suggest", "fabricated")]), [], options);
+  expect(result.rows.every(row => !row.triage)).toBe(true);
+  expect(ids(result)).toEqual(["goal"]);
+});
+
 test("intention refs do not duplicate starts; completed/dropped intentions no longer appear", () => {
   const focus = doc([{ ref: { intentionId: "goal" }, verdict: "suggest", reason: "Looks finished — mark done?", doneIntention: "goal" }]);
   const result = mergeFocus(focus, [], options);
