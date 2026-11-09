@@ -216,6 +216,7 @@ contracts.
 The npm package includes `skills/` for inspection, but it is the Wolfpack
 application package and Wolfpack does not install it inside Pi. The released CLI
 bundles the control skill and copies it into Pi only after explicit opt-in.
-Platform binaries do not expose skills as files. Setup does not edit Pi settings
-or overwrite skill directories. The cloned repository remains the auditable
+Platform binaries do not expose skills as files. Setup edits Pi settings only to
+move the old Pi Tasks entry's resource filters during the migration above, and
+does not overwrite skill directories. The cloned repository remains the auditable
 source of truth for manual installation.
