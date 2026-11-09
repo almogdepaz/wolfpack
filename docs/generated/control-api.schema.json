@@ -4587,7 +4587,13 @@
                 "RELAY_UNAVAILABLE",
                 "PEER_UNREACHABLE",
                 "DELIVERY_UNCONFIRMED",
-                "PEER_POLICY_REQUIRED"
+                "PEER_POLICY_REQUIRED",
+                "RELAY_STORAGE_BUSY",
+                "RELAY_STORAGE_UNAVAILABLE",
+                "RELAY_STORAGE_INVALID",
+                "RELAY_STORAGE_UNCERTAIN",
+                "RELAY_STORAGE_RECOVERING",
+                "RELAY_STORAGE_RECOVERY_BLOCKED"
               ]
             },
             "message": {
@@ -4602,6 +4608,9 @@
             "retryAfterMs": {
               "type": "integer",
               "minimum": 0
+            },
+            "ownerFatal": {
+              "const": true
             }
           },
           "required": [
@@ -5443,7 +5452,13 @@
                 "RELAY_UNAVAILABLE",
                 "PEER_UNREACHABLE",
                 "DELIVERY_UNCONFIRMED",
-                "PEER_POLICY_REQUIRED"
+                "PEER_POLICY_REQUIRED",
+                "RELAY_STORAGE_BUSY",
+                "RELAY_STORAGE_UNAVAILABLE",
+                "RELAY_STORAGE_INVALID",
+                "RELAY_STORAGE_UNCERTAIN",
+                "RELAY_STORAGE_RECOVERING",
+                "RELAY_STORAGE_RECOVERY_BLOCKED"
               ]
             },
             "message": {
@@ -5458,6 +5473,9 @@
             "retryAfterMs": {
               "type": "integer",
               "minimum": 0
+            },
+            "ownerFatal": {
+              "const": true
             }
           },
           "required": [

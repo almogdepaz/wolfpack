@@ -1,5 +1,7 @@
 # restart-safe task relay
 
+status: blocked draft implementation. R1–R4/R6 ownership, presentation, compatibility and retention corrections remain open. the Claude recovery policy remains an unanswered user decision. this document is not release approval.
+
 ## wire and ownership
 
 `restart-safe-v1` is the default relay profile. its endpoint path is `/api/task-relay/restart-safe-v1`; peer ingress and host-only resolution use `/peer` and `/resolve-peer`. `GET /api/task-relay/profile` advertises the selected profile, persisted store epoch and matching endpoint path. the inner opaque envelope protocol remains version 2.
@@ -18,11 +20,15 @@ restart-safe connect requires canonical session and generation UUIDs. the host f
 
 ## restart lifecycle
 
-server stop/start reopens the same journal and epoch. a server-owned worker timeout returns retryable `RELAY_UNAVAILABLE` with an explicit potentially committed outcome. the owning recovery facade confirms termination before creating a replacement worker; it does not replay the interrupted request. endpoint polling retries only its committed protocol envelope/ACK IDs. voluntary gateway shutdown fences replacement.
+server stop/start reopens the same journal and epoch. worker timeout returns potentially committed `RELAY_UNAVAILABLE`. poisoned commits return typed `RELAY_STORAGE_UNCERTAIN`, `ownerFatal: true`, and `mayHaveBeenDelivered: true`; the worker stops rather than continuing from uncertain RAM. the facade confirms termination before single-flight replacement and never replays the interrupted request. callers retry only their recorded protocol identities.
 
-endpoint journals belong to wolfpack-tasks, not this server. compatible endpoints restore assignments, event/message identities, pending outbox, insertion receipts, sparse delivery ACKs and terminal/parent-ACK reservations under the same broker UUID. Pi reconciles durable structured session entries before model insertion or wake. an interrupted wake without authoritative harness evidence is explicit `TASK_PRESENTATION_UNCONFIRMED`, never an automatic duplicate assignment execution. user tool actions are not recovery operations.
+recovery uses monotonic cooldowns of 1, 2, 4, 8, 16 and then 30 seconds. `RELAY_STORAGE_RECOVERING` rejects requests before admission and supplies `retryAfterMs`. only a successful connect from the still-current healthy owner resets recovery state; a delayed old success cannot clear a later failure. voluntary shutdown prevents replacement.
 
-fresh sessions, reused names, missing/unsupported journals and real store-epoch discontinuities cannot adopt old work. parent verification and one logical parent ACK remain separate from protocol acceptance and session teardown. no `/reload`, fresh assignment or manual rebind is required for an interruption whose identity and committed state remain recoverable.
+`RELAY_STORAGE_BUSY` reports another native owner; `RELAY_STORAGE_UNAVAILABLE` reports retryable opening I/O or access failure. neither implies acceptance or permits takeover. `RELAY_STORAGE_INVALID` permanently blocks unsupported/corrupt/unverifiable storage for that facade lifetime. `RELAY_STORAGE_RECOVERY_BLOCKED` preserves the root reservation when termination is unconfirmed. these failures never authorize a fresh epoch, an empty fallback or user-action replay.
+
+endpoint journals belong to wolfpack-tasks, not this server. endpoint ownership and Pi insertion proof are still under R1–R3 correction: broker UUID alone and RAM history are insufficient. existing presentation-blocking behavior is unapproved WIP, including the unresolved Claude policy. relay durability does not establish model consumption, execution or successful side effects.
+
+fresh sessions, reused names, missing/unsupported journals and real store-epoch discontinuities cannot adopt old work. parent verification and one logical parent ACK remain separate from protocol acceptance and session teardown. the source-level relay restart checks do not require `/reload`, a fresh assignment or manual rebind; complete installed endpoint lifecycle coverage remains required before that broader claim.
 
 ## trust and verification boundaries
 

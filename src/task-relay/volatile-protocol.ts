@@ -1,3 +1,4 @@
+import type { RelayOwnerFailureCode, RelayOwnerFailureData } from "./owner-failure.ts";
 import { MEMORY_RELAY_PROFILE, RESTART_SAFE_RELAY_PROFILE } from "./memory-store.ts";
 import type { MemoryRelayCode, MemoryRelayStore } from "./memory-store.ts";
 import type { RelayEndpoint, RelayEnvelope } from "./domain.ts";
@@ -41,8 +42,8 @@ export interface VolatilePeerRequest {
   readonly origin: string;
   readonly envelope: RelayEnvelope;
 }
-export type VolatileCode = MemoryRelayCode | "RELAY_PROFILE_REQUIRED" | "CALLER_NOT_FOUND" | "CALLER_DEAD"
-  | "SOURCE_MISMATCH" | "RELAY_UNAVAILABLE" | "PEER_UNREACHABLE" | "DELIVERY_UNCONFIRMED";
+export type VolatileCode = MemoryRelayCode | RelayOwnerFailureCode | "RELAY_PROFILE_REQUIRED" | "CALLER_NOT_FOUND" | "CALLER_DEAD"
+  | "SOURCE_MISMATCH" | "RELAY_STORAGE_RECOVERING" | "RELAY_UNAVAILABLE" | "PEER_UNREACHABLE" | "DELIVERY_UNCONFIRMED";
 export type VolatileValue =
   | { readonly kind: "connected"; readonly endpoint: RelayEndpoint; readonly leaseExpiresAt: string; readonly sessionId?: string }
   | { readonly kind: "resolved"; readonly endpoint: RelayEndpoint }
@@ -55,13 +56,18 @@ export type VolatileResult =
   | { readonly ok: true; readonly profile: RelayProfile; readonly epoch: string; readonly value: VolatileValue }
   | { readonly ok: false; readonly profile: RelayProfile; readonly epoch?: string;
       readonly error: { readonly code: VolatileCode; readonly message: string; readonly retryable: boolean;
-        readonly mayHaveBeenDelivered?: true; readonly retryAfterMs?: number } };
+        readonly mayHaveBeenDelivered?: true; readonly retryAfterMs?: number; readonly ownerFatal?: true } };
+
+export function relayOwnerFailureResult(failure: RelayOwnerFailureData, profile: RelayProfile, retryAfterMs?: number): VolatileResult {
+  return { ok: false, profile, error: { code: failure.code, message: failure.code, retryable: failure.retryable, ownerFatal: true,
+    ...(failure.mayHaveBeenDelivered && { mayHaveBeenDelivered: true }), ...(retryAfterMs !== undefined && { retryAfterMs }) } };
+}
 
 export function volatileFailure(code: VolatileCode, epoch?: string, retryAfterMs?: number, profile: RelayProfile = MEMORY_RELAY_PROFILE): VolatileResult {
   return { ok: false, profile, ...(epoch && { epoch }), error: {
     code, message: code,
-    retryable: ["RELAY_CAPACITY", "RELAY_UNAVAILABLE", "PEER_UNREACHABLE"].includes(code),
-    ...(["RELAY_RESET", "DELIVERY_UNCONFIRMED", "PEER_UNREACHABLE", "RELAY_UNAVAILABLE"].includes(code) && { mayHaveBeenDelivered: true as const }),
+    retryable: ["RELAY_CAPACITY", "RELAY_UNAVAILABLE", "PEER_UNREACHABLE", "RELAY_STORAGE_BUSY", "RELAY_STORAGE_UNAVAILABLE", "RELAY_STORAGE_UNCERTAIN", "RELAY_STORAGE_RECOVERING"].includes(code),
+    ...(["RELAY_RESET", "DELIVERY_UNCONFIRMED", "PEER_UNREACHABLE", "RELAY_UNAVAILABLE", "RELAY_STORAGE_UNCERTAIN"].includes(code) && { mayHaveBeenDelivered: true as const }),
     ...(retryAfterMs !== undefined && { retryAfterMs }),
   } };
 }

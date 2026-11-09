@@ -22,6 +22,7 @@ test("failed server-owned worker is replaced before the next request, retaining 
     hang = true;
     const interrupted = await gateway.volatile({ operation: "health", profile: gateway.profile, epoch: registered.epoch, callerSession: session, endpoint: registered.value.endpoint });
     expect(interrupted).toMatchObject({ ok: false, error: { code: "RELAY_UNAVAILABLE", retryable: true, mayHaveBeenDelivered: true } });
+    if (!interrupted.ok && interrupted.error.retryAfterMs) await Bun.sleep(interrupted.error.retryAfterMs + 10);
     expect(await gateway.volatileEpoch()).toBe(registered.epoch);
   } finally { await gateway.close(); rmSync(directory, { recursive: true, force: true }); }
 }, 15_000);
@@ -35,8 +36,9 @@ test("a poisoned native commit fences RAM and replaces the stopped worker after 
     const first = await connect(); expect(first.ok).toBe(true);
     await gateway.close(); chmodSync(directory, 0o500);
     gateway = createTaskRelayGateway(options); await gateway.initialize();
-    const failed = await connect(); expect(failed).toMatchObject({ ok: false, error: { code: "RELAY_UNAVAILABLE", mayHaveBeenDelivered: true } });
+    const failed = await connect(); expect(failed).toMatchObject({ ok: false, error: { code: "RELAY_STORAGE_UNCERTAIN", ownerFatal: true, mayHaveBeenDelivered: true } });
     chmodSync(directory, 0o700);
+    if (!failed.ok && failed.error.retryAfterMs) await Bun.sleep(failed.error.retryAfterMs + 10);
     const recovered = await connect(); expect(recovered).toMatchObject({ ok: true, epoch: first.epoch });
     if (first.ok && recovered.ok && first.value.kind === "connected" && recovered.value.kind === "connected") expect(recovered.value.endpoint).toEqual(first.value.endpoint);
   } finally { chmodSync(directory, 0o700); await gateway.close(); rmSync(directory, { recursive: true, force: true }); }

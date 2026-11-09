@@ -3,6 +3,7 @@ import { canonicalTailnetOrigin } from "../tailnet-machine-contract.ts";
 import { createLogger } from "../log.ts";
 import { RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION, isLocalRelay, isOpaqueRelayId, isRelayEndpoint, isRelayEnvelope } from "./domain.ts";
 import type { RelayEnvelope, RelayRegistration } from "./domain.ts";
+import { RelayOwnerFailure } from "./owner-failure.ts";
 import { createRecoveryStore } from "./recovery-store.ts";
 import { MEMORY_RELAY_LIMITS, MEMORY_RELAY_PROFILE, RESTART_SAFE_RELAY_PROFILE, MemoryRelayError, MemoryRelayStore } from "./memory-store.ts";
 import type { ForwardAttempt } from "./memory-store.ts";
@@ -233,6 +234,7 @@ export class VolatileRelayGateway {
       }
       return fail("INVALID_REQUEST");
     } catch (error) {
+      if (error instanceof RelayOwnerFailure) throw error; // The owner is poisoned, not an ordinary request rejection.
       return this.#failure(this.#stop.signal.aborted ? "RELAY_RESET"
         : error instanceof GatewayError || error instanceof MemoryRelayError ? error.code : "RELAY_UNAVAILABLE", this.epoch);
     } finally { if (peer) this.#peers--; else this.#ordinary--; }

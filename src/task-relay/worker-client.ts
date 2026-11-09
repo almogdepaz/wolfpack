@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { RelayOwnerFailure, isRelayOwnerFailureData, type RelayOwnerFailureData } from "./owner-failure.ts";
 import { assertSupportedBunRuntime } from "../runtime-version.ts";
 import { types as utilTypes } from "node:util";
 import { join, resolve } from "node:path";
@@ -6,7 +7,7 @@ import { createLogger } from "../log.ts";
 import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
-import { volatileFailure, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
+import { volatileFailure, relayOwnerFailureResult, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
 import { readPeerResponse, withPeerAbort } from "./peer-response.ts";
 import type { VolatileResult } from "./volatile-protocol.ts";
 import {
@@ -76,12 +77,17 @@ export class WorkerRelayGateway implements RelayGateway {
   #rejectReady!: (error: Error) => void;
   #startupTimer: ReturnType<typeof setTimeout>;
   #closed = false;
+  #ownerFailure: RelayOwnerFailureData | undefined;
   #stopping: Promise<void> | undefined;
+  #terminationConfirmed = false;
   #nextId = 0;
   #regularBytes = 0;
   #peerBytes = 0;
   #epoch: Promise<string | undefined> | undefined;
   get isClosed(): boolean { return this.#closed; }
+  get terminationConfirmed(): boolean { return this.#terminationConfirmed; }
+  get ownerFailure(): RelayOwnerFailureData | undefined { return this.#ownerFailure; }
+  #unavailable(): Error { return this.#ownerFailure ? new RelayOwnerFailure(this.#ownerFailure.code) : new WorkerUnavailable("relay worker unavailable; an interrupted mutation may have committed"); }
   get profile(): "volatile-v1" | "restart-safe-v1" { return this.#options.profile ?? "volatile-v1"; }
 
   constructor(suppliedOptions: WorkerGatewayOptions = { root: undefined }) {
@@ -126,6 +132,11 @@ export class WorkerRelayGateway implements RelayGateway {
   #message(message: WorkerMessage): void {
     if (this.#closed) return;
     if (!message || typeof message !== "object") { this.#fail("invalid relay worker message"); return; }
+    if (message.kind === "owner-failure") {
+      if (!isRelayOwnerFailureData(message.failure)) { this.#fail("invalid relay owner failure"); return; }
+      this.#ownerFailure = Object.freeze({ ...message.failure });
+      this.#fail(`relay owner unavailable: ${message.failure.code}`); return;
+    }
     if (message.kind === "ready") {
       clearTimeout(this.#startupTimer); this.#resolveReady(); return;
     }
@@ -142,6 +153,12 @@ export class WorkerRelayGateway implements RelayGateway {
     if (pending.peer) this.#peerBytes -= pending.bytes; else this.#regularBytes -= pending.bytes;
     if (!this.#pending.size) this.#worker.unref();
     if (message.error) {
+      if (typeof message.error !== "string") {
+        if (!isRelayOwnerFailureData(message.error)) { pending.reject(new WorkerUnavailable("invalid relay owner failure")); this.#fail("invalid relay owner failure"); return; }
+        this.#ownerFailure = Object.freeze({ ...message.error });
+        pending.reject(this.#unavailable());
+        this.#fail(`relay owner failed: ${message.error.code}`); return;
+      }
       pending.reject(new WorkerUnavailable("relay operation unavailable"));
       if (this.profile === "restart-safe-v1") this.#fail("relay operation failed; fence uncertain worker state before reopening its journal");
     } else pending.resolve(message.value);
@@ -192,12 +209,12 @@ export class WorkerRelayGateway implements RelayGateway {
     if (!this.#closed) {
       this.#closed = true; this.#epoch = undefined; clearTimeout(this.#startupTimer);
       for (const controller of this.#peerControllers) controller.abort();
-      const error = new WorkerUnavailable("relay worker unavailable; an interrupted mutation may have committed");
+      const error = this.#unavailable();
       this.#rejectReady(error);
       for (const item of this.#pending.values()) { clearTimeout(item.timer); item.reject(error); }
       this.#pending.clear(); this.#peerBytes = 0; this.#regularBytes = 0;
       // Never start a replacement before the old worker has actually exited.
-      this.#stopping = this.#worker.terminate().then(() => { this.#releaseOwner(); }, () => {
+      this.#stopping = this.#worker.terminate().then(() => { this.#terminationConfirmed = true; this.#releaseOwner(); }, () => {
         // Keep the ownership reservation if termination cannot be confirmed.
         log.warn("relay worker termination unconfirmed; root remains reserved");
       });
@@ -206,7 +223,7 @@ export class WorkerRelayGateway implements RelayGateway {
   }
 
   #call<M extends RelayWorkerMethod>(method: M, ...input: Parameters<RelayWorkerGateway[M]>): Promise<Awaited<ReturnType<RelayWorkerGateway[M]>>> {
-    if (this.#closed) return Promise.reject(new WorkerUnavailable("relay worker is closed"));
+    if (this.#closed) return Promise.reject(this.#unavailable());
     const peer = method === "volatilePeer";
     const count = [...this.#pending.values()].filter(p => p.peer === peer).length;
     if (count >= (peer ? LIMIT.peerRequests : LIMIT.regularRequests)) return Promise.reject(new WorkerUnavailable("relay queue is full"));
@@ -235,18 +252,19 @@ export class WorkerRelayGateway implements RelayGateway {
   async #volatileResult(method: "volatile" | "volatilePeer" | "volatileTopology", input: unknown): Promise<VolatileResult> {
     try { return await this.#call(method, input); }
     catch (error) {
+      if (error instanceof RelayOwnerFailure) return relayOwnerFailureResult(error.failure, this.profile);
       return volatileFailure(error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed && this.profile === "volatile-v1" ? "RELAY_RESET" : "RELAY_UNAVAILABLE", undefined, undefined, this.profile);
     }
   }
   async volatileEpoch(): Promise<string | undefined> {
-    if (this.#closed) throw new WorkerUnavailable("relay worker is closed");
+    if (this.#closed) throw this.#unavailable();
     if (!this.#epoch) {
       const pending = this.#call("volatileEpoch");
       this.#epoch = pending;
       void pending.catch(() => { if (this.#epoch === pending) this.#epoch = undefined; });
     }
     const epoch = await this.#epoch;
-    if (this.#closed) throw new WorkerUnavailable("relay worker is closed");
+    if (this.#closed) throw this.#unavailable();
     return epoch;
   }
   volatile(input: unknown) { return this.#volatileResult("volatile", input); }

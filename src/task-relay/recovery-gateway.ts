@@ -1,44 +1,98 @@
 import type { GatewayOptions } from "./gateway.ts";
 import type { RelayGateway } from "./worker-protocol.ts";
 import { WorkerRelayGateway, captureOptions } from "./worker-client.ts";
+import { RelayOwnerFailure, RelayRecoveryCooldown } from "./owner-failure.ts";
+import { relayOwnerFailureResult, volatileFailure, type VolatileResult } from "./volatile-protocol.ts";
 
-/** Server-owned recovery, not mutation replay. A timed-out request returns unknown;
- * the next caller reopens storage only after confirmed prior worker termination. */
+/** Server-owned recovery, never mutation replay. Failed owners terminate before
+ * a single-flight half-open replacement; each failed cycle backs off up to 30s. */
 export class RecoveryRelayGateway implements RelayGateway {
   readonly root: string;
   readonly profile = "restart-safe-v1" as const;
   #worker: WorkerRelayGateway;
   #replacing: Promise<WorkerRelayGateway> | undefined;
   #closed = false;
+  readonly #failedOwners = new WeakSet<WorkerRelayGateway>();
+  #consecutiveFailures = 0;
+  #retryAt = 0;
+  #blocked: RelayOwnerFailure | undefined;
   readonly #options: GatewayOptions;
   constructor(options: GatewayOptions) {
     this.#options = captureOptions(options);
     this.#worker = new WorkerRelayGateway({ ...this.#options, profile: this.profile });
     this.root = this.#worker.root;
   }
+  #remaining(): number { return Math.max(0, Math.ceil(this.#retryAt - performance.now())); }
+  #backoff(): void {
+    this.#consecutiveFailures = Math.min(this.#consecutiveFailures + 1, 6);
+    this.#retryAt = performance.now() + Math.min(30_000, 1000 * 2 ** (this.#consecutiveFailures - 1));
+  }
+  #observe(owner: WorkerRelayGateway): void {
+    if (!owner.isClosed || this.#failedOwners.has(owner)) return;
+    this.#failedOwners.add(owner);
+    if (owner.ownerFailure && !owner.ownerFailure.retryable) this.#blocked = new RelayOwnerFailure(owner.ownerFailure.code);
+    else this.#backoff();
+  }
   async #owner(): Promise<WorkerRelayGateway> {
     if (this.#closed) throw new Error("relay gateway is closed");
+    if (this.#blocked) throw this.#blocked;
+    if (this.#replacing) return this.#replacing;
     if (!this.#worker.isClosed) return this.#worker;
-    if (!this.#replacing) {
-      const prior = this.#worker;
-      this.#replacing = (async () => {
-        await prior.close(); // A failed termination retains the root reservation and prevents replacement.
-        if (this.#closed) throw new Error("relay gateway closed during recovery");
-        this.#worker = new WorkerRelayGateway({ ...this.#options, root: this.root, profile: this.profile });
-        await this.#worker.initialize();
-        return this.#worker;
-      })().finally(() => { this.#replacing = undefined; });
-    }
+    this.#observe(this.#worker);
+    if (this.#blocked) throw this.#blocked;
+    if (this.#remaining()) throw new RelayRecoveryCooldown(this.#remaining());
+    const prior = this.#worker;
+    this.#replacing = (async () => {
+      await prior.close();
+      if (!prior.terminationConfirmed) {
+        this.#blocked = new RelayOwnerFailure("RELAY_STORAGE_RECOVERY_BLOCKED");
+        throw this.#blocked; // The reservation stays held. No takeover, even if termination rejects.
+      }
+      if (this.#closed) throw new Error("relay gateway closed during recovery");
+      let replacement: WorkerRelayGateway | undefined;
+      try {
+        replacement = new WorkerRelayGateway({ ...this.#options, root: this.root, profile: this.profile });
+        this.#worker = replacement;
+        await replacement.initialize();
+        return replacement;
+      } catch (error) {
+        if (replacement?.isClosed) this.#observe(replacement);
+        else this.#backoff();
+        throw error;
+      }
+    })().finally(() => { this.#replacing = undefined; });
     return this.#replacing;
   }
-  async initialize() { await (await this.#owner()).initialize(); }
-  async volatileEpoch() { return (await this.#owner()).volatileEpoch(); }
-  async registrationsForSessions(ids: readonly string[]) { return (await this.#owner()).registrationsForSessions(ids); }
-  async endpointForSession(id: string) { return (await this.#owner()).endpointForSession(id); }
-  async endpointsForSessions(ids: readonly string[]) { return (await this.#owner()).endpointsForSessions(ids); }
-  async volatile(input: unknown) { return (await this.#owner()).volatile(input); }
-  async volatilePeer(input: unknown) { return (await this.#owner()).volatilePeer(input); }
-  async volatileTopology(input: unknown) { return (await this.#owner()).volatileTopology(input); }
+  async #perform<T>(operation: (owner: WorkerRelayGateway) => Promise<T>): Promise<T> {
+    const owner = await this.#owner();
+    try { return await operation(owner); }
+    finally { this.#observe(owner); }
+  }
+  async #result(operation: (owner: WorkerRelayGateway) => Promise<VolatileResult>): Promise<VolatileResult> {
+    try {
+      const result = await this.#perform(async owner => {
+        const value = await operation(owner);
+        if (value.ok && value.value.kind === "connected" && owner === this.#worker && !owner.isClosed) {
+          this.#consecutiveFailures = 0; this.#retryAt = 0;
+        }
+        return value;
+      });
+      if (result.ok) return result;
+      return this.#remaining() && result.error.retryable ? { ...result, error: { ...result.error, retryAfterMs: this.#remaining() } } : result;
+    } catch (error) {
+      if (error instanceof RelayOwnerFailure) return relayOwnerFailureResult(error.failure, this.profile, error.failure.retryable ? this.#remaining() || undefined : undefined);
+      if (error instanceof RelayRecoveryCooldown) return volatileFailure(error.code, undefined, error.retryAfterMs, this.profile);
+      throw error;
+    }
+  }
+  initialize() { return this.#perform(owner => owner.initialize()); }
+  volatileEpoch() { return this.#perform(owner => owner.volatileEpoch()); }
+  registrationsForSessions(ids: readonly string[]) { return this.#perform(owner => owner.registrationsForSessions(ids)); }
+  endpointForSession(id: string) { return this.#perform(owner => owner.endpointForSession(id)); }
+  endpointsForSessions(ids: readonly string[]) { return this.#perform(owner => owner.endpointsForSessions(ids)); }
+  volatile(input: unknown) { return this.#result(owner => owner.volatile(input)); }
+  volatilePeer(input: unknown) { return this.#result(owner => owner.volatilePeer(input)); }
+  volatileTopology(input: unknown) { return this.#result(owner => owner.volatileTopology(input)); }
   async close() {
     this.#closed = true;
     await this.#replacing?.catch(() => undefined);

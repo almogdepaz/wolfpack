@@ -1,3 +1,4 @@
+import { relayOpenFailure } from "./owner-failure.ts";
 import { MemoryRelayStore } from "./memory-store.ts";
 import { RelayRecoveryJournal } from "./recovery-journal.ts";
 import type { RelayInvestigationSink } from "./investigation.ts";
@@ -6,7 +7,9 @@ import type { RelayInvestigationSink } from "./investigation.ts";
  * operation commits its primary changes before exposing its result to the gateway.
  * SQLite writes only changed rows; derived indexes are never recovery authority. */
 export function createRecoveryStore(options: { readonly root: string; readonly peerOrigin?: string; readonly limits?: NonNullable<ConstructorParameters<typeof MemoryRelayStore>[0]>["limits"]; readonly investigation?: RelayInvestigationSink }): { store: MemoryRelayStore; close(): void } {
-  const journal = new RelayRecoveryJournal(options.root, options.peerOrigin);
+  let journal: RelayRecoveryJournal;
+  try { journal = new RelayRecoveryJournal(options.root, options.peerOrigin); }
+  catch (error) { throw relayOpenFailure(error); }
   try {
     const engine = new MemoryRelayStore({ limits: options.limits, investigation: options.investigation, recoverable: true, rows: journal.load() });
     journal.commit(engine.recoveryRows());
@@ -21,5 +24,5 @@ export function createRecoveryStore(options: { readonly root: string; readonly p
       };
     } });
     return { store, close: () => journal.close() };
-  } catch (error) { journal.close(); throw error; }
+  } catch (error) { journal.close(); throw relayOpenFailure(error); }
 }

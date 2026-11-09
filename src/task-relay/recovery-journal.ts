@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { RelayOwnerFailure } from "./owner-failure.ts";
 import { createHash } from "node:crypto";
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -61,7 +62,7 @@ export class RelayRecoveryJournal {
     } catch (error) { try { db.exec("ROLLBACK"); } catch {} db.close(); throw error; }
   }
   load(): readonly RecoveryRow[] { this.assertHealthy(); return [...this.#rows.values()]; }
-  assertHealthy(): void { if (this.#poisoned) throw new Error("relay commit uncertain; worker must reopen storage"); }
+  assertHealthy(): void { if (this.#poisoned) throw new RelayOwnerFailure("RELAY_STORAGE_UNCERTAIN"); }
   commit(rows: readonly RecoveryRow[]): void {
     this.assertHealthy();
     const next = new Map(rows.map(row => [JSON.stringify([row.bucket, row.key]), row]));
@@ -77,7 +78,7 @@ export class RelayRecoveryJournal {
       for (const row of removed) remove.run(row.bucket, row.key);
       db.exec("COMMIT");
       this.#rows.clear(); for (const [id, row] of next) this.#rows.set(id, row);
-    } catch (error) { this.#poisoned = true; try { db.exec("ROLLBACK"); } catch {} throw error; }
+    } catch (error) { this.#poisoned = true; try { db.exec("ROLLBACK"); } catch {} throw new RelayOwnerFailure("RELAY_STORAGE_UNCERTAIN", error); }
   }
   close(): void { if (!this.#closed) { this.#closed = true; this.#poisoned = true; this.#db.close(); } }
 }
