@@ -27,8 +27,10 @@ test("QA-19: phone header keeps actions on the first row across long status chan
   test.skip(info.project.name === "desktop", "phone geometry");
   let long = false;
   let offline = false;
+  let sessionsDown = false;
   await page.route("https://**", route => route.abort());
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [] } }));
+  await page.route(`${server.baseUrl}/api/sessions`, route => sessionsDown ? route.fulfill({ status: 503, json: { error: "sessions unavailable" } }) : route.continue());
   await page.route(url => url.pathname === "/api/focus", async route => {
     if (offline) return route.abort();
     const response = await route.fetch();
@@ -51,6 +53,24 @@ test("QA-19: phone header keeps actions on the first row across long status chan
   expect(longBox.height).toBeCloseTo(shortBox.height, 0);
   await expect(header.locator(":scope > span").first()).toHaveAttribute("title", "reading activity · not confirmed yet");
   await page.screenshot({ path: info.outputPath("header-long.png") });
+  sessionsDown = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  const note = header.locator(":scope > small");
+  await expect(note).toHaveText("sessions unavailable");
+  await page.screenshot({ path: info.outputPath("header-session-notice.png") });
+  const statusBox = (await header.locator(":scope > span").first().boundingBox())!;
+  expect(statusBox.width).toBeGreaterThan(44); // The status dot/text must not collapse behind the notice.
+  const noticeHeader = (await header.boundingBox())!;
+  const noticeActions = (await actions.boundingBox())!;
+  expect(noticeActions.y).toBeCloseTo(shortBox.y, 0);
+  expect((await note.boundingBox())!.y).toBeGreaterThanOrEqual(noticeActions.y + noticeActions.height);
+  expect(await note.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  long = false;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(header).not.toContainText("reading activity");
+  expect((await header.boundingBox())!.height).toBeCloseTo(noticeHeader.height, 0);
+  expect((await actions.boundingBox())!.y).toBeCloseTo(shortBox.y, 0);
+  sessionsDown = false;
   offline = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(header).toContainText("offline · read-only");

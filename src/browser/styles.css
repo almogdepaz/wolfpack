@@ -3077,8 +3077,8 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-header > small { flex-basis: 100%; order: 1; }
   .focus-header > span:not(.dot) { flex: 1 1 auto; min-width: 0; }
   .focus-header > span.focus-header-actions { flex: none; }
-  /* Status yields width, never the actions' first row; full text remains in the DOM/title. */
-  .assistant-column .focus-header { flex-wrap: nowrap; min-height: 44px; }
+  /* Status yields width, never the actions' first row; notices wrap below both. */
+  .assistant-column .focus-header { flex-wrap: wrap; min-height: 44px; }
   .assistant-column .focus-header > :first-child { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .focus-for, .focus-extra { display: none; }
   .focus-next .focus-action { min-height: 44px; margin-top: 0; padding-inline: 6px; }
