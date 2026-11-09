@@ -8,7 +8,7 @@ test.afterAll(async () => { await server?.close(); });
 test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: "wait" }); });
 
 async function runtimeFixture(page: Page, initial: string, target = "test-project", pinned = false) {
-  let runtime = { state: initial, authority: "fallback", source: "screen-fallback", freshness: "fresh", stale: false,
+  let runtime = { state: initial, authority: initial === "done" ? "program" : "fallback", source: initial === "done" ? "program-status" : "screen-fallback", freshness: "fresh", stale: false,
     changedAt: new Date().toISOString(), stoppedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
     transitionSequence: 5, unseen: true, stoppedSequence: initial === "output" ? 0 : 5, acknowledgedSequence: 0 };
   const acknowledgements: { sessionId: string; transitionSequence: number }[] = [];
@@ -58,7 +58,7 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" });
   await expect(next.locator("summary")).toContainText("stopped · 12m");
-  await next.getByRole("button", { name: "open test-project stopped" }).click();
+  await next.getByRole("button", { name: "review test-project stopped" }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect.poll(() => f.acknowledgements).toContainEqual({ sessionId: f.ids.get("test-project"), transitionSequence: 5 });
   await expect(page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
@@ -83,7 +83,7 @@ test("the seen 24-hour finished row uses the original stop time, not metadata ti
 test("reviewed work stays out of next when metadata becomes unseen again", async ({ page }) => {
   const f = await runtimeFixture(page, "done");
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" }).getByRole("button", { name: "open test-project stopped" }).click();
+  await page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" }).getByRole("button", { name: "review test-project stopped" }).click();
   await expect.poll(() => f.acknowledgements).toContainEqual({ sessionId: f.ids.get("test-project"), transitionSequence: 5 });
   f.metadata();
   await page.goto(server.baseUrl);

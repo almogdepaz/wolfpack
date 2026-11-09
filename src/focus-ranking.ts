@@ -1,9 +1,11 @@
 import { AGENT_STATUS_STATE } from "./agent-status-contract.js";
 import type { FocusDocument, FocusIntention } from "./focus-contract.js";
+import type { ProgramStatusKind } from "./program-status-contract.js";
 export interface FocusSession {
   id: string;
   name: string;
   state: string;
+  inputKind?: ProgramStatusKind;
   changedAt?: string;
   unseen?: boolean;
   stoppedSequence?: number;
@@ -25,6 +27,23 @@ export interface FocusAction {
   session?: FocusSession;
   reason: string;
 }
+/** Shared row vocabulary for the dashboard, assistant page, card and sidebar preview. */
+export function focusSessionLabel(session: FocusSession): string {
+  if (session.state === AGENT_STATUS_STATE.NEEDS_INPUT) return session.inputKind ?? "needs you";
+  if (stoppedUnseen(session)) return "stopped";
+  return session.state === AGENT_STATUS_STATE.DONE ? "finished" : session.state;
+}
+export function focusActionVerb(row: FocusAction): string {
+  if (!row.session) return "start";
+  switch (focusSessionLabel(row.session)) {
+    case "permission": return "approve";
+    case "question": return "answer";
+    case "auth": return "log in";
+    case "failed": return "retry";
+    case "stopped": return "review";
+    default: return "open";
+  }
+}
 export function linkedFocusSessions(intention: FocusIntention, sessions: readonly FocusSession[]): FocusSession[] {
   return sessions.filter(s => intention.sessions !== undefined
     ? intention.sessions.includes(s.id)
@@ -45,9 +64,10 @@ export function rankFocus(doc: FocusDocument, sessions: readonly FocusSession[],
   const starts: FocusAction[] = [];
   const finished: FocusAction[] = [];
   for (const intention of doc.intentions) {
+    // Completed intentions cannot hide later attention or unseen stops from the unlinked groups.
+    if (intention.done) continue;
     const live = linkedFocusSessions(intention, sessions);
     live.forEach(s => linked.add(s));
-    if (intention.done) continue;
     for (const session of live.filter(needsYou).sort(oldest)) {
       if (!attention.some(row => row.session === session)) attention.push({ kind: "open", intention, session, reason: "Needs you for this intention; intention order, then oldest first." });
     }

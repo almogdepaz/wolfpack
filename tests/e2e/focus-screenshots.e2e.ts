@@ -81,6 +81,8 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch();
     const body = await response.json();
+    const permission = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    permission.runtimeState.inputKind = "permission";
     const session = body.sessions.find((s: { name: string }) => s.name === "another-project");
     session.runtimeState = { ...session.runtimeState, state: "done", changedAt: new Date().toISOString(), authority: "program", stale: false };
     await route.fulfill({ response, json: body });
@@ -111,6 +113,16 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   expect.soft(aligned(today), "QA-6 today chevrons share a column with 0, 1 and 2 chips").toBeLessThanOrEqual(1);
   const chips = await view.locator(".focus-today > li > .focus-chips:not(:empty)").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(chips), "QA-6 chip groups share a right edge").toBeLessThanOrEqual(1);
+  await expect(view.getByRole("button", { name: "approve prompt-project permission", exact: true })).toHaveText("approve ›");
+  const actions = await view.locator(".focus-next > li > .focus-action").evaluateAll(els => els.map(el => {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const box = el.getBoundingClientRect();
+    return { width: box.width, right: box.right, textLeft: range.getBoundingClientRect().left, left: box.left };
+  }));
+  expect.soft(aligned(actions.map(a => a.width)), "one fixed action width, including approve").toBeLessThanOrEqual(1);
+  expect.soft(aligned(actions.map(a => a.right)), "action chevrons share an edge").toBeLessThanOrEqual(1);
+  for (const action of actions) expect.soft(action.textLeft, "longest verb fits its column").toBeGreaterThanOrEqual(action.left);
   const next = await view.locator(".focus-next > li > .focus-card > summary").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(next), "QA-7 open and start share a disclosure column").toBeLessThanOrEqual(1);
   expect.soft(aligned([...today, ...next]), "N1 next and today share one disclosure column").toBeLessThanOrEqual(1);

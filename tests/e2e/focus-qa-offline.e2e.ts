@@ -1,9 +1,72 @@
 import { test, expect } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { startTestServer, type TestServer } from "./helpers";
 
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
+
+test("row truth: broker outage has one page-voice notice, not a raw transport error", async ({ page }, info) => {
+  await page.setViewportSize({ width: info.project.name === "desktop" ? 1440 : 390, height: 900 });
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.assistant = { ...body.assistant, state: "unknown", error: "broker not connected", queued: 3,
+      unavailableReason: "sessions unavailable; reconnecting to the terminal broker" };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(page.locator("#assistant-content .focus-header")).toContainText("sessions unavailable · focus is saved here");
+  await expect(page.locator("#assistant-content")).not.toContainText("broker not connected");
+  await expect(page.locator("#focus-status")).toHaveText("3 queued · sends when the broker is back");
+  if (process.env.WOLFPACK_FOCUS_SHOTS) {
+    mkdirSync(process.env.WOLFPACK_FOCUS_SHOTS, { recursive: true });
+    await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-offline-broker-${info.project.name === "desktop" ? 1440 : 390}.png`), fullPage: true });
+  }
+});
+
+for (const mode of ["catching", "stale", "cached"] as const) for (const today of [true, false])
+  test(`row truth: ${mode} ${today ? "today omits" : "another day keeps"} weekday`, async ({ page }, info) => {
+    await page.clock.install({ time: new Date("2026-11-09T12:30:00Z") });
+    await page.setViewportSize({ width: info.project.name === "desktop" ? 1440 : 390, height: 900 });
+    const at = `2026-11-${today ? "09" : "08"}T03:12:00Z`;
+    let down = false;
+    await page.route(url => url.pathname === "/api/focus", async route => {
+      if (down) return route.abort("failed");
+      const response = await route.fetch();
+      const body = await response.json();
+      body.document.updatedAt = at;
+      body.routines = { catchingUp: mode === "catching" ? { machines: 1, since: at } : null,
+        stale: mode === "stale" ? { since: at } : null, unreachable: [{ name: "laptop", since: at }], surfaced: null };
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(server.baseUrl);
+    const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
+    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+    // Opening refreshes focus; finish that healthy read before simulating a later outage.
+    await (await opened).finished();
+    if (mode === "cached") {
+      down = true;
+      await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    }
+    const time = await page.evaluate(({ at, today }) => new Date(at).toLocaleString([], {
+      weekday: today ? undefined : "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }), { at, today });
+    const prefix = mode === "catching" ? "reading activity since" : mode === "stale" ? "quiet since" : "focus from";
+    await expect(page.locator("#assistant-content .focus-header > span").first()).toContainText(`${prefix} ${time}`);
+    if (mode !== "cached") await expect(page.locator("#assistant-content .focus-notes")).toContainText(`laptop not reached since ${time}`);
+    else {
+      await expect(page.locator("#assistant-content .focus-header")).toContainText("offline · read-only");
+      await expect(page.locator("#focus-status")).toHaveText("");
+      await expect(page.locator("#assistant-content")).not.toContainText("Failed to fetch");
+    }
+    if (process.env.WOLFPACK_FOCUS_SHOTS) {
+      mkdirSync(process.env.WOLFPACK_FOCUS_SHOTS, { recursive: true });
+      await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-time-${mode}-${today ? "today" : "other"}-${info.project.name === "desktop" ? 1440 : 390}.png`), fullPage: true });
+    }
+  });
 
 for (const firstFetchFails of [false, true]) test(`P1: cold ${firstFetchFails ? "failed" : "healthy"} session fetch is connecting until its first response`, async ({ page }) => {
   await page.addInitScript(() => {
@@ -163,7 +226,9 @@ test("R3: broker outage overrides a pending catch-up on every surface and recove
   await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeEnabled();
 });
 
-test("S2: a retired peer installation leaves the offline snapshot before local recovery", async ({ page }) => {
+test("S2: a retired peer installation leaves the offline snapshot before local recovery", async ({ page }, info) => {
+  const width = info.project.name === "desktop" ? 1440 : 390;
+  await page.setViewportSize({ width, height: 900 });
   const origin = "https://focus-peer.example.ts.net";
   const oldId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
   const newId = "42d17268-cde1-4b14-990a-44e468ec6333";
@@ -179,14 +244,16 @@ test("S2: a retired peer installation leaves the offline snapshot before local r
   })));
   await page.route(`${origin}/api/sessions`, route => route.fulfill(json({ sessions: [{
     name: replaced ? "replacement-worker" : "retired-worker",
-    identity: { wolfpackSessionId: replaced ? "mock:replacement" : "mock:retired" },
-    runtimeState: { state: "needs-input", authority: "program", stale: false, changedAt: new Date().toISOString() },
+    identity: { wolfpackSessionId: replaced ? "mock:replacement" : "mock:retired", projectPath: "/work/peer" },
+    runtimeState: { state: "needs-input", authority: "program", source: "program-status", freshness: "fresh", stale: false, changedAt: new Date().toISOString() },
   }] })));
   await page.route(`${server.baseUrl}/api/sessions`, route => localDown ? route.fulfill(json({ error: "local unavailable" }, 503)) : route.continue());
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next");
   await expect(next).toContainText("retired-worker", { timeout: 10_000 });
+  await expect(next.locator("li").filter({ hasText: "retired-worker" }).locator("summary .focus-for")).toHaveText("peer · focus peer");
+  if (process.env.WOLFPACK_FOCUS_SHOTS) await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-peer-${width}.png`), fullPage: true });
   localDown = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(next.locator("button").first()).toBeDisabled({ timeout: 10_000 });
@@ -209,7 +276,7 @@ test("QA-14: self-offline keeps last known next rows, disabled, then recovers", 
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.locator(".focus-next")).toContainText("prompt-project needs you");
+  await expect(view.locator(".focus-next")).toContainText("prompt-project question");
   const summaries = await view.locator(".focus-next .focus-card > summary").allTextContents();
   await context.setOffline(true);
   await expect(view).toContainText("offline · read-only", { timeout: 15_000 });

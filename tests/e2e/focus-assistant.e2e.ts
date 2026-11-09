@@ -16,7 +16,7 @@ async function withBlockedPromptProject(page: Page) {
     const response = await route.fetch();
     const body = await response.json();
     const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
-    session.runtimeState = { ...session.runtimeState, state: "needs-input", authority: "program", stale: false };
+    session.runtimeState = { ...session.runtimeState, state: "needs-input", authority: "program", source: "program-status", freshness: "fresh", stale: false };
     await route.fulfill({ response, json: body });
   });
 }
@@ -106,7 +106,7 @@ test("cached home-offline focus is read-only and still ranks live sessions", asy
   await expect(page.locator("#dashboard-focus .focus-next")).toBeVisible();
   await page.route(url => url.pathname === "/api/focus", route => route.abort("failed"));
   await page.reload();
-  await expect(page.locator("#dashboard-focus")).toContainText(/focus from \w+ \d\d:\d\d · .+ offline · read-only/);
+  await expect(page.locator("#dashboard-focus")).toContainText(/focus from (?:\w+ )?\d\d:\d\d · .+ offline · read-only/);
   // the cached copy carries the home's resolved name; no stale default machine name
   await expect(page.locator("#dashboard-focus")).toContainText("this machine offline");
   await expect(page.locator("#dashboard-focus .focus-header > .dot")).toHaveClass(/red/);
