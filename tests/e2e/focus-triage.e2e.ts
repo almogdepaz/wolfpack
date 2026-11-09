@@ -245,6 +245,27 @@ test("expired triage returns quiet stops to rules and names the expiry", async (
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 next:");
 });
 
+for (const outcome of ["submitted", "unverified"] as const) test(`R3: ${outcome} receipt survives reordered refs, equivalent timestamps and reload`, async ({ page }) => {
+  await seed(page);
+  let sends = 0;
+  await page.route("**/api/session-control/send", async route => {
+    sends++;
+    await route.fulfill({ json: { ok: true, outcome, delivery: outcome === "submitted" ? "delivered" : "unverified", observedMs: 1 } });
+  });
+  await page.goto(server.baseUrl);
+  const button = page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  await button.click();
+  await expect(button).toBeDisabled();
+  await write(page, [{ type: "next", author: "assistant", rows: [{ ref: { sessionId: "mock:prompt-project", machine }, stoppedAt: episode.replace("Z", "+00:00"), verdict: "suggest", reason: "Same draft, new formatting", suggestion: draft }] }]);
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#dashboard-focus")).toContainText("Same draft, new formatting");
+  await expect(button).toBeDisabled();
+  await page.reload();
+  await expect(button).toBeDisabled();
+  await expect(page.locator("#dashboard-focus")).toContainText(outcome === "submitted" ? "sent to prompt-project" : "delivery unconfirmed");
+  expect(sends).toBe(1);
+});
+
 test("an uncertain user send stays visible and cannot be tapped again", async ({ page }) => {
   await seed(page);
   await page.route("**/api/session-control/send", route => route.fulfill({ json: { ok: true, outcome: "unverified", delivery: "unverified", observedMs: 1 } }));

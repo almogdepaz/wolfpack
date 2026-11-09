@@ -4,6 +4,7 @@ import { mergeFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSession
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-send-contract";
+import { createFocusReceipts, focusSuggestionKey, type FocusSendReceipt } from "./focus-receipts";
 import type { AssistantTerminalTarget } from "./assistant-terminal";
 import { showAppDialog } from "./app-dialog";
 import { isRequestTimeout } from "./fetch-timeout";
@@ -266,18 +267,25 @@ export function createAssistantView(deps: {
     ? `${row.session.name} ${focusSessionLabel(row.session)}`
     : row.intention ? row.triage ? row.triage.reason : row.kind === "start" ? `start “${row.intention.title}”` : row.intention.title
     : `${row.triage && "sessionId" in row.triage.ref ? row.triage.ref.sessionId : "session"} · not reached`;
-  // User-tap receipts only (B1): not an assistant send log. Survive polls/order rewrites,
-  // keyed to exact target, episode and draft; uncertain delivery never offers a blind retry.
-  const sent = new Map<string, { label: string; at: string; state: "sending" | "sent" | "check" | "retry" }>();
-  const suggestionKey = (row: FocusAction) => JSON.stringify([row.triage?.ref, row.triage?.stoppedAt, row.triage?.suggestion]);
+  // Persist the user-tap fence before sending; a reload cannot turn uncertain delivery into a retry.
+  const sent = createFocusReceipts({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) });
+  const suggestionKey = (row: FocusAction) => row.triage ? focusSuggestionKey(row.triage) : "";
+  function receiptFor(row: FocusAction): FocusSendReceipt | undefined {
+    if (!row.triage?.suggestion) return;
+    try { return sent.get(suggestionKey(row)); }
+    catch (e) {
+      error = e instanceof Error ? e.message : "Suggestion receipts unavailable; check the session.";
+      return { label: error, at: new Date().toISOString(), state: "check" };
+    }
+  }
   const doneSuggestion = (row: FocusAction) => doc().intentions.find(i => i.id === row.triage?.doneIntention && !i.done);
   async function sendSuggestion(row: FocusAction) {
     if (!row.session || !row.triage?.suggestion || row.unavailable) return;
     const key = suggestionKey(row);
-    if (sent.has(key) && sent.get(key)!.state !== "retry") return;
+    const prior = receiptFor(row);
+    if (prior && prior.state !== "retry") return;
     const remember = (label: string, state: "sending" | "sent" | "check" | "retry" = "check") => {
-      sent.set(key, { label, at: new Date().toISOString(), state });
-      if (sent.size > 200) sent.delete(sent.keys().next().value!);
+      sent.put(key, { label, at: new Date().toISOString(), state });
       render();
     };
     remember("sending", "sending");
@@ -301,7 +309,7 @@ export function createAssistantView(deps: {
     return `<ol class="focus-next" aria-label="Next actions">${rows.map((row, index) => {
       const finished = row.session?.state === "done" && !stoppedUnseen(row.session);
       const title = nextTitle(row);
-      const receipt = sent.get(suggestionKey(row));
+      const receipt = receiptFor(row);
       const done = doneSuggestion(row);
       const suggest = !!row.triage?.suggestion;
       const verb = suggest ? (receipt ? receipt.state === "retry" ? "send" : receipt.state : "send") : done ? "done" : row.kind === "intention" ? "review" : focusActionVerb(row);
