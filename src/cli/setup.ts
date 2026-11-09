@@ -34,11 +34,26 @@ import {
 } from "../provider-readiness.js";
 import type { OpenableHarness } from "../agent-kind.js";
 import {
+  PI_TASKS_PACKAGE,
   acceptsPiIntegrationInstall,
+  findLegacyPiTasksEntry,
   installPiIntegration,
+  migratePiTasksPackage,
+  piTasksRestoreHintLines,
   piIntegrationDisclosureLines,
+  piTasksMigrationDisclosureLines,
   planPiIntegrationSetup,
 } from "./pi-integration.js";
+import {
+  acceptsClaudeIntegrationPrompt,
+  claudeConfigDirectory,
+  claudeIntegrationDisableLines,
+  claudeIntegrationDisclosureLines,
+  defaultClaudeSetupRunner,
+  enableClaudeTaskIntegration,
+  planClaudeIntegrationSetup,
+} from "./claude-integration-setup.js";
+import { claudeManagedSettingsDropInDirectory } from "../claude-integration.js";
 import { configureTailscaleRemoteAccess, inspectTailscaleSelf } from "./tailscale-remote-setup.js";
 import pkg from "../../package.json";
 
@@ -201,8 +216,47 @@ function reconcileSetupService(
   return { serviceInstalled, serviceRunning };
 }
 
+/** Offers the legacy Pi Tasks package migration; returns true when the legacy package is installed. */
+function handlePiTasksMigration(interactive: boolean): boolean {
+  const legacy = findLegacyPiTasksEntry();
+  if (legacy === undefined) return false;
+  print("");
+  print(bold("  Pi Tasks migration:"));
+  for (const line of piTasksMigrationDisclosureLines(legacy.source, legacy.filters)) {
+    print(dim(line));
+  }
+  if (!interactive) {
+    print(dim("  Non-interactive mode skipped the migration; run the commands above, or 'wolfpack setup' interactively."));
+    return true;
+  }
+  const migrate = ask("  Migrate Pi Tasks now? [y/N] ");
+  if (!acceptsPiIntegrationInstall(migrate)) {
+    print(dim("  Skipped the Pi Tasks migration."));
+    return true;
+  }
+  const result = migratePiTasksPackage({ pathValue: process.env.PATH });
+  if (result.status === "failed") {
+    print(red(`  Pi Tasks migration stopped at: ${result.failedCommand}`));
+    for (const command of result.retryCommands) print(dim(`  Retry: ${command}`));
+    if (result.settingsPath !== undefined && result.restoreEntry !== undefined) {
+      for (const line of piTasksRestoreHintLines({ settingsPath: result.settingsPath, restoreEntry: result.restoreEntry })) {
+        print(yellow(line));
+      }
+    }
+    return true;
+  }
+  print(green(`  Migrated Pi Tasks to ${PI_TASKS_PACKAGE}.`));
+  if (result.status === "filters_not_restored") {
+    for (const line of piTasksRestoreHintLines(result)) print(yellow(line));
+  }
+  print(dim("  Start a fresh Pi session, or run /reload in an existing session."));
+  return true;
+}
+
 function handleOptionalPiIntegration(interactive: boolean): void {
   const piIntegrationMode = planPiIntegrationSetup(process.env.PATH, interactive);
+  // An installed legacy package means the integration was already accepted once; migrate it instead.
+  if (piIntegrationMode !== "hidden" && handlePiTasksMigration(interactive)) return;
   if (piIntegrationMode === "prompt") {
     print("");
     print(bold("  Optional Pi integration:"));
@@ -238,6 +292,65 @@ function handleOptionalPiIntegration(interactive: boolean): void {
     print(dim("  Pi detected; non-interactive mode skipped the optional Pi integration."));
     print(dim("  Run 'wolfpack setup' interactively to install the control skill and Pi Tasks."));
   }
+}
+
+function withoutClaudeTaskIntegration(config: Config): Config {
+  const { claudeTaskIntegration: _claudeTaskIntegration, ...rest } = config;
+  return rest;
+}
+
+/**
+ * Offers, verifies or disables the Claude task integration. The flag is saved only after every step
+ * succeeds; a failure or a disable saves the config without it.
+ */
+function handleOptionalClaudeIntegration(interactive: boolean, config: Config): void {
+  const mode = planClaudeIntegrationSetup(process.env.PATH, interactive);
+  if (mode === "hidden") return;
+  const enabled = config.claudeTaskIntegration === true;
+  const dropInDirectory = claudeManagedSettingsDropInDirectory();
+  print("");
+  if (mode === "guidance") {
+    print(dim(enabled
+      ? "  Claude task integration is on; non-interactive mode skipped its checks."
+      : "  Claude detected; non-interactive mode skipped the optional Claude task integration."));
+    print(dim(`  Run 'wolfpack setup' interactively to ${enabled ? "verify or disable" : "enable"} it.`));
+    return;
+  }
+  print(bold("  Optional Claude task integration:"));
+  if (enabled) {
+    if (acceptsClaudeIntegrationPrompt(ask("  The Claude task integration is on. Disable it? [y/N] "))) {
+      saveConfig(withoutClaudeTaskIntegration(config));
+      print(green("  Disabled the Claude task integration."));
+      for (const line of claudeIntegrationDisableLines(dropInDirectory)) print(dim(line));
+      return;
+    }
+    print(dim("  Verifying the Claude task integration..."));
+  } else {
+    for (const line of claudeIntegrationDisclosureLines(dropInDirectory)) print(dim(line));
+    if (!acceptsClaudeIntegrationPrompt(ask("  Enable the Claude task integration? [y/N] "))) {
+      print(dim("  Skipped the optional Claude task integration."));
+      return;
+    }
+  }
+  const result = enableClaudeTaskIntegration({
+    run: defaultClaudeSetupRunner,
+    env: process.env,
+    claudeConfigDirectory: claudeConfigDirectory(),
+    dropInDirectory,
+    confirmDropIn: (dropInPath) => acceptsClaudeIntegrationPrompt(ask(`  Use sudo to write ${dropInPath}? [y/N] `)),
+    report: (line) => print(dim(line)),
+  });
+  if (result.status === "enabled") {
+    saveConfig({ ...config, claudeTaskIntegration: true });
+    print(green("  Enabled the Claude task integration."));
+    print(dim("  New claude sessions launch with the wolfpack-tasks channel."));
+    return;
+  }
+  saveConfig(withoutClaudeTaskIntegration(config));
+  print(red(`  Claude task integration stopped: ${result.reason}.`));
+  if (result.failedCommand !== undefined) print(dim(`  Failed command: ${result.failedCommand}`));
+  print(dim(`  Retry: ${result.retry}`));
+  print(dim("  The Claude task integration is off."));
 }
 
 async function installSetupService(options: {
@@ -381,6 +494,7 @@ export async function setup(options: SetupOptions = {}) {
       tailscaleHostname: verifiedRemoteHostname ?? previousConfig?.tailscaleHostname,
     }),
     ...(displayName && { displayName }),
+    ...(previousConfig?.claudeTaskIntegration === true && { claudeTaskIntegration: true }),
   };
   saveConfig(config);
   // The plist/unit embeds config values, while the remote-origin policy is
@@ -397,6 +511,7 @@ export async function setup(options: SetupOptions = {}) {
   });
 
   handleOptionalPiIntegration(interactive);
+  handleOptionalClaudeIntegration(interactive, config);
 
   ({ serviceInstalled, serviceRunning } = await installSetupService({
     serviceInstalled,

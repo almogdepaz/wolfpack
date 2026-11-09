@@ -1,4 +1,4 @@
-import { CREATABLE_HARNESSES } from "../agent-kind.ts";
+import { AGENT_KIND, CREATABLE_HARNESSES } from "../agent-kind.ts";
 import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
 import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
@@ -231,7 +231,10 @@ function sessionCreateRequestSchema(): JsonSchema {
   };
   const taskWorkerProperties = {
     projectDir: ref("ProjectDirectory"),
-    harness: { const: "pi" },
+    harness: {
+      enum: [AGENT_KIND.PI.id, AGENT_KIND.CLAUDE.id],
+      description: "Task-worker harness. taskWorkerPolicy and taskWorkerDryRun apply only to pi.",
+    },
     taskWorker: { const: true },
     readinessTimeoutMs: {
       type: "integer",
@@ -247,7 +250,7 @@ function sessionCreateRequestSchema(): JsonSchema {
       project: ref("ProjectName"),
       ...ordinaryProperties,
       projectDir: ref("ProjectDirectory"),
-      taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
+      taskWorker: boolean("Opt into task endpoint readiness (Pi Tasks, or the Claude wolfpack-tasks plugin) before success is returned"),
       readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
       taskWorkerPolicy: taskWorkerProperties.taskWorkerPolicy,
       taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
@@ -265,7 +268,7 @@ function sessionOpenRequestSchema(): JsonSchema {
   const ordinaryProperties = {
     harness: {
       ...ref("OpenableHarness"),
-      description: "Child harness; defaults to the parent harness. model and taskWorker require a pi child.",
+      description: "Child harness; defaults to the parent harness. model requires a pi child; taskWorker requires a pi or claude child, and taskWorkerPolicy and taskWorkerDryRun require pi.",
     },
     parentSession: ref("SessionName"),
     sessionName: ref("SessionName"),
@@ -303,7 +306,7 @@ function sessionOpenRequestSchema(): JsonSchema {
       project: ref("ProjectName"),
       projectDir: ref("ProjectDirectory"),
       ...ordinaryProperties,
-      taskWorker: boolean("Opt into Pi Tasks endpoint readiness before success is returned"),
+      taskWorker: boolean("Opt into task endpoint readiness (Pi Tasks, or the Claude wolfpack-tasks plugin) before success is returned"),
       readinessTimeoutMs: taskWorkerProperties.readinessTimeoutMs,
       taskWorkerPolicy: taskWorkerProperties.taskWorkerPolicy,
       taskWorkerDryRun: taskWorkerProperties.taskWorkerDryRun,
@@ -829,6 +832,10 @@ export const controlApiSource: ControlApiSource = {
       projectDir: string(),
       harness: string(),
       terminal: ref("SessionTerminalLiveness"),
+      runtimeState: {
+        ...ref("AgentRuntimeState"),
+        description: "Read-only last agent runtime state the session observer recorded (about every 5 seconds). Absent before the first observation. Advisory: not task readiness or completion evidence.",
+      },
       parentSession: ref("SessionControlIdentity"),
       taskEndpoint: ref("RelayEndpoint"),
       taskTransport: ref("TaskRelayRegistration"),

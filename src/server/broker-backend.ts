@@ -67,6 +67,9 @@ import {
   resolveAgentCommand,
 } from "../agent-kind.js";
 import { SHELL } from "./shell.js";
+import { CLAUDE_INTEGRATION } from "../claude-integration.js";
+import { claudeTaskIntegrationState } from "../config.js";
+import { taskWorkerHarness } from "./task-worker-readiness.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
 import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
@@ -125,6 +128,11 @@ export const BROKER_UNAVAILABLE_GRACE_MS = 3_000;
 
 const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
+
+export interface BrokerBackendOptions {
+  /** Read at each session create; defaults to the effective gate (config flag and current managed drop-in). */
+  readonly claudeTaskIntegration?: () => boolean;
+}
 
 /** Minimal subset of `BrokerClient` BrokerBackend depends on; eases test mocking. */
 export interface BrokerClientApi {
@@ -287,6 +295,22 @@ type SendAttemptStop =
   | { readonly kind: "observed" }
   | { readonly kind: "not_delivered"; readonly reason: SessionSendFailureReason };
 
+/**
+ * Pause between a submitted input's text and its Enter in a Claude session.
+ * Claude Code reads text and Enter that arrive in one chunk as a paste and
+ * keeps the Enter as a newline (seen with 2.1.319 for text over ~51
+ * characters), so Enter is a separate write once the text has been read.
+ * Other harnesses keep text and Enter in one write. Writes to one Claude
+ * session are serialized (`BrokerBackend.serializeClaudeWrite`) so another
+ * input cannot land between a text and its Enter.
+ */
+export const SESSION_SUBMIT_SETTLE_MS = 100;
+const ENTER_INPUT = "\r";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Each status read inside a send's observation window gets at most this much of it. */
 const SESSION_SEND_STATUS_READ_MAX_MS = 200;
 
@@ -406,8 +430,9 @@ function notDeliveredSend(reason: SessionSendFailureReason): SessionSendObservat
 
 /** Live state of one `writeObservedInput` call, handed to its callbacks. */
 interface InputObservation<T> {
+  /** Set just before the first write. */
   inputSent: boolean;
-  /** Wall clock taken just before the write; set with `inputSent`. */
+  /** Wall clock taken just before the submitting write: the Enter when there is one, else the input. */
   inputSentAtMs: number | undefined;
   /** Settle the observation; only the first call counts. */
   finish(result: T): void;
@@ -415,15 +440,28 @@ interface InputObservation<T> {
 
 interface ObservedInputSpec<T> {
   readonly sessionName: string;
+  /** Text to write, without Enter. */
   readonly input: string;
-  /** Bounds the whole call, subscribe included. */
+  /** Follow `input` with Enter. */
+  readonly submit: boolean;
+  /**
+   * Claude session: write a submitted, non-empty `input`'s Enter on its own after `SESSION_SUBMIT_SETTLE_MS`
+   * (otherwise in the same write), after earlier writes to the session have finished.
+   */
+  readonly separateEnter: boolean;
+  /** Bounds the whole call, subscribe and the wait for earlier writes included; once the text is written, its Enter is still written. */
   readonly timeoutMs: number;
-  readonly onTimeout: () => T;
+  /**
+   * The deadline passed. `subscribed` is false while the output subscription was not ready yet,
+   * and true once it was (the call then waited for earlier writes to a Claude session, or observed).
+   */
+  readonly onTimeout: (subscribed: boolean) => T;
   readonly onLifecycle: (event: SessionLifecycleEvent) => T;
   readonly onSubscribeError: (error: unknown) => T;
   readonly onWriteError: () => T;
   /** Output after the boundary; `observation.inputSent` separates pre-write frames. */
   readonly onOutput: (frame: OutputBinaryFrame, observation: InputObservation<T>) => void;
+  /** Runs after the first write, before a separate Enter. */
   readonly onInputSent?: (observation: InputObservation<T>) => void;
   /** Runs synchronously before subscribing, for callers with other evidence sources. */
   readonly bind?: (observation: InputObservation<T>) => void;
@@ -476,6 +514,10 @@ function commandAgent(command: string[] | undefined): string | undefined {
   return detectAgentKindFromCommandArgs(command);
 }
 
+function brokerSessionAgentKind(session: Pick<BrokerSessionInfo, "env" | "command">): AgentKind | string {
+  return inferAgentKind(envValue(session.env, "WOLFPACK_AGENT_KIND") || commandAgent(session.command));
+}
+
 interface PendingSessionExit {
   readonly name: string | undefined;
   readonly exitCode: number | undefined;
@@ -493,6 +535,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   private readonly client: BrokerClientApi;
   private readonly nameToId = new Map<string, string>();
   private readonly idToInfo = new Map<string, BrokerSessionInfo>();
+  /** Harness of each live session, keyed by session UUID; decides how Enter is written. */
+  private readonly idToAgentKind = new Map<string, AgentKind | string>();
+  /** Last queued write to each Claude session, keyed by session UUID; see `serializeClaudeWrite`. */
+  private readonly claudeWriteTails = new Map<string, Promise<void>>();
   /** Refcount of active onSessionData subscribers, keyed by session UUID. */
   private readonly subscriberRefs = new Map<string, SubscriberRef>();
   /** Lifecycle subscribers keyed by session UUID. */
@@ -506,8 +552,14 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
    */
   private readonly killRequests = new Map<string, KillRequestState>();
   private brokerUnavailableTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly claudeTaskIntegration: () => boolean;
 
-  constructor(client: BrokerClientApi, private readonly emitEvent: typeof publishEvent = publishEvent) {
+  constructor(
+    client: BrokerClientApi,
+    private readonly emitEvent: typeof publishEvent = publishEvent,
+    options: BrokerBackendOptions = {},
+  ) {
+    this.claudeTaskIntegration = options.claudeTaskIntegration ?? (() => claudeTaskIntegrationState().on);
     this.client = client;
   }
 
@@ -535,7 +587,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       wolfpackSessionId: s.id,
       wolfpackSessionName: s.name,
       projectPath: s.cwd,
-      agentKind: inferAgentKind(envValue(s.env, "WOLFPACK_AGENT_KIND") || commandAgent(s.command)),
+      agentKind: brokerSessionAgentKind(s),
       parentSession: extractParentSessionFromEnv(s.env),
       externalAgent: extractExternalAgentFromEnv(s.env, "broker_env"),
     }));
@@ -559,6 +611,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       if (!s.alive) continue;
       this.nameToId.set(s.name, s.id);
       this.idToInfo.set(s.id, { id: s.id, name: s.name, cwd: s.cwd, alive: s.alive });
+      this.idToAgentKind.set(s.id, identity?.agentKind ?? brokerSessionAgentKind(s));
       liveIds.add(s.id);
       liveNames.add(s.name);
     }
@@ -567,6 +620,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     }
     for (const id of this.idToInfo.keys()) {
       if (!liveIds.has(id)) this.idToInfo.delete(id);
+    }
+    for (const id of this.idToAgentKind.keys()) {
+      if (!liveIds.has(id)) this.idToAgentKind.delete(id);
     }
     reconcileParentInboxes(liveIds);
     return facts;
@@ -636,14 +692,23 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     if (options?.model !== undefined && agentCmd !== AGENT_KIND.PI.id) {
       throw new Error("model selection requires the pi harness");
     }
-    if (taskWorker !== undefined && (agentCmd !== AGENT_KIND.PI.id || options?.initialPrompt !== undefined)) {
-      throw new Error("task worker requires the Pi harness without an initial prompt");
+    const workerHarness = taskWorker === undefined ? undefined : taskWorkerHarness(taskWorker);
+    if (taskWorker !== undefined && (agentCmd !== workerHarness || options?.initialPrompt !== undefined)) {
+      throw new Error("task worker requires a matching Pi or Claude harness without an initial prompt");
+    }
+    // Only the stock claude command is known to accept --channels; wrapper commands launch unchanged.
+    const claudeChannels = agentCmd === AGENT_KIND.CLAUDE.id && this.claudeTaskIntegration();
+    if (workerHarness === AGENT_KIND.CLAUDE.id && !claudeChannels) {
+      throw new Error("Claude task workers require the Claude task integration; run wolfpack setup");
     }
     if (agentCmd === AGENT_KIND.SHELL.id) {
       if (options?.initialPrompt !== undefined) {
         throw new Error("initial prompt requires an agent harness");
       }
       shellCmd = SHELL;
+    } else if (taskWorker !== undefined && taskWorker.harness === AGENT_KIND.CLAUDE.id) {
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
+      commandArgs = [taskWorker.executable, "--channels", CLAUDE_INTEGRATION.channelSpec];
     } else if (taskWorker !== undefined) {
       // Test and compatibility callers can provide the pre-policy launch shape;
       // route-owned launches always provide the resolved fields.
@@ -660,26 +725,33 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; exec "$@"`;
       commandArgs = [taskWorker.executable, ...workerPiArgs];
     } else {
-      const modelArg = options?.model !== undefined ? ' --model "$1"' : "";
-      const promptArg = options?.initialPrompt !== undefined
-        ? ` "$${options.model !== undefined ? 2 : 1}"`
-        : "";
-      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${modelArg}${promptArg}; exec ${SHELL}`;
-      commandArgs = [
-        ...(options?.model !== undefined ? [options.model] : []),
-        ...(options?.initialPrompt !== undefined ? [options.initialPrompt] : []),
-      ];
+      // Values travel as positional argv ("$1", "$2", ...), never inside the shell text.
+      const positional = (value: string): string => {
+        commandArgs.push(value);
+        return `"$${commandArgs.length}"`;
+      };
+      const channelsArg = claudeChannels ? ` --channels ${positional(CLAUDE_INTEGRATION.channelSpec)}` : "";
+      const modelArg = options?.model !== undefined ? ` --model ${positional(options.model)}` : "";
+      // claude's --channels takes several values; `--` keeps it from consuming the prompt.
+      const endOfOptions = claudeChannels ? " --" : "";
+      const promptArg = options?.initialPrompt !== undefined ? `${endOfOptions} ${positional(options.initialPrompt)}` : "";
+      shellCmd = `{ setopt nonotify nomonitor 2>/dev/null; set +m 2>/dev/null; } ; clear; ${launchCmd}${channelsArg}${modelArg}${promptArg}; exec ${SHELL}`;
     }
 
     const agentKind = options?.agentKind ?? inferAgentKind(agentCmd);
     const taskWorkerEnv: Array<[string, string]> = [];
     if (taskWorker !== undefined) {
-      taskWorkerEnv.push(["PI_TASK_WORKER", "1"]);
+      // Older Pi Tasks releases read PI_TASK_WORKER; wolfpack-tasks reads either name.
+      taskWorkerEnv.push(["PI_TASK_WORKER", "1"], ["WOLFPACK_TASK_WORKER", "1"]);
       const port = process.env.WOLFPACK_PORT;
       if (port) taskWorkerEnv.push(["WOLFPACK_PORT", port]);
       const home = process.env.HOME;
       if (home) taskWorkerEnv.push(["HOME", home]);
-      taskWorkerEnv.push(...Object.entries(taskWorker.env ?? {}));
+      if (taskWorker.harness !== AGENT_KIND.CLAUDE.id) taskWorkerEnv.push(...Object.entries(taskWorker.env ?? {}));
+    } else if (claudeChannels) {
+      // The wolfpack-tasks plugin reaches the task relay through this port.
+      const port = process.env.WOLFPACK_PORT;
+      if (port) taskWorkerEnv.push(["WOLFPACK_PORT", port]);
     }
     const env: Array<[string, string]> = [
       ["TERM", "xterm-256color"],
@@ -726,6 +798,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       cwd: session.cwd,
       alive: session.alive,
     });
+    this.idToAgentKind.set(session.id, agentKind);
     const identity = getSessionIdentityStore().capture({
       wolfpackSessionId: session.id,
       wolfpackSessionName: session.name,
@@ -769,6 +842,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const name = this.idToInfo.get(id)?.name;
     if (name !== undefined && this.nameToId.get(name) === id) this.nameToId.delete(name);
     this.idToInfo.delete(id);
+    this.idToAgentKind.delete(id);
     getSessionIdentityStore().deleteById(id);
   }
 
@@ -829,8 +903,45 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   async send(name: string, text: string, noEnter?: boolean): Promise<void> {
     const id = await this.resolveId(name);
     if (!id) return;
-    const payload = noEnter ? text : text + "\r";
-    this.client.writeInput(id, TEXT_ENCODER.encode(payload));
+    const writeSingle = () => this.client.writeInput(id, TEXT_ENCODER.encode(noEnter ? text : text + ENTER_INPUT));
+    if (!this.separateEnter(id)) {
+      writeSingle();
+      return;
+    }
+    await this.serializeClaudeWrite(id, async () => {
+      if (noEnter || text === "") {
+        writeSingle();
+        return;
+      }
+      this.client.writeInput(id, TEXT_ENCODER.encode(text));
+      await delay(SESSION_SUBMIT_SETTLE_MS);
+      this.client.writeInput(id, TEXT_ENCODER.encode(ENTER_INPUT));
+    });
+  }
+
+  /** Claude sessions get Enter as its own write; see `SESSION_SUBMIT_SETTLE_MS`. */
+  private separateEnter(sessionId: string): boolean {
+    return this.idToAgentKind.get(sessionId) === AGENT_KIND.CLAUDE.id;
+  }
+
+  /**
+   * Runs `write` after every earlier write queued for the Claude session `sessionId`, so a
+   * text, its settle gap and its Enter stay together. Other sessions do not wait. A write
+   * that throws still releases the queue.
+   */
+  private async serializeClaudeWrite<T>(sessionId: string, write: () => Promise<T>): Promise<T> {
+    const previous = this.claudeWriteTails.get(sessionId);
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => { release = resolve; });
+    this.claudeWriteTails.set(sessionId, tail);
+    try {
+      // Tails only resolve, so an earlier failure cannot reject this wait.
+      await previous;
+      return await write();
+    } finally {
+      release();
+      if (this.claudeWriteTails.get(sessionId) === tail) this.claudeWriteTails.delete(sessionId);
+    }
   }
 
   /**
@@ -846,8 +957,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       return notDeliveredSend(this.targetUnavailableOutcome(sessionId, options.sessionName ?? info?.name));
     }
     const first = await this.observeSendAttempt(sessionId, info.name, {
-      input: options.noEnter ? options.text : `${options.text}\r`,
+      input: options.text,
       noEnter: options.noEnter,
+      separateEnter: this.separateEnter(sessionId),
       observeMs: options.observeMs,
       priorDelivered: false,
       sessionName: options.sessionName,
@@ -860,8 +972,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       return first;
     }
     const retry = await this.observeSendAttempt(sessionId, info.name, {
-      input: "\r",
+      input: "",
       noEnter: false,
+      separateEnter: this.separateEnter(sessionId),
       observeMs: options.observeMs,
       priorDelivered: true,
       sessionName: options.sessionName,
@@ -882,14 +995,17 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     attempt: {
       readonly input: string;
       readonly noEnter: boolean;
+      readonly separateEnter: boolean;
       readonly observeMs: number;
       readonly priorDelivered: boolean;
       readonly sessionName: string | undefined;
     },
   ): Promise<SessionSendObservationResult> {
     // One deadline covers the baseline read, subscribe, write and final read;
-    // nothing after it is evidence.
-    const deadlineMs = Date.now() + attempt.observeMs;
+    // nothing after it is evidence. The settle gap before a separate Enter is
+    // added so the window after Enter stays `observeMs`.
+    const settleMs = attempt.separateEnter && !attempt.noEnter && attempt.input !== "" ? SESSION_SUBMIT_SETTLE_MS : 0;
+    const deadlineMs = Date.now() + attempt.observeMs + settleMs;
     const statusReadMs = Math.min(SESSION_SEND_STATUS_READ_MAX_MS, Math.floor(attempt.observeMs / 4));
     const status = new SendStatusTimeline();
     let outputSeen = false;
@@ -899,9 +1015,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const stopUnlessWritten = (reason: SessionSendFailureReason): SendAttemptStop =>
       observation?.inputSent ? observed : notDelivered(reason);
     const decided = (): boolean => (attempt.noEnter ? outputSeen || status.changed() : status.submitted());
-    // The write must leave room for the final read; past this, nothing is written.
+    // The submitting write must leave room for the final read, and the text
+    // room for the settle gap before it; past this, nothing is written.
     const writeByMs = deadlineMs - statusReadMs;
-    const windowSpent = (): boolean => Date.now() >= writeByMs;
+    const windowSpent = (): boolean => Date.now() >= writeByMs - settleMs;
     // Listen before reading the baseline so no pushed change falls between them.
     const unsubscribeStatus = this.onProgramStatusById(sessionId, (record) => {
       if (Date.now() > deadlineMs) return;
@@ -917,15 +1034,21 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       const { result: stop } = await this.writeObservedInput<SendAttemptStop>(sessionId, {
         sessionName: name,
         input: attempt.input,
+        submit: !attempt.noEnter,
+        separateEnter: attempt.separateEnter,
         timeoutMs: writeByMs - Date.now(),
         bind: (bound) => { observation = bound; },
         beforeWrite: () => (windowSpent() ? notDelivered(SESSION_SEND_FAILURE_REASON.TIMED_OUT) : undefined),
-        onTimeout: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
+        // A subscribe that never became ready is a backend problem; a window spent in the queue is a timeout.
+        onTimeout: (subscribed) => stopUnlessWritten(subscribed
+          ? SESSION_SEND_FAILURE_REASON.TIMED_OUT
+          : SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
         onLifecycle: (event) => stopUnlessWritten(event.kind === "exited"
           ? SESSION_SEND_FAILURE_REASON.TARGET_EXITED
           : SESSION_SEND_FAILURE_REASON.REPLAY_GAP),
         onSubscribeError: (error) => stopUnlessWritten(this.subscribeErrorOutcome(error, targetUnavailableOutcome)),
-        onWriteError: () => notDelivered(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
+        // A failed Enter after a written text still delivered the text.
+        onWriteError: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
         onOutput: (frame, current) => {
           if (!current.inputSent || frame.data.length === 0 || Date.now() > deadlineMs) return;
           outputSeen = true;
@@ -949,7 +1072,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           outputSeen,
           priorDelivered: attempt.priorDelivered,
         }),
-        observedMs: writtenAtMs === undefined ? 0 : Math.min(Date.now(), deadlineMs) - writtenAtMs,
+        observedMs: writtenAtMs === undefined ? 0 : Math.max(0, Math.min(Date.now(), deadlineMs) - writtenAtMs),
       };
     } finally {
       unsubscribeStatus();
@@ -1029,7 +1152,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     let bufferCodePoints = 0;
     const { result, outputBoundarySeq } = await this.writeObservedInput<SessionPromptWaitResult["outcome"]>(sessionId, {
       sessionName: info.name,
-      input: options.noEnter ? options.prompt : `${options.prompt}\r`,
+      input: options.prompt,
+      submit: !options.noEnter,
+      separateEnter: this.separateEnter(sessionId),
       timeoutMs: options.timeoutMs,
       onTimeout: () => SESSION_PROMPT_OUTCOME.TIMED_OUT,
       onLifecycle: (event) => event.kind === "exited"
@@ -1140,8 +1265,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       }
     };
     spec.bind?.(observation);
+    const deadlineMs = Date.now() + spec.timeoutMs;
     const timer = setTimeout(
-      () => observation.finish(spec.onTimeout()),
+      () => observation.finish(spec.onTimeout(boundaryEstablished)),
       spec.timeoutMs,
     );
     const lifecycleUnsubscribe = this.onSessionLifecycleById(sessionId, (event) => {
@@ -1181,24 +1307,52 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       for (const pending of pendingOutput) appendOutput(pending);
       pendingOutput.length = 0;
       if (settled) return await settle();
-      const stop = spec.beforeWrite?.();
-      if (stop !== undefined) {
-        observation.finish(stop);
+      const separateEnter = spec.submit && spec.separateEnter && spec.input !== "";
+      const write = async (): Promise<void> => {
+        // A call that settled or ran out of time while it waited in the queue writes nothing.
+        if (settled) return;
+        const stop = spec.beforeWrite?.();
+        if (stop !== undefined) {
+          observation.finish(stop);
+          return;
+        }
+        if (Date.now() >= deadlineMs) {
+          observation.finish(spec.onTimeout(true));
+          return;
+        }
+        // Output can arrive while the write is still on the stack; it already
+        // follows the input.
+        observation.inputSent = true;
+        if (!separateEnter) observation.inputSentAtMs = Date.now();
+        try {
+          this.client.writeInput(sessionId, TEXT_ENCODER.encode(spec.submit && !separateEnter ? spec.input + ENTER_INPUT : spec.input));
+        } catch {
+          observation.inputSent = false;
+          observation.inputSentAtMs = undefined;
+          observation.finish(spec.onWriteError());
+          return;
+        }
+        spec.onInputSent?.(observation);
+        if (!separateEnter) return;
+        // The text is delivered, so its Enter follows even if the call has settled meanwhile.
+        await delay(SESSION_SUBMIT_SETTLE_MS);
+        observation.inputSentAtMs = Date.now();
+        try {
+          this.client.writeInput(sessionId, TEXT_ENCODER.encode(ENTER_INPUT));
+        } catch {
+          observation.inputSentAtMs = undefined;
+          observation.finish(spec.onWriteError());
+        }
+      };
+      if (!spec.separateEnter) {
+        await write();
         return await settle();
       }
-      // Output can arrive while the write is still on the stack; it already
-      // follows the input.
-      observation.inputSent = true;
-      observation.inputSentAtMs = Date.now();
-      try {
-        this.client.writeInput(sessionId, TEXT_ENCODER.encode(spec.input));
-      } catch {
-        observation.inputSent = false;
-        observation.inputSentAtMs = undefined;
-        observation.finish(spec.onWriteError());
-        return await settle();
-      }
-      spec.onInputSent?.(observation);
+      // The timer keeps running while earlier writes to this Claude session finish.
+      const queued = this.serializeClaudeWrite(sessionId, write);
+      await Promise.race([queued, terminal]);
+      // Once the text is written, the call returns only after its Enter.
+      if (observation.inputSent) await queued;
       return await settle();
     } finally {
       clearTimeout(timer);

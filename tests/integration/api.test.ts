@@ -22,6 +22,7 @@ import {
   SESSION_PROMPT_SELECTOR_MAX_CHARS,
 } from "../../src/session-prompt-contract.ts";
 import { MAX_INITIAL_PROMPT_LENGTH } from "../../src/validation.ts";
+import { claudeChannelDropInContent } from "../../src/claude-integration.ts";
 import { TASK_WORKER_POLICY_MAX_BYTES } from "../../src/task-worker-policy-contract.ts";
 import {
   createTailnetOriginServerFixture,
@@ -41,6 +42,10 @@ import type { JsonObject } from "../control-api-schema-validator.ts";
 // ─── Environment setup (must precede imports that read env) ──────────────────
 process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
+
+/** The public error text for a Claude task worker while `claudeTaskIntegration` is off. */
+const CLAUDE_TASK_INTEGRATION_OFF =
+  "Claude task workers need claudeTaskIntegration in ~/.wolfpack/config.json; run wolfpack setup to enable the Claude task integration";
 
 const PRIOR_WOLFPACK_DEV_DIR = process.env.WOLFPACK_DEV_DIR;
 const PRIOR_WOLFPACK_SESSION_IDENTITY_PATH = process.env.WOLFPACK_SESSION_IDENTITY_PATH;
@@ -70,7 +75,7 @@ process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = TEST_TASK_WORKER_POLICY_PATH;
 
 const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/server/task-gateways.ts");
 await __resetTaskRelayGatewayForTests();
-const { __resetJwtAuthConfig, __setDevDir } = await import("../../src/test-hooks.ts");
+const { __resetJwtAuthConfig, __setDevDir, __setClaudeManagedSettingsDropInDirectory } = await import("../../src/test-hooks.ts");
 const { DuplicateSessionError } = await import("../../src/server/backend-contract.ts");
 const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
 const { EventBus } = await import("../../src/event-bus.ts");
@@ -2855,6 +2860,123 @@ describe("agent-native top-level session control", () => {
     }
   });
 
+  test("gates Claude task workers on the integration opt-in and rejects Pi-only options", async () => {
+    const projectDir = createExplicitProjectDir("claude-task-worker-gate");
+    for (const body of [
+      { projectDir, harness: "claude", taskWorker: true, taskWorkerDryRun: true },
+      { projectDir, harness: "claude", taskWorker: true, taskWorkerPolicy: { extensionPolicy: "inherit" } },
+    ]) {
+      mockBackend.lastCreateArgs = null;
+      const res = await post("/api/session-create", body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers",
+        code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+
+    // The integration is off: a non-retryable precondition, so 400 with the fix in the message.
+    await mockBackend.createSession("claude-gate-parent", projectDir, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+    for (const [path, body, code] of [
+      ["/api/session-create", { projectDir, harness: "claude", taskWorker: true }, SESSION_CREATE_ERROR.INVALID_REQUEST],
+      ["/api/session-open", { projectDir, parentSession: "claude-gate-parent", harness: "claude", taskWorker: true }, SESSION_OPEN_ERROR.INVALID_REQUEST],
+    ] as const) {
+      mockBackend.lastCreateArgs = null;
+      const disabled = await post(path, body);
+      expect(disabled.status, path).toBe(400);
+      expect(await disabled.json()).toEqual({
+        error: CLAUDE_TASK_INTEGRATION_OFF,
+        code,
+      });
+      expect(mockBackend.lastCreateArgs).toBeNull();
+    }
+
+    // The flag is on but the managed drop-in is missing: the integration is still off.
+    const dropInRoot = mkdtempSync(join(tmpdir(), "wolfpack-claude-dropin-"));
+    const configPath = join(process.env.WOLFPACK_DIR!, "config.json");
+    const priorConfig = existsSync(configPath) ? readFileSync(configPath, "utf8") : undefined;
+    writeFileSync(configPath, JSON.stringify({ devDir: projectDir, port: 18790, claudeTaskIntegration: true }));
+    __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
+    try {
+      for (const [path, body, code] of [
+        ["/api/session-create", { projectDir, harness: "claude", taskWorker: true }, SESSION_CREATE_ERROR.INVALID_REQUEST],
+        ["/api/session-open", { projectDir, parentSession: "claude-gate-parent", harness: "claude", taskWorker: true }, SESSION_OPEN_ERROR.INVALID_REQUEST],
+      ] as const) {
+        mockBackend.lastCreateArgs = null;
+        const missing = await post(path, body);
+        expect(missing.status, path).toBe(400);
+        const missingBody = await missing.json() as { error: string; code: string };
+        expect(missingBody.code).toBe(code);
+        expect(missingBody.error).toContain(`${join(dropInRoot, "wolfpack.json")} is missing`);
+        expect(missingBody.error).toContain("wolfpack setup");
+        expect(missingBody.error).toContain("wolfpack doctor");
+        expect(mockBackend.lastCreateArgs).toBeNull();
+      }
+    } finally {
+      __setClaudeManagedSettingsDropInDirectory(undefined);
+      rmSync(dropInRoot, { recursive: true, force: true });
+      if (priorConfig === undefined) rmSync(configPath, { force: true });
+      else writeFileSync(configPath, priorConfig);
+    }
+  });
+
+  test("launches Claude task workers through create and open when the integration is enabled", async () => {
+    const root = createExplicitProjectDir("claude-task-worker");
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const executable = join(bin, "claude");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    const configPath = join(process.env.WOLFPACK_DIR!, "config.json");
+    const priorConfig = existsSync(configPath) ? readFileSync(configPath, "utf8") : undefined;
+    writeFileSync(configPath, JSON.stringify({ devDir: root, port: 18790, claudeTaskIntegration: true }));
+    const dropInRoot = join(root, "managed-settings.d");
+    mkdirSync(dropInRoot);
+    writeFileSync(join(dropInRoot, "wolfpack.json"), claudeChannelDropInContent());
+    __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
+    const priorPath = process.env.PATH;
+    process.env.PATH = `${bin}:${priorPath ?? ""}`;
+    mockBackend.setSessions([]);
+    mockBackend.setOnBeforeCreate((name) => {
+      queueMicrotask(() => {
+        void getTaskRelayGateway().volatile({
+          profile: "volatile-v1", operation: "connect", callerSession: name,
+          generation: `test-${name}`,
+          protocolVersions: [2],
+        });
+      });
+    });
+    try {
+      for (const [path, body, operation] of [
+        ["/api/session-create", { projectDir: root, harness: "claude", taskWorker: true, readinessTimeoutMs: 500 }, "createTopLevelSession"],
+        ["/api/session-open", { projectDir: root, parentSession: "claude-parent", harness: "claude", taskWorker: true, readinessTimeoutMs: 500 }, "openSession"],
+      ] as const) {
+        if (path === "/api/session-open") {
+          await mockBackend.createSession("claude-parent", root, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+        }
+        mockBackend.lastCreateArgs = null;
+        const response = await post(path, body);
+        const responseBody = await response.json();
+        expect(response.ok, JSON.stringify(responseBody)).toBeTruthy();
+        expect(validateSchema(responseSchema(operation), responseBody, controlApiSchema)).toEqual([]);
+        expect(responseBody).toMatchObject({ ok: true, harness: "claude", taskEndpoint: { relay: "wolfpack-pi-tasks-v2" } });
+        expect(mockBackend.lastCreateArgs).toMatchObject({
+          cmd: "claude",
+          agentKind: "claude",
+          taskWorker: { harness: "claude", executable },
+        });
+      }
+    } finally {
+      __setClaudeManagedSettingsDropInDirectory(undefined);
+      mockBackend.setOnBeforeCreate(null);
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+      if (priorConfig === undefined) rmSync(configPath, { force: true });
+      else writeFileSync(configPath, priorConfig);
+    }
+  });
+
   test("publishes task-worker create/open success and recovery bodies that satisfy generated schemas", async () => {
     const root = createExplicitProjectDir("task-worker-public");
     const executable = join(root, "pi");
@@ -3399,22 +3521,37 @@ describe("POST /api/session-open", () => {
 
   test("gates model and task-worker options on the child harness before creation or preflight", async () => {
     const projectDir = createExplicitProjectDir("non-pi child");
-    for (const option of [{ model: "anthropic/claude-opus-4-1" }, { taskWorker: true }, { taskWorker: true, taskWorkerDryRun: true }]) {
+    const piOnly = "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers";
+    for (const [harness, option, error] of [
+      ["claude", { model: "anthropic/claude-opus-4-1" }, "invalid session-open request"],
+      ["claude", { taskWorker: true, model: "anthropic/claude-opus-4-1" }, piOnly],
+      ["claude", { taskWorker: true, taskWorkerDryRun: true }, piOnly],
+      ["claude", { taskWorker: true, taskWorkerPolicy: { extensionPolicy: "inherit" } }, piOnly],
+      ["codex", { taskWorker: true }, "invalid session-open request"],
+    ] as const) {
+      mockBackend.lastCreateArgs = null;
       const res = await post("/api/session-open", {
-        projectDir, parentSession: "wolf-1", harness: "claude", ...option,
+        projectDir, parentSession: "wolf-1", harness, ...option,
       });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({
-        error: "invalid session-open request", code: SESSION_OPEN_ERROR.INVALID_REQUEST,
-      });
+      expect(res.status, JSON.stringify(option)).toBe(400);
+      expect(await res.json()).toEqual({ error, code: SESSION_OPEN_ERROR.INVALID_REQUEST });
       expect(mockBackend.lastCreateArgs).toBeNull();
     }
+    const disabled = await post("/api/session-open", {
+      projectDir, parentSession: "wolf-1", harness: "claude", taskWorker: true,
+    });
+    expect(disabled.status).toBe(400);
+    expect(await disabled.json()).toEqual({
+      code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      error: CLAUDE_TASK_INTEGRATION_OFF,
+    });
+    expect(mockBackend.lastCreateArgs).toBeNull();
   });
 
   test.each(
     ["available", "missing-executable", "missing-extension"].flatMap(resource =>
       [false, true].map(dryRun => [resource, dryRun] as const)),
-  )("rejects inherited non-pi task workers with %s resources (dry-run: %s)", async (resource, dryRun) => {
+  )("routes inherited Claude task workers to the Claude preflight with %s Pi resources (dry-run: %s)", async (resource, dryRun) => {
     useParentHarness("claude");
     const projectDir = createExplicitProjectDir("inherited-worker-gate");
     const executable = join(projectDir, "pi");
@@ -3435,9 +3572,11 @@ describe("POST /api/session-open", () => {
         projectDir, parentSession: "wolf-1", taskWorker: true,
         ...(dryRun && { taskWorkerDryRun: true }),
       });
+      // Dry runs report Pi spawn policy only; a real Claude launch is rejected while the opt-in is off.
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({
-        error: "invalid session-open request", code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+        error: dryRun ? "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers" : CLAUDE_TASK_INTEGRATION_OFF,
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
       });
       expect(mockBackend.lastCreateArgs).toBeNull();
     } finally {
@@ -3968,6 +4107,30 @@ describe("session control API", () => {
     } finally {
       mockBackend.listIdentities = originalListIdentities;
     }
+  });
+
+  test("status adds the last observed runtime state read-only and omits it before any observation", async () => {
+    mockBackend.setCapturePane(async () => {
+      throw new Error("status must not read terminal output");
+    });
+    const unobserved = await (await get("/api/session-control/status?session=wolf-1")).json();
+    expect(unobserved.ok).toBe(true);
+    expect(unobserved).not.toHaveProperty("runtimeState");
+
+    const observedAt = new Date().toISOString();
+    const runtimeState = getAgentRuntimeStateStore().reduce({
+      sessionKey: "mock:wolf-1",
+      broker: { state: "alive", observedAt },
+      sources: [],
+      fallback: { rawOutputChanged: true, observedAt },
+      currentRun: { runId: "mock:wolf-1" },
+    }, { persist: false });
+    const transitionSequence = runtimeState.transitionSequence;
+
+    const status = await (await get("/api/session-control/status?session=wolf-1")).json();
+    expect(status.runtimeState).toEqual(JSON.parse(JSON.stringify(runtimeState)));
+    expect(status.runtimeState).toMatchObject({ state: "output", authority: "fallback" });
+    expect(getAgentRuntimeStateStore().get("mock:wolf-1")?.transitionSequence).toBe(transitionSequence);
   });
 
   test("status resolves stable ids and fails closed for dead listed sessions", async () => {

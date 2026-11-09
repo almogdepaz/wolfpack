@@ -5,10 +5,15 @@
  * and produces canned ControlResponse values. No real socket, no real broker.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { BROKER_UNAVAILABLE_GRACE_MS, BrokerBackend, type BrokerClientApi } from "../../src/server/broker-backend";
+import {
+  BROKER_UNAVAILABLE_GRACE_MS,
+  BrokerBackend,
+  SESSION_SUBMIT_SETTLE_MS,
+  type BrokerClientApi,
+} from "../../src/server/broker-backend";
 import type { ControlResponse, OutputBinaryFrame, EventBody } from "../../src/broker/codec";
 import {
   BrokerNotConnectedError,
@@ -23,6 +28,8 @@ import {
 import { sessionIdentityStorePath } from "../../src/server/session-identity";
 import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
 import { SHELL } from "../../src/server/shell";
+import { claudeChannelDropInContent } from "../../src/claude-integration";
+import { __setClaudeManagedSettingsDropInDirectory } from "../../src/test-hooks";
 import { renderSnapshotToAnsi } from "../../src/broker/snapshot-render";
 import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event-bus";
 import type { WolfpackEvent } from "../../src/events-contract";
@@ -621,7 +628,7 @@ describe("BrokerBackend.createSession", () => {
     ["isolated", true],
   ] as const)("launches task workers with explicit %s extension policy argv and no initial prompt", async (extensionPolicy, expectsNoExtensions) => {
     const executable = "/opt/homebrew/bin/pi";
-    const extension = "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts";
+    const extension = "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/wolfpack-tasks/src/extension.ts";
     const model = "openai-codex/gpt-5.6-terra";
     client.setHandler("create_session", () => okResp({
       session: sessionInfo({ name: "worker", id: SESSION_UUID_1 }),
@@ -651,6 +658,146 @@ describe("BrokerBackend.createSession", () => {
     expect(shellCommand).not.toContain(executable);
     expect(shellCommand).not.toContain(extension);
     expect(params.env).toContainEqual(["PI_TASK_WORKER", "1"]);
+    expect(params.env).toContainEqual(["WOLFPACK_TASK_WORKER", "1"]);
+  });
+
+  describe("Claude task integration", () => {
+    const channelSpec = "plugin:wolfpack-tasks@wolfpack-tasks";
+    const priorPort = process.env.WOLFPACK_PORT;
+    beforeEach(() => {
+      process.env.WOLFPACK_PORT = "18790";
+      client.setHandler("create_session", () => okResp({
+        session: sessionInfo({ name: "claude-one", id: SESSION_UUID_1 }),
+      }));
+    });
+    afterEach(() => {
+      if (priorPort === undefined) delete process.env.WOLFPACK_PORT;
+      else process.env.WOLFPACK_PORT = priorPort;
+    });
+
+    function backendWithIntegration(enabled: boolean): BrokerBackend {
+      return new BrokerBackend(client, undefined, { claudeTaskIntegration: () => enabled });
+    }
+
+    function createParams(): { command: string[]; env: Array<[string, string]> } {
+      return client.requests.find((request) => request.method === "create_session")?.params as {
+        command: string[]; env: Array<[string, string]>;
+      };
+    }
+
+    describe("default gate: config flag and current managed drop-in", () => {
+      const configPath = join(process.env.WOLFPACK_DIR!, "config.json");
+      let dropInRoot = "";
+      beforeEach(() => {
+        dropInRoot = mkdtempSync(join(tmpdir(), "wolfpack-claude-dropin-"));
+        __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
+        writeFileSync(configPath, JSON.stringify({ devDir: "/tmp", port: 18790, claudeTaskIntegration: true }));
+      });
+      afterEach(() => {
+        __setClaudeManagedSettingsDropInDirectory(undefined);
+        rmSync(configPath, { force: true });
+        rmSync(dropInRoot, { recursive: true, force: true });
+      });
+
+      test("a valid drop-in adds --channels", async () => {
+        writeFileSync(join(dropInRoot, "wolfpack.json"), claudeChannelDropInContent());
+        await new BrokerBackend(client).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+        expect(createParams().command.slice(3)).toEqual(["wolfpack-agent", channelSpec]);
+        expect(createParams().env).toContainEqual(["WOLFPACK_PORT", "18790"]);
+      });
+
+      for (const [name, content] of [
+        ["absent", undefined],
+        ["malformed", "{not json"],
+        ["channels disabled", JSON.stringify({ channelsEnabled: false, allowedChannelPlugins: [{ plugin: "wolfpack-tasks", marketplace: "wolfpack-tasks" }] })],
+        ["wrong allowlist", JSON.stringify({ channelsEnabled: true, allowedChannelPlugins: [] })],
+      ] as const) {
+        test(`a ${name} drop-in launches claude without --channels`, async () => {
+          if (content !== undefined) writeFileSync(join(dropInRoot, "wolfpack.json"), content);
+          await new BrokerBackend(client).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+          const params = createParams();
+          expect(params.command).toHaveLength(3);
+          expect(params.command[2]).toContain("; claude; exec");
+          expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_PORT");
+        });
+      }
+    });
+
+    test("off: the stock claude launch is unchanged", async () => {
+      await backendWithIntegration(false).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+      const params = createParams();
+      expect(params.command).toHaveLength(3);
+      expect(params.command[2]).toContain("; claude; exec");
+      expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_PORT");
+    });
+
+    test("off: a stock claude prompt stays one positional argument", async () => {
+      await backendWithIntegration(false).createSession("claude-one", "/tmp/proj", "claude", loadSettings, {
+        agentKind: "claude", initialPrompt: "review the diff",
+      });
+      const params = createParams();
+      expect(params.command[2]).toContain('; clear; claude "$1"; exec');
+      expect(params.command.slice(3)).toEqual(["wolfpack-agent", "review the diff"]);
+    });
+
+    test("on: the stock claude launch without a prompt adds only --channels", async () => {
+      await backendWithIntegration(true).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+      const params = createParams();
+      expect(params.command[2]).toContain('; clear; claude --channels "$1"; exec');
+      expect(params.command.slice(3)).toEqual(["wolfpack-agent", channelSpec]);
+    });
+
+    test("on: the stock claude launch adds --channels as argv and WOLFPACK_PORT", async () => {
+      // --channels takes several values, so `--` stops it from consuming the prompt.
+      await backendWithIntegration(true).createSession("claude-one", "/tmp/proj", "claude", loadSettings, {
+        agentKind: "claude", initialPrompt: "review the diff",
+      });
+      const params = createParams();
+      expect(params.command[2]).toContain('; clear; claude --channels "$1" -- "$2"; exec');
+      expect(params.command.slice(3)).toEqual(["wolfpack-agent", channelSpec, "review the diff"]);
+      expect(params.env).toContainEqual(["WOLFPACK_PORT", "18790"]);
+      expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_TASK_WORKER");
+    });
+
+    test("on: wrapper commands and other harnesses launch unchanged", async () => {
+      const enabled = backendWithIntegration(true);
+      await enabled.createSession("claude-one", "/tmp/proj", "claude-wrapper", loadSettings);
+      await enabled.createSession("claude-one", "/tmp/proj", "pi", loadSettings);
+      const creates = client.requests.filter((request) => request.method === "create_session")
+        .map((request) => request.params as { command: string[]; env: Array<[string, string]> });
+      expect(creates.map((params) => params.command.length)).toEqual([3, 3]);
+      expect(creates[0]!.command[2]).toContain("; claude-wrapper; exec");
+      expect(creates[1]!.command[2]).toContain("; pi; exec");
+      for (const params of creates) expect(params.env.map(([key]) => key)).not.toContain("WOLFPACK_PORT");
+    });
+
+    test("claude task workers get --channels, worker env and no prompt", async () => {
+      const executable = "/opt/homebrew/bin/claude";
+      await backendWithIntegration(true).createSession("claude-one", "/tmp/worktree", "claude", loadSettings, {
+        agentKind: "claude",
+        taskWorker: { harness: "claude", executable },
+      });
+      const params = createParams();
+      expect(params.command).toEqual([SHELL, "-lic", params.command[2], "wolfpack-agent", executable, "--channels", channelSpec]);
+      expect(params.command[2]).toContain('exec "$@"');
+      expect(params.env).toContainEqual(["WOLFPACK_TASK_WORKER", "1"]);
+      expect(params.env).toContainEqual(["PI_TASK_WORKER", "1"]);
+      expect(params.env).toContainEqual(["WOLFPACK_PORT", "18790"]);
+    });
+
+    test("claude task workers require the integration and the claude harness", async () => {
+      const claudeWorker = { harness: "claude" as const, executable: "/opt/homebrew/bin/claude" };
+      await expect(backendWithIntegration(false).createSession("claude-one", "/tmp/worktree", "claude", loadSettings, {
+        agentKind: "claude", taskWorker: claudeWorker,
+      })).rejects.toThrow("Claude task integration");
+      await expect(backendWithIntegration(true).createSession("claude-one", "/tmp/worktree", "pi", loadSettings, {
+        agentKind: "pi", taskWorker: claudeWorker,
+      })).rejects.toThrow("task worker");
+      await expect(backendWithIntegration(true).createSession("claude-one", "/tmp/worktree", "claude", loadSettings, {
+        agentKind: "claude", taskWorker: { executable: "/opt/homebrew/bin/pi", extension: "/tmp/extension.ts" },
+      })).rejects.toThrow("task worker");
+      expect(client.requests.filter((request) => request.method === "create_session")).toEqual([]);
+    });
   });
 
   test("persists parent identity in broker env and public session identity", async () => {
@@ -949,6 +1096,34 @@ describe("BrokerBackend send/sendKey/writeToTerminal route through input_binary"
     expect(new TextDecoder().decode(client.inputs[0].data)).toBe("ls\r");
   });
 
+  test("send to a pi session keeps text and Enter in one write", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "pi-live", id: SESSION_UUID_2, env: [["WOLFPACK_AGENT_KIND", "pi"]] })],
+    }));
+    await backend.list();
+    await backend.send("pi-live", "a prompt that is longer than fifty-one characters in total");
+    expect(client.inputs.map((input) => new TextDecoder().decode(input.data)))
+      .toEqual(["a prompt that is longer than fifty-one characters in total\r"]);
+  });
+
+  test("send to a claude session writes the text, then Enter in its own write after the settle gap", async () => {
+    // Claude Code reads one chunk of text plus Enter as a paste and keeps the Enter as a newline.
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "claude-live", id: SESSION_UUID_2, env: [["WOLFPACK_AGENT_KIND", "claude"]] })],
+    }));
+    await backend.list();
+    const writtenAt: number[] = [];
+    client.onWriteInput = () => { writtenAt.push(Date.now()); };
+    await backend.send("claude-live", "ls");
+    expect(client.inputs.map((input) => input.sessionId)).toEqual([SESSION_UUID_2, SESSION_UUID_2]);
+    expect(client.inputs.map((input) => new TextDecoder().decode(input.data))).toEqual(["ls", "\r"]);
+    expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
+
+    client.inputs.length = 0;
+    await backend.send("claude-live", "");
+    expect(client.inputs.map((input) => new TextDecoder().decode(input.data))).toEqual(["\r"]);
+  });
+
   test("send with noEnter omits the trailing CR", async () => {
     await backend.send("live", "partial", true);
     expect(new TextDecoder().decode(client.inputs[0].data)).toBe("partial");
@@ -1079,6 +1254,25 @@ describe("BrokerBackend.promptAndWaitForOutput", () => {
     expect(client.inputs).toHaveLength(1);
     expect(client.inputs[0]?.sessionId).toBe(SESSION_UUID_1);
     expect(new TextDecoder().decode(client.inputs[0]?.data)).toBe("run now\r");
+  });
+
+  test("writes a claude prompt's Enter separately after the settle gap", async () => {
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1, env: [["WOLFPACK_AGENT_KIND", "claude"]] })],
+    }));
+    await backend.list();
+    const writtenAt: number[] = [];
+    client.onWriteInput = (sessionId, data) => {
+      writtenAt.push(Date.now());
+      if (new TextDecoder().decode(data) === "\r") client.emit(sessionId, new TextEncoder().encode("READY"), 18n);
+    };
+    const result = await (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      SESSION_UUID_1,
+      { prompt: "run now", outputContains: "READY", noEnter: false, timeoutMs: 1_000 },
+    );
+    expect(result).toEqual({ outcome: "matched", outputBoundarySeq: "17" });
+    expect(client.inputs.map((input) => new TextDecoder().decode(input.data))).toEqual(["run now", "\r"]);
+    expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
   });
 
   test("matches UTF-8 output split across post-boundary frames", async () => {
@@ -1712,6 +1906,107 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(inputs()).toEqual(["hello\r"]);
   });
 
+  describe("claude sessions", () => {
+    beforeEach(async () => {
+      client.setHandler("list_sessions", () => okResp({
+        sessions: [sessionInfo({ name: "live", id: SESSION_UUID_1, env: [["WOLFPACK_AGENT_KIND", "claude"]] })],
+      }));
+      await backend.list();
+    });
+
+    test("writes Enter separately after the settle gap and observes the window after it", async () => {
+      // Regression: claude 2.1.319 kept a same-write Enter as a newline for text over ~51 characters.
+      rootStatus = status("idle", 1);
+      const text = "reply with just the word PONGA and nothing else, do not use tools ok";
+      const writtenAt: number[] = [];
+      client.onWriteInput = (sessionId, data) => {
+        writtenAt.push(Date.now());
+        if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+        else client.emit(sessionId, data, 18n);
+      };
+      const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text, noEnter: false, observeMs: 30, ensureSubmitted: false,
+      });
+      expect(inputs()).toEqual([text, "\r"]);
+      expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
+      expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+    });
+
+    test("a status record between the text and its Enter is baseline, not submission", async () => {
+      rootStatus = status("idle", 1);
+      client.onWriteInput = (sessionId, data) => {
+        if (new TextDecoder().decode(data) !== "\r") {
+          client.emit(sessionId, data, 18n);
+          pushStatus(afterWrite("working"));
+          pushStatus(afterWrite("idle", 2));
+        }
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "draft", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+      expect(inputs()).toEqual(["draft", "\r"]);
+    });
+
+    test("judges submission from program status, not from input-like screen text", async () => {
+      // Claude shows a dim suggestion (for example "❯ say Q3") in an empty input after a turn.
+      rootStatus = status("idle", 1);
+      client.onWriteInput = (sessionId, data) => {
+        if (new TextDecoder().decode(data) !== "\r") return;
+        pushStatus(afterWrite("working"));
+        client.emit(sessionId, encoder.encode("\n❯ say Q3\n"), 18n);
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "say Q2", noEnter: false, observeMs: 200, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+
+      client.inputs.length = 0;
+      rootStatus = status("idle", Date.now());
+      client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("❯ say Q4"), 19n);
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "say Q4", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+    });
+
+    test("an empty text with Enter is one write with no settle gap", async () => {
+      rootStatus = status("idle", 1);
+      client.onWriteInput = () => pushStatus(afterWrite("working"));
+      const started = Date.now();
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "", noEnter: false, observeMs: 5_000, ensureSubmitted: false,
+      })).toMatchObject({ outcome: "submitted" });
+      expect(inputs()).toEqual(["\r"]);
+      expect(Date.now() - started).toBeLessThan(SESSION_SUBMIT_SETTLE_MS);
+    });
+
+    test("ensureSubmitted re-sends one carriage return after a swallowed Enter", async () => {
+      rootStatus = status("idle", 1);
+      let enters = 0;
+      client.onWriteInput = (sessionId, data) => {
+        // The first Enter is swallowed; the re-sent one submits.
+        if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, encoder.encode("run tests"), 18n);
+        else if (++enters === 2) pushStatus(afterWrite("working"));
+      };
+      const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: true,
+      });
+      expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted", retried: true });
+      expect(inputs()).toEqual(["run tests", "\r", "\r"]);
+    });
+
+    test("a failed Enter after a written text still reports the text as delivered", async () => {
+      rootStatus = status("idle", 1);
+      client.onWriteInput = (sessionId) => {
+        client.emit(sessionId, encoder.encode("run tests"), 18n);
+        client.inputError = new Error("input plane down");
+      };
+      const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      });
+      expect(result.delivery).toBe("delivered");
+      expect(inputs()).toEqual(["run tests"]);
+    });
+  });
+
   test("releases its output subscription and status listener", async () => {
     rootStatus = status("idle", 1);
     await backend.sendAndObserveSubmission(SESSION_UUID_1, {
@@ -1719,6 +2014,131 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     });
     expect(client.activeSubscriptions.has(SESSION_UUID_1)).toBe(false);
     pushStatus(status("working", 3));
+  });
+});
+
+describe("BrokerBackend Claude submit serialization", () => {
+  // Regression: a second submit to one Claude session wrote its text in the first one's settle gap,
+  // so the first Enter submitted both texts together and the second Enter submitted nothing.
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const writes = (): Array<[string, string]> =>
+    client.inputs.map((input) => [input.sessionId, decoder.decode(input.data)]);
+  const texts = (): string[] => writes().map(([, text]) => text);
+  const prompt = (sessionId: string, text: string, timeoutMs: number) =>
+    (backend as unknown as PromptWaitBackend).promptAndWaitForOutput(
+      sessionId,
+      { prompt: text, outputContains: `${text} done`, noEnter: false, timeoutMs },
+    );
+
+  beforeEach(async () => {
+    const claudeEnv: Array<[string, string]> = [["WOLFPACK_AGENT_KIND", "claude"]];
+    client.setHandler("list_sessions", () => okResp({
+      sessions: [
+        sessionInfo({ name: "a", id: SESSION_UUID_1, env: claudeEnv }),
+        sessionInfo({ name: "b", id: SESSION_UUID_2, env: claudeEnv }),
+      ],
+    }));
+    client.setHandler("session_info", (params) => okResp({
+      session: sessionInfo({ name: "a", id: (params as { session_id: string }).session_id, env: claudeEnv }),
+    }));
+    await backend.list();
+  });
+
+  test("two overlapping sends to one session write each text with its own Enter", async () => {
+    await Promise.all([backend.send("a", "text1"), backend.send("a", "text2")]);
+    expect(texts()).toEqual(["text1", "\r", "text2", "\r"]);
+  });
+
+  test("a prompt that overlaps a send waits for the send's Enter", async () => {
+    let enters = 0;
+    client.onWriteInput = (sessionId, data) => {
+      if (decoder.decode(data) === "\r" && ++enters === 2) client.emit(sessionId, encoder.encode("text2 done"), 18n);
+    };
+    const [, result] = await Promise.all([backend.send("a", "text1"), prompt(SESSION_UUID_1, "text2", 2_000)]);
+    expect(texts()).toEqual(["text1", "\r", "text2", "\r"]);
+    expect(result.outcome).toBe("matched");
+  });
+
+  test("an observed send that overlaps a send waits for the send's Enter", async () => {
+    await Promise.all([
+      backend.send("a", "text1"),
+      backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "text2", noEnter: false, observeMs: 1_000, ensureSubmitted: false,
+      }),
+    ]);
+    expect(texts()).toEqual(["text1", "\r", "text2", "\r"]);
+  });
+
+  test("a no-Enter text does not land in another submit's settle gap", async () => {
+    await Promise.all([backend.send("a", "text1"), backend.send("a", "draft", true)]);
+    expect(texts()).toEqual(["text1", "\r", "draft"]);
+  });
+
+  test("submits to two different sessions do not wait for each other", async () => {
+    await Promise.all([backend.send("a", "text1"), backend.send("b", "text2")]);
+    expect(writes()).toEqual([
+      [SESSION_UUID_1, "text1"],
+      [SESSION_UUID_2, "text2"],
+      [SESSION_UUID_1, "\r"],
+      [SESSION_UUID_2, "\r"],
+    ]);
+  });
+
+  test("a failed first submit releases the session for the next one", async () => {
+    const writeInput = client.writeInput.bind(client);
+    let failed = false;
+    client.writeInput = (sessionId, data) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("input plane down");
+      }
+      writeInput(sessionId, data);
+    };
+    const settled = await Promise.allSettled([backend.send("a", "text1"), backend.send("a", "text2")]);
+    expect(settled.map((entry) => entry.status)).toEqual(["rejected", "fulfilled"]);
+    expect(texts()).toEqual(["text2", "\r"]);
+  });
+
+  test("a failed Enter releases the session for the next submit", async () => {
+    let calls = 0;
+    const writeInput = client.writeInput.bind(client);
+    client.writeInput = (sessionId, data) => {
+      if (++calls === 2) throw new Error("input plane down");
+      writeInput(sessionId, data);
+    };
+    const settled = await Promise.allSettled([backend.send("a", "text1"), backend.send("a", "text2")]);
+    expect(settled.map((entry) => entry.status)).toEqual(["rejected", "fulfilled"]);
+    expect(texts()).toEqual(["text1", "text2", "\r"]);
+  });
+
+  test("an observed send whose deadline expires in the queue reports timed_out and writes nothing", async () => {
+    // Three earlier submits hold the queue ~300 ms; the observed send's timer (~115 ms) fires while it waits.
+    const [, , , result] = await Promise.all([
+      backend.send("a", "text1"),
+      backend.send("a", "text2"),
+      backend.send("a", "text3"),
+      backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "late", noEnter: false, observeMs: 20, ensureSubmitted: false,
+      }),
+    ]);
+    expect(result).toMatchObject({ delivery: "not_delivered", reason: "timed_out" });
+    expect(texts()).toEqual(["text1", "\r", "text2", "\r", "text3", "\r"]);
+  });
+
+  test("an observed send whose subscribe never becomes ready stays backend_unavailable", async () => {
+    client.subscribeGate = new Promise<void>(() => {});
+    const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "late", noEnter: false, observeMs: 20, ensureSubmitted: false,
+    });
+    expect(result).toMatchObject({ delivery: "not_delivered", reason: "backend_unavailable" });
+    expect(client.inputs).toEqual([]);
+  });
+
+  test("a prompt whose deadline expires in the queue writes nothing", async () => {
+    const [, result] = await Promise.all([backend.send("a", "text1"), prompt(SESSION_UUID_1, "text2", 30)]);
+    expect(result.outcome).toBe("timed_out");
+    expect(texts()).toEqual(["text1", "\r"]);
   });
 });
 

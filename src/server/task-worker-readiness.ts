@@ -2,6 +2,7 @@ import { accessSync, constants, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
+import type { ClaudeTaskIntegrationGate } from "../claude-integration.js";
 import { canonicalReadableRegularFile } from "./task-worker-resource.js";
 import {
   resolveTaskWorkerPolicy,
@@ -40,7 +41,11 @@ export const TASK_WORKER_ERROR = {
 export type TaskWorkerErrorCode = typeof TASK_WORKER_ERROR[keyof typeof TASK_WORKER_ERROR];
 export type TaskWorkerCleanup = "completed" | "unconfirmed";
 
-export interface TaskWorkerLaunch {
+export type TaskWorkerHarness = typeof AGENT_KIND.PI.id | typeof AGENT_KIND.CLAUDE.id;
+
+export interface PiTaskWorkerLaunch {
+  /** Absent means Pi, the original task-worker harness. */
+  readonly harness?: typeof AGENT_KIND.PI.id;
   readonly executable: string;
   /** Mandatory Pi Tasks extension; also present first in extensions. */
   readonly extension: string;
@@ -48,6 +53,18 @@ export interface TaskWorkerLaunch {
   readonly extensions?: ResolvedTaskWorkerPolicy["extensions"];
   readonly env?: ResolvedTaskWorkerPolicy["env"];
   readonly piOptions?: ResolvedTaskWorkerPolicy["piOptions"];
+}
+
+/** Claude task workers get their task tools from the wolfpack-tasks plugin; the launch adds only `--channels`. */
+export interface ClaudeTaskWorkerLaunch {
+  readonly harness: typeof AGENT_KIND.CLAUDE.id;
+  readonly executable: string;
+}
+
+export type TaskWorkerLaunch = PiTaskWorkerLaunch | ClaudeTaskWorkerLaunch;
+
+export function taskWorkerHarness(launch: TaskWorkerLaunch): TaskWorkerHarness {
+  return launch.harness ?? AGENT_KIND.PI.id;
 }
 
 export interface PreparedTaskWorkerLaunch extends ResolvedTaskWorkerPolicy {
@@ -91,6 +108,8 @@ interface WaitForTaskWorkerReadinessInput extends TaskWorkerTransportLookup {
   readonly sessionId: string;
   readonly session?: string;
   readonly projectDir: string;
+  /** The harness the launch requested; absent means Pi. */
+  readonly harness?: TaskWorkerHarness;
   readonly timeoutMs: number;
   readonly pollIntervalMs?: number;
   readonly cleanupTimeoutMs?: number;
@@ -120,22 +139,18 @@ function configuredPath(
   return path;
 }
 
-function executableFromPath(pathValue: string | undefined): string {
-  if (pathValue === undefined) {
-    throw new TaskWorkerReadinessError(
-      TASK_WORKER_ERROR.PREFLIGHT_FAILED,
-      "pi executable is not available on PATH",
-    );
-  }
+function executableFromPath(pathValue: string | undefined, command: string = AGENT_KIND.PI.cmd): string {
+  const unavailable = () => new TaskWorkerReadinessError(
+    TASK_WORKER_ERROR.PREFLIGHT_FAILED,
+    `${command} executable is not available on PATH`,
+  );
+  if (pathValue === undefined) throw unavailable();
   for (const entry of pathValue.split(delimiter)) {
     if (!entry) continue;
-    const candidate = resolve(entry, "pi");
+    const candidate = resolve(entry, command);
     if (isExecutableFile(candidate)) return candidate;
   }
-  throw new TaskWorkerReadinessError(
-    TASK_WORKER_ERROR.PREFLIGHT_FAILED,
-    "pi executable is not available on PATH",
-  );
+  throw unavailable();
 }
 
 function isExecutableFile(path: string): boolean {
@@ -169,9 +184,15 @@ export function prepareTaskWorkerLaunch(
   }
 
   const agentDirectory = env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+  // Pi installs user-scope npm packages under `<agentDir>/npm`. Prefer the renamed package and keep
+  // the legacy `pi-tasks` install working until setup migrates it.
+  const installedExtensions = ["wolfpack-tasks", "pi-tasks"].map((name) =>
+    join(agentDirectory, "npm", "node_modules", "@sgtbeatdown", name, "src", "extension.ts"));
+  const defaultExtension = installedExtensions.find((path) => canonicalReadableRegularFile(path) !== undefined)
+    ?? installedExtensions[0]!;
   const extension = configuredPath(
     env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION,
-    join(agentDirectory, "npm", "node_modules", "@sgtbeatdown", "pi-tasks", "src", "extension.ts"),
+    defaultExtension,
     "WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION",
   );
   if (canonicalReadableRegularFile(extension) === undefined) {
@@ -194,15 +215,30 @@ export function prepareTaskWorkerLaunch(
   }
 }
 
+/**
+ * Resolves the claude executable for a Claude task worker. Spawn policies are Pi-only, so none is read.
+ * `integration` is the effective gate: the `claudeTaskIntegration` flag and the current managed drop-in.
+ */
+export function prepareClaudeTaskWorkerLaunch(
+  env: Readonly<Record<string, string | undefined>>,
+  integration: ClaudeTaskIntegrationGate,
+): ClaudeTaskWorkerLaunch {
+  if (!integration.on) {
+    throw new TaskWorkerReadinessError(TASK_WORKER_ERROR.PREFLIGHT_FAILED, integration.error);
+  }
+  return { harness: AGENT_KIND.CLAUDE.id, executable: executableFromPath(env.PATH, AGENT_KIND.CLAUDE.cmd) };
+}
+
 function readySession(
   inspection: SessionInspectionResult,
   sessionId: string,
   projectDir: string,
+  harness: TaskWorkerHarness,
 ): boolean {
   return inspection.ok
     && inspection.sessionId === sessionId
     && inspection.projectPath === projectDir
-    && inspection.harness === AGENT_KIND.PI.id
+    && inspection.harness === harness
     && inspection.alive;
 }
 
@@ -290,6 +326,7 @@ export async function waitForTaskWorkerReadiness(
     sessionId: input.sessionId,
   };
   const inspectSession = input.backend.inspectSession?.bind(input.backend);
+  const harness = input.harness ?? AGENT_KIND.PI.id;
   const deadline = Date.now() + input.timeoutMs;
   const pollIntervalMs = input.pollIntervalMs ?? TASK_WORKER_READINESS_POLL_MS;
   const cleanupTimeoutMs = input.cleanupTimeoutMs ?? TASK_WORKER_CLEANUP_TIMEOUT_MS;
@@ -304,7 +341,7 @@ export async function waitForTaskWorkerReadiness(
         failure = "task worker readiness inspection exceeded the readiness deadline";
         break;
       }
-      if (!readySession(inspection.value, input.sessionId, input.projectDir)) {
+      if (!readySession(inspection.value, input.sessionId, input.projectDir, harness)) {
         failure = "task worker session identity, project root, harness, or liveness changed before readiness";
         break;
       }
@@ -328,7 +365,7 @@ export async function waitForTaskWorkerReadiness(
           failure = "task worker liveness check exceeded the readiness deadline";
           break;
         }
-        if (!readySession(liveness.value, input.sessionId, input.projectDir)) {
+        if (!readySession(liveness.value, input.sessionId, input.projectDir, harness)) {
           failure = "task worker exited or changed before endpoint readiness";
           break;
         }

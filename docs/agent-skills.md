@@ -17,8 +17,22 @@ receive no offer. Accepting copies the bundled control skill into Pi before it
 runs Pi's package manager with this command:
 
 ```bash
-pi install npm:@sgtbeatdown/pi-tasks
+pi install npm:@sgtbeatdown/wolfpack-tasks
 ```
+
+The package was published as `npm:@sgtbeatdown/pi-tasks` before it gained
+Claude Code support. When Pi still has the old package, setup offers a
+default-no migration that runs `pi remove npm:@sgtbeatdown/pi-tasks` and then
+the install command above, and `wolfpack doctor` reports the old package as a
+warning with the same commands. The migration moves the old entry's resource
+filters in Pi's `settings.json` (for example a `skills` filter for a local skill
+overlay) to the new entry, and renames `skills/wolfpack-pi-task-delegation`
+paths to `skills/wolfpack-task-delegation`. It holds Pi's settings lock
+(`settings.json.lock`) while it re-reads the file and changes only that entry, so
+a concurrent Pi settings write is kept. If the lock stays held for about one
+second, another process takes the lock over before the write, or it cannot write
+the entry, setup prints the entry to restore by hand. It removes the lock only
+while the lock is still its own.
 
 Wolfpack does not install the full `wolfpack-bridge` app inside Pi just to obtain
 the control skill.
@@ -29,9 +43,9 @@ The packages and resources have distinct ownership:
 | --- | --- | --- |
 | Wolfpack | `wolfpack-tailnet-control` | Creates and controls visible Wolfpack sessions through the canonical CLI. |
 | Pi Tasks extension | `agent_task_*` | Delivers assignments and stores structured task status/results; it does not spawn sessions. |
-| Pi Tasks skill | `wolfpack-pi-task-delegation` | Teaches Pi how to combine the session-control skill with task dispatch, completion, and parent-owned cleanup. |
+| Pi Tasks skill | `wolfpack-task-delegation` | Teaches Pi how to combine the session-control skill with task dispatch, completion, and parent-owned cleanup. |
 
-`npm:@sgtbeatdown/pi-tasks` contains both the extension and its matching
+`npm:@sgtbeatdown/wolfpack-tasks` contains both the extension and its matching
 delegation skill, so those two stay version-aligned. Every participating Pi
 session needs Pi Tasks loaded and a reachable local Wolfpack task gateway. The
 server-owned task store is machine-global, and trusted Tailnet peer routing uses
@@ -45,6 +59,66 @@ installs nothing and directs Pi users to rerun `wolfpack setup` interactively. P
 can execute commands with the user's permissions, so review them before opting
 in. Start a fresh agent context afterward, or run `/reload` in an existing Pi
 session.
+
+## Claude task integration setup
+
+`wolfpack setup` checks for `claude` on `PATH`. Claude users receive one
+default-no, opt-in offer for the Claude task integration; users without Claude
+receive no offer. The integration lets Wolfpack task mail reach Claude sessions
+through the `wolfpack-tasks` Claude Code plugin and its channel. Accepting runs
+these steps in order and stops at the first failure:
+
+1. Check that `claude --version` is at least 2.1.319 and that Claude uses the
+   first-party provider (`CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX`
+   are unset).
+2. Run `claude plugin marketplace add almogdepaz/wolfpack-tasks`, unless the
+   marketplace is already known to Claude.
+3. Run `claude plugin install wolfpack-tasks@wolfpack-tasks` (user scope),
+   unless it is already installed.
+4. After an explicit confirmation, write the machine-wide managed-settings
+   drop-in `wolfpack.json` with `sudo mkdir -p` and `sudo install -m 0644`, unless
+   the file already has the expected content. The directory is
+   `/Library/Application Support/ClaudeCode/managed-settings.d` on macOS and
+   `/etc/claude-code/managed-settings.d` on Linux. The drop-in sets
+   `channelsEnabled: true` and `allowedChannelPlugins` to the `wolfpack-tasks`
+   plugin only. That allowlist replaces any lower-precedence allowlist, and the
+   highest-precedence managed source that sets `allowedChannelPlugins` wins, so
+   another managed source can block the channel.
+5. Save `claudeTaskIntegration: true` in `~/.wolfpack/config.json`.
+
+Wolfpack treats the integration as on only while the flag is set and the
+drop-in is current. If the drop-in is later removed or changed, new Claude
+sessions launch without the channel and Claude task-worker requests fail until
+setup repairs it.
+
+On a failure, setup prints the failed command and a retry hint, and leaves the
+flag off. Wolfpack writes only `wolfpack.json` and never edits other managed
+settings. Re-running setup while the integration is on offers to disable it; if
+you keep it, setup verifies every step again and repairs only what is missing.
+Disabling clears the flag and prints, but does not run, the commands that remove
+the drop-in (`sudo rm`) and the plugin (`claude plugin uninstall`).
+Non-interactive setup changes nothing and directs Claude users to rerun
+`wolfpack setup` interactively. While the flag is on, Wolfpack launches the stock
+`claude` command with `--channels plugin:wolfpack-tasks@wolfpack-tasks`; see
+[Claude task workers](session-control.md#claude-task-workers).
+
+`wolfpack doctor` shows one line while the flag is off. While it is on, doctor
+runs only `claude --version` and reads files; `--fix` never runs these
+commands. It fails an old Claude version, a third-party provider, a missing
+user-scope plugin, and a missing or wrong drop-in. It warns when
+`managed-settings.json` or another drop-in sets `channelsEnabled: false` or an
+`allowedChannelPlugins` list without the plugin, and names that file. Doctor
+does not inspect MDM or server-managed settings. It also reads the plugin's
+status files in `~/.wolfpack/wolfpack-tasks/claude/` and warns, with the session
+and the reason, about each live Claude session whose wake stalled after its
+status checks ran out, that has a current nudge error, or that uses fallback
+wake instead of the channel. A nudge error stops counting once the session
+calls its inbox after that nudge (or, for a failed status check, after the
+pointer it retried). A thrown paste or submit records no nudge time, so while a
+pointer waits for an inbox call, doctor warns that the recorded nudge error
+may belong to that pointer. It warns about status files it cannot read. A channel
+session counts as delivered only after a pointer or inbox call; before that,
+doctor reports it as "channel configured, unverified".
 
 ## Clone or update the auditable source
 
@@ -159,6 +233,7 @@ contracts.
 The npm package includes `skills/` for inspection, but it is the Wolfpack
 application package and Wolfpack does not install it inside Pi. The released CLI
 bundles the control skill and copies it into Pi only after explicit opt-in.
-Platform binaries do not expose skills as files. Setup does not edit Pi settings
-or overwrite skill directories. The cloned repository remains the auditable
+Platform binaries do not expose skills as files. Setup edits Pi settings only to
+move the old Pi Tasks entry's resource filters during the migration above, and
+does not overwrite skill directories. The cloned repository remains the auditable
 source of truth for manual installation.

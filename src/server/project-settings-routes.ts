@@ -66,8 +66,11 @@ import { openSubSession, resolveSubSessionHarness, SessionOpenError } from "./se
 import type { SessionOpenBackend } from "./session-open.js";
 import {
   TaskWorkerReadinessError,
+  prepareClaudeTaskWorkerLaunch,
   prepareTaskWorkerLaunch,
 } from "./task-worker-readiness.js";
+import type { PreparedTaskWorkerLaunch, TaskWorkerLaunch } from "./task-worker-readiness.js";
+import { claudeTaskIntegrationState } from "../config.js";
 import {
   readTaskWorkerHostPolicy,
   taskWorkerPolicyPath,
@@ -118,6 +121,49 @@ function validTaskWorkerReadinessTimeout(value: number | undefined): boolean {
     && value >= 1
     && value <= SESSION_TASK_WORKER_MAX_READINESS_TIMEOUT_MS
   );
+}
+
+interface TaskWorkerPiOptions {
+  readonly model?: unknown;
+  readonly taskWorkerPolicy?: unknown;
+  readonly taskWorkerDryRun?: unknown;
+}
+
+const CLAUDE_TASK_WORKER_PI_OPTIONS_ERROR = "model, taskWorkerPolicy and taskWorkerDryRun apply only to Pi task workers";
+
+/**
+ * Model selection, spawn policy and its dry run are Pi-only: Claude workers get their task tools from the
+ * wolfpack-tasks plugin and take no Pi model, extensions, env or options.
+ */
+function claudeTaskWorkerWithPiOptions(harness: string, body: TaskWorkerPiOptions): boolean {
+  return harness === AGENT_KIND.CLAUDE.id
+    && (body.model !== undefined || body.taskWorkerPolicy !== undefined || body.taskWorkerDryRun !== undefined);
+}
+
+/** Pi and Claude can run task workers. */
+function validTaskWorkerHarness(harness: string, body: TaskWorkerPiOptions): boolean {
+  if (harness === AGENT_KIND.PI.id) return true;
+  return harness === AGENT_KIND.CLAUDE.id && !claudeTaskWorkerWithPiOptions(harness, body);
+}
+
+/**
+ * Checked before launch preparation so the request fails as a 400, not a retryable preflight 503.
+ * Returns the public error while the integration is effectively off for a Claude worker.
+ */
+function claudeTaskIntegrationOffError(harness: string): string | undefined {
+  if (harness !== AGENT_KIND.CLAUDE.id) return undefined;
+  const integration = claudeTaskIntegrationState();
+  return integration.on ? undefined : integration.error;
+}
+
+function prepareHarnessTaskWorkerLaunch(
+  harness: string,
+  projectDir: string,
+  taskWorkerPolicy: unknown,
+): TaskWorkerLaunch | PreparedTaskWorkerLaunch {
+  return harness === AGENT_KIND.CLAUDE.id
+    ? prepareClaudeTaskWorkerLaunch(process.env, claudeTaskIntegrationState())
+    : prepareTaskWorkerLaunch(process.env, projectDir, taskWorkerPolicy);
 }
 
 function taskWorkerFailureBody(error: TaskWorkerReadinessError): Record<string, unknown> {
@@ -647,9 +693,22 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     const { project, projectDir } = projectSelection.value;
 
     const configuredCommand = body.harness ?? effectiveAgentCmd(loadSettings());
-    if (body.taskWorker === true && configuredCommand !== AGENT_KIND.PI.id) {
+    if (body.taskWorker === true && claudeTaskWorkerWithPiOptions(configuredCommand, body)) {
+      return json(res, {
+        error: CLAUDE_TASK_WORKER_PI_OPTIONS_ERROR,
+        code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+      }, 400);
+    }
+    if (body.taskWorker === true && !validTaskWorkerHarness(configuredCommand, body)) {
       return json(res, {
         error: "invalid session-create request",
+        code: SESSION_CREATE_ERROR.INVALID_REQUEST,
+      }, 400);
+    }
+    const integrationOffError = body.taskWorker === true ? claudeTaskIntegrationOffError(configuredCommand) : undefined;
+    if (integrationOffError !== undefined) {
+      return json(res, {
+        error: integrationOffError,
         code: SESSION_CREATE_ERROR.INVALID_REQUEST,
       }, 400);
     }
@@ -669,7 +728,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     let taskWorker;
     try {
       taskWorker = body.taskWorker === true
-        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
+        ? prepareHarnessTaskWorkerLaunch(configuredCommand, projectDir, body.taskWorkerPolicy)
         : undefined;
     } catch (error: unknown) {
       if (error instanceof TaskWorkerReadinessError) {
@@ -678,7 +737,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       throw error;
     }
 
-    if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+    if (body.taskWorkerDryRun === true && taskWorker !== undefined && "diagnostics" in taskWorker) {
       return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
     }
 
@@ -723,12 +782,23 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
     });
     if (!body) return;
     if (
+      isSessionOpenBody(body)
+      && body.taskWorker === true
+      && body.harness !== undefined
+      && claudeTaskWorkerWithPiOptions(body.harness, body)
+    ) {
+      return json(res, {
+        error: CLAUDE_TASK_WORKER_PI_OPTIONS_ERROR,
+        code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+      }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+    }
+    if (
       !isSessionOpenBody(body)
       || !isValidSessionName(body.parentSession)
       || (body.sessionName !== undefined && !isValidSessionName(body.sessionName))
       || (body.harness !== undefined && !isOpenableHarness(body.harness))
-      || (body.harness !== undefined && body.harness !== AGENT_KIND.PI.id
-        && (body.model !== undefined || body.taskWorker === true))
+      || (body.harness !== undefined && body.harness !== AGENT_KIND.PI.id && body.model !== undefined)
+      || (body.harness !== undefined && body.taskWorker === true && !validTaskWorkerHarness(body.harness, body))
       || (
         body.model !== undefined
         && (!body.model.trim()
@@ -804,18 +874,30 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         inspectSession: backend.inspectSession?.bind(backend),
         killSessionById: backend.killSessionById.bind(backend),
       };
+      let taskWorker: TaskWorkerLaunch | PreparedTaskWorkerLaunch | undefined;
       if (body.taskWorker === true) {
         const childHarness = await resolveSubSessionHarness(
           sessionOpenBackend, body.parentSession, body.harness,
         );
-        if (childHarness !== AGENT_KIND.PI.id) {
+        if (claudeTaskWorkerWithPiOptions(childHarness, body)) {
+          return json(res, {
+            error: CLAUDE_TASK_WORKER_PI_OPTIONS_ERROR,
+            code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+          }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+        }
+        if (!validTaskWorkerHarness(childHarness, body)) {
           throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
         }
+        const integrationOffError = claudeTaskIntegrationOffError(childHarness);
+        if (integrationOffError !== undefined) {
+          return json(res, {
+            error: integrationOffError,
+            code: SESSION_OPEN_ERROR.INVALID_REQUEST,
+          }, SESSION_OPEN_HTTP_STATUS[SESSION_OPEN_ERROR.INVALID_REQUEST]);
+        }
+        taskWorker = prepareHarnessTaskWorkerLaunch(childHarness, projectDir, body.taskWorkerPolicy);
       }
-      const taskWorker = body.taskWorker === true
-        ? prepareTaskWorkerLaunch(process.env, projectDir, body.taskWorkerPolicy)
-        : undefined;
-      if (body.taskWorkerDryRun === true && taskWorker !== undefined) {
+      if (body.taskWorkerDryRun === true && taskWorker !== undefined && "diagnostics" in taskWorker) {
         return json(res, { ok: true, taskWorkerPolicy: taskWorker.diagnostics });
       }
 

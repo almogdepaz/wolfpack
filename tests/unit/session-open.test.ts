@@ -257,7 +257,7 @@ describe("openSubSession", () => {
       harness: "pi",
       taskWorker: {
         executable: "/opt/homebrew/bin/pi",
-        extension: "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts",
+        extension: "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/wolfpack-tasks/src/extension.ts",
       },
       readinessTimeoutMs: 100,
       endpointForSession: async () => endpoint,
@@ -273,7 +273,7 @@ describe("openSubSession", () => {
       initialPrompt: undefined,
       taskWorker: {
         executable: "/opt/homebrew/bin/pi",
-        extension: "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/pi-tasks/src/extension.ts",
+        extension: "/Users/home/.pi/agent/npm/node_modules/@sgtbeatdown/wolfpack-tasks/src/extension.ts",
       },
     });
   });

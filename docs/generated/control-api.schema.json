@@ -1939,7 +1939,7 @@
           },
           "taskWorker": {
             "type": "boolean",
-            "description": "Opt into Pi Tasks endpoint readiness before success is returned"
+            "description": "Opt into task endpoint readiness (Pi Tasks, or the Claude wolfpack-tasks plugin) before success is returned"
           },
           "readinessTimeoutMs": {
             "type": "integer",
@@ -2014,7 +2014,11 @@
                 "$ref": "#/$defs/ProjectDirectory"
               },
               "harness": {
-                "const": "pi"
+                "enum": [
+                  "pi",
+                  "claude"
+                ],
+                "description": "Task-worker harness. taskWorkerPolicy and taskWorkerDryRun apply only to pi."
               },
               "taskWorker": {
                 "const": true
@@ -2105,7 +2109,7 @@
           },
           "harness": {
             "$ref": "#/$defs/OpenableHarness",
-            "description": "Child harness; defaults to the parent harness. model and taskWorker require a pi child."
+            "description": "Child harness; defaults to the parent harness. model requires a pi child; taskWorker requires a pi or claude child, and taskWorkerPolicy and taskWorkerDryRun require pi."
           },
           "parentSession": {
             "$ref": "#/$defs/SessionName"
@@ -2129,7 +2133,7 @@
           },
           "taskWorker": {
             "type": "boolean",
-            "description": "Opt into Pi Tasks endpoint readiness before success is returned"
+            "description": "Opt into task endpoint readiness (Pi Tasks, or the Claude wolfpack-tasks plugin) before success is returned"
           },
           "readinessTimeoutMs": {
             "type": "integer",
@@ -2162,7 +2166,7 @@
               },
               "harness": {
                 "$ref": "#/$defs/OpenableHarness",
-                "description": "Child harness; defaults to the parent harness. model and taskWorker require a pi child."
+                "description": "Child harness; defaults to the parent harness. model requires a pi child; taskWorker requires a pi or claude child, and taskWorkerPolicy and taskWorkerDryRun require pi."
               },
               "parentSession": {
                 "$ref": "#/$defs/SessionName"
@@ -2217,7 +2221,7 @@
             "properties": {
               "harness": {
                 "$ref": "#/$defs/OpenableHarness",
-                "description": "Child harness; defaults to the parent harness. model and taskWorker require a pi child."
+                "description": "Child harness; defaults to the parent harness. model requires a pi child; taskWorker requires a pi or claude child, and taskWorkerPolicy and taskWorkerDryRun require pi."
               },
               "parentSession": {
                 "$ref": "#/$defs/SessionName"
@@ -6621,6 +6625,10 @@
         },
         "terminal": {
           "$ref": "#/$defs/SessionTerminalLiveness"
+        },
+        "runtimeState": {
+          "$ref": "#/$defs/AgentRuntimeState",
+          "description": "Read-only last agent runtime state the session observer recorded (about every 5 seconds). Absent before the first observation. Advisory: not task readiness or completion evidence."
         },
         "parentSession": {
           "$ref": "#/$defs/SessionControlIdentity"

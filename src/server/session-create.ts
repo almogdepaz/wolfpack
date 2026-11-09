@@ -4,6 +4,7 @@ import type { SessionLaunchOptions } from "./backend.js";
 import { inferAgentKind } from "./session-identity.js";
 import {
   TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
+  taskWorkerHarness,
   waitForTaskWorkerReadiness,
 } from "./task-worker-readiness.js";
 import type { TaskWorkerLaunch, TaskWorkerTransportLookup } from "./task-worker-readiness.js";
@@ -90,6 +91,7 @@ export async function createTopLevelSession(
           session,
           sessionId: identity.wolfpackSessionId,
           projectDir: input.projectDir,
+          harness: taskWorkerHarness(input.taskWorker),
           timeoutMs: input.readinessTimeoutMs ?? TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
         });
       return {

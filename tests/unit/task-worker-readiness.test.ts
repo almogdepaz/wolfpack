@@ -1,10 +1,11 @@
-import { chmodSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "bun:test";
 import { VolatileRelayGateway } from "../../src/task-relay/volatile-gateway.ts";
 import {
   TaskWorkerReadinessError,
+  prepareClaudeTaskWorkerLaunch,
   prepareTaskWorkerLaunch,
   waitForTaskWorkerReadiness,
 } from "../../src/server/task-worker-readiness.ts";
@@ -73,6 +74,31 @@ describe("task worker launch preflight", () => {
     })).toThrow("task-worker Pi Tasks extension is missing or unreadable");
   });
 
+  test("resolves the installed wolfpack-tasks extension and tolerates the legacy pi-tasks install", () => {
+    const root = temporaryRoot();
+    const executable = join(root, "pi");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    const agent = join(root, "agent");
+    const installed = (name: string): string => {
+      const directory = join(agent, "npm", "node_modules", "@sgtbeatdown", name, "src");
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, "extension.ts"), "export default function () {}\n");
+      return join(directory, "extension.ts");
+    };
+    const env = {
+      WOLFPACK_TASK_WORKER_PI_EXECUTABLE: executable,
+      PI_CODING_AGENT_DIR: agent,
+      WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
+    };
+
+    expect(() => prepareTaskWorkerLaunch(env)).toThrow("task-worker Pi Tasks extension is missing or unreadable");
+    const legacy = installed("pi-tasks");
+    expect(prepareTaskWorkerLaunch(env).extension).toBe(legacy);
+    const renamed = installed("wolfpack-tasks");
+    expect(prepareTaskWorkerLaunch(env).extension).toBe(renamed);
+  });
+
   test("rejects a regular file that is not executable by this process", () => {
     const root = temporaryRoot();
     const executable = join(root, "pi");
@@ -86,6 +112,36 @@ describe("task worker launch preflight", () => {
       WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION: extension,
       WOLFPACK_TASK_WORKER_POLICY_PATH: join(root, "missing-policy.json"),
     })).toThrow(TaskWorkerReadinessError);
+  });
+});
+
+describe("claude task worker launch preflight", () => {
+  test("resolves claude from PATH when the integration is enabled", () => {
+    const root = temporaryRoot();
+    const executable = join(root, "claude");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+
+    expect(prepareClaudeTaskWorkerLaunch({ PATH: `${join(root, "empty")}:${root}` }, { on: true }))
+      .toEqual({ harness: "claude", executable });
+  });
+
+  test("fails preflight with a setup hint when the integration is off", () => {
+    const root = temporaryRoot();
+    const executable = join(root, "claude");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+
+    const error = "the managed-settings drop-in is missing; run wolfpack setup";
+    expect(() => prepareClaudeTaskWorkerLaunch({ PATH: root }, { on: false, error })).toThrow(
+      expect.objectContaining({ code: "TASK_WORKER_PREFLIGHT_FAILED", message: error }),
+    );
+  });
+
+  test("fails preflight when claude is not on PATH", () => {
+    expect(() => prepareClaudeTaskWorkerLaunch({ PATH: temporaryRoot() }, { on: true })).toThrow(
+      expect.objectContaining({ code: "TASK_WORKER_PREFLIGHT_FAILED", message: expect.stringContaining("claude executable") }),
+    );
   });
 });
 
@@ -211,6 +267,37 @@ describe("task worker readiness", () => {
     ]);
 
     expect(outcome).toBe("rejected");
+  });
+
+  test("accepts only the harness the launch requested", async () => {
+    const endpoint = { relay: "wolfpack-pi-tasks-v2", id: "e4ef9a6c-90e2-4e08-a74e-904a2e4f59f5" };
+    const backendFor = (harness: string, killed: string[] = []) => {
+      let alive = true;
+      return {
+        async inspectSession() {
+          return { ok: true as const, session: "worker", sessionId: "worker-id", projectPath: "/worktree", harness, alive };
+        },
+        async killSessionById(sessionId: string) {
+          killed.push(sessionId);
+          alive = false;
+        },
+      };
+    };
+    const common = {
+      endpointForSession: async () => endpoint,
+      sessionId: "worker-id",
+      projectDir: "/worktree",
+      timeoutMs: 50,
+      pollIntervalMs: 0,
+    };
+
+    expect(await waitForTaskWorkerReadiness({ ...common, backend: backendFor("claude"), harness: "claude" })).toEqual(endpoint);
+    const killed: string[] = [];
+    await expect(waitForTaskWorkerReadiness({ ...common, backend: backendFor("pi", killed), harness: "claude" }))
+      .rejects.toMatchObject({ code: "TASK_WORKER_NOT_READY", cleanup: "completed" });
+    expect(killed).toEqual(["worker-id"]);
+    await expect(waitForTaskWorkerReadiness({ ...common, backend: backendFor("claude") }))
+      .rejects.toMatchObject({ code: "TASK_WORKER_NOT_READY" });
   });
 
   test("times out a live exact-root worker with no relay endpoint", async () => {
