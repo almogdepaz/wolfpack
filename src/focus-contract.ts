@@ -55,6 +55,8 @@ function intentionFields(v: Record<string, unknown>): boolean {
     && (v.machine === undefined || text(v.machine, 256)) && (v.sessions === undefined || strings(v.sessions, 100));
 }
 const oneLine = (v: unknown, max: number): v is string => text(v, max) && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029\p{Cf}\p{Default_Ignorable_Code_Point}]/u.test(v);
+/** Reasons are display-only: retain emoji variation/joining, never bidi or other hidden controls. */
+const reasonLine = (v: unknown): v is string => typeof v === "string" && v.length <= 300 && oneLine(v.replace(/[\u200d\ufe0f]/gu, ""), 300);
 export function focusNextRefKey(ref: FocusNextRef): string {
   return "sessionId" in ref ? JSON.stringify([ref.machine, ref.sessionId]) : JSON.stringify([ref.intentionId]);
 }
@@ -63,7 +65,7 @@ function triage(v: unknown): v is FocusTriage {
   const session = keys(v.ref, ["machine", "sessionId"]) && id(v.ref.machine) && oneLine(v.ref.sessionId, 128);
   const intention = keys(v.ref, ["intentionId"]) && id(v.ref.intentionId);
   return (session ? timestamp(v.stoppedAt) : intention && v.stoppedAt === undefined)
-    && typeof v.verdict === "string" && ["needs-you", "suggest", "quiet"].includes(v.verdict) && oneLine(v.reason, 300)
+    && typeof v.verdict === "string" && ["needs-you", "suggest", "quiet"].includes(v.verdict) && reasonLine(v.reason)
     && (v.suggestion === undefined || (v.verdict === "suggest" && oneLine(v.suggestion, 200) && !/^[\/!]/u.test(v.suggestion.trimStart())))
     && (v.doneIntention === undefined || (v.verdict === "suggest" && id(v.doneIntention)))
     && (v.verdict !== "suggest" || v.suggestion !== undefined || v.doneIntention !== undefined)

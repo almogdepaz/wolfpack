@@ -68,6 +68,7 @@ describe("focus document", () => {
     const row = { ref: { machine: "peer", sessionId: "session" }, stoppedAt: now, verdict: "suggest", reason: "Continue the approved plan", suggestion: "Continue the plan." };
     for (const hidden of ["\u202e", "\u202a", "\u2066", "\u2069", "\u200e", "\u200f", "\u200b", "\u200c", "\u200d", "\ufeff", "\u00ad", "\u034f", "\ufe0f"]) {
       for (const field of ["suggestion", "reason"] as const) {
+        if (field === "reason" && ["\u200d", "\ufe0f"].includes(hidden)) continue;
         expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...row, [field]: `continue${hidden} safely` }], author: "assistant" }], now)).toThrow();
       }
     }
@@ -75,6 +76,16 @@ describe("focus document", () => {
       expect(() => reduceFocus(initial, [{ type: "next", rows: [{ ...row, suggestion }], author: "assistant" }], now)).toThrow();
     }
     expect(reduceFocus(initial, [{ type: "next", rows: [{ ...row, suggestion: "Continue — café 中文 😀;  keep scope." }], author: "assistant" }], now).next?.rows[0]?.suggestion).toBe("Continue — café 中文 😀;  keep scope.");
+  });
+  test("N2: emoji formatting is allowed in reasons only, without bypassing the raw reason bound", () => {
+    const row = { ref: { machine: "peer", sessionId: "session" }, stoppedAt: now, verdict: "suggest", suggestion: "Continue the plan." };
+    for (const reason of ["✔️ done", "👩‍💻 review"]) {
+      const doc = reduceFocus(emptyFocus(), [{ type: "next", author: "assistant", rows: [{ ...row, reason }] }], now);
+      expect(doc.next?.rows[0]?.reason).toBe(reason);
+      expect(() => reduceFocus(emptyFocus(), [{ type: "next", author: "assistant", rows: [{ ...row, reason, suggestion: reason }] }], now)).toThrow();
+      expect(() => reduceFocus(emptyFocus(), [{ type: "next", author: "assistant", rows: [{ ...row, reason, ref: { ...row.ref, sessionId: reason } }] }], now)).toThrow();
+    }
+    expect(() => reduceFocus(emptyFocus(), [{ type: "next", author: "assistant", rows: [{ ...row, reason: `x${"\u200d".repeat(300)}` }] }], now)).toThrow();
   });
   test("there is no reply op and no reply field: the user talks to the assistant in its terminal", () => {
     expect(() => reduceFocus(emptyFocus(), [{ type: "reply", text: "Broker leak first.", author: "assistant" } as unknown as FocusOp], now)).toThrow();
