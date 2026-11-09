@@ -73,3 +73,59 @@ for (const width of [1440, 1280]) for (const entry of ["dashboard", "cached firs
   expect.soft(new Set(geometry.map(g => `${g.cols}x${g.rows}`)).size, "attach and resize/stability frames share the pane's settled geometry").toBe(1);
   await page.screenshot({ path: info.outputPath(`first-fit-${entry.replaceAll(" ", "-")}.png`), fullPage: true });
 });
+
+for (const width of [1440, 1280]) test(`pane pin refit: pin then unpin at ${width} settles once without hidden columns`, async ({ page }, info) => {
+  await page.setViewportSize({ width, height: 900 });
+  await page.addInitScript(() => {
+    localStorage.setItem("wolfpack-sidebar-pinned", "0");
+    localStorage.setItem("wolfpackDebug", "1");
+  });
+  let sockets = 0;
+  const geometry: { type: string; cols: number; rows: number }[] = [];
+  page.on("websocket", ws => {
+    if (!ws.url().includes("/ws/pty")) return;
+    sockets++;
+    ws.on("framesent", frame => {
+      if (typeof frame.payload !== "string") return;
+      const message = JSON.parse(frame.payload);
+      if (["attach", "resize", "layout_stable"].includes(message.type)) geometry.push(message);
+    });
+  });
+  await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+  // Sample beyond the normal resize settlement window, rather than accepting
+  // one transiently fitting frame or missing a delayed duplicate resize.
+  const sample = () => page.evaluate(() => new Promise<{ mount: number; canvas: number; right: number; mountRight: number }[]>(resolve => {
+    const frames: { mount: number; canvas: number; right: number; mountRight: number }[] = [];
+    const start = performance.now();
+    const tick = () => {
+      const canvas = document.querySelector<HTMLCanvasElement>("#assistant-pane canvas")!;
+      const box = canvas.getBoundingClientRect();
+      const mount = canvas.parentElement!.getBoundingClientRect();
+      frames.push({ mount: mount.width, canvas: box.width, right: box.right, mountRight: mount.right });
+      if (performance.now() - start >= 2_500) resolve(frames);
+      else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }));
+  const initial = (await sample()).at(-1)!;
+  const stages = [];
+  for (const action of ["Pin sidebar", "Unpin sidebar"]) {
+    if (action === "Pin sidebar") await page.mouse.move(1, 100);
+    const before = geometry.length;
+    await page.getByRole("button", { name: action, exact: true }).click();
+    const frames = await sample();
+    const sent = geometry.slice(before);
+    stages.push({ action, frames, geometry: sent });
+    expect.soft(frames.slice(-10).every(f => f.canvas > 0 && f.canvas <= f.mount + 1 && f.right <= f.mountRight + 1), `${action}: canvas fits the settled mount`).toBe(true);
+    expect.soft(sent, `${action}: exactly one geometry frame, without reattach`).toHaveLength(1);
+    expect.soft(sent[0]?.type).toBe("resize");
+    await page.screenshot({ path: info.outputPath(`${action === "Pin sidebar" ? "pinned" : "unpinned"}-${width}.png`), fullPage: true });
+  }
+  expect.soft(stages[0]!.frames.at(-1)!.mount).toBeLessThan(initial.mount);
+  expect.soft(stages[1]!.frames.at(-1)!.mount).toBeCloseTo(initial.mount, 0);
+  expect.soft(stages[0]!.geometry[0]?.cols).toBeLessThan(stages[1]!.geometry[0]?.cols ?? 0);
+  expect.soft(sockets, "pin/unpin must refit the same connection").toBe(1);
+  writeFileSync(info.outputPath("pin-refit.json"), JSON.stringify({ initial, stages, sockets, geometry, trace: await page.evaluate(() => window.__wf_dumpTrace?.("assistant")) }, null, 2));
+});

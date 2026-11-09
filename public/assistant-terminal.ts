@@ -199,6 +199,7 @@ export function createAssistantTerminal(deps: {
   wide.addEventListener("change", sync);
   document.addEventListener("visibilitychange", sync);
   return {
+    get layoutController(): Pick<PtyTerminalController, "resize" | "supportsOrderedResize"> | null { return visible() ? controller : null; },
     setTarget(next: AssistantTerminalTarget | null, reason = "the assistant terminal is not running yet.") { target = next; unavailableMessage = reason; sync(); },
     setActive(next: boolean) {
       const opening = next && !active;

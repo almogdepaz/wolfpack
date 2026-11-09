@@ -5936,11 +5936,13 @@ function initSidebar() {
       state.sidebarLayoutTransitioning = false;
       if (acknowledged) revealGridCellsWithoutResize();
     };
-    if (activeGridTerminalSessions() !== null) {
+    // The pane is outside the main/grid pool but shares resize suppression.
+    const paneController = assistantPane.layoutController;
+    if (!paneController && activeGridTerminalSessions() !== null) {
       scheduleGridStabilizedFit(complete);
       return;
     }
-    const controller = state.terminalController;
+    const controller = paneController ?? state.terminalController;
     if (!controller) {
       complete();
       return;
