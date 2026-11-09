@@ -27,7 +27,7 @@ test('sidebar marks grid membership without hover, including waiting duplicates,
   const row = (id: string) => page.locator(`#sidebar-session-list [data-session-order-id="${id}"]`);
   await row('solo').getByRole('button', { name: 'Add to grid: solo', exact: true }).click();
   await expect(page.locator('#desktop-grid-container .grid-cell')).toHaveCount(2);
-  await row('parent').getByRole('button', { name: 'Expand 1 child agent', exact: true }).click();
+  await row('parent').getByRole('button', { name: 'Expand 1 child agent; a descendant is active (agent work or recent output)', exact: true }).click();
   await row('child').getByRole('button', { name: 'Add to grid: child', exact: true }).click();
   await expect(page.locator('#desktop-grid-container .grid-cell')).toHaveCount(3);
   await expect(row('child')).toHaveClass(/sub-session-card/);

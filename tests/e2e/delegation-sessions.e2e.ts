@@ -59,6 +59,13 @@ function fakeSession(
   };
 }
 
+function trustedSession(name: string, state: string, parent?: { id: string; name: string }) {
+  return {
+    ...fakeSession(name, `${name}-id`, parent),
+    runtimeState: { state, unseen: false, authority: "manifest", source: "local-manifest", freshness: "fresh", stale: false },
+  };
+}
+
 async function dispatchSyntheticTouch(
   page: Page,
   selector: string | null,
@@ -100,6 +107,131 @@ async function routeDelegationSessions(page: Page, sessions: readonly ReturnType
     await route.fulfill({ contentType: "application/json", body: JSON.stringify({ version: "test", name: "test" }) });
   });
 }
+
+test("descendant status colors existing controls without changing parent state or geometry", async ({ page }, testInfo) => {
+  const sessions = [trustedSession("parent", "done"), trustedSession("child", "done", { id: "parent-id", name: "parent" }),
+    trustedSession("grandchild", "failed", { id: "child-id", name: "child" })];
+  await routeHydratedPty(page);
+  await routeDelegationSessions(page, sessions);
+  await page.goto(srv.baseUrl);
+  const dashboard = page.locator('#session-list .machine-group:not(.needs-you)');
+  const parentCard = dashboard.locator('[data-session-order-id="parent-id"]');
+  const toggle = parentCard.locator('.delegation-sidebar-toggle');
+  await expect(toggle).toHaveAttribute("aria-label", "Expand 1 child agent; a descendant failed");
+  await expect(toggle).toHaveAttribute("title", "Expand 1 child agent; a descendant failed");
+  await expect(parentCard).toHaveClass(/tier-idle/);
+  await expect(toggle).toHaveText("1 agent");
+  await expect(dashboard.locator('.sub-session-card')).toHaveCount(0);
+  const size = await toggle.boundingBox();
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(toggle).toHaveClass(/descendant-fail/);
+  const childToggle = dashboard.locator('[data-session-order-id="child-id"] .delegation-sidebar-toggle');
+  await expect(childToggle).toHaveClass(/descendant-fail/);
+  await expect(page.locator('#sessions-view')).toBeVisible();
+  await toggle.click();
+
+  for (const [state, status, token] of [["failed", "fail", "--danger"], ["needs-input", "need", "--attn"], ["working", "work", "--accent"], ["done", "idle", "--text-muted"]]) {
+    sessions[2] = trustedSession("grandchild", state!, { id: "child-id", name: "child" });
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(toggle).toHaveClass(new RegExp(`descendant-${status}`));
+    await expect(parentCard).toHaveClass(/tier-idle/);
+    const colors = await toggle.evaluate((element, token) => {
+      const probe = document.createElement("span");
+      probe.style.color = `var(${token})`;
+      element.append(probe);
+      const expected = getComputedStyle(probe).color;
+      probe.remove();
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const context = canvas.getContext("2d", { willReadFrequently: true })!;
+      const ancestors: Element[] = [];
+      for (let current: Element | null = element; current; current = current.parentElement) ancestors.unshift(current);
+      for (const ancestor of ancestors) {
+        context.fillStyle = getComputedStyle(ancestor).backgroundColor;
+        context.fillRect(0, 0, 1, 1);
+      }
+      const luminance = () => Array.from(context.getImageData(0, 0, 1, 1).data).slice(0, 3)
+        .map(channel => channel / 255).map(channel => channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4)
+        .reduce((sum, channel, i) => sum + channel * [.2126, .7152, .0722][i]!, 0);
+      const background = luminance();
+      context.fillStyle = getComputedStyle(element).color;
+      context.fillRect(0, 0, 1, 1);
+      const foreground = luminance();
+      return { actual: getComputedStyle(element).color, expected, contrast: (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05) };
+    }, token!);
+    expect(colors.actual).toBe(colors.expected);
+    expect(colors.contrast).toBeGreaterThanOrEqual(4.5);
+    const box = await toggle.boundingBox();
+    expect(box!.width).toBeCloseTo(size!.width, 0);
+    expect(box!.height).toBeCloseTo(size!.height, 0);
+  }
+  sessions[2] = trustedSession("grandchild", "failed", { id: "child-id", name: "child" });
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(toggle).toHaveClass(/descendant-fail/);
+  await page.screenshot({ path: testInfo.outputPath("descendant-status.png"), fullPage: true });
+  if (testInfo.project.name === "desktop") {
+    await collapseInitialSessionMenu(page);
+    await expect(page.locator('#sidebar-session-list [data-session-order-id="parent-id"] .delegation-sidebar-toggle')).toHaveClass(/descendant-fail/);
+  } else {
+    await parentCard.locator('.card-open').click();
+    await expect(page.locator('#chip-label')).toHaveText("parent");
+    await page.locator('#session-chip').click();
+    const drawerToggle = page.locator('#drawer-list .drawer-item[data-val="parent"] + .delegation-sidebar-toggle');
+    await expect(drawerToggle).toHaveClass(/descendant-fail/);
+    await expect(drawerToggle).toHaveAttribute("aria-label", "Expand 1 child agent; a descendant failed");
+  }
+});
+
+test("descendant summaries retain full inventory through filters and neutral unavailable states", async ({ page }, testInfo) => {
+  const sessions = [trustedSession("parent", "working"), trustedSession("child", "needs-input", { id: "parent-id", name: "parent" })];
+  let unavailable = false;
+  await routeDelegationSessions(page, sessions);
+  await page.route("**/api/sessions", route => route.fulfill({
+    status: unavailable ? 503 : 200, contentType: "application/json",
+    body: JSON.stringify(unavailable ? { error: "broker unavailable" } : { sessions }),
+  }));
+  await page.goto(srv.baseUrl);
+  const dashboard = page.locator('#session-list .machine-group:not(.needs-you)');
+  const parent = dashboard.locator('[data-session-order-id="parent-id"]');
+  const toggle = parent.locator('.delegation-sidebar-toggle');
+  await expect(toggle).toHaveClass(/descendant-need/);
+  await expect(parent).toHaveClass(/tier-work/);
+  await expect(parent.getByRole("button", { name: "Stop parent", exact: true })).toHaveAttribute("data-session", "parent");
+  await expect(page.locator('#session-list .needs-you .card-open')).toHaveAttribute("data-session", "child");
+  await expect(page.locator('#session-summary')).toContainText("1 need you");
+  if (testInfo.project.name !== "desktop") await page.locator('.mobile-session-search > summary').click();
+  const search = page.locator(testInfo.project.name === "desktop" ? '#dashboard-search' : '#mobile-search');
+  await search.fill("parent");
+  await expect(toggle).toHaveClass(/descendant-need/);
+  await search.fill("");
+  if (testInfo.project.name !== "desktop") await page.locator('.mobile-session-search > summary').click();
+  const workingFilter = page.locator('#dashboard-session-filter [data-session-card-view="work"]');
+  await workingFilter.click();
+  await expect(dashboard.locator('.sub-session-card')).toHaveCount(0);
+  await expect(toggle).toHaveClass(/descendant-need/);
+  await expect(parent).toHaveClass(/tier-work/);
+  await workingFilter.click();
+  await parent.getByRole("button", { name: "Stop parent", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText('Stop session "parent"?');
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  sessions[1] = { ...sessions[1]!, runtimeState: { state: "unknown", unseen: false, authority: "liveness", source: "broker-liveness", freshness: "unknown", stale: true } };
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  // Existing broker-health handling treats any unknown liveness as machine unavailable.
+  await expect(dashboard).toHaveClass(/offline/);
+  await expect(dashboard.locator('.delegation-sidebar-toggle')).toHaveCount(0);
+  sessions[1] = trustedSession("child", "needs-input", { id: "parent-id", name: "parent" });
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(toggle).toHaveClass(/descendant-need/);
+  await expect(parent).toHaveClass(/tier-work/);
+  unavailable = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(dashboard).toHaveClass(/offline/);
+  await expect(dashboard.locator('.delegation-sidebar-toggle')).toHaveCount(0);
+});
 
 test("desktop parent grid opens every child session expanded", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop delegation grid behavior only");
@@ -660,7 +792,7 @@ test("mobile drawer groups child sessions directly under their parent", async ({
 
   const parentItem = drawer.locator('.drawer-item[data-val="parent"]');
   const toggle = parentItem.locator("..").locator(".delegation-sidebar-toggle");
-  await expect(toggle).toHaveAttribute("aria-label", "Expand 1 child agent");
+  await expect(toggle).toHaveAttribute("aria-label", "Expand 1 child agent; all descendants idle");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   const toggleBox = await toggle.boundingBox();
   expect(toggleBox).not.toBeNull();
@@ -699,13 +831,13 @@ test("dashboard delegation cards hide children until toggled and visibly nest ex
   const children = dashboard.locator(".sub-session-card");
   await expect(parentCard).toBeVisible();
 
-  const toggle = parentCard.getByRole("button", { name: "Expand 2 child agents", exact: true });
+  const toggle = parentCard.getByRole("button", { name: "Expand 2 child agents; all descendants idle", exact: true });
   await expect(toggle).toHaveText("2 agents");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
   await expect(children).toHaveCount(0);
 
   await toggle.click();
-  const collapse = parentCard.getByRole("button", { name: "Collapse 2 child agents", exact: true });
+  const collapse = parentCard.getByRole("button", { name: "Collapse 2 child agents; all descendants idle", exact: true });
   await expect(collapse).toHaveAttribute("aria-expanded", "true");
   await expect(children).toHaveCount(2);
   await expect(page.locator("#sessions-view")).toBeVisible();
@@ -806,14 +938,14 @@ test("dashboard delegation cards hide children until toggled and visibly nest ex
   }
 
   await collapse.click();
-  await expect(parentCard.getByRole("button", { name: "Expand 2 child agents", exact: true })).toHaveAttribute("aria-expanded", "false");
+  await expect(parentCard.getByRole("button", { name: "Expand 2 child agents; all descendants idle", exact: true })).toHaveAttribute("aria-expanded", "false");
   await expect(children).toHaveCount(0);
   await expect(page.locator("#sessions-view")).toBeVisible();
   if (testInfo.project.name === "desktop") {
     await collapseInitialSessionMenu(page);
     const sidebar = page.locator("#sidebar-session-list");
     await expect(sidebar.locator(".sub-session-card")).toHaveCount(0);
-    await sidebar.getByRole("button", { name: "Expand 2 child agents", exact: true }).click();
+    await sidebar.getByRole("button", { name: "Expand 2 child agents; all descendants idle", exact: true }).click();
     await expect(sidebar.locator(".sub-session-card")).toHaveCount(2);
     await page.locator("#sidebar-expand-btn").click();
     await expect(collapse).toHaveAttribute("aria-expanded", "true");

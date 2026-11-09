@@ -16,6 +16,15 @@ function order(sessions: ReturnType<typeof session>[], manual: string[] = []) {
   return orderTriageSessionRows(projectDelegationSessions(sessions), manual.map(sessionId => ({ machineUrl: "", sessionId })), "").map(row => row.session.name);
 }
 
+test("descendant button failure precedence does not change needs-input-first triage", () => {
+  const rows = projectDelegationSessions([
+    session("root", "done"), session("failed-child", "failed", undefined, "root"),
+    session("need-grandchild", "needs-input", older, "failed-child"), session("solo-failure", "failed"),
+  ]);
+  expect(rows[0]!.childSummary?.status).toBe("fail");
+  expect(orderTriageSessionRows(rows, [], "").map(row => row.session.name)).toEqual(["root", "failed-child", "need-grandchild", "solo-failure"]);
+});
+
 test("automatic need age, fail, work and idle recency order without manual positions", () => {
   const sessions = [session("idle-old", "idle", older), session("work-old", "working", older), session("need-new", "needs-input", newer), session("fail", "failed"), session("idle-new", "done", newer), session("work-new", "working", newer), session("need-old", "needs-input", older), session("work-tie", "working", newer)];
   expect(order(sessions)).toEqual(["need-old", "need-new", "fail", "work-new", "work-tie", "work-old", "idle-new", "idle-old"]);
