@@ -43,6 +43,22 @@ test("pane keyboard: Shift+Escape returns from terminal input to the list withou
   expect(inputFrames.length).toBe(before);
 });
 
+test("pane keyboard: Tab from Back to list explicitly enters terminal input", async ({ page }) => {
+  let binary = 0;
+  page.on("websocket", ws => {
+    if (ws.url().includes("/ws/pty")) ws.on("framesent", frame => { if (typeof frame.payload !== "string") binary++; });
+  });
+  await openFocus(page);
+  await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+  await pane(page).getByRole("button", { name: "Back to list", exact: true }).focus();
+  await page.keyboard.press("Tab");
+  expect(await page.locator("#assistant-pty-input").evaluate(el => el.contains(document.activeElement))).toBe(true);
+  await page.keyboard.type("tab opt-in");
+  await expect.poll(() => binary).toBeGreaterThan(0);
+  await page.keyboard.press("Shift+Escape");
+  await expect(page.locator(".assistant-column")).toBeFocused();
+});
+
 for (const key of ["Enter", "Space"]) {
   test(`pane keyboard: ${key} activates Take Control without terminal opt-in`, async ({ page, context }) => {
     const owner = await context.newPage();
@@ -59,6 +75,7 @@ for (const key of ["Enter", "Space"]) {
       await openFocus(page);
       const overlay = pane(page).getByRole("dialog", { name: "Session active on another device", exact: true });
       await expect(overlay).toBeVisible();
+      await expect(overlay).not.toHaveAttribute("aria-modal", "true");
       expect(takeovers).toBe(0);
       await tabToOverlay(page, "Take Control");
       await page.keyboard.press(key);
@@ -93,6 +110,7 @@ for (const key of ["Enter", "Space"]) {
     end!();
     const overlay = pane(page).getByRole("dialog", { name: "terminal ended", exact: true });
     await expect(overlay).toBeVisible();
+    await expect(overlay).not.toHaveAttribute("aria-modal", "true");
     await tabToOverlay(page, "Reconnect");
     await page.keyboard.press(key);
     await expect(overlay).toHaveCount(0);

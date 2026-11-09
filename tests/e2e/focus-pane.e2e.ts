@@ -77,6 +77,20 @@ test("pane: two columns at 1100+, one column below, clean breakpoint remount and
   expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
 });
 
+test("pane: one-column opening preserves the existing focus behavior", async ({ page }, info) => {
+  await page.setViewportSize({ width: info.project.name === "desktop" ? 1099 : 390, height: 900 });
+  await page.addInitScript(() => {
+    const state = window as unknown as { listFocuses: number };
+    state.listFocuses = 0;
+    document.addEventListener("focusin", event => {
+      if ((event.target as HTMLElement).classList.contains("assistant-column")) state.listFocuses++;
+    });
+  });
+  await openFocus(page);
+  await expect(pane(page)).toBeHidden();
+  expect(await page.evaluate(() => (window as unknown as { listFocuses: number }).listFocuses)).toBe(0);
+});
+
 test("pane: attach on open, disconnect on leave/hidden, reattach on return without duplicate viewers", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop pane only");
   const stats = transport(page);

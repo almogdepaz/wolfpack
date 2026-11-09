@@ -37,6 +37,8 @@ export function createAssistantTerminal(deps: {
   document.getElementById("assistant-pane-focus")!.onclick = () => { inputRequested = true; controller?.focus(); };
   input.addEventListener("pointerdown", () => { inputRequested = true; });
   pane.addEventListener("keydown", event => {
+    // Tab is an explicit keyboard opt-in too; native mount focus is not.
+    if (event.key === "Tab") inputRequested = true;
     if (event.key !== "Escape" || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) return;
     event.preventDefault();
     event.stopPropagation(); // Capture before Ghostty consumes the chord as stdin.
@@ -67,6 +69,12 @@ export function createAssistantTerminal(deps: {
     container.classList.remove("hydrating", "hydrated");
     if (hadFocus && active && document.visibilityState === "visible") backToList();
   }
+  function appendOverlay(element: HTMLElement) {
+    // Pane dialogs do not make the adjacent focus list modal/inert.
+    element.removeAttribute("aria-modal");
+    input.inert = true;
+    container.append(element);
+  }
   function showConflict(owner: PtyTerminalController) {
     clearOverlay();
     revealTerminalConflict(container, owner.hydration);
@@ -86,8 +94,7 @@ export function createAssistantTerminal(deps: {
     });
     // Keep dialog controls outside Ghostty's focus/keydown boundary. While
     // blocked, skip the terminal input rather than bouncing Tab back to the list.
-    input.inert = true;
-    container.append(overlay);
+    appendOverlay(overlay);
   }
   function showFailure(owner: PtyTerminalController, message: string) {
     clearOverlay();
@@ -98,8 +105,7 @@ export function createAssistantTerminal(deps: {
       release();
       sync();
     });
-    input.inert = true;
-    container.append(overlay);
+    appendOverlay(overlay);
   }
   async function mount(next: AssistantTerminalTarget) {
     status.textContent = "connecting";
@@ -159,7 +165,7 @@ export function createAssistantTerminal(deps: {
     setActive(next: boolean) {
       const opening = next && !active;
       active = next;
-      if (opening) backToList();
+      if (opening && wide.matches) backToList();
       sync();
     },
   };

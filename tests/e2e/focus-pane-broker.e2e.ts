@@ -66,6 +66,12 @@ test("real broker pane waits for explicit takeover and frees the slot while hidd
   test.skip(skipIfNoBroker.condition, skipIfNoBroker.reason);
   test.skip(info.project.name !== "desktop", "desktop embedded surface");
   const owner = await context.newPage();
+  let ownerTakeovers = 0, ownerReady = 0;
+  owner.on("websocket", socket => {
+    if (!socket.url().includes("/ws/pty")) return;
+    socket.on("framesent", frame => { if (typeof frame.payload === "string" && JSON.parse(frame.payload).type === "take_control") ownerTakeovers++; });
+    socket.on("framereceived", frame => { if (typeof frame.payload === "string" && JSON.parse(frame.payload).type === "pty_ready") ownerReady++; });
+  });
   try {
     await focus(owner);
     await expect(owner.locator("#assistant-pty")).toHaveClass(/hydrated/);
@@ -82,8 +88,17 @@ test("real broker pane waits for explicit takeover and frees the slot while hidd
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await expect(pane(page).locator("canvas")).toHaveCount(0);
-    await pane(owner).getByRole("button", { name: "Take Control", exact: true }).click();
+    // Release the displaced owner and reattach normally, with no takeover
+    // authority. This only succeeds if hiding the challenger actually freed the slot.
+    await owner.evaluate(() => {
+      for (const value of ["hidden", "visible"]) {
+        Object.defineProperty(document, "visibilityState", { configurable: true, value });
+        document.dispatchEvent(new Event("visibilitychange"));
+      }
+    });
+    await expect.poll(() => ownerReady).toBe(2);
     await expect(pane(owner).locator(".viewer-conflict-overlay")).toHaveCount(0);
     await expect(owner.locator("#assistant-pty")).toHaveClass(/hydrated/);
+    expect(ownerTakeovers).toBe(0);
   } finally { await owner.close(); }
 });
