@@ -15,6 +15,8 @@ export function createAssistantView(deps: {
   homeMachine: (id: string) => Machine | undefined;
   localMachineName: () => string;
   sessions: () => FocusSession[];
+  /** Verify a cached assistant incarnation against the current owning session list. */
+  terminalSessionAvailable: (target: AssistantTerminalTarget) => boolean;
   terminalTarget: (target: AssistantTerminalTarget | null, unavailableMessage?: string) => void;
   /** False means the local session projection is unavailable, not that every session stopped. */
   sessionsAvailable: () => boolean;
@@ -30,13 +32,14 @@ export function createAssistantView(deps: {
   let focus: FocusResponse | undefined;
   let machine = "";
   let homeName = "sgt";
-  let offline = false;
+  let focusUnavailable = false;
   // No answer from the home yet (first paint from the cache): show the cached copy as it was, write nothing.
   let answered = false;
   // Saved writes; a poll started before one does not replace the document it saved.
   let writes = 0;
   let error = "";
   let transportFailure = false;
+  const offline = () => focusUnavailable && transportFailure;
   let notice = "";
   let noticeTimer: ReturnType<typeof setTimeout> | undefined;
   const NOTICE_MS = 5_000;
@@ -52,10 +55,21 @@ export function createAssistantView(deps: {
   const pageNextCap = () => showAllNext ? Infinity : 5;
   let wasEnabled = false;
   const cacheKey = "wolfpack-focus-cache";
-  try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
+  try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (typeof cached.machine === "string") machine = cached.machine; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
   const terminalUnavailable = () => focus?.assistant?.unavailableReason;
-  const locked = () => offline || busy || !answered;
+  const locked = () => focusUnavailable || busy || !answered;
   const sessionLocked = () => locked() || !deps.sessionsAvailable();
+  function terminalTarget(): AssistantTerminalTarget | null {
+    const assistant = focus?.assistant;
+    if (!answered || !assistant?.enabled || !assistant.session || offline() || (!focusUnavailable && terminalUnavailable())) return null;
+    // A remote /focus response is local to its own server, not this browser.
+    const home = machine || deps.homeMachine(focus!.home)?.key || "";
+    if (home && !deps.sessionMachineKnown(home)) return null;
+    const target = { session: assistant.session, sessionId: assistant.sessionId, machine: home };
+    // A focus-store fault must not disconnect a separately verified live terminal.
+    // Cached identity alone cannot authorize a missing/replaced/offline session.
+    return !focusUnavailable || deps.terminalSessionAvailable(target) ? target : null;
+  }
   // Presentation only: retain the last verified projection during a self-offline poll.
   // All session actions are disabled until the local projection is available again.
   let lastSessions: FocusSession[] = [];
@@ -66,11 +80,11 @@ export function createAssistantView(deps: {
   };
   const nextRows = (cap: number) => !deps.sessionsAvailable() && !lastSessions.length ? [] : rankFocus(doc(), sessions(), cap);
   // The cached copy carries the home's resolved name, so an offline first answer names the right machine.
-  const cache = (value: FocusResponse) => { try { localStorage.setItem(cacheKey, JSON.stringify({ ...value, homeName })); } catch { /* storage unavailable; live view still works */ } };
+  const cache = (value: FocusResponse) => { try { localStorage.setItem(cacheKey, JSON.stringify({ ...value, homeName, machine })); } catch { /* storage unavailable; live view still works */ } };
   const doc = () => focus?.document ?? emptyFocus();
-  const routines = () => offline || terminalUnavailable() || !focus?.assistant?.enabled ? undefined : focus.routines;
+  const routines = () => focusUnavailable || terminalUnavailable() || !focus?.assistant?.enabled ? undefined : focus.routines;
   // An error beside a live session (a dropped queue, an unverified send) is a note under the live state; "failed" is the assistant not running.
-  const status = () => offline ? `${homeName} offline` : terminalUnavailable() ? "unavailable" : focus?.assistant?.error && !focus.assistant.session ? "failed" : focus?.assistant?.enabled ? (focus.assistant.state === "needs-input" ? "needs you" : routines()?.catchingUp ? "catching up" : focus.assistant.state) : "off";
+  const status = () => focusUnavailable ? (offline() ? `${homeName} offline` : "focus unavailable") : terminalUnavailable() ? "unavailable" : focus?.assistant?.error && !focus.assistant.session ? "failed" : focus?.assistant?.enabled ? (focus.assistant.state === "needs-input" ? "needs you" : routines()?.catchingUp ? "catching up" : focus.assistant.state) : "off";
   // Today's times need no weekday; older catching-up / stale / not-reached times keep it.
   const when = (at: string) => new Date(at).toLocaleString([], { weekday: localDay(Date.parse(at)) === localDay(Date.now()) ? undefined : "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
   const localDay = (ms: number) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
@@ -334,7 +348,8 @@ export function createAssistantView(deps: {
     const r = routines();
     const catching = r?.catchingUp;
     // Every state names the user's move: answer, catch up now, look at its terminal; never only what the system is doing.
-    const info = offline ? `focus from ${current.updatedAt ? when(current.updatedAt) : "cache"} · ${homeName} offline · read-only`
+    const info = offline() ? `focus from ${current.updatedAt ? when(current.updatedAt) : "cache"} · ${homeName} offline · read-only`
+      : focusUnavailable ? "focus unavailable · read-only · details in settings"
       : terminalUnavailable() ? "sessions unavailable · focus is saved here"
       : state === "needs you" ? "needs you · answer"
       : r?.surfaced ? `has not confirmed reading activity · sent ${r.surfaced.sends} times`
@@ -344,7 +359,7 @@ export function createAssistantView(deps: {
     const nudgeDay = current.nudge && localDay(Date.parse(current.nudge.updatedAt));
     const nudge = current.nudge?.text ? `<p class="focus-nudge${catching ? " from" : ""}">${esc(current.nudge.text)}${catching && nudgeDay !== localDay(Date.now()) ? ` <small>from ${dayName(nudgeDay!)}</small>` : ""}</p>` : "";
     const catchUp = button("catch-up", "catch up now", "catch up now", !!terminalUnavailable());
-    const noteItems = [...(r ? [...r.unreachable.map(m => esc(`${m.name} not reached ${m.since ? `since ${when(m.since)}` : "yet"} · its day is reviewed when it is back`)), ...(r.surfaced ? [`${r.stale ? `quiet since ${when(r.stale.since)} · ` : ""}look at its terminal, then ${catchUp}`] : []), ...(r.stale && !r.surfaced ? [catchUp] : []), ...[r.notice, r.error].filter(Boolean).map(t => esc(t!))] : []), ...(!offline && enabled && assistantError ? [esc(assistantError)] : [])].map(n => `<span>${n}</span>`).join("");
+    const noteItems = [...(r ? [...r.unreachable.map(m => esc(`${m.name} not reached ${m.since ? `since ${when(m.since)}` : "yet"} · its day is reviewed when it is back`)), ...(r.surfaced ? [`${r.stale ? `quiet since ${when(r.stale.since)} · ` : ""}look at its terminal, then ${catchUp}`] : []), ...(r.stale && !r.surfaced ? [catchUp] : []), ...[r.notice, r.error].filter(Boolean).map(t => esc(t!))] : []), ...(!focusUnavailable && enabled && assistantError ? [esc(assistantError)] : [])].map(n => `<span>${n}</span>`).join("");
     const notes = noteItems ? `<p class="focus-notes">${noteItems}</p>` : "";
     const summaryDay = current.daySummary;
     // A day note stays listed until it is marked read after that activity day ended (its turn at the
@@ -353,21 +368,21 @@ export function createAssistantView(deps: {
     const dayEnd = summaryDay && (noteDay ? Date.parse(noteDay.endsAt) : new Date(`${summaryDay.date}T00:00`).getTime() + 864e5);
     const yesterday = summaryDay && !(current.seenDayNoteAt && Date.parse(current.seenDayNoteAt) >= dayEnd!)
       ? `<div class="focus-yesterday"><h2>${dayName(summaryDay.date)}</h2><span>${summaryDay.done} done · ${summaryDay.carried} carried over · ${summaryDay.questions} question${summaryDay.questions === 1 ? "" : "s"}</span>${button("day-note", "read ›", `Read day note for ${summaryDay.date}`, noteDay?.note === false)}</div>` : "";
-    // The dot follows the user's move: amber while a routine waits on its terminal, red while the home is unreachable.
-    const tone = dot(offline ? "failed" : r?.surfaced ? "needs you" : state);
-    const sessionNotice = answered && !offline && !terminalUnavailable() && deps.sessionsUnavailable() ? "<small>sessions unavailable</small>" : "";
+    // The dot follows the user's move: amber while a routine waits, red when focus is unavailable.
+    const tone = dot(focusUnavailable ? "failed" : r?.surfaced ? "needs you" : state);
+    const sessionNotice = answered && !focusUnavailable && !terminalUnavailable() && deps.sessionsUnavailable() ? "<small>sessions unavailable</small>" : "";
     // Nothing of the focus ui shows while the assistant is off: tile, block and page stay hidden; settings is the only door.
     // Disabled from another device while the page is open: leave it once, on the transition (show re-enters render).
     const closing = wasEnabled && !enabled;
     wasEnabled = enabled;
     if (closing && document.getElementById("assistant-view")?.classList.contains("visible")) deps.show("sessions");
     const tile = document.getElementById("sidebar-assistant");
-    const tileState = !focus?.document ? "set focus" : offline ? "offline" : terminalUnavailable() ? "unavailable" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
+    const tileState = focusUnavailable ? (offline() ? "offline" : "focus unavailable") : !focus?.document ? "set focus" : terminalUnavailable() ? "unavailable" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
     const tileStatus = tileState ?? `${nextCount} next`;
     if (tile) {
       tile.hidden = !enabled;
       // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
-      tile.dataset.tone = offline || terminalUnavailable() || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
+      tile.dataset.tone = focusUnavailable || terminalUnavailable() || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
       const countedNext = tileState === null;
       const upNext = next[0] ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
       tile.innerHTML = `<span class="assistant-tile-head">${TILE_MARK}<b>assistant<span class="visually-hidden">,</span></b><span class="assistant-tile-state">${tone}${tileStatus}${countedNext && next[0] ? '<span class="visually-hidden">:</span>' : ""}</span></span> <span class="assistant-tile-next">${upNext}</span>`;
@@ -378,14 +393,14 @@ export function createAssistantView(deps: {
     const block = document.getElementById("dashboard-focus");
     if (block) block.hidden = !enabled;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk" data-focus-key="action:attn">${dot(state)} ${esc(info)} ›</button>` : "";
-    replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !offline ? `<p role="status">${esc(error)}</p>` : ""}`);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${offline || terminalUnavailable() || !focus?.assistant?.session ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
-    if (live) live.textContent = offline ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
+    if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
     if (setting) setting.textContent = enabled ? `on · ${info}` : "off";
     const settingError = document.getElementById("assistant-setting-error");
-    if (settingError) settingError.textContent = offline && transportFailure ? "" : error || focus?.assistant?.error || "";
+    if (settingError) settingError.textContent = offline() ? "" : error || focus?.assistant?.error || "";
     const settingHome = document.getElementById("assistant-setting-home");
     if (settingHome) settingHome.textContent = `Home: ${homeName}${focus?.assistant?.folder ? ` · ${focus.assistant.folder}` : ""}. Needs pi installed and logged in there (pi, then /login).`;
     const toggle = document.getElementById("assistant-setting-toggle") as HTMLButtonElement;
@@ -395,9 +410,8 @@ export function createAssistantView(deps: {
     const terminalState = document.getElementById("assistant-terminal-state");
     if (terminalState) terminalState.textContent = terminalUnavailable() ? "sessions unavailable" : focus?.assistant?.queued ? `${focus.assistant.queued} queued` : focus?.assistant?.error ?? state;
     // The existing focus/session refresh owns this projection; the pane never polls or watches work.
-    deps.terminalTarget(answered && enabled && !offline && !terminalUnavailable() && focus?.assistant?.session
-      ? { session: focus.assistant.session, machine, sessionId: focus.assistant.sessionId } : null,
-      offline ? `${homeName} is offline. the terminal reconnects when it is back.` : terminalUnavailable() ? "the terminal is unavailable while the broker reconnects." : "the assistant terminal is not running yet.");
+    deps.terminalTarget(terminalTarget(),
+      offline() ? `${homeName} is offline. the terminal reconnects when it is back.` : terminalUnavailable() ? "the terminal is unavailable while the broker reconnects." : focusUnavailable ? "the assistant terminal is unavailable. check sessions and focus settings." : "the assistant terminal is not running yet.");
     if (fitChips()) render();
   }
   async function refresh(open = !opened) {
@@ -420,11 +434,11 @@ export function createAssistantView(deps: {
         if (response.document !== null && !isFocusDocument(response.document)) throw new Error("invalid focus document");
         // A write saved while this poll was in flight is newer than the document it carries: keep the written one.
         focus = writes !== epoch && focus?.home === response.home ? { ...response, document: focus.document, revision: focus.revision } : response;
-        offline = false; transportFailure = false; error = "";
+        focusUnavailable = false; transportFailure = false; error = "";
         for (const session of openSessions()) void loadContext(session);
         cache(focus);
       } catch (e) {
-        offline = true;
+        focusUnavailable = true;
         transportFailure = e instanceof TypeError || navigator.onLine === false;
         error = e instanceof Error ? e.message : "focus unavailable";
       }
@@ -435,7 +449,7 @@ export function createAssistantView(deps: {
   }
   async function write(op: FocusOp | (() => FocusOp)) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (offline) throw new Error("focus home is offline; changes were not saved");
+      if (focusUnavailable) throw new Error("focus is unavailable; changes were not saved");
       if (!answered) throw new Error("focus is still loading; changes were not saved");
       try {
         const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: [typeof op === "function" ? op() : op] }) }, machine);
@@ -480,7 +494,7 @@ export function createAssistantView(deps: {
       }
     })();
   });
-  function talk() { if (focus?.assistant?.session && !offline && !terminalUnavailable()) deps.open(focus.assistant.session, machine); }
+  function talk() { const target = terminalTarget(); if (target) deps.open(target.session, target.machine); }
   async function run(action: () => Promise<void>) {
     if (busy) return;
     busy = true;
@@ -512,8 +526,8 @@ export function createAssistantView(deps: {
         host.querySelector<HTMLElement>(`details[data-focus-card="${CSS.escape(expand)}"] > summary`)?.focus();
         return;
       }
+      if (action === "talk") { talk(); return; }
       if (locked()) return;
-      if (action === "talk") talk();
       if (action === "catch-up") void run(async () => { const next = await deps.request<RoutineStatus>("/focus/catch-up", { method: "POST" }, machine); if (focus) focus.routines = next; });
       if (action === "day-note") void run(readDayNote);
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));

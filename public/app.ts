@@ -1245,6 +1245,8 @@ const assistantPane = createAssistantTerminal({ createController: createPtyTermi
 const focusUi = createAssistantView({
   request: api,
   terminalTarget: (target, reason) => assistantPane.setTarget(target, reason),
+  terminalSessionAvailable: target => !!target.sessionId && state.lastSessionGroups.some(g => g.online && (g.machine.url || "") === target.machine
+    && g.sessions.some(s => isFocusAssistantSession(s) && s.name === target.session && s.identity?.wolfpackSessionId === target.sessionId)),
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
   localMachineName: () => state.selfName || "this machine",
   // Pinned helpers can need attention, but their routine idle/done turns are not next actions.

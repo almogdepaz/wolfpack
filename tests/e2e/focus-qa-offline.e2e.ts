@@ -134,7 +134,7 @@ for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state
   await expect(view.locator(".focus-next button").first()).toBeDisabled({ timeout: 10_000 });
   await expect(view.locator(".focus-header")).toContainText("sessions unavailable", { timeout: 1_000 });
   await expect(view.locator(".focus-header")).not.toContainText("read-only");
-  await view.locator(".focus-today summary").first().click();
+  await view.locator(".focus-today summary .focus-title").first().click();
   await expect(view.locator(".focus-today .focus-card-body [data-focus-session]")).toHaveCount(2);
   for (const button of await view.locator("[data-focus-session]").all()) await expect(button).toBeDisabled();
   expect((await page.request.get(`${server.baseUrl}/api/focus`)).ok()).toBe(true);
@@ -303,13 +303,173 @@ for (const failure of ["HTTP 500", "invalid document"] as const) test(`S1: setti
   await (await opened).finished();
   failed = true;
   await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
-  await expect(page.locator("#assistant-setting-status")).toContainText("offline · read-only");
+  await expect(page.locator("#assistant-setting-status")).toContainText("focus unavailable · read-only");
+  await expect(page.locator("#assistant-setting-status")).not.toContainText("offline");
   await expect(page.locator("#assistant-setting-error")).toHaveText(message);
   failed = false;
   await page.locator("#assistant-setting-open").click();
   await expect(page.locator("#assistant-content .focus-header")).not.toContainText("offline · read-only");
   await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   await expect(page.locator("#assistant-setting-error")).toHaveText("");
+});
+
+for (const failure of ["HTTP 503", "invalid document"] as const) test(`QA-30: ${failure} keeps a verified assistant terminal live, including cached reload`, async ({ page }, info) => {
+  const desktop = info.project.name === "desktop";
+  let failed = false;
+  const message = failure === "HTTP 503" ? "focus persistence is unreadable: EACCES" : "invalid focus document";
+  let sockets = 0;
+  let binary = 0;
+  page.on("websocket", ws => {
+    if (!ws.url().includes("/ws/pty")) return;
+    sockets++;
+    ws.on("framesent", frame => { if (typeof frame.payload !== "string") binary++; });
+  });
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  await page.route(url => url.pathname === "/api/focus", async route => {
+    if (!failed) return route.continue();
+    if (failure === "HTTP 503") return route.fulfill({ status: 503, json: { error: message } });
+    const response = await route.fetch(); const body = await response.json();
+    body.document.version = 999;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await (await opened).finished();
+  const view = page.locator("#assistant-content");
+  const terminal = page.locator("#assistant-pty");
+  if (desktop) await expect(terminal).toHaveClass(/hydrated/);
+  const canvas = desktop ? await terminal.locator("canvas").elementHandle() : null;
+  failed = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  for (const header of ["#assistant-content .focus-header", "#dashboard-focus .focus-header"]) {
+    await expect(page.locator(header)).toContainText("focus unavailable · read-only");
+    await expect(page.locator(header)).not.toContainText("offline");
+  }
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("focus unavailable");
+  await expect(view.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();
+  await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeEnabled();
+  await expect(page.locator("#focus-status")).toHaveText(""); // cause belongs in settings
+  if (desktop) {
+    await expect(terminal).toHaveClass(/hydrated/);
+    expect(await canvas!.evaluate(el => el.isConnected), "no store-fault terminal remount").toBe(true);
+    expect(sockets).toBe(1);
+    await page.locator("#assistant-pane-focus").click();
+    await page.keyboard.type("still talking");
+    await expect.poll(() => binary).toBeGreaterThan(0);
+  }
+  await page.screenshot({ path: info.outputPath(`qa30-${failure.replace(" ", "-")}.png`), fullPage: true });
+  // A cold error may use the cached focus identity only after fresh sessions verify it.
+  await page.reload();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expect(view.locator(".focus-header")).toContainText("focus unavailable");
+  await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeEnabled();
+  if (desktop) await expect(terminal).toHaveClass(/hydrated/);
+  else {
+    await expect(page.locator(".view.swiping")).toHaveCount(0);
+    await view.getByRole("button", { name: "Talk to assistant" }).click();
+    await expect(page.locator("#assistant-terminal-header")).toBeVisible();
+    await page.locator("#assistant-terminal-focus").click();
+  }
+  await view.getByRole("button", { name: "Assistant settings", exact: true }).click();
+  await expect(page.locator("#assistant-setting-status")).not.toContainText("offline");
+  await expect(page.locator("#assistant-setting-error")).toHaveText(message);
+  await expect(page.locator("#assistant-setting-toggle")).toBeDisabled();
+  failed = false;
+  await page.locator("#assistant-setting-open").click();
+  await expect(view.locator(".focus-header")).not.toContainText("focus unavailable");
+  await expect(view.getByRole("textbox", { name: "Add an intention" })).toBeEnabled();
+});
+
+test("QA-30: a remote focus home keeps its terminal on the owning machine after store failure and reload", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "remote pane routing");
+  const origin = "https://focus-home.example.ts.net";
+  const id = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
+  const json = (body: unknown) => ({ json: body, headers: { "Access-Control-Allow-Origin": "*" } });
+  let failed = false;
+  let remoteReads = 0;
+  const sockets: string[] = [];
+  await page.route("https://**", route => route.abort());
+  await page.route("**/api/tailnet/v1/candidates", route => route.fulfill(json({ candidates: [{ hostname: "focus-home.example.ts.net", tailnetNodeId: "n-home", origin, online: true }] })));
+  await page.route(`${origin}/api/machine`, route => route.fulfill(json({
+    protocol: { name: "wolfpack-machine", major: 1, minor: 0 },
+    machine: { tailnetNodeId: "n-home", installationId: id, displayName: "focus home", origin },
+    wolfpack: { version: "1.7.0" }, capabilities: ["sessions", "terminal-websocket", "push-subscription"],
+  })));
+  await page.route(`${origin}/api/sessions`, async route => {
+    const response = await route.fetch({ url: `${server.baseUrl}/api/sessions` });
+    await route.fulfill({ response, ...json(await response.json()) });
+  });
+  await page.route(url => url.origin === server.baseUrl && url.pathname === "/api/focus", async route => {
+    if (failed) return route.fulfill({ status: 503, json: { error: "remote focus store unreadable" } });
+    const response = await route.fetch(); const body = await response.json();
+    body.local = false; body.home = id;
+    await route.fulfill({ response, json: body });
+  });
+  await page.route(url => url.origin === origin && url.pathname === "/api/focus", async route => {
+    if (failed) return route.fulfill({ status: 503, ...json({ error: "remote focus store unreadable" }) });
+    const response = await route.fetch({ url: `${server.baseUrl}/api/focus` }); const body = await response.json();
+    body.local = true; body.home = id; body.installationId = id;
+    body.document.nudge.text = `remote focus read ${++remoteReads}`;
+    await route.fulfill({ response, ...json(body) });
+  });
+  // Keep the external peer socket at its transport boundary; no remote service is contacted.
+  await page.routeWebSocket(`${origin.replace("https:", "wss:")}/ws/pty**`, ws => { sockets.push(ws.url()); });
+  page.on("websocket", ws => { if (ws.url().includes("/ws/pty") && new URL(ws.url()).host === new URL(server.baseUrl).host) sockets.push(ws.url()); });
+  await page.goto(server.baseUrl);
+  // Initial focus can answer before discovery verifies the home. Refresh from
+  // that observed ready state instead of racing the next five-second poll.
+  await expect(page.locator(`.machine-group[data-machine="n-home:${id}"]`).first()).toBeVisible();
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#dashboard-focus .focus-nudge")).toHaveText(/^remote focus read /);
+  const opened = page.waitForResponse(response => new URL(response.url()).origin === origin && new URL(response.url()).pathname === "/api/focus");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await (await opened).finished();
+  // The socket may mount from the previous projection before the open-refresh
+  // finishes. Observe that refresh's rendered document before failing the store.
+  await expect(page.locator("#assistant-content .focus-nudge")).toHaveText(`remote focus read ${remoteReads}`);
+  await expect.poll(() => sockets.length).toBeGreaterThan(0);
+  expect(new URL(sockets[0]!).origin).toBe(origin.replace("https:", "wss:"));
+  failed = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#assistant-content .focus-header")).toContainText("focus unavailable");
+  await expect(page.locator("#assistant-pane-empty")).toBeHidden();
+  expect(sockets).toHaveLength(1);
+  await page.reload();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expect.poll(() => sockets.length).toBe(2);
+  expect(new URL(sockets[1]!).origin).toBe(origin.replace("https:", "wss:"));
+  await expect(page.locator("#assistant-content .focus-header")).toContainText("focus unavailable");
+});
+
+for (const change of ["removed", "replaced", "broker unavailable"] as const) test(`QA-30: store failure does not trust a ${change} assistant target`, async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "pane target identity guard");
+  let failed = false;
+  let changed = false;
+  await page.route(url => url.pathname === "/api/focus", route => failed ? route.fulfill({ status: 503, json: { error: "focus store unreadable" } }) : route.continue());
+  await page.route("**/api/sessions", async route => {
+    if (changed && change === "broker unavailable") return route.fulfill({ status: 503, json: { error: "broker unavailable" } });
+    const response = await route.fetch(); const body = await response.json();
+    if (changed && change === "removed") body.sessions = body.sessions.filter((s: { name: string }) => s.name !== "assistant");
+    if (changed && change === "replaced") body.sessions.find((s: { name: string }) => s.name === "assistant").identity.wolfpackSessionId = "mock:replacement-assistant";
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await (await opened).finished();
+  await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+  failed = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#assistant-content .focus-header")).toContainText("focus unavailable");
+  await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+  changed = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#assistant-pane-empty")).toBeVisible();
+  await expect(page.locator("#assistant-pane-empty")).not.toContainText("offline");
+  await expect(page.locator("#assistant-pty canvas")).toHaveCount(0);
+  await expect(page.locator("#assistant-pane-focus")).toBeHidden();
+  await expect(page.locator("#assistant-content").getByRole("button", { name: "Talk to assistant" })).toBeDisabled();
 });
 
 test("QA-14: self-offline keeps last known next rows, disabled, then recovers", async ({ page, context }) => {
