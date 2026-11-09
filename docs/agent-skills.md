@@ -89,6 +89,16 @@ Non-interactive setup changes nothing and directs Claude users to rerun
 `claude` command with `--channels plugin:wolfpack-tasks@wolfpack-tasks`; see
 [Claude task workers](session-control.md#claude-task-workers).
 
+`wolfpack doctor` shows one line while the flag is off. While it is on, doctor
+runs only `claude --version` and reads files; `--fix` never runs these
+commands. It fails an old Claude version, a third-party provider, a missing
+user-scope plugin, and a missing or wrong drop-in. It warns when
+`managed-settings.json` or another drop-in sets `channelsEnabled: false` or an
+`allowedChannelPlugins` list without the plugin, and names that file. Doctor
+does not inspect MDM or server-managed settings. It also warns about each live
+Claude session that uses fallback wake instead of the channel, from the
+plugin's status files in `~/.wolfpack/wolfpack-tasks/claude/`.
+
 ## Clone or update the auditable source
 
 Use a dedicated clone. Updating is fast-forward-only so this workflow does not
