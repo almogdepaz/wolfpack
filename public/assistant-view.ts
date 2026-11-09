@@ -3,6 +3,7 @@ import { esc, escAttr, isDesktop } from "./app-state";
 import { rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, type FocusAction, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
+import type { AssistantTerminalTarget } from "./assistant-terminal";
 import { showAppDialog } from "./app-dialog";
 import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../src/focus-context";
 interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string; unavailableReason?: string }
@@ -13,6 +14,7 @@ export function createAssistantView(deps: {
   request: <T>(path: string, init?: RequestInit, machine?: string, interactive?: boolean) => Promise<T>;
   homeMachine: (id: string) => Machine | undefined;
   sessions: () => FocusSession[];
+  terminalTarget: (target: AssistantTerminalTarget | null) => void;
   /** False means the local session projection is unavailable, not that every session stopped. */
   sessionsAvailable: () => boolean;
   /** A completed local session fetch failed; the initial pending fetch is not an outage. */
@@ -346,6 +348,9 @@ export function createAssistantView(deps: {
     if (settingOpen) settingOpen.hidden = !enabled;
     const terminalState = document.getElementById("assistant-terminal-state");
     if (terminalState) terminalState.textContent = terminalUnavailable() ? "sessions unavailable" : focus?.assistant?.queued ? `${focus.assistant.queued} queued` : focus?.assistant?.error ?? state;
+    // The existing focus/session refresh owns this projection; the pane never polls or watches work.
+    deps.terminalTarget(answered && enabled && !offline && !terminalUnavailable() && focus?.assistant?.session
+      ? { session: focus.assistant.session, machine, sessionId: focus.assistant.sessionId } : null);
     if (fitChips()) render();
   }
   async function refresh(open = !opened) {

@@ -2,6 +2,7 @@
   "extends": "../tsconfig.json",
   "include": [
     "app-debug.ts",
+    "assistant-terminal.ts",
     "delegation-sessions.ts",
     "extension-loader.ts",
     "ghostty-prewarm-pool.ts",

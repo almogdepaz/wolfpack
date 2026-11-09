@@ -58,10 +58,13 @@ test("pane: two columns at 1100+, one column below, clean breakpoint remount and
   for (const width of [1440, 1100]) {
     await page.setViewportSize({ width, height: 900 });
     await hydrated(page);
+    // Resize settlement is asynchronous; capture the fitted terminal, not the old-width canvas.
+    await expect.poll(() => page.locator("#assistant-pty").evaluate(el => el.querySelector("canvas")!.getBoundingClientRect().width <= el.clientWidth)).toBe(true);
     const list = (await page.locator(".assistant-column").boundingBox())!;
     const terminal = (await pane(page).boundingBox())!;
     expect(terminal.x).toBeGreaterThanOrEqual(list.x + list.width - 1);
     expect(terminal.width).toBeGreaterThan(250);
+    expect(await page.locator('#assistant-content .focus-today .focus-title').first().evaluate(el => el.clientWidth)).toBeGreaterThan(90);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: join(shots, `assistant-${width}.png`), fullPage: true });
   }
@@ -110,6 +113,15 @@ test("pane: keyboard stays in the list, click to type, back to list never sends 
   expect(await page.locator(".assistant-column").evaluate(el => el.contains(document.activeElement))).toBe(true);
   await add.pressSequentially("still list");
   expect(stats.binary).toBe(before);
+  // A newly mounted projection on foreground return needs a fresh explicit focus action.
+  await pane(page).locator("canvas").click();
+  await visibility(page, "hidden");
+  await visibility(page, "visible");
+  await hydrated(page);
+  expect(await page.locator(".assistant-column").evaluate(el => el.contains(document.activeElement))).toBe(true);
+  await pane(page).getByRole("button", { name: "Focus terminal", exact: true }).click();
+  await page.keyboard.type("explicit focus");
+  await expect.poll(() => stats.binary).toBeGreaterThan(before);
 });
 
 test("pane: full-screen handover and tile return release the old controller before attaching", async ({ page }, info) => {
@@ -179,6 +191,23 @@ test("pane: pinned assistant never acknowledges or counts as watched work", asyn
   await expect(page.locator('#sidebar-session-list .card-name-text').filter({ hasText: /^assistant$/ })).toHaveCount(0);
 });
 
+test("pane: leaving during the asynchronous WASM mount never opens a late viewer", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "desktop pane only");
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/ghostty-web.bundle.js*", async route => { await held; await route.continue(); });
+  const stats = transport(page);
+  await openFocus(page);
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
+  expect(stats.opened).toBe(0);
+  release();
+  await page.locator("#assistant-setting-open").click();
+  await hydrated(page);
+  await expect.poll(() => stats.live).toBe(1);
+  expect(stats.opened).toBe(1);
+  expect(stats.max).toBe(1);
+});
+
 test("pane: uses the shared refresh cadence, no extra session/focus polling", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop pane only");
   test.setTimeout(60_000);
@@ -201,4 +230,5 @@ test("pane: uses the shared refresh cadence, no extra session/focus polling", as
   await visibility(page, "hidden");
   const hidden = await windowCounts();
   expect(hidden).toEqual({ sessions: 0, focus: 0 });
+  console.log("pane refresh counts", JSON.stringify({ visible, hidden }));
 });

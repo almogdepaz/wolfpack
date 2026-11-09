@@ -1,4 +1,5 @@
 import { createAssistantView } from "./assistant-view";
+import { createAssistantTerminal } from "./assistant-terminal";
 import { stoppedUnseen } from "../src/focus-ranking";
 import type { FocusSessionStart } from "../src/focus-start";
 import { isFocusAssistantSession, withoutFocusAssistant } from "../src/focus-session";
@@ -1240,8 +1241,10 @@ async function api<TResponse = unknown>(path: string, opts?: RequestInit, machin
 let pendingFocusStart: FocusSessionStart | undefined;
 // One copy for the settings toggle and the terminal header / kill path.
 const DISABLE_ASSISTANT_MESSAGE = "Stop the assistant? Its conversation and your focus list are kept; enable it again any time.";
+const assistantPane = createAssistantTerminal({ createController: createPtyTerminalController, createConflictOverlay });
 const focusUi = createAssistantView({
   request: api,
+  terminalTarget: target => assistantPane.setTarget(target),
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
   sessions: () => state.lastSessionGroups.filter(g => g.online).flatMap(g => withoutFocusAssistant(g.sessions).filter(s => s.pinned !== true).map(s => ({ id: s.identity?.wolfpackSessionId ?? s.name, name: s.name, state: s.runtimeState?.state ?? "unknown", changedAt: s.runtimeState?.state === "done" || s.runtimeState?.state === "idle" ? s.runtimeState.stoppedAt ?? s.runtimeState.changedAt : s.runtimeState?.changedAt, unseen: s.runtimeState?.unseen, stoppedSequence: s.runtimeState?.stoppedSequence, acknowledgedSequence: s.runtimeState?.acknowledgedSequence, cwd: s.identity?.projectPath, machine: g.machine.name, machineUrl: g.machine.url, lastLine: s.lastLine }))),
   sessionsAvailable: () => state.lastSessionGroups.some(g => !g.machine.url && g.online),
@@ -1595,6 +1598,8 @@ function showView(requested: string, skipAnimation?: boolean, refreshSessions = 
   const goingForward = (VIEW_DEPTH[viewName] || 0) > (VIEW_DEPTH[previousView] || 0);
 
   stopDebugPanelRefresh(previousView, viewName);
+  // Release the pane before the full-screen controller can mount (including talk).
+  if (viewName !== "assistant") assistantPane.setActive(false);
   teardownTerminalForViewChange(previousView, viewName);
   setState({ currentView: viewName });
   document.getElementById("assistant-terminal-header").hidden = viewName !== "terminal" || !focusUi.isAssistant(state.currentSession, state.currentMachine);
@@ -1602,6 +1607,7 @@ function showView(requested: string, skipAnimation?: boolean, refreshSessions = 
   if (viewName === "settings") void focusUi.loadTiming();
   document.dispatchEvent(new Event("wolfpack-extension-scope-change"));
   applyViewVisibility(previousElement, nextElement, animate, goingForward);
+  if (viewName === "assistant") assistantPane.setActive(true);
 
   // Stop timers immediately (don't defer these).
   if (state.sessionRefreshTimer) { clearInterval(state.sessionRefreshTimer); state.sessionRefreshTimer = null; }
