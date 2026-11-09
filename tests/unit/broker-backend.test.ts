@@ -490,21 +490,18 @@ test("raw UUID lifecycle facts and inbox cleanup precede deferred public kill cl
   }
 });
 
-test("a tracked child's exit reaches its parent inbox before the public exit event, once, even after a dead listing", async () => {
+describe("child exits from the lifecycle and the session table", () => {
   const parentId = "22222222-2222-4222-8222-222222222222";
-  clearParentInbox(parentId);
-  __resetChildEventsForTests();
-  const kinds: string[] = [];
-  const childEvents: unknown[] = [];
-  const exactBackend = new BrokerBackend(client, event => {
-    kinds.push(event.kind);
-    if (event.kind === "child_event") childEvents.push(event.childEvent);
-  });
-  try {
+  const parentSession = { wolfpackSessionId: parentId, wolfpackSessionName: "lead" };
+  let kinds: string[] = [];
+  let childEvents: Array<Record<string, unknown>> = [];
+  let exactBackend: BrokerBackend;
+
+  function track(id = SESSION_UUID_1, name = "worker"): void {
     observeChildSession({
-      sessionId: SESSION_UUID_1,
-      name: "worker",
-      parentSession: { wolfpackSessionId: parentId, wolfpackSessionName: "lead" },
+      sessionId: id,
+      name,
+      parentSession,
       alive: true,
       runtimeState: {
         state: "working", authority: "program", freshness: "fresh", source: "program-status", label: "working",
@@ -512,21 +509,105 @@ test("a tracked child's exit reaches its parent inbox before the public exit eve
       },
       rendered: "compiling\nfailed: 2 tests",
     }, () => {});
-    // The table can show the child dead before its exit frame is processed.
-    client.setHandler("list_sessions", () => okResp({ sessions: [sessionInfo({ name: "worker", id: SESSION_UUID_1, alive: false })] }));
+  }
+
+  /** The parent stays live in every table, so its inbox is kept. */
+  function table(...sessions: Array<{ id: string; name: string; alive: boolean }>): void {
+    const rows = [{ id: parentId, name: "lead", alive: true }, ...sessions];
+    client.setHandler("list_sessions", () => okResp({ sessions: rows.map(session => sessionInfo(session)) }));
+  }
+
+  beforeEach(() => {
+    clearParentInbox(parentId);
+    __resetChildEventsForTests();
+    kinds = [];
+    childEvents = [];
+    exactBackend = new BrokerBackend(client, event => {
+      kinds.push(event.kind);
+      if (event.kind === "child_event") childEvents.push(event.childEvent as unknown as Record<string, unknown>);
+    });
+  });
+
+  afterEach(() => {
+    clearParentInbox(parentId);
+    __resetChildEventsForTests();
+  });
+
+  test("lifecycle before the table read: one exited with the exit code, then the dead and absent table add nothing", async () => {
+    track();
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 3 });
+    table({ id: SESSION_UUID_1, name: "worker", alive: false });
     await exactBackend.listSessionFacts();
-    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 3 });
-    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 3 });
-    expect(kinds.filter(kind => kind !== "session.created")).toEqual(["child_event", "session.exited", "session.exited"]);
+    table();
+    await exactBackend.listSessionFacts();
+    expect(kinds.filter(kind => kind !== "session.created")).toEqual(["child_event", "session.exited"]);
     expect(childEvents).toEqual([expect.objectContaining({
       event: "exited", reason: "exit", exitCode: 3, state: "working", childSessionId: SESSION_UUID_1,
       parentSessionId: parentId, lastLines: ["compiling", "failed: 2 tests"],
     })]);
     expect(listParentNotifications(parentId)).toEqual([expect.objectContaining({ message: "exited (exit code 3)", from: "worker" })]);
-  } finally {
-    clearParentInbox(parentId);
-    __resetChildEventsForTests();
-  }
+  });
+
+  test("table read before the lifecycle: a confirmed dead child is exited once; the late exit frame adds only the public event", async () => {
+    track();
+    table({ id: SESSION_UUID_1, name: "worker", alive: false });
+    await exactBackend.listSessionFacts();
+    await exactBackend.listSessionFacts();
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 3 });
+    expect(kinds.filter(kind => kind !== "session.created")).toEqual(["child_event", "session.exited"]);
+    expect(childEvents).toEqual([expect.objectContaining({
+      event: "exited", reason: "exit", state: "working", lastLines: ["compiling", "failed: 2 tests"],
+    })]);
+    expect(childEvents[0]).not.toHaveProperty("exitCode");
+  });
+
+  test("an exit missed during a disconnect is recovered from the dead table, and a child gone from the table is exited too", async () => {
+    track(SESSION_UUID_1, "worker");
+    track(SESSION_UUID_2, "helper");
+    // The broker client was disconnected: no exit frame ever arrives.
+    client.requestError = new Error("broker disconnected");
+    await expect(exactBackend.listSessionFacts()).rejects.toThrow("broker disconnected");
+    client.requestError = null;
+    // Unavailable facts are not terminal: nothing was reported.
+    expect(childEvents).toEqual([]);
+    table({ id: SESSION_UUID_1, name: "worker", alive: false });
+    await exactBackend.listSessionFacts();
+    expect(childEvents.map(event => [event.childName, event.event, event.reason])).toEqual([
+      ["worker", "exited", "exit"],
+      ["helper", "exited", "exit"],
+    ]);
+    table();
+    await exactBackend.listSessionFacts();
+    expect(childEvents).toHaveLength(2);
+  });
+
+  test("a child listed dead while its kill reply is outstanding waits for the reply and reports killed", async () => {
+    track();
+    let settleKill!: (response: ControlResponse) => void;
+    client.setHandler("kill_session", () => new Promise<ControlResponse>(resolve => { settleKill = resolve; }));
+    const kill = exactBackend.killSessionById(SESSION_UUID_1);
+    table({ id: SESSION_UUID_1, name: "worker", alive: false });
+    await exactBackend.listSessionFacts();
+    expect(childEvents).toEqual([]);
+    settleKill(okResp({ kind: "kill_session" }));
+    await kill;
+    // The exit frame was lost; the next table read reports the kill.
+    await exactBackend.listSessionFacts();
+    expect(childEvents.map(event => [event.event, event.reason])).toEqual([["exited", "killed"]]);
+  });
+
+  test("a table read that started before a child was created does not report it as gone", async () => {
+    let releaseList!: () => void;
+    const listGate = new Promise<void>(resolve => { releaseList = resolve; });
+    client.setHandler("list_sessions", async () => { await listGate; return okResp({ sessions: [] }); });
+    const listing = exactBackend.listSessionFacts();
+    await Promise.resolve();
+    client.setHandler("create_session", () => okResp({ session: sessionInfo({ name: "fresh-child", id: SESSION_UUID_1 }) }));
+    await exactBackend.createSession("fresh-child", "/tmp/proj", "claude", loadSettings, { agentKind: "claude", parentSession });
+    releaseList();
+    await listing;
+    expect(childEvents).toEqual([]);
+  });
 });
 
 test("a child created through the backend reports its first event state, but a restored child does not", async () => {

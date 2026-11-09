@@ -59,7 +59,7 @@ import type {
 } from "../broker/client.js";
 import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/codec.js";
 import type { SessionInspectionResult } from "../session-status-contract.js";
-import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND } from "../events-contract.js";
+import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND, type SessionExitReason } from "../events-contract.js";
 import { publishEvent } from "./event-bus.js";
 import { notifyProgramStatusChanged } from "./program-status-signal.js";
 import {
@@ -74,7 +74,7 @@ import { taskWorkerHarness } from "./task-worker-readiness.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
 import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
-import { childSessionExited, noteChildCreated, reconcileChildEvents } from "./child-events.js";
+import { childSessionExited, childTrackingMark, noteChildCreated, reconcileChildEvents } from "./child-events.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { PROGRAM_STATUS_STATE, parseBrokerProgramStatusRecord } from "../program-status-contract.js";
@@ -598,6 +598,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   }
 
   async listSessionFacts(): Promise<SessionListFact[]> {
+    const trackedBefore = childTrackingMark();
     const sessions = await this.brokerSessions();
     const identitySessions: Array<{
       wolfpackSessionId: string;
@@ -648,9 +649,17 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       if (!liveIds.has(id)) this.idToAgentKind.delete(id);
     }
     reconcileParentInboxes(liveIds);
-    // A dead session still in the table may not have reported its exit yet.
-    reconcileChildEvents(new Set(sessions.map(s => s.id)));
+    // A known child that is dead or gone in this table has exited, even if
+    // its exit frame was lost; the lifecycle path shares the deduplication.
+    reconcileChildEvents(liveIds, { trackedBefore, exitReason: id => this.tableExitReason(id), publish: this.emitEvent });
     return facts;
+  }
+
+  /** The reason for an exit found in the session table; undefined while a kill reply is outstanding. */
+  private tableExitReason(id: string): SessionExitReason | undefined {
+    const kill = this.killRequests.get(id);
+    if (kill && kill.inFlight > 0) return undefined;
+    return kill?.succeeded ? SESSION_EXIT_REASON.KILLED : SESSION_EXIT_REASON.EXIT;
   }
 
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {

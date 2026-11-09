@@ -51,6 +51,8 @@ const BUSY_STATES: ReadonlySet<AgentStatusState> = new Set([
 ]);
 
 interface ChildRecord {
+  /** Tracking order (`childTrackingMark`): a table read only judges older records. */
+  readonly trackedSeq: number;
   name: string;
   parentSessionId: string;
   parentName: string;
@@ -81,6 +83,13 @@ type ChildEventListener = (delivery: ChildEventDelivery) => void;
 
 const children = new Map<string, ChildRecord>();
 const listeners = new Set<ChildEventListener>();
+let trackingSeq = 0;
+
+function track(sessionId: string, record: Omit<ChildRecord, "trackedSeq">): ChildRecord {
+  const child = { ...record, trackedSeq: ++trackingSeq };
+  children.set(sessionId, child);
+  return child;
+}
 
 function lastScreenLines(rendered: string): readonly string[] {
   const lines = rendered.split(/\r?\n/)
@@ -167,16 +176,19 @@ export function observeChildSession(observation: ChildSessionObservation, publis
   const parent = observation.parentSession;
   if (!parent) return;
   let child = children.get(observation.sessionId);
-  if (!child) {
-    child = { name: observation.name, parentSessionId: parent.wolfpackSessionId, parentName: parent.wolfpackSessionName, armed: false };
-    children.set(observation.sessionId, child);
-  }
+  // A dead first sight is not tracked: there is no live child to report on,
+  // and a record would make a later table read report a stale exit.
+  if (!child && !observation.alive) return;
+  child ??= track(observation.sessionId, {
+    name: observation.name, parentSessionId: parent.wolfpackSessionId, parentName: parent.wolfpackSessionName, armed: false,
+  });
   child.name = observation.name;
   child.parentSessionId = parent.wolfpackSessionId;
   child.parentName = parent.wolfpackSessionName;
   if (observation.rendered !== undefined) child.lastLines = lastScreenLines(observation.rendered);
-  // Exits come from the session lifecycle. A dead or stale observation is not
-  // a fresh claim about the child, and leaves the baseline unchanged.
+  // Exits come from the session lifecycle and the session table
+  // (`reconcileChildEvents`). A dead or stale observation is not a fresh
+  // claim about the child's state, and leaves the baseline unchanged.
   const { runtimeState } = observation;
   if (!observation.alive || runtimeState.stale) return;
   const previous = child.state;
@@ -196,7 +208,7 @@ export function observeChildSession(observation: ChildSessionObservation, publis
  */
 export function noteChildCreated(sessionId: string, name: string, parent: ParentSessionIdentity): void {
   if (children.has(sessionId)) return;
-  children.set(sessionId, {
+  track(sessionId, {
     name,
     parentSessionId: parent.wolfpackSessionId,
     parentName: parent.wolfpackSessionName,
@@ -218,7 +230,7 @@ export function noteChildInputDelivered(sessionId: string, name: string, parent:
     child.armed = true;
     return;
   }
-  children.set(sessionId, {
+  track(sessionId, {
     name,
     parentSessionId: parent.wolfpackSessionId,
     parentName: parent.wolfpackSessionName,
@@ -270,10 +282,31 @@ export function childMessageEvent(
   return undefined;
 }
 
-/** Only a successful authoritative table can establish absent sessions. */
-export function reconcileChildEvents(liveSessionIds: ReadonlySet<string>): void {
-  for (const id of children.keys()) {
-    if (!liveSessionIds.has(id)) children.delete(id);
+/** Take this before a session table read starts; pass it as `trackedBefore`. */
+export function childTrackingMark(): number {
+  return trackingSeq;
+}
+
+export interface ChildTableReconcile {
+  /** `childTrackingMark()` from before the read: newer records may be missing from it. */
+  readonly trackedBefore: number;
+  /** The exit reason, or undefined to wait (a kill reply is still outstanding). */
+  readonly exitReason: (sessionId: string) => SessionExitReason | undefined;
+  readonly publish: PublishEvent;
+}
+
+/**
+ * A successful, authoritative session table: a known child that is listed dead
+ * or no longer listed has exited, also when its exit frame was lost (for
+ * example during a broker disconnect). Emits `exited` once, shared with
+ * `childSessionExited`, so either arrival order reports one exit. An exit
+ * found here carries no exit code. Unavailable facts must not reach here.
+ */
+export function reconcileChildEvents(liveSessionIds: ReadonlySet<string>, reconcile: ChildTableReconcile): void {
+  for (const [id, child] of Array.from(children)) {
+    if (liveSessionIds.has(id) || child.trackedSeq > reconcile.trackedBefore) continue;
+    const reason = reconcile.exitReason(id);
+    if (reason !== undefined) childSessionExited(id, { reason }, reconcile.publish);
   }
 }
 
@@ -287,4 +320,5 @@ export function __resetChildEventsForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetChildEventsForTests is test-only");
   children.clear();
   listeners.clear();
+  trackingSeq = 0;
 }

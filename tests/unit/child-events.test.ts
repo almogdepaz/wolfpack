@@ -18,6 +18,7 @@ import {
   __resetChildEventsForTests,
   childMessageEvent,
   childSessionExited,
+  childTrackingMark,
   noteChildCreated,
   noteChildInputDelivered,
   observeChildSession,
@@ -182,7 +183,7 @@ describe("child events", () => {
     expect(events().map(event => [event.event, event.state])).toEqual([["done", AGENT_STATUS_STATE.IDLE]]);
   });
 
-  test("dead, stale and parentless observations produce nothing and keep the baseline", () => {
+  test("dead, stale and parentless observations produce no state event and keep the baseline", () => {
     observe(AGENT_STATUS_STATE.WORKING);
     observe(AGENT_STATUS_STATE.DONE, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { alive: false });
     observe(AGENT_STATUS_STATE.DONE, AGENT_STATUS_AUTHORITY.PROGRAM, { stale: true });
@@ -222,8 +223,33 @@ describe("child events", () => {
     observe(AGENT_STATUS_STATE.WORKING);
     observe(AGENT_STATUS_STATE.FAILED);
     expect(seen).toEqual(["lead:error"]);
-    reconcileChildEvents(new Set());
+    reconcileChildEvents(new Set(), { trackedBefore: childTrackingMark(), exitReason: () => "exit", publish });
+    expect(events().map(event => event.event)).toEqual(["error", "error", "exited"]);
+    // Forgotten: the next sight is a baseline again.
     observe(AGENT_STATUS_STATE.DONE);
+    expect(events()).toHaveLength(3);
+  });
+
+  test("a table read reports a known child that is dead or gone as exited, once", () => {
+    observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { rendered: "compiling\nfailed" });
+    observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "live", name: "live" });
+    observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "killing", name: "killing" });
+    // A dead first sight is not tracked: there is no live child to report.
+    observe(AGENT_STATUS_STATE.DONE, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { alive: false, id: "ghost", name: "ghost" });
+    const mark = childTrackingMark();
+    // Created while that table read was in flight: absent from it, but not gone.
+    noteChildCreated("new-id", "new", PARENT);
+    const exitReason = (id: string) => (id === "killing" ? undefined : "exit" as const);
+    reconcileChildEvents(new Set(["live"]), { trackedBefore: mark, exitReason, publish });
+    expect(events().map(event => [event.childName, event.event, event.reason])).toEqual([["worker", "exited", "exit"]]);
+    expect(events()[0]).toMatchObject({ state: AGENT_STATUS_STATE.WORKING, lastLines: ["compiling", "failed"] });
+    // The lifecycle callback that arrives later finds nothing to report.
+    expect(childSessionExited(CHILD, { reason: "exit", exitCode: 1 }, publish)).toBeUndefined();
+
+    // The kill reply came back: the deferred child is reported with its reason.
+    reconcileChildEvents(new Set(["live", "new-id"]), { trackedBefore: childTrackingMark(), exitReason: () => "killed", publish });
+    expect(events().map(event => [event.childName, event.event, event.reason])).toEqual([["worker", "exited", "exit"], ["killing", "exited", "killed"]]);
+    reconcileChildEvents(new Set(["live", "new-id"]), { trackedBefore: childTrackingMark(), exitReason: () => "exit", publish });
     expect(events()).toHaveLength(2);
   });
 
