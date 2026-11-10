@@ -2814,6 +2814,237 @@
         "503 SessionStatusFailure"
       ]
     },
+    "listSessionChildren": {
+      "route": "GET /api/session-control/children",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:listSessionChildren:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listSessionChildren request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionSelector"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:listSessionChildren:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listSessionChildren response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "bootId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "session": {
+                  "$ref": "#/$defs/SessionName"
+                },
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "state": {
+                  "$ref": "#/$defs/AgentStatusState"
+                },
+                "authority": {
+                  "$ref": "#/$defs/AgentStatusAuthority"
+                },
+                "stale": {
+                  "type": "boolean"
+                },
+                "settled": {
+                  "type": "boolean",
+                  "description": "Fresh tracked state is idle, needs-input, done, failed, stopped or off, with no delivered task pending."
+                },
+                "lastEvent": {
+                  "$ref": "#/$defs/ChildEvent"
+                }
+              },
+              "required": [
+                "session",
+                "sessionId",
+                "state",
+                "settled"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "sessionId",
+          "bootId",
+          "children"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure"
+      ]
+    },
+    "waitForSessionChildren": {
+      "route": "GET /api/session-control/children/wait",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:waitForSessionChildren:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "waitForSessionChildren request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "children": {
+            "enum": [
+              "any",
+              "all"
+            ]
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 600000
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Used only with the same bootId."
+          },
+          "bootId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "session",
+          "children"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:waitForSessionChildren:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "waitForSessionChildren response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "children": {
+            "enum": [
+              "any",
+              "all"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "events",
+              "settled",
+              "no_children",
+              "timeout"
+            ],
+            "description": "timeout is a check-in result, not a failure."
+          },
+          "bootId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The cursor used: the request since for the current boot, otherwise 0."
+          },
+          "cursor": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Pass as since with bootId to the next wait."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ChildEvent"
+            },
+            "maxItems": 100
+          },
+          "truncated": {
+            "const": true
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "session": {
+                  "$ref": "#/$defs/SessionName"
+                },
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                }
+              },
+              "required": [
+                "session",
+                "sessionId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "sessionId",
+          "children",
+          "outcome",
+          "bootId",
+          "since",
+          "cursor",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "429 ErrorEnvelope",
+        "503 SessionStatusFailure"
+      ]
+    },
     "snapshotSessionVisibleScreen": {
       "route": "GET /api/session-control/snapshot",
       "stable": true,

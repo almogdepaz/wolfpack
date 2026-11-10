@@ -1029,3 +1029,83 @@ describe("unreachable server", () => {
     });
   });
 });
+
+describe("agent wait and agent children", () => {
+  test("parses wait modes, the timeout in seconds and a boot-scoped since", () => {
+    expect(parseAgentCommand(["wait", "--children", "any"])).toEqual({ ok: true, action: "wait", mode: "any", timeoutMs: 180_000, output: "plain" });
+    expect(parseAgentCommand(["wait", "--children", "all", "--timeout", "600", "--since", "7", "--boot-id", "boot", "--json"])).toEqual({
+      ok: true, action: "wait", mode: "all", timeoutMs: 600_000, since: 7, bootId: "boot", output: "json",
+    });
+    expect(parseAgentCommand(["children", "--json"])).toEqual({ ok: true, action: "children", output: "json" });
+  });
+
+  test("rejects invalid wait and children arguments", () => {
+    for (const argv of [
+      ["wait"],
+      ["wait", "--children", "some"],
+      ["wait", "--children", "any", "--timeout", "0"],
+      ["wait", "--children", "any", "--timeout", "601"],
+      ["wait", "--children", "any", "--timeout", "1.5"],
+      ["wait", "--children", "any", "--since", "3"],
+      ["wait", "--children", "any", "--boot-id", "boot"],
+      ["wait", "--children", "any", "--since", "-1", "--boot-id", "boot"],
+      ["wait", "--children", "any", "--since", "1", "--boot-id", "x".repeat(101)],
+      ["wait", "--children", "any", "extra"],
+      ["wait", "--children", "any", "--shell"],
+      ["children", "extra"],
+    ]) {
+      expect(parseAgentCommand(argv).ok, argv.join(" ")).toBe(false);
+    }
+  });
+
+  function agentCli(args: string[], body: unknown): { exitCode: number; stdout: string; stderr: string } {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "lead";
+      process.env.WOLFPACK_SESSION_ID = "lead-id";
+      process.env.WOLFPACK_AGENT_KIND = "claude";
+      globalThis.fetch = async (url) => {
+        console.error("URL " + url);
+        return Response.json(${JSON.stringify(body)});
+      };
+      const { runAgentCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runAgentCommand(${JSON.stringify(args)}));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe",
+    });
+    return { exitCode: child.exitCode, stdout: child.stdout.toString(), stderr: child.stderr.toString() };
+  }
+
+  const waitBody = {
+    ok: true, session: "lead", sessionId: "lead-id", children: "any", outcome: "timeout", bootId: "boot", since: 4, cursor: 4, events: [],
+  };
+
+  test("a wait timeout is a successful check-in and the query carries the cursor of this session", () => {
+    const child = agentCli(["wait", "--children", "any", "--timeout", "5", "--since", "4", "--boot-id", "boot", "--json"], waitBody);
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(child.stdout)).toEqual(waitBody);
+    const url = new URL(child.stderr.match(/URL (\S+)/)![1]!);
+    expect(url.pathname).toBe("/api/session-control/children/wait");
+    expect(Object.fromEntries(url.searchParams)).toEqual({ session: "lead-id", children: "any", timeoutMs: "5000", since: "4", bootId: "boot" });
+  });
+
+  test("plain wait output keeps each event on one terminal-safe line", () => {
+    const event = { seq: 5, childName: "worker", event: "message", message: "a\u001b[2Jb\nc" };
+    const child = agentCli(["wait", "--children", "any"], { ...waitBody, outcome: "events", cursor: 5, events: [event] });
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    expect(child.stdout).toBe("events (cursor 5, boot boot)\n5 worker message: a [2Jb c\n");
+  });
+
+  test("rejects a wait response for another session and lists children", () => {
+    const other = agentCli(["wait", "--children", "all", "--json"], { ...waitBody, sessionId: "other-id" });
+    expect(other.exitCode).toBe(SESSION_EXIT.GENERAL);
+    expect(JSON.parse(other.stdout).error.code).toBe("INVALID_CHILD_WAIT_RESPONSE");
+    const list = agentCli(["children"], {
+      ok: true, session: "lead", sessionId: "lead-id", bootId: "boot",
+      children: [{ session: "worker", sessionId: "worker-id", state: "idle", settled: true, lastEvent: { event: "done" } }],
+    });
+    expect(list.exitCode).toBe(SESSION_EXIT.OK);
+    expect(list.stdout).toBe("worker idle settled (last: done)\n");
+    expect(list.stderr).toContain("/api/session-control/children?session=lead-id");
+  });
+});

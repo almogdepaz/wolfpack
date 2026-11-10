@@ -105,3 +105,44 @@ export function childEventSummary(payload: Pick<ChildEventPayload, "event" | "st
   }
   return boundedChildEventText(text, CHILD_EVENT_LIMITS.MESSAGE_CODE_POINTS);
 }
+
+/** `agent wait --children`: `any` returns on the first new event; `all` when every live child is settled. */
+export const CHILD_WAIT_MODE = {
+  ANY: "any",
+  ALL: "all",
+} as const;
+
+export const CHILD_WAIT_MODES = [CHILD_WAIT_MODE.ANY, CHILD_WAIT_MODE.ALL] as const;
+
+export type ChildWaitMode = typeof CHILD_WAIT_MODES[number];
+
+/**
+ * Why a child wait returned. `timeout` is a check-in, not a failure: the
+ * caller looks at the children and waits again with the returned cursor.
+ */
+export const CHILD_WAIT_OUTCOME = {
+  EVENTS: "events",
+  SETTLED: "settled",
+  NO_CHILDREN: "no_children",
+  TIMEOUT: "timeout",
+} as const;
+
+export const CHILD_WAIT_OUTCOMES = [
+  CHILD_WAIT_OUTCOME.EVENTS,
+  CHILD_WAIT_OUTCOME.SETTLED,
+  CHILD_WAIT_OUTCOME.NO_CHILDREN,
+  CHILD_WAIT_OUTCOME.TIMEOUT,
+] as const;
+
+export type ChildWaitOutcome = typeof CHILD_WAIT_OUTCOMES[number];
+
+export const CHILD_WAIT_LIMITS = {
+  DEFAULT_TIMEOUT_MS: 180_000,
+  MAX_TIMEOUT_MS: 600_000,
+  /** `all` re-checks child states at this interval: a state can settle without an event. */
+  RECHECK_MS: 1_000,
+  /** Concurrent waits per server process. */
+  WAITERS: 32,
+  /** Extra time the CLI allows past the server timeout before it gives up on the response. */
+  CLIENT_GRACE_MS: 30_000,
+} as const;

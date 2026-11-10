@@ -330,6 +330,26 @@ export function reconcileChildEvents(liveSessionIds: ReadonlySet<string>, reconc
   }
 }
 
+/** States in which a tracked child waits for its parent or has stopped (`agent wait --children all`). */
+const SETTLED_STATES: ReadonlySet<AgentStatusState> = new Set([
+  AGENT_STATUS_STATE.IDLE,
+  AGENT_STATUS_STATE.NEEDS_INPUT,
+  AGENT_STATUS_STATE.DONE,
+  AGENT_STATUS_STATE.FAILED,
+  AGENT_STATUS_STATE.STOPPED,
+  AGENT_STATUS_STATE.OFF,
+]);
+
+/**
+ * A live child is settled when its last fresh state is a settled state and no
+ * delivered task is still pending (`armed`). An untracked child or one whose
+ * state is not known yet is not settled.
+ */
+export function isChildSettled(sessionId: string): boolean {
+  const child = children.get(sessionId);
+  return child?.state !== undefined && SETTLED_STATES.has(child.state) && !child.armed;
+}
+
 /** Delivery hook: called synchronously for every event after the inbox append. */
 export function onChildEvent(listener: ChildEventListener): () => void {
   listeners.add(listener);

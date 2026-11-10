@@ -25,7 +25,7 @@ import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 import { SESSION_PLAN_MAX_PATH_LENGTH } from "../session-plan-contract.ts";
 import { NOTIFY_UNDELIVERED_REASON } from "../notify-contract.ts";
 import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND } from "../events-contract.ts";
-import { CHILD_EVENT_LIMITS, CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENTS } from "../child-event-contract.ts";
+import { CHILD_EVENT_LIMITS, CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENTS, CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, CHILD_WAIT_OUTCOMES } from "../child-event-contract.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
   QUIET_ALERT_KIND,
@@ -1662,6 +1662,67 @@ export const controlApiSource: ControlApiSource = {
         "404 SessionStatusFailure",
         "409 SessionStatusFailure",
         "410 SessionStatusFailure",
+        "503 SessionStatusFailure",
+      ],
+    },
+    "GET /api/session-control/children": {
+      operationId: "listSessionChildren",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({ session: ref("SessionSelector") }, ["session"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        bootId: { type: "string", minLength: 1 },
+        children: arrayOf(object({
+          session: ref("SessionName"),
+          sessionId: ref("SessionId"),
+          state: ref("AgentStatusState"),
+          authority: ref("AgentStatusAuthority"),
+          stale: boolean(),
+          settled: { type: "boolean", description: "Fresh tracked state is idle, needs-input, done, failed, stopped or off, with no delivered task pending." },
+          lastEvent: ref("ChildEvent"),
+        }, ["session", "sessionId", "state", "settled"])),
+      }, ["ok", "session", "sessionId", "bootId", "children"]),
+      errors: [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure",
+      ],
+    },
+    "GET /api/session-control/children/wait": {
+      operationId: "waitForSessionChildren",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        session: ref("SessionSelector"),
+        children: { enum: [...CHILD_WAIT_MODES] },
+        timeoutMs: { type: "integer", minimum: 1, maximum: CHILD_WAIT_LIMITS.MAX_TIMEOUT_MS },
+        since: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: "Used only with the same bootId." },
+        bootId: { type: "string", minLength: 1, maxLength: 100 },
+      }, ["session", "children"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        children: { enum: [...CHILD_WAIT_MODES] },
+        outcome: { enum: [...CHILD_WAIT_OUTCOMES], description: "timeout is a check-in result, not a failure." },
+        bootId: { type: "string", minLength: 1 },
+        since: { type: "integer", minimum: 0, description: "The cursor used: the request since for the current boot, otherwise 0." },
+        cursor: { type: "integer", minimum: 0, description: "Pass as since with bootId to the next wait." },
+        events: { ...arrayOf(ref("ChildEvent")), maxItems: 100 },
+        truncated: { const: true },
+        pending: arrayOf(object({ session: ref("SessionName"), sessionId: ref("SessionId") }, ["session", "sessionId"])),
+      }, ["ok", "session", "sessionId", "children", "outcome", "bootId", "since", "cursor", "events"]),
+      errors: [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "429 ErrorEnvelope",
         "503 SessionStatusFailure",
       ],
     },

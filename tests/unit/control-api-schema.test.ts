@@ -150,6 +150,52 @@ describe("control api schema", () => {
     expect(validate(stream, { id: 4, at: childEvent.observedAt, kind: "child_event", session: "parent", sessionId: "parent-id" }, artifact)).not.toEqual([]);
   });
 
+  test("documents the child list and the child wait with timeout as a result", () => {
+    const childEvent = {
+      kind: "wolfpack.child_event/v1",
+      eventId: "child-id:boot:3",
+      bootId: "boot",
+      seq: 3,
+      childSessionId: "child-id",
+      childName: "worker",
+      parentSessionId: "parent-id",
+      event: "done",
+      state: "done",
+      observedAt: "2026-11-10T00:00:00.000Z",
+    };
+    expect(httpOperation("listSessionChildren")).toMatchObject({ route: "GET /api/session-control/children", stable: true });
+    const list = httpResponse("listSessionChildren");
+    const child = { session: "worker", sessionId: "child-id", state: "done", authority: "program", settled: true, lastEvent: childEvent };
+    expect(validate(list, { ok: true, session: "parent", sessionId: "parent-id", bootId: "boot", children: [child] }, artifact)).toEqual([]);
+    expect(validate(list, { ok: true, session: "parent", sessionId: "parent-id", bootId: "boot", children: [{ ...child, settled: undefined }] }, artifact)).not.toEqual([]);
+
+    const wait = httpOperation("waitForSessionChildren");
+    expect(wait).toMatchObject({ route: "GET /api/session-control/children/wait", stable: true });
+    expect(wait.errors).toContain("429 ErrorEnvelope");
+    const request = httpRequest("waitForSessionChildren");
+    expect(validate(request, { session: "parent", children: "all", timeoutMs: 180_000, since: 2, bootId: "boot" }, artifact)).toEqual([]);
+    for (const invalid of [
+      { session: "parent" },
+      { session: "parent", children: "some" },
+      { session: "parent", children: "any", timeoutMs: 600_001 },
+      { session: "parent", children: "any", since: -1 },
+    ]) {
+      expect(validate(request, invalid, artifact)).not.toEqual([]);
+    }
+    const response = httpResponse("waitForSessionChildren");
+    const base = { ok: true, session: "parent", sessionId: "parent-id", children: "any", bootId: "boot", since: 2, cursor: 3 };
+    expect(validate(response, { ...base, outcome: "events", events: [childEvent] }, artifact)).toEqual([]);
+    expect(validate(response, { ...base, outcome: "timeout", events: [], cursor: 2, pending: [{ session: "worker", sessionId: "child-id" }] }, artifact)).toEqual([]);
+    expect(validate(response, { ...base, outcome: "events", events: [childEvent], truncated: true }, artifact)).toEqual([]);
+    for (const invalid of [
+      { ...base, outcome: "failed", events: [] },
+      { ...base, outcome: "events" },
+      { ...base, outcome: "events", events: [], truncated: false },
+    ]) {
+      expect(validate(response, invalid, artifact)).not.toEqual([]);
+    }
+  });
+
   test("documents endpoint-only push test delivery and its distinct failure envelope", () => {
     const operation = httpOperation("sendTestNotification");
     expect(operation).toMatchObject({ route: "POST /api/push/test", stable: true, auth: "jwt-when-configured" });

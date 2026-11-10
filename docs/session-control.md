@@ -168,6 +168,7 @@ wolfpack list --json
 wolfpack session status <session-or-id> [--json]
 wolfpack session inbox <session-or-id> [--since <seq>] [--json]
 wolfpack agent inbox [--since <seq>] [--json]
+wolfpack agent children [--json]
 wolfpack session read <session-or-id> [--json]
 ```
 
@@ -298,6 +299,25 @@ The server also delivers each child event to the parent agent. The first availab
 3. **Inbox only.** Without either path the event stays in the parent inbox and on the event stream.
 
 Only interactive terminal input counts as viewer input; `session send` and typed notes do not. A viewer's own unsent text that is older than 60 s can be submitted together with a note.
+
+#### Wait for children
+
+```bash
+wolfpack agent children [--json]
+wolfpack agent wait --children any|all [--timeout <seconds>] [--since <seq> --boot-id <id>] [--json]
+```
+
+Both commands act for the current agent session (the injected stable ID, otherwise `WOLFPACK_SESSION_NAME`) on this machine; they reject `--machine`.
+
+- `agent children` calls `GET /api/session-control/children?session=<self>`. It lists the live children whose identity names this session, sorted by name, with `state` (the last recorded runtime state, or `unknown`), `authority` and `stale` when a state exists, `settled`, and `lastEvent` (the newest child event in the parent inbox, when one is retained).
+- `agent wait` calls `GET /api/session-control/children/wait?session=<self>&children=any|all&timeoutMs=<ms>[&since=<seq>&bootId=<id>]` and blocks until the server answers. `--timeout` is in seconds (default 180, maximum 600). The response has `outcome`, the child `events` after the cursor, `bootId`, `since` (the cursor used) and `cursor`.
+  - `any` returns `events` as soon as at least one child event is newer than the cursor, also one that already waited before the call. It returns `no_children` when there are no live children and no newer events.
+  - `all` returns `settled` when every live child is settled, and also when no live child remains but newer events exist; otherwise `no_children`. A child is settled when its last fresh tracked state is `idle`, `needs-input`, `done`, `failed`, `stopped` or `off` and no task delivered by `session send` is still pending. The server checks again about every second and at each child event, so a child that settles without an event is found. On a timeout, `pending` names the children that are not settled.
+  - `timeout` is a check-in result, not a failure: every outcome exits 0. Act on `outcome`.
+- Pass the returned `cursor` as `--since` together with the returned `bootId` as `--boot-id`. The cursor applies only to the same server boot: a missing or different boot ID reads every retained event of the current boot. `truncated: true` means the 100-entry inbox bound dropped entries after the cursor; read `wolfpack agent inbox --json` or `wolfpack agent children --json` to recover the current state.
+- At most 32 waits run at the same time per server; another wait gets HTTP 429 (`CHILD_WAIT_BUSY`, `Retry-After: 5`). A wait ends without an answer when its client disconnects.
+
+Wait results are wake-ups, not task-completion evidence. Verify the child's work and status before acting on it.
 
 ### Current session identity
 

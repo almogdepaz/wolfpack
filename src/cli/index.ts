@@ -97,6 +97,8 @@ Commands:
   wolfpack session <action>        Inspect or control sessions
   wolfpack agent spawn <project>   Spawn a child agent (same harness by default)
   wolfpack agent inbox             Poll this agent session\u0027s parent-notification inbox
+  wolfpack agent wait --children any|all Wait for this agent session\u0027s children
+  wolfpack agent children          List this agent session\u0027s live children
   wolfpack session inbox <session> Poll a session\u0027s parent-notification inbox
   wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
