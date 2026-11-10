@@ -4,7 +4,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { getMachineDisplayName } from "../machine-display-name.js";
-import { execFile } from "node:child_process";
+import { openProjectGit } from "./project-git.js";
 import { createLogger, errMsg } from "../log.js";
 import { clampCols, clampRows } from "../validation.js";
 
@@ -53,6 +53,7 @@ import { createRemoteOpsRoutes } from "./remote-ops-routes.js";
 
 const log = createLogger("routes");
 const RESIZE_BODY_KEYS = new Set(["session", "cols", "rows"]);
+const GIT_STATUS_MAX_OUTPUT = 1024 * 1024;
 
 interface AgentRuntimeAckBody extends Record<string, unknown> {
   sessionId: string;
@@ -270,13 +271,10 @@ return {
     if (!projectDir || !existsSync(projectDir))
       return json(res, { error: "project directory not found" }, 404);
     try {
-      const output = await new Promise<string>((resolve, reject) => {
-        execFile("git", ["status", "--short", "--branch"], { cwd: projectDir }, (err, stdout, stderr) => {
-          if (err) return reject(new Error(stderr || err.message));
-          resolve(stdout);
-        });
-      });
-      json(res, { status: output });
+      const run = await openProjectGit(projectDir, { label: "Git status", maxOutput: GIT_STATUS_MAX_OUTPUT });
+      const result = await run(["status", "--short", "--branch"]);
+      if (result.code !== 0) return json(res, { error: result.stderr.trim() || "git status failed" }, 500);
+      json(res, { status: result.stdout });
     } catch (e: unknown) {
       json(res, { error: errMsg(e) || "git status failed" }, 500);
     }

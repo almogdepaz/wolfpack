@@ -1,5 +1,6 @@
 import { describe, expect, test, beforeAll, afterAll, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import type { Server } from "node:http";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
@@ -224,6 +225,52 @@ function post(path: string, body: unknown, headers?: Record<string, string>) {
 function get(path: string, headers?: Record<string, string>) {
   return fetch(`${base}${path}`, { headers });
 }
+
+describe("GET /api/git-status bounded git", () => {
+  test("returns an error within five seconds when git stalls", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wp-git-stall-"));
+    const executable = join(root, "git");
+    writeFileSync(executable, "#!/bin/sh\nexec /bin/sleep 30\n");
+    chmodSync(executable, 0o755);
+    class GitDirBackend extends MockBackend {
+      sessionDir() { return root; }
+    }
+    const priorPath = process.env.PATH;
+    useBackend(new GitDirBackend({ sessions: ["wolf-1"] }));
+    process.env.PATH = `${root}:${priorPath ?? ""}`;
+    try {
+      const started = Date.now();
+      const res = await get("/api/git-status?session=wolf-1");
+      expect(res.status).toBe(500);
+      expect(Date.now() - started).toBeLessThan(5000);
+      expect(typeof (await res.json()).error).toBe("string");
+    } finally {
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+      useBackend(mockBackend);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  test("preserves the short branch status format for a real repository", async () => {
+    const root = mkdtempSync(join(tmpdir(), "wp-git-status-"));
+    class GitDirBackend extends MockBackend {
+      sessionDir() { return root; }
+    }
+    try {
+      execFileSync("git", ["init", root], { stdio: "pipe" });
+      useBackend(new GitDirBackend({ sessions: ["wolf-1"] }));
+      const res = await get("/api/git-status?session=wolf-1");
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(typeof body.status).toBe("string");
+      expect(body.status.startsWith("## ")).toBe(true);
+    } finally {
+      useBackend(mockBackend);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 interface TestSessionFact {
   readonly name: string;
