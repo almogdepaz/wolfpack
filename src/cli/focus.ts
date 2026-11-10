@@ -3,7 +3,8 @@ import { isFocusOp, type FocusDocument, type FocusOp } from "../focus-contract.j
 import { candidateEnumerationCandidates } from "../tailnet-machine-contract.js";
 import { call, issueJwt } from "./api.js";
 import { CONFIG_PATH, loadConfig, parseConfig } from "./config.js";
-import { isFocusHome, readFocusHomeConfig, writeFocusHome } from "../focus-home.js";
+import { FOCUS_HOME_DISABLE_FIRST, isFocusHome, readFocusHomeConfig, writeFocusHome } from "../focus-home.js";
+import { dirname, join } from "node:path";
 import { verifyMachineTarget, type VerifiedMachineTarget } from "./machine-target.js";
 import { print, printError, printJson } from "./formatting.js";
 
@@ -84,10 +85,13 @@ const focusHomeIo: FocusHomeIo = { path: CONFIG_PATH, installationId: async () =
  * atomically so keys this build does not parse are kept.
  */
 export async function focusHomeCommand(parsed: { json?: boolean; home?: string | null }, io: FocusHomeIo = focusHomeIo) {
-  const raw = readFocusHomeConfig(io.path);
   const self = await io.installationId();
-  const current = (raw && parseConfig(raw)?.focus?.home) ?? null;
+  const raw = readFocusHomeConfig(io.path);
+  const config = raw && parseConfig(raw);
+  const current = config?.focus?.home ?? null;
   if (parsed.home !== undefined) {
+    const local = (current ?? self) === self;
+    if (local && (parsed.home ?? self) !== self && config?.pinnedSessions?.some(pin => pin.name === "assistant" && pin.cwd === join(dirname(io.path), "assistant"))) throw new Error(FOCUS_HOME_DISABLE_FIRST);
     const { changed } = writeFocusHome(parsed.home, io.path);
     return { home: parsed.home ?? self, local: (parsed.home ?? self) === self, changed };
   }

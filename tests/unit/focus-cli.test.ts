@@ -37,6 +37,38 @@ test("CLI CAS retries exactly once with fresh revision, not on ambiguous transpo
   expect(calls).toBe(2);
 });
 
+test("CLI home move refuses an enabled local assistant but permits same-home and stale non-home pins", async () => {
+  const { focusHomeCommand } = await import("../../src/cli/focus.ts");
+  const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "focus-cli-guard-")), path = join(dir, "config.json");
+  const io = { path, installationId: () => "self-id" };
+  const pin = { name: "assistant", cwd: join(dir, "assistant"), command: ["pi"], harness: "pi" };
+  const base = { devDir: dir, port: 19865, pinnedSessions: [pin], futureKey: true };
+  try {
+    for (const focus of [undefined, { home: "self-id" }]) {
+      writeFileSync(path, JSON.stringify({ ...base, ...(focus && { focus }) }));
+      const before = readFileSync(path, "utf8");
+      await expect(focusHomeCommand({ home: "peer-id" }, io)).rejects.toThrow("Disable this machine's assistant first");
+      expect(readFileSync(path, "utf8")).toBe(before);
+      expect((await focusHomeCommand({}, io)).local).toBe(true);
+      expect((await focusHomeCommand({ home: "self-id" }, io)).local).toBe(true);
+      expect((await focusHomeCommand({ home: null }, io)).local).toBe(true);
+    }
+    writeFileSync(path, JSON.stringify(base));
+    const child = Bun.spawnSync([process.execPath, "src/cli/index.ts", "focus", "home", "peer-id"], {
+      cwd: process.cwd(), env: { ...process.env, WOLFPACK_DIR: dir, WOLFPACK_TEST: "1", NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(1);
+    expect(child.stderr.toString()).toContain("Disable this machine's assistant first");
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(base);
+    writeFileSync(path, JSON.stringify({ ...base, focus: { home: "peer-a" } }));
+    expect((await focusHomeCommand({ home: "peer-b" }, io)).home).toBe("peer-b");
+    expect(JSON.parse(readFileSync(path, "utf8")).futureKey).toBe(true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("focus home writes or clears focus.home in the configured config and keeps every other field", async () => {
   const { parseFocusHomeCommand, focusHomeCommand } = await import("../../src/cli/focus.ts");
   expect(parseFocusHomeCommand(["home"])).toEqual({ json: false });

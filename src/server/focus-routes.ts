@@ -6,7 +6,7 @@ import { FocusConflict, FocusValidationError } from "./focus-store.js";
 import { errMsg } from "../log.js";
 import { InvalidInboxFile, UnknownInboxFile } from "../focus-coverage.js";
 import { join } from "node:path";
-import { isFocusHome, writeFocusHome } from "../focus-home.js";
+import { FOCUS_HOME_DISABLE_FIRST, isFocusHome, writeFocusHome } from "../focus-home.js";
 
 export function createFocusRoutes(ctx: ServerContext) {
   const identity = () => {
@@ -39,7 +39,7 @@ export function createFocusRoutes(ctx: ServerContext) {
         const before = identity();
         const local = (home ?? before.installationId) === before.installationId;
         try {
-          if (!local && before.local && ctx.assistantService.enabled) return json(res, { error: "Disable this machine's assistant first, then change its home machine." }, 409);
+          if (!local && before.local && ctx.assistantService.enabled) return json(res, { error: FOCUS_HOME_DISABLE_FIRST }, 409);
           if (!ctx.config) throw new Error("valid wolfpack config required");
           // With the assistant disabled (or this machine not the home), wait out
           // any previous routine pull before publishing a different owner.

@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { CONFIG_PATH, parseConfig } from "./config.js";
 import { writePrivateJsonFile } from "./persistence.js";
 
+export const FOCUS_HOME_DISABLE_FIRST = "Disable this machine's assistant first, then change its home machine.";
+
 export function isFocusHome(value: unknown): value is string | null {
   return value === null || typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 }
