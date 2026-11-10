@@ -104,9 +104,11 @@ test("git log per repository within a time window", async () => {
   execFileSync("git", ["-C", repo, "add", "f"]);
   execFileSync("git", ["-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "ship\tit"], { env: { ...process.env, GIT_COMMITTER_DATE: "2026-11-06T10:00:00Z", GIT_AUTHOR_DATE: "2026-11-06T10:00:00Z" } });
   const window = [Date.parse("2026-11-06T03:00:00Z"), Date.parse("2026-11-07T03:00:00Z")] as const;
-  const [inside, missing] = await readGitLogs([repo, "/definitely/missing"], ...window);
+  const directory = root();
+  const [inside, plain, missing] = await readGitLogs([repo, directory, "/definitely/missing"], ...window);
   expect(inside!.repository).toBe(true);
-  expect(missing!.repository).toBe(false);
+  expect(plain!.repository).toBe(false);
+  expect(missing!.repository).toBeUndefined();
   expect(inside!.commits).toHaveLength(1);
   expect(inside!.commits[0]!.subject).toBe("ship it");
   expect(missing!.error).toBe("not a readable git repository");
@@ -122,6 +124,24 @@ test("D2: a real repository with missing objects keeps its read error instead of
   expect(log?.repository).toBe(true);
   expect(log?.commonDir).toBe(join(repo, ".git"));
   expect(log?.error).toBe("not a readable git repository");
+});
+
+test("D2-R1: failed repository detection keeps real repo errors while plain directories still fold", async () => {
+  const { readGitLogs } = await import("../../src/server/activity-recorder.ts");
+  const { dayNoteMarkdown } = await import("../../src/focus-coverage.ts");
+  const repo = root(), directory = root();
+  execFileSync("git", ["init", "-q", "-b", "main", repo]);
+  const from = Date.parse("2026-11-06T03:00:00Z"), to = Date.parse("2026-11-07T03:00:00Z");
+  expect((await readGitLogs([repo], from, to))[0]?.commonDir).toBe(join(repo, ".git"));
+  writeFileSync(join(repo, ".git/config"), "[core]\nrepositoryformatversion = 999\n");
+  const logs = await readGitLogs([repo, directory], from, to);
+  expect(logs[0]?.repository).toBeUndefined();
+  expect(logs[0]?.error).toBe("not a readable git repository");
+  expect(logs[1]?.repository).toBe(false);
+  const note = dayNoteMarkdown("2026-11-06", { start: from, end: to }, [], logs.map(log => ({ ...log, machine: "home" })));
+  expect(note).toContain(`worktrees: ${repo}`);
+  expect(note).toContain("- not a readable git repository");
+  expect(note).toContain(`- not repositories (home): ${directory}`);
 });
 
 test("day-note git facts identify real linked worktrees by the common git directory", async () => {

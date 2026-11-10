@@ -134,20 +134,22 @@ export function readGitLog(cwd: string, from: number, to: number): Promise<{ com
     });
   });
 }
-/** Canonical identity shared by linked worktrees, resolved only on the machine owning the cwd. */
-function readGitCommonDir(cwd: string): Promise<string | undefined> {
+/** Canonical identity shared by linked worktrees, resolved only on the owning machine.
+ * Missing/failed evidence is unknown. Only Git's explicit non-repository fatal
+ * diagnostic (exit 128, fixed C locale) can establish a negative identity. */
+function readGitCommonDir(cwd: string): Promise<Pick<ActivityGitRepo, "commonDir" | "repository">> {
   return new Promise(resolve => {
-    execFile("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { timeout: GIT_TIMEOUT_MS, maxBuffer: 16 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } }, (error, stdout) => {
-      if (error) return resolve(undefined);
-      try { resolve(realpathSync(stdout.trim())); } catch { resolve(undefined); }
+    execFile("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { timeout: GIT_TIMEOUT_MS, maxBuffer: 16 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" } }, (error, stdout, stderr) => {
+      if (error) return resolve(error.code === 128 && /^fatal: not a git repository(?:[ (:\r\n]|$)/.test(stderr) ? { repository: false } : {});
+      try { resolve({ commonDir: realpathSync(stdout.trim()), repository: true }); } catch { resolve({}); }
     });
   });
 }
 /** Bounded cwd inputs from this machine's journal; commonDir lets day notes collapse worktrees. */
 export async function readGitLogs(cwds: readonly string[], from: number, to: number): Promise<ActivityGitRepo[]> {
   return Promise.all(cwds.slice(0, GIT_LOG_MAX_REPOS).map(async cwd => {
-    const [log, commonDir] = await Promise.all([readGitLog(cwd, from, to), readGitCommonDir(cwd)]);
-    return { cwd, ...log, repository: !!commonDir || !log.error, ...(commonDir && { commonDir }),
-      ...(!commonDir && !log.error && { error: "git common directory unavailable; worktree grouping may be incomplete" }) };
+    const [log, identity] = await Promise.all([readGitLog(cwd, from, to), readGitCommonDir(cwd)]);
+    return { cwd, ...log, ...identity,
+      ...(!identity.commonDir && !log.error && { repository: true, error: "git common directory unavailable; worktree grouping may be incomplete" }) };
   }));
 }
