@@ -62,6 +62,27 @@ test("S1: rejected A write is never replayed on B, and explicitly reports not sa
   } finally { gate.release(); }
 });
 
+test("S1: an explicit ownership rejection cannot use a held old poll as proof for retry", async ({ page }) => {
+  await open(page); await page.locator("#assistant-setting-open").click();
+  const gate = latch(), arrived = latch();
+  let posts = 0;
+  await page.route(`${local.baseUrl}/api/focus`, async route => {
+    if (route.request().method() === "POST") { posts++; return route.continue(); }
+    const response = await route.fetch(); arrived.release(); await gate.promise; await route.fulfill({ response });
+  });
+  try {
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await arrived.promise;
+    await moveFromAnotherClient();
+    await page.getByRole("textbox", { name: "Add an intention", exact: true }).fill("do not replay an explicit rejection");
+    const rejected = page.waitForResponse(r => r.url() === local.baseUrl + "/api/focus" && r.request().method() === "POST");
+    await page.locator("#assistant-content").getByRole("button", { name: "Add", exact: true }).click();
+    await (await rejected).finished(); gate.release();
+    await expect(page.locator("#app-dialog")).toContainText("not saved — the home changed");
+    expect(posts).toBe(1);
+  } finally { gate.release(); }
+});
+
 test("S1: late A timing cannot replace or be saved as B timing", async ({ page }) => {
   const gate = latch(), arrived = latch();
   await page.route(`${local.baseUrl}/api/settings`, async route => {
