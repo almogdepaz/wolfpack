@@ -282,7 +282,7 @@ test("R4: a newly reordered merge still sends only the target and draft on the t
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(block).toContainText("Continue second");
   await block.getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
-  expect(sent).toMatchObject({ session: "mock:prompt-project", text: draft });
+  await expect.poll(() => sent).toMatchObject({ session: "mock:prompt-project", text: draft });
 });
 
 for (const outcome of ["submitted", "unverified"] as const) test(`R3: ${outcome} receipt survives reordered refs, equivalent timestamps and reload`, async ({ page }) => {

@@ -20,6 +20,7 @@ interface Machine { key: string; name: string }
 class FocusOwnershipError extends Error {}
 const HOME_CHANGED = "not saved — the home changed; review the current home and try again.";
 const OLD_HOME_COMPLETED = "the home changed; this request completed on the previous home. Check it before retrying.";
+const OLD_HOME_DELIVERY = "the home changed; check the previous session's delivery before retrying.";
 class FocusHomeChanged extends FocusOwnershipError { constructor(message = HOME_CHANGED) { super(message); } }
 interface HomeOwner { readonly home: string; readonly generation: number; readonly machine: string; readonly name: string }
 const isTransportFailure = (error: unknown) => !(error instanceof FocusOwnershipError)
@@ -329,7 +330,7 @@ export function createAssistantView(deps: {
       ? { machine: row.session.machineInstallationId ?? "", sessionId: row.session.id }
       : row.intention ? { intentionId: row.intention.id } : undefined);
     if (!ref) return;
-    const key = JSON.stringify([focusNextRefKey(ref), Date.parse(row.triage?.stoppedAt ?? row.session?.stoppedAt ?? row.session?.changedAt ?? ""),
+    const key = JSON.stringify([localOwner?.home ?? focus?.home, homeGeneration, focusNextRefKey(ref), Date.parse(row.triage?.stoppedAt ?? row.session?.stoppedAt ?? row.session?.changedAt ?? ""),
       kind, kind === "send" ? row.triage?.suggestion : null, kind === "done" ? done?.id : null]);
     return { key, kind, row };
   }
@@ -348,8 +349,14 @@ export function createAssistantView(deps: {
     announce("This action changed; review the updated row.");
     render();
   }
-  async function sendSuggestion(row: FocusAction) {
+  async function sendSuggestion(row: FocusAction, actionKey: string) {
     if (!row.session || !row.triage?.suggestion || row.unavailable) return;
+    const owner = captureOwner();
+    // A session send is not a home-server CAS write: validate its owner before any
+    // receipt or delivery, using a new read rather than a held pre-tap poll.
+    await flight; requireOwner(owner);
+    await refresh(); requireOwner(owner);
+    if (!currentAction(actionKey)) return;
     const key = suggestionKey(row);
     const prior = receiptFor(row);
     if (prior && prior.state !== "retry") return;
@@ -369,8 +376,12 @@ export function createAssistantView(deps: {
       // A transport error does not prove that the write failed. A typed pre-write refusal can retry.
       const refusal = (e as { data?: { outcome?: string } }).data?.outcome === SESSION_SEND_OUTCOME.NOT_DELIVERED;
       remember(refusal ? "not sent · try again" : "delivery unconfirmed · check the session", refusal ? "retry" : "check");
+      requireOwner(owner, OLD_HOME_DELIVERY);
       throw e;
     }
+    // Keep the physical-target receipt even if delivery finished after a home move;
+    // it still prevents a duplicate, but cannot authorize replay under the new owner.
+    requireOwner(owner, OLD_HOME_DELIVERY);
   }
   function nextHtml(cap: number, expanded = false) {
     const rows = nextRows(cap);
@@ -815,7 +826,7 @@ export function createAssistantView(deps: {
         const action = currentAction(rowAction);
         if (!action) return;
         const { row, kind } = action;
-        if (kind === "send") { void run(() => sendSuggestion(row)); return; }
+        if (kind === "send") { void run(() => sendSuggestion(row, rowAction)); return; }
         if (kind === "done") { void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
         if (kind === "open" && row.session) deps.open(row.session.name, row.session.machineUrl);
         else if (kind === "start" && row.intention) deps.start(row.intention);

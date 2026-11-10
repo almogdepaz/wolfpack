@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers";
 import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 let local: TestServer, remote: TestServer;
 const origin = "https://race-peer.example.ts.net";
@@ -40,6 +40,95 @@ async function moveFromAnotherClient() {
   expect((await fetch(local.baseUrl + "/api/focus/assistant", { method: "POST", body: JSON.stringify({ enabled: false }) })).status).toBe(200);
   expect((await fetch(local.baseUrl + "/api/focus/home", { method: "POST", body: JSON.stringify({ home: peerId }) })).status).toBe(200);
 }
+
+async function seedTriage(page: Page, done = false) {
+  const episode = "2026-11-10T12:00:00.000Z";
+  const current = await (await fetch(local.baseUrl + "/api/focus")).json();
+  expect((await fetch(local.baseUrl + "/api/focus", { method: "POST", body: JSON.stringify({ expectedRevision: current.revision, ops: [
+    { type: "add", intention: { id: "triage-goal", title: "Original home goal", sessions: ["mock:prompt-project"] } },
+    { type: "next", author: "assistant", rows: [{ ref: { machine: current.installationId, sessionId: "mock:prompt-project" }, stoppedAt: episode, verdict: "suggest", reason: "The original home's recommendation", ...(done ? { doneIntention: "triage-goal" } : { suggestion: "Keep the approved scope." }) }] },
+  ] }) })).status).toBe(200);
+  await page.route(`${local.baseUrl}/api/sessions`, async route => {
+    const response = await route.fetch(); const body = await response.json();
+    const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    session.runtimeState = { ...session.runtimeState, state: done ? "done" : "needs-input", inputKind: done ? undefined : "question", changedAt: episode, stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0 };
+    await route.fulfill({ response, json: body });
+  });
+}
+
+test("merge: a suggestion tapped after the home moved is refused before send or receipt persistence", async ({ page }) => {
+  await seedTriage(page); await open(page); await page.locator("#assistant-setting-open").click();
+  const sends: string[] = [];
+  await page.route("**/api/session-control/send", async route => { sends.push(route.request().url()); await route.fulfill({ json: { outcome: "submitted" } }); });
+  const send = page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  await expect(send).toBeEnabled();
+  await moveFromAnotherClient();
+  await send.click();
+  await expect.poll(async () => sends.length > 0 || await page.locator("#app-dialog").isVisible()).toBe(true);
+  expect(sends).toEqual([]);
+  await expect(page.locator("#app-dialog")).toContainText("not saved — the home changed");
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-send-receipts-v1") || "[]"))).toEqual([]);
+});
+
+test("merge: a held pre-tap poll cannot authorize a suggestion after the home moved", async ({ page }) => {
+  await seedTriage(page); await open(page); await page.locator("#assistant-setting-open").click();
+  const gate = latch(), arrived = latch();
+  let held = false;
+  const sends: string[] = [];
+  await page.route("**/api/session-control/send", async route => { sends.push(route.request().url()); await route.fulfill({ json: { outcome: "submitted" } }); });
+  await page.route(`${local.baseUrl}/api/focus`, async route => {
+    if (route.request().method() !== "GET" || held) return route.continue();
+    held = true; const response = await route.fetch(); arrived.release(); await gate.promise; await route.fulfill({ response });
+  });
+  try {
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await arrived.promise;
+    await moveFromAnotherClient();
+    await page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+    gate.release();
+    await expect.poll(async () => sends.length > 0 || await page.locator("#app-dialog").isVisible()).toBe(true);
+    expect(sends).toEqual([]);
+    await expect(page.locator("#app-dialog")).toContainText("not saved — the home changed");
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-send-receipts-v1") || "[]"))).toEqual([]);
+  } finally { gate.release(); }
+});
+
+test("merge: a late suggestion delivery keeps its original receipt without replaying onto the new home", async ({ page }) => {
+  await seedTriage(page); await open(page); await page.locator("#assistant-setting-open").click();
+  const gate = latch(), arrived = latch();
+  const sends: { url: string; body: unknown }[] = [];
+  await page.route("**/api/session-control/send", async route => {
+    sends.push({ url: route.request().url(), body: route.request().postDataJSON() }); arrived.release();
+    await gate.promise; await route.fulfill({ json: { outcome: "submitted" } });
+  });
+  try {
+    await page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+    await arrived.promise;
+    await moveFromAnotherClient();
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(page.locator("#assistant-setting-home")).toContainText("Race peer");
+    gate.release();
+    await expect(page.locator("#app-dialog")).toContainText("the home changed; check the previous session's delivery before retrying");
+    expect(sends).toEqual([{ url: local.baseUrl + "/api/session-control/send", body: { session: "mock:prompt-project", text: "Keep the approved scope.", ensureSubmitted: true } }]);
+    const receipts = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-send-receipts-v1") || "[]"));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0][1]).toMatchObject({ state: "sent", label: "sent to prompt-project" });
+  } finally { gate.release(); }
+});
+
+test("merge: a done verdict cannot write or retry onto the new home", async ({ page }) => {
+  await seedTriage(page, true); await open(page); await page.locator("#assistant-setting-open").click();
+  const beforeA = (await (await fetch(local.baseUrl + "/api/focus")).json()).document;
+  const beforeB = (await (await fetch(remote.baseUrl + "/api/focus")).json()).document;
+  const done = page.locator("#assistant-content").getByRole("button", { name: "Mark done: Original home goal", exact: true });
+  await expect(done).toBeEnabled();
+  await moveFromAnotherClient();
+  await done.click();
+  await expect(page.locator("#app-dialog")).toContainText("not saved — the home changed");
+  const before = JSON.parse(readFileSync(join(local.home, ".wolfpack/assistant/focus.json"), "utf8"));
+  expect(before).toEqual(beforeA);
+  expect((await (await fetch(remote.baseUrl + "/api/focus")).json()).document).toEqual(beforeB);
+});
 
 test("S1: rejected A write is never replayed on B, and explicitly reports not saved", async ({ page }) => {
   await open(page);
