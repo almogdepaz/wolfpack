@@ -368,6 +368,43 @@ describe("child-event delivery to the parent agent", () => {
     expect(h.sends[1]!.text).toContain("second done");
   });
 
+  /** Events a note accounts for: the listed items plus its "+k more". */
+  function noteTotal(text: string): number {
+    const body = text.slice(text.indexOf(":") + 1, text.lastIndexOf("(details:")).trim();
+    const parts = body.split("; ");
+    const more = /^\+(\d+) more$/.exec(parts.at(-1)!);
+    return more ? parts.length - 1 + Number(more[1]) : parts.length;
+  }
+
+  for (const [label, firstResult, followUpTotal] of [
+    ["a submitted", SUBMITTED, CHILD_EVENT_NOTE_LIMITS.PENDING],
+    ["a pasted", PASTED, CHILD_EVENT_NOTE_LIMITS.PENDING],
+    // The kept batch goes back in front; the oldest event is dropped and counted.
+    ["a nothing-written", NOTHING_WRITTEN, CHILD_EVENT_NOTE_LIMITS.PENDING + 1],
+  ] as const) {
+    test(`a full queue during ${label} note keeps every later event for the follow-up note (review A2-3)`, async () => {
+      const h = harness({ sends: [firstResult] });
+      await deliver(h, event({ childName: "w1" }));
+      h.holdSends();
+      h.delivery.observeParent(h.parent());
+      await settle();
+      for (let n = 2; n <= CHILD_EVENT_NOTE_LIMITS.PENDING + 1; n += 1) await deliver(h, event({ childName: `w${n}` }));
+      h.releaseSend();
+      await settle(); await settle();
+      expect(h.sends).toHaveLength(1);
+      expect(h.sends[0]!.text).toContain("w1 done");
+      h.advance(CHILD_EVENT_NOTE_LIMITS.MIN_INTERVAL_MS);
+      await observe(h);
+      expect(h.sends).toHaveLength(2);
+      const followUp = h.sends[1]!.text;
+      expect(followUp).toContain("w2 done");
+      // w1 is never retyped; a kept batch is bounded with the queue, so w1 is the dropped one.
+      expect(followUp).not.toContain("w1 done");
+      expect(noteTotal(followUp)).toBe(followUpTotal);
+      expect(h.delivery.hasPending()).toBe(false);
+    });
+  }
+
   test("the rate limit holds a new event that arrives just after a note emptied the queue", async () => {
     const h = harness();
     await deliver(h, event({ childName: "first" }));

@@ -77,10 +77,18 @@ export interface ChildEventDeliveryDeps {
   now(): number;
 }
 
+interface QueuedEvent {
+  readonly payload: ChildEventPayload;
+  readonly queuedAt: number;
+}
+
 interface PendingNotes {
-  items: { readonly payload: ChildEventPayload; readonly queuedAt: number }[];
+  /** Events waiting for the next note; at most `PENDING`. */
+  items: QueuedEvent[];
+  /** Waiting events dropped by the `PENDING` bound, counted in the next note. */
   dropped: number;
   attempts: number;
+  /** The note being sent. Its events are not in `items`, so new arrivals never displace them. */
   inFlight: boolean;
 }
 
@@ -143,14 +151,19 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
     }
   };
 
+  /** Drops the oldest waiting events beyond the bound and counts them. */
+  const bound = (entry: PendingNotes) => {
+    const excess = entry.items.length - CHILD_EVENT_NOTE_LIMITS.PENDING;
+    if (excess <= 0) return;
+    entry.items.splice(0, excess);
+    entry.dropped += excess;
+  };
+
   const enqueue = (payload: ChildEventPayload) => {
     const sessionId = payload.parentSessionId;
     const entry = pending.get(sessionId) ?? { items: [], dropped: 0, attempts: 0, inFlight: false };
     entry.items.push({ payload, queuedAt: deps.now() });
-    if (entry.items.length > CHILD_EVENT_NOTE_LIMITS.PENDING) {
-      entry.items.shift();
-      entry.dropped += 1;
-    }
+    bound(entry);
     pending.set(sessionId, entry);
   };
 
@@ -169,8 +182,18 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
     && deps.typedNotesEnabled() && viewerQuiet(sessionId, deps.now());
 
   const flush = async (parent: ParentObservation, entry: PendingNotes) => {
-    const batch = entry.items.slice();
-    const text = childEventNoteText(batch.map(item => item.payload), entry.dropped);
+    // Take the batch out of the queue: events that arrive during the send wait
+    // for the next note, and the bound applies only to them.
+    const batch = entry.items;
+    const batchDropped = entry.dropped;
+    entry.items = [];
+    entry.dropped = 0;
+    const keepBatch = () => {
+      entry.items = [...batch, ...entry.items];
+      entry.dropped += batchDropped;
+      bound(entry);
+    };
+    const text = childEventNoteText(batch.map(item => item.payload), batchDropped);
     entry.inFlight = true;
     lastNoteAt.set(parent.sessionId, deps.now());
     let result: SessionSendObservationResult | undefined;
@@ -184,19 +207,21 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
     if (result?.writeRefused && result.delivery === SESSION_SEND_DELIVERY.NOT_DELIVERED) {
       // The parent stopped waiting before anything was written: keep the note
       // for a later observation without using an attempt.
+      keepBatch();
       return;
     }
     if (result?.reason !== undefined) {
       // Nothing was written: keep the events for a bounded number of attempts.
       entry.attempts += 1;
-      if (entry.attempts < CHILD_EVENT_NOTE_LIMITS.ATTEMPTS) return;
+      if (entry.attempts < CHILD_EVENT_NOTE_LIMITS.ATTEMPTS) {
+        keepBatch();
+        return;
+      }
       log.warn("typed child-event note dropped after repeated failures", { parent: parent.name, reason: result.reason, events: batch.length });
     } else if (result && result.outcome !== SESSION_SEND_OUTCOME.SUBMITTED) {
       // Something may sit in the parent input: never type the same events again.
       log.warn("typed child-event note not verified as submitted; not retyped", { parent: parent.name, outcome: result.outcome });
     }
-    entry.items.splice(0, batch.length);
-    entry.dropped = 0;
     entry.attempts = 0;
     if (entry.items.length === 0 && pending.get(parent.sessionId) === entry) pending.delete(parent.sessionId);
   };
