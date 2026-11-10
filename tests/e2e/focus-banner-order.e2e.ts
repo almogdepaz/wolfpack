@@ -57,11 +57,12 @@ for (const width of [1440, 1280, 1279, 390]) test(`assistant banner leads sessio
     await expect(page.locator("#desktop-sidebar")).toHaveClass(/collapsed/);
     await expect(page.locator("#desktop-sidebar")).toHaveAttribute("inert", "");
     await page.screenshot({ path: info.outputPath(`banner-${width}-collapsed.png`), fullPage: true });
-    // F2: a hover over Sessions does not transfer the chooser from the main
-    // banner/filter to the sidebar, unlike a hover over the Assistant page.
+    // QA-37: Sessions owns the main chooser; hovering must not open an empty sidebar.
+    // The Assistant page still offers the populated hover chooser below.
     await page.mouse.move(width - 10, 500);
     await page.mouse.move(1, 500);
-    await expect(page.locator("#desktop-sidebar")).not.toHaveClass(/collapsed/);
+    await expect(page.locator("#desktop-sidebar")).toHaveClass(/collapsed/);
+    await expect(page.locator("#desktop-sidebar")).toHaveAttribute("inert", "");
     await expect(page.locator("#dashboard-focus")).toBeVisible();
     await expect(page.locator("#sidebar-session-controls")).toBeHidden();
     await expect(page.locator("#sidebar-assistant")).toBeHidden();
