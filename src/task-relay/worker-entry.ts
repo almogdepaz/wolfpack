@@ -1,5 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { VolatileRelayGateway } from "./volatile-gateway.ts";
+import { RelayOwnerFailure } from "./owner-failure.ts";
 import {
   RELAY_WORKER_LIMITS as LIMIT, RELAY_WORKER_METHODS, captureRelayWire,
   type WorkerOptions, type WorkerRequest, type ParentMessage, type CallbackValue,
@@ -22,68 +23,78 @@ function callback(request: { kind: "inspect"; selector: string } | { kind: "peer
 }
 const gatewayOptions = {
   ...options,
+  onOwnerFailure: (failure: RelayOwnerFailure) => { port.postMessage({ kind: "owner-failure", failure: failure.failure }); port.close(); },
   inspectSession: async (selector: string) => await callback({ kind: "inspect", selector }) as SessionInspectionResult,
   ...(options.proxyPeerFetch && { peerFetch: async (url: RequestInfo | URL, init?: RequestInit) => {
     const reply = await callback({ kind: "peer-fetch", url: String(url), body: String(init?.body) }) as { status: number; body: string };
     return new Response(reply.body, { status: reply.status });
   } }),
 };
-// The only engine is memory-owned. No compatibility engine or disk replay.
-const volatile = new VolatileRelayGateway(gatewayOptions);
-const regular: WorkerRequest[] = [], peers: WorkerRequest[] = [];
-const requests = new Map<number, { peer: boolean; bytes: number }>();
-let activeRegular = 0, activePeer = 0;
-const methods = new Set<string>(RELAY_WORKER_METHODS);
-function pump(): void {
-  for (const peer of [true, false]) {
-    const queue = peer ? peers : regular;
-    while (queue.length && (peer ? activePeer < LIMIT.activePeer : activeRegular < LIMIT.activeRegular)) {
-      const request = queue.shift()!;
-      if (peer) activePeer++; else activeRegular++;
-      void (async () => {
-        try {
-          let value: unknown;
-          if (request.method === "volatileEpoch") value = volatile.epoch;
-          else if (request.method === "initialize") value = volatile.initialize();
-          else if (request.method === "registrationsForSessions") value = await volatile.registrationsForSessions(request.args[0] as readonly string[]);
-          else if (request.method === "hostEnvelope") value = await volatile.hostEnvelope(request.args[0] as Parameters<typeof volatile.hostEnvelope>[0]);
-          else value = await (request.method === "volatilePeer" ? volatile.peer(request.args[0])
-            : request.method === "volatileTopology" ? volatile.topology(request.args[0]) : volatile.request(request.args[0]));
-          const captured = captureRelayWire(value, LIMIT.responseBytes, true);
-          port.postMessage({ kind: "result", id: request.id, value: captured.value });
-        } catch {
-          // The parent returns STORE_UNAVAILABLE, not a fabricated acceptance or leaked file path.
-          port.postMessage({ kind: "result", id: request.id, error: "relay operation unavailable" });
-        } finally {
-          requests.delete(request.id);
-          if (peer) activePeer--; else activeRegular--;
-          pump();
-        }
-      })();
+
+function run(volatile: VolatileRelayGateway): void {
+  const regular: WorkerRequest[] = [], peers: WorkerRequest[] = [];
+  const requests = new Map<number, { peer: boolean; bytes: number }>();
+  let activeRegular = 0, activePeer = 0;
+  const methods = new Set<string>(RELAY_WORKER_METHODS);
+  function pump(): void {
+    for (const peer of [true, false]) {
+      const queue = peer ? peers : regular;
+      while (queue.length && (peer ? activePeer < LIMIT.activePeer : activeRegular < LIMIT.activeRegular)) {
+        const request = queue.shift()!;
+        if (peer) activePeer++; else activeRegular++;
+        void (async () => {
+          try {
+            let value: unknown;
+            if (request.method === "volatileEpoch") value = volatile.epoch;
+            else if (request.method === "initialize") value = volatile.initialize();
+            else if (request.method === "registrationsForSessions") value = await volatile.registrationsForSessions(request.args[0] as readonly string[]);
+            else if (request.method === "hostEnvelope") value = await volatile.hostEnvelope(request.args[0] as Parameters<typeof volatile.hostEnvelope>[0]);
+            else value = await (request.method === "volatilePeer" ? volatile.peer(request.args[0])
+              : request.method === "volatileTopology" ? volatile.topology(request.args[0]) : volatile.request(request.args[0]));
+            const captured = captureRelayWire(value, LIMIT.responseBytes, true);
+            port.postMessage({ kind: "result", id: request.id, value: captured.value });
+          } catch (error) {
+            // A poisoned owner must reach the parent as fatal/uncertain, never as a healthy request error.
+            port.postMessage({ kind: "result", id: request.id, error: error instanceof RelayOwnerFailure ? error.failure : "relay operation unavailable" });
+          } finally {
+            requests.delete(request.id);
+            if (peer) activePeer--; else activeRegular--;
+            pump();
+          }
+        })();
+      }
     }
   }
+  port.on("message", (message: ParentMessage) => {
+    if (!message || typeof message !== "object") throw new Error("invalid relay parent message");
+    if (message.kind === "callback") {
+      const pending = callbacks.get(message.id);
+      if (!pending) return; // timed-out host work may finish later; it has no current authority
+      callbacks.delete(message.id); clearTimeout(pending.timer);
+      if (message.error) pending.reject(new Error("relay host callback unavailable")); else pending.resolve(message.value!);
+      return;
+    }
+    if (message.kind !== "request" || !Number.isSafeInteger(message.id) || message.id < 0
+      || !methods.has(message.method) || !Array.isArray(message.args) || requests.has(message.id)) throw new Error("invalid relay worker request");
+    const peer = message.method === "volatilePeer";
+    const existing = [...requests.values()].filter(item => item.peer === peer);
+    const captured = captureRelayWire(message.args, LIMIT.requestBytes);
+    const args = captured.value;
+    const bytes = captured.bytes;
+    if (bytes > LIMIT.requestBytes || existing.length >= (peer ? LIMIT.peerRequests : LIMIT.regularRequests)
+      || existing.reduce((sum, item) => sum + item.bytes, bytes) > (peer ? LIMIT.peerBytes : LIMIT.regularBytes)) throw new Error("relay worker admission budget exceeded");
+    requests.set(message.id, { peer, bytes });
+    (peer ? peers : regular).push({ ...message, args });
+    pump();
+  });
+  port.on("close", () => { void volatile.close(); });
+  port.postMessage({ kind: "ready" });
 }
-port.on("message", (message: ParentMessage) => {
-  if (!message || typeof message !== "object") throw new Error("invalid relay parent message");
-  if (message.kind === "callback") {
-    const pending = callbacks.get(message.id);
-    if (!pending) return; // timed-out host work may finish later; it has no current authority
-    callbacks.delete(message.id); clearTimeout(pending.timer);
-    if (message.error) pending.reject(new Error("relay host callback unavailable")); else pending.resolve(message.value!);
-    return;
-  }
-  if (message.kind !== "request" || !Number.isSafeInteger(message.id) || message.id < 0
-    || !methods.has(message.method) || !Array.isArray(message.args) || requests.has(message.id)) throw new Error("invalid relay worker request");
-  const peer = message.method === "volatilePeer";
-  const existing = [...requests.values()].filter(item => item.peer === peer);
-  const captured = captureRelayWire(message.args, LIMIT.requestBytes);
-  const args = captured.value;
-  const bytes = captured.bytes;
-  if (bytes > LIMIT.requestBytes || existing.length >= (peer ? LIMIT.peerRequests : LIMIT.regularRequests)
-    || existing.reduce((sum, item) => sum + item.bytes, bytes) > (peer ? LIMIT.peerBytes : LIMIT.regularBytes)) throw new Error("relay worker admission budget exceeded");
-  requests.set(message.id, { peer, bytes });
-  (peer ? peers : regular).push({ ...message, args });
-  pump();
-});
-port.on("close", () => { void volatile.close(); });
-port.postMessage({ kind: "ready" });
+
+try { run(new VolatileRelayGateway(gatewayOptions)); }
+catch (error) {
+  if (!(error instanceof RelayOwnerFailure)) throw error;
+  // Constructor failure has no request id yet. Still preserve its typed, path-free diagnosis.
+  port.postMessage({ kind: "owner-failure", failure: error.failure });
+  port.close();
+}

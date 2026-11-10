@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { validateControlApiSchemaValue as validate, type JsonObject } from "../control-api-schema-validator.ts";
 
-const names = ["WOLFPACK_TEST", "WOLFPACK_TASK_RELAY_ROOT", "WOLFPACK_TASK_RELAY_PROFILE", "WOLFPACK_JWT_SECRET", "WOLFPACK_JWT_AUDIENCE"];
+const names = ["WOLFPACK_TEST", "WOLFPACK_TASK_RELAY_ROOT", "WOLFPACK_TASK_RELAY_PROFILE", "WOLFPACK_TASK_RELAY_STORAGE", "WOLFPACK_JWT_SECRET", "WOLFPACK_JWT_AUDIENCE"];
 const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
 process.env.WOLFPACK_TEST = "1";
 const root = mkdtempSync(join(tmpdir(), "wolfpack-volatile-http-"));
@@ -46,6 +46,7 @@ beforeAll(async () => { await new Promise<void>(resolve => server.listen(0, "127
 beforeEach(async () => {
   await __resetTaskRelayGatewayForTests();
   process.env.WOLFPACK_TASK_RELAY_ROOT = relayRoot; process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1";
+  process.env.WOLFPACK_TASK_RELAY_STORAGE = "memory";
   process.env.WOLFPACK_JWT_SECRET = secret; process.env.WOLFPACK_JWT_AUDIENCE = "volatile-http"; __resetJwtAuthConfig();
   __setTestBackend(new PiBackend({ sessions: ["sender", "receiver"] }));
   gateway = getTaskRelayGateway() as InstanceType<typeof WorkerRelayGateway>;
@@ -76,16 +77,16 @@ function envelope(source: { relay: string; id: string }, target: { relay: string
   return { source, target, envelopeId: randomUUID(), protocolVersion: 2, payload: { opaque: "synthetic payload" }, createdAt: new Date().toISOString() };
 }
 
-test("only memory-owned startup is allowed, selection is frozen and obsolete state is untouched", async () => {
+test("explicit memory startup keeps wire selection frozen and obsolete state untouched", async () => {
   await __resetTaskRelayGatewayForTests(); delete process.env.WOLFPACK_TASK_RELAY_PROFILE;
   expect(getTaskRelayProfile()).toBe("volatile-v1");
   const defaultBinding = await connect("sender");
   expect(defaultBinding.epoch).toBeString();
   expect(readFileSync(sentinel)).toEqual(original);
   await __resetTaskRelayGatewayForTests(); process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
-  expect(() => getTaskRelayProfile()).toThrow("only memory-owned volatile-v1 is supported");
-  expect(() => getTaskRelayGateway()).toThrow("only memory-owned volatile-v1 is supported");
-  process.env.WOLFPACK_TASK_RELAY_PROFILE = "typo"; expect(() => getTaskRelayGateway()).toThrow("only memory-owned volatile-v1 is supported");
+  expect(() => getTaskRelayProfile()).toThrow("unsupported task relay profile");
+  expect(() => getTaskRelayGateway()).toThrow("unsupported task relay profile");
+  process.env.WOLFPACK_TASK_RELAY_PROFILE = "typo"; expect(() => getTaskRelayGateway()).toThrow("unsupported task relay profile");
   expect(readFileSync(sentinel)).toEqual(original);
   process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1"; gateway = getTaskRelayGateway() as typeof gateway;
   process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";

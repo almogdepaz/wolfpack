@@ -109,20 +109,20 @@ const handlers: Record<string, Handler> = {
       if (new URL(req.url ?? "/", "http://localhost").search || typeof req.headers["content-type"] !== "string"
         || req.headers["content-type"].split(";")[0]!.trim().toLowerCase() !== "application/json") throw new BodyError(400);
       const raw = await read(req);
-      epoch = await gateway.volatileEpoch();
       let body: unknown;
       try { body = JSON.parse(raw) as unknown; } catch { throw new BodyError(400); }
       if (!object(body) || typeof body.operation !== "string" || !operations.has(body.operation)) throw new BodyError(400);
       // Nonlocal IDs must already be host-resolved aliases. The worker refuses
       // unknown routes; trusted-Tailnet transport rechecks topology on every attempt.
       const result = await gateway.volatile(body);
+      epoch = result.epoch;
       if (res.destroyed) return;
       res.setHeader("Cache-Control", "no-store");
       const status = result.ok ? 200 : result.error.code === "RELAY_CAPACITY" || result.error.code === "RELAY_UNAVAILABLE" || result.error.code === "PEER_UNREACHABLE" ? 503
         : result.error.code === "TARGET_NOT_REGISTERED" || result.error.code === "CALLER_NOT_FOUND" ? 404
           : result.error.code === "CALLER_DEAD" || result.error.code === "REGISTRATION_EXPIRED" ? 410
             : ["RELAY_RESET", "SOURCE_MISMATCH", "ENVELOPE_CONFLICT", "DELIVERY_UNCONFIRMED", "RELAY_PROFILE_REQUIRED"].includes(result.error.code) ? 409 : 400;
-      json(res, !result.ok && result.epoch === undefined && epoch ? { ...result, epoch } : result, status);
+      json(res, result, status);
     } catch (error) {
       if (error instanceof BodyError) { discard(req, res); reject(res, "INVALID_REQUEST", error.status, epoch); }
       else reject(res, "RELAY_UNAVAILABLE", 503, epoch);
