@@ -97,7 +97,15 @@ const quietAlertHistory = new Map<string, QuietAlertPolicyState>();
 interface ChildBlockedEpisode {
   /** The quiet episode that alerts for this block, once one is open. */
   episodeId?: string;
-  /** Set when that episode emitted: this block has alerted. */
+  /** That episode emitted: this block has alerted and never alerts again. */
+  alerted?: true;
+  /**
+   * The emitted episode while it is still the session's episode. A screen
+   * change while the child stays blocked opens a new episode; this state
+   * replaces it in the same observation (review A3-3), so the same episode
+   * repeats and its delivery retries continue. Cleared when the episode is
+   * gone (a capture gap), because push delivery then forgot it.
+   */
   emitted?: QuietAlertPolicyState;
 }
 const childBlockedEpisodes = new Map<string, ChildBlockedEpisode>();
@@ -351,7 +359,10 @@ function reduceSessionQuietAlert(
   if (reduction.event) {
     recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
     const blocked = childBlockedEpisodes.get(sessionKey);
-    if (blocked?.episodeId === reduction.event.episodeId) blocked.emitted = reduction.state;
+    if (blocked?.episodeId === reduction.event.episodeId) {
+      blocked.alerted = true;
+      blocked.emitted = reduction.state;
+    }
   }
   return reduction.fact;
 }
@@ -755,7 +766,8 @@ interface ChildBlockObservation {
  * started) already alerts as needs-input when due, so it is adopted: one push
  * per block. When the block has no fresh continuity (a capture gap), the
  * episode opens at the first fresh observation while the child stays blocked.
- * A block that alerted never opens another episode.
+ * A block that alerted never opens another episode: its emitted episode stays
+ * the session's episode until the child leaves needs-input.
  */
 function reduceChildBlockedEpisode(
   sessionKey: string,
@@ -777,8 +789,15 @@ function reduceChildBlockedEpisode(
     return;
   }
   const blocked = childBlockedEpisodes.get(sessionKey);
-  if (blocked === undefined || blocked.emitted !== undefined || observation.quietContinuity !== "fresh") return;
+  if (blocked === undefined || observation.quietContinuity !== "fresh") return;
   const episode = quietAlertHistory.get(sessionKey);
+  if (blocked.alerted) {
+    if (episode === undefined) blocked.emitted = undefined;
+    else if (episode.episodeId === blocked.emitted?.episodeId) return;
+    else if (blocked.emitted !== undefined) quietAlertHistory.set(sessionKey, blocked.emitted);
+    else quietAlertHistory.delete(sessionKey);
+    return;
+  }
   if (episode && !episode.emitted) {
     blocked.episodeId = episode.episodeId;
     return;

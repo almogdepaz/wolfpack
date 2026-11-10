@@ -219,3 +219,89 @@ test("a child pushed for its block gets no second push after a capture gap while
   await observeAfter(31);
   expect(payloads).toHaveLength(1);
 });
+
+test("a screen change after the push keeps the blocked episode; leaving and re-entering blocked pushes again (review A3-3)", async () => {
+  await spawnChild();
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  await observeAfter(5);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(5);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  expect(payloads).toEqual(["Wolfpack: worker: Needs input (permission)"]);
+
+  // Still blocked: the screen redraws, then stays quiet.
+  backend.setCapturePane(async () => "$ approve rm? [y/n]");
+  backend.setOutputSequence("worker", "1");
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  expect(payloads).toHaveLength(1);
+
+  // The child leaves blocked and blocks again: a new episode.
+  backend.setCapturePane(async () => "$ running");
+  backend.setOutputSequence("worker", "2");
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(5);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(5);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  expect(payloads).toHaveLength(2);
+});
+
+test("the reviewer's blocked-push probe: a redraw after the push while still blocked sends no second push (review A3-3)", async () => {
+  backend.setCapturePane(async () => "initial child screen");
+  const { parentId } = await spawnChild();
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  offsetMs += 1_000;
+  backend.setProgramStatus("worker", { id: "", state: PROGRAM_STATUS_STATE.BLOCKED, kind: "permission", message: "approve command?", updatedAtMs: Date.now() });
+  await observeAfter(0);
+  await observeAfter(60);
+  expect(listParentNotifications(parentId).map(entry => entry.childEvent?.event)).toEqual(["blocked"]);
+  expect(payloads).toHaveLength(1);
+  // The status is not refreshed; only the screen changes.
+  backend.setCapturePane(async () => "changed permission prompt");
+  backend.setOutputSequence("worker", "1");
+  await observeAfter(1);
+  await observeAfter(31);
+  expect(payloads).toHaveLength(1);
+});
+
+test("a child pushed for its block gets no second push after a capture gap and a later redraw while still blocked", async () => {
+  await spawnChild();
+  let failCapture = false;
+  let screen = "$ same screen";
+  backend.setCapturePane(async () => {
+    if (failCapture) throw new Error("capture unavailable");
+    return screen;
+  });
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(5);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  expect(payloads).toHaveLength(1);
+  failCapture = true;
+  backend.setOutputSequence("worker", "1");
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  failCapture = false;
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  screen = "$ approve rm? [y/n]";
+  backend.setOutputSequence("worker", "2");
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  expect(payloads).toHaveLength(1);
+});
