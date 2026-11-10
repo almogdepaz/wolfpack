@@ -1,3 +1,4 @@
+import type { RelayOwnerFailureData } from "./owner-failure.ts";
 import { types as utilTypes } from "node:util";
 import type { TaskRelayRegistration } from "./registration.ts";
 import type { RelayEndpoint } from "./domain.ts";
@@ -31,6 +32,7 @@ export const RELAY_WORKER_LIMITS = {
 
 export interface WorkerOptions {
   root: string;
+  storage?: "memory" | "sqlite";
   peerOrigin?: string;
   proxyPeerFetch: boolean;
 }
@@ -40,7 +42,8 @@ export type CallbackRequest = { kind: "inspect"; id: number; selector: string }
 export type CallbackValue = SessionInspectionResult | { status: number; body: string };
 export type ParentMessage = WorkerRequest | { kind: "callback"; id: number; value?: CallbackValue; error?: string };
 export type WorkerMessage = { kind: "ready" } | CallbackRequest
-  | { kind: "result"; id: number; value?: unknown; error?: string };
+  | { kind: "owner-failure"; failure: RelayOwnerFailureData }
+  | { kind: "result"; id: number; value?: unknown; error?: string | RelayOwnerFailureData };
 
 export class RelayWireBudgetError extends Error {}
 

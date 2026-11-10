@@ -44,6 +44,6 @@ process.on("SIGTERM", () => {
     wss.close(); await __resetTaskRelayGatewayForTests(); process.exit(0);
   })();
 });
-await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+await new Promise<void>(resolve => server.listen(Number(process.env.WOLFPACK_TEST_HTTP_PORT ?? 0), "127.0.0.1", resolve));
 writeFileSync(join(root, "ready.tmp"), JSON.stringify({ nonce, pid: process.pid, port: (server.address() as AddressInfo).port }), { mode: 0o600 });
 renameSync(join(root, "ready.tmp"), join(root, "ready.json"));
