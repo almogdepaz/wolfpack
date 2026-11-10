@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers";
+import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 let local: TestServer, remote: TestServer;
@@ -8,6 +9,8 @@ const peerId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
 test.beforeEach(async () => { local = await startTestServer({ focusAssistant: true }); remote = await startTestServer({ focusAssistant: true }); });
 test.afterEach(async ({ page }) => { await page.close(); await local?.close(); await remote?.close(); });
 async function open(page: Page) {
+  // These ownership checks exercise body controls, not the phone disclosure default.
+  await page.addInitScript(key => localStorage.setItem(key, "1"), FOCUS_MOBILE_EXPANDED_KEY);
   await page.route("https://**", route => route.abort());
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [{ hostname: "race-peer.example.ts.net", tailnetNodeId: "n-race", origin, online: true }] } }));
   // Only peer transport/identity is adapted; both stores and settings handlers are real fixtures.
@@ -80,6 +83,47 @@ test("S1: an explicit ownership rejection cannot use a held old poll as proof fo
     await (await rejected).finished(); gate.release();
     await expect(page.locator("#app-dialog")).toContainText("not saved — the home changed");
     expect(posts).toBe(1);
+  } finally { gate.release(); }
+});
+
+test("S1-R1: a late A rejection cannot revoke B timing after B is loaded", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "settings-page background polling is desktop-only");
+  const original = (await (await fetch(remote.baseUrl + "/api/settings")).json()).settings.assistant;
+  expect((await fetch(remote.baseUrl + "/api/settings", { method: "POST", body: JSON.stringify({ assistant: { ...original, quietMinutes: 99 } }) })).status).toBe(200);
+  await open(page); await page.locator("#assistant-setting-open").click();
+  const gate = latch(), arrived = latch();
+  let posts = 0;
+  const peerWrites: string[] = [];
+  page.on("request", req => { if (req.url() === origin + "/api/focus" && req.method() === "POST") peerWrites.push(req.postData()!); });
+  await page.route(`${local.baseUrl}/api/focus`, async route => {
+    if (route.request().method() !== "POST") return route.continue();
+    posts++; arrived.release(); await gate.promise; await route.continue();
+  });
+  try {
+    await page.getByRole("textbox", { name: "Add an intention", exact: true }).fill("late rejected old-home action");
+    await page.locator("#assistant-content").getByRole("button", { name: "Add", exact: true }).click();
+    await arrived.promise;
+    await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
+    const quiet = page.locator('#assistant-timing input[name="quietMinutes"]');
+    // Finish the settings-opening A read before requesting the B observation.
+    await expect(quiet).toBeEnabled();
+    await moveFromAnotherClient();
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(page.locator("#assistant-setting-home")).toContainText("Race peer");
+    await expect(quiet).toHaveValue("99");
+    await expect(quiet).toBeEnabled();
+    gate.release();
+    await expect(page.locator("#app-dialog")).toContainText("not saved — the home changed");
+    await page.locator("#app-dialog-confirm").click();
+    const fresh = page.waitForResponse(r => r.url() === origin + "/api/focus" && r.request().method() === "GET");
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await (await fresh).finished();
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.locator("#assistant-timing-status")).toHaveText("Routine timing on Race peer.");
+    await expect(quiet).toHaveValue("99");
+    await expect(quiet).toBeEnabled();
+    await expect(page.locator("#assistant-timing").getByRole("button", { name: "Save timing", exact: true })).toBeEnabled();
+    expect(posts).toBe(1); expect(peerWrites).toEqual([]);
   } finally { gate.release(); }
 });
 

@@ -549,9 +549,11 @@ export function createAssistantView(deps: {
         if ((e as { status?: number }).status !== 409) throw e;
         const rejected: unknown = (e as { data?: unknown }).data;
         if (isFocusHomeIdentity(rejected) && (!rejected.local || rejected.home !== owner.home)) {
-          // An ownership rejection revokes old polls too; it is not a CAS conflict.
-          homeGeneration++; focusUnavailable = true; terminalOwner = "rejected";
-          deps.terminalTarget(null);
+          // Revoke held polls only for the rejected owner, never a newer home's authority.
+          if (ownerIsCurrent(owner)) {
+            homeGeneration++; focusUnavailable = true; terminalOwner = "rejected";
+            deps.terminalTarget(null);
+          }
           throw new FocusHomeChanged();
         }
         if (attempt) throw e;
