@@ -33,9 +33,9 @@ function writeQuietAlertMode(mode: string): void {
   writeFileSync(process.env.WOLFPACK_SETTINGS_PATH!, JSON.stringify({ agentCmd: "shell", cmds: [], quietAlerts: { mode, quietAfterSeconds: 30 } }));
 }
 
-async function observeAfter(seconds: number): Promise<void> {
+async function observeAfter(seconds: number): Promise<Awaited<ReturnType<typeof __runSessionNotificationObservationForTests>>> {
   offsetMs += seconds * 1_000;
-  await __runSessionNotificationObservationForTests();
+  return __runSessionNotificationObservationForTests();
 }
 
 async function spawnChild(): Promise<{ parentId: string; childId: string }> {
@@ -481,7 +481,8 @@ test("the reviewer's replaced-emitted-quiet-retry ordering: a short block restor
     setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
     await observeAfter(1);
     setChildStatus(PROGRAM_STATUS_STATE.WORKING);
-    await observeAfter(1);
+    const left = await observeAfter(1);
+    expect(left.find(session => session.name === "worker")?.quietAlert).toBeDefined();
   });
   expect(sender.attempts()).toBe(2);
   expect(sender.delivered()).toBe(1);
@@ -525,7 +526,9 @@ test("a policy invalidation during a short block supersedes the failed episode: 
     await observeAfter(1);
     invalidateQuietAlertPolicy(QUIET_ALERT_KIND.QUIET);
     setChildStatus(PROGRAM_STATUS_STATE.WORKING);
-    await observeAfter(1);
+    const left = await observeAfter(1);
+    // Push drops the episode's recipients on its own; the fact shows no restore.
+    expect(left.find(session => session.name === "worker")?.quietAlert).toBeUndefined();
   }, 4);
   expect(sender.attempts()).toBe(1);
 });
