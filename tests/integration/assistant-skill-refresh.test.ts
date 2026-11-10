@@ -430,7 +430,7 @@ test("L3: journaled recent input survives a server restart", async () => {
     await t.reopen("generation two", true);
     await t.ctx.focusRuntime.tick();
     expect(t.kills).toEqual([]);
-    setSystemTime(new Date(at + 61_000));
+    setSystemTime(new Date(at + 6 * 60_000)); // journal-only history may contain later deduplicated input
     await t.ctx.focusRuntime.tick();
     expect(t.kills).toEqual(["mock:assistant"]);
   } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
@@ -612,6 +612,26 @@ test("SR-R2: stop while the post-kill reconcile list is held still forbids launc
     expect(t.archived()).toEqual([]);
     expect(readFileSync(t.transcript, "utf8")).toBe("no late archive");
   } finally { release(); await flight; t.close(); }
+});
+
+test("L3: a journal bucket cannot hide deduplicated recent input after restart", async () => {
+  const t = await fixture();
+  try {
+    writeFileSync(t.transcript, "preserve input near a bucket boundary");
+    const at = Date.UTC(2026, 10, 10, 20, 0, 1);
+    setSystemTime(new Date(at));
+    __resetSessionObservationForTests();
+    t.ctx.activityRecorder.notePresence("assistant", "browser");
+    setSystemTime(new Date(Date.UTC(2026, 10, 10, 20, 4, 50)));
+    t.ctx.activityRecorder.notePresence("assistant", "cli");
+    await t.reopen("generation two", true);
+    setSystemTime(new Date(Date.UTC(2026, 10, 10, 20, 5, 10)));
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual([]); // last actual input was only20s ago, but its bucket's first row is older than5min
+    setSystemTime(new Date(Date.UTC(2026, 10, 10, 20, 6, 0)));
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual(["mock:assistant"]);
+  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
 });
 
 test("a configured non-Pi assistant is not rotated by the managed skill protocol", async () => {

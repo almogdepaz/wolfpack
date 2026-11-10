@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { ACTIVITY_KIND, presenceBucket, type ActivityRowBody, type InputSource, type ActivityGitRepo } from "../activity-journal.js";
+import { ACTIVITY_KIND, PRESENCE_BUCKET_MS, presenceBucket, type ActivityRowBody, type InputSource, type ActivityGitRepo } from "../activity-journal.js";
 import type { EventBus } from "../event-bus.js";
 import { WOLFPACK_EVENT_KIND, type WolfpackEvent } from "../events-contract.js";
 import type { SessionListFact } from "./backend-contract.js";
@@ -101,14 +101,16 @@ export class ActivityRecorder {
 
   /** Live input presence, including events deduplicated out of the five-minute journal. No input bytes retained. */
   hasRecentInput(session: string): boolean {
+    const latest = this.latestInput.get(session);
     const recorded = this.options.journal.inputAt(session);
-    const at = Math.max(this.latestInput.get(session) ?? -Infinity, recorded ? Date.parse(recorded) : -Infinity);
+    // After restart the row marks only the bucket's first input; later inputs in it were deliberately deduplicated.
+    const at = latest ?? (recorded ? Date.parse(presenceBucket(Date.parse(recorded))) + PRESENCE_BUCKET_MS : -Infinity);
     return (this.options.now ?? Date.now)() - at < RECENT_INPUT_MS;
   }
   /** Input reached a PTY from a browser or the cli. Records presence only, never the bytes. */
   notePresence(session: string, source: InputSource): void {
     const now = (this.options.now ?? Date.now)();
-    for (const [name, at] of this.latestInput) if (now - at >= RECENT_INPUT_MS) this.latestInput.delete(name);
+    for (const [name, at] of this.latestInput) if (now - at >= PRESENCE_BUCKET_MS + RECENT_INPUT_MS) this.latestInput.delete(name);
     this.latestInput.set(session, now);
     const bucket = presenceBucket(now);
     if (bucket !== this.presenceBucket) { this.presenceBucket = bucket; this.presence.clear(); }
