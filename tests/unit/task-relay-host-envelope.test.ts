@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { AGENT_KIND } from "../../src/agent-kind.ts";
 import { CHILD_EVENT, CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENT_RELAY_PROTOCOL, type ChildEventPayload } from "../../src/child-event-contract.ts";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
@@ -119,17 +120,93 @@ test("the relay worker exposes the host envelope operation", async () => {
   expect(await gateway.hostEnvelope({ ...input, targetSession: "nobody" })).toEqual({ kind: "unsupported" });
 });
 
-test("a worker reset after the send reports uncertain acceptance; a closed worker reports a definite rejection (review A2-2)", async () => {
+/** Records the requests the gateway actually posts to its worker thread. */
+function watchWorkerPosts() {
+  const posted: string[] = [];
+  let notify: (() => void) | undefined;
+  const original = Worker.prototype.postMessage;
+  Worker.prototype.postMessage = function (this: Worker, message: unknown, ...rest: unknown[]) {
+    const request = message as { kind?: unknown; method?: unknown };
+    if (request?.kind === "request" && typeof request.method === "string") {
+      posted.push(request.method);
+      if (request.method === "hostEnvelope") notify?.();
+    }
+    return (original as (...args: unknown[]) => void).call(this, message, ...rest);
+  } as typeof Worker.prototype.postMessage;
+  const hostEnvelopePosted = new Promise<void>(resolve => { notify = resolve; });
+  return { posted, hostEnvelopePosted, restore: () => { Worker.prototype.postMessage = original; } };
+}
+
+function workerGateway(label: string) {
   const inspect = async (selector: string) => ({ ok: true as const, session: selector, sessionId: selector, projectPath: "/tmp", harness: AGENT_KIND.PI.id, alive: true });
-  const gateway = new WorkerRelayGateway({ root: mkdtempSync(join(tmpdir(), "relay-host-envelope-reset-")), inspectSession: inspect });
+  const gateway = new WorkerRelayGateway({ root: mkdtempSync(join(tmpdir(), `relay-host-envelope-${label}-`)), inspectSession: inspect });
   gateways.push(gateway);
-  const input = { ...hostInput("parent"), createdAt: new Date().toISOString() };
-  // The request is handed to the worker; the reset can come before or after the store accepted it.
-  const inFlight = gateway.hostEnvelope(input);
-  await gateway.close();
-  expect(await inFlight).toEqual({ kind: "failed", code: "RELAY_RESET", acceptance: HOST_ENVELOPE_ACCEPTANCE.UNCERTAIN });
-  // A closed worker never receives the request.
-  expect(await gateway.hostEnvelope(input)).toEqual({ kind: "failed", code: "RELAY_RESET", acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED });
+  return gateway;
+}
+
+test("a worker reset after the request was posted reports uncertain acceptance (review A2-2, A4-3)", async () => {
+  const watch = watchWorkerPosts();
+  try {
+    const gateway = workerGateway("posted");
+    await gateway.initialize();
+    const inFlight = gateway.hostEnvelope({ ...hostInput("parent"), createdAt: new Date().toISOString() });
+    // The worker has the request; its result has not come back yet.
+    await watch.hostEnvelopePosted;
+    await gateway.close();
+    expect(watch.posted.filter(method => method === "hostEnvelope")).toHaveLength(1);
+    expect(await inFlight).toEqual({ kind: "failed", code: "RELAY_RESET", acceptance: HOST_ENVELOPE_ACCEPTANCE.UNCERTAIN });
+  } finally {
+    watch.restore();
+  }
+});
+
+test("a worker reset before the request was posted, or a closed worker, is a definite rejection (review A4-3)", async () => {
+  const watch = watchWorkerPosts();
+  try {
+    const gateway = workerGateway("unposted");
+    const input = { ...hostInput("parent"), createdAt: new Date().toISOString() };
+    // The worker is not ready yet, so the request waits in the client and is never posted.
+    const queued = gateway.hostEnvelope(input);
+    await gateway.close();
+    expect(await queued).toEqual({ kind: "failed", code: "RELAY_RESET", acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED });
+    expect(await gateway.hostEnvelope(input)).toEqual({ kind: "failed", code: "RELAY_RESET", acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED });
+    expect(watch.posted).toEqual([]);
+  } finally {
+    watch.restore();
+  }
+});
+
+test("a worker reset before the envelope was posted falls back to one typed note (review A4-3)", async () => {
+  const watch = watchWorkerPosts();
+  try {
+    const gateway = workerGateway("fallback");
+    const notes: string[] = [];
+    const delivery = createChildEventDelivery({
+      hostEnvelope: input => gateway.hostEnvelope(input),
+      send: async (_sessionId, _name, text) => {
+        notes.push(text);
+        return { delivery: SESSION_SEND_DELIVERY.DELIVERED, outcome: SESSION_SEND_OUTCOME.SUBMITTED, observedMs: 1 };
+      },
+      typedNotesEnabled: () => true,
+      lastViewerInputAt: () => undefined,
+      now: () => NOW,
+    });
+    const parentId = randomUUID();
+    const delivered = delivery.deliver({ parentSessionName: "parent", childEvent: {
+      kind: CHILD_EVENT_PAYLOAD_KIND, eventId: "child:boot:1", bootId: "boot", seq: 1, childSessionId: randomUUID(), childName: "child",
+      parentSessionId: parentId, event: CHILD_EVENT.DONE, state: AGENT_STATUS_STATE.IDLE, observedAt: new Date(NOW).toISOString(),
+    } });
+    await gateway.close();
+    await delivered;
+    delivery.observeParent({ sessionId: parentId, name: "parent", alive: true, runtimeState: {
+      state: AGENT_STATUS_STATE.IDLE, authority: AGENT_STATUS_AUTHORITY.PROGRAM, freshness: AGENT_STATUS_FRESHNESS.FRESH, stale: false } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(watch.posted).toEqual([]);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("child done");
+  } finally {
+    watch.restore();
+  }
 });
 
 test("a gateway failure before the store accepted is a definite rejection (review A2-2)", async () => {

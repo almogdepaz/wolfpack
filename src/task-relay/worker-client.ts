@@ -64,6 +64,8 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
   bytes: number;
   peer: boolean;
+  /** The request reached the worker thread, so its mutation may have committed (review A4-3). */
+  posted: boolean;
 }
 
 /** One server-owned relay worker. This is isolation, not a new security boundary or cache. */
@@ -196,9 +198,12 @@ export class WorkerRelayGateway implements RelayGateway {
     if (!this.#closed) {
       this.#closed = true; this.#epoch = undefined; clearTimeout(this.#startupTimer);
       for (const controller of this.#peerControllers) controller.abort();
-      const error = new WorkerUnavailable("relay worker unavailable; an interrupted mutation may have committed", true);
-      this.#rejectReady(error);
-      for (const item of this.#pending.values()) { clearTimeout(item.timer); item.reject(error); }
+      // Only a request the worker received can have committed; one still waiting
+      // for readiness is a definite failure (review A4-3).
+      const afterSend = new WorkerUnavailable("relay worker unavailable; an interrupted mutation may have committed", true);
+      const beforeSend = new WorkerUnavailable("relay worker unavailable before the request was sent");
+      this.#rejectReady(beforeSend);
+      for (const item of this.#pending.values()) { clearTimeout(item.timer); item.reject(item.posted ? afterSend : beforeSend); }
       this.#pending.clear(); this.#peerBytes = 0; this.#regularBytes = 0;
       // Never start a replacement before the old worker has actually exited.
       this.#stopping = this.#worker.terminate().then(() => { this.#releaseOwner(); }, () => {
@@ -229,9 +234,12 @@ export class WorkerRelayGateway implements RelayGateway {
     this.#worker.ref();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => this.#fail("relay request timed out; worker stopped to bound outstanding work"), this.#requestMs);
-      this.#pending.set(id, { resolve: value => resolve(value as Awaited<ReturnType<RelayWorkerGateway[M]>>), reject, timer, bytes, peer });
+      const pending: Pending = { resolve: value => resolve(value as Awaited<ReturnType<RelayWorkerGateway[M]>>), reject, timer, bytes, peer, posted: false };
+      this.#pending.set(id, pending);
       void this.#ready.then(() => {
-        if (!this.#closed) this.#worker.postMessage({ kind: "request", id, method, args });
+        if (this.#closed) return;
+        this.#worker.postMessage({ kind: "request", id, method, args });
+        pending.posted = true;
       }).catch(() => this.#fail("relay worker transport unavailable"));
     });
   }
