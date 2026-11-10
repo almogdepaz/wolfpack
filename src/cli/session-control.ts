@@ -1724,7 +1724,7 @@ async function runTargetSessionCommand(
       return sessionSendExit(data);
     }
     if (parsed.action === "prompt") {
-      const data = await call("/api/session-control/prompt", {
+      const data = await call("/api/session-control/prompt", longRequestInit({
         method: "POST",
         body: JSON.stringify({
           session: parsed.session,
@@ -1733,7 +1733,7 @@ async function runTargetSessionCommand(
           noEnter: parsed.noEnter,
           timeoutMs: parsed.timeoutMs,
         }),
-      }, target) as SessionPromptResponse;
+      }, parsed.timeoutMs + LONG_REQUEST_GRACE_MS), target) as SessionPromptResponse;
       if (parsed.output === "json") jsonOut(data, target);
       else if (data.outcome !== SESSION_PROMPT_OUTCOME.MATCHED) print(yellow(data.outcome));
       return SESSION_PROMPT_EXIT[data.outcome] ?? SESSION_EXIT.GENERAL;

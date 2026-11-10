@@ -1148,6 +1148,14 @@ describe("agent wait and agent children", () => {
     expect(session.options).toEqual([{ path: "/api/session-control/wait", timeout: false, signal: "pending" }]);
   });
 
+  test("session prompt replaces Bun's ~360 s default fetch timeout with its own deadline", () => {
+    // session prompt allows --timeout-ms up to 600,000 and its route answers only when done.
+    const prompt = longWaitFetchOptions("runSessionCommand", ["prompt", "alpha", "run", "--until", "READY", "--timeout-ms", "600000", "--json"],
+      { ok: true, session: "alpha", sessionId: "id-alpha", outcome: "matched", outputBoundarySeq: "12" });
+    expect(prompt.exitCode).toBe(SESSION_EXIT.OK);
+    expect(prompt.options).toEqual([{ path: "/api/session-control/prompt", timeout: false, signal: "pending" }]);
+  });
+
   test("a wait timeout is a successful check-in and the query carries the cursor of this session", () => {
     const child = agentCli(["wait", "--children", "any", "--timeout", "5", "--since", "4", "--boot-id", "boot", "--json"], waitBody);
     expect(child.exitCode).toBe(SESSION_EXIT.OK);
