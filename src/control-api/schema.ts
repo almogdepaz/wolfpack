@@ -26,6 +26,7 @@ import { SESSION_PLAN_MAX_PATH_LENGTH } from "../session-plan-contract.ts";
 import { NOTIFY_UNDELIVERED_REASON } from "../notify-contract.ts";
 import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND } from "../events-contract.ts";
 import { CHILD_EVENT_LIMITS, CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENTS, CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, CHILD_WAIT_OUTCOMES } from "../child-event-contract.ts";
+import { CASCADE_OUTCOMES, CHILD_CLEANUP_POLICIES, CHILD_CLEANUP_REPORTS } from "../session-cascade-contract.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
   QUIET_ALERT_KIND,
@@ -285,6 +286,7 @@ function sessionOpenRequestSchema(): JsonSchema {
       maxLength: MAX_INITIAL_PROMPT_LENGTH,
     },
     plan: ref("SessionOpenPlanRequest"),
+    outliveParent: { const: true, description: "Record the outlive cleanup policy: the child keeps running after its parent. Default: cascade" },
   };
   const taskWorkerProperties = {
     harness: ordinaryProperties.harness,
@@ -300,6 +302,7 @@ function sessionOpenRequestSchema(): JsonSchema {
     },
     taskWorkerPolicy: ref("TaskWorkerPolicyOverride"),
     taskWorkerDryRun: { const: true },
+    outliveParent: ordinaryProperties.outliveParent,
   };
   return {
     type: "object",
@@ -680,7 +683,17 @@ export const controlApiSource: ControlApiSource = {
     ParentSessionIdentity: object({
       wolfpackSessionId: string(),
       wolfpackSessionName: ref("SessionName"),
+      cleanup: {
+        enum: [...CHILD_CLEANUP_POLICIES],
+        description: "Recorded at spawn. cascade: killed when the parent is killed or dies. Absent on a pre-upgrade child, which never cascades.",
+      },
     }, ["wolfpackSessionId", "wolfpackSessionName"]),
+    CascadedChild: object({
+      sessionId: ref("SessionId"),
+      session: ref("SessionName"),
+      outcome: { enum: [...CASCADE_OUTCOMES] },
+      reason: { type: "string", description: "failed only: why the kill failed" },
+    }, ["sessionId", "session", "outcome"]),
     PublicSessionIdentity: object({
       wolfpackSessionId: string(),
       wolfpackSessionName: ref("SessionName"),
@@ -1594,7 +1607,12 @@ export const controlApiSource: ControlApiSource = {
         ok: { const: true },
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
-      }, ["ok", "session", "sessionId"]),
+        cascaded: {
+          ...arrayOf(ref("CascadedChild")),
+          description: "Same-machine cascade children killed with this session, recursively, by each child's recorded policy",
+        },
+        cascadeError: { type: "string", description: "The session table was unavailable; no child was cascaded by this request" },
+      }, ["ok", "session", "sessionId", "cascaded"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "GET /api/session-control/list": {
@@ -1682,8 +1700,9 @@ export const controlApiSource: ControlApiSource = {
           authority: ref("AgentStatusAuthority"),
           stale: boolean(),
           settled: { type: "boolean", description: "Fresh tracked state is idle, needs-input, done, failed, stopped or off, with no delivered task pending." },
+          cleanup: { enum: [...CHILD_CLEANUP_REPORTS], description: "The child's recorded cleanup policy; none for a child without one" },
           lastEvent: ref("ChildEvent"),
-        }, ["session", "sessionId", "state", "settled"])),
+        }, ["session", "sessionId", "state", "settled", "cleanup"])),
       }, ["ok", "session", "sessionId", "bootId", "children"]),
       errors: [
         "400 SessionStatusFailure",

@@ -105,8 +105,8 @@ The server owns validation, naming, identity, and launch.`;
 }
 
 export function sessionOpenUsage(): string {
-  return `Usage: wolfpack session open <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-       wolfpack session open --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
+  return `Usage: wolfpack session open <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--json]
+       wolfpack session open --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
 
 Global selector: wolfpack --machine <short-name-or-fqdn> session open ...
 
@@ -119,8 +119,8 @@ export function agentUsage(): string {
 Global selector: wolfpack --machine <short-name-or-fqdn> agent <spawn|inbox> ...
 
 Commands:
-  wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-  wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
+  wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--json]
+  wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
   wolfpack agent notify-parent [--message <text>] [--json]
   wolfpack agent inbox [--since <seq>] [--json]
   wolfpack agent wait --children any|all [--timeout <seconds>] [--since <seq> --boot-id <id>] [--json]
@@ -131,7 +131,9 @@ notifies its parent's inbox and enrolled devices, or polls the current session's
 wait blocks until a child event arrives (any) or every live child is settled (all);
 timeout (default 180 s) is a check-in result with exit 0. Pass the returned cursor
 and bootId as --since/--boot-id to the next wait. children lists the current
-session's live children. wait and children run on this host only.`;
+session's live children. wait and children run on this host only.
+A spawned child is killed with its parent (POST /api/kill or parent exit), recursively;
+--outlive-parent keeps it running instead.`;
 }
 
 export function sessionUsage(): string {
@@ -184,6 +186,7 @@ export type ParsedSessionCommand =
     readonly promptFile?: string;
     readonly plan?: string;
     readonly notifyParent?: true;
+    readonly outliveParent?: true;
     readonly taskWorker?: true;
     readonly taskWorkerPolicyFile?: string;
     readonly taskWorkerDryRun?: true;
@@ -231,6 +234,7 @@ export type ParsedAgentCommand =
     readonly promptFile?: string;
     readonly plan?: string;
     readonly notifyParent?: true;
+    readonly outliveParent?: true;
     readonly taskWorker?: true;
     readonly taskWorkerPolicyFile?: string;
     readonly taskWorkerDryRun?: true;
@@ -405,6 +409,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
   const nameValue = action === "open" ? (consumeLaunchValue(args, "--name") ?? consumeLaunchValue(args, "--session-name")) : null;
   const modelValue = action === "open" ? consumeLaunchValue(args, "--model") : null;
   const notifyParent = consumeFlag(args, "--notify-parent");
+  const outliveParent = consumeFlag(args, "--outlive-parent");
   const taskWorker = consumeFlag(args, "--task-worker");
   const taskWorkerPolicyFileValue = consumeLaunchValue(args, "--task-worker-policy-file");
   const taskWorkerDryRun = consumeFlag(args, "--task-worker-dry-run");
@@ -439,7 +444,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
   const validPromptSources = promptSources.length <= 1 && validPromptFile && validPlan;
   const validHarness = harnessValue === null
     || (harness !== undefined && (action === "create" || isOpenableHarness(harness)));
-  const validNotify = action !== "create" || !notifyParent;
+  const validNotify = action !== "create" || (!notifyParent && !outliveParent);
   const selector = parseExistingProjectSelector(project, projectDir);
   const readinessTimeoutMs = readinessTimeoutValue === null ? undefined : Number(readinessTimeoutValue);
   const validTaskWorker = !taskWorker || (
@@ -495,6 +500,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     ...(promptFile !== undefined && { promptFile }),
     ...(plan !== undefined && { plan }),
     ...(notifyParent && { notifyParent: true }),
+    ...(outliveParent && { outliveParent: true }),
     ...(taskWorker && { taskWorker: true }),
     ...(taskWorkerPolicyFileValue !== null && { taskWorkerPolicyFile: taskWorkerPolicyFileValue }),
     ...(taskWorkerDryRun && { taskWorkerDryRun: true }),
@@ -684,7 +690,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     return { ok: false, message: action ? `Unknown agent command: ${action}` : "Usage: wolfpack agent spawn <project> ..." };
   }
   const parsed = parseSessionCommand(["open", ...args]);
-  const usage = "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]";
+  const usage = "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]";
   if (!parsed.ok) return { ok: false, message: usage };
   if (parsed.action !== "open") return { ok: false, message: "Usage: wolfpack agent spawn <project> ..." };
   return {
@@ -698,6 +704,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     ...(parsed.promptFile !== undefined && { promptFile: parsed.promptFile }),
     ...(parsed.plan !== undefined && { plan: parsed.plan }),
     ...(parsed.notifyParent && { notifyParent: true }),
+    ...(parsed.outliveParent && { outliveParent: true }),
     ...(parsed.taskWorker && { taskWorker: true }),
     ...(parsed.taskWorkerPolicyFile !== undefined && { taskWorkerPolicyFile: parsed.taskWorkerPolicyFile }),
     ...(parsed.taskWorkerDryRun && { taskWorkerDryRun: true }),
@@ -1143,6 +1150,7 @@ interface LaunchPromptSource {
 
 interface SessionOpenLaunchArgs extends LaunchPromptSource {
   readonly selector: ExistingProjectSelector;
+  readonly outliveParent?: true;
   readonly harness?: OpenableHarness;
   readonly sessionName?: string;
   readonly model?: string;
@@ -1260,6 +1268,7 @@ async function runSessionOpen(
         ...(taskWorkerPolicy !== undefined && { taskWorkerPolicy }),
         ...(parsed.taskWorkerDryRun && { taskWorkerDryRun: true }),
         ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
+        ...(parsed.outliveParent && { outliveParent: true }),
         ...(initialPrompt !== undefined && { initialPrompt }),
         ...planRequest(parsed),
       }),

@@ -18,6 +18,7 @@ import {
 } from "./task-worker-readiness.js";
 import type { TaskWorkerLaunch, TaskWorkerTransportLookup } from "./task-worker-readiness.js";
 import type { RelayEndpoint } from "../task-relay/domain.js";
+import { CHILD_CLEANUP, type ChildCleanupPolicy } from "../session-cascade-contract.js";
 import { DuplicateSessionError } from "./backend.js";
 import type { SessionLaunchOptions } from "./backend.js";
 import type {
@@ -94,6 +95,8 @@ interface OpenSubSessionInput extends TaskWorkerTransportLookup {
   readonly harness?: OpenableHarness;
   readonly model?: string;
   readonly initialPrompt?: string;
+  /** The child's cleanup policy; defaults to `cascade`. */
+  readonly cleanup?: ChildCleanupPolicy;
   readonly taskWorker?: TaskWorkerLaunch;
   readonly readinessTimeoutMs?: number;
   readonly endpointForSession?: (sessionId: string) => Promise<RelayEndpoint | undefined>;
@@ -162,6 +165,7 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
   const parentIdentity: ParentSessionIdentity = {
     wolfpackSessionId: parentState.identity.wolfpackSessionId,
     wolfpackSessionName: parentState.identity.wolfpackSessionName,
+    cleanup: input.cleanup ?? CHILD_CLEANUP.CASCADE,
   };
 
   for (let attempt = 0; attempt < SESSION_OPEN_MAX_CREATE_ATTEMPTS; attempt++) {

@@ -19,6 +19,7 @@ import {
   isValidSessionName,
 } from "../validation.js";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.js";
+import { CHILD_CLEANUP } from "../session-cascade-contract.js";
 import {
   SESSION_OPEN_ERROR,
   SESSION_OPEN_HTTP_STATUS,
@@ -212,7 +213,7 @@ interface SessionCreateBody extends Record<string, unknown> {
 }
 
 function isSessionCreateBody(body: Record<string, unknown>): body is SessionCreateBody {
-  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
+  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun", "outliveParent"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
@@ -238,6 +239,8 @@ interface SessionOpenBody extends Record<string, unknown> {
   readinessTimeoutMs?: number;
   taskWorkerPolicy?: Record<string, unknown>;
   taskWorkerDryRun?: boolean;
+  /** Record the `outlive` cleanup policy instead of `cascade`. */
+  outliveParent?: true;
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
@@ -254,7 +257,8 @@ function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBo
     && hasOptionalType(body, "taskWorker", "boolean")
     && hasOptionalType(body, "readinessTimeoutMs", "number")
     && (body.taskWorkerPolicy === undefined || isJsonObject(body.taskWorkerPolicy))
-    && hasOptionalType(body, "taskWorkerDryRun", "boolean");
+    && hasOptionalType(body, "taskWorkerDryRun", "boolean")
+    && (body.outliveParent === undefined || body.outliveParent === true);
 }
 
 /** Resolves a `--plan` path against the project the child runs in. */
@@ -566,6 +570,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
       parentIdentity = {
         wolfpackSessionId: activeParentIdentity.wolfpackSessionId,
         wolfpackSessionName: activeParentIdentity.wolfpackSessionName,
+        cleanup: CHILD_CLEANUP.CASCADE,
       };
     }
     const customName = sessionName?.trim();
@@ -749,6 +754,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         projectDir,
         command: configuredCommand,
         initialPrompt,
+        ...(body.outliveParent === true && { cleanup: CHILD_CLEANUP.OUTLIVE }),
         ...(taskWorker !== undefined && {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,

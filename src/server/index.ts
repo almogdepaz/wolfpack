@@ -33,6 +33,7 @@ import {
   SESSION_SEND_DEFAULT_OBSERVE_MS, SESSION_SEND_DELIVERY, SESSION_SEND_FAILURE_REASON, SESSION_SEND_OUTCOME,
 } from "../session-send-contract.js";
 import { startChildEventDelivery } from "./child-event-delivery.js";
+import { startChildCleanupCascade } from "./session-cascade.js";
 import { lastViewerInputAt } from "./viewer-input.js";
 import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
@@ -340,7 +341,11 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
     now: Date.now,
   });
   startSessionNotificationObserver(ctx);
+  // Parent death kills cascade children. The first table after this start is a
+  // baseline, so sessions that died while the server was down do not cascade.
+  const stopChildCleanupCascade = startChildCleanupCascade(() => ctx.backend);
   server.once("close", () => {
+    stopChildCleanupCascade();
     stopChildEventDelivery();
     taskRelay.close();
     stopSessionNotificationObserver();

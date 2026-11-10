@@ -431,6 +431,41 @@ describe("session control cli parsing", () => {
     });
   });
 
+  test("parses --outlive-parent for spawn and open and rejects it for create", () => {
+    expect(parseSessionCommand(["open", "wolfpack", "--outlive-parent"])).toMatchObject({ ok: true, action: "open", outliveParent: true });
+    expect(parseAgentCommand(["spawn", "wolfpack", "--outlive-parent"])).toMatchObject({ ok: true, action: "spawn", outliveParent: true });
+    expect(parseAgentCommand(["spawn", "wolfpack"])).not.toHaveProperty("outliveParent");
+    expect(parseSessionCommand(["create", "wolfpack", "--outlive-parent"]).ok).toBe(false);
+  });
+
+  test("open sends outliveParent only when --outlive-parent is given", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      process.env.WOLFPACK_AGENT_KIND = "pi";
+      const bodies = [];
+      globalThis.fetch = async (url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json({ ok: true, session: "pi-main-sub-agent-1", sessionId: "id-1", project: "wolfpack", harness: "pi" });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      await runSessionCommand(["open", "wolfpack", "--outlive-parent", "--json"]);
+      await runSessionCommand(["open", "wolfpack", "--json"]);
+      console.error(JSON.stringify(bodies));
+      process.exit(0);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(0);
+    expect(JSON.parse(child.stderr.toString())).toEqual([
+      { project: "wolfpack", parentSession: "pi-main", outliveParent: true },
+      { project: "wolfpack", parentSession: "pi-main" },
+    ]);
+  });
+
   test("parses read with json output", () => {
     expect(parseSessionCommand(["read", "alpha", "--json"])).toEqual({
       ok: true,

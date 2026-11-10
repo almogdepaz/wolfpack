@@ -154,13 +154,23 @@ describe("openSubSession", () => {
           agentCmd: childHarness,
           options: {
             agentKind: childHarness,
-            parentSession: { wolfpackSessionId: PARENT_ID, wolfpackSessionName: "parent" },
+            parentSession: { wolfpackSessionId: PARENT_ID, wolfpackSessionName: "parent", cleanup: "cascade" },
             initialPrompt: undefined,
           },
         }]);
         expect(notifications).toEqual([`${PARENT_ID}:parent-sub-agent`]);
       }
     }
+  });
+
+  test("records the cascade cleanup policy by default and outlive on request", async () => {
+    const backend = new FakeSessionOpenBackend("pi-main", "pi");
+    await openSubSession({ backend, parentSession: "pi-main", project: "wolfpack", projectDir: "/dev/wolfpack" });
+    await openSubSession({ backend, parentSession: "pi-main", project: "wolfpack", projectDir: "/dev/wolfpack", cleanup: "outlive" });
+    expect(backend.createCalls.map(call => call.options?.parentSession)).toEqual([
+      { wolfpackSessionId: PARENT_ID, wolfpackSessionName: "pi-main", cleanup: "cascade" },
+      { wolfpackSessionId: PARENT_ID, wolfpackSessionName: "pi-main", cleanup: "outlive" },
+    ]);
   });
 
   test("accepts model selection for a pi child of a non-pi parent", async () => {
@@ -233,6 +243,7 @@ describe("openSubSession", () => {
         parentSession: {
           wolfpackSessionId: PARENT_ID,
           wolfpackSessionName: "pi-main",
+          cleanup: "cascade",
         },
         model,
         initialPrompt: prompt,
@@ -269,6 +280,7 @@ describe("openSubSession", () => {
       parentSession: {
         wolfpackSessionId: PARENT_ID,
         wolfpackSessionName: "pi-main",
+        cleanup: "cascade",
       },
       initialPrompt: undefined,
       taskWorker: {

@@ -130,8 +130,8 @@ After creation, a failed root/identity/liveness/endpoint check or deadline kills
 ## Spawn a child agent
 
 ```bash
-wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--json]
+wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--json]
 ```
 
 - performs one `POST /api/session-open` request.
@@ -145,6 +145,7 @@ wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>]
 - supports `--plan <file>` and `--prompt-file <file>` like top-level creation.
 - `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked. That command queues the message in the live parent's inbox and also notifies enrolled human devices (see below).
 - stores structured parent ID/name metadata and sends a best-effort typed browser notification when opened.
+- records the child's cleanup policy in its parent identity: `cascade` by default, `outlive` with `--outlive-parent`. A `cascade` child is killed with its parent (see [Parent-owned teardown](#parent-owned-teardown)); an `outlive` child keeps running.
 - json success has the same fields as top-level creation, including stable `sessionId`; `harness` reports the child's harness.
 
 `wolfpack session open` remains a deprecated compatibility alias for `wolfpack agent spawn` and accepts the same selectors, optional `--harness`, and Pi-child model selection. It never means top-level creation.
@@ -207,7 +208,7 @@ wolfpack kill <session-or-id> --json
 wolfpack --machine <short-name-or-fqdn> kill <session-or-id> --json
 ```
 
-`kill` accepts the same opaque selector rules as inspection. It uses Wolfpack's ordinary global API auth policy; `--machine` first verifies the configured Tailnet target and carries the normal JWT authorization when configured. A local JSON success is `{ "ok": true, "session": string, "sessionId": string }`; a remote JSON success retains those fields and adds verified `machine` identity. After success, verify teardown through the matching target's active-session list:
+`kill` accepts the same opaque selector rules as inspection. It uses Wolfpack's ordinary global API auth policy; `--machine` first verifies the configured Tailnet target and carries the normal JWT authorization when configured. A local JSON success is `{ "ok": true, "session": string, "sessionId": string, "cascaded": [...] }`; a remote JSON success retains those fields and adds verified `machine` identity. After success, verify teardown through the matching target's active-session list:
 
 ```bash
 wolfpack list --json
@@ -215,6 +216,19 @@ wolfpack --machine <short-name-or-fqdn> list --json
 ```
 
 The killed `sessionId` must be absent. Do not treat `/quit` as a substitute, and do not kill a session without explicit authority for that exact target.
+
+### Child cleanup cascade
+
+A child spawned with the default `cascade` policy is killed together with its parent. The cascade is recursive: each child's own recorded policy decides whether it follows its parent, so an `outlive` child and its subtree stay running. A child created before the policy existed has no recorded policy and never cascades.
+
+- triggers: a successful `POST /api/kill` of the parent, or the parent's death. Death means a lifecycle exit frame, or a dead or missing entry in a session table that the server read successfully. An unavailable read is not death.
+- `cascaded` in the kill response lists each cascade child as `{ sessionId, session, outcome, reason? }`. `outcome` is `killed`, `already_gone` (the child was already dead; its own cascade children still follow their policy) or `failed` with a `reason`. A failed child keeps its children.
+- when the session table cannot be read after the kill, the parent is still killed, `cascaded` is empty and `cascadeError` gives the reason. A later death notification of that parent can still cascade.
+- a parent-death cascade logs each child at info (`parent death cascade`, with `parentSessionId` and `childSessionId`).
+- each session is cascaded at most once per server boot; a cycle or a second trigger does not kill again.
+- same machine only. The cascade reads and kills through the local backend and never calls a peer.
+- no cascade after a server restart: the first session table after startup is the baseline, so a parent that died while the server was down does not cascade its children. Kill them explicitly.
+- `wolfpack agent children --json` reports each child's `cleanup`: `cascade`, `outlive`, or `none` when no policy is recorded.
 
 ## Send and wait
 
@@ -309,7 +323,7 @@ wolfpack agent wait --children any|all [--timeout <seconds>] [--since <seq> --bo
 
 Both commands act for the current agent session (the injected stable ID, otherwise `WOLFPACK_SESSION_NAME`) on this machine; they reject `--machine`.
 
-- `agent children` calls `GET /api/session-control/children?session=<self>`. It lists the live children whose identity names this session, sorted by name, with `state` (the last recorded runtime state, or `unknown`), `authority` and `stale` when a state exists, `settled`, and `lastEvent` (the newest child event in the parent inbox, when one is retained).
+- `agent children` calls `GET /api/session-control/children?session=<self>`. It lists the live children whose identity names this session, sorted by name, with `cleanup` (the recorded policy: `cascade`, `outlive` or `none`), `state` (the last recorded runtime state, or `unknown`), `authority` and `stale` when a state exists, `settled`, and `lastEvent` (the newest child event in the parent inbox, when one is retained).
 - `agent wait` calls `GET /api/session-control/children/wait?session=<self>&children=any|all&timeoutMs=<ms>[&since=<seq>&bootId=<id>]` and blocks until the server answers. `--timeout` is in seconds (default 180, maximum 600). The response has `outcome`, the child `events` after the cursor, `bootId`, `since` (the cursor used) and `cursor`.
   - `any` returns `events` as soon as at least one child event is newer than the cursor, also one that already waited before the call. It returns `no_children` when there are no live children and no newer events.
   - `all` returns `settled` when every live child is settled, and also when no live child remains but newer events exist; otherwise `no_children`. A child is settled when its last fresh tracked state is `idle`, `needs-input`, `done`, `failed`, `stopped` or `off` and no task delivered by `session send` is still pending. The server checks again about every second and at each child event, so a child that settles without an event is found. On a timeout, `pending` names the children that are not settled.

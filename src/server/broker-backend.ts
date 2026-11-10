@@ -75,6 +75,7 @@ import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-cont
 import { CMD_REGEX } from "../validation.js";
 import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
 import { childSessionExited, childTrackingMark, noteChildCreated, reconcileChildEvents } from "./child-events.js";
+import { noteSessionAlive, noteSessionExit, noteSessionTable, sessionTableMark } from "./session-death.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { PROGRAM_STATUS_STATE, parseBrokerProgramStatusRecord } from "../program-status-contract.js";
@@ -625,6 +626,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 
   async listSessionFacts(): Promise<SessionListFact[]> {
     const trackedBefore = childTrackingMark();
+    const tableMark = sessionTableMark();
     const sessions = await this.brokerSessions();
     const identitySessions: Array<{
       wolfpackSessionId: string;
@@ -678,6 +680,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     // A known child that is dead or gone in this table has exited, even if
     // its exit frame was lost; the lifecycle path shares the deduplication.
     reconcileChildEvents(liveIds, { trackedBefore, exitReason: id => this.tableExitReason(id), publish: this.emitEvent });
+    // Same evidence for the cleanup cascade: a parent dead or gone in this table died.
+    noteSessionTable(liveIds, tableMark);
     return facts;
   }
 
@@ -870,6 +874,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     // Same synchronous step as the identity capture: no observer pass can see
     // this child's lineage before it is tracked as created in this boot.
     if (options?.parentSession) noteChildCreated(session.id, session.name, options.parentSession);
+    noteSessionAlive(session.id);
     log.info("session created", { name: session.name, id: session.id, cwd, cmd: agentCmd });
     return toPublicSessionIdentity(identity);
   }
@@ -1732,6 +1737,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       ...(exit.exitCode !== undefined && { exitCode: exit.exitCode }),
       ...(exit.signal !== undefined && { signal: exit.signal }),
     }, this.emitEvent);
+    // The cleanup cascade treats a lifecycle exit as death evidence.
+    noteSessionExit(id);
     this.emitEvent({
       kind: WOLFPACK_EVENT_KIND.SESSION_EXITED,
       sessionId: id,

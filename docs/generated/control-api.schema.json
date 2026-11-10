@@ -2131,6 +2131,10 @@
           "plan": {
             "$ref": "#/$defs/SessionOpenPlanRequest"
           },
+          "outliveParent": {
+            "const": true,
+            "description": "Record the outlive cleanup policy: the child keeps running after its parent. Default: cascade"
+          },
           "taskWorker": {
             "type": "boolean",
             "description": "Opt into task endpoint readiness (Pi Tasks, or the Claude wolfpack-tasks plugin) before success is returned"
@@ -2187,6 +2191,10 @@
               },
               "plan": {
                 "$ref": "#/$defs/SessionOpenPlanRequest"
+              },
+              "outliveParent": {
+                "const": true,
+                "description": "Record the outlive cleanup policy: the child keeps running after its parent. Default: cascade"
               }
             },
             "required": [
@@ -2251,6 +2259,10 @@
               },
               "taskWorkerDryRun": {
                 "const": true
+              },
+              "outliveParent": {
+                "const": true,
+                "description": "Record the outlive cleanup policy: the child keeps running after its parent. Default: cascade"
               }
             },
             "required": [
@@ -2537,12 +2549,24 @@
           },
           "sessionId": {
             "$ref": "#/$defs/SessionId"
+          },
+          "cascaded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CascadedChild"
+            },
+            "description": "Same-machine cascade children killed with this session, recursively, by each child's recorded policy"
+          },
+          "cascadeError": {
+            "type": "string",
+            "description": "The session table was unavailable; no child was cascaded by this request"
           }
         },
         "required": [
           "ok",
           "session",
-          "sessionId"
+          "sessionId",
+          "cascaded"
         ],
         "additionalProperties": false
       },
@@ -2876,6 +2900,14 @@
                   "type": "boolean",
                   "description": "Fresh tracked state is idle, needs-input, done, failed, stopped or off, with no delivered task pending."
                 },
+                "cleanup": {
+                  "enum": [
+                    "cascade",
+                    "outlive",
+                    "none"
+                  ],
+                  "description": "The child's recorded cleanup policy; none for a child without one"
+                },
                 "lastEvent": {
                   "$ref": "#/$defs/ChildEvent"
                 }
@@ -2884,7 +2916,8 @@
                 "session",
                 "sessionId",
                 "state",
-                "settled"
+                "settled",
+                "cleanup"
               ],
               "additionalProperties": false
             }
@@ -6205,11 +6238,46 @@
         },
         "wolfpackSessionName": {
           "$ref": "#/$defs/SessionName"
+        },
+        "cleanup": {
+          "enum": [
+            "cascade",
+            "outlive"
+          ],
+          "description": "Recorded at spawn. cascade: killed when the parent is killed or dies. Absent on a pre-upgrade child, which never cascades."
         }
       },
       "required": [
         "wolfpackSessionId",
         "wolfpackSessionName"
+      ],
+      "additionalProperties": false
+    },
+    "CascadedChild": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "outcome": {
+          "enum": [
+            "killed",
+            "already_gone",
+            "failed"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "description": "failed only: why the kill failed"
+        }
+      },
+      "required": [
+        "sessionId",
+        "session",
+        "outcome"
       ],
       "additionalProperties": false
     },

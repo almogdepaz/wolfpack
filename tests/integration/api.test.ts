@@ -3123,6 +3123,7 @@ describe("agent-native top-level session control", () => {
       ok: true,
       session: "wolf-1",
       sessionId: "mock:wolf-1",
+      cascaded: [],
     });
     expect(await mockBackend.hasSession("wolf-1")).toBe(false);
   });

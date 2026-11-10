@@ -45,6 +45,7 @@ import { isChildSettled, noteChildInputDelivered } from "./child-events.js";
 import { ChildWaitBusyError, waitForChildren, type ChildWaitChild } from "./child-wait.js";
 import { CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, type ChildEventPayload, type ChildWaitMode } from "../child-event-contract.js";
 import { getAgentRuntimeStateStore } from "./agent-status.js";
+import { CHILD_CLEANUP, type ChildCleanupReport } from "../session-cascade-contract.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
@@ -353,7 +354,7 @@ async function inspectLiveSession(res: ServerResponse, selector: string): Promis
 }
 
 /** The live children of a parent, sorted by name. Exited children are not listed. */
-async function liveChildren(parentSessionId: string): Promise<ChildWaitChild[]> {
+async function liveChildren(parentSessionId: string): Promise<Array<ChildWaitChild & { readonly cleanup: ChildCleanupReport }>> {
   const backend = getBackend();
   const names = await backend.list();
   const identities = await backend.listIdentities?.();
@@ -361,7 +362,12 @@ async function liveChildren(parentSessionId: string): Promise<ChildWaitChild[]> 
   return names.flatMap((name) => {
     const identity = identities[name];
     if (identity?.parentSession?.wolfpackSessionId !== parentSessionId || !sessionTerminalLiveness(name).alive) return [];
-    return [{ session: name, sessionId: identity.wolfpackSessionId, settled: isChildSettled(identity.wolfpackSessionId) }];
+    return [{
+      session: name,
+      sessionId: identity.wolfpackSessionId,
+      settled: isChildSettled(identity.wolfpackSessionId),
+      cleanup: identity.parentSession.cleanup ?? CHILD_CLEANUP.NONE,
+    }];
   }).sort((left, right) => left.session.localeCompare(right.session));
 }
 
@@ -465,6 +471,7 @@ return {
           state: runtimeState?.state ?? "unknown",
           ...(runtimeState && { authority: runtimeState.authority, stale: runtimeState.stale }),
           settled: child.settled,
+          cleanup: child.cleanup,
           ...(lastEvent && { lastEvent }),
         };
       });

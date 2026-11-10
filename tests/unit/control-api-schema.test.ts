@@ -150,6 +150,27 @@ describe("control api schema", () => {
     expect(validate(stream, { id: 4, at: childEvent.observedAt, kind: "child_event", session: "parent", sessionId: "parent-id" }, artifact)).not.toEqual([]);
   });
 
+  test("documents the kill cascade and the recorded child policy", () => {
+    const kill = httpResponse("killSession");
+    const base = { ok: true, session: "lead", sessionId: "lead-id" };
+    expect(validate(kill, { ...base, cascaded: [
+      { sessionId: "kid-id", session: "kid", outcome: "killed" },
+      { sessionId: "gone-id", session: "gone", outcome: "already_gone" },
+      { sessionId: "stuck-id", session: "stuck", outcome: "failed", reason: "broker refused" },
+    ] }, artifact)).toEqual([]);
+    expect(validate(kill, base, artifact)).not.toEqual([]);
+    expect(validate(kill, { ...base, cascaded: [{ sessionId: "kid-id", session: "kid", outcome: "orphaned" }] }, artifact)).not.toEqual([]);
+    const parent = (artifact.$defs as JsonObject).ParentSessionIdentity as { properties: Record<string, { enum?: string[] }> };
+    expect(parent.properties.cleanup!.enum).toEqual(["cascade", "outlive"]);
+    const open = httpRequest("openSession");
+    const ordinary = { project: "wolfpack", parentSession: "pi-main" };
+    const worker = { projectDir: "/worktrees/wolfpack", parentSession: "claude-main", taskWorker: true };
+    expect(validate(open, { ...ordinary, outliveParent: true }, artifact)).toEqual([]);
+    expect(validate(open, { ...worker, outliveParent: true }, artifact)).toEqual([]);
+    expect(validate(open, { ...ordinary, outliveParent: false }, artifact)).not.toEqual([]);
+    expect(validate(httpRequest("createSession"), { project: "wolfpack", outliveParent: true }, artifact)).not.toEqual([]);
+  });
+
   test("documents the child list and the child wait with timeout as a result", () => {
     const childEvent = {
       kind: "wolfpack.child_event/v1",
@@ -165,9 +186,10 @@ describe("control api schema", () => {
     };
     expect(httpOperation("listSessionChildren")).toMatchObject({ route: "GET /api/session-control/children", stable: true });
     const list = httpResponse("listSessionChildren");
-    const child = { session: "worker", sessionId: "child-id", state: "done", authority: "program", settled: true, lastEvent: childEvent };
+    const child = { session: "worker", sessionId: "child-id", state: "done", authority: "program", settled: true, cleanup: "cascade", lastEvent: childEvent };
     expect(validate(list, { ok: true, session: "parent", sessionId: "parent-id", bootId: "boot", children: [child] }, artifact)).toEqual([]);
     expect(validate(list, { ok: true, session: "parent", sessionId: "parent-id", bootId: "boot", children: [{ ...child, settled: undefined }] }, artifact)).not.toEqual([]);
+    expect(validate(list, { ok: true, session: "parent", sessionId: "parent-id", bootId: "boot", children: [{ ...child, cleanup: "later" }] }, artifact)).not.toEqual([]);
 
     const wait = httpOperation("waitForSessionChildren");
     expect(wait).toMatchObject({ route: "GET /api/session-control/children/wait", stable: true });
