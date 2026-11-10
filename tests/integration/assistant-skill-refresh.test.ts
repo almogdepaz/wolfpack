@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test, setSystemTime } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -292,6 +292,36 @@ test("the running server's one-second timer performs the deferred refresh withou
     expect(t.kills).toEqual(["mock:assistant"]);
     expect(t.archived()).toEqual(["timer-owned refresh"]);
   } finally { t.close(); }
+});
+
+test.each(["unchanged", "advanced", "missing-final", "missing-sample"] as const)("SR-R1: fallback idle output fence (%s)", async output => {
+  const t = await fixture();
+  try {
+    writeFileSync(t.transcript, "keep the active turn");
+    t.backend.setProgramStatus("assistant", undefined);
+    t.backend.setCapturePane(async () => "\n› ");
+    if (output === "missing-sample") t.backend.setOutputSequence("assistant", undefined);
+    await t.reopen();
+    await t.ctx.focusRuntime.status();
+    setSystemTime(new Date(Date.now() + 6000)); // establish real observer quiet history without advancing interval timers
+    const list = t.backend.listSessionFacts.bind(t.backend);
+    let reads = 0;
+    t.backend.listSessionFacts = async () => {
+      if (++reads === 3 && output !== "unchanged" && output !== "missing-sample") {
+        t.backend.setOutputSequence("assistant", output === "advanced" ? "999" : undefined);
+        t.backend.setCapturePane(async () => "working on the next turn…");
+      }
+      return list();
+    };
+    await t.ctx.focusRuntime.tick();
+    if (output === "unchanged") {
+      expect(t.kills).toEqual(["mock:assistant"]);
+      expect(t.archived()).toEqual(["keep the active turn"]);
+    } else {
+      expect(t.kills).toEqual([]);
+      expect(readFileSync(t.transcript, "utf8")).toBe("keep the active turn");
+    }
+  } finally { setSystemTime(); t.close(); }
 });
 
 test("a configured non-Pi assistant is not rotated by the managed skill protocol", async () => {

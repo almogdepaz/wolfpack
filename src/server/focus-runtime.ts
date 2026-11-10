@@ -115,6 +115,8 @@ export class FocusRuntime {
         const state = programStatusSource(fact?.programStatus, { observedAt: new Date().toISOString() });
         if (!this.timer || !fact || fact.programStatus?.updatedAtMs !== current.programAt
           || (fact.programStatus && (!state || !piHarness.isIdle(state)))
+          || (current.programAt === undefined && (!current.fallback || current.fallback.outputSequence === undefined
+            || fact.outputSequence !== current.fallback.outputSequence || !genericHarness.isIdle(current.fallback)))
           || this.queue.busy || !service.enabled || !this.homeIsLocal()) return;
         await this.ctx.backend.killSessionById(current.id);
         this.pins.reset("assistant");
@@ -124,7 +126,7 @@ export class FocusRuntime {
     }).finally(() => { this.tickFlight = undefined; });
   }
   /** The assistant's current incarnation, whether its harness is resting, and whether it is waiting on the user. */
-  private async sample(): Promise<{ id: string; idle: boolean; needsInput: boolean; token: string; programAt?: number } | undefined> {
+  private async sample(): Promise<{ id: string; idle: boolean; needsInput: boolean; token: string; programAt?: number; fallback?: { screen: string; quietMs: number; outputSequence?: string } } | undefined> {
     const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
     if (!service.enabled || !this.homeIsLocal()) return undefined;
@@ -139,6 +141,6 @@ export class FocusRuntime {
     const screen = adapter.needsScreen(state) ? await this.ctx.backend.capturePane(session.name, { scrollbackLines: 0 }) : undefined;
     const quietMs = Date.now() - Date.parse(session.activity.lastRenderedActivityAt ?? session.runtimeState.changedAt);
     const facts = { ...state, screen, quietMs };
-    return { id: session.identity.wolfpackSessionId, idle: adapter.isIdle(facts), needsInput: adapter.needsInput(facts), programAt: fact.programStatus?.updatedAtMs, token: fact.programStatus ? `program:${fact.programStatus.updatedAtMs}` : session.runtimeState.changedAt };
+    return { id: session.identity.wolfpackSessionId, idle: adapter.isIdle(facts), needsInput: adapter.needsInput(facts), ...(screen !== undefined && { fallback: { screen, quietMs, outputSequence: fact.outputSequence } }), programAt: fact.programStatus?.updatedAtMs, token: fact.programStatus ? `program:${fact.programStatus.updatedAtMs}` : session.runtimeState.changedAt };
   }
 }
