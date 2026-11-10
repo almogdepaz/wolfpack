@@ -12,6 +12,10 @@ interface RoutineStatus { catchingUp: { machines: number; since: string | null; 
 interface FocusResponse { home: string; installationId: string; local: boolean; document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
 interface Machine { key: string; name: string }
 class FocusOwnershipError extends Error {}
+const HOME_CHANGED = "not saved — the home changed; review the current home and try again.";
+const OLD_HOME_COMPLETED = "the home changed; this request completed on the previous home. Check it before retrying.";
+class FocusHomeChanged extends FocusOwnershipError { constructor(message = HOME_CHANGED) { super(message); } }
+interface HomeOwner { readonly home: string; readonly generation: number; readonly machine: string; readonly name: string }
 const isTransportFailure = (error: unknown) => !(error instanceof FocusOwnershipError)
   && (error instanceof TypeError || isRequestTimeout(error) || navigator.onLine === false);
 export function createAssistantView(deps: {
@@ -38,6 +42,10 @@ export function createAssistantView(deps: {
   let localOwner: Pick<FocusResponse, "home" | "installationId" | "local"> | undefined;
   let homeGeneration = 0;
   let homeChanging = false;
+  let timingOwner: HomeOwner | undefined;
+  let timingSave: HomeOwner | undefined;
+  let timingLoad = 0;
+  const startOwners = new WeakMap<FocusSessionStart, HomeOwner>();
   let machine = "";
   let homeName = "sgt";
   let focusUnavailable = false;
@@ -71,6 +79,27 @@ export function createAssistantView(deps: {
   }
   const cacheKey = "wolfpack-focus-cache";
   try { const cached = JSON.parse(localStorage.getItem(cacheKey) || "null"); if (cached && (cached.document === null || isFocusDocument(cached.document))) { focus = cached; if (cached.terminalOwner === "rejected") terminalOwner = "rejected"; if (typeof cached.machine === "string") machine = cached.machine; if (typeof cached.homeName === "string") homeName = cached.homeName; } } catch { /* no valid cached focus */ }
+  const ownerIsCurrent = (owner: Pick<HomeOwner, "home" | "generation">) => owner.home === localOwner?.home && owner.generation === homeGeneration;
+  function requireOwner(owner: HomeOwner, message = HOME_CHANGED) { if (!ownerIsCurrent(owner)) throw new FocusHomeChanged(message); }
+  function captureOwner(): HomeOwner {
+    if (!localOwner || !answered || focusUnavailable || focus?.home !== localOwner.home) throw new Error("focus is unavailable; changes were not saved");
+    const target = localOwner.local ? { key: "", name: "this machine" } : deps.homeMachine(localOwner.home);
+    if (!target) throw new TypeError("focus home is offline; changes were not saved");
+    return { home: localOwner.home, generation: homeGeneration, machine: target.key, name: target.name };
+  }
+  function acceptOwner(next: NonNullable<typeof localOwner>): boolean {
+    const previous = localOwner?.home ?? focus?.home;
+    localOwner = next;
+    const changed = previous !== undefined && previous !== next.home;
+    if (changed) {
+      homeGeneration++;
+      timingOwner = undefined; timingSave = undefined; timingLoad++;
+      timingForm?.reset(); syncTimingControls();
+      terminalOwner = "rejected"; deps.terminalTarget(null);
+      try { localStorage.removeItem(cacheKey); } catch { /* storage unavailable */ }
+    }
+    return changed;
+  }
   const terminalUnavailable = () => focus?.assistant?.unavailableReason;
   const locked = () => focusUnavailable || busy || !answered;
   const sessionLocked = () => locked() || !deps.sessionsAvailable();
@@ -421,7 +450,7 @@ export function createAssistantView(deps: {
     if (setting) setting.textContent = enabled ? `on · ${focusUnavailable && !offline() ? unavailableInfo : info}` : focusUnavailable ? (offline() ? `${homeName} offline · read-only` : unavailableInfo) : "off";
     const settingError = document.getElementById("assistant-setting-error");
     if (settingError) settingError.textContent = offline() ? "" : error || focus?.assistant?.error || "";
-    renderHomePicker();
+    renderHomePicker(); syncTimingControls();
     const settingHome = document.getElementById("assistant-setting-home");
     if (settingHome) settingHome.textContent = `Home: ${homeName}${focus?.assistant?.folder ? ` · ${focus.assistant.folder}` : ""}. Needs pi installed and logged in there (pi, then /login).`;
     const toggle = document.getElementById("assistant-setting-toggle") as HTMLButtonElement;
@@ -440,11 +469,12 @@ export function createAssistantView(deps: {
     opened = true;
     flight = (async () => {
       const epoch = writes;
-      const generation = homeGeneration;
+      let generation = homeGeneration;
       try {
         let response = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, undefined, false);
         if (generation !== homeGeneration) return;
-        localOwner = { home: response.home, installationId: response.installationId, local: response.local };
+        const changed = acceptOwner({ home: response.home, installationId: response.installationId, local: response.local });
+        generation = homeGeneration;
         const home = response.local ? { key: "", name: "this machine" } : deps.homeMachine(response.home);
         homeName = home?.name ?? (focus?.home === response.home ? homeName : "sgt");
         if (focus && focus.home !== response.home) focus = { ...response, document: null };
@@ -463,6 +493,7 @@ export function createAssistantView(deps: {
         focusUnavailable = false; transportFailure = false; error = "";
         for (const session of openSessions()) void loadContext(session);
         cache(focus);
+        if (changed && document.getElementById("settings-view")?.classList.contains("visible")) void loadTiming();
       } catch (e) {
         if (generation !== homeGeneration) return;
         if (e instanceof FocusOwnershipError) {
@@ -478,51 +509,85 @@ export function createAssistantView(deps: {
     })().finally(() => { flight = undefined; });
     return flight;
   }
-  async function write(op: FocusOp | (() => FocusOp)) {
+  async function write(op: FocusOp | (() => FocusOp), owner = captureOwner()) {
     for (let attempt = 0; attempt < 2; attempt++) {
+      requireOwner(owner);
       if (focusUnavailable) throw new Error("focus is unavailable; changes were not saved");
       if (!answered) throw new Error("focus is still loading; changes were not saved");
       try {
-        const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: [typeof op === "function" ? op() : op] }) }, machine);
+        const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: [typeof op === "function" ? op() : op] }) }, owner.machine);
+        requireOwner(owner, OLD_HOME_COMPLETED);
+        if (saved.home !== owner.home) throw new FocusHomeChanged();
         focus = { ...saved, assistant: focus?.assistant };
         writes++;
         cache(focus);
         announce("focus updated");
         return;
-      } catch (e) { if (attempt || (e as { status?: number }).status !== 409) throw e; await refresh(); }
+      } catch (e) {
+        if (attempt || (e as { status?: number }).status !== 409) throw e;
+        await refresh(); requireOwner(owner);
+      }
     }
   }
   async function readDayNote() {
+    const owner = captureOwner();
     const date = doc().daySummary?.date;
     if (!date) return;
-    const note = await deps.request<{ markdown: string }>(`/focus/day-note?date=${date}`, undefined, machine);
-    if (await showAppDialog({ title: `Day note ${date}`, message: note.markdown, scroll: true, confirmLabel: "Mark read", cancelLabel: "Close" })) await write({ type: "seen-day-note", at: new Date().toISOString() });
+    const note = await deps.request<{ markdown: string }>(`/focus/day-note?date=${date}`, undefined, owner.machine);
+    requireOwner(owner);
+    if (await showAppDialog({ title: `Day note ${date}`, message: note.markdown, scroll: true, confirmLabel: "Mark read", cancelLabel: "Close" })) {
+      requireOwner(owner);
+      await write({ type: "seen-day-note", at: new Date().toISOString() }, owner);
+    }
   }
   const timingForm = document.getElementById("assistant-timing") as HTMLFormElement | null;
   const timingStatus = (text: string, state: string) => { const el = document.getElementById("assistant-timing-status"); if (el) { el.textContent = text; el.dataset.state = state; } };
+  function syncTimingControls() {
+    const disabled = !timingOwner || !ownerIsCurrent(timingOwner) || !!timingSave;
+    for (const control of timingForm?.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button") ?? []) control.disabled = disabled;
+  }
   async function loadTiming() {
+    const starting = localOwner && { home: localOwner.home, generation: homeGeneration };
+    const load = ++timingLoad;
+    timingOwner = undefined; syncTimingControls();
     await refresh();
-    if (!timingForm) return;
+    if (!timingForm || load !== timingLoad || starting && !ownerIsCurrent(starting)) return;
+    let owner: HomeOwner | undefined;
     try {
-      const timing = (await deps.request<{ settings: { assistant: AssistantTiming } }>("/settings", undefined, machine, false)).settings.assistant;
+      owner = captureOwner();
+      const timing = (await deps.request<{ settings: { assistant: AssistantTiming } }>("/settings", undefined, owner.machine, false)).settings.assistant;
+      if (load !== timingLoad || !ownerIsCurrent(owner)) return;
       for (const [key, value] of Object.entries(timing)) (timingForm.elements.namedItem(key) as HTMLInputElement).value = String(value);
-      timingStatus(`Routine timing on ${homeName}.`, "idle");
-    } catch { timingStatus(`Could not load routine timing from ${homeName}.`, "error"); }
+      timingOwner = owner; syncTimingControls();
+      timingStatus(`Routine timing on ${owner.name}.`, "idle");
+    } catch {
+      if (load === timingLoad && (!owner || ownerIsCurrent(owner))) timingStatus(`Could not load routine timing from ${owner?.name ?? "the focus home"}.`, "error");
+    }
   }
   // The home server validates; a field error is worded with that field's own label and marks the input.
   timingForm?.addEventListener("submit", event => {
     event.preventDefault();
+    const owner = timingOwner;
+    if (!owner || !ownerIsCurrent(owner)) { timingStatus(HOME_CHANGED, "error"); return; }
+    if (timingSave) return;
     const values = Object.fromEntries([...new FormData(timingForm)].map(([key, value]) => [key, key === "fallbackTime" ? String(value) : Number(value)]));
     for (const input of timingForm.querySelectorAll("input")) input.setAttribute("aria-invalid", "false");
+    timingSave = owner; syncTimingControls();
     void (async () => {
-      try { await deps.request("/settings", { method: "POST", body: JSON.stringify({ assistant: values }) }, machine); timingStatus("Routine timing saved.", "success"); }
+      try {
+        await refresh(); requireOwner(owner);
+        await deps.request("/settings", { method: "POST", body: JSON.stringify({ assistant: values }) }, owner.machine);
+        if (ownerIsCurrent(owner)) timingStatus("Routine timing saved.", "success");
+      }
       catch (e) {
+        if (e instanceof FocusHomeChanged) { timingStatus(e.message, "error"); await showHomeChanged(e.message); return; }
+        if (!ownerIsCurrent(owner)) return;
         const data = (e as { data?: { field?: string; expected?: string } }).data;
         const input = data?.field ? timingForm.elements.namedItem(data.field) as HTMLInputElement | null : null;
         input?.setAttribute("aria-invalid", "true");
         const label = input?.closest("label")?.textContent?.trim();
         timingStatus(label && data?.expected ? `${label} must be ${data.expected}` : e instanceof Error ? e.message : "Could not save routine timing.", "error");
-      }
+      } finally { if (timingSave === owner) timingSave = undefined; syncTimingControls(); }
     })();
   });
   function renderHomePicker() {
@@ -548,8 +613,7 @@ export function createAssistantView(deps: {
     void run(async () => {
       if (!await showAppDialog({ title: "Change home machine", message: `The focus document and assistant live on ${name}. This machine will read and write focus there. Disable this machine's assistant before moving away. Changing home does not enable an assistant.`, confirmLabel: "Change home", cancelLabel: "Cancel" })) return;
       const saved = await deps.request<Pick<FocusResponse, "home" | "installationId" | "local">>("/focus/home", { method: "POST", body: JSON.stringify({ home: chosen === localOwner!.installationId ? null : chosen }) });
-      homeGeneration++;
-      localOwner = saved;
+      acceptOwner(saved);
       focus = undefined; answered = false; machine = ""; terminalOwner = "rejected";
       deps.terminalTarget(null);
       try { localStorage.removeItem(cacheKey); } catch { /* storage unavailable */ }
@@ -560,12 +624,17 @@ export function createAssistantView(deps: {
     }).finally(() => { homeChanging = false; render(); });
   });
   function talk() { const target = terminalTarget(); if (target) deps.open(target.session, target.machine); }
+  async function showHomeChanged(message: string) {
+    try { await showAppDialog({ title: "Home changed", message, confirmLabel: "Close", cancelLabel: null }); }
+    catch (dialogError) { console.warn("Could not show the home-change notice", dialogError); }
+  }
   async function run(action: () => Promise<void>) {
     if (busy) return;
     busy = true;
     try { await action(); error = ""; } catch (e) {
       transportFailure = isTransportFailure(e);
       error = e instanceof Error ? e.message : "focus action failed";
+      if (e instanceof FocusHomeChanged) await showHomeChanged(error);
     }
     finally { busy = false; render(); }
   }
@@ -593,7 +662,12 @@ export function createAssistantView(deps: {
       }
       if (action === "talk") { talk(); return; }
       if (locked()) return;
-      if (action === "catch-up") void run(async () => { const next = await deps.request<RoutineStatus>("/focus/catch-up", { method: "POST" }, machine); if (focus) focus.routines = next; });
+      if (action === "catch-up") void run(async () => {
+        const owner = captureOwner();
+        const next = await deps.request<RoutineStatus>("/focus/catch-up", { method: "POST" }, owner.machine);
+        requireOwner(owner, OLD_HOME_COMPLETED);
+        if (focus) focus.routines = next;
+      });
       if (action === "day-note") void run(readDayNote);
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
       if (target.dataset.focusNext !== undefined) {
@@ -642,11 +716,14 @@ export function createAssistantView(deps: {
   document.getElementById("assistant-terminal-focus")!.onclick = () => deps.show("assistant");
   document.getElementById("assistant-setting-open")!.onclick = () => deps.show("assistant");
   document.getElementById("assistant-setting-toggle")!.onclick = () => { void run(async () => {
+    const owner = captureOwner();
     const enabled = !focus?.assistant?.enabled;
     if (!await deps.confirm(enabled)) return;
-    const assistant = await deps.request<AssistantStatus>("/focus/assistant", { method: "POST", body: JSON.stringify({ enabled, loginConfirmed: enabled }) }, machine);
+    await refresh(); requireOwner(owner);
+    const assistant = await deps.request<AssistantStatus>("/focus/assistant", { method: "POST", body: JSON.stringify({ enabled, loginConfirmed: enabled }) }, owner.machine);
+    requireOwner(owner, OLD_HOME_COMPLETED);
     if (focus) focus.assistant = assistant;
-    await refresh();
+    await refresh(); requireOwner(owner);
     // One enable: the assistant opens right away so its first run (and anything pi asks) is in view.
     if (enabled) deps.show("assistant");
   }); };
@@ -658,12 +735,16 @@ export function createAssistantView(deps: {
   render();
   return { refresh, render, loadTiming,
     setSidebarOwner(owns: boolean) { sidebarOwnsChooser = owns; updateSidebarVisibility(); },
-    captureStart: (intentionId: string): FocusSessionStart => ({ intentionId, home: focus?.home ?? "" }),
+    captureStart: (intentionId: string): FocusSessionStart => {
+      const owner = captureOwner();
+      const start = { intentionId, home: owner.home };
+      startOwners.set(start, owner);
+      return start;
+    },
     linkStartedSession: async (start: FocusSessionStart, session: StartedFocusSession) => {
-      await write(() => {
-        if (start.home !== focus?.home) throw new Error("focus home changed while creating the session");
-        return linkStartedFocusSession(doc(), start.intentionId, session);
-      });
+      const owner = startOwners.get(start);
+      if (!owner) throw new FocusHomeChanged();
+      await write(() => linkStartedFocusSession(doc(), start.intentionId, session), owner);
       render();
     },
     enabled: () => !!focus?.assistant?.enabled,
