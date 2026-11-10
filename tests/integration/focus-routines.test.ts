@@ -808,7 +808,8 @@ describe("focus routines: peer boundary and review caps (b2/b3/b4)", () => {
       timing: async () => ASSISTANT_TIMING_DEFAULTS, assistant: async () => t.assistant, queueBusy: () => false, enqueue: () => {}, now: () => t.clock.now,
     });
     await routines.tick();
-    expect(noteOf(t, "2026-11-05")).toContain("(all repositories) (mac): invalid git payload");
+    expect(noteOf(t, "2026-11-05")).toContain("### (all repositories) (mac)");
+    expect(noteOf(t, "2026-11-05")).toContain("- invalid git payload");
   });
 
   test("a heavy day is capped per day and never hides later days (P3)", async () => {

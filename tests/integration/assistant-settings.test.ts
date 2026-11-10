@@ -20,8 +20,8 @@ test("assistant timing lives in bridge settings: defaults, validated writes, pre
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const post = (body: unknown) => fetch(`${base}/api/settings`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   try {
-    expect((await (await fetch(`${base}/api/settings`)).json()).settings.assistant).toEqual({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30 });
-    const assistant = { quietMinutes: 45, fallbackTime: "04:30", catchUpDebounceMinutes: 5, urgentCatchUpSpacingMinutes: 3, journalRetentionDays: 14 };
+    expect((await (await fetch(`${base}/api/settings`)).json()).settings.assistant).toEqual({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30, nextOrderTtlHours: 4 });
+    const assistant = { quietMinutes: 45, fallbackTime: "04:30", catchUpDebounceMinutes: 5, urgentCatchUpSpacingMinutes: 3, journalRetentionDays: 14, nextOrderTtlHours: 6 };
     const saved = await post({ assistant });
     expect(saved.status).toBe(200);
     expect((await saved.json()).settings.assistant).toEqual(assistant);

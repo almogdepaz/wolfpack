@@ -839,7 +839,7 @@ describe("control api schema compatibility samples", () => {
         },
       }] }],
       ["getSettings", {
-        settings: { agentCmd: "shell", cmds: [{ cmd: "shell", enabled: true }], quietAlerts: DEFAULT_QUIET_ALERT_POLICY, assistant: { quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30 } },
+        settings: { agentCmd: "shell", cmds: [{ cmd: "shell", enabled: true }], quietAlerts: DEFAULT_QUIET_ALERT_POLICY, assistant: { quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30, nextOrderTtlHours: 4 } },
         effective: { agentCmd: "shell", cmds: ["shell"] },
       }],
       ["getSessionStatus", {

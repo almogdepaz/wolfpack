@@ -8,6 +8,8 @@ export interface AppDialogField {
 export interface AppDialogOptions {
   readonly title: string;
   readonly message?: string;
+  /** A caller-built safe DOM fragment, before any form fields. Never raw HTML. */
+  readonly content?: HTMLElement;
   /** Long plain text (a day note): keep line breaks and scroll inside the dialog; the region is keyboard reachable. */
   readonly scroll?: boolean;
   readonly fields?: readonly AppDialogField[];
@@ -57,6 +59,7 @@ export function showAppDialog(options: AppDialogOptions): Promise<AppDialogResul
   message.classList.toggle("app-dialog-scroll", options.scroll === true);
   message.tabIndex = options.scroll ? 0 : -1;
   fields.replaceChildren();
+  if (options.content) fields.append(options.content);
 
   for (const field of options.fields || []) {
     const label = document.createElement("label");

@@ -1,3 +1,4 @@
+import { focusLastLine } from "../focus-text.js";
 import { randomUUID } from "node:crypto";
 import type { SessionMeta } from "../session-meta-contract.js";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
@@ -182,6 +183,14 @@ function withoutQuietAlerts(sessions: readonly ObservedSessionSummary[]): readon
 }
 
 const knownSessionSummaries = new Map<string, KnownSessionSummary>();
+/** Bounded manager input from the existing observer, never an on-demand screen read.
+ * Names may be reused: only an exact observed incarnation can supply its last line. */
+export function observedSessionLastLine(sessionId: string): string {
+  for (const summary of knownSessionSummaries.values()) {
+    if (summary.identity?.wolfpackSessionId === sessionId) return focusLastLine(summary.lastLine);
+  }
+  return "";
+}
 let nextObservationOwnership = 0;
 let latestAuthoritativeObservation = 0;
 

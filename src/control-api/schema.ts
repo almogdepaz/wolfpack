@@ -670,9 +670,10 @@ export const controlApiSource: ControlApiSource = {
       quietMinutes: { type: "integer", minimum: 15, maximum: 480 },
       fallbackTime: { type: "string", pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
       catchUpDebounceMinutes: { type: "integer", minimum: 1, maximum: 120 },
+      nextOrderTtlHours: { type: "integer", minimum: 1, maximum: 24 },
       urgentCatchUpSpacingMinutes: { type: "integer", minimum: 1, maximum: 120 },
       journalRetentionDays: { type: "integer", minimum: 1, maximum: 365 },
-    }, ["quietMinutes", "fallbackTime", "catchUpDebounceMinutes", "urgentCatchUpSpacingMinutes", "journalRetentionDays"]),
+    }, ["quietMinutes", "fallbackTime", "catchUpDebounceMinutes", "urgentCatchUpSpacingMinutes", "journalRetentionDays", "nextOrderTtlHours"]),
     Settings: object({
       agentCmd: string(),
       cmds: arrayOf(ref("CmdEntry")),
@@ -846,6 +847,7 @@ export const controlApiSource: ControlApiSource = {
     SessionOrganizationProjection: { anyOf: [ref("SessionOrganization"), object({ status: { const: "unavailable" } }, ["status"])] },
     SessionRuntimeSummary: object({
       state: { enum: [...AGENT_STATUS_STATES] },
+      inputKind: { enum: ["permission", "question", "auth"] },
       changedAt: nullable(string()),
       stoppedAt: nullable(string()),
       pinned: boolean(),
@@ -859,6 +861,9 @@ export const controlApiSource: ControlApiSource = {
       sessionId: ref("SessionId"),
       state: { const: "active" },
       runtime: ref("SessionRuntimeSummary"),
+      machine: string(),
+      lastLine: { type: "string", maxLength: 300, description: "Untrusted bounded last line from the existing session observer; empty means no summary yet, not success." },
+      lastLineTrust: { const: "untrusted-data" },
       project: string(),
       projectPath: string(),
       projectDir: string(),
@@ -1396,7 +1401,7 @@ export const controlApiSource: ControlApiSource = {
     },
     "POST /api/focus": {
       operationId: "updateFocus", stable: true, auth: "jwt-when-configured",
-      request: object({ expectedRevision: integer(), ops: arrayOf({ type: "object", description: "Validated by src/focus-contract.ts; add/edit/done/undo/drop/reorder/nudge/note/day-summary/seen-day-note" }) }, ["expectedRevision", "ops"]),
+      request: object({ expectedRevision: integer(), ops: arrayOf({ type: "object", description: "Validated by src/focus-contract.ts; add/edit/done/undo/drop/reorder/next/nudge/note/day-summary/seen-day-note" }) }, ["expectedRevision", "ops"]),
       response: object({ home: string(), installationId: string(), local: boolean(), document: { type: "object" }, revision: integer() }, ["home", "installationId", "local", "document", "revision"]),
       errors: ["400 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
@@ -1415,7 +1420,7 @@ export const controlApiSource: ControlApiSource = {
     },
     "GET /api/activity/git": {
       operationId: "readActivityGit", stable: true, auth: "jwt-when-configured",
-      response: object({ repos: arrayOf({ type: "object", description: "git log per active session cwd within ?from&to" }) }, ["repos"]), errors: ["400 ErrorEnvelope"],
+      response: object({ repos: arrayOf({ type: "object", description: "bounded git log per active session cwd within ?from&to; optional commonDir identifies linked worktrees of one repository; repository records repository detection so non-repository cwd reads can be folded separately" }) }, ["repos"]), errors: ["400 ErrorEnvelope"],
     },
     "GET /api/activity": {
       operationId: "readActivity", stable: true, auth: "jwt-when-configured",

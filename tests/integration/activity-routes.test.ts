@@ -51,7 +51,7 @@ test("GET /api/activity pages rows behind normal owner auth, like /api/sessions"
     }
     const git = await fetch(`${base}/api/activity/git?${range(now - 60_000, now + 60_000)}`, { headers });
     expect(git.headers.get("cache-control")).toBe("no-store");
-    expect(await git.json()).toEqual({ repos: [{ cwd: root, commits: [], error: "not a readable git repository" }] });
+    expect(await git.json()).toEqual({ repos: [{ cwd: root, commits: [], error: "not a readable git repository", repository: false }] });
     expect(await (await fetch(`${base}/api/activity/git?${range(now - 7_200_000, now - 3_600_000)}`, { headers })).json()).toEqual({ repos: [] });
     const bad = await fetch(`${base}/api/activity?limit=5000`, { headers });
     expect(bad.status).toBe(400);

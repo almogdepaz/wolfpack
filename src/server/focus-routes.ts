@@ -26,7 +26,7 @@ export function createFocusRoutes(ctx: ServerContext) {
         const current = envelope();
         // Opening the dashboard is a catch-up trigger; the debounce still applies.
         if (current.local && new URL(req.url ?? "/", "http://localhost").searchParams.get("open") === "1") void ctx.focusRuntime.routines.tick();
-        json(res, { ...current, ...(current.local && { assistant: await ctx.focusRuntime.status(), routines: ctx.focusRuntime.routines.status(current.document?.daySummary?.date) }) });
+        json(res, { ...current, ...(current.local && { assistant: await ctx.focusRuntime.status(), routines: ctx.focusRuntime.routines.status(current.document?.daySummary?.date), nextOrderTtlHours: (await import("./project-settings-routes.js")).loadSettings().assistant.nextOrderTtlHours }) });
       }
       catch (error) { json(res, { ...identity(), error: errMsg(error) }, 503); }
     },

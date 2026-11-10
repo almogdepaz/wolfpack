@@ -143,6 +143,34 @@ test("list adds runtime stop facts without changing terminal or identity fields"
   } finally { await f.close(); }
 });
 
+test("list exposes an incarnation-pinned bounded untrusted last line without reading screens", async () => {
+  const { observeDashboardSessions, __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+  const { getInstallationId } = await import("../../src/tailnet-machine-installation.ts");
+  const f = await fixture();
+  __resetSessionObservationForTests();
+  try {
+    f.backend.setCapturePane(async () => `untrusted \u202e\u2066\u200b\ufeff${"x".repeat(600)}\n`);
+    await observeDashboardSessions(f.ctx);
+    const capture = spyOn(f.backend, "capturePane");
+    capture.mockClear();
+    const live = (await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID);
+    expect(live.lastLine).toStartWith("untrusted ");
+    expect(live.lastLine).not.toMatch(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/u);
+    expect(Array.from(live.lastLine).length).toBeLessThanOrEqual(300);
+    expect(live.lastLineTrust).toBe("untrusted-data");
+    expect(live.machine).toBe(getInstallationId());
+    expect(capture).not.toHaveBeenCalled();
+    capture.mockRestore();
+    // A name reused by a different UUID must not inherit an old ask.
+    const identities = f.backend.listIdentities.bind(f.backend);
+    const identitySpy = spyOn(f.backend, "listIdentities").mockImplementation(async () => {
+      const values = await identities(); values.live!.wolfpackSessionId = "66666666-6666-4666-8666-666666666666"; return values;
+    });
+    expect((await f.read("list")).body.sessions.find((s: any) => s.session === "live").lastLine).toBe("");
+    identitySpy.mockRestore();
+  } finally { __resetSessionObservationForTests(); await f.close(); }
+});
+
 test("list runtime facts exclude server-owned pinned stops", async () => {
   const { getAgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
   const store = getAgentRuntimeStateStore();

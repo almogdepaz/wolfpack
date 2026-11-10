@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { FocusTriage } from "../../src/focus-contract.ts";
 import { parseFocusCommand, updateFocusWithRetry } from "../../src/cli/focus.ts";
 
 test("focus CLI parses every operation with explicit link/project/machine fields", () => {
@@ -13,6 +14,24 @@ test("focus CLI parses every operation with explicit link/project/machine fields
   expect(() => parseFocusCommand(["done", "ship", "junk"])).toThrow();
   expect(() => parseFocusCommand(["add", "ship", "--wat", "x"])).toThrow();
 });
+test("focus next parses a JSON input file through the same reducer validation", () => {
+  const { mkdtempSync, writeFileSync, rmSync } = require("node:fs");
+  const { tmpdir } = require("node:os");
+  const { join } = require("node:path");
+  const root = mkdtempSync(join(tmpdir(), "focus-next-"));
+  const file = join(root, "next.json");
+  const rows: FocusTriage[] = [{ ref: { machine: "peer-id", sessionId: "session-id" }, stoppedAt: "2026-11-06T12:00:00Z", verdict: "quiet", reason: "Nothing for you" }];
+  try {
+    writeFileSync(file, JSON.stringify(rows));
+    expect(parseFocusCommand(["next", file, "--json"])).toEqual({ json: true, op: { type: "next", rows, author: "assistant" } });
+    writeFileSync(file, JSON.stringify([{ ...rows[0], verdict: "sent" }]));
+    expect(() => parseFocusCommand(["next", file])).toThrow();
+    writeFileSync(file, "{bad json");
+    expect(() => parseFocusCommand(["next", file])).toThrow();
+    expect(() => parseFocusCommand(["next", file, "extra"])).toThrow();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test("remote focus help never resolves a machine or starts a server", () => {
   const child = Bun.spawnSync([process.execPath, "src/cli/index.ts", "--machine", "peer", "focus", "--help"], { cwd: process.cwd(), env: { ...process.env, WOLFPACK_TEST: "1", NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe" });
   expect(child.exitCode).toBe(0);

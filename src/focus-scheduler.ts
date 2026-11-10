@@ -15,9 +15,9 @@ export type Routine = typeof ROUTINE[keyof typeof ROUTINE];
 export const ROUTINE_RESEND_CAP = 3;
 export const STALE_AFTER_MS = 24 * 60 * 60_000;
 
-export interface AssistantTiming { quietMinutes: number; fallbackTime: string; catchUpDebounceMinutes: number; urgentCatchUpSpacingMinutes: number; journalRetentionDays: number }
-export const ASSISTANT_TIMING_DEFAULTS: AssistantTiming = Object.freeze({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30 });
-const RANGES = { quietMinutes: [15, 480], catchUpDebounceMinutes: [1, 120], urgentCatchUpSpacingMinutes: [1, 120], journalRetentionDays: [1, 365] } as const;
+export interface AssistantTiming { quietMinutes: number; fallbackTime: string; catchUpDebounceMinutes: number; urgentCatchUpSpacingMinutes: number; journalRetentionDays: number; nextOrderTtlHours: number }
+export const ASSISTANT_TIMING_DEFAULTS: AssistantTiming = Object.freeze({ quietMinutes: 90, fallbackTime: "03:00", catchUpDebounceMinutes: 15, urgentCatchUpSpacingMinutes: 2, journalRetentionDays: 30, nextOrderTtlHours: 4 });
+const RANGES = { quietMinutes: [15, 480], catchUpDebounceMinutes: [1, 120], urgentCatchUpSpacingMinutes: [1, 120], journalRetentionDays: [1, 365], nextOrderTtlHours: [1, 24] } as const;
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const MIN = 60_000;
 
@@ -30,6 +30,7 @@ export function parseAssistantTiming(raw: unknown): AssistantTiming {
     fallbackTime: typeof v.fallbackTime === "string" && TIME.test(v.fallbackTime) ? v.fallbackTime : ASSISTANT_TIMING_DEFAULTS.fallbackTime,
     catchUpDebounceMinutes: inRange("catchUpDebounceMinutes", v.catchUpDebounceMinutes) ? v.catchUpDebounceMinutes : ASSISTANT_TIMING_DEFAULTS.catchUpDebounceMinutes,
     urgentCatchUpSpacingMinutes: inRange("urgentCatchUpSpacingMinutes", v.urgentCatchUpSpacingMinutes) ? v.urgentCatchUpSpacingMinutes : ASSISTANT_TIMING_DEFAULTS.urgentCatchUpSpacingMinutes,
+    nextOrderTtlHours: inRange("nextOrderTtlHours", v.nextOrderTtlHours) ? v.nextOrderTtlHours : ASSISTANT_TIMING_DEFAULTS.nextOrderTtlHours,
     journalRetentionDays: inRange("journalRetentionDays", v.journalRetentionDays) ? v.journalRetentionDays : ASSISTANT_TIMING_DEFAULTS.journalRetentionDays,
   };
 }

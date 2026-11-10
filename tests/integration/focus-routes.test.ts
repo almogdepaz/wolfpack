@@ -23,6 +23,7 @@ test("focus HTTP CAS, first write, invalid ops and corrupt-file protection", asy
     const first = await (await fetch(`${base}/api/focus`)).json();
     expect(first.document).toBeNull();
     expect(first.revision).toBe(0);
+    expect(first.nextOrderTtlHours).toBe(4);
     const write = { expectedRevision: 0, ops: [{ type: "add", intention: { id: "ship", title: "ship" } }] };
     expect((await post(write)).status).toBe(200);
     expect(statSync(path).mode & 0o777).toBe(0o600);

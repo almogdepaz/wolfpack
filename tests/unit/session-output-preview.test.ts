@@ -117,6 +117,7 @@ describe("display-only terminal projection", () => {
   test("bounds agent line to 160 codepoints and sanitizes controls", () => {
     expect(lastTerminalPreviewLine("first\n final status ")).toBe("final status");
     expect(lastTerminalPreviewLine("ok\u0007bad")).toBe("okbad");
+    expect(lastTerminalPreviewLine("👩‍💻 ✔️ review")).toBe("👩‍💻 ✔️ review");
     expect(Array.from(lastTerminalPreviewLine("😀".repeat(500)))).toHaveLength(160);
   });
   test("retains old final-line fallback (240 chars) when only chrome remains", () => {

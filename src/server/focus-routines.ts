@@ -480,8 +480,8 @@ export class FocusRoutines {
 
   private async gitFor(window: { start: number; end: number }, machines: { source: ActivitySource }[]): Promise<GitRepoLog[]> {
     return (await Promise.all(machines.map(async m => {
-      try { return (await m.source.git(window.start, window.end)).repos.map(repo => ({ machine: m.source.name, ...repo })); }
-      catch (error) { return [{ machine: m.source.name, cwd: "(all repositories)", commits: [], error: errMsg(error) }]; }
+      try { return (await m.source.git(window.start, window.end)).repos.map(repo => ({ ...repo, machine: m.source.name, installationId: m.source.id })); }
+      catch (error) { return [{ machine: m.source.name, installationId: m.source.id, cwd: "(all repositories)", commits: [], error: errMsg(error) }]; }
     }))).flat();
   }
 

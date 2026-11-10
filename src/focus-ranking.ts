@@ -1,5 +1,6 @@
 import { AGENT_STATUS_STATE } from "./agent-status-contract.js";
-import type { FocusDocument, FocusIntention } from "./focus-contract.js";
+import { focusNextRefKey, type FocusDocument, type FocusIntention, type FocusTriage } from "./focus-contract.js";
+import { ASSISTANT_TIMING_DEFAULTS } from "./focus-scheduler.js";
 import type { ProgramStatusKind } from "./program-status-contract.js";
 export interface FocusSession {
   id: string;
@@ -14,6 +15,7 @@ export interface FocusSession {
   cwd?: string;
   machine?: string;
   machineUrl?: string;
+  machineInstallationId?: string;
   /** Shown in the card body only; ranking ignores it. */
   lastLine?: string;
 }
@@ -23,10 +25,13 @@ export function stoppedUnseen(session: { state: string; unseen?: boolean; stoppe
     && (session.stoppedSequence ?? 0) > (session.acknowledgedSequence ?? 0);
 }
 export interface FocusAction {
-  kind: "open" | "start";
+  kind: "open" | "start" | "intention";
   intention?: FocusIntention;
   session?: FocusSession;
   reason: string;
+  source?: "assistant" | "new-rules" | "rules";
+  triage?: FocusTriage;
+  unavailable?: boolean;
 }
 /** Shared row vocabulary for the dashboard, assistant page, card and sidebar preview. */
 export function focusSessionLabel(session: FocusSession): string {
@@ -56,17 +61,14 @@ const byIdentity = (a: FocusSession, b: FocusSession) => a.id.localeCompare(b.id
 const oldest = (a: FocusSession, b: FocusSession) => at(a) - at(b) || byIdentity(a, b);
 const stoppedAt = (s: FocusSession) => Date.parse(s.stoppedAt ?? s.changedAt ?? "") || 0;
 const newestStop = (a: FocusSession, b: FocusSession) => stoppedAt(b) - stoppedAt(a) || byIdentity(a, b);
-/** A finished agent is worth a look for this long; after that it is a chip again. */
-export const FINISHED_WINDOW_MS = 24 * 60 * 60_000;
-/** Linked needs-you → linked stopped-unseen → starts → recent seen linked finishes → unlinked needs-you → unlinked stopped-unseen.
- * Intention order, then oldest attention / newest stop first; unseen stops never expire. Working and fresh idle remain chips.
+/** Rules fallback: linked needs-you → linked stopped-unseen → starts → unlinked needs-you → unlinked stopped-unseen.
+ * Intention order, then oldest attention / newest stop first; unseen stops never expire. Reviewed finishes remain chips/done today.
  */
 export function rankFocus(doc: FocusDocument, sessions: readonly FocusSession[], cap = 5, now = Date.now()): FocusAction[] {
   const linked = new Set<FocusSession>();
   const attention: FocusAction[] = [];
   const stopped: FocusAction[] = [];
   const starts: FocusAction[] = [];
-  const finished: FocusAction[] = [];
   for (const intention of doc.intentions) {
     // Completed intentions cannot hide later attention or unseen stops from the unlinked groups.
     if (intention.done) continue;
@@ -79,13 +81,77 @@ export function rankFocus(doc: FocusDocument, sessions: readonly FocusSession[],
       if (!stopped.some(row => row.session === session)) stopped.push({ kind: "open", intention, session, reason: "Stopped work on this intention you have not seen; intention order, then newest first." });
     }
     if (live.length === 0) starts.push({ kind: "start", intention, reason: "An unfinished intention with no live session, in your order." });
-    for (const session of live.filter(s => s.state === AGENT_STATUS_STATE.DONE && !stoppedUnseen(s) && now - at(s) <= FINISHED_WINDOW_MS).sort(oldest).reverse()) {
-      if (!finished.some(row => row.session === session)) finished.push({ kind: "open", intention, session, reason: "Finished work on this intention; look before it goes stale." });
-    }
   }
   const unlinked = sessions.filter(s => !linked.has(s) && needsYou(s)).sort(oldest).map(session => ({ kind: "open" as const, session, reason: "Unlinked session needs you; oldest first." }));
   const unlinkedStopped = sessions.filter(s => !linked.has(s) && stoppedUnseen(s)).sort(newestStop).map(session => ({ kind: "open" as const, session, reason: "Stopped unlinked work you have not seen; newest first." }));
-  return [...attention, ...stopped, ...starts, ...finished, ...unlinked, ...unlinkedStopped].slice(0, Math.max(0, cap));
+  return [...attention, ...stopped, ...starts, ...unlinked, ...unlinkedStopped].slice(0, Math.max(0, cap));
+}
+export interface FocusMergeOptions {
+  enabled: boolean;
+  stale?: boolean;
+  ttlHours?: number;
+  now?: number;
+  cap?: number;
+  /** A verified installation, not an arbitrary assistant-authored id. */
+  machineKnown: (installationId: string) => boolean;
+  /** True only for a current successful session listing, not merely a ready handshake. */
+  machineReachable: (installationId: string) => boolean;
+}
+export interface FocusMerge { rows: FocusAction[]; order: "assistant" | "rules" | "expired"; updatedAt?: string }
+export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[], options: FocusMergeOptions): FocusMerge {
+  const now = options.now ?? Date.now();
+  const cap = Math.max(0, options.cap ?? 5);
+  const rules = rankFocus(doc, sessions, Infinity, now).map(row => ({ ...row,
+    ...(row.session?.machineInstallationId && !options.machineReachable(row.session.machineInstallationId) && { unavailable: true }),
+  }));
+  const next = doc.next;
+  const expired = !!next && now - Date.parse(next.updatedAt) >= (options.ttlHours ?? ASSISTANT_TIMING_DEFAULTS.nextOrderTtlHours) * 3600_000;
+  if (!next || !options.enabled || options.stale || expired) return {
+    rows: rules.slice(0, cap).map(row => ({ ...row, source: "rules" })),
+    order: options.enabled && !options.stale && expired ? "expired" : "rules",
+  };
+  const judged = new Set<string>();
+  const assistant: FocusAction[] = [];
+  const rowKey = (row: FocusAction) => row.session
+    ? focusNextRefKey({ machine: row.session.machineInstallationId ?? "", sessionId: row.session.id })
+    : focusNextRefKey({ intentionId: row.intention!.id });
+  for (const triage of next.rows) {
+    // A user tick/drop invalidates a done-only proposal, not the unseen session episode.
+    if (triage.doneIntention && !triage.suggestion && !doc.intentions.some(i => i.id === triage.doneIntention && !i.done)) continue;
+    const ref = triage.ref;
+    let row: FocusAction | undefined;
+    if ("sessionId" in ref) {
+      if (!options.machineKnown(ref.machine)) continue;
+      const session = sessions.find(s => s.id === ref.sessionId && s.machineInstallationId === ref.machine);
+      // Availability must not revive a verdict for a different cached episode.
+      if (session && Date.parse(session.stoppedAt ?? session.changedAt ?? "") !== Date.parse(triage.stoppedAt ?? "")) continue;
+      // Quiet is never authority to hide attention, even when the assistant judged this exact episode.
+      if (triage.verdict === "quiet" && (!session || needsYou(session))) continue;
+      if (!options.machineReachable(ref.machine)) {
+        // Keep the assistant's place and reason; no session action can use this placeholder.
+        row = { kind: "open", reason: triage.reason, unavailable: true };
+      } else if (session) {
+        const rule = rules.find(r => r.session === session);
+        const done = triage.doneIntention && doc.intentions.find(i => i.id === triage.doneIntention && !i.done);
+        if (rule) row = rule;
+        // A reviewed finish may continue as a mark-done proposal, never a second generic finished row.
+        else if (done && session.state === AGENT_STATUS_STATE.DONE) row = { kind: "open", session, intention: done, reason: triage.reason };
+      }
+    } else {
+      const intention = doc.intentions.find(i => i.id === ref.intentionId && !i.done);
+      if (intention) row = rules.find(r => !r.session && r.intention === intention)
+        ?? { kind: "intention", intention, reason: triage.reason };
+    }
+    if (!row) continue;
+    judged.add(focusNextRefKey(ref));
+    if (triage.verdict !== "quiet") assistant.push({ ...row, source: "assistant", triage, reason: triage.reason });
+  }
+  const unjudged = rules.filter(row => !judged.has(rowKey(row))).map(row => ({ ...row, source: "new-rules" as const }));
+  return {
+    rows: [...unjudged.filter(row => row.session && needsYou(row.session)), ...assistant,
+      ...unjudged.filter(row => !row.session || !needsYou(row.session))].slice(0, cap),
+    order: "assistant", updatedAt: next.updatedAt,
+  };
 }
 export type FocusDoneItem = { at: string; kind: "intention"; intention: FocusIntention } | { at: string; kind: "session"; intention: FocusIntention; session: FocusSession };
 /** Today's timeline: ticked intentions and linked finishes, excluding stopped-unseen work until reviewed. `day` maps a timestamp to its day label. */

@@ -1,9 +1,13 @@
 import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
 import { esc, escAttr, isDesktop } from "./app-state";
-import { rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
-import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
+import { mergeFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
+import { emptyFocus, isFocusDocument, focusNextRefKey, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
+import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-send-contract";
+import { focusLastLine } from "../src/focus-text";
+import { createFocusReceipts, focusSuggestionKey, type FocusSendReceipt } from "./focus-receipts";
 import type { AssistantTerminalTarget } from "./assistant-terminal";
+import { createDayNoteContent } from "./focus-day-note";
 import { showAppDialog } from "./app-dialog";
 import { createFocusMobileDisclosure } from "./focus-mobile-disclosure";
 import { isRequestTimeout } from "./fetch-timeout";
@@ -11,7 +15,7 @@ import { isFocusHomeIdentity, type FocusHomeIdentity } from "../src/focus-home-c
 import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../src/focus-context";
 interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string; unavailableReason?: string }
 interface RoutineStatus { catchingUp: { machines: number; since: string | null; unconfirmed?: true } | null; yesterday?: { date: string; note: boolean; endsAt: string }; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
-interface FocusResponse extends FocusHomeIdentity { document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
+interface FocusResponse extends FocusHomeIdentity { document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus; nextOrderTtlHours?: number }
 interface Machine { key: string; name: string }
 class FocusOwnershipError extends Error {}
 const HOME_CHANGED = "not saved — the home changed; review the current home and try again.";
@@ -25,6 +29,7 @@ export function createAssistantView(deps: {
   homeMachine: (id: string) => Machine | undefined;
   homeMachines: () => { id: string; name: string; online: boolean }[];
   localMachineName: () => string;
+  machineReachable: (installationId: string) => boolean;
   sessions: () => FocusSession[];
   /** Verify a cached assistant incarnation against the current owning session list. */
   terminalSessionAvailable: (target: AssistantTerminalTarget) => boolean;
@@ -49,6 +54,7 @@ export function createAssistantView(deps: {
   let timingLoad = 0;
   const startOwners = new WeakMap<FocusSessionStart, HomeOwner>();
   let machine = "";
+  let localInstallationId = "";
   let homeName = "sgt";
   let focusUnavailable = false;
   // A later store fault cannot revive an explicitly rejected owner.
@@ -122,11 +128,29 @@ export function createAssistantView(deps: {
   // All session actions are disabled until the local projection is available again.
   let lastSessions: FocusSession[] = [];
   const sessions = () => {
-    if (deps.sessionsAvailable()) lastSessions = deps.sessions();
-    lastSessions = lastSessions.filter(session => !session.machineUrl || deps.sessionMachineKnown(session.machineUrl));
+    const fresh = deps.sessions().map(session => ({ ...session, lastLine: focusLastLine(session.lastLine ?? ""), machineInstallationId: session.machineInstallationId || (!session.machineUrl ? localInstallationId : undefined) }));
+    // A failed/pending list is not an authoritative empty list. Preserve its last episode
+    // facts, but never retain a retired installation or revive a deleted reachable session.
+    const retained = lastSessions.filter(session => session.machineUrl
+      ? deps.sessionMachineKnown(session.machineUrl) && !deps.machineReachable(session.machineInstallationId ?? "")
+      : !deps.sessionsAvailable());
+    lastSessions = [...fresh, ...retained.filter(old => !fresh.some(s => s.id === old.id && s.machineInstallationId === old.machineInstallationId))];
     return lastSessions;
   };
-  const nextRows = (cap: number) => !deps.sessionsAvailable() && !lastSessions.length ? [] : rankFocus(doc(), sessions(), cap);
+  const nextOrder = (cap: number) => mergeFocus(doc(), sessions(), {
+    cap, enabled: !!focus?.assistant?.enabled, stale: !!routines()?.stale,
+    ttlHours: focus?.nextOrderTtlHours,
+    machineKnown: id => id === localInstallationId || !!deps.homeMachine(id),
+    machineReachable: id => id === localInstallationId ? deps.sessionsAvailable() : deps.machineReachable(id),
+  });
+  const nextRows = (cap: number) => {
+    const rows = nextOrder(cap).rows;
+    return !deps.sessionsAvailable() && !lastSessions.length ? rows.filter(row => row.source === "assistant") : rows;
+  };
+  const orderLabel = () => {
+    const order = nextOrder(0);
+    return order.order === "assistant" ? `ordered ${age(order.updatedAt!)} ago` : order.order === "expired" ? "by rules · order expired" : "by rules";
+  };
   // The cached copy carries the home's resolved name, so an offline first answer names the right machine.
   const cache = (value: FocusResponse) => { try { localStorage.setItem(cacheKey, JSON.stringify({ ...value, homeName, machine, terminalOwner })); } catch { /* storage unavailable; live view still works */ } };
   const doc = () => focus?.document ?? emptyFocus();
@@ -200,14 +224,15 @@ export function createAssistantView(deps: {
   const field = (label: string, value: string) => value ? `<div><dt>${label}</dt><dd>${value}</dd></div>` : "";
   const project = (path?: string) => path ? `<span title="${escAttr(path)}">${esc(path.replace(/\/+$/, "").split("/").pop() || path)}</span>` : "";
   // Linked rule rows keep their intention title beside the session's context; today and starts already name it.
-  function rowContext(intention?: FocusIntention, session?: FocusSession, hidden = false) {
+  function rowContext(intention?: FocusIntention, session?: FocusSession, reason?: string, hidden = false) {
     const all = sessions();
     const local = deps.localMachineName();
     const manyMachines = new Set(all.map(s => s.machine)).size > 1;
-    const linked = session ? [session] : linkedFocusSessions(intention!, all);
+    const linked = session ? [session] : intention ? linkedFocusSessions(intention, all) : [];
     const targets = linked.length ? linked : [{ cwd: intention?.project, machine: intention?.machine, machineUrl: undefined }];
     const labels = [...new Set(targets.map(s => [project(s.cwd), s.machine && (manyMachines || s.machineUrl || s.machine !== local) ? esc(s.machine) : ""].filter(Boolean).join(" · ")).filter(Boolean))];
-    const caption = [session && intention ? esc(intention.title) : "", labels.join(", ")].filter(Boolean).join(" · ");
+    const caption = reason ? [labels.join(", "), esc(reason)].filter(Boolean).join(" · ")
+      : [session && intention ? esc(intention.title) : "", labels.join(", ")].filter(Boolean).join(" · ");
     return caption ? `<small class="focus-for"${hidden ? ' hidden=""' : ""}>${caption}</small>` : "";
   }
   // `open=""` is how innerHTML serializes the attribute, so an unchanged render still compares equal in replace().
@@ -268,31 +293,106 @@ export function createAssistantView(deps: {
     const stopped = stoppedUnseen(session);
     return field("machine", esc(session.machine ?? "")) + field("project", project(session.cwd))
       + field("state", stopped ? `stopped${session.changedAt ? ` · ${age(session.changedAt)}` : ""}` : `${esc(focusSessionLabel(session))}${session.changedAt ? ` · since ${age(session.changedAt)}` : ""}`)
-      + field("last line", session.lastLine ? `<code>${esc(session.lastLine)}</code>` : "") + field("why here", esc(row.reason)) + field("for", esc(row.intention?.title ?? ""));
+      + field("last line", session.lastLine ? `<code>${esc(session.lastLine)}</code>` : "") + field(row.triage ? "reason" : "by rules", esc(row.triage ? row.reason : focusSessionLabel(session))) + field("for", esc(row.intention?.title ?? ""));
   }
   function intentionBody(intention: FocusIntention, cardKey: string, reason?: string) {
     const linked = linkedFocusSessions(intention, sessions());
-    return field("sessions", linked.length ? `<span class="focus-chips focus-session-chips">${linked.map(session => sessionChip(session, `body:${cardKey}`)).join("")}</span>` : "none yet")
+    return field("intention", esc(intention.title)) + field("sessions", linked.length ? `<span class="focus-chips focus-session-chips">${linked.map(session => sessionChip(session, `body:${cardKey}`)).join("")}</span>` : "none yet")
       + field("project", project(intention.project)) + field("machine", esc(intention.machine ?? "")) + field("added", stamp(intention.createdAt))
-      + field("done", intention.done && intention.doneAt ? stamp(intention.doneAt) : "") + field("why here", esc(reason ?? ""));
+      + field("done", intention.done && intention.doneAt ? stamp(intention.doneAt) : "") + field("reason", esc(reason ?? ""));
   }
   // One wording for a next row: the row itself and the sidebar tile's "next" line.
   const nextTitle = (row: FocusAction) => row.session
     ? `${row.session.name} ${focusSessionLabel(row.session)}`
-    : `start “${row.intention!.title}”`;
+    : row.intention ? row.triage ? row.triage.reason : row.kind === "start" ? `start “${row.intention.title}”` : row.intention.title
+    : `${row.triage && "sessionId" in row.triage.ref ? row.triage.ref.sessionId : "session"} · not reached`;
+  // Persist the user-tap fence before sending; a reload cannot turn uncertain delivery into a retry.
+  const sent = createFocusReceipts({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) });
+  const suggestionKey = (row: FocusAction) => row.triage ? focusSuggestionKey(row.triage) : "";
+  function receiptFor(row: FocusAction): FocusSendReceipt | undefined {
+    if (!row.triage?.suggestion) return;
+    try { return sent.get(suggestionKey(row)); }
+    catch (e) {
+      error = e instanceof Error ? e.message : "Suggestion receipts unavailable; check the session.";
+      return { label: error, at: new Date().toISOString(), state: "check" };
+    }
+  }
+  const doneSuggestion = (row: FocusAction) => doc().intentions.find(i => i.id === row.triage?.doneIntention && !i.done);
+  type RowAction = "send" | "done" | "open" | "start" | "intention";
+  const renderedActions = new Map<string, { kind: RowAction; row: FocusAction }>();
+  function describeAction(row: FocusAction, forceDone = false) {
+    const done = doneSuggestion(row);
+    if (forceDone && !done) return;
+    const kind: RowAction = forceDone ? "done" : row.triage?.suggestion ? "send" : done ? "done"
+      : row.session ? "open" : row.kind === "start" ? "start" : "intention";
+    const ref = row.triage?.ref ?? (row.session
+      ? { machine: row.session.machineInstallationId ?? "", sessionId: row.session.id }
+      : row.intention ? { intentionId: row.intention.id } : undefined);
+    if (!ref) return;
+    const key = JSON.stringify([focusNextRefKey(ref), Date.parse(row.triage?.stoppedAt ?? row.session?.stoppedAt ?? row.session?.changedAt ?? ""),
+      kind, kind === "send" ? row.triage?.suggestion : null, kind === "done" ? done?.id : null]);
+    return { key, kind, row };
+  }
+  function bindAction(row: FocusAction, forceDone = false): string {
+    const action = describeAction(row, forceDone);
+    if (!action) return "";
+    renderedActions.set(action.key, action);
+    return action.key;
+  }
+  function currentAction(key: string) {
+    const shown = renderedActions.get(key);
+    if (shown) for (const row of nextRows(Infinity)) {
+      const current = describeAction(row, shown.kind === "done");
+      if (current?.key === key && !row.unavailable) return current;
+    }
+    announce("This action changed; review the updated row.");
+    render();
+  }
+  async function sendSuggestion(row: FocusAction) {
+    if (!row.session || !row.triage?.suggestion || row.unavailable) return;
+    const key = suggestionKey(row);
+    const prior = receiptFor(row);
+    if (prior && prior.state !== "retry") return;
+    const remember = (label: string, state: "sending" | "sent" | "check" | "retry" = "check") => {
+      sent.put(key, { label, at: new Date().toISOString(), state });
+      render();
+    };
+    remember("sending", "sending");
+    try {
+      const result = await deps.request<{ outcome: SessionSendOutcome; error?: string }>("/session-control/send", {
+        method: "POST", body: JSON.stringify({ session: row.session.id, text: row.triage.suggestion, ensureSubmitted: true }),
+      }, row.session.machineUrl);
+      if (result.outcome === SESSION_SEND_OUTCOME.SUBMITTED) remember(`sent to ${row.session.name}`, "sent");
+      else if (result.outcome === SESSION_SEND_OUTCOME.NOT_DELIVERED) remember(result.error || "not sent · try again", "retry");
+      else remember(result.outcome === SESSION_SEND_OUTCOME.PASTED_NOT_SUBMITTED ? "pasted, not submitted · check the session" : "delivery unconfirmed · check the session");
+    } catch (e) {
+      // A transport error does not prove that the write failed. A typed pre-write refusal can retry.
+      const refusal = (e as { data?: { outcome?: string } }).data?.outcome === SESSION_SEND_OUTCOME.NOT_DELIVERED;
+      remember(refusal ? "not sent · try again" : "delivery unconfirmed · check the session", refusal ? "retry" : "check");
+      throw e;
+    }
+  }
   function nextHtml(cap: number, expanded = false) {
     const rows = nextRows(cap);
     if (!rows.length) return `<p class="focus-empty">${doc().intentions.length && doc().intentions.every(i => i.done) ? "all intentions done — tell the assistant what's next" : "nothing waiting"}</p>`;
     return `<ol class="focus-next" aria-label="Next actions">${rows.map((row, index) => {
       const finished = row.session?.state === "done" && !stoppedUnseen(row.session);
       const title = nextTitle(row);
-      const verb = focusActionVerb(row);
+      const receipt = receiptFor(row);
+      const done = doneSuggestion(row);
+      const suggest = !!row.triage?.suggestion;
+      const verb = suggest ? (receipt ? receipt.state === "retry" ? "send" : receipt.state : "send") : done ? "done" : row.kind === "intention" ? "review" : focusActionVerb(row);
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
-      const key = row.session ? `session:${row.session.id}` : `start:${row.intention!.id}`;
+      const key = row.session ? `session:${row.session.machineInstallationId ?? ""}:${row.session.id}` : row.intention ? `start:${row.intention.id}` : `unavailable:${JSON.stringify(row.triage?.ref)}`;
       if (row.session) renderedSessions.set(key, row.session);
-      const action = `<button type="button" class="focus-action"${sessionLocked() ? " disabled" : ""} data-focus-next="${index}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(row.session ? `${verb} ${title}` : title)}">${verb}<span aria-hidden="true"> ›</span></button>`;
-      const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span>${rowContext(row.intention, row.session)}`;
-      return `<li${index >= 3 && !expanded ? ' class="focus-extra"' : ""}>${card(key, summary, row.session ? sessionBody(row, row.session) : intentionBody(row.intention!, key, row.reason), row.session ? contextHtml(row.session) : "")}${action}</li>`;
+      const actionName = suggest ? `Send suggestion to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
+      const action = `<button type="button" class="focus-action"${sessionLocked() || row.unavailable || (suggest && receipt && receipt.state !== "retry") ? " disabled" : ""} data-focus-next="${escAttr(bindAction(row))}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(actionName)}">${verb}<span aria-hidden="true"> ›</span></button>`;
+      const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span>${rowContext(row.intention, row.session, row.session || row.unavailable ? row.triage?.reason : undefined)}`;
+      const target = row.session ? `${row.session.name}${row.session.machine ? ` · ${row.session.machine}` : ""}` : title;
+      const draft = suggest ? `<small>to ${esc(target)}</small><p>${esc(row.triage!.suggestion!)}</p>${receipt ? `<small role="status">${esc(receipt.label)} · ${age(receipt.at)} ago</small>` : ""}${done ? `<button type="button" data-focus-mark-done="${escAttr(bindAction(row, true))}"${sessionLocked() || row.unavailable ? " disabled" : ""}>done ›</button>` : ""}` : "";
+      const marker = row.unavailable ? "not reached" : row.source === "new-rules" ? "new · by rules" : "";
+      const body = row.session ? sessionBody(row, row.session) : row.intention ? intentionBody(row.intention, key, row.triage?.reason ?? "no live session") : field("reason", esc(row.reason));
+      return `<li${index >= 3 && !expanded ? ' class="focus-extra"' : ""}>${card(key, summary, body, row.session ? contextHtml(row.session) : "")}${action}${draft || marker ? `<div class="focus-draft">${draft}${marker ? `<small>${marker}</small>` : ""}</div>` : ""}</li>`;
     }).join("")}</ol>`;
   }
   function sessionChip(session: FocusSession, key: string, hidden = false) {
@@ -361,7 +461,7 @@ export function createAssistantView(deps: {
     return changed;
   }
   function todayHtml(items: FocusIntention[]) {
-    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li style="--focus-chips-width:${compactChips.get(i.id)?.width ?? 0}px"${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i, undefined, isDesktop() && compactChips.get(i.id)?.showContext === false)}</span>`, intentionBody(i, `intention:${i.id}`))}${chipsHtml(i)}</li>`).join("")}</ul>`;
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li style="--f-chips:${compactChips.get(i.id)?.width ?? 0}px"${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i, undefined, undefined, isDesktop() && compactChips.get(i.id)?.showContext === false)}</span>`, intentionBody(i, `intention:${i.id}`))}${chipsHtml(i)}</li>`).join("")}</ul>`;
   }
   // The live dom holds the newest open state: a tap sets `open` at once, but the browser queues its toggle event, and a
   // render in between would rebuild the card from `openCards` and the toggle would then fire on the detached node (N6).
@@ -379,6 +479,7 @@ export function createAssistantView(deps: {
   function render() {
     foldOpenCards();
     renderedSessions.clear();
+    renderedActions.clear();
     const current = doc();
     for (const id of compactChips.keys()) if (!current.intentions.some(intention => intention.id === id && linkedFocusSessions(intention, sessions()).length > 0)) compactChips.delete(id);
     const enabled = !!focus?.assistant?.enabled;
@@ -437,7 +538,7 @@ export function createAssistantView(deps: {
       // The tile's tone drives its glow: amber when the user's move is due, a pulse while it reads or works, red offline.
       tile.dataset.tone = focusUnavailable || terminalUnavailable() || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
       const countedNext = tileState === null;
-      const upNext = next[0] ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
+      const upNext = next[0] ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(next[0].triage?.reason ?? nextTitle(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
       tile.innerHTML = `<span class="assistant-tile-head">${TILE_MARK}<b>assistant<span class="visually-hidden">,</span></b><span class="assistant-tile-state">${tone}${tileStatus}${countedNext && next[0] ? '<span class="visually-hidden">:</span>' : ""}</span></span> <span class="assistant-tile-next">${upNext}</span>`;
       tile.title = current.nudge?.text ?? info;
       // The visible content (name, status, next) is the accessible name: an aria-label would hide what is shown (axe label-content-name-mismatch).
@@ -450,8 +551,8 @@ export function createAssistantView(deps: {
     if (block) { block.hidden = !enabled; block.dataset.mobileCollapsed = String(!dashboardExpanded); }
     const disclosure = `<button type="button" class="focus-mobile-toggle" data-focus-action="toggle-dashboard" data-focus-key="action:toggle-dashboard" aria-controls="dashboard-focus-details" aria-expanded="${dashboardExpanded}" aria-label="${dashboardExpanded ? "Collapse" : "Expand"} assistant ${escAttr(state)} ${needsYouCount} need you"><b>assistant</b> <span class="focus-title">${esc(state)}</span> <span>${needsYouCount} need you</span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>`;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk" data-focus-key="action:attn">${dot(state)} ${esc(info)} ›</button>` : "";
-    replace("dashboard-focus", !enabled ? "" : `${disclosure}<div id="dashboard-focus-details" class="focus-dashboard-body"${dashboardExpanded ? "" : ' hidden=""'}><div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}</div>`);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("dashboard-focus", !enabled ? "" : `${disclosure}<div id="dashboard-focus-details" class="focus-dashboard-body"${dashboardExpanded ? "" : ' hidden=""'}><div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}</div>`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -486,6 +587,7 @@ export function createAssistantView(deps: {
           // a remote 503 describes that peer, not this installation.
           const identity: unknown = (e as { data?: unknown })?.data;
           if (generation === homeGeneration && isFocusHomeIdentity(identity)) {
+            localInstallationId = identity.installationId;
             const changed = acceptOwner(identity);
             generation = homeGeneration;
             const home = identity.local ? { key: "", name: "this machine" } : deps.homeMachine(identity.home);
@@ -495,6 +597,7 @@ export function createAssistantView(deps: {
           throw e;
         }
         if (generation !== homeGeneration) return;
+        localInstallationId = response.installationId;
         const changed = acceptOwner({ home: response.home, installationId: response.installationId, local: response.local });
         generation = homeGeneration;
         const home = response.local ? { key: "", name: "this machine" } : deps.homeMachine(response.home);
@@ -540,7 +643,7 @@ export function createAssistantView(deps: {
         const saved = await deps.request<FocusResponse>("/focus", { method: "POST", body: JSON.stringify({ expectedRevision: doc().revision, ops: [typeof op === "function" ? op() : op] }) }, owner.machine);
         requireOwner(owner, OLD_HOME_COMPLETED);
         if (saved.home !== owner.home) throw new FocusHomeChanged();
-        focus = { ...saved, assistant: focus?.assistant };
+        focus = { ...focus, ...saved, assistant: focus?.assistant };
         writes++;
         cache(focus);
         announce("focus updated");
@@ -567,7 +670,7 @@ export function createAssistantView(deps: {
     if (!date) return;
     const note = await deps.request<{ markdown: string }>(`/focus/day-note?date=${date}`, undefined, owner.machine);
     requireOwner(owner);
-    if (await showAppDialog({ title: `Day note ${date}`, message: note.markdown, scroll: true, confirmLabel: "Mark read", cancelLabel: "Close" })) {
+    if (await showAppDialog({ title: `Day note ${date}`, message: "The day's assistant write-ups.", content: createDayNoteContent(note.markdown), confirmLabel: "Mark read", cancelLabel: "Close" })) {
       requireOwner(owner);
       await write({ type: "seen-day-note", at: new Date().toISOString() }, owner);
     }
@@ -706,10 +809,17 @@ export function createAssistantView(deps: {
       });
       if (action === "day-note") void run(readDayNote);
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
-      if (target.dataset.focusNext !== undefined) {
+      const rowAction = target.dataset.focusNext ?? target.dataset.focusMarkDone;
+      if (rowAction !== undefined) {
         if (sessionLocked()) return;
-        const row = nextRows(id === "dashboard-focus" ? 3 : pageNextCap())[Number(target.dataset.focusNext)];
-        if (row?.session) deps.open(row.session.name, row.session.machineUrl); else if (row?.intention) deps.start(row.intention);
+        const action = currentAction(rowAction);
+        if (!action) return;
+        const { row, kind } = action;
+        if (kind === "send") { void run(() => sendSuggestion(row)); return; }
+        if (kind === "done") { void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }
+        if (kind === "open" && row.session) deps.open(row.session.name, row.session.machineUrl);
+        else if (kind === "start" && row.intention) deps.start(row.intention);
+        else if (row.intention) { openCard(`start:${row.intention.id}`); render(); }
       }
       if (target.dataset.focusSession) {
         if (sessionLocked()) return;

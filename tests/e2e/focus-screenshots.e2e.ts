@@ -84,15 +84,18 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
     const permission = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
     permission.runtimeState.inputKind = "permission";
     const session = body.sessions.find((s: { name: string }) => s.name === "another-project");
-    session.runtimeState = { ...session.runtimeState, state: "done", changedAt: new Date().toISOString(), authority: "program", stale: false };
+    // QA-33: a reviewed finish no longer ranks. Keep this geometry fixture actionable.
+    session.runtimeState = { ...session.runtimeState, state: "done", changedAt: new Date().toISOString(), stoppedAt: new Date().toISOString(), unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, authority: "program", stale: false };
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(3);
   if (!desktop) {
-    const box = (await block.getByRole("button", { name: "Open assistant", exact: true }).boundingBox())!;
-    expect.soft(box.height, "QA-8 dashboard assistant target").toBeGreaterThanOrEqual(44);
+    await expect.poll(async () => {
+      const box = await block.getByRole("button", { name: "Open assistant", exact: true }).boundingBox();
+      return box?.height ?? 0;
+    }, { message: "QA-8 dashboard assistant target" }).toBeGreaterThanOrEqual(44);
   }
   const row = block.locator(".focus-next > li").first();
   await row.locator("summary").click();
