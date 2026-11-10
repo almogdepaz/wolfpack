@@ -826,7 +826,7 @@ function retireChildBlockedEpisode(sessionKey: string): void {
   childBlockedEpisodes.delete(sessionKey);
   if (!blocked?.opened) return;
   const episode = quietAlertHistory.get(sessionKey);
-  if (episode?.episodeId === blocked.episodeId && !episode.emitted) quietAlertHistory.delete(sessionKey);
+  if (episode !== undefined && episode.episodeId === blocked.episodeId && !episode.emitted) quietAlertHistory.delete(sessionKey);
 }
 
 /** Authorities whose needs-input state is the session's own claim. */
