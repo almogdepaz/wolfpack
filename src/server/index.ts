@@ -37,6 +37,8 @@ import { startChildCleanupCascade } from "./session-cascade.js";
 import { lastViewerInputAt } from "./viewer-input.js";
 import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
+import { createHostPolicy } from "./host-policy.js";
+import { readLocalTailscaleStatus } from "./tailscale-status.js";
 import { consumeWebSocketTicket } from "./ws-ticket.js";
 import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
 import { installShutdownSignalHandlers } from "./shutdown.js";
@@ -56,7 +58,13 @@ if (loginShellPath.source === "fallback") {
 // Cross-origin Tailnet access derives solely from the canonical hostname that
 // setup persisted after Serve verification. No forwarded/request header can
 // expand this authority.
-const configuredTailnetHostname = loadConfig()?.tailscaleHostname;
+const configuredServer = loadConfig();
+const configuredTailnetHostname = configuredServer?.tailscaleHostname;
+const hostPolicy = createHostPolicy({
+  configuredHostname: configuredTailnetHostname,
+  extraHosts: configuredServer?.allowedHosts ?? [],
+  readSelfStatus: () => readLocalTailscaleStatus(true),
+});
 const originPolicy = createTailnetOriginPolicy({
   port: PORT,
   tailscaleHostname: configuredTailnetHostname,
@@ -122,6 +130,13 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
 
   const server = createServer(async (req, res) => {
     try {
+      if (!(await hostPolicy.isAllowed(req.headers.host))) {
+        const sanitizedHost = (req.headers.host ?? "").slice(0, 255).replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+        log.warn("host not allowed", { host: sanitizedHost });
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "host not allowed" }));
+        return;
+      }
       const directOrigin = req.headers.origin;
       const recoveredServeOrigin = directOrigin
         ? undefined
@@ -208,6 +223,10 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
       });
       if (!wsUpgradeRateLimiter.allow(client.clientKey)) {
         socket.end("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      if (!(await hostPolicy.isAllowed(req.headers.host))) {
+        socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;
       }
       if (!reserveWsConnection(client.clientKey)) {
