@@ -39,7 +39,7 @@ export function createFocusRoutes(ctx: ServerContext) {
         const before = identity();
         const local = (home ?? before.installationId) === before.installationId;
         try {
-          if (!local && home !== before.home && ctx.assistantService.enabled) return json(res, { error: "Disable this machine's assistant first, then change its home machine." }, 409);
+          if (!local && before.local && ctx.assistantService.enabled) return json(res, { error: "Disable this machine's assistant first, then change its home machine." }, 409);
           if (!ctx.config) throw new Error("valid wolfpack config required");
           // With the assistant disabled (or this machine not the home), wait out
           // any previous routine pull before publishing a different owner.

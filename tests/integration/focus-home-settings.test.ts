@@ -73,6 +73,10 @@ test("home settings validate, preserve unknown keys, apply identity/routines/pin
     expect((await f.backend.listSessionFacts()).map(fact => fact.name)).toEqual(["helper"]);
     expect((await f.ctx.focusRuntime.status()).enabled).toBe(false);
     expect(f.ctx.focusRuntime.routines.status().catchingUp).toBeNull();
+    // A pin on a non-home is filtered out, not an enabled local assistant.
+    expect((await f.post({ home: "another-peer" })).status).toBe(200);
+    expect(f.config.focus).toEqual({ home: "another-peer" });
+    expect((await f.ctx.focusRuntime.status()).enabled).toBe(false);
     expect((await f.post({ home: null })).status).toBe(200);
     expect(f.config.focus).toBeUndefined();
     expect(await f.get()).toMatchObject({ local: true, home: getInstallationId(), assistant: { enabled: false } });
