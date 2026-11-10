@@ -2,6 +2,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { platform } from "node:os";
+import { isIPv6 } from "node:net";
+import { parseHostHeader } from "./server/host-policy.js";
 import { isValidPort } from "./validation.js";
 import { resolveWolfpackDir } from "./wolfpack-dir.js";
 import { canonicalTailnetOrigin, isMachineDisplayName } from "./tailnet-machine-contract.js";
@@ -21,6 +23,8 @@ export interface Config {
   devDir: string;
   port: number;
   tailscaleHostname?: string;
+  /** Extra Host values the server accepts, for a custom proxy; restart required. */
+  allowedHosts?: string[];
   /** Host-owned machine display name; overrides the OS computer name in every handshake. */
   displayName?: string;
   /** Opt-in written by `wolfpack setup` after the Claude task integration is installed; absent means off. */
@@ -41,11 +45,22 @@ export function parseConfig(raw: unknown): Config | null {
   const canonicalOrigin = configuredHostname ? canonicalTailnetOrigin(configuredHostname) : null;
   const tailscaleHostname = canonicalOrigin?.slice("https://".length);
   const displayName = typeof candidate.displayName === "string" ? candidate.displayName.trim() : undefined;
+  const allowedHosts: string[] = [];
+  if (Array.isArray(candidate.allowedHosts)) {
+    for (const value of candidate.allowedHosts) {
+      if (typeof value !== "string") continue;
+      // Saved config contains normalized IPv6 literals without HTTP brackets.
+      const host = parseHostHeader(isIPv6(value) ? `[${value}]` : value);
+      if (host) allowedHosts.push(host);
+      if (allowedHosts.length === 32) break;
+    }
+  }
   return {
     devDir,
     port,
     tailscaleHostname,
     ...(isMachineDisplayName(displayName) && { displayName }),
+    ...(allowedHosts.length > 0 && { allowedHosts }),
     ...(candidate.claudeTaskIntegration === true && { claudeTaskIntegration: true }),
     ...(candidate.childEventTypedNotes === false && { childEventTypedNotes: false as const }),
   };
