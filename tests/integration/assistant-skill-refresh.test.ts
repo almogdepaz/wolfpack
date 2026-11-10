@@ -1,4 +1,4 @@
-import { expect, test, setSystemTime } from "bun:test";
+import { expect, test, setSystemTime, spyOn } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, lstatSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -541,6 +541,50 @@ test("D1: a late delivered result cannot consume a different conversation genera
     expect(JSON.parse(readFileSync(t.record, "utf8")).readSkillPending).toBe(true);
   } finally { release(); await flight; t.close(); }
 });
+
+test("L5: scheduled tick warnings are latched until error change or recovery", async () => {
+  const t = await fixture();
+  const output: string[] = [];
+  const write = process.stdout.write.bind(process.stdout);
+  const capture = spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array,
+    encoding?: BufferEncoding | ((error?: Error | null) => void), callback?: (error?: Error | null) => void) => {
+    output.push(String(chunk));
+    // Preserve both native overloads and complete diagnostics in the private command log.
+    return typeof encoding === "function" ? write(chunk, encoding) : write(chunk, encoding, callback);
+  });
+  try {
+    const record = readFileSync(t.record, "utf8");
+    const agents = join(t.assistant.folder, "AGENTS.md");
+    const original = readFileSync(agents, "utf8");
+    let ticks = 0;
+    const tick = t.ctx.focusRuntime.tick.bind(t.ctx.focusRuntime);
+    t.ctx.focusRuntime.tick = () => tick().finally(() => { ticks++; });
+    const waitTicks = async (count: number) => {
+      const target = ticks + count, deadline = Date.now() + 3500;
+      while (ticks < target && Date.now() < deadline) await Bun.sleep(20);
+      expect(ticks).toBeGreaterThanOrEqual(target);
+    };
+    const warnings = () => output.flatMap(s => s.split("\n")).filter(s => {
+      try { return JSON.parse(s).msg === "assistant runtime unavailable"; } catch { return false; }
+    });
+    writeFileSync(t.record, "{bad json");
+    await waitTicks(2);
+    expect(warnings()).toHaveLength(1);
+    writeFileSync(t.record, record);
+    rmSync(agents);
+    await waitTicks(2);
+    expect(warnings()).toHaveLength(2);
+    writeFileSync(agents, original);
+    writeFileSync(t.record, "{bad json");
+    await waitTicks(1);
+    expect(warnings()).toHaveLength(3);
+    writeFileSync(t.record, record);
+    await waitTicks(1); // successful tick resets the outage latch
+    writeFileSync(t.record, "{bad json");
+    await waitTicks(1);
+    expect(warnings()).toHaveLength(4);
+  } finally { capture.mockRestore(); t.close(); }
+}, 15000);
 
 test("a configured non-Pi assistant is not rotated by the managed skill protocol", async () => {
   const t = await fixture();

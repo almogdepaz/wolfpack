@@ -27,6 +27,7 @@ export class FocusRuntime {
   private timer?: ReturnType<typeof setInterval>;
   private tickFlight?: Promise<void>;
   private lifetime = 0;
+  private tickError?: string;
   constructor(private readonly ctx: ServerContext) {
     this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder), prepareLaunch: pin => ctx.assistantService.prepareLaunch(pin) });
     this.queue = new FocusSendQueue(async (id, text, origin) => {
@@ -53,7 +54,7 @@ export class FocusRuntime {
       enqueue: (text, settled) => {
         if (!this.sampledSessionId) throw new Error("assistant is not running");
         this.queue.enqueue(this.sampledSessionId, text, settled, "routine");
-        void this.tick().catch(error => log.warn("assistant runtime unavailable", { error: errMsg(error) }));
+        this.requestTick();
       },
     });
   }
@@ -64,7 +65,7 @@ export class FocusRuntime {
     try { this.ctx.assistantService.refreshSkill(); } catch (error) { log.warn("assistant skill refresh failed", { error: errMsg(error) }); }
     this.pins.start();
     this.routines.start();
-    this.timer = setInterval(() => { void this.tick().catch(error => log.warn("assistant runtime unavailable", { error: errMsg(error) })); }, 1000);
+    this.timer = setInterval(() => { this.requestTick(); }, 1000);
     this.timer.unref();
   }
   stop(): void { this.lifetime++; this.pins.stop(); this.routines.stop(); clearInterval(this.timer); this.timer = undefined; this.queue.clear("server stopped; queue discarded"); }
@@ -103,6 +104,13 @@ export class FocusRuntime {
       this.lastVerdict = { at: now, id, verdict: sample && { idle: sample.idle, needsInput: sample.needsInput } };
     }
     return this.lastVerdict.verdict;
+  }
+  private requestTick(): void {
+    void this.tick().then(() => { this.tickError = undefined; }, error => {
+      const message = errMsg(error);
+      if (this.tickError !== message) log.warn("assistant runtime unavailable", { error: message });
+      this.tickError = message;
+    });
   }
   tick(): Promise<void> {
     const lifetime = this.lifetime;
