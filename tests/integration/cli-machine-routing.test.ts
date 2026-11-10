@@ -198,6 +198,34 @@ describe("remote machine cli network boundary", () => {
     }
   });
 
+  test("routes exec through the verified machine handshake with authentication and a verbatim argv", async () => {
+    const requests: Array<{ readonly path: string; readonly authorization: string | null; readonly body: unknown }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url);
+        requests.push({ path: url.pathname, authorization: request.headers.get("authorization"), body: request.method === "POST" ? await request.json() : null });
+        if (url.pathname === "/api/machine") return Response.json(handshake());
+        if (url.pathname === "/api/exec") return Response.json({ ok: true, cwd: "/srv", exitCode: 0, signal: null, timedOut: false, durationMs: 1,
+          stdout: "--machine x\n", stdoutEncoding: "utf8", stdoutBytes: 12, stdoutTruncated: false, stderr: "", stderrEncoding: "utf8", stderrBytes: 0, stderrTruncated: false });
+        return new Response("unexpected", { status: 500 });
+      },
+    });
+    try {
+      const child = spawnCli(["--machine", "peer", "exec", "--cwd", "/srv", "--json", "--", "echo", "--machine", "x"], `http://127.0.0.1:${server.port}`);
+      const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(requests.map(({ path }) => path)).toEqual(["/api/machine", "/api/exec"]);
+      expect(requests.every(({ authorization }) => authorization?.startsWith("Bearer ") === true)).toBe(true);
+      expect(requests[1]!.body).toEqual({ argv: ["echo", "--machine", "x"], cwd: "/srv" });
+      expect(JSON.parse(stdout)).toMatchObject({ exitCode: 0, machine: (handshake() as { readonly machine: object }).machine });
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("a file command fails before any request when the machine handshake fails", async () => {
     const paths: string[] = [];
     const server = Bun.serve({

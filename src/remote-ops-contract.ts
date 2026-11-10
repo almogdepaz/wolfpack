@@ -100,3 +100,70 @@ export interface RemoteFileFailure {
   readonly maxBytes?: number;
   readonly matches?: number;
 }
+
+/**
+ * Remote commands (`wolfpack exec`): an argv array run without a shell, in an
+ * absolute working directory, with the server's environment and stdin closed.
+ */
+export const REMOTE_EXEC_ROUTE = "/api/exec";
+
+export const REMOTE_EXEC_DEFAULT_TIMEOUT_SECONDS = 120;
+export const REMOTE_EXEC_MAX_TIMEOUT_SECONDS = 600;
+/** Bytes kept of each of stdout and stderr; the rest is read and discarded. */
+export const REMOTE_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024;
+/** Commands running at once; one more is refused with EXEC_BUSY. */
+export const REMOTE_EXEC_MAX_CONCURRENT = 4;
+export const REMOTE_EXEC_MAX_ARGS = 1024;
+/** A request body: the argv, the cwd and the timeout. */
+export const REMOTE_EXEC_BODY_MAX_BYTES = 256 * 1024;
+
+export const REMOTE_EXEC_ERROR = {
+  INVALID_REQUEST: "INVALID_REQUEST",
+  REQUEST_TOO_LARGE: "REQUEST_TOO_LARGE",
+  CWD_NOT_ABSOLUTE: "CWD_NOT_ABSOLUTE",
+  CWD_NOT_FOUND: "CWD_NOT_FOUND",
+  CWD_NOT_DIRECTORY: "CWD_NOT_DIRECTORY",
+  COMMAND_NOT_FOUND: "COMMAND_NOT_FOUND",
+  PERMISSION_DENIED: "PERMISSION_DENIED",
+  EXEC_BUSY: "EXEC_BUSY",
+  SPAWN_FAILED: "SPAWN_FAILED",
+} as const;
+export type RemoteExecErrorCode = typeof REMOTE_EXEC_ERROR[keyof typeof REMOTE_EXEC_ERROR];
+export const REMOTE_EXEC_ERRORS = Object.values(REMOTE_EXEC_ERROR);
+
+export const REMOTE_EXEC_ERROR_STATUS: Readonly<Record<RemoteExecErrorCode, number>> = {
+  INVALID_REQUEST: 400,
+  REQUEST_TOO_LARGE: 413,
+  CWD_NOT_ABSOLUTE: 400,
+  CWD_NOT_FOUND: 404,
+  CWD_NOT_DIRECTORY: 409,
+  COMMAND_NOT_FOUND: 404,
+  PERMISSION_DENIED: 403,
+  EXEC_BUSY: 429,
+  SPAWN_FAILED: 500,
+};
+
+/** The command ran: `exitCode` is null when a signal ended it, `signal` names that signal. */
+export interface RemoteExecResult {
+  readonly ok: true;
+  readonly cwd: string;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly timedOut: boolean;
+  readonly durationMs: number;
+  readonly stdout: string;
+  readonly stdoutEncoding: RemoteFileEncoding;
+  readonly stdoutBytes: number;
+  readonly stdoutTruncated: boolean;
+  readonly stderr: string;
+  readonly stderrEncoding: RemoteFileEncoding;
+  readonly stderrBytes: number;
+  readonly stderrTruncated: boolean;
+}
+
+export interface RemoteExecFailure {
+  readonly error: string;
+  readonly code: RemoteExecErrorCode;
+  readonly maxBytes?: number;
+  readonly maxConcurrent?: number;
+}

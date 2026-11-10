@@ -67,7 +67,7 @@ export function assertAbsolutePath(path: string): void {
 }
 
 /** The text of bytes that round-trip through UTF-8 unchanged and hold no NUL; null for binary content. */
-function utf8Text(bytes: Buffer): string | null {
+export function utf8Text(bytes: Buffer): string | null {
   if (bytes.includes(0)) return null;
   const text = bytes.toString("utf8");
   return Buffer.from(text, "utf8").equals(bytes) ? text : null;

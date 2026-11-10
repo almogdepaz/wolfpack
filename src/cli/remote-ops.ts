@@ -1,19 +1,25 @@
 /**
- * `wolfpack [--machine X] file read|write|edit`: remote file operations through
- * the server API. With `--machine` the verified target is used and paths must be
- * absolute; without it a relative path resolves against the local working directory.
+ * `wolfpack [--machine X] file read|write|edit` and `exec`: remote file
+ * operations and commands through the server API. With `--machine` the verified
+ * target is used and paths must be absolute; without it a relative path resolves
+ * against the local working directory.
  */
 import { readFileSync, statSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { VerifiedMachineTarget } from "./machine-target.js";
 import { baseUrl, call } from "./api.js";
 import { print, printApiJson, printError, printJson, red } from "./formatting.js";
 import { SESSION_EXIT } from "./session-control.js";
 import {
+  REMOTE_EXEC_MAX_TIMEOUT_SECONDS,
+  REMOTE_EXEC_OUTPUT_MAX_BYTES,
+  REMOTE_EXEC_ROUTE,
   REMOTE_FILE_ENCODING,
   REMOTE_FILE_ERROR,
   REMOTE_FILE_MAX_BYTES,
   REMOTE_FILE_ROUTE,
+  type RemoteExecResult,
   type RemoteFileEdit,
   type RemoteFileRead,
   type RemoteFileWrite,
@@ -99,6 +105,45 @@ function emit(jsonOutput: boolean, failure: Failure, target: VerifiedMachineTarg
     printError(red(`  ${failure.message}`));
   }
   return exitCode;
+}
+
+/** POST one remote operation; on failure the error is already printed and the exit code returned. */
+async function post(
+  route: string,
+  body: Record<string, unknown>,
+  target: VerifiedMachineTarget | undefined,
+  jsonOutput: boolean,
+  label: string,
+): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly exitCode: number }> {
+  const failed = (failure: Failure, failureTarget: VerifiedMachineTarget | undefined, exitCode: number) =>
+    ({ ok: false as const, exitCode: emit(jsonOutput, failure, failureTarget, exitCode) });
+  let response: Response;
+  try {
+    response = await call(route, { method: "POST", body: JSON.stringify(body) }, target);
+  } catch (error: unknown) {
+    return failed({
+      code: "SERVER_UNREACHABLE",
+      message: `could not reach the wolfpack server at ${baseUrl(target)}: ${error instanceof Error ? error.message : String(error)}`,
+    }, undefined, SESSION_EXIT.GENERAL);
+  }
+  if (response.status === 401) {
+    return failed({ code: "AUTH_REQUIRED", message: "auth required; set WOLFPACK_JWT_SECRET and re-run" }, target, SESSION_EXIT.AUTH);
+  }
+  let value: unknown;
+  try {
+    value = await response.json();
+  } catch {
+    return failed({ code: "INVALID_RESPONSE", message: `wolfpack server returned invalid JSON (HTTP ${response.status})` }, target, SESSION_EXIT.GENERAL);
+  }
+  if (!response.ok) {
+    const { error, code, ...details } = (value ?? {}) as { error?: unknown; code?: unknown };
+    return failed({
+      code: typeof code === "string" ? code : `HTTP_${response.status}`,
+      message: typeof error === "string" ? error : `${label} failed: HTTP ${response.status}`,
+      details,
+    }, target, SESSION_EXIT.GENERAL);
+  }
+  return { ok: true, value };
 }
 
 async function readLocalContent(flags: ReadonlyMap<string, string | true>): Promise<Buffer> {
@@ -190,33 +235,120 @@ export async function fileCommand(argv: readonly string[], target?: VerifiedMach
     }
   }
 
-  let response: Response;
-  try {
-    response = await call(ROUTE_BY_ACTION[parsed.action]!, { method: "POST", body: JSON.stringify(requestBody(parsed, path, content)) }, target);
-  } catch (error: unknown) {
-    return emit(jsonOutput, {
-      code: "SERVER_UNREACHABLE",
-      message: `could not reach the wolfpack server at ${baseUrl(target)}: ${error instanceof Error ? error.message : String(error)}`,
-    }, undefined, SESSION_EXIT.GENERAL);
-  }
-  if (response.status === 401) {
-    return emit(jsonOutput, { code: "AUTH_REQUIRED", message: "auth required; set WOLFPACK_JWT_SECRET and re-run" }, target, SESSION_EXIT.AUTH);
-  }
-  let value: unknown;
-  try {
-    value = await response.json();
-  } catch {
-    return emit(jsonOutput, { code: "INVALID_RESPONSE", message: `wolfpack server returned invalid JSON (HTTP ${response.status})` }, target, SESSION_EXIT.GENERAL);
-  }
-  if (!response.ok) {
-    const { error, code, ...details } = (value ?? {}) as { error?: unknown; code?: unknown };
-    return emit(jsonOutput, {
-      code: typeof code === "string" ? code : `HTTP_${response.status}`,
-      message: typeof error === "string" ? error : `file ${parsed.action} failed: HTTP ${response.status}`,
-      details,
-    }, target, SESSION_EXIT.GENERAL);
-  }
-  if (jsonOutput) printApiJson(value, target);
-  else printResult(parsed.action, value);
+  const posted = await post(ROUTE_BY_ACTION[parsed.action]!, requestBody(parsed, path, content), target, jsonOutput, `file ${parsed.action}`);
+  if (!posted.ok) return posted.exitCode;
+  if (jsonOutput) printApiJson(posted.value, target);
+  else printResult(parsed.action, posted.value);
   return 0;
+}
+
+export const EXEC_USAGE = `Usage: wolfpack [--machine <short-name-or-fqdn>] exec --cwd <dir> [--timeout <seconds>] [--json] -- <command> [args...]
+
+Runs one command on the server machine as the wolfpack server user, behind the
+ordinary API auth. The arguments after -- go to the command verbatim; there is no
+shell. With --machine, --cwd must be absolute. The command gets the server's
+environment and a closed stdin. --timeout defaults to 120 and is at most ${REMOTE_EXEC_MAX_TIMEOUT_SECONDS} seconds;
+a timeout kills the command's process group. stdout and stderr keep the first
+${REMOTE_EXEC_OUTPUT_MAX_BYTES} bytes each.
+Without --json, the output goes to stdout and stderr and wolfpack exits with the
+command's exit code (124 on timeout, 128 + n for signal n).
+With --json, wolfpack prints the result and exits 0 when the command ran.`;
+
+/** Exit code of `timeout(1)` for a command that ran out of time. */
+const TIMEOUT_EXIT = 124;
+const SIGNAL_EXIT_BASE = 128;
+const EXEC_SEPARATOR = "--";
+const EXEC_VALUE_FLAGS = new Set(["--cwd", "--timeout"]);
+
+interface ParsedExecArgs {
+  readonly cwd: string;
+  readonly timeoutSeconds: number | undefined;
+  readonly json: boolean;
+  readonly argv: readonly string[];
+}
+
+function parseExec(options: readonly string[], command: readonly string[] | undefined): ParsedExecArgs {
+  const flags = new Map<string, string>();
+  let json = false;
+  for (let index = 0; index < options.length; index++) {
+    const arg = options[index]!;
+    if (arg === "--json") {
+      if (json) throw new ArgumentError("--json given more than once");
+      json = true;
+    } else if (EXEC_VALUE_FLAGS.has(arg)) {
+      if (flags.has(arg)) throw new ArgumentError(`${arg} given more than once`);
+      const value = options[++index];
+      if (value === undefined) throw new ArgumentError(`${arg} requires a value`);
+      flags.set(arg, value);
+    } else {
+      throw new ArgumentError(`unknown exec argument before --: ${arg}`);
+    }
+  }
+  const cwd = flags.get("--cwd");
+  if (!cwd) throw new ArgumentError("exec requires --cwd <dir>");
+  if (!command) throw new ArgumentError("exec requires -- before the command");
+  if (command.length === 0 || command[0] === "") throw new ArgumentError("exec requires a command after --");
+  const timeout = flags.get("--timeout");
+  let timeoutSeconds: number | undefined;
+  if (timeout !== undefined) {
+    timeoutSeconds = /^\d+$/.test(timeout) ? Number(timeout) : Number.NaN;
+    if (!(timeoutSeconds >= 1 && timeoutSeconds <= REMOTE_EXEC_MAX_TIMEOUT_SECONDS)) {
+      throw new ArgumentError(`--timeout must be a whole number of seconds from 1 to ${REMOTE_EXEC_MAX_TIMEOUT_SECONDS}`);
+    }
+  }
+  return { cwd, timeoutSeconds, json, argv: command };
+}
+
+function outputBytes(content: string, encoding: string): Buffer {
+  return encoding === REMOTE_FILE_ENCODING.BASE64 ? Buffer.from(content, "base64") : Buffer.from(content, "utf8");
+}
+
+/** Mirror the command's exit: its code, 124 on timeout, or 128 + the signal number. */
+function commandExitCode(result: RemoteExecResult): number {
+  if (result.timedOut) return TIMEOUT_EXIT;
+  if (result.exitCode !== null) return result.exitCode;
+  const signal = result.signal === null ? undefined : osConstants.signals[result.signal as NodeJS.Signals];
+  return signal === undefined ? SESSION_EXIT.GENERAL : SIGNAL_EXIT_BASE + signal;
+}
+
+function printExecResult(result: RemoteExecResult): void {
+  process.stdout.write(outputBytes(result.stdout, result.stdoutEncoding));
+  process.stderr.write(outputBytes(result.stderr, result.stderrEncoding));
+  const notes: string[] = [];
+  if (result.stdoutTruncated) notes.push(`stdout truncated: kept ${REMOTE_EXEC_OUTPUT_MAX_BYTES} of ${result.stdoutBytes} bytes`);
+  if (result.stderrTruncated) notes.push(`stderr truncated: kept ${REMOTE_EXEC_OUTPUT_MAX_BYTES} of ${result.stderrBytes} bytes`);
+  if (result.timedOut) notes.push(`timed out after ${result.durationMs} ms; the process group was killed`);
+  for (const note of notes) printError(red(`  wolfpack exec: ${note}`));
+}
+
+export async function execCommand(argv: readonly string[], target?: VerifiedMachineTarget): Promise<number> {
+  const separator = argv.indexOf(EXEC_SEPARATOR);
+  const options = separator < 0 ? argv : argv.slice(0, separator);
+  const command = separator < 0 ? undefined : argv.slice(separator + 1);
+  if (argv.length === 0 || (command === undefined && options.length === 1 && HELP.has(options[0]!))) {
+    print(EXEC_USAGE);
+    return 0;
+  }
+  const jsonOutput = options.includes("--json");
+  let parsed: ParsedExecArgs;
+  try {
+    parsed = parseExec(options, command);
+  } catch (error: unknown) {
+    if (!(error instanceof ArgumentError)) throw error;
+    return emit(jsonOutput, { code: "INVALID_ARGUMENTS", message: error.message }, undefined, SESSION_EXIT.USAGE);
+  }
+  if (target && !isAbsolute(parsed.cwd)) {
+    return emit(jsonOutput, { code: "INVALID_ARGUMENTS", message: `with --machine --cwd must be absolute: ${parsed.cwd}` }, undefined, SESSION_EXIT.USAGE);
+  }
+  const cwd = target ? parsed.cwd : resolve(process.cwd(), parsed.cwd);
+  const body = { argv: parsed.argv, cwd, ...(parsed.timeoutSeconds !== undefined && { timeoutSeconds: parsed.timeoutSeconds }) };
+  const posted = await post(REMOTE_EXEC_ROUTE, body, target, jsonOutput, "exec");
+  if (!posted.ok) return posted.exitCode;
+  if (jsonOutput) {
+    printApiJson(posted.value, target);
+    return 0;
+  }
+  const result = posted.value as RemoteExecResult;
+  printExecResult(result);
+  return commandExitCode(result);
 }

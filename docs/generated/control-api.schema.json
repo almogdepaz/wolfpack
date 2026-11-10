@@ -2747,6 +2747,142 @@
         "500 RemoteFileErrorEnvelope"
       ]
     },
+    "runRemoteCommand": {
+      "route": "POST /api/exec",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:runRemoteCommand:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "runRemoteCommand request",
+        "type": "object",
+        "properties": {
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 1024,
+            "description": "Program and arguments; run without a shell. The program is resolved through the server's PATH"
+          },
+          "cwd": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Absolute existing directory on the server machine"
+          },
+          "timeoutSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 600,
+            "description": "Default 120; on timeout the command's process group is killed"
+          }
+        },
+        "required": [
+          "argv",
+          "cwd"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:runRemoteCommand:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "runRemoteCommand response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "null when a signal ended the command"
+          },
+          "signal": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timedOut": {
+            "type": "boolean"
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stdoutEncoding": {
+            "enum": [
+              "utf8",
+              "base64"
+            ],
+            "description": "utf8 for text; base64 otherwise"
+          },
+          "stdoutBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Total bytes written, including bytes past the cap"
+          },
+          "stdoutTruncated": {
+            "type": "boolean",
+            "description": "true when output exceeded 1048576 bytes"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stderrEncoding": {
+            "enum": [
+              "utf8",
+              "base64"
+            ]
+          },
+          "stderrBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stderrTruncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "cwd",
+          "exitCode",
+          "signal",
+          "timedOut",
+          "durationMs",
+          "stdout",
+          "stdoutEncoding",
+          "stdoutBytes",
+          "stdoutTruncated",
+          "stderr",
+          "stderrEncoding",
+          "stderrBytes",
+          "stderrTruncated"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 RemoteExecErrorEnvelope",
+        "401 ErrorEnvelope",
+        "403 RemoteExecErrorEnvelope",
+        "404 RemoteExecErrorEnvelope",
+        "409 RemoteExecErrorEnvelope",
+        "413 RemoteExecErrorEnvelope",
+        "429 RemoteExecErrorEnvelope",
+        "500 RemoteExecErrorEnvelope"
+      ]
+    },
     "killSession": {
       "route": "POST /api/kill",
       "stable": true,
@@ -5588,6 +5724,39 @@
         },
         "matches": {
           "type": "integer"
+        }
+      },
+      "required": [
+        "error",
+        "code"
+      ],
+      "additionalProperties": false
+    },
+    "RemoteExecErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "INVALID_REQUEST",
+            "REQUEST_TOO_LARGE",
+            "CWD_NOT_ABSOLUTE",
+            "CWD_NOT_FOUND",
+            "CWD_NOT_DIRECTORY",
+            "COMMAND_NOT_FOUND",
+            "PERMISSION_DENIED",
+            "EXEC_BUSY",
+            "SPAWN_FAILED"
+          ]
+        },
+        "maxBytes": {
+          "type": "integer"
+        },
+        "maxConcurrent": {
+          "type": "integer",
+          "description": "Running-command limit (4); set with EXEC_BUSY"
         }
       },
       "required": [

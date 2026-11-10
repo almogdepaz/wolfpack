@@ -1,12 +1,21 @@
 /**
- * Remote file routes (`wolfpack [--machine X] file ...`). They sit behind the
- * global API auth gate in `index.ts` like session create; there is no extra
- * authorization layer. Each write and edit is logged at info with the path and
- * byte count, never the content.
+ * Remote file and command routes (`wolfpack [--machine X] file ...` and
+ * `exec`). They sit behind the global API auth gate in `index.ts` like session
+ * create; there is no extra authorization layer. Each write, edit and exec is
+ * logged at info with the path or cwd, argv[0] and byte counts, never file
+ * content, other argv or command output.
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createLogger } from "../log.js";
 import {
+  REMOTE_EXEC_BODY_MAX_BYTES,
+  REMOTE_EXEC_DEFAULT_TIMEOUT_SECONDS,
+  REMOTE_EXEC_ERROR,
+  REMOTE_EXEC_ERROR_STATUS,
+  REMOTE_EXEC_MAX_ARGS,
+  REMOTE_EXEC_MAX_CONCURRENT,
+  REMOTE_EXEC_MAX_TIMEOUT_SECONDS,
+  REMOTE_EXEC_ROUTE,
   REMOTE_FILE_EDIT_BODY_MAX_BYTES,
   REMOTE_FILE_ENCODING,
   REMOTE_FILE_ERROR,
@@ -14,9 +23,12 @@ import {
   REMOTE_FILE_MAX_PATH_LENGTH,
   REMOTE_FILE_ROUTE,
   REMOTE_FILE_WRITE_BODY_MAX_BYTES,
+  type RemoteExecErrorCode,
+  type RemoteExecFailure,
   type RemoteFileErrorCode,
   type RemoteFileFailure,
 } from "../remote-ops-contract.js";
+import { RemoteExecError, runRemoteCommand } from "./remote-exec.js";
 import { hasOnlyKeys, json, parseObjectBody } from "./http.js";
 import { editRemoteFile, readRemoteFile, RemoteFileError, writeRemoteFile } from "./remote-files.js";
 
@@ -25,6 +37,7 @@ const log = createLogger("remote-ops");
 const READ_KEYS = new Set(["path"]);
 const WRITE_KEYS = new Set(["path", "content", "encoding", "createOnly"]);
 const EDIT_KEYS = new Set(["path", "old", "new", "all"]);
+const EXEC_KEYS = new Set(["argv", "cwd", "timeoutSeconds"]);
 /** A read body holds only a path. */
 const READ_BODY_MAX_BYTES = 16 * 1024;
 const BASE64_PATTERN = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -55,6 +68,7 @@ function decodeBase64(value: string): Buffer | null {
 }
 
 function parseBodyWithLimit(req: IncomingMessage, res: ServerResponse, maxBytes: number): Promise<Record<string, unknown> | null> {
+  // REQUEST_TOO_LARGE and INVALID_REQUEST have the same code and status in the file and exec contracts.
   return parseObjectBody(req, res, {
     maxBytes,
     respondOnTooLarge: true,
@@ -67,6 +81,19 @@ function parseBodyWithLimit(req: IncomingMessage, res: ServerResponse, maxBytes:
       status: REMOTE_FILE_ERROR_STATUS.INVALID_REQUEST,
     },
   });
+}
+
+function failExec(res: ServerResponse, code: RemoteExecErrorCode, message: string, details: Omit<RemoteExecFailure, "error" | "code"> = {}): void {
+  json(res, { error: message, code, ...details } satisfies RemoteExecFailure, REMOTE_EXEC_ERROR_STATUS[code]);
+}
+
+function isArgv(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.length <= REMOTE_EXEC_MAX_ARGS
+    && value.every(arg => typeof arg === "string" && !arg.includes("\0")) && value[0] !== "";
+}
+
+function isTimeout(value: unknown): value is number | undefined {
+  return value === undefined || (Number.isInteger(value) && (value as number) >= 1 && (value as number) <= REMOTE_EXEC_MAX_TIMEOUT_SECONDS);
 }
 
 const readFile: Handler = async (req, res) => {
@@ -127,8 +154,36 @@ const editFile: Handler = async (req, res) => {
   }
 };
 
+const execCommand: Handler = async (req, res) => {
+  const body = await parseBodyWithLimit(req, res, REMOTE_EXEC_BODY_MAX_BYTES);
+  if (!body) return;
+  const { argv, cwd, timeoutSeconds } = body;
+  if (!hasOnlyKeys(body, EXEC_KEYS) || !isArgv(argv) || !isPath(cwd) || !isTimeout(timeoutSeconds)) {
+    return failExec(res, REMOTE_EXEC_ERROR.INVALID_REQUEST,
+      `argv (1 to ${REMOTE_EXEC_MAX_ARGS} strings, the first nonempty) and cwd required; timeoutSeconds is an integer from 1 to ${REMOTE_EXEC_MAX_TIMEOUT_SECONDS}`);
+  }
+  // A dropped connection (for example a killed CLI) kills the command instead of holding a slot until the timeout.
+  const dropped = new AbortController();
+  res.on("close", () => { if (!res.writableFinished) dropped.abort(); });
+  const command = argv[0]!;
+  const startedAt = Date.now();
+  try {
+    const result = await runRemoteCommand({ argv, cwd, timeoutMs: (timeoutSeconds ?? REMOTE_EXEC_DEFAULT_TIMEOUT_SECONDS) * 1000, signal: dropped.signal });
+    log.info("remote exec", {
+      cwd, command, exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut,
+      stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes, durationMs: result.durationMs,
+    });
+    json(res, result);
+  } catch (error: unknown) {
+    if (!(error instanceof RemoteExecError)) throw error;
+    log.info("remote exec failed", { cwd, command, code: error.code, durationMs: Date.now() - startedAt });
+    failExec(res, error.code, error.message, error.code === REMOTE_EXEC_ERROR.EXEC_BUSY ? { maxConcurrent: REMOTE_EXEC_MAX_CONCURRENT } : {});
+  }
+};
+
 export function createRemoteOpsRoutes(): Record<string, Handler> {
   return {
+    [`POST ${REMOTE_EXEC_ROUTE}`]: execCommand,
     [`POST ${REMOTE_FILE_ROUTE.READ}`]: readFile,
     [`POST ${REMOTE_FILE_ROUTE.WRITE}`]: writeFile,
     [`POST ${REMOTE_FILE_ROUTE.EDIT}`]: editFile,

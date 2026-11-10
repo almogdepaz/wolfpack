@@ -8,7 +8,7 @@ Wolfpack exposes a scriptable session surface for agents and operators. The serv
 wolfpack --machine <short-name-or-fqdn> <control-command> ...
 ```
 
-The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `agent inbox`, `session status`, `session organization`, `session inbox`, `session read`, `session send`, `session wait`, `session prompt`, `kill`, and `events`. Other commands reject it.
+The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `agent inbox`, `session status`, `session organization`, `session inbox`, `session read`, `session send`, `session wait`, `session prompt`, `kill`, `events`, `file`, and `exec`. Other commands reject it.
 
 A short name is expanded using the exact Tailnet suffix from configured `tailscaleHostname`. A full name must be a canonical HTTPS Tailnet hostname in that suffix; URLs, ports, paths, foreign suffixes, malformed or duplicate selectors, and missing configuration fail closed without a localhost fallback. Before any control request, the CLI sends an exact, bounded `GET /api/machine` probe with redirects disabled, a bounded timeout, and the normal Wolfpack JWT `Authorization` header when configured. The structured handshake must report the selected canonical origin and session-control capability.
 
@@ -365,6 +365,26 @@ These commands reach any path that the wolfpack server user can access: the same
 - Errors: `{ "error": message, "code": string, "size"?, "maxBytes"?, "matches"? }` with codes `INVALID_REQUEST`, `REQUEST_TOO_LARGE`, `PATH_NOT_ABSOLUTE`, `NOT_FOUND`, `PERMISSION_DENIED`, `NOT_A_FILE`, `SYMLINK_LOOP`, `DANGLING_SYMLINK`, `FILE_TOO_LARGE`, `FILE_EXISTS`, `BINARY_FILE`, `EDIT_MATCH_COUNT` and `IO_FAILED`. CLI `--json` failures are `{ "ok": false, "error": { "code", "message" }, ...details }`, plus `machine` for a remote target. Exit codes: `1` for a refused operation, `2` for a usage error, `5` for an auth failure.
 - Audit: each write and edit, successful or failed, is logged at info level by the `remote-ops` component with the path, byte count, replacement count or error code, and duration. File content is never logged.
 - Limits: there is no locking. Two concurrent edits of one file can lose one update. The rename replaces a hard link with a new file, and the replaced file is owned by the server user. Create-only needs hard-link support in the target filesystem.
+
+## Run commands
+
+```bash
+wolfpack [--machine <short-name-or-fqdn>] exec --cwd <dir> [--timeout <seconds>] [--json] -- <program> [args...]
+```
+
+`POST /api/exec` runs one program on the server machine as the wolfpack server user: the same power as a shell session there. It sits behind the same global API gate as session create and the file routes: the origin check, then JWT validation when JWT auth is configured, then the rate limits. There is no route-specific bypass. When JWT auth is not configured, any client that passes the origin check can run commands. `--machine` uses the verified Tailnet selector, and a failed handshake fails the command with no localhost fallback.
+
+- Arguments: everything after `--` is the argv, sent verbatim and run without a shell, so pipes, globs, `$VAR` and `~` are not expanded; run `sh -c '...'` explicitly when you need a shell. `--` is required, and options are read only before it, so the command's own flags (including `--json` or `--machine`) pass through unchanged. The program is resolved through the server's `PATH`. At most 1024 arguments; NUL bytes are refused.
+- `--cwd` is required and must be an existing directory (`CWD_NOT_FOUND`, `CWD_NOT_DIRECTORY`). The server requires an absolute path. Without `--machine`, the CLI resolves a relative `--cwd` locally; with `--machine`, it refuses a relative one before any request.
+- Environment: the command gets the server's environment, not the caller's; the request cannot set variables. stdin is closed.
+- Timeout: `--timeout` / `timeoutSeconds` defaults to 120 and is at most 600. The command runs in its own process group. On timeout the server kills the whole group with `SIGKILL` and reports `timedOut: true`. The group is also killed when the command exits (after up to 500 ms to read the remaining output), so background children cannot outlive the request, and when the client disconnects before the result.
+- Output: stdout and stderr are each kept up to 1 MiB (1048576 bytes). The rest is read and counted but dropped: `stdoutBytes`/`stderrBytes` give the total, and `stdoutTruncated`/`stderrTruncated` are set. Output that is valid UTF-8 is returned with `encoding: "utf8"`; other output is base64. A cut multi-byte character at the cap is dropped.
+- Result: `{ "ok": true, "cwd", "exitCode", "signal", "timedOut", "durationMs", "stdout", "stdoutEncoding", "stdoutBytes", "stdoutTruncated", "stderr", "stderrEncoding", "stderrBytes", "stderrTruncated" }`. `exitCode` is `null` when a signal ended the command.
+- Concurrency: at most 4 commands run at once per server; another request fails with `429` `EXEC_BUSY` and `maxConcurrent`.
+- Errors: `{ "error": message, "code": string, "maxBytes"?, "maxConcurrent"? }` with codes `INVALID_REQUEST`, `REQUEST_TOO_LARGE`, `CWD_NOT_ABSOLUTE`, `CWD_NOT_FOUND`, `CWD_NOT_DIRECTORY`, `COMMAND_NOT_FOUND`, `PERMISSION_DENIED`, `EXEC_BUSY` and `SPAWN_FAILED`.
+- CLI exit codes: without `--json`, the CLI writes the command's stdout and stderr bytes unchanged, notes truncation and timeout on stderr, and exits with the command's exit code, `124` on timeout, or `128` + the signal number. Those values can overlap the wolfpack codes below (`1` refused or unreachable, `2` usage, `5` auth). Use `--json` to tell them apart: it prints the result and exits `0` whenever the command ran, and failures use the usual `{ "ok": false, "error": { "code", "message" }, ... }` shape with exit `1`, `2` or `5`.
+- Audit: each exec, successful or failed, is logged at info level by the `remote-ops` component with the cwd, `argv[0]`, exit code or signal, timeout flag, output byte counts or error code, and duration. Other arguments and the output are never logged.
+- Limits: a child that leaves the process group (`setsid`, a daemonizing fork) is not killed by the group kill. The CLI request has no deadline of its own beyond the server timeout.
 
 ## Follow live events
 

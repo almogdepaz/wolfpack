@@ -278,6 +278,26 @@ describe("control api schema", () => {
     expect(edit.errors).toContain("409 RemoteFileErrorEnvelope");
   });
 
+  test("publishes the authenticated remote exec route with its result and error shapes", () => {
+    const exec = httpOperation("runRemoteCommand");
+    expect(exec.route).toBe("POST /api/exec");
+    expect(exec.auth).toBe("jwt-when-configured");
+    expect(validate(exec.request, { argv: ["git", "status"], cwd: "/srv", timeoutSeconds: 30 }, artifact)).toEqual([]);
+    expect(validate(exec.request, { argv: [], cwd: "/srv" }, artifact)).not.toEqual([]);
+    expect(validate(exec.request, { argv: ["ls"], cwd: "/srv", timeoutSeconds: 601 }, artifact)).not.toEqual([]);
+    expect(validate(exec.request, { argv: ["ls"], cwd: "/srv", env: { A: "1" } }, artifact)).not.toEqual([]);
+    expect(validate(exec.response, {
+      ok: true, cwd: "/srv", exitCode: null, signal: "SIGKILL", timedOut: true, durationMs: 5,
+      stdout: "", stdoutEncoding: "utf8", stdoutBytes: 0, stdoutTruncated: false,
+      stderr: "AA==", stderrEncoding: "base64", stderrBytes: 2000000, stderrTruncated: true,
+    }, artifact)).toEqual([]);
+    const envelope = resolveRef({ $ref: "#/$defs/RemoteExecErrorEnvelope" }, artifact);
+    expect(validate(envelope, { error: "busy", code: "EXEC_BUSY", maxConcurrent: 4 }, artifact)).toEqual([]);
+    expect(validate(envelope, { error: "x", code: "NOT_A_CODE" }, artifact)).not.toEqual([]);
+    expect(exec.errors).toContain("429 RemoteExecErrorEnvelope");
+    expect(exec.errors).toContain("401 ErrorEnvelope");
+  });
+
   test("publishes the runtime asset route with extension ID and immutable package digest", () => {
     expect(httpOperation("getInstalledExtensionAsset").route).toBe("GET /api/extensions/assets/{extensionId}/{packageDigest}/{assetPath}");
   });

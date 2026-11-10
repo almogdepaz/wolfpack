@@ -207,6 +207,7 @@ describe("JWT auth middleware", () => {
       { method: "POST", path: "/api/file/read" },
       { method: "POST", path: "/api/file/write" },
       { method: "POST", path: "/api/file/edit" },
+      { method: "POST", path: "/api/exec" },
     ] as const;
 
     for (const endpoint of protectedEndpoints) {
