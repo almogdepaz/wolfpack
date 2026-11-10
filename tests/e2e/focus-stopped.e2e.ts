@@ -96,13 +96,20 @@ test("QA-28: unreviewed done work stays stopped in next, footer and timeline unt
   await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText("prompt-project finished");
 });
 
-test("the seen 24-hour finished row uses the original stop time, not metadata time", async ({ page }) => {
+test("QA-33: reviewed done leaves next and keeps its original stop time in done today", async ({ page }) => {
   const f = await runtimeFixture(page, "done", "prompt-project");
   f.review();
+  // Keep the stop in the activity day under test, including around midnight.
+  await page.clock.setFixedTime(new Date(Date.parse(f.stopTime) + 60_000));
   await page.goto(server.baseUrl);
   const stopClock = await page.evaluate(at => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }), f.stopTime);
-  const row = page.locator("#dashboard-focus .focus-next li").filter({ hasText: "prompt-project finished" });
-  await expect(row.locator(".focus-title > small")).toHaveText(` · ${stopClock}`);
+  await expect(page.locator("#dashboard-focus .focus-next li").filter({ hasText: "prompt-project" })).toHaveCount(0);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  const view = page.locator("#assistant-content");
+  await expect(view.locator(".focus-next li").filter({ hasText: "prompt-project" })).toHaveCount(0);
+  const row = view.locator(".focus-done li").filter({ hasText: "prompt-project finished" });
+  await expect(row).toBeVisible();
+  await expect(row.locator(".focus-time")).toHaveText(stopClock);
 });
 
 test("reviewed work stays out of next when metadata becomes unseen again", async ({ page }) => {
