@@ -115,9 +115,9 @@ test("killing a parent kills its cascade children recursively and keeps outlive 
 
 test("a child kill that fails is reported with its reason and its children are kept", async () => {
   class StuckBackend extends MockBackend {
-    override async killSessionById(sessionId: string): Promise<void> {
+    override async killSessionById(sessionId: string) {
       if (sessionId === "mock:stuck") throw new Error("broker refused");
-      await super.killSessionById(sessionId);
+      return super.killSessionById(sessionId);
     }
   }
   const backend = new StuckBackend();
@@ -168,7 +168,11 @@ function lineage(parentId: string, parentName: string, cleanup?: string): Array<
 }
 
 /** A broker backend on a fake client: a session table plus kill requests. */
-function brokerFixture(options: { onKill?: (id: string, backend: InstanceType<typeof BrokerBackend>) => void } = {}) {
+function brokerFixture(options: {
+  onKill?: (id: string, backend: InstanceType<typeof BrokerBackend>) => void;
+  /** A broker error code for this kill, while the table still lists the session alive. */
+  killError?: (id: string) => string | undefined;
+} = {}) {
   const sessions = new Map<string, FakeSession>();
   const add = (id: string, name: string, env: Array<[string, string]> = [], alive = true) => sessions.set(id, { id, name, alive, env });
   add(LEAD, "lead");
@@ -196,6 +200,8 @@ function brokerFixture(options: { onKill?: (id: string, backend: InstanceType<ty
       if (method === "kill_session") {
         const id = String(params.session_id);
         kills.push(id);
+        const forced = options.killError?.(id);
+        if (forced !== undefined) return { status: "error", error: { code: forced, message: "gone" } };
         const session = sessions.get(id);
         if (!session?.alive) return { status: "error", error: { code: "session_not_alive", message: "gone" } };
         session.alive = false;
@@ -272,4 +278,71 @@ test("an explicit kill whose exit frame arrives during the kill cascades once", 
   ]);
   expect(kills.sort()).toEqual([LEAD, KID, GRANDKID].sort());
   expect(peerCalls).toEqual([]);
+});
+
+for (const code of ["session_not_alive", "unknown_session"]) {
+  test(`a child the broker reports ${code} during the kill cascade is already_gone and its children still cascade`, async () => {
+    const { backend, kills } = brokerFixture({ killError: id => id === KID ? code : undefined });
+    await backend.listSessionFacts();
+    const kill = createRoutes(createServerContext({ backend, events: new EventBus() }))["POST /api/kill"] as Handler;
+    const response = await call(kill, { session: "lead" });
+    expect(response.status).toBe(200);
+    const cascaded = response.body.cascaded as Array<Record<string, unknown>>;
+    expect(cascaded.map(entry => [entry.session, entry.outcome]).sort()).toEqual([
+      ["grandkid", CASCADE_OUTCOME.KILLED],
+      ["kid", CASCADE_OUTCOME.ALREADY_GONE],
+    ]);
+    expect(kills.sort()).toEqual([LEAD, KID, GRANDKID].sort());
+  });
+}
+
+test("agent spawn --outlive-parent through POST /api/session-open records outlive, lists it, and survives the parent kill", async () => {
+  const backend = new MockBackend();
+  __setTestBackend(backend);
+  const routes = createRoutes(createServerContext({ backend, events: new EventBus() }));
+  const open = routes["POST /api/session-open"] as Handler;
+  const kill = routes["POST /api/kill"] as Handler;
+  const children = createSessionControlRoutes(createServerContext({ backend, events: new EventBus() }))["GET /api/session-control/children"] as Handler;
+  await backend.createSession("lead", "/tmp", "claude", loadSettings);
+  const projectDir = process.cwd();
+
+  const outlive = await call(open, { projectDir, parentSession: "lead", sessionName: "keeper", harness: "claude", outliveParent: true });
+  expect(outlive.status, JSON.stringify(outlive.body)).toBe(200);
+  const ordinary = await call(open, { projectDir, parentSession: "lead", sessionName: "kid", harness: "claude" });
+  expect(ordinary.status, JSON.stringify(ordinary.body)).toBe(200);
+  const identities = await backend.listIdentities();
+  expect(identities.keeper?.parentSession).toMatchObject({ wolfpackSessionName: "lead", cleanup: CHILD_CLEANUP.OUTLIVE });
+  expect(identities.kid?.parentSession).toMatchObject({ wolfpackSessionName: "lead", cleanup: CHILD_CLEANUP.CASCADE });
+
+  const listed = await call(children, {}, "/api/session-control/children?session=lead", "GET");
+  expect((listed.body.children as Array<Record<string, unknown>>).map(child => [child.session, child.cleanup])).toEqual([
+    ["keeper", CHILD_CLEANUP.OUTLIVE],
+    ["kid", CHILD_CLEANUP.CASCADE],
+  ]);
+
+  const killed = await call(kill, { session: "lead" });
+  expect(killed.status).toBe(200);
+  expect((killed.body.cascaded as Array<Record<string, unknown>>).map(entry => entry.session)).toEqual(["kid"]);
+  expect(await backend.list()).toEqual(["keeper"]);
+});
+
+test("the task-worker spawn path accepts --outlive-parent like the ordinary path", async () => {
+  const backend = new MockBackend();
+  __setTestBackend(backend);
+  const open = createRoutes(createServerContext({ backend, events: new EventBus() }))["POST /api/session-open"] as Handler;
+  await backend.createSession("lead", "/tmp", "claude", loadSettings);
+  const request = { projectDir: process.cwd(), parentSession: "lead", harness: "pi", taskWorker: true, taskWorkerDryRun: true };
+  const without = await call(open, request);
+  const withOutlive = await call(open, { ...request, outliveParent: true });
+  expect(without.body.code).not.toBe("INVALID_REQUEST");
+  expect([withOutlive.status, withOutlive.body]).toEqual([without.status, without.body]);
+});
+
+test("a top-level session-create refuses outliveParent: a session without a parent has no cleanup policy", async () => {
+  const backend = new MockBackend();
+  __setTestBackend(backend);
+  const create = createRoutes(createServerContext({ backend, events: new EventBus() }))["POST /api/session-create"] as Handler;
+  const response = await call(create, { projectDir: process.cwd(), harness: "claude", outliveParent: true });
+  expect(response.status).toBe(400);
+  expect(await backend.list()).toEqual([]);
 });

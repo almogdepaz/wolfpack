@@ -23,7 +23,8 @@ export interface SessionCreateBackend {
     options?: SessionLaunchOptions,
   ): Promise<PublicSessionIdentity>;
   inspectSession?(selector: string): Promise<import("../session-status-contract.js").SessionInspectionResult>;
-  killSessionById?(sessionId: string): Promise<void>;
+  /** Rollback kill; the disposition is not used. */
+  killSessionById?(sessionId: string): Promise<unknown>;
 }
 
 export interface TopLevelSessionSuccess {

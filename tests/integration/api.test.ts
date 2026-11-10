@@ -3213,6 +3213,7 @@ describe("POST /api/create", () => {
     expect(mockBackend.lastCreateArgs?.parentSession).toEqual({
       wolfpackSessionId: "mock:wolf-1",
       wolfpackSessionName: "wolf-1",
+      cleanup: "cascade",
     });
     expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
       type: "sub_session_opened",
@@ -3249,6 +3250,7 @@ describe("POST /api/create", () => {
     expect(child.identity.parentSession).toEqual({
       wolfpackSessionId: "mock:wolf-1",
       wolfpackSessionName: "wolf-1",
+      cleanup: "cascade",
     });
   });
 
@@ -3629,6 +3631,7 @@ describe("POST /api/session-open", () => {
       parentSession: {
         wolfpackSessionId: "mock:wolf-1",
         wolfpackSessionName: "wolf-1",
+        cleanup: "cascade",
       },
       model,
       initialPrompt: prompt,

@@ -23,9 +23,10 @@
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
 import { noteViewerInput } from "./viewer-input.js";
-import { DuplicateSessionError, UnsupportedTerminalKeyError } from "./backend-contract.js";
+import { DuplicateSessionError, SESSION_KILL_DISPOSITION, UnsupportedTerminalKeyError } from "./backend-contract.js";
 import type {
   CapturePaneOptions,
+  SessionKillDisposition,
   PtyBackendMethods,
   SessionAttachLease,
   SessionBackend,
@@ -885,7 +886,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     await this.killSessionById(id);
   }
 
-  async killSessionById(id: string): Promise<void> {
+  async killSessionById(id: string): Promise<SessionKillDisposition> {
     // SIGHUP (1) - interactive bash ignores SIGTERM, but SIGHUP propagates to
     // the foreground process group via the controlling PTY and reliably tears
     // down nested shells (e.g. `bash -lic /bin/zsh`).
@@ -901,17 +902,21 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       kill.inFlight--;
       this.settleKillRequest(id, kill);
     }
+    let disposition: SessionKillDisposition = SESSION_KILL_DISPOSITION.KILLED;
     if (resp.status === "error") {
       const code = resp.error?.code;
+      // Idempotent: the broker no longer runs this session, so the kill is not an error.
       if (code !== "unknown_session" && code !== "session_not_alive") {
         throw new BrokerRpcError(code ?? "internal_error", resp.error?.message ?? "kill failed");
       }
+      disposition = SESSION_KILL_DISPOSITION.ALREADY_GONE;
     }
     const name = this.idToInfo.get(id)?.name;
     if (name !== undefined && this.nameToId.get(name) === id) this.nameToId.delete(name);
     this.idToInfo.delete(id);
     this.idToAgentKind.delete(id);
     getSessionIdentityStore().deleteById(id);
+    return disposition;
   }
 
   async hasSession(name: string): Promise<boolean> {

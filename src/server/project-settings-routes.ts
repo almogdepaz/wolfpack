@@ -213,7 +213,7 @@ interface SessionCreateBody extends Record<string, unknown> {
 }
 
 function isSessionCreateBody(body: Record<string, unknown>): body is SessionCreateBody {
-  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun", "outliveParent"]);
+  const allowedKeys = new Set(["project", "projectDir", "harness", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
@@ -244,7 +244,7 @@ interface SessionOpenBody extends Record<string, unknown> {
 }
 
 function isSessionOpenBody(body: Record<string, unknown>): body is SessionOpenBody {
-  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "harness", "model", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun"]);
+  const allowedKeys = new Set(["project", "projectDir", "parentSession", "sessionName", "harness", "model", "initialPrompt", "plan", "taskWorker", "readinessTimeoutMs", "taskWorkerPolicy", "taskWorkerDryRun", "outliveParent"]);
   return Object.keys(body).every(key => allowedKeys.has(key))
     && hasOptionalType(body, "project", "string")
     && hasOptionalType(body, "projectDir", "string")
@@ -754,7 +754,6 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         projectDir,
         command: configuredCommand,
         initialPrompt,
-        ...(body.outliveParent === true && { cleanup: CHILD_CLEANUP.OUTLIVE }),
         ...(taskWorker !== undefined && {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,
@@ -916,6 +915,7 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
         harness: body.harness,
         model: body.model,
         initialPrompt,
+        ...(body.outliveParent === true && { cleanup: CHILD_CLEANUP.OUTLIVE }),
         ...(taskWorker !== undefined && {
           taskWorker,
           readinessTimeoutMs: body.readinessTimeoutMs,

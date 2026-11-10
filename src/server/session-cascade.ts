@@ -10,7 +10,7 @@ import {
   CHILD_CLEANUP,
   type CascadedChild,
 } from "../session-cascade-contract.js";
-import type { SessionBackend, SessionListFact } from "./backend-contract.js";
+import { SESSION_KILL_DISPOSITION, type SessionBackend, type SessionKillDisposition, type SessionListFact } from "./backend-contract.js";
 import { forgetSessionObservation } from "./session-observation.js";
 import { onSessionDeath } from "./session-death.js";
 import { teardownPty } from "./websocket.js";
@@ -46,17 +46,18 @@ export async function killSessionWithTeardown(
   backend: Pick<SessionBackend, "killSessionById">,
   session: string,
   sessionId: string,
-): Promise<void> {
+): Promise<SessionKillDisposition> {
   teardownPty(session);
   forgetSessionObservation(sessionId, session);
-  await backend.killSessionById(sessionId);
+  return backend.killSessionById(sessionId);
 }
 
 /**
  * Kill the cascade children of a parent that was killed or died, then their
  * cascade children. Reads one session table; throws when it is unavailable.
- * A child listed dead is `already_gone`; its own cascade children still follow
- * their policy. A child whose kill fails keeps its children.
+ * A child listed dead, or one the backend reports gone at kill time, is
+ * `already_gone`; its own cascade children still follow their policy. A child
+ * whose kill fails keeps its children.
  */
 export async function cascadeChildCleanup(backend: CascadeBackend, parentSessionId: string): Promise<CascadedChild[]> {
   const facts = await backend.listSessionFacts();
@@ -77,8 +78,9 @@ export async function cascadeChildCleanup(backend: CascadeBackend, parentSession
         cascaded.push({ sessionId, session: child.name, outcome: CASCADE_OUTCOME.ALREADY_GONE });
       } else {
         try {
-          await killSessionWithTeardown(backend, child.name, sessionId);
-          cascaded.push({ sessionId, session: child.name, outcome: CASCADE_OUTCOME.KILLED });
+          const disposition = await killSessionWithTeardown(backend, child.name, sessionId);
+          const outcome = disposition === SESSION_KILL_DISPOSITION.ALREADY_GONE ? CASCADE_OUTCOME.ALREADY_GONE : CASCADE_OUTCOME.KILLED;
+          cascaded.push({ sessionId, session: child.name, outcome });
         } catch (error: unknown) {
           releaseSessionCleanup(sessionId);
           cascaded.push({ sessionId, session: child.name, outcome: CASCADE_OUTCOME.FAILED, reason: errMsg(error) });

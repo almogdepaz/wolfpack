@@ -222,7 +222,7 @@ The killed `sessionId` must be absent. Do not treat `/quit` as a substitute, and
 A child spawned with the default `cascade` policy is killed together with its parent. The cascade is recursive: each child's own recorded policy decides whether it follows its parent, so an `outlive` child and its subtree stay running. A child created before the policy existed has no recorded policy and never cascades.
 
 - triggers: a successful `POST /api/kill` of the parent, or the parent's death. Death means a lifecycle exit frame, or a dead or missing entry in a session table that the server read successfully. An unavailable read is not death.
-- `cascaded` in the kill response lists each cascade child as `{ sessionId, session, outcome, reason? }`. `outcome` is `killed`, `already_gone` (the child was already dead; its own cascade children still follow their policy) or `failed` with a `reason`. A failed child keeps its children.
+- `cascaded` in the kill response lists each cascade child as `{ sessionId, session, outcome, reason? }`. `outcome` is `killed`, `already_gone` (the child was already dead in the session table, or the broker answered the kill with `session_not_alive` or `unknown_session`; its own cascade children still follow their policy) or `failed` with a `reason`. A failed child keeps its children.
 - when the session table cannot be read after the kill, the parent is still killed, `cascaded` is empty and `cascadeError` gives the reason. A later death notification of that parent can still cascade.
 - a parent-death cascade logs each child at info (`parent death cascade`, with `parentSessionId` and `childSessionId`).
 - each session is cascaded at most once per server boot; a cycle or a second trigger does not kill again.
