@@ -634,6 +634,61 @@ test("L3: a journal bucket cannot hide deduplicated recent input after restart",
   } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
 });
 
+test.each(["archive-link", "family-link", "late-corrupt-state", "healthy"] as const)("C1: rotation preflight preserves the live writer on failure (%s)", async kind => {
+  const t = await fixture();
+  try {
+    writeFileSync(t.transcript, "keep this live conversation");
+    await t.reopen(); // changed digest, live idle assistant, empty queue/inbox
+    const record = readFileSync(t.record, "utf8");
+    const launches = t.launches.length;
+    const outside = join(t.root, "outside");
+    mkdirSync(outside);
+    const target = join(outside, "target.jsonl");
+    writeFileSync(target, "outside bytes");
+    if (kind === "archive-link") {
+      rmSync(t.archive, { recursive: true, force: true });
+      symlinkSync(outside, t.archive, "dir");
+    } else if (kind === "family-link") {
+      symlinkSync(target, join(t.assistant.folder, "sessions/other_focus-assistant.jsonl"));
+    }
+    let corrupted = false;
+    if (kind === "late-corrupt-state") {
+      const list = t.backend.listSessionFacts.bind(t.backend);
+      let reads = 0;
+      t.backend.listSessionFacts = async () => {
+        // The initial digest read succeeds; corrupt metadata at the final broker fence.
+        if (++reads === 3) { writeFileSync(t.record, "{late corrupt"); corrupted = true; }
+        return list();
+      };
+    }
+    await t.ctx.focusRuntime.tick();
+    if (kind === "healthy") {
+      expect(t.kills).toEqual(["mock:assistant"]);
+      expect(t.launches).toHaveLength(launches + 1);
+      expect(t.archived()).toEqual(["keep this live conversation"]);
+    } else {
+      expect(t.kills).toEqual([]);
+      expect(t.launches).toHaveLength(launches);
+      expect(await t.backend.list()).toContain("assistant");
+      expect((await t.ctx.focusRuntime.status()).error).toMatch(/real directory|regular file|malformed/);
+      expect(readFileSync(t.transcript, "utf8")).toBe("keep this live conversation");
+      expect(readFileSync(t.record, "utf8")).toBe(kind === "late-corrupt-state" ? "{late corrupt" : record);
+    }
+    if (kind === "late-corrupt-state") expect(corrupted).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe("outside bytes");
+    expect(readdirSync(outside)).toEqual(["target.jsonl"]);
+    if (kind !== "healthy") {
+      if (kind === "archive-link") rmSync(t.archive); // remove only the fixture symlink, never its target
+      if (kind === "family-link") rmSync(join(t.assistant.folder, "sessions/other_focus-assistant.jsonl"));
+      if (kind === "late-corrupt-state") writeFileSync(t.record, record);
+      await t.ctx.focusRuntime.tick();
+      expect(t.kills).toEqual(["mock:assistant"]);
+      expect(t.launches).toHaveLength(launches + 1);
+      expect((await t.ctx.focusRuntime.status()).error).toBeUndefined();
+    }
+  } finally { t.close(); }
+});
+
 test("a configured non-Pi assistant is not rotated by the managed skill protocol", async () => {
   const t = await fixture();
   try {

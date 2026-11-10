@@ -152,6 +152,8 @@ export class FocusRuntime {
           || (current.programAt === undefined && (!current.fallback || current.fallback.outputSequence === undefined
             || fact.outputSequence !== current.fallback.outputSequence || !genericHarness.isIdle(current.fallback)))
           || this.queue.busy || userActive() || !service.enabled || !this.homeIsLocal()) return;
+        try { service.preflightConversation(); }
+        catch (error) { this.pins.errors.assistant = errMsg(error); return; }
         await this.ctx.backend.killSessionById(current.id);
         // stop() revokes this continuation even if the same runtime has since started again.
         if (!active()) return;

@@ -94,6 +94,11 @@ export class AssistantService {
         && (pending !== true || typeof generation === "string");
     });
   }
+  /** Shared preflight for an idle rotation and the later actual launch; neither may skip path/state validation. */
+  preflightConversation(): ConversationState | null {
+    this.validateConversationPaths();
+    return this.readConversation();
+  }
   conversationChanged(): boolean {
     // An unrecorded legacy conversation cannot prove it loaded the current contract.
     return this.readConversation()?.digest !== this.seededDigest();
@@ -111,9 +116,8 @@ export class AssistantService {
   /** Called only by the serialized pin reconciler after proving there is no live writer. */
   prepareLaunch(pin: PinnedSession): PinnedSession {
     if (!this.isManagedPin(pin)) return pin;
-    this.validateConversationPaths();
     // Reseeding may restore bundled bytes; it must not erase evidence that this conversation saw a different seed.
-    const previous = this.readConversation();
+    const previous = this.preflightConversation();
     const changed = previous?.digest !== this.seededDigest();
     this.refreshSkill();
     const digest = this.seededDigest();
