@@ -8,6 +8,20 @@ async function openAssistant(page: Page) {
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
 }
 
+test("QA-38: settings store errors do not point back to settings", async ({ page }, info) => {
+  let failed = false;
+  await page.route(url => url.pathname === "/api/focus", route => failed
+    ? route.fulfill({ status: 503, json: { error: "focus persistence is unreadable: fixture" } }) : route.continue());
+  await openAssistant(page);
+  failed = true;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#assistant-content .focus-header")).toContainText("read-only");
+  await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
+  await expect(page.locator("#assistant-setting-status")).toHaveText("on · focus unavailable · read-only");
+  await expect(page.locator("#assistant-setting-error")).toContainText("focus persistence is unreadable");
+  await page.screenshot({ path: info.outputPath(`qa38-settings-${info.project.name}.png`), animations: "disabled" });
+});
+
 test("QA-37: Sessions does not open an empty hover chooser", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop hover");
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "0"));

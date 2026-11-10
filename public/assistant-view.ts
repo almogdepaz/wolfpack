@@ -363,8 +363,9 @@ export function createAssistantView(deps: {
     const r = routines();
     const catching = r?.catchingUp;
     // Every state names the user's move: answer, catch up now, look at its terminal; never only what the system is doing.
+    const unavailableInfo = "focus unavailable · read-only";
     const info = offline() ? `focus from ${current.updatedAt ? when(current.updatedAt) : "cache"} · ${homeName} offline · read-only`
-      : focusUnavailable ? "focus unavailable · read-only · details in settings"
+      : focusUnavailable ? `${unavailableInfo} · details in settings`
       : terminalUnavailable() ? "sessions unavailable · focus is saved here"
       : state === "needs you" ? "needs you · answer"
       : r?.surfaced ? `has not confirmed reading activity · sent ${r.surfaced.sends} times`
@@ -413,7 +414,7 @@ export function createAssistantView(deps: {
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
-    if (setting) setting.textContent = enabled ? `on · ${info}` : "off";
+    if (setting) setting.textContent = enabled ? `on · ${focusUnavailable && !offline() ? unavailableInfo : info}` : "off";
     const settingError = document.getElementById("assistant-setting-error");
     if (settingError) settingError.textContent = offline() ? "" : error || focus?.assistant?.error || "";
     const settingHome = document.getElementById("assistant-setting-home");
