@@ -2369,6 +2369,91 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
         expect(result).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted", writeRefused: true });
         expect(result.retried).toBeUndefined();
       });
+
+      /**
+       * A guard read that captures one state while a push with another state
+       * lands before its response returns (review A4-1). `readNumber` picks the read.
+       */
+      function racedGuardRead(
+        readNumber: number,
+        captured: string,
+        pushed: { readonly state: string; readonly stamp: (capturedStamp: number) => number },
+      ): () => number {
+        let reads = 0;
+        client.setHandler("session_info", async () => {
+          if (++reads !== readNumber) return sessionInfoResponse();
+          const capturedStamp = Date.now();
+          rootStatus = status(captured, capturedStamp);
+          const response = sessionInfoResponse();
+          await sleep(5);
+          pushStatus(status(pushed.state, pushed.stamp(capturedStamp)));
+          return response;
+        });
+        return () => reads;
+      }
+      const staleGuardRead = (readNumber: number): () => number =>
+        racedGuardRead(readNumber, "idle", { state: "blocked", stamp: captured => captured + 10 });
+
+      test("a guard read older than a pushed blocked status writes no Enter (review A4-1)", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 18n);
+        };
+        // Read 1 is the baseline, read 2 guards the text, read 3 guards the Enter.
+        staleGuardRead(3);
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note"]);
+        expect(result.writeRefused).toBe(true);
+      });
+
+      test("a guard read and a push with the same stamp and different states write no Enter (review A4-1)", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 18n);
+        };
+        // The order of blocked and idle with one stamp is unknown, so neither authorizes.
+        racedGuardRead(3, "blocked", { state: "idle", stamp: captured => captured });
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note"]);
+        expect(result.writeRefused).toBe(true);
+      });
+
+      test("a guard read older than a pushed blocked status writes no retry Enter (review A4-1)", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          // The first Enter is swallowed: the status stays idle.
+          if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 18n);
+        };
+        // Attempt 1: baseline, text guard, Enter guard, final. Attempt 2: baseline, retry Enter guard.
+        const reads = staleGuardRead(6);
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 30, ensureSubmitted: true, writeGuard,
+        });
+        expect(reads()).toBeGreaterThanOrEqual(6);
+        expect(inputs()).toEqual(["note", "\r"]);
+        expect(result.writeRefused).toBe(true);
+      });
+
+      test("a fresh exact-ID read that reports the parent dead writes nothing, also with a live cache (review A4-1)", async () => {
+        rootStatus = status("idle", 1);
+        client.setHandler("session_info", () => okResp({
+          session: { ...sessionInfo({ name: "live", id: SESSION_UUID_1, alive: false }), program_status: rootStatus },
+        }));
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+          else client.emit(sessionId, data, 18n);
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 30, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual([]);
+        expect(result).toMatchObject({ delivery: "not_delivered", writeRefused: true });
+        expect(result.retried).toBeUndefined();
+      });
     });
   });
 

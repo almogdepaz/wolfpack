@@ -28,6 +28,9 @@ import { onChildEvent, type ChildEventDelivery } from "./child-events.js";
 
 const log = createLogger("session-observation");
 
+/** The flush result when the note text was written but its Enter was refused. */
+const NOTE_RESULT_PARTIAL_WRITE_REFUSED = "partial_write_refused";
+
 export const CHILD_EVENT_NOTE_LIMITS = {
   /** No note while a viewer typed into the parent this recently. */
   VIEWER_QUIET_MS: 60_000,
@@ -210,7 +213,17 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
       keepBatch();
       return;
     }
-    if (result?.reason !== undefined) {
+    if (result?.writeRefused) {
+      // The note text was written but the guard refused the Enter (review A4-2):
+      // the text may remain unsent in the parent input. Retyping could submit
+      // it twice, so the events stay available only through the inbox.
+      log.warn("typed child-event note text written but its Enter was refused; events stay in the inbox", {
+        result: NOTE_RESULT_PARTIAL_WRITE_REFUSED,
+        parent: parent.name,
+        parentSessionId: parent.sessionId,
+        eventIds: batch.map(item => item.payload.eventId),
+      });
+    } else if (result?.reason !== undefined) {
       // Nothing was written: keep the events for a bounded number of attempts.
       entry.attempts += 1;
       if (entry.attempts < CHILD_EVENT_NOTE_LIMITS.ATTEMPTS) {

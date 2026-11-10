@@ -316,6 +316,25 @@ describe("child-event delivery to the parent agent", () => {
     expect(h.delivery.hasPending()).toBe(false);
   });
 
+  test("a refused Enter after the note text is an explicit partial_write_refused outcome, logged once (review A4-2)", async () => {
+    const h = harness({ sends: [REFUSED_BEFORE_ENTER] });
+    const payload = event();
+    await deliver(h, payload);
+    const lines: string[] = [];
+    const write = process.stdout.write.bind(process.stdout);
+    process.stdout.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stdout.write;
+    try {
+      await observe(h);
+      h.advance(CHILD_EVENT_NOTE_LIMITS.MIN_INTERVAL_MS);
+      await observe(h);
+    } finally {
+      process.stdout.write = write;
+    }
+    const warnings = lines.map(line => JSON.parse(line) as Record<string, unknown>).filter(entry => entry.level === "warn");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({ result: "partial_write_refused", parentSessionId: PARENT_ID, eventIds: [payload.eventId] });
+  });
+
   test("the write guard re-checks status, viewer input and the setting at write time (review A2-1)", async () => {
     const h = harness();
     await deliver(h, event());

@@ -354,18 +354,25 @@ class SendStatusTimeline {
   private newestMs: number | undefined;
   /** The record that set `newestMs`; undefined when a clear set it. */
   private newest: ProgramStatusRecord | undefined;
+  /** Another record shares the newest stamp with a different state. */
+  private newestAmbiguous = false;
 
   admit(record: ProgramStatusRecord | undefined, writtenAtMs: number | undefined): void {
     if (record === undefined) {
       this.newestMs = Math.max(this.newestMs ?? 0, Date.now());
       this.newest = undefined;
+      this.newestAmbiguous = false;
     } else if (this.newestMs !== undefined && record.updatedAtMs <= this.newestMs) {
       // Placing a stale record by its stamp could only invent an edge; drop it.
-      if (record.updatedAtMs === this.newest?.updatedAtMs && record.state !== this.newest.state) this.ambiguous = true;
+      if (record.updatedAtMs === this.newest?.updatedAtMs && record.state !== this.newest.state) {
+        this.ambiguous = true;
+        this.newestAmbiguous = true;
+      }
       return;
     } else {
       this.newestMs = record.updatedAtMs;
       this.newest = record;
+      this.newestAmbiguous = false;
     }
     if (writtenAtMs === undefined) {
       this.baseline = record;
@@ -382,6 +389,16 @@ class SendStatusTimeline {
       return;
     }
     this.after.push(record);
+  }
+
+  /**
+   * The newest admitted root state, by stamp (a clear by its arrival): what a
+   * write may be authorized from. Undefined when nothing was admitted or two
+   * states share the newest stamp.
+   */
+  latest(): { readonly record: ProgramStatusRecord | undefined } | undefined {
+    if (this.newestMs === undefined || this.newestAmbiguous) return undefined;
+    return { record: this.newest };
   }
 
   /** A record the broker stamped after the write arrived, so the status changed since. */
@@ -1063,6 +1080,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const deadlineMs = Date.now() + attempt.observeMs + settleMs;
     const statusReadMs = Math.min(SESSION_SEND_STATUS_READ_MAX_MS, Math.floor(attempt.observeMs / 4));
     const status = new SendStatusTimeline();
+    // Write authorization (review A4-1): every pushed record and every read,
+    // ordered by stamp, so a read older than a push cannot authorize a write.
+    const authority = new SendStatusTimeline();
     let outputSeen = false;
     let observation: InputObservation<SendAttemptStop> | undefined;
     const observed: SendAttemptStop = { kind: "observed" };
@@ -1080,12 +1100,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     // Listen before reading the baseline so no pushed change falls between them.
     const unsubscribeStatus = this.onProgramStatusById(sessionId, (record) => {
       if (Date.now() > deadlineMs) return;
+      authority.admit(record, undefined);
       status.admit(record, observation?.inputSentAtMs);
       if (observation?.inputSent && decided()) observation.finish(observed);
     });
     try {
       const initial = await this.rootProgramStatusWithin(sessionId, Date.now() + statusReadMs, "baseline");
-      if (initial) status.admit(initial.record, undefined);
+      if (initial) {
+        status.admit(initial.record, undefined);
+        authority.admit(initial.record, undefined);
+      }
       // A timer cannot interrupt a busy turn, so check the clock before subscribing and writing.
       if (windowSpent()) return notDeliveredSend(SESSION_SEND_FAILURE_REASON.TIMED_OUT);
       const targetUnavailableOutcome = () => this.targetUnavailableOutcome(sessionId, attempt.sessionName ?? name);
@@ -1109,11 +1133,16 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         onWriteError: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
         onSubmitWritten: attempt.onSubmitWritten,
         // Read the root status again at each write: the baseline read can be
-        // stale after the wait for earlier writes or the settle gap.
+        // stale after the wait for earlier writes or the settle gap. The read's
+        // own exact-ID liveness decides, and its record counts only if no newer
+        // push or clear arrived meanwhile (review A4-1).
         writeGuard: writeGuard && {
           allows: async () => {
             const current = await this.rootProgramStatusWithin(sessionId, Math.min(writeByMs, Date.now() + statusReadMs), "guard");
-            return this.idToInfo.get(sessionId)?.alive === true && writeGuard(current?.record);
+            if (current?.alive !== true || this.idToInfo.get(sessionId)?.alive === false) return false;
+            authority.admit(current.record, undefined);
+            const latest = authority.latest();
+            return latest !== undefined && writeGuard(latest.record);
           },
           onRefused: () => {
             writeRefused = true;
@@ -1151,12 +1180,12 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     }
   }
 
-  /** Reads the root status record, or undefined when the read fails or is not handled by `untilMs`. */
+  /** Reads the root status record and exact-ID liveness, or undefined when the read fails or is not handled by `untilMs`. */
   private async rootProgramStatusWithin(
     sessionId: string,
     untilMs: number,
     phase: "baseline" | "guard" | "final",
-  ): Promise<{ readonly record: ProgramStatusRecord | undefined } | undefined> {
+  ): Promise<{ readonly record: ProgramStatusRecord | undefined; readonly alive: boolean } | undefined> {
     const timeoutMs = untilMs - Date.now();
     if (timeoutMs <= 0) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1164,7 +1193,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     try {
       const read = await Promise.race([
         this.exactSessionInfo(sessionId, timeoutMs)
-          .then((session) => ({ record: parseBrokerProgramStatusRecord(session.program_status) })),
+          .then((session) => ({ record: parseBrokerProgramStatusRecord(session.program_status), alive: session.alive })),
         expired,
       ]);
       // A busy turn can run the response before an expired timer, so check the clock and stamp too.
