@@ -1,5 +1,5 @@
 import { expect, test, setSystemTime } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, lstatSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { AssistantService } from "../../src/server/assistant-service.ts";
@@ -434,6 +434,38 @@ test("L3: journaled recent input survives a server restart", async () => {
     await t.ctx.focusRuntime.tick();
     expect(t.kills).toEqual(["mock:assistant"]);
   } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
+});
+
+test.each(["sessions-link", "archive-link", "sessions-file", "archive-file", "family-link", "family-directory"] as const)("SR-N1/L1: refuse unsafe conversation paths (%s) without modifying them", async kind => {
+  const t = await fixture();
+  try {
+    const sessions = join(t.assistant.folder, "sessions");
+    const outside = join(t.root, "outside");
+    mkdirSync(outside);
+    const target = join(outside, "target.jsonl");
+    writeFileSync(target, "outside conversation bytes");
+    if (kind === "sessions-link" || kind === "sessions-file") {
+      renameSync(sessions, join(t.root, "original-sessions"));
+      if (kind === "sessions-link") symlinkSync(outside, sessions, "dir"); else writeFileSync(sessions, "not a directory");
+    } else if (kind === "archive-link" || kind === "archive-file") {
+      rmSync(t.archive, { recursive: true, force: true });
+      if (kind === "archive-link") symlinkSync(outside, t.archive, "dir"); else writeFileSync(t.archive, "not a directory");
+    } else {
+      if (kind === "family-link") symlinkSync(target, t.transcript); else mkdirSync(t.transcript);
+      expect(t.assistant.command()).not.toContain(t.transcript); // retain the read-only regular-file preview filter
+    }
+    const record = readFileSync(t.record, "utf8");
+    const launches = t.launches.length;
+    t.backend.setSessions([]);
+    t.ctx.focusRuntime.pins.reset("assistant");
+    await t.ctx.focusRuntime.pins.tick();
+    expect(t.launches).toHaveLength(launches);
+    expect(t.ctx.focusRuntime.pins.errors.assistant).toMatch(/real directory|regular file/);
+    expect(readFileSync(t.record, "utf8")).toBe(record);
+    expect(readFileSync(target, "utf8")).toBe("outside conversation bytes");
+    if (kind === "family-link") expect(lstatSync(t.transcript).isSymbolicLink()).toBe(true);
+    if (kind === "archive-link") expect(readdirSync(outside)).toEqual(["target.jsonl"]);
+  } finally { t.close(); }
 });
 
 test("a configured non-Pi assistant is not rotated by the managed skill protocol", async () => {

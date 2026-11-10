@@ -28,7 +28,7 @@ export class FocusRuntime {
   private tickFlight?: Promise<void>;
   private lifetime = 0;
   constructor(private readonly ctx: ServerContext) {
-    this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => ctx.assistantService.pins.filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder), prepareLaunch: pin => ctx.assistantService.prepareLaunch(pin) });
+    this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder), prepareLaunch: pin => ctx.assistantService.prepareLaunch(pin) });
     this.queue = new FocusSendQueue(async (id, text) => {
       const { isAllowedSession } = await import("./http.js");
       if (!(await isAllowedSession("assistant", ctx.backend))) throw new Error("assistant session unavailable");

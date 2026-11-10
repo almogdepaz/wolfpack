@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
@@ -26,7 +26,7 @@ export class AssistantService {
   get config(): Config | null { return (this.options.readConfig ?? loadConfig)(); }
   isManagedPin(pin: PinnedSession): boolean { return pin.name === "assistant" && pin.cwd === this.folder && pin.harness === AGENT_KIND.PI.id && pin.command[0] === AGENT_KIND.PI.cmd; }
   get pins() { return (this.config?.pinnedSessions ?? []).map(pin => this.isManagedPin(pin) ? { ...pin, command: this.command() } : pin); }
-  get enabled(): boolean { return this.pins.some(p => p.name === "assistant" && p.cwd === this.folder); }
+  get enabled(): boolean { return (this.config?.pinnedSessions ?? []).some(p => p.name === "assistant" && p.cwd === this.folder); }
   private save(config: Config): void { (this.options.writeConfig ?? saveConfig)(config); }
   /**
    * Explicit paths keep the conversation portable even when its original cwd no longer exists.
@@ -67,6 +67,18 @@ export class AssistantService {
     const sessions = join(this.folder, "sessions");
     return existsSync(sessions) ? readdirSync(sessions, { withFileTypes: true }).filter(f => f.isFile() && f.name.endsWith("_focus-assistant.jsonl")).map(f => f.name).sort() : [];
   }
+  private validateConversationPaths(): void {
+    const sessions = join(this.folder, "sessions");
+    for (const directory of [sessions, join(sessions, "archive")]) {
+      const entry = lstatSync(directory, { throwIfNoEntry: false });
+      if (entry && !entry.isDirectory()) throw new Error(`assistant conversation path must be a real directory: ${directory}`);
+      if (!entry) mkdirSync(directory, { mode: 0o700 });
+    }
+    // Pi's fresh-ID lookup scans top-level JSONL headers, including non-family filenames.
+    for (const file of readdirSync(sessions)) {
+      if (file.endsWith(".jsonl") && !lstatSync(join(sessions, file)).isFile()) throw new Error(`assistant conversation must be a regular file: ${file}`);
+    }
+  }
   private get conversationPath(): string { return join(this.folder, "conversation.json"); }
   private seededDigest(): string {
     return createHash("sha256").update(JSON.stringify([readFileSync(this.skillPath, "utf8"), readFileSync(join(this.folder, "AGENTS.md"), "utf8")])).digest("hex");
@@ -80,6 +92,7 @@ export class AssistantService {
   /** Called only by the serialized pin reconciler after proving there is no live writer. */
   prepareLaunch(pin: PinnedSession): PinnedSession {
     if (!this.isManagedPin(pin)) return pin;
+    this.validateConversationPaths();
     // Reseeding may restore bundled bytes; it must not erase evidence that this conversation saw a different seed.
     const changed = this.conversationChanged();
     this.refreshSkill();
