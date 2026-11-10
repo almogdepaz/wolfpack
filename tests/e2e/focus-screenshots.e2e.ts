@@ -92,8 +92,10 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(3);
   if (!desktop) {
-    const box = (await block.getByRole("button", { name: "Open assistant", exact: true }).boundingBox())!;
-    expect.soft(box.height, "QA-8 dashboard assistant target").toBeGreaterThanOrEqual(44);
+    await expect.poll(async () => {
+      const box = await block.getByRole("button", { name: "Open assistant", exact: true }).boundingBox();
+      return box?.height ?? 0;
+    }, { message: "QA-8 dashboard assistant target" }).toBeGreaterThanOrEqual(44);
   }
   const row = block.locator(".focus-next > li").first();
   await row.locator("summary").click();
