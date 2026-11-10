@@ -10,7 +10,8 @@ const {
   __runSessionNotificationObservationForTests,
   stopSessionNotificationObserver,
 } = await import("../../../src/server/session-observation.ts");
-const { __resetChildEventsForTests } = await import("../../../src/server/child-events.ts");
+const { __resetChildEventsForTests, noteChildCreated } = await import("../../../src/server/child-events.ts");
+const { BrokerBackend } = await import("../../../src/server/broker-backend.ts");
 const { listParentNotifications } = await import("../../../src/server/parent-inbox.ts");
 const { PROGRAM_STATUS_STATE } = await import("../../../src/program-status-contract.ts");
 const { startChildEventDelivery } = await import("../../../src/server/child-event-delivery.ts");
@@ -108,6 +109,69 @@ test("a queued typed note keeps the observer running and reaches the parent once
     expect(await __runSessionNotificationObservationForTests()).toEqual([]);
   } finally {
     stopDelivery();
+    await stopSessionNotificationObserver();
+    __setTestBackend(previousBackend);
+  }
+});
+
+test("a live observation that started before a child's exit does not report the exit twice (review A3-1)", async () => {
+  const previousBackend = getBackend();
+  __resetSessionObservationForTests();
+  __resetChildEventsForTests();
+  const parentId = "11111111-1111-4111-8111-111111111111";
+  const childId = "22222222-2222-4222-8222-222222222222";
+  let childAlive = true;
+  const info = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
+    id, name, cwd: "/tmp", alive: true, cols: 120, rows: 40, pid: 1234, started_at_ms: Date.now() - 1000,
+    exit_code: null, command: ["claude"], env: [], ...extra,
+  });
+  const client = {
+    request: async (method: string) => {
+      if (method !== "list_sessions") throw new Error(`unexpected broker request ${method}`);
+      return {
+        status: "ok",
+        payload: {
+          sessions: [
+            info(parentId, "lead"),
+            info(childId, "worker", {
+              alive: childAlive,
+              env: [["WOLFPACK_PARENT_SESSION_ID", parentId], ["WOLFPACK_PARENT_SESSION_NAME", "lead"]],
+              program_status: { id: "", state: "working", updated_at_ms: Date.now() },
+            }),
+          ],
+        },
+      };
+    },
+  };
+  const backend = new BrokerBackend(client as never, () => {});
+  __setTestBackend(backend);
+  noteChildCreated(childId, "worker", { wolfpackSessionId: parentId, wolfpackSessionName: "lead" });
+  let release = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let captured = () => {};
+  const captureEntered = new Promise<void>(resolve => { captured = resolve; });
+  backend.capturePane = async (name: string) => {
+    if (name === "worker") {
+      captured();
+      await gate;
+    }
+    return "unchanged";
+  };
+  try {
+    // The pass reads the child as live, then waits on its capture.
+    const observation = __runSessionNotificationObservationForTests();
+    await captureEntered;
+    childAlive = false;
+    backend.ingestEvent({ event: "session_exited", session_id: childId, exit_code: 3 });
+    release();
+    await observation;
+    // The next table lists the child dead.
+    await __runSessionNotificationObservationForTests();
+    const exits = listParentNotifications(parentId).filter(entry => entry.childEvent?.event === "exited");
+    expect(exits).toHaveLength(1);
+    expect(exits[0]!.childEvent).toMatchObject({ childSessionId: childId, exitCode: 3 });
+  } finally {
+    release();
     await stopSessionNotificationObserver();
     __setTestBackend(previousBackend);
   }

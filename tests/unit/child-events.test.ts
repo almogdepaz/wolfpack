@@ -18,6 +18,7 @@ import {
   __resetChildEventsForTests,
   childMessageEvent,
   childSessionExited,
+  CHILD_EXIT_MEMORY,
   childTrackingMark,
   noteChildCreated,
   noteChildInputDelivered,
@@ -225,7 +226,7 @@ describe("child events", () => {
     expect(seen).toEqual(["lead:error"]);
     reconcileChildEvents(new Set(), { trackedBefore: childTrackingMark(), exitReason: () => "exit", publish });
     expect(events().map(event => event.event)).toEqual(["error", "error", "exited"]);
-    // Forgotten: the next sight is a baseline again.
+    // An exited child is not tracked again.
     observe(AGENT_STATUS_STATE.DONE);
     expect(events()).toHaveLength(3);
   });
@@ -251,6 +252,31 @@ describe("child events", () => {
     expect(events().map(event => [event.childName, event.event, event.reason])).toEqual([["worker", "exited", "exit"], ["killing", "exited", "killed"]]);
     reconcileChildEvents(new Set(["live", "new-id"]), { trackedBefore: childTrackingMark(), exitReason: () => "exit", publish });
     expect(events()).toHaveLength(2);
+  });
+
+  test("an exited child is not tracked again by a late live observation, send or create (review A3-1)", () => {
+    observe(AGENT_STATUS_STATE.WORKING);
+    childSessionExited(CHILD, { reason: "exit", exitCode: 3 }, publish);
+    // An observation that read the child as live before the exit arrives late.
+    observe(AGENT_STATUS_STATE.WORKING);
+    observe(AGENT_STATUS_STATE.NEEDS_INPUT);
+    noteChildInputDelivered(CHILD, "worker", PARENT);
+    noteChildCreated(CHILD, "worker", PARENT);
+    reconcileChildEvents(new Set(), { trackedBefore: childTrackingMark(), exitReason: () => "exit", publish });
+    expect(childSessionExited(CHILD, { reason: "exit" }, publish)).toBeUndefined();
+    expect(events().map(event => event.event)).toEqual(["exited"]);
+  });
+
+  test("the exited-child memory is bounded and forgets the oldest exit first", () => {
+    for (let n = 0; n <= CHILD_EXIT_MEMORY; n += 1) {
+      noteChildCreated(`gone-${n}`, `gone-${n}`, PARENT);
+      childSessionExited(`gone-${n}`, { reason: "exit" }, publish);
+    }
+    observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "gone-0", name: "gone-0" });
+    observe(AGENT_STATUS_STATE.FAILED, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "gone-0", name: "gone-0" });
+    observe(AGENT_STATUS_STATE.WORKING, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "gone-1", name: "gone-1" });
+    observe(AGENT_STATUS_STATE.FAILED, AGENT_STATUS_AUTHORITY.PROGRAM, {}, { id: "gone-1", name: "gone-1" });
+    expect(events().filter(event => event.event === "error").map(event => event.childName)).toEqual(["gone-0"]);
   });
 
   test("event text is bounded and has no control characters", () => {

@@ -81,9 +81,25 @@ export interface ChildEventDelivery {
 
 type ChildEventListener = (delivery: ChildEventDelivery) => void;
 
+/** How many exited child session IDs are remembered (review A3-1). */
+export const CHILD_EXIT_MEMORY = 1024;
+
 const children = new Map<string, ChildRecord>();
+/**
+ * Child session IDs that exited, oldest first. A session ID names one
+ * incarnation and never comes back, so an observation, send or create that
+ * started before the exit must not track it again (review A3-1).
+ */
+const exitedChildren = new Set<string>();
 const listeners = new Set<ChildEventListener>();
 let trackingSeq = 0;
+
+function rememberExit(sessionId: string): void {
+  exitedChildren.add(sessionId);
+  if (exitedChildren.size <= CHILD_EXIT_MEMORY) return;
+  const oldest = exitedChildren.values().next().value;
+  if (oldest !== undefined) exitedChildren.delete(oldest);
+}
 
 function track(sessionId: string, record: Omit<ChildRecord, "trackedSeq">): ChildRecord {
   const child = { ...record, trackedSeq: ++trackingSeq };
@@ -177,7 +193,7 @@ function deriveStateEvent(previous: AgentStatusState, child: ChildRecord, runtim
  */
 export function observeChildSession(observation: ChildSessionObservation, publish: PublishEvent): ChildEventPayload | undefined {
   const parent = observation.parentSession;
-  if (!parent) return undefined;
+  if (!parent || exitedChildren.has(observation.sessionId)) return undefined;
   let child = children.get(observation.sessionId);
   // A dead first sight is not tracked: there is no live child to report on,
   // and a record would make a later table read report a stale exit.
@@ -210,7 +226,7 @@ export function observeChildSession(observation: ChildSessionObservation, publis
  * then compared with `unknown` and reported, not taken as a baseline.
  */
 export function noteChildCreated(sessionId: string, name: string, parent: ParentSessionIdentity): void {
-  if (children.has(sessionId)) return;
+  if (children.has(sessionId) || exitedChildren.has(sessionId)) return;
   track(sessionId, {
     name,
     parentSessionId: parent.wolfpackSessionId,
@@ -227,7 +243,7 @@ export function noteChildCreated(sessionId: string, name: string, parent: Parent
  * tracked from here; its first observation is still a baseline.
  */
 export function noteChildInputDelivered(sessionId: string, name: string, parent: ParentSessionIdentity | undefined): void {
-  if (!parent) return;
+  if (!parent || exitedChildren.has(sessionId)) return;
   const child = children.get(sessionId);
   if (child) {
     child.armed = true;
@@ -241,7 +257,7 @@ export function noteChildInputDelivered(sessionId: string, name: string, parent:
   });
 }
 
-/** The session lifecycle reported an exit. Emits once, then forgets the child. */
+/** The session lifecycle reported an exit. Emits once, then forgets the child and remembers its exit. */
 export function childSessionExited(
   sessionId: string,
   exit: { readonly reason: SessionExitReason; readonly exitCode?: number; readonly signal?: number },
@@ -250,6 +266,7 @@ export function childSessionExited(
   const child = children.get(sessionId);
   if (!child) return undefined;
   children.delete(sessionId);
+  rememberExit(sessionId);
   return emit(sessionId, child, {
     event: CHILD_EVENT.EXITED,
     state: child.state ?? AGENT_STATUS_STATE.UNKNOWN,
@@ -322,6 +339,7 @@ export function onChildEvent(listener: ChildEventListener): () => void {
 export function __resetChildEventsForTests(): void {
   if (!process.env.WOLFPACK_TEST) throw new Error("__resetChildEventsForTests is test-only");
   children.clear();
+  exitedChildren.clear();
   listeners.clear();
   trackingSeq = 0;
 }
