@@ -3,6 +3,7 @@
  * coverage (`reviewedThrough`, per-machine catch-up cursors, last run per
  * routine), the one outstanding inbox file, and generated day-note facts.
  */
+import { AGENT_STATUS_STATE } from "./agent-status-contract.js";
 import { ACTIVITY_KIND, type ActivityRow, type ActivityGitRepo } from "./activity-journal.js";
 import { ROUTINE, type Routine, type NeedsInputSnapshot } from "./focus-scheduler.js";
 
@@ -213,8 +214,8 @@ function sessionDayFacts(machine: { name: string; rows: ActivityRow[] }): string
       s.cwd = row.cwd;
       if (row.harness) s.harness = row.harness;
     } else if (row.kind === ACTIVITY_KIND.SESSION_STATE) {
-      s.needsInput ||= row.state === "needs-input";
-      s.failed ||= row.state === "failed";
+      s.needsInput ||= row.state === AGENT_STATUS_STATE.NEEDS_INPUT;
+      s.failed ||= row.state === AGENT_STATUS_STATE.FAILED;
     } else if (row.kind === ACTIVITY_KIND.SESSION_EXITED) s.exited = true;
   }
   const projects = new Map<string, DaySession[]>();

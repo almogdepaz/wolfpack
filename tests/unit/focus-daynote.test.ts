@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { AGENT_STATUS_STATE } from "../../src/agent-status-contract";
 import { ACTIVITY_KIND, type ActivityRow } from "../../src/activity-journal";
 import { dayNoteMarkdown, dayNoteUpdateMarkdown } from "../../src/focus-coverage";
 const at = "2026-11-09T12:00:00.000Z";
@@ -57,10 +58,10 @@ test("sessions roll up by project and incarnation, listing only attention/failed
     { seq: 2, at, kind: ACTIVITY_KIND.INPUT, session: "quiet-helper", sessionId: "a", source: "cli", bucket: at },
     { seq: 3, at, kind: ACTIVITY_KIND.SESSION_EXITED, session: "quiet-helper", sessionId: "a", reason: "exit" },
     { seq: 4, at, kind: ACTIVITY_KIND.SESSION_CREATED, session: "failed-helper", sessionId: "b", cwd: "/dev/wolfpack-focus", harness: "pi" },
-    { seq: 5, at, kind: ACTIVITY_KIND.SESSION_STATE, session: "failed-helper", sessionId: "b", state: "failed", label: "Failed" },
+    { seq: 5, at, kind: ACTIVITY_KIND.SESSION_STATE, session: "failed-helper", sessionId: "b", state: AGENT_STATUS_STATE.FAILED, label: "Failed" },
     { seq: 6, at, kind: ACTIVITY_KIND.SESSION_EXITED, session: "failed-helper", sessionId: "b", reason: "exit" },
     { seq: 7, at, kind: ACTIVITY_KIND.SESSION_LIVE, session: "review", sessionId: "c", cwd: "/dev/wolfpack-focus", harness: "claude" },
-    { seq: 8, at, kind: ACTIVITY_KIND.SESSION_STATE, session: "review", sessionId: "c", state: "needs-input", label: "Needs input" },
+    { seq: 8, at, kind: ACTIVITY_KIND.SESSION_STATE, session: "review", sessionId: "c", state: AGENT_STATUS_STATE.NEEDS_INPUT, label: "Needs input" },
     { seq: 9, at, kind: ACTIVITY_KIND.SESSION_CREATED, session: "quiet-helper", sessionId: "d", cwd: "/dev/other", harness: "pi" },
     { seq: 10, at, kind: ACTIVITY_KIND.SESSION_EXITED, sessionId: "d", reason: "exit" },
   ];
