@@ -379,7 +379,7 @@ impl Session {
         };
         let mut drain_child_killer = child.clone_killer();
         if let Err(e) = spawn_named_thread(format!("broker-pty-read-{drain_id}"), move || {
-            if let Err(error) = drain_reader(reader, drain_terminal, Arc::clone(&drain_seq), drain_bus, drain_effects) {
+            if let Err(error) = catch_reader_panic(|| drain_reader(reader, drain_terminal, Arc::clone(&drain_seq), drain_bus, drain_effects)) {
                 tracing::error!(
                     session_id = %drain_id,
                     error = %error,
@@ -1355,6 +1355,15 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
     bus: Arc<OutputBus>,
     effects: &DrainEffects,
 ) -> io::Result<()> {
+    // Signal "drainer done; every byte produced has been ingested" so
+    // attached subscribers see Closed and sync waiters wake up.
+    struct CloseBusOnDrop(Arc<OutputBus>);
+    impl Drop for CloseBusOnDrop {
+        fn drop(&mut self) {
+            self.0.close();
+        }
+    }
+    let _close_bus = CloseBusOnDrop(Arc::clone(&bus));
     let mut buf = [0u8; 8192];
     let outcome = loop {
         if bus.is_closed() {
@@ -1430,10 +1439,13 @@ fn drain_reader_with_terminal<R: Read, T: TerminalFeed>(
             Err(error) => break Err(error),
         }
     };
-    // Signal "drainer done; every byte produced has been ingested" so
-    // attached subscribers see Closed and sync waiters wake up.
-    bus.close();
     outcome
+}
+
+/// Converts a reader-thread panic into an error so the session is marked failed and the child is killed.
+fn catch_reader_panic(read: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(read))
+        .unwrap_or_else(|_| Err(io::Error::other("PTY reader panicked")))
 }
 
 fn mark_pty_read_failed(
@@ -1635,6 +1647,14 @@ mod tests {
             };
             buf[..chunk.len()].copy_from_slice(chunk);
             Ok(chunk.len())
+        }
+    }
+
+    struct TerminalFeedPanic;
+
+    impl TerminalFeed for TerminalFeedPanic {
+        fn try_feed_chunk(&mut self, _data: &[u8]) -> Result<FeedOutcome, TerminalStateError> {
+            panic!("terminal feed panicked");
         }
     }
 
@@ -1904,6 +1924,30 @@ mod tests {
             buf[..chunk.len()].copy_from_slice(chunk);
             Ok(chunk.len())
         }
+    }
+
+    #[test]
+    fn reader_panic_becomes_an_error() {
+        let error = catch_reader_panic(|| panic!("x")).expect_err("reader panic must become an error");
+        assert_eq!(error.to_string(), "PTY reader panicked");
+        assert!(catch_reader_panic(|| Ok(())).is_ok());
+    }
+
+    #[test]
+    fn drainer_panic_closes_the_output_bus() {
+        let bus = OutputBus::with_defaults();
+        let (effects, _writes, _events) = test_drain_effects();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drain_reader_with_terminal(
+                ChunkReader { chunks: [b"x".as_slice()].into() },
+                Arc::new(Mutex::new(TerminalFeedPanic)),
+                Arc::new(AtomicU64::new(0)),
+                Arc::clone(&bus),
+                &effects,
+            )
+        }));
+        assert!(result.is_err(), "the double must panic");
+        assert!(bus.is_closed(), "a panicking drainer must still close the bus");
     }
 
     #[test]
