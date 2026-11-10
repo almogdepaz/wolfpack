@@ -15,6 +15,7 @@ import {
   type ChildEventDeliveryDeps,
   type ParentObservation,
 } from "../../src/server/child-event-delivery.ts";
+import { HOST_ENVELOPE_ACCEPTANCE } from "../../src/task-relay/volatile-protocol.ts";
 import type { VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult } from "../../src/task-relay/volatile-protocol.ts";
 
 const PARENT_ID = "11111111-1111-4111-8111-111111111111";
@@ -133,7 +134,10 @@ describe("child-event delivery to the parent agent", () => {
     expect(h.sends).toEqual([]);
   });
 
-  for (const relay of [{ kind: "unsupported" }, { kind: "failed", code: "RELAY_UNAVAILABLE" }] as const) {
+  for (const relay of [
+    { kind: "unsupported" },
+    { kind: "failed", code: "RELAY_UNAVAILABLE", acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED },
+  ] as const) {
     test(`a ${relay.kind} relay falls back to one typed note when the parent is idle`, async () => {
       const h = harness({ relay });
       await deliver(h, event({ childName: "worker-1", event: CHILD_EVENT.DONE }));
@@ -150,6 +154,28 @@ describe("child-event delivery to the parent agent", () => {
       expect(h.sends).toHaveLength(1);
     });
   }
+
+  test("a relay that may have accepted the envelope keeps it in the inbox and types no note (review A2-2)", async () => {
+    const h = harness({ relay: { kind: "failed", code: "RELAY_RESET", acceptance: HOST_ENVELOPE_ACCEPTANCE.UNCERTAIN } });
+    await deliver(h, event());
+    expect(h.relayCalls).toHaveLength(1);
+    expect(h.delivery.hasPending()).toBe(false);
+    await observe(h);
+    expect(h.sends).toEqual([]);
+  });
+
+  test("a relay call that throws is treated as uncertain acceptance (review A2-2)", async () => {
+    const h = harness();
+    const delivery = createChildEventDelivery({
+      hostEnvelope: async () => { throw new Error("relay transport broke after the send"); },
+      send: async () => { throw new Error("no note expected"); },
+      typedNotesEnabled: () => true,
+      lastViewerInputAt: () => undefined,
+      now: h.now,
+    });
+    await delivery.deliver({ parentSessionName: "coordinator", childEvent: event() });
+    expect(delivery.hasPending()).toBe(false);
+  });
 
   test("a done parent also receives the note", async () => {
     const h = harness();

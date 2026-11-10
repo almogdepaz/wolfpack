@@ -4,11 +4,15 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_KIND } from "../../src/agent-kind.ts";
-import { CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENT_RELAY_PROTOCOL } from "../../src/child-event-contract.ts";
+import { CHILD_EVENT, CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENT_RELAY_PROTOCOL, type ChildEventPayload } from "../../src/child-event-contract.ts";
+import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../../src/agent-status-contract.ts";
+import { createChildEventDelivery } from "../../src/server/child-event-delivery.ts";
+import { SESSION_SEND_DELIVERY, SESSION_SEND_OUTCOME } from "../../src/session-send-contract.ts";
 import { RELAY_ID, RELAY_PROTOCOL_VERSION } from "../../src/task-relay/domain.ts";
 import type { RelayEndpoint, RelayEnvelope } from "../../src/task-relay/domain.ts";
 import { MEMORY_RELAY_PROFILE as profile } from "../../src/task-relay/memory-store.ts";
 import { VolatileRelayGateway } from "../../src/task-relay/volatile-gateway.ts";
+import { HOST_ENVELOPE_ACCEPTANCE } from "../../src/task-relay/volatile-protocol.ts";
 import type { VolatileBinding, VolatileResult, VolatileValue } from "../../src/task-relay/volatile-protocol.ts";
 import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
 
@@ -113,4 +117,64 @@ test("the relay worker exposes the host envelope operation", async () => {
   const input = { ...hostInput("parent"), createdAt: new Date().toISOString() };
   expect(await gateway.hostEnvelope(input)).toEqual({ kind: "accepted", duplicate: false });
   expect(await gateway.hostEnvelope({ ...input, targetSession: "nobody" })).toEqual({ kind: "unsupported" });
+});
+
+test("a worker reset after the send reports uncertain acceptance; a closed worker reports a definite rejection (review A2-2)", async () => {
+  const inspect = async (selector: string) => ({ ok: true as const, session: selector, sessionId: selector, projectPath: "/tmp", harness: AGENT_KIND.PI.id, alive: true });
+  const gateway = new WorkerRelayGateway({ root: mkdtempSync(join(tmpdir(), "relay-host-envelope-reset-")), inspectSession: inspect });
+  gateways.push(gateway);
+  const input = { ...hostInput("parent"), createdAt: new Date().toISOString() };
+  // The request is handed to the worker; the reset can come before or after the store accepted it.
+  const inFlight = gateway.hostEnvelope(input);
+  await gateway.close();
+  expect(await inFlight).toEqual({ kind: "failed", code: "RELAY_RESET", acceptance: HOST_ENVELOPE_ACCEPTANCE.UNCERTAIN });
+  // A closed worker never receives the request.
+  expect(await gateway.hostEnvelope(input)).toEqual({ kind: "failed", code: "RELAY_RESET", acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED });
+});
+
+test("a gateway failure before the store accepted is a definite rejection (review A2-2)", async () => {
+  const f = fixture();
+  expect(await f.gateway.hostEnvelope({ ...hostInput(f.id("parent")), createdAt: "not a time" }))
+    .toEqual({ kind: "failed", code: "INVALID_REQUEST", acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED });
+});
+
+test("a relay that accepted and then reset gives one relay delivery and no typed note; a definite rejection gives one note (review A2-2)", async () => {
+  const f = fixture();
+  const parent = await f.connect("parent", [RELAY_PROTOCOL_VERSION, CHILD_EVENT_RELAY_PROTOCOL]);
+  const payload = (seq: number): ChildEventPayload => ({
+    kind: CHILD_EVENT_PAYLOAD_KIND, eventId: `child:boot:${seq}`, bootId: "boot", seq, childSessionId: f.id("child"), childName: "child",
+    parentSessionId: f.id("parent"), event: CHILD_EVENT.DONE, state: AGENT_STATUS_STATE.IDLE, observedAt: new Date(NOW).toISOString(),
+  });
+  const notes: string[] = [];
+  let reply: "reset-after-accept" | "rejected" = "reset-after-accept";
+  const delivery = createChildEventDelivery({
+    hostEnvelope: async input => {
+      if (reply === "rejected") return { kind: "failed", code: "RELAY_CAPACITY", acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED };
+      await f.gateway.hostEnvelope(input);
+      return { kind: "failed", code: "RELAY_RESET", acceptance: HOST_ENVELOPE_ACCEPTANCE.UNCERTAIN };
+    },
+    send: async (_sessionId, _name, text) => {
+      notes.push(text);
+      return { delivery: SESSION_SEND_DELIVERY.DELIVERED, outcome: SESSION_SEND_OUTCOME.SUBMITTED, observedMs: 1 };
+    },
+    typedNotesEnabled: () => true,
+    lastViewerInputAt: () => undefined,
+    now: () => NOW,
+  });
+  const observeIdleParent = async () => {
+    delivery.observeParent({ sessionId: f.id("parent"), name: "parent", alive: true, runtimeState: {
+      state: AGENT_STATUS_STATE.IDLE, authority: AGENT_STATUS_AUTHORITY.PROGRAM, freshness: AGENT_STATUS_FRESHNESS.FRESH, stale: false } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+  };
+
+  await delivery.deliver({ parentSessionName: "parent", childEvent: payload(1) });
+  await observeIdleParent();
+  expect(take(await f.gateway.request({ ...parent, operation: "receive", cursor: "0" }), "page").deliveries).toHaveLength(1);
+  expect(notes).toEqual([]);
+
+  reply = "rejected";
+  await delivery.deliver({ parentSessionName: "parent", childEvent: payload(2) });
+  await observeIdleParent();
+  expect(notes).toHaveLength(1);
+  expect(notes[0]).toContain("child done");
 });

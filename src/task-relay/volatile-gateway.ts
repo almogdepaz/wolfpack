@@ -9,7 +9,7 @@ import type { TaskRelayRegistration } from "./registration.ts";
 import type { BoundedRelayInvestigation } from "./investigation.ts";
 import { createSuspensionInclusiveElapsedNow } from "./suspension-inclusive-clock.ts";
 import { captureRelayWire } from "./worker-protocol.ts";
-import { VOLATILE_GATEWAY_LIMITS as LIMIT, VOLATILE_PEER_PATH, volatileFailure } from "./volatile-protocol.ts";
+import { HOST_ENVELOPE_ACCEPTANCE, VOLATILE_GATEWAY_LIMITS as LIMIT, VOLATILE_PEER_PATH, volatileFailure } from "./volatile-protocol.ts";
 import type {
   VolatileBinding, VolatileCode, VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult, VolatilePeerRequest, VolatileRequest,
   VolatileResult, VolatileValue, VolatileTopologyRequest,
@@ -184,8 +184,11 @@ export class VolatileRelayGateway {
       return { kind: "accepted", duplicate: accepted.kind === "duplicate" };
     } catch (error) {
       if (error instanceof GatewayError && error.code === "TARGET_NOT_REGISTERED") return { kind: "unsupported" };
+      // Nothing awaits after the synchronous store accept, so a failure here
+      // means the envelope was not accepted.
       return { kind: "failed", code: this.#stop.signal.aborted ? "RELAY_RESET"
-        : error instanceof GatewayError || error instanceof MemoryRelayError ? error.code : "RELAY_UNAVAILABLE" };
+        : error instanceof GatewayError || error instanceof MemoryRelayError ? error.code : "RELAY_UNAVAILABLE",
+        acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED };
     }
   }
   request(input: unknown): Promise<VolatileResult> { return this.#run(input, "endpoint"); }

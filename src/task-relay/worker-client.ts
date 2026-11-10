@@ -6,7 +6,7 @@ import { createLogger } from "../log.ts";
 import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
-import { volatileFailure, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
+import { HOST_ENVELOPE_ACCEPTANCE, volatileFailure, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
 import { readPeerResponse, withPeerAbort } from "./peer-response.ts";
 import type { VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult, VolatileResult } from "./volatile-protocol.ts";
 import {
@@ -49,7 +49,14 @@ function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOptions {
   }
   return Object.freeze(Object.assign(captureRelayWire(scalars, LIMIT.requestBytes).value, callbacks)) as unknown as WorkerGatewayOptions;
 }
-class WorkerUnavailable extends Error {}
+class WorkerUnavailable extends Error {
+  /** The request was handed to the worker, so its mutation may have committed. */
+  readonly afterSend: boolean;
+  constructor(message: string, afterSend = false) {
+    super(message);
+    this.afterSend = afterSend;
+  }
+}
 class InvalidWorkerRequest extends Error {}
 interface Pending {
   resolve(value: unknown): void;
@@ -140,7 +147,7 @@ export class WorkerRelayGateway implements RelayGateway {
     this.#pending.delete(message.id); clearTimeout(pending.timer);
     if (pending.peer) this.#peerBytes -= pending.bytes; else this.#regularBytes -= pending.bytes;
     if (!this.#pending.size) this.#worker.unref();
-    if (message.error) pending.reject(new WorkerUnavailable("relay operation unavailable"));
+    if (message.error) pending.reject(new WorkerUnavailable("relay operation unavailable", true));
     else pending.resolve(message.value);
   }
 
@@ -189,7 +196,7 @@ export class WorkerRelayGateway implements RelayGateway {
     if (!this.#closed) {
       this.#closed = true; this.#epoch = undefined; clearTimeout(this.#startupTimer);
       for (const controller of this.#peerControllers) controller.abort();
-      const error = new WorkerUnavailable("relay worker unavailable; an interrupted mutation may have committed");
+      const error = new WorkerUnavailable("relay worker unavailable; an interrupted mutation may have committed", true);
       this.#rejectReady(error);
       for (const item of this.#pending.values()) { clearTimeout(item.timer); item.reject(error); }
       this.#pending.clear(); this.#peerBytes = 0; this.#regularBytes = 0;
@@ -252,7 +259,8 @@ export class WorkerRelayGateway implements RelayGateway {
   async hostEnvelope(input: VolatileHostEnvelopeRequest): Promise<VolatileHostEnvelopeResult> {
     try { return await this.#call("hostEnvelope", input); }
     catch (error) {
-      return { kind: "failed", code: error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed ? "RELAY_RESET" : "RELAY_UNAVAILABLE" };
+      return { kind: "failed", code: error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : this.#closed ? "RELAY_RESET" : "RELAY_UNAVAILABLE",
+        acceptance: error instanceof WorkerUnavailable && error.afterSend ? HOST_ENVELOPE_ACCEPTANCE.UNCERTAIN : HOST_ENVELOPE_ACCEPTANCE.REJECTED };
     }
   }
   initialize() { return this.#call("initialize"); }

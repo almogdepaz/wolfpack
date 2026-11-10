@@ -23,7 +23,7 @@ import {
   type SessionSendWriteGuard,
 } from "../session-send-contract.js";
 import { createLogger, errMsg } from "../log.js";
-import type { VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult } from "../task-relay/volatile-protocol.js";
+import { HOST_ENVELOPE_ACCEPTANCE, type VolatileHostEnvelopeRequest, type VolatileHostEnvelopeResult } from "../task-relay/volatile-protocol.js";
 import { onChildEvent, type ChildEventDelivery } from "./child-events.js";
 
 const log = createLogger("session-observation");
@@ -212,11 +212,20 @@ export function createChildEventDelivery(deps: ChildEventDeliveryDeps): ChildEve
         // instead of conflicting. A late send expires and falls back to a note.
         createdAt: childEvent.observedAt,
       }).catch((error: unknown): VolatileHostEnvelopeResult => {
+        // Unknown how far the call got, so the envelope may have been accepted.
         log.warn("child-event relay send failed", { error: errMsg(error) });
-        return { kind: "failed", code: "RELAY_UNAVAILABLE" };
+        return { kind: "failed", code: "RELAY_UNAVAILABLE", acceptance: HOST_ENVELOPE_ACCEPTANCE.UNCERTAIN };
       });
       if (relayed.kind === "accepted") return;
-      if (relayed.kind === "failed") log.warn("child-event relay send failed; using typed note", { code: relayed.code });
+      if (relayed.kind === "failed") {
+        // A typed note is a fallback only for an envelope that is definitely not
+        // in the parent inbox; otherwise the parent could get the event twice.
+        if (relayed.acceptance === HOST_ENVELOPE_ACCEPTANCE.UNCERTAIN) {
+          log.warn("child-event relay acceptance uncertain; no typed note", { code: relayed.code });
+          return;
+        }
+        log.warn("child-event relay send failed; using typed note", { code: relayed.code });
+      }
       if (deps.typedNotesEnabled()) enqueue(childEvent);
     },
 
