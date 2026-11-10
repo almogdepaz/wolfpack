@@ -132,9 +132,13 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
         stop();
         reject(error);
       };
+      const hasEvents = () => childEventsSince(request.parentSessionId, request.since, request.bootId).events.length > 0;
       // Checks run one at a time; a trigger during a check runs one more.
       const check = async (): Promise<void> => {
         if (done) return;
+        // `any` completes from events alone; the children read only decides
+        // `no_children`, so it never holds back a retained or new event.
+        if (request.mode === CHILD_WAIT_MODE.ANY && hasEvents()) { finish(result(CHILD_WAIT_OUTCOME.EVENTS)); return; }
         if (checking) { again = true; return; }
         checking = true;
         try {
@@ -162,7 +166,9 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
       const unsubscribe = onChildEvent(({ childEvent }) => {
         if (childEvent.parentSessionId === request.parentSessionId) void check();
       });
-      const timer = setTimeout(() => finish(result(CHILD_WAIT_OUTCOME.TIMEOUT)), request.timeoutMs);
+      const timer = setTimeout(() => finish(result(
+        request.mode === CHILD_WAIT_MODE.ANY && hasEvents() ? CHILD_WAIT_OUTCOME.EVENTS : CHILD_WAIT_OUTCOME.TIMEOUT,
+      )), request.timeoutMs);
       // A child can settle without an event (for example working → idle without a task).
       const recheck = request.mode === CHILD_WAIT_MODE.ALL
         ? setInterval(() => void check(), request.recheckMs ?? CHILD_WAIT_LIMITS.RECHECK_MS)

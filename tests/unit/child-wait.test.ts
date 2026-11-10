@@ -109,6 +109,39 @@ describe("waitForChildren", () => {
     expect((await pending)?.outcome).toBe("events");
   });
 
+  test("any: a retained event returns events while the children read is held, even at a short timeout", async () => {
+    emitMessage();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    try {
+      const result = await waitForChildren({
+        parentSessionId: PARENT.wolfpackSessionId, mode: "any", timeoutMs: 30,
+        listChildren: async () => { await gate; return [child("worker", false)]; },
+      });
+      expect(result).toMatchObject({ outcome: "events", cursor: 1 });
+      expect(result?.events).toHaveLength(1);
+    } finally {
+      release();
+    }
+  });
+
+  test("any: an event while the children read is held returns events without waiting for the read", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    try {
+      const pending = waitForChildren({
+        parentSessionId: PARENT.wolfpackSessionId, mode: "any", timeoutMs: 5_000,
+        listChildren: async () => { await gate; return [child("worker", false)]; },
+      });
+      await tick();
+      emitMessage();
+      const raced = await Promise.race([pending, new Promise(resolve => setTimeout(() => resolve("held"), 50))]);
+      expect(raced).toMatchObject({ outcome: "events", cursor: 1 });
+    } finally {
+      release();
+    }
+  });
+
   test("any: ignores events of another parent and other-boot cursors read the current boot", async () => {
     noteChildCreated("other-id", "other", { wolfpackSessionId: "other-parent", wolfpackSessionName: "x" });
     childMessageEvent("other-parent", "other", "hi", publish);
