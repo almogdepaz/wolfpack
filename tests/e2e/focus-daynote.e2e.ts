@@ -58,6 +58,23 @@ for (const width of [1440, 1280, 390]) test(`day note ${width} opens all readabl
   await expect(page.locator("#assistant-content .focus-yesterday")).toHaveCount(0);
 });
 
+for (const [timezoneId, clock] of [["America/New_York", "13:05"], ["Asia/Jerusalem", "20:05"]] as const) test.describe(`update labels in ${timezoneId}`, () => {
+  test.use({ timezoneId });
+  test("update label uses local HH:MM and preserves an unparseable label", async ({ page }) => {
+    const instant = "2026-11-09T18:05:00.000Z";
+    await note(`# ${day}\n\n## assistant\nMain review.\n\n---\n\n# later · after ${instant}\n\n## sessions\n- update facts\n\n## assistant\nEvening review.\n\n---\n\n# later · after not-a-timestamp\n\n## sessions\n- more facts\n\n## assistant\nAnother review.\n`);
+    await page.goto(server.baseUrl);
+    await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+    await page.getByRole("button", { name: `Read day note for ${day}`, exact: true }).click();
+    const dialog = page.locator("#app-dialog");
+    await expect(dialog.locator(".focus-context-note")).toHaveText([`later · after ${clock}`, "later · after not-a-timestamp"]);
+    await expect(dialog.getByRole("region", { name: "Assistant write-ups", exact: true })).not.toContainText(instant);
+    await dialog.locator("summary").click();
+    await expect(dialog.locator("pre")).toContainText(instant);
+    await page.locator("#app-dialog-cancel").click();
+  });
+});
+
 for (const empty of ["no heading", "pending update", "none answered"] as const) test(`day note ${empty}: authored reviews stay visible and generated facts stay collapsed`, async ({ page }) => {
   await note(empty === "no heading" ? `# ${day}\n\n## sessions\n- raw activity only` : `# ${day}\n\n## assistant\n${empty === "pending update" ? "Earlier prose" : ""}\n\n---\n\n# later · after 2026-11-09T18:00:00.000Z\n\n## sessions\n- raw activity only\n\n## assistant\n\n`);
   await page.goto(server.baseUrl);

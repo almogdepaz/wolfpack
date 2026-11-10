@@ -45,6 +45,14 @@ function appendWriteUp(host: HTMLElement, prose: string) {
   }
 }
 
+function localUpdateLabel(label: string): string {
+  const prefix = "later · after ";
+  if (!label.startsWith(prefix)) return label;
+  const at = new Date(label.slice(prefix.length));
+  return Number.isFinite(at.getTime())
+    ? `${prefix}${at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}` : label;
+}
+
 /** All authored reviews stay visible in order; only generated facts are collapsed. */
 export function createDayNoteContent(markdown: string): HTMLElement {
   const { writeUps, details, pending } = dayNoteSections(markdown);
@@ -56,7 +64,7 @@ export function createDayNoteContent(markdown: string): HTMLElement {
   for (const writeUp of writeUps) {
     const section = document.createElement("section");
     if (writeUp.label) {
-      const label = document.createElement("p"); label.className = "focus-context-note"; label.textContent = writeUp.label; section.append(label);
+      const label = document.createElement("p"); label.className = "focus-context-note"; label.textContent = localUpdateLabel(writeUp.label); section.append(label);
     }
     appendWriteUp(section, writeUp.text); review.append(section);
   }
