@@ -309,6 +309,13 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(readFileSync(skill, "utf8")).not.toContain("ask: ");
     expect(readFileSync(skill, "utf8")).not.toContain("focus reply");
     expect(readFileSync(skill, "utf8")).toContain("manager-level");
+    expect(readFileSync(skill, "utf8")).toContain("product/design, scope, data-loss, deploy or authority decision");
+    expect(readFileSync(skill, "utf8")).toContain("even when an option has a recommendation");
+    expect(readFileSync(skill, "utf8")).toContain("never suggest replies about yourself");
+    expect(readFileSync(skill, "utf8")).toContain("conversation, skill, settings, enable/restart or focus home");
+    expect(readFileSync(skill, "utf8")).toContain("including coordinator sessions");
+    expect(readFileSync(skill, "utf8")).toContain("obvious go-ahead matching the intention → `suggest`");
+    expect(readFileSync(skill, "utf8")).toContain("options with a recommendation → `suggest`");
     expect(readFileSync(skill, "utf8")).toContain("wolfpack focus next next.json");
     expect(readFileSync(skill, "utf8")).toContain("never use `wolfpack session read` for triage");
     expect(readFileSync(skill, "utf8")).toContain("session creation are forbidden");
