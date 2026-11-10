@@ -264,7 +264,7 @@ function gitDayFacts(git: GitRepoLog[]): string[] {
   for (const group of groups.values()) {
     lines.push(`### ${flat(projectName(group.repo))} (${flat(group.machine)})`, "", `worktrees: ${[...group.cwds].map(flat).join(" · ")}`, "");
     for (const error of group.errors) lines.push(`- ${flat(error)}`);
-    const commits = [...group.commits.values()].sort((a, b) => b.at.localeCompare(a.at) || a.sha.localeCompare(b.sha));
+    const commits = [...group.commits.values()].sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0) || a.sha.localeCompare(b.sha));
     if (!commits.length && !group.errors.size) lines.push("- no commits");
     for (const commit of commits.slice(0, DAY_NOTE_COMMIT_CAP)) lines.push(`- ${flat(commit.sha)} ${flat(commit.subject)}`);
     if (commits.length > DAY_NOTE_COMMIT_CAP) lines.push(`- + ${commits.length - DAY_NOTE_COMMIT_CAP} more in the bounded log`);

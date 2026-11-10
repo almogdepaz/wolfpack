@@ -52,6 +52,19 @@ test("day note repository blocks cap visible commits and count the remaining bou
   expect(note).toContain("+ 5 more");
 });
 
+test("D4: commit chronology and the display cap use instants across mixed offsets", () => {
+  const older = { ...commit(101), at: "2026-11-09T13:00:00+02:00", subject: "older offset commit" };
+  const newer = { ...commit(102), at: "2026-11-09T12:30:00Z", subject: "newer UTC commit" };
+  const repo = { machine: "home", cwd: "/dev/repo", commits: [older, newer] };
+  const note = dayNoteMarkdown("2026-11-09", window, [], [repo]);
+  expect(note.indexOf("newer UTC commit")).toBeLessThan(note.indexOf("older offset commit"));
+  const latest = Array.from({ length: 19 }, (_, n) => ({ ...commit(n), at: "2026-11-09T16:00:00Z" }));
+  const capped = dayNoteMarkdown("2026-11-09", window, [], [{ ...repo, commits: [older, newer, ...latest] }]);
+  expect(capped).toContain("newer UTC commit");
+  expect(capped).not.toContain("older offset commit");
+  expect(capped).toContain("+ 1 more");
+});
+
 test("sessions roll up by project and incarnation, listing only attention/failed or live sessions", () => {
   const rows: ActivityRow[] = [
     { seq: 1, at, kind: ACTIVITY_KIND.SESSION_CREATED, session: "quiet-helper", sessionId: "a", cwd: "/dev/wolfpack-focus", harness: "pi" },
