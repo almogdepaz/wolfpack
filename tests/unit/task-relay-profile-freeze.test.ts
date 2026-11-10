@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { createTaskRelayGateway, getTaskRelayProfile } from "../../src/task-relay/gateway.ts";
 import { RecoveryRelayGateway } from "../../src/task-relay/recovery-gateway.ts";
 import { WorkerRelayGateway, hasRelayWorkerOwners } from "../../src/task-relay/worker-client.ts";
@@ -13,7 +14,6 @@ beforeEach(() => {
   root = mkdtempSync("/tmp/relay-profile-freeze-");
   process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1";
   delete process.env.WOLFPACK_TASK_RELAY_STORAGE;
-  expect(hasRelayWorkerOwners()).toBe(false);
 });
 afterEach(async () => {
   try { await gateway?.close(); }
@@ -24,11 +24,19 @@ afterEach(async () => {
 });
 
 test("unsupported startup profile is still rejected when there is no relay owner", () => {
-  process.env.WOLFPACK_TASK_RELAY_PROFILE = "unsupported-before-startup";
-  expect(() => getTaskRelayProfile()).toThrow("unsupported task relay profile");
-  expect(() => createTaskRelayGateway({ root })).toThrow("unsupported task relay profile");
-  expect(hasRelayWorkerOwners()).toBe(false);
-});
+  const home = join(root, "child-home");
+  mkdirSync(home, { mode: 0o700 });
+  const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "fixtures/task-relay-profile-startup.ts")], {
+    cwd: home,
+    env: {
+      HOME: home, TMPDIR: home, WOLFPACK_DIR: join(home, ".wolfpack"), WOLFPACK_TEST: "1",
+      WOLFPACK_BROKER_SOCKET: join(home, "missing.sock"), WOLFPACK_TASK_RELAY_ROOT: join(home, "relay"),
+      WOLFPACK_TASK_RELAY_PROFILE: "unsupported-before-startup", NO_COLOR: "1", FORCE_COLOR: "0",
+    },
+    stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 10_000, killSignal: "SIGKILL",
+  });
+  expect(child.exitCode, `${child.stdout.toString()}${child.stderr.toString()}`).toBe(0);
+}, 15_000);
 
 for (const storage of ["memory", "default-sqlite"] as const) test(`live ${storage} owner freezes the wire profile without changing endpoint or epoch`, async () => {
   const sessionId = randomUUID(), generation = randomUUID();
