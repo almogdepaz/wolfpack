@@ -1,9 +1,17 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Locator } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers";
 
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
+async function measuredBox(locator: Locator) {
+  let box: Awaited<ReturnType<Locator["boundingBox"]>> = null;
+  await expect.poll(async () => {
+    box = await locator.boundingBox();
+    return box?.height ?? 0;
+  }).toBeGreaterThan(0);
+  return box!;
+}
 
 test("QA-4: an empty focus document has no today count or empty rule disclosure", async ({ page }) => {
   await page.route(url => url.pathname === "/api/focus", async route => {
@@ -42,40 +50,42 @@ test("QA-19: phone header keeps actions on the first row across long status chan
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const header = page.locator("#assistant-content .focus-header");
   const actions = header.locator(".focus-header-actions");
-  const shortBox = (await header.boundingBox())!;
+  await expect(header).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  const shortBox = await measuredBox(header);
   await page.screenshot({ path: info.outputPath("header-short.png") });
   long = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(header).toContainText("reading activity · not confirmed yet");
-  const longBox = (await header.boundingBox())!;
-  const actionBox = (await actions.boundingBox())!;
+  const longBox = await measuredBox(header);
+  const actionBox = await measuredBox(actions);
   expect(actionBox.y).toBeCloseTo(longBox.y, 0);
   expect(longBox.height).toBeCloseTo(shortBox.height, 0);
   await expect(header.locator(":scope > span").first()).toHaveAttribute("title", "reading activity · not confirmed yet");
   await page.screenshot({ path: info.outputPath("header-long.png") });
   sessionsDown = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  const note = header.locator(":scope > small");
+  const note = header.getByText("sessions unavailable", { exact: true });
   await expect(note).toHaveText("sessions unavailable");
   await page.screenshot({ path: info.outputPath("header-session-notice.png") });
-  const statusBox = (await header.locator(":scope > span").first().boundingBox())!;
+  const statusBox = await measuredBox(header.locator(":scope > span").first());
   expect(statusBox.width).toBeGreaterThan(44); // The status dot/text must not collapse behind the notice.
-  const noticeHeader = (await header.boundingBox())!;
-  const noticeActions = (await actions.boundingBox())!;
+  const noticeHeader = await measuredBox(header);
+  const noticeActions = await measuredBox(actions);
   expect(noticeActions.y).toBeCloseTo(shortBox.y, 0);
-  expect((await note.boundingBox())!.y).toBeGreaterThanOrEqual(noticeActions.y + noticeActions.height);
+  expect((await measuredBox(note)).y).toBeGreaterThanOrEqual(noticeActions.y + noticeActions.height);
   expect(await note.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   long = false;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(header).not.toContainText("reading activity");
-  expect((await header.boundingBox())!.height).toBeCloseTo(noticeHeader.height, 0);
-  expect((await actions.boundingBox())!.y).toBeCloseTo(shortBox.y, 0);
+  expect((await measuredBox(header)).height).toBeCloseTo(noticeHeader.height, 0);
+  expect((await measuredBox(actions)).y).toBeCloseTo(shortBox.y, 0);
   sessionsDown = false;
   offline = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(header).toContainText("offline · read-only");
-  expect((await header.boundingBox())!.height).toBeCloseTo(shortBox.height, 0);
-  expect((await actions.boundingBox())!.y).toBeCloseTo(shortBox.y, 0);
+  expect((await measuredBox(header)).height).toBeCloseTo(shortBox.height, 0);
+  expect((await measuredBox(actions)).y).toBeCloseTo(shortBox.y, 0);
   await expect(header.locator(":scope > span").first()).toHaveAttribute("title", /focus from .*offline · read-only/);
 });
 
