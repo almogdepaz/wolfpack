@@ -96,5 +96,12 @@ test("QA-34: hover sidebar overlays without shrinking the hydrated pane", async 
   await page.locator("#desktop-sidebar").evaluate(async el => { await Promise.all(el.getAnimations().map(animation => animation.finished)); });
   await expect.poll(() => pane.evaluate(el => el.querySelector("canvas")!.getBoundingClientRect().width <= el.clientWidth)).toBe(true);
   expect((await pane.boundingBox())!.width).toBeCloseTo(before, 0);
+  const alpha = await page.locator("#desktop-sidebar").evaluate(el => {
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = getComputedStyle(el).backgroundColor; context.fillRect(0, 0, 1, 1);
+    return context.getImageData(0, 0, 1, 1).data[3];
+  });
+  expect(alpha, "overlay must obscure the main-page text behind it").toBe(255);
   await page.screenshot({ path: info.outputPath("qa34-hover-1440.png"), animations: "disabled" });
 });
