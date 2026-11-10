@@ -17,6 +17,7 @@ const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { createSessionControlRoutes } = await import("../../src/server/session-control-routes.ts");
 const { AssistantService } = await import("../../src/server/assistant-service.ts");
+const { createVolatileRelayRoutes } = await import("../../src/server/volatile-relay-routes.ts");
 afterAll(() => {
   if (priorTest === undefined) delete process.env.WOLFPACK_TEST;
   else process.env.WOLFPACK_TEST = priorTest;
@@ -62,9 +63,9 @@ async function fixture(pinned = false, liveId = LIVE_ID) {
   const config = pinned ? { devDir: "/tmp", port: 19846, pinnedSessions: [{ name: "live", cwd: "/fixture", command: ["pi"], harness: "pi" }] } : null;
   const ctx = createServerContext({ backend, taskRelayGateway: gateway, config,
     assistantService: new AssistantService({ root, readConfig: () => config }) });
-  const routes = createSessionControlRoutes(ctx);
+  const routes = { ...createSessionControlRoutes(ctx), ...createVolatileRelayRoutes(ctx) };
   const server = createServer((req, res) => {
-    const route = routes[`GET ${new URL(req.url!, "http://localhost").pathname}`];
+    const route = routes[`${req.method} ${new URL(req.url!, "http://localhost").pathname}`];
     if (!route) { res.writeHead(404).end(); return; }
     void route(req, res);
   });
@@ -79,6 +80,7 @@ async function fixture(pinned = false, liveId = LIVE_ID) {
   const connect = () => gateway.volatile({ operation: "connect", profile: "volatile-v1", callerSession: "live", generation: "fixture", protocolVersions: [2] });
   return {
     backend, gateway, read, connect, ctx,
+    rejectRelay: async () => await (await fetch(`${origin}/api/task-relay/volatile-v1`, { method: "POST", headers: { "content-type": "text/plain" }, body: "{}" })).json() as any,
     block: () => { blocked = true; },
     release,
     close: async () => {
@@ -90,17 +92,30 @@ async function fixture(pinned = false, liveId = LIVE_ID) {
   };
 }
 
+test("session registration remains volatile-v1 independently of the selected server storage", async () => {
+  const prior = process.env.WOLFPACK_TASK_RELAY_STORAGE;
+  process.env.WOLFPACK_TASK_RELAY_STORAGE = "sqlite";
+  const f = await fixture();
+  try {
+    const connected = await f.connect(); expect(connected.ok).toBe(true);
+    const status = await f.read("status?session=live");
+    expect(status.body.taskTransport).toMatchObject({ profile: "volatile-v1" });
+    expect(await f.rejectRelay()).toMatchObject({ profile: "volatile-v1", ok: false });
+  } finally { await f.close(); if (prior === undefined) delete process.env.WOLFPACK_TASK_RELAY_STORAGE; else process.env.WOLFPACK_TASK_RELAY_STORAGE = prior; }
+});
+
 function assertDegraded(body: any) {
   expect(body).toMatchObject({ ok: true, session: "live", sessionId: LIVE_ID,
     terminal: { exists: true, alive: true, status: "ready" }, taskRelay: { status: "unavailable" } });
   expect(body.taskRelay.recovery).toContain("wolfpack service restart --server-only");
-  expect(body.taskRelay.recovery).toContain("explicitly rebind");
+  expect(body.taskRelay.recovery).toContain("preserves transport state for live RAM clients");
+  expect(body.taskRelay.recovery).toContain("memory-only server restart loses state and requires rebind");
   // Recovery must not turn optional relay failure into accidental terminal loss.
   expect(body.taskRelay.recovery).toMatch(/preserves sessions only with a verified independently owned broker/);
   expect(body.taskRelay.recovery).toMatch(/server child terminates an invocation-owned broker and its sessions/);
   expect(body.taskRelay.recovery).toMatch(/unknown ownership, do not restart unless you explicitly accept session loss/);
   expect(body.taskRelay.recovery).toContain("Interrupted mutations may have committed");
-  expect(body.taskRelay.recovery).toContain("do not automatically replay tasks");
+  expect(body.taskRelay.recovery).toContain("never task execution or tool actions");
   expect(body).not.toHaveProperty("taskEndpoint");
   expect(body).not.toHaveProperty("taskTransport");
   expect(validate({ $ref: "#/$defs/SessionStatus" }, body, schema)).toEqual([]);

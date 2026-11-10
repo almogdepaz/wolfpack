@@ -28,7 +28,8 @@ export const BUNDLE_BUDGETS: ReadonlyArray<readonly [string, number, number]> = 
   // Notification prompt/test button: approved raw cap 104500; measured 104051.
   // UI redesign after final control removals: measured 112770/20859; approved caps 113200/21000.
   // USER APPROVED #198 session labels/editor: raw 113200 -> 115000, gzip 21000 -> 21600.
-  ["public/styles.css", 115_000, 21_600],
+  // USER APPROVED 2026-11-10 focus + main merge: raw 115000 -> 120000 (gzip unchanged).
+  ["public/styles.css", 120_000, 21_600],
 ];
 if (import.meta.main) {
   let failed = false;

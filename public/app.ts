@@ -1768,9 +1768,17 @@ function sidebarDelegationToggleHtml(row: DelegationSessionRow<DelegationSession
   const key = sidebarDelegationParentKey(machineUrl, sessionId);
   const expanded = expandedSidebarDelegationParents.has(key);
   const count = row.childSummary.total;
-  const accessibleLabel = `${count} child ${count === 1 ? "agent" : "agents"}`;
+  const status = row.childSummary.status;
+  const statusText = {
+    fail: "a descendant failed",
+    need: "a descendant needs input",
+    work: "a descendant is active (agent work or recent output)",
+    idle: "all descendants idle",
+    unavailable: "descendant status unavailable",
+  }[status];
+  const accessibleLabel = `${expanded ? "Collapse" : "Expand"} ${count} child ${count === 1 ? "agent" : "agents"}; ${statusText}`;
   const visibleLabel = `${count} ${count === 1 ? "agent" : "agents"}`;
-  return `<button type="button" class="delegation-sidebar-toggle${expanded ? " expanded" : ""}" data-action="delegation-toggle" data-delegation-key="${escAttr(key)}" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Collapse" : "Expand"} ${escAttr(accessibleLabel)}" title="${expanded ? "Collapse" : "Expand"} child agents"><span class="delegation-sidebar-toggle-icon" aria-hidden="true"></span><span>${esc(visibleLabel)}</span></button>`;
+  return `<button type="button" class="delegation-sidebar-toggle descendant-${status}${expanded ? " expanded" : ""}" data-action="delegation-toggle" data-delegation-key="${escAttr(key)}" aria-expanded="${expanded ? "true" : "false"}" aria-label="${escAttr(accessibleLabel)}" title="${escAttr(accessibleLabel)}"><span class="delegation-sidebar-toggle-icon" aria-hidden="true"></span><span>${esc(visibleLabel)}</span></button>`;
 }
 
 function visibleDelegationRows(rows: readonly DelegationSessionRow<DelegationSessionLike>[], machineUrl: string): DelegationSessionRow<DelegationSessionLike>[] {

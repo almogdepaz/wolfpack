@@ -1,3 +1,5 @@
+import { sessionRuntimeState, sessionTier, type SessionTier } from "../src/agent-runtime-ui";
+import { AGENT_STATUS_STATE } from "../src/agent-status-contract";
 import type { SessionOrganizationProjection } from "../src/session-organization-contract";
 
 export interface DelegationParentReference {
@@ -54,8 +56,13 @@ export interface DelegationSessionLike {
   readonly triage?: string;
 }
 
+export type DelegationDescendantStatus = SessionTier | "unavailable";
+
 export interface DelegationChildSummary {
+  /** Direct children only, matching the expand/collapse control's existing count. */
   readonly total: number;
+  /** Current known status of all descendants, excluding the parent itself. */
+  readonly status: DelegationDescendantStatus;
 }
 
 export type DelegationRowRole = "root" | "child" | "orphan";
@@ -87,8 +94,21 @@ function childSort<TSession extends DelegationSessionLike>(a: TSession, b: TSess
   return String(a.name).localeCompare(String(b.name));
 }
 
-export function summarizeDelegationChildren(sessions: readonly DelegationSessionLike[]): DelegationChildSummary {
-  return { total: sessions.length };
+const DESCENDANT_STATUS_PRIORITY: Record<DelegationDescendantStatus, number> = {
+  idle: 0, unavailable: 1, work: 2, need: 3, fail: 4,
+};
+
+export function summarizeDelegationChildren(
+  sessions: readonly DelegationSessionLike[],
+  descendants: readonly DelegationSessionLike[] = sessions,
+): DelegationChildSummary {
+  let status: DelegationDescendantStatus = "idle";
+  for (const descendant of descendants) {
+    const candidate = sessionRuntimeState(descendant) === AGENT_STATUS_STATE.UNKNOWN
+      ? "unavailable" : sessionTier(descendant);
+    if (DESCENDANT_STATUS_PRIORITY[candidate] > DESCENDANT_STATUS_PRIORITY[status]) status = candidate;
+  }
+  return { total: sessions.length, status };
 }
 
 export function delegationChildSummaryText(summary: DelegationChildSummary): string {
@@ -179,6 +199,23 @@ export function projectDelegationSessions<TSession extends DelegationSessionLike
     siblings.sort(childSort);
   }
 
+  // Traverse the full machine inventory, before any collapse, grouping or filtering.
+  const descendantsOf = (session: TSession): TSession[] => {
+    const descendants: TSession[] = [];
+    const seen = new Set<string | TSession>([sessionIdentityId(session) || session]);
+    const pending = [...(children.get(sessionIdentityId(session) || "") || [])];
+    while (pending.length) {
+      const child = pending.pop()!;
+      const id = sessionIdentityId(child);
+      const key = id || child;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      descendants.push(child);
+      if (id) pending.push(...(children.get(id) || []));
+    }
+    return descendants;
+  };
+
   const ordered: DelegationSessionRow<TSession>[] = [];
   const visited = new Set<string | TSession>();
   const appendTree = (session: TSession, roleOverride?: DelegationRowRole): void => {
@@ -192,7 +229,7 @@ export function projectDelegationSessions<TSession extends DelegationSessionLike
       session,
       role: roleOverride ?? (parent ? "child" : "root"),
       parent,
-      childSummary: childSessions.length > 0 ? summarizeDelegationChildren(childSessions) : null,
+      childSummary: childSessions.length > 0 ? summarizeDelegationChildren(childSessions, descendantsOf(session)) : null,
     });
     for (const child of childSessions) appendTree(child);
   };

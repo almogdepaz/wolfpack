@@ -13,6 +13,7 @@ import {
   TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
   TaskWorkerReadinessError,
   failTaskWorkerReadiness,
+  taskWorkerHarness,
   waitForTaskWorkerReadiness,
 } from "./task-worker-readiness.js";
 import type { TaskWorkerLaunch, TaskWorkerTransportLookup } from "./task-worker-readiness.js";
@@ -166,8 +167,8 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
   for (let attempt = 0; attempt < SESSION_OPEN_MAX_CREATE_ATTEMPTS; attempt++) {
     const childHarness = input.harness ?? parentState.harness;
     if (
-      (input.model !== undefined || input.taskWorker !== undefined)
-      && childHarness !== AGENT_KIND.PI.id
+      (input.model !== undefined && childHarness !== AGENT_KIND.PI.id)
+      || (input.taskWorker !== undefined && childHarness !== taskWorkerHarness(input.taskWorker))
     ) {
       throw new SessionOpenError(SESSION_OPEN_ERROR.INVALID_REQUEST);
     }
@@ -229,6 +230,7 @@ export async function openSubSession(input: OpenSubSessionInput): Promise<Sessio
         session,
         sessionId: identity.wolfpackSessionId,
         projectDir: input.projectDir,
+        harness: taskWorkerHarness(input.taskWorker),
         timeoutMs: input.readinessTimeoutMs ?? TASK_WORKER_DEFAULT_READINESS_TIMEOUT_MS,
       });
     if (input.notify) {

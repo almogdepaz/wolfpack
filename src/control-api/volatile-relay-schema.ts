@@ -27,6 +27,8 @@ const codes = {
   ENVELOPE_CONFLICT: true, ENVELOPE_EXPIRED: true, RELAY_PROFILE_REQUIRED: true,
   CALLER_NOT_FOUND: true, CALLER_DEAD: true, SOURCE_MISMATCH: true, RELAY_UNAVAILABLE: true,
   PEER_UNREACHABLE: true, DELIVERY_UNCONFIRMED: true, PEER_POLICY_REQUIRED: true,
+  RELAY_STORAGE_BUSY: true, RELAY_STORAGE_UNAVAILABLE: true, RELAY_STORAGE_INVALID: true,
+  RELAY_STORAGE_UNCERTAIN: true, RELAY_STORAGE_RECOVERING: true, RELAY_STORAGE_RECOVERY_BLOCKED: true,
 } satisfies Record<VolatileCode | "PEER_POLICY_REQUIRED", true>;
 
 export const volatileRelayDefinitions: Record<string, Schema> = {
@@ -44,7 +46,7 @@ export const volatileRelayDefinitions: Record<string, Schema> = {
   ] },
   VolatileErrorEnvelope: object({ ok: { const: false }, profile, epoch: uuid,
     error: object({ code: { enum: Object.keys(codes) }, message: { type: "string" }, retryable: boolean,
-      mayHaveBeenDelivered: { const: true }, retryAfterMs: count }, ["code", "message", "retryable"]) }, ["ok", "profile", "error"]),
+      mayHaveBeenDelivered: { const: true }, retryAfterMs: count, ownerFatal: { const: true } }, ["code", "message", "retryable"]) }, ["ok", "profile", "error"]),
   VolatileResponse: { oneOf: [ref("VolatileErrorEnvelope"), object({ ok: { const: true }, profile, epoch: uuid, value: { oneOf: [
     value("connected", { endpoint: localEndpoint, leaseExpiresAt: { type: "string", format: "date-time" } }),
     value("resolved", { endpoint: ref("RelayEndpoint") }),

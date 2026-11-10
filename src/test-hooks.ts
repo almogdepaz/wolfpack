@@ -8,5 +8,6 @@
 export { __setDevDir } from "./server/dev-dir.js";
 export { __getTestState } from "./server/websocket.js";
 export { __resetJwtAuthConfig } from "./auth.js";
+export { __setClaudeManagedSettingsDropInDirectory } from "./claude-integration.js";
 export { __setTestBackend, __resetBackend } from "./server/backend.js";
 export { MockBackend } from "./server/mock-backend.js";

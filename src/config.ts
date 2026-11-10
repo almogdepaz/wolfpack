@@ -6,6 +6,11 @@ import { isPinnedSessions, type PinnedSession } from "./pinned-sessions.js";
 import { isValidPort } from "./validation.js";
 import { resolveWolfpackDir } from "./wolfpack-dir.js";
 import { canonicalTailnetOrigin, isMachineDisplayName } from "./tailnet-machine-contract.js";
+import {
+  activeClaudeManagedSettingsDropInDirectory,
+  claudeTaskIntegrationGate,
+  type ClaudeTaskIntegrationGate,
+} from "./claude-integration.js";
 
 export const IS_MACOS = platform() === "darwin";
 export const IS_LINUX = platform() === "linux";
@@ -22,6 +27,8 @@ export interface Config {
   /** Installation identity, not a display name or an arbitrary URL. */
   focus?: { home: string };
   pinnedSessions?: PinnedSession[];
+  /** Opt-in written by `wolfpack setup` after the Claude task integration is installed; absent means off. */
+  claudeTaskIntegration?: boolean;
 }
 
 export function parseConfig(raw: unknown): Config | null {
@@ -43,7 +50,7 @@ export function parseConfig(raw: unknown): Config | null {
     focus = { home: value.home };
   }
   if (candidate.pinnedSessions !== undefined && !isPinnedSessions(candidate.pinnedSessions)) return null;
-  return { devDir, port, tailscaleHostname, ...(isMachineDisplayName(displayName) && { displayName }), ...(focus && { focus }), ...(candidate.pinnedSessions !== undefined && { pinnedSessions: candidate.pinnedSessions as PinnedSession[] }) };
+  return { devDir, port, tailscaleHostname, ...(isMachineDisplayName(displayName) && { displayName }), ...(focus && { focus }), ...(candidate.pinnedSessions !== undefined && { pinnedSessions: candidate.pinnedSessions as PinnedSession[] }), ...(candidate.claudeTaskIntegration === true && { claudeTaskIntegration: true }) };
 }
 
 export function loadConfigFromText(text: string): Config | null {
@@ -60,6 +67,19 @@ export function loadConfig(): Config | null {
   } catch { /* expected: config file doesn't exist yet */
     return null;
   }
+}
+
+/** Reads the opt-in on every call so `wolfpack setup` takes effect without a server restart. */
+export function claudeTaskIntegrationEnabled(): boolean {
+  return loadConfig()?.claudeTaskIntegration === true;
+}
+
+/**
+ * The effective Claude task integration: the flag and the current managed drop-in, read on every
+ * call (both are small files) so neither a setup run nor a removed drop-in needs a server restart.
+ */
+export function claudeTaskIntegrationState(): ClaudeTaskIntegrationGate {
+  return claudeTaskIntegrationGate(claudeTaskIntegrationEnabled(), activeClaudeManagedSettingsDropInDirectory());
 }
 
 export function saveConfig(c: Config) {

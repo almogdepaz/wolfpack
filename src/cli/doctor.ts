@@ -25,6 +25,7 @@ import {
 import pkg from "../../package.json";
 import { print, bold, green, red, dim, yellow } from "./formatting.js";
 import { checkStorageCapacity, type StorageCapacity } from "./storage-capacity.ts";
+import { checkClaudeTaskIntegration, checkPiTasksPackage } from "./doctor-integrations.js";
 
 const log = createLogger("doctor");
 const CLI_VERSION: string = pkg.version;
@@ -761,7 +762,7 @@ export async function doctor({
   fix: doFix = process.argv.includes("--fix"),
   json = process.argv.includes("--json"),
   storage = false,
-  checkGroups = storage ? [() => checkStorageCapacity(WOLFPACK_DIR)] : [checkDeps, checkConfig, checkService, checkConnectivity, checkSecurity, checkBinary, checkDoctorBroker, checkEnvironment, checkLogs, () => checkStorageCapacity(WOLFPACK_DIR)],
+  checkGroups = storage ? [() => checkStorageCapacity(WOLFPACK_DIR)] : [checkDeps, checkConfig, checkService, checkConnectivity, checkSecurity, checkBinary, checkDoctorBroker, checkEnvironment, () => checkPiTasksPackage(), () => checkClaudeTaskIntegration(), checkLogs, () => checkStorageCapacity(WOLFPACK_DIR)],
 }: DoctorOptions = {}) {
   if (storage && doFix) throw new TypeError("doctor --storage is read-only and cannot be combined with --fix");
 

@@ -345,8 +345,8 @@ test("full inventory groups matching nested children under their ancestor and mo
   });
   await page.goto(server.baseUrl);
   const tree = page.locator('#session-list .session-label-group[data-group="Tree"]');
-  await tree.getByRole("button", { name: "Expand 1 child agent", exact: true }).click();
-  await tree.getByRole("button", { name: "Expand 1 child agent", exact: true }).click();
+  await tree.getByRole("button", { name: "Expand 1 child agent; a descendant is active (agent work or recent output)", exact: true }).click();
+  await tree.getByRole("button", { name: "Expand 1 child agent; a descendant is active (agent work or recent output)", exact: true }).click();
   await expect(tree.locator('.card-name-text')).toHaveText(["test-project", "another-project", "prompt-project"]);
   await expect(page.locator('#session-list .session-label-group[data-group="Child metadata"]')).toHaveCount(0);
   await tree.getByRole("button", { name: "Collapse Group “Tree”", exact: true }).click();

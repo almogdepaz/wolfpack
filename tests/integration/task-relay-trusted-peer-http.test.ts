@@ -15,13 +15,15 @@ const signed = `${b64({ alg: "HS256", typ: "JWT" })}.${b64({ exp: Math.floor(Dat
 const headers = { "content-type": "application/json", authorization: `Bearer ${signed}.${createHmac("sha256", secret).update(signed).digest("base64url")}` };
 const origin = (name: string) => `https://${name}.tail123.ts.net`;
 const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-async function fixture(ownerAuth = true) {
+async function fixture(ownerAuth = true, storage: "memory" | "sqlite" = "memory") {
   const root = mkdtempSync(join(tmpdir(), "trusted-peer-http-")), mapping = join(root, "network.json");
   writeFileSync(mapping, "{}", { mode: 0o600 });
   const children: ReturnType<typeof Bun.spawn>[] = [], roots: Record<string, string> = {}, bases: Record<string, string> = {};
+  const stopped = new Set<ReturnType<typeof Bun.spawn>>();
   const close = async () => {
-    for (const child of children) child.kill("SIGTERM");
+    for (const child of children) if (!stopped.has(child) && child.exitCode === null) child.kill("SIGTERM");
     for (const child of children) {
+      if (stopped.has(child)) continue;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const exit = await Promise.race([child.exited, new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 5000); })]);
       clearTimeout(timer);
@@ -31,16 +33,18 @@ async function fixture(ownerAuth = true) {
     rmSync(root, { recursive: true, force: true });
   };
   try {
-    for (const name of ["a", "b"]) {
+    const start = async (name: string) => {
       const home = join(root, name); roots[name] = home; mkdirSync(join(home, ".wolfpack"), { recursive: true, mode: 0o700 });
       // mkdir recursive modes do not retrofit an existing ancestor; own the fixture root explicitly.
       const { chmodSync } = await import("node:fs"); chmodSync(home, 0o700);
       writeFileSync(join(home, ".wolfpack", "config.json"), JSON.stringify({ devDir: home, port: 18790, tailscaleHostname: `${name}.tail123.ts.net` }), { mode: 0o600 });
       const node = (id: string) => ({ ID: `node-${id}`, DNSName: `${id}.tail123.ts.net.`, Online: true, UserID: id === "b" ? 2 : 1, ...(id === "b" && { Tags: ["tag:server"] }) });
       const status = { BackendState: "Running", Self: node(name), Peer: { other: node(name === "a" ? "b" : "a"), guest: { ...node("guest"), UserID: 2 } } };
+      rmSync(join(home, "ready.json"), { force: true });
       const nonce = randomUUID();
       const child = Bun.spawn([process.execPath, join(import.meta.dir, "fixtures/volatile-peer-http.ts"), home, mapping, nonce], {
-        cwd: home, env: { PATH: process.env.PATH, HOME: home, WOLFPACK_TEST: "1",
+        cwd: home, env: { PATH: process.env.PATH, HOME: home, WOLFPACK_TEST: "1", WOLFPACK_TASK_RELAY_STORAGE: storage,
+          WOLFPACK_TEST_HTTP_PORT: bases[name] ? new URL(bases[name]!).port : "0",
           WOLFPACK_TASK_RELAY_ROOT: join(home, "relay"), WOLFPACK_BROKER_SOCKET: join(home, "no-broker.sock"), ...(ownerAuth && { WOLFPACK_JWT_SECRET: secret }),
           WOLFPACK_TAILSCALE_STATUS_JSON: JSON.stringify(status) }, stdin: "ignore", stdout: Bun.file(join(home, "stdout.log")), stderr: Bun.file(join(home, "stderr.log")),
       }); children.push(child);
@@ -49,7 +53,15 @@ async function fixture(ownerAuth = true) {
       if (!existsSync(join(home, "ready.json"))) throw new Error(`private peer startup failed: ${readFileSync(join(home, "stderr.log"), "utf8").slice(-2000)}`);
       const ready = JSON.parse(readFileSync(join(home, "ready.json"), "utf8")); expect(ready.nonce).toBe(nonce); expect(ready.pid).toBe(child.pid);
       bases[name] = `http://127.0.0.1:${ready.port}`;
-    }
+      return child;
+    };
+    const hosts: Record<string, ReturnType<typeof Bun.spawn>> = {};
+    for (const name of ["a", "b"]) hosts[name] = await start(name);
+    const restart = async (names: readonly string[]) => {
+      for (const name of names) { stopped.add(hosts[name]!); hosts[name]!.kill("SIGKILL"); }
+      await Promise.all(names.map(name => hosts[name]!.exited));
+      for (const name of names) hosts[name] = await start(name);
+    };
     writeFileSync(mapping, JSON.stringify(Object.fromEntries(Object.entries(bases).map(([name, base]) => [origin(name), base]))));
     const post = async (name: string, body: unknown, path = route) => {
       const response = await fetch(bases[name] + path, { method: "POST", headers, body: JSON.stringify(body) });
@@ -61,7 +73,7 @@ async function fixture(ownerAuth = true) {
       const result = await post(name, { profile, operation: "connect", callerSession, generation: randomUUID(), protocolVersions: [2] }); expect(result.status).toBe(200);
       return { profile, epoch: result.body.epoch, callerSession, endpoint: result.body.value.endpoint };
     };
-    return { root, roots, bases, post, connect, close };
+    return { root, roots, bases, post, connect, close, restart };
   } catch (error) { await close(); throw error; }
 }
 
@@ -92,6 +104,47 @@ for (const ownerAuth of [false, true]) test(`production trusted-Tailnet HTTP acc
     const conflict = await fetch(f.bases.b + route + "/peer", { method: "POST", headers, body: JSON.stringify(changed) });
     expect(conflict.status).toBe(409); expect(await conflict.json()).toMatchObject({ ok: false, error: { code: "ENVELOPE_CONFLICT" } });
     expect((await f.post("a", { ...a, origin: origin("unknown"), target: b.endpoint }, route + "/resolve-peer")).status).toBe(403);
+  } finally { await f.close(); }
+}, 30_000);
+
+test("trusted peer lost-response retry uses terminal predecessor evidence without granting fresh endpoint authority", async () => {
+  const f = await fixture(true, "sqlite");
+  try {
+    const a = await f.connect("a", "sender"), old = await f.connect("b", "receiver");
+    const resolved = await f.post("a", { ...a, origin: origin("b"), target: old.endpoint }, route + "/resolve-peer");
+    expect(resolved.status).toBe(200);
+    const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: a.endpoint, target: resolved.body.value.endpoint,
+      createdAt: new Date().toISOString(), payload: "committed before the response was lost" };
+    writeFileSync(join(f.roots.a!, "network-mode"), "drop-next");
+    expect((await f.post("a", { ...a, operation: "send", envelope })).body).toMatchObject({ ok: false, error: { code: "PEER_UNREACHABLE" } });
+    const frame = JSON.parse(readFileSync(join(f.roots.a!, "last-forward.json"), "utf8")), peer = JSON.parse(frame.raw);
+    expect((await f.post("b", { ...old, operation: "receive", cursor: "0" })).body.value.deliveries).toHaveLength(1);
+    expect((await f.post("b", { ...old, operation: "acknowledge", envelopeId: envelope.envelopeId })).status).toBe(200);
+    const committed = await f.post("b", peer, route + "/peer");
+    const acceptanceId = committed.body.value.acceptanceId;
+    const current = await f.connect("b", "receiver"); expect(current.endpoint).not.toEqual(old.endpoint);
+    await f.restart(["a", "b"]); await pause(1050);
+    const retry = await f.post("a", { ...a, operation: "send", envelope });
+    expect(retry.body).toMatchObject({ ok: true, value: { duplicate: true, acceptanceId } });
+    expect(JSON.parse(readFileSync(join(f.roots.a!, "last-forward.json"), "utf8"))).toEqual(frame);
+    expect((await f.post("b", { ...current, operation: "receive", cursor: "0" })).body.value).toMatchObject({ deliveries: [], nextCursor: "0" });
+    for (const operation of ["send", "receive", "acknowledge"]) {
+      const extra = operation === "send" ? { envelope: { ...envelope, source: old.endpoint, target: current.endpoint } }
+        : operation === "receive" ? { cursor: "0" } : { envelopeId: envelope.envelopeId };
+      expect((await f.post("b", { ...old, operation, ...extra })).body).toMatchObject({ ok: false, error: { code: "REGISTRATION_EXPIRED" } });
+    }
+    expect((await f.post("b", { ...current, operation: "acknowledge", envelopeId: envelope.envelopeId })).body.ok).toBe(false);
+    for (const changed of [
+      { ...peer.envelope, payload: "changed immutable retry" },
+      { ...peer.envelope, source: { ...peer.envelope.source, id: randomUUID() } },
+      { ...peer.envelope, target: current.endpoint },
+    ]) expect((await f.post("b", { ...peer, envelope: changed }, route + "/peer")).body).toMatchObject({ ok: false, error: { code: "ENVELOPE_CONFLICT" } });
+    expect((await f.post("b", { ...peer, envelope: { ...peer.envelope, envelopeId: randomUUID() } }, route + "/peer")).body).toMatchObject({ ok: false, error: { code: "TARGET_NOT_REGISTERED" } });
+    expect((await f.post("b", { ...peer, epoch: randomUUID() }, route + "/peer")).body).toMatchObject({ ok: false, error: { code: "PEER_POLICY_REQUIRED" } });
+    expect((await f.post("b", { ...peer, sourceEpoch: randomUUID() }, route + "/peer")).body.ok).toBe(false);
+    expect((await f.post("b", { ...peer, origin: origin("unknown") }, route + "/peer")).status).toBe(403);
+    expect((await fetch(f.bases.b + route + "/peer", { method: "POST", headers: { "content-type": "application/json" }, body: frame.raw })).status).toBe(401);
+    expect((await f.post("b", { ...current, operation: "health" })).body.value.store).toMatchObject({ activeItems: 0, receipts: 1, registrations: 2, sessions: 1 });
   } finally { await f.close(); }
 }, 30_000);
 
@@ -128,4 +181,46 @@ test.skipIf(!piSource)("normal pinned RAM cores authenticate locally and complet
     try { await Promise.all(cores.map(core => core.close())); }
     finally { authNames.forEach((name, index) => { if (prior[index] === undefined) delete process.env[name]; else process.env[name] = prior[index]; }); await f.close(); }
   }
+}, 30_000);
+
+
+test.skipIf(!piSource)("live RAM clients retain assignment/result/ACK through one and both trusted relay hosts restarting", async () => {
+  expect(isAbsolute(piSource!)).toBe(true);
+  expect(process.env.WOLFPACK_PI_TASKS_REVISION).toMatch(/^[0-9a-f]{40}$/);
+  expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: piSource, encoding: "utf8" }).trim()).toBe(process.env.WOLFPACK_PI_TASKS_REVISION!);
+  expect(execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: piSource, encoding: "utf8" }).trim()).toBe("");
+  const { createTaskStore } = await import(pathToFileURL(join(piSource!, "src/task-store.ts")).href);
+  const { createVolatileTaskSession } = await import(pathToFileURL(join(piSource!, "src/volatile-task-session.ts")).href);
+  const f = await fixture(true, "sqlite"), stores = [createTaskStore(), createTaskStore()], sessions: any[] = [];
+  const authenticated = Object.assign((input: RequestInfo | URL, init?: RequestInit) => fetch(input, { ...init, headers }), { preconnect: fetch.preconnect }) as typeof fetch;
+  try {
+    for (const [index, name] of ["a", "b"].entries()) sessions.push(createVolatileTaskSession({ url: f.bases[name] + route,
+      callerSession: name === "a" ? "sender" : "receiver", store: stores[index], fetch: authenticated }));
+    const a = await sessions[0].connect(), b = await sessions[1].connect();
+    const bindings = stores.map((store: any) => store.getRelayTransportBinding());
+    const sourceBinding = { ...bindings[0], callerSession: "sender" };
+    // Only host-owned trusted topology may mint the opaque cross-host alias.
+    const resolved = await f.post("a", { profile, epoch: sourceBinding.epoch, callerSession: "sender", endpoint: a.endpoint,
+      origin: origin("b"), target: b.endpoint }, route + "/resolve-peer");
+    expect(resolved.status).toBe(200);
+    writeFileSync(join(f.roots.a!, "network-mode"), "drop-next");
+    const task = await a.createTask({ target: resolved.body.value.endpoint, task: "one cross-host assignment", timeoutMs: 120_000 })
+      .catch((error: any) => { expect(error.code).toBe("PEER_UNREACHABLE"); return { taskId: error.details.taskId }; });
+    const firstFrame = JSON.parse(readFileSync(join(f.roots.a!, "last-forward.json"), "utf8"));
+    await f.restart(["b"]); await f.restart(["a", "b"]); await pause(1050);
+    await a.flushOutbox();
+    expect(JSON.parse(readFileSync(join(f.roots.a!, "last-forward.json"), "utf8"))).toEqual(firstFrame);
+    await b.receive(); await b.receive();
+    expect(b.getTask(task.taskId).events.filter((event: any) => event.type === "task.created")).toHaveLength(1);
+    const cursors = stores.map((store: any) => store.getReceiveCursor());
+    await b.submitIntent({ taskId: task.taskId, type: "task.completed", payload: { summary: "done once" } });
+    await f.restart(["a", "b"]);
+    expect(await sessions[0].connect()).toBe(a); expect(await sessions[1].connect()).toBe(b);
+    expect(stores.map((store: any) => store.getRelayTransportBinding())).toEqual(bindings);
+    expect(stores.map((store: any) => store.getReceiveCursor())).toEqual(cursors);
+    await a.receive(); expect(a.getTask(task.taskId).status).toBe("completed");
+    await a.acknowledgeParent(task.taskId); await b.receive(); await a.receive();
+    expect(b.getTask(task.taskId).events.filter((event: any) => event.type === "task.parent_acknowledged")).toHaveLength(1);
+    expect(a.getTask(task.taskId).events.filter((event: any) => event.type === "task.completed")).toHaveLength(1);
+  } finally { sessions.forEach(session => session.close()); stores.forEach((store: any) => store.close()); await f.close(); }
 }, 30_000);

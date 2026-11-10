@@ -447,16 +447,17 @@ body.session-order-pointer-active * {
 }
 .delegation-parent-missing { color: var(--warning-hot); }
 .delegation-sidebar-toggle {
+  --delegation-status-color: var(--text-muted);
   width: fit-content;
   margin-top: 5px;
   padding: 3px 6px 3px 4px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid rgba(0,255,65,0.22);
+  border: 1px solid color-mix(in srgb, var(--delegation-status-color) 22%, transparent);
   border-radius: 999px;
-  background: rgba(0,255,65,0.055);
-  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--delegation-status-color) 5.5%, transparent);
+  color: var(--delegation-status-color);
   font: inherit;
   font-size: 11px;
   font-weight: 650;
@@ -483,7 +484,7 @@ body.session-order-pointer-active * {
   margin: 0;
   border-right: 2px solid currentColor;
   border-bottom: 2px solid currentColor;
-  color: var(--accent);
+  color: inherit;
   transform: rotate(-45deg);
   transition: transform 0.14s ease;
 }
@@ -492,10 +493,13 @@ body.session-order-pointer-active * {
 }
 .delegation-sidebar-toggle:hover,
 .delegation-sidebar-toggle.expanded {
-  color: var(--accent);
-  border-color: rgba(0,255,65,0.42);
-  background: rgba(0,255,65,0.1);
+  color: var(--delegation-status-color);
+  border-color: color-mix(in srgb, var(--delegation-status-color) 42%, transparent);
+  background: color-mix(in srgb, var(--delegation-status-color) 10%, transparent);
 }
+.delegation-sidebar-toggle.descendant-fail { --delegation-status-color: var(--danger); }
+.delegation-sidebar-toggle.descendant-need { --delegation-status-color: var(--attn); }
+.delegation-sidebar-toggle.descendant-work { --delegation-status-color: var(--accent); }
 .triage-badge {
   font-family: var(--font-ui);
   font-size: 10px;

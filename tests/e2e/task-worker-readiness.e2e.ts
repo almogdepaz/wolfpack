@@ -26,8 +26,11 @@ function piExecutable(): string | undefined {
 }
 
 const executable = piExecutable();
+// Mirrors the server default: the renamed package first, then the pre-rename install.
+const installedExtensions = ["wolfpack-tasks", "pi-tasks"].map((name) =>
+  join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? "", ".pi", "agent"), "npm", "node_modules", "@sgtbeatdown", name, "src", "extension.ts"));
 const extension = process.env.WOLFPACK_TASK_WORKER_PI_TASKS_EXTENSION
-  ?? join(process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? "", ".pi", "agent"), "npm", "node_modules", "@sgtbeatdown", "pi-tasks", "src", "extension.ts");
+  ?? installedExtensions.find((path) => existsSync(path)) ?? installedExtensions[0]!;
 const unavailableReason = !executable
   ? "Pi executable not found on PATH"
   : !existsSync(extension)

@@ -1,5 +1,4 @@
 import { stoppedUnseen } from "../focus-ranking.js";
-import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { createSessionOrganizationRoutes } from "./session-organization-routes.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename } from "node:path";
@@ -44,6 +43,7 @@ import {
   parseObjectBody,
 } from "./http.js";
 import { listParentNotifications } from "./parent-inbox.js";
+import { getAgentRuntimeStateStore } from "./agent-status.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
@@ -226,6 +226,8 @@ function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulS
     alive: inspection.alive,
     status: inspection.alive ? SESSION_TERMINAL_STATUS.READY : SESSION_TERMINAL_STATUS.DEAD,
   };
+  // Read-only: the last state the session observer reduced; status never runs an observation itself.
+  const runtimeState = getAgentRuntimeStateStore().get(inspection.sessionId);
   return {
     ok: true as const,
     selector,
@@ -238,6 +240,7 @@ function inspectedSessionStatusPayload(selector: string, inspection: SuccessfulS
     projectDir: inspection.projectPath,
     harness: inspection.harness,
     terminal,
+    ...(runtimeState && { runtimeState }),
     ...(taskRelay && { taskRelay }),
     ...(inspection.parentSession && { parentSession: inspection.parentSession }),
     ...(terminal.alive && taskTransport && isLiveTaskRelayRegistration(taskTransport, getTaskRelayProfile()) && { taskEndpoint: taskTransport.endpoint, taskTransport }),
