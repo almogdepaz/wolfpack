@@ -8,6 +8,30 @@ async function openAssistant(page: Page) {
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
 }
 
+test("QA-35: next-row times fit completely or are hidden", async ({ page }, info) => {
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    session.name = "broker-leak-worker-3";
+    session.runtimeState = { ...session.runtimeState, changedAt: new Date(Date.now() - 3 * 3600000).toISOString(), state: "needs-input", inputKind: "permission" };
+    await route.fulfill({ response, json: body });
+  });
+  await page.setViewportSize({ width: info.project.name === "desktop" ? 1280 : 390, height: 900 });
+  await openAssistant(page);
+  for (const width of info.project.name === "desktop" ? [1280, 1440] : [390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const stamp = page.locator("#assistant-content .focus-next > li").filter({ hasText: "broker-leak-worker-3" }).locator(".focus-title small");
+    await expect(stamp).toHaveCount(1);
+    if (width === 1280) await expect(stamp).toBeHidden();
+    await expect.poll(() => stamp.evaluate(el => {
+      if (getComputedStyle(el).display === "none") return true;
+      return el.getBoundingClientRect().right <= el.parentElement!.getBoundingClientRect().right + 1;
+    })).toBe(true);
+    await page.screenshot({ path: info.outputPath(`qa35-time-${width}.png`), animations: "disabled" });
+  }
+});
+
 test("QA-34: hover sidebar overlays without shrinking the hydrated pane", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop hover/pane");
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "0"));

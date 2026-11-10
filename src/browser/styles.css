@@ -2990,6 +2990,8 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-rank { min-width: 14px; color: var(--text-4); font: 12px var(--font-mono); text-align: right; }
 .focus-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: 500; }
 .focus-title small, .focus-for { color: var(--text-3); font-size: 12px; font-weight: 400; }
+.focus-next .focus-title small { display: inline-block; }
+@media (min-width: 769px) and (max-width: 1439px) { .assistant-column .focus-next .focus-title small { display: none; } }
 .focus-today .focus-for { margin-left: 10px; }
 .focus-for { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Context absorbs contraction before the title's state/kind word; titles can still shrink once context runs out. */

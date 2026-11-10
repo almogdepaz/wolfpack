@@ -83,7 +83,7 @@ test("QA-22/23: narrow pane rows yield context before kind text and pane control
     const range = document.createRange();
     range.setStart(el.firstChild!, 0);
     range.setEnd(el.firstChild!, "broker-leak permission".length);
-    return { available: el.clientWidth, label: range.getBoundingClientRect().width };
+    return { available: el.getBoundingClientRect().width, label: range.getBoundingClientRect().width };
   });
   await page.screenshot({ path: info.outputPath("pane-1280.png"), animations: "disabled" });
   expect.soft(measure.available).toBeGreaterThanOrEqual(measure.label);
