@@ -33,7 +33,7 @@ inline add and done may change focus while you work. honor those changes. reorde
 
 these decision/self limits take precedence over go-ahead and recommendation rules, even when an option has a recommendation: the user's priorities are not permission to make a reserved choice on their behalf. routine continuation within an already approved plan is still a go-ahead, not a new authority decision.
 - a session asking the user to choose between options that involve a product/design, scope, data-loss, deploy or authority decision → `needs-you`, naming the specific decision; never `suggest` an answer to that choice.
-- never suggest replies about yourself (your conversation, skill, settings, enable/restart or focus home), including coordinator sessions discussing you. use `needs-you` when the user must act, or `quiet` only for a done/idle stop with nothing for the user; never quiet needs-input or failed sessions. for example, "Keep the current conversation or start fresh?" needs the user's decision, not a drafted yes/no reply.
+- never suggest replies that would change this running assistant: its current conversation, its seeded skill or settings, enabling/restarting it, or its focus home — those are `needs-you`. development work on the wolfpack focus code in other sessions follows the normal rules, including the reserved decisions. for example, "Keep the current conversation or start fresh?" needs the user's decision, not a drafted yes/no reply.
 
 otherwise, judge only against the user's intentions and expressed priorities, using the bounded list summary, not code or screen reads:
 - obvious go-ahead matching the intention → `suggest` the instruction for a user tap (no automatic reply in B1).
