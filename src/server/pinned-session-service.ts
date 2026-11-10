@@ -10,7 +10,7 @@ export class PinnedSessionService {
   private liveSince = new Map<string, number>();
   private flight?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
-  constructor(private readonly options: { backend: SessionBackend; pins: () => readonly PinnedSession[]; now?: () => number }) {}
+  constructor(private readonly options: { backend: SessionBackend; pins: () => readonly PinnedSession[]; prepareLaunch?: (pin: PinnedSession) => PinnedSession; now?: () => number }) {}
   start(): void {
     if (this.timer) return;
     void this.tick();
@@ -45,15 +45,16 @@ export class PinnedSessionService {
       if (conflicts.has(action.name)) continue;
       if (action.action === "failed") { this.errors[action.name] = "pinned session failed repeatedly; disable and enable to retry"; continue; }
       if (action.action !== "create") continue;
-      const pin = pins.find(p => p.name === action.name)!;
+      const configured = pins.find(p => p.name === action.name)!;
       try {
+        const pin = this.options.prepareLaunch?.(configured) ?? configured;
         await this.options.backend.createSession(pin.name, pin.cwd, pin.command[0], () => ({ agentCmd: pin.command[0]! }), { agentKind: pin.harness, pinnedCommand: pin.command });
         this.liveSince.set(pin.name, now);
         delete this.errors[pin.name];
       } catch (error) {
-        this.history[pin.name] = recordPinFailure(this.history[pin.name], now);
-        this.errors[pin.name] = errMsg(error);
-        log.warn("pinned session create failed", { name: pin.name, error: errMsg(error) });
+        this.history[configured.name] = recordPinFailure(this.history[configured.name], now);
+        this.errors[configured.name] = errMsg(error);
+        log.warn("pinned session create failed", { name: configured.name, error: errMsg(error) });
       }
     }
   }

@@ -130,6 +130,10 @@ export class FocusRoutines {
     this.chain = next.catch(() => undefined);
     return next;
   }
+  /** Do not rotate a conversation across a pending pull, inbox, ack, or send-bookkeeping write. */
+  withNoInbox(work: () => Promise<void>): Promise<void> {
+    return this.exclusive(async () => { if (!this.read().inbox) await work(); });
+  }
   private now(): number { return (this.deps.now ?? Date.now)(); }
   private iso(): string { return new Date(this.now()).toISOString(); }
 

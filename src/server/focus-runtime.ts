@@ -25,8 +25,9 @@ export class FocusRuntime {
   private sampledSessionId?: string;
   private lastVerdict?: { at: number; id: string; verdict: { idle: boolean; needsInput: boolean } | undefined };
   private timer?: ReturnType<typeof setInterval>;
+  private tickFlight?: Promise<void>;
   constructor(private readonly ctx: ServerContext) {
-    this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => ctx.assistantService.pins.filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder) });
+    this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => ctx.assistantService.pins.filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder), prepareLaunch: pin => ctx.assistantService.prepareLaunch(pin) });
     this.queue = new FocusSendQueue(async (id, text) => {
       const { isAllowedSession } = await import("./http.js");
       if (!(await isAllowedSession("assistant", ctx.backend))) throw new Error("assistant session unavailable");
@@ -47,18 +48,18 @@ export class FocusRuntime {
       queueBusy: () => this.queue.busy,
       enqueue: (text, settled) => {
         if (!this.sampledSessionId) throw new Error("assistant is not running");
-        this.queue.enqueue(this.sampledSessionId, text, settled, "routine");
-        void this.tick().catch(error => log.warn("assistant queue unavailable", { error: errMsg(error) }));
+        this.queue.enqueue(this.sampledSessionId, `Read .pi/skills/wolfpack-focus/SKILL.md first; ${text}`, settled, "routine");
+        void this.tick().catch(error => log.warn("assistant runtime unavailable", { error: errMsg(error) }));
       },
     });
   }
   homeIsLocal(): boolean { const id = getInstallationId(); return (this.ctx.config?.focus?.home ?? id) === id; }
   start(): void {
     if (this.timer) return;
-    this.pins.start();
     try { this.ctx.assistantService.refreshSkill(); } catch (error) { log.warn("assistant skill refresh failed", { error: errMsg(error) }); }
+    this.pins.start();
     this.routines.start();
-    this.timer = setInterval(() => { if (this.queue.busy) void this.tick().catch(error => log.warn("assistant queue unavailable", { error: errMsg(error) })); }, 1000);
+    this.timer = setInterval(() => { void this.tick().catch(error => log.warn("assistant runtime unavailable", { error: errMsg(error) })); }, 1000);
     this.timer.unref();
   }
   stop(): void { this.pins.stop(); this.routines.stop(); clearInterval(this.timer); this.timer = undefined; this.queue.clear("server stopped; queue discarded"); }
@@ -98,12 +99,32 @@ export class FocusRuntime {
     }
     return this.lastVerdict.verdict;
   }
-  async tick(): Promise<void> {
-    const sample = await this.sample();
-    if (sample) await this.queue.tick(sample);
+  tick(): Promise<void> {
+    return this.tickFlight ??= this.configure(async () => {
+      const sample = this.queue.busy ? await this.sample() : undefined;
+      if (sample) await this.queue.tick(sample);
+      const service = this.ctx.assistantService;
+      if (!this.timer || !service.pins.some(pin => service.isManagedPin(pin)) || !this.homeIsLocal() || this.queue.busy || !service.conversationChanged()) return;
+      // Share the routine lock, not its cached status: a pull might still be about to publish an inbox.
+      await this.routines.withNoInbox(async () => {
+        const current = await this.sample();
+        if (!this.timer || !current?.idle || current.needsInput || this.queue.busy || !service.enabled || !this.homeIsLocal()) return;
+        // Recheck incarnation and program token after asynchronous sampling; never kill by reusable name.
+        const facts = await this.ctx.backend.listSessionFacts();
+        const fact = facts.find(f => f.alive && f.identity?.wolfpackSessionId === current.id);
+        const state = programStatusSource(fact?.programStatus, { observedAt: new Date().toISOString() });
+        if (!this.timer || !fact || fact.programStatus?.updatedAtMs !== current.programAt
+          || (fact.programStatus && (!state || !piHarness.isIdle(state)))
+          || this.queue.busy || !service.enabled || !this.homeIsLocal()) return;
+        await this.ctx.backend.killSessionById(current.id);
+        this.pins.reset("assistant");
+        await this.pins.tick();
+        this.lastVerdict = undefined;
+      });
+    }).finally(() => { this.tickFlight = undefined; });
   }
   /** The assistant's current incarnation, whether its harness is resting, and whether it is waiting on the user. */
-  private async sample(): Promise<{ id: string; idle: boolean; needsInput: boolean; token: string } | undefined> {
+  private async sample(): Promise<{ id: string; idle: boolean; needsInput: boolean; token: string; programAt?: number } | undefined> {
     const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
     if (!service.enabled || !this.homeIsLocal()) return undefined;
@@ -118,6 +139,6 @@ export class FocusRuntime {
     const screen = adapter.needsScreen(state) ? await this.ctx.backend.capturePane(session.name, { scrollbackLines: 0 }) : undefined;
     const quietMs = Date.now() - Date.parse(session.activity.lastRenderedActivityAt ?? session.runtimeState.changedAt);
     const facts = { ...state, screen, quietMs };
-    return { id: session.identity.wolfpackSessionId, idle: adapter.isIdle(facts), needsInput: adapter.needsInput(facts), token: fact.programStatus ? `program:${fact.programStatus.updatedAtMs}` : session.runtimeState.changedAt };
+    return { id: session.identity.wolfpackSessionId, idle: adapter.isIdle(facts), needsInput: adapter.needsInput(facts), programAt: fact.programStatus?.updatedAtMs, token: fact.programStatus ? `program:${fact.programStatus.updatedAtMs}` : session.runtimeState.changedAt };
   }
 }
