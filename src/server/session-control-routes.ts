@@ -45,6 +45,7 @@ import { isChildSettled, noteChildInputDelivered } from "./child-events.js";
 import { ChildWaitBusyError, waitForChildren, type ChildWaitChild } from "./child-wait.js";
 import { CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, type ChildEventPayload, type ChildWaitMode } from "../child-event-contract.js";
 import { getAgentRuntimeStateStore } from "./agent-status.js";
+import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
 import { CHILD_CLEANUP, type ChildCleanupReport } from "../session-cascade-contract.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
@@ -468,7 +469,7 @@ return {
         return {
           session: child.session,
           sessionId: child.sessionId,
-          state: runtimeState?.state ?? "unknown",
+          state: runtimeState?.state ?? AGENT_STATUS_STATE.UNKNOWN,
           ...(runtimeState && { authority: runtimeState.authority, stale: runtimeState.stale }),
           settled: child.settled,
           cleanup: child.cleanup,

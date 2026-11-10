@@ -96,7 +96,7 @@ describe("session control fast-path parsing", () => {
   test("reports agent-native usage for invalid child-agent spawn", () => {
     expect(parseAgentCommand(["spawn"])).toEqual({
       ok: false,
-      message: "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]",
+      message: "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]",
     });
   });
 
