@@ -170,7 +170,7 @@ export function buildInbox(input: { file: string; routine: Routine; createdAt: s
   };
 }
 
-export interface GitRepoLog extends ActivityGitRepo { machine: string }
+export interface GitRepoLog extends ActivityGitRepo { machine: string; installationId?: string }
 const flat = (text: string) => text.replace(/[\r\n\t\u2028\u2029]+/g, " ").slice(0, 300);
 /** Generated, deterministic facts for one day; the assistant appends its write-up under `## assistant`. */
 /** A machine with activity that day that the review could not reach; its rows came through catch-ups. */
@@ -242,7 +242,7 @@ function gitDayFacts(git: GitRepoLog[]): string[] {
   const groups = new Map<string, { machine: string; repo: string; cwds: Set<string>; commits: Map<string, ActivityGitRepo["commits"][number]>; errors: Set<string> }>();
   for (const repo of git) {
     const identity = repo.commonDir ?? repo.cwd;
-    const key = JSON.stringify([repo.machine, identity]);
+    const key = JSON.stringify([repo.installationId ?? repo.machine, identity]);
     let group = groups.get(key);
     if (!group) groups.set(key, group = { machine: repo.machine, repo: identity.replace(/[\\/]\.git$/, ""), cwds: new Set(), commits: new Map(), errors: new Set() });
     group.cwds.add(repo.cwd);
