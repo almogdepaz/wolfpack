@@ -106,6 +106,8 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
       let done = false;
       let checking = false;
       let again = false;
+      // A child event arrived during the current children read.
+      let invalidated = false;
       let lastChildren: readonly ChildWaitChild[] = [];
       const result = (outcome: ChildWaitOutcome): ChildWaitResult => {
         const pending = request.mode === CHILD_WAIT_MODE.ALL ? pendingChildren(lastChildren) : [];
@@ -144,12 +146,14 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
         try {
           do {
             again = false;
+            invalidated = false;
             const children = await request.listChildren();
             if (done) return;
             lastChildren = children;
             // An event during the read can name a child the read missed: the
             // read is stale for every outcome, so read again before deciding.
-            if (again) continue;
+            // A re-check tick is no such evidence and keeps the read.
+            if (invalidated) { again = true; continue; }
             // Read the inbox after the await: an event during it is not lost.
             const read = childEventsSince(request.parentSessionId, request.since, request.bootId);
             const outcome = decide(request.mode, children, read.events.length > 0);
@@ -164,7 +168,9 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
       const onAbort = () => finish(undefined);
       // Subscribe before the first check, so an event during it triggers another.
       const unsubscribe = onChildEvent(({ childEvent }) => {
-        if (childEvent.parentSessionId === request.parentSessionId) void check();
+        if (childEvent.parentSessionId !== request.parentSessionId) return;
+        invalidated = true;
+        void check();
       });
       const timer = setTimeout(() => finish(result(
         request.mode === CHILD_WAIT_MODE.ANY && hasEvents() ? CHILD_WAIT_OUTCOME.EVENTS : CHILD_WAIT_OUTCOME.TIMEOUT,

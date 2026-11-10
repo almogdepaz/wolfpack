@@ -242,6 +242,20 @@ describe("waitForChildren", () => {
     expect(calls).toBe(2);
   });
 
+  test("all: a re-check during a slow children read does not discard the read", async () => {
+    let calls = 0;
+    const result = await waitForChildren({
+      parentSessionId: PARENT.wolfpackSessionId, mode: "all", timeoutMs: 300, recheckMs: 5,
+      listChildren: async () => {
+        calls += 1;
+        await new Promise(resolve => setTimeout(resolve, 20));
+        return [child("a", true)];
+      },
+    });
+    expect(result?.outcome).toBe("settled");
+    expect(calls).toBe(1);
+  });
+
   test("resolves to undefined on abort and rejects when the children read fails", async () => {
     const controller = new AbortController();
     const pending = waitForChildren({
