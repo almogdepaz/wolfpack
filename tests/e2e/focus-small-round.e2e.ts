@@ -8,6 +8,17 @@ async function openAssistant(page: Page) {
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
 }
 
+test("QA-37: Sessions does not open an empty hover chooser", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "desktop hover");
+  await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "0"));
+  await page.goto(server.baseUrl);
+  await expect(page.locator("#session-list .card").first()).toBeVisible();
+  await page.locator("#expanded-collapse-btn").click();
+  await page.mouse.move(2, 450);
+  await expect(page.locator("#desktop-sidebar")).toHaveClass(/collapsed/);
+  await expect(page.locator("#sidebar-hover-edge")).toBeHidden();
+});
+
 test("QA-36: today context yields instead of duplicating a project-named chip", async ({ page }, info) => {
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
   await page.route("**/api/sessions", async route => {

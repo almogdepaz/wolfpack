@@ -2357,7 +2357,7 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
   #view-container { flex: 1; min-width: 0; }
   #sidebar-hover-edge { position: fixed; inset: 0 auto 0 0; width: 8px; z-index: 60; }
   body:has(#desktop-sidebar.collapsed) #sidebar-hover-edge { display: block; }
-  body.sessions-expanded #sidebar-hover-edge { display: none !important; }
+  body.sessions-expanded #sidebar-hover-edge, body:has(#sessions-view.visible) #sidebar-hover-edge { display: none !important; }
   #session-drawer { display: none; }
   #drawer-backdrop { display: none; }
 }

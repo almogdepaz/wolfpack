@@ -6044,7 +6044,7 @@ function initSidebar() {
 
   // Entering the narrow invisible edge temporarily opens an unpinned sidebar.
   const openAutoSidebar = (): void => {
-    if (state.sidebarCollapsed && !state.sidebarPinned && !state.sessionsExpanded) {
+    if (state.currentView !== "sessions" && state.sidebarCollapsed && !state.sidebarPinned && !state.sessionsExpanded) {
       state.sidebarTransitionIsHover = true;
       sidebar.classList.remove("collapsed");
       state.sidebarAutoExpanded = true;
