@@ -35,6 +35,14 @@ export class UnsupportedTerminalKeyError extends Error {
   }
 }
 
+/** How an exact-ID kill ended. */
+export const SESSION_KILL_DISPOSITION = {
+  KILLED: "killed",
+  /** The session had already exited or was unknown; not an error. */
+  ALREADY_GONE: "already_gone",
+} as const;
+export type SessionKillDisposition = (typeof SESSION_KILL_DISPOSITION)[keyof typeof SESSION_KILL_DISPOSITION];
+
 export interface SessionLaunchOptions {
   readonly agentKind?: AgentKind | string;
   readonly externalAgent?: CaptureSessionIdentityInput["externalAgent"];
@@ -86,8 +94,11 @@ export interface SessionBackend {
     options?: SessionLaunchOptions,
   ): Promise<PublicSessionIdentity>;
   killSession(name: string): Promise<void>;
-  /** Kill the exact broker identity captured at creation; never resolve a reusable name. */
-  killSessionById(sessionId: string): Promise<void>;
+  /**
+   * Kill the exact broker identity captured at creation; never resolve a reusable name.
+   * A session that already exited or is unknown is not an error: it resolves `already_gone`.
+   */
+  killSessionById(sessionId: string): Promise<SessionKillDisposition>;
   hasSession(name: string): Promise<boolean>;
   capturePane(name: string, options?: CapturePaneOptions): Promise<string>;
   /** Capture only a live session with this durable broker UUID; names are never resolved here. */

@@ -73,7 +73,7 @@ test.each([false, true])("coalesced live broker response then exit cannot resurr
   const id = "550e8400-e29b-41d4-a716-446655440000";
   const dir = mkdtempSync("/tmp/wpn-inbox-");
   const socketPath = join(dir, "b.sock");
-  let killTask: Promise<void> | undefined;
+  let killTask: Promise<unknown> | undefined;
   let releaseKillReply = () => {};
   let respondToList: (() => void) | undefined;
   const requests: string[] = [];

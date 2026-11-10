@@ -11,6 +11,7 @@ import type { AgentKind } from "../agent-kind.js";
 export type { AgentKind } from "../agent-kind.js";
 import { DEV_DIR } from "./dev-dir.js";
 import { readValidatedJsonFile, writePrivateJsonFile } from "./persistence.js";
+import { isChildCleanupPolicy, type ChildCleanupPolicy } from "../session-cascade-contract.js";
 
 export const SESSION_IDENTITY_SCHEMA_VERSION = 1;
 export type SessionIdentityPersistenceMode = "private" | "memory";
@@ -31,6 +32,8 @@ export interface ExternalAgentIdentity {
 export interface ParentSessionIdentity {
   readonly wolfpackSessionId: string;
   readonly wolfpackSessionName: string;
+  /** Recorded at spawn; absent for a pre-upgrade child, which never cascades. */
+  readonly cleanup?: ChildCleanupPolicy;
 }
 
 export interface SessionIdentity {
@@ -108,6 +111,7 @@ export function identityEnvVars(input: {
     ...(input.parentSession ? [
       ["WOLFPACK_PARENT_SESSION_ID", input.parentSession.wolfpackSessionId] as [string, string],
       ["WOLFPACK_PARENT_SESSION_NAME", input.parentSession.wolfpackSessionName] as [string, string],
+      ...(input.parentSession.cleanup ? [["WOLFPACK_PARENT_CLEANUP", input.parentSession.cleanup] as [string, string]] : []),
     ] : []),
     ["WOLFPACK_EXTERNAL_AGENT_ID_FILE", join(input.projectPath, ".wolfpack", "external-agent-id")],
   ];
@@ -121,7 +125,9 @@ export function extractParentSessionFromEnv(
   const wolfpackSessionId = map.get("WOLFPACK_PARENT_SESSION_ID")?.trim();
   const wolfpackSessionName = map.get("WOLFPACK_PARENT_SESSION_NAME")?.trim();
   if (!wolfpackSessionId || !wolfpackSessionName) return undefined;
-  return { wolfpackSessionId, wolfpackSessionName };
+  // An unknown value is no policy: the child never cascades.
+  const cleanup = map.get("WOLFPACK_PARENT_CLEANUP")?.trim();
+  return { wolfpackSessionId, wolfpackSessionName, ...(isChildCleanupPolicy(cleanup) && { cleanup }) };
 }
 
 export function extractExternalAgentFromEnv(

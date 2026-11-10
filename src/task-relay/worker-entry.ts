@@ -48,6 +48,7 @@ function run(volatile: VolatileRelayGateway): void {
             if (request.method === "volatileEpoch") value = volatile.epoch;
             else if (request.method === "initialize") value = volatile.initialize();
             else if (request.method === "registrationsForSessions") value = await volatile.registrationsForSessions(request.args[0] as readonly string[]);
+            else if (request.method === "hostEnvelope") value = await volatile.hostEnvelope(request.args[0] as Parameters<typeof volatile.hostEnvelope>[0]);
             else value = await (request.method === "volatilePeer" ? volatile.peer(request.args[0])
               : request.method === "volatileTopology" ? volatile.topology(request.args[0]) : volatile.request(request.args[0]));
             const captured = captureRelayWire(value, LIMIT.responseBytes, true);

@@ -2131,6 +2131,10 @@
           "plan": {
             "$ref": "#/$defs/SessionOpenPlanRequest"
           },
+          "outliveParent": {
+            "const": true,
+            "description": "Record the outlive cleanup policy: the child keeps running after its parent. Default: cascade"
+          },
           "taskWorker": {
             "type": "boolean",
             "description": "Opt into task endpoint readiness (Pi Tasks, or the Claude wolfpack-tasks plugin) before success is returned"
@@ -2187,6 +2191,10 @@
               },
               "plan": {
                 "$ref": "#/$defs/SessionOpenPlanRequest"
+              },
+              "outliveParent": {
+                "const": true,
+                "description": "Record the outlive cleanup policy: the child keeps running after its parent. Default: cascade"
               }
             },
             "required": [
@@ -2251,6 +2259,10 @@
               },
               "taskWorkerDryRun": {
                 "const": true
+              },
+              "outliveParent": {
+                "const": true,
+                "description": "Record the outlive cleanup policy: the child keeps running after its parent. Default: cascade"
               }
             },
             "required": [
@@ -2504,6 +2516,373 @@
         "503 ErrorEnvelope"
       ]
     },
+    "readRemoteFile": {
+      "route": "POST /api/file/read",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:readRemoteFile:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readRemoteFile request",
+        "type": "object",
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/RemoteFilePath"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readRemoteFile:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readRemoteFile response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "path": {
+            "type": "string"
+          },
+          "resolvedPath": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760
+          },
+          "binary": {
+            "type": "boolean"
+          },
+          "encoding": {
+            "enum": [
+              "utf8",
+              "base64"
+            ],
+            "description": "utf8 for text; base64 when binary is true"
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "path",
+          "resolvedPath",
+          "size",
+          "binary",
+          "encoding",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 RemoteFileErrorEnvelope",
+        "401 ErrorEnvelope",
+        "403 RemoteFileErrorEnvelope",
+        "404 RemoteFileErrorEnvelope",
+        "409 RemoteFileErrorEnvelope",
+        "413 RemoteFileErrorEnvelope",
+        "500 RemoteFileErrorEnvelope"
+      ]
+    },
+    "writeRemoteFile": {
+      "route": "POST /api/file/write",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:writeRemoteFile:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "writeRemoteFile request",
+        "type": "object",
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/RemoteFilePath"
+          },
+          "encoding": {
+            "enum": [
+              "utf8",
+              "base64"
+            ]
+          },
+          "content": {
+            "type": "string"
+          },
+          "createOnly": {
+            "const": true,
+            "description": "Refuse an existing file"
+          }
+        },
+        "required": [
+          "path",
+          "encoding",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:writeRemoteFile:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "writeRemoteFile response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "path": {
+            "type": "string"
+          },
+          "resolvedPath": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760
+          },
+          "created": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "path",
+          "resolvedPath",
+          "size",
+          "created"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 RemoteFileErrorEnvelope",
+        "401 ErrorEnvelope",
+        "403 RemoteFileErrorEnvelope",
+        "404 RemoteFileErrorEnvelope",
+        "409 RemoteFileErrorEnvelope",
+        "413 RemoteFileErrorEnvelope",
+        "500 RemoteFileErrorEnvelope"
+      ]
+    },
+    "editRemoteFile": {
+      "route": "POST /api/file/edit",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:editRemoteFile:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "editRemoteFile request",
+        "type": "object",
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/RemoteFilePath"
+          },
+          "old": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact text; without all it must match exactly once"
+          },
+          "new": {
+            "type": "string"
+          },
+          "all": {
+            "const": true,
+            "description": "Replace every match"
+          }
+        },
+        "required": [
+          "path",
+          "old",
+          "new"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:editRemoteFile:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "editRemoteFile response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "path": {
+            "type": "string"
+          },
+          "resolvedPath": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760
+          },
+          "replacements": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "ok",
+          "path",
+          "resolvedPath",
+          "size",
+          "replacements"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 RemoteFileErrorEnvelope",
+        "401 ErrorEnvelope",
+        "403 RemoteFileErrorEnvelope",
+        "404 RemoteFileErrorEnvelope",
+        "409 RemoteFileErrorEnvelope",
+        "413 RemoteFileErrorEnvelope",
+        "500 RemoteFileErrorEnvelope"
+      ]
+    },
+    "runRemoteCommand": {
+      "route": "POST /api/exec",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:runRemoteCommand:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "runRemoteCommand request",
+        "type": "object",
+        "properties": {
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "maxItems": 1024,
+            "description": "Program and arguments; run without a shell. The program is resolved through the server's PATH"
+          },
+          "cwd": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Absolute existing directory on the server machine"
+          },
+          "timeoutSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 600,
+            "description": "Default 120; on timeout the command's process group is killed"
+          }
+        },
+        "required": [
+          "argv",
+          "cwd"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:runRemoteCommand:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "runRemoteCommand response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "exitCode": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "null when a signal ended the command"
+          },
+          "signal": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timedOut": {
+            "type": "boolean"
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stdoutEncoding": {
+            "enum": [
+              "utf8",
+              "base64"
+            ],
+            "description": "utf8 for text; base64 otherwise"
+          },
+          "stdoutBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Total bytes written, including bytes past the cap"
+          },
+          "stdoutTruncated": {
+            "type": "boolean",
+            "description": "true when output exceeded 1048576 bytes"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stderrEncoding": {
+            "enum": [
+              "utf8",
+              "base64"
+            ]
+          },
+          "stderrBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "stderrTruncated": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "cwd",
+          "exitCode",
+          "signal",
+          "timedOut",
+          "durationMs",
+          "stdout",
+          "stdoutEncoding",
+          "stdoutBytes",
+          "stdoutTruncated",
+          "stderr",
+          "stderrEncoding",
+          "stderrBytes",
+          "stderrTruncated"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 RemoteExecErrorEnvelope",
+        "401 ErrorEnvelope",
+        "403 RemoteExecErrorEnvelope",
+        "404 RemoteExecErrorEnvelope",
+        "409 RemoteExecErrorEnvelope",
+        "413 RemoteExecErrorEnvelope",
+        "429 RemoteExecErrorEnvelope",
+        "500 RemoteExecErrorEnvelope"
+      ]
+    },
     "killSession": {
       "route": "POST /api/kill",
       "stable": true,
@@ -2537,12 +2916,24 @@
           },
           "sessionId": {
             "$ref": "#/$defs/SessionId"
+          },
+          "cascaded": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/CascadedChild"
+            },
+            "description": "Same-machine cascade children killed with this session, recursively, by each child's recorded policy"
+          },
+          "cascadeError": {
+            "type": "string",
+            "description": "The session table was unavailable; no child was cascaded by this request"
           }
         },
         "required": [
           "ok",
           "session",
-          "sessionId"
+          "sessionId",
+          "cascaded"
         ],
         "additionalProperties": false
       },
@@ -2786,6 +3177,11 @@
           "sessionId": {
             "$ref": "#/$defs/SessionId"
           },
+          "bootId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Server process that assigned seq; pass since only with the same bootId."
+          },
           "notifications": {
             "type": "array",
             "items": {
@@ -2806,6 +3202,246 @@
         "404 SessionStatusFailure",
         "409 SessionStatusFailure",
         "410 SessionStatusFailure",
+        "503 SessionStatusFailure"
+      ]
+    },
+    "listSessionChildren": {
+      "route": "GET /api/session-control/children",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:listSessionChildren:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listSessionChildren request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionSelector"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:listSessionChildren:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "listSessionChildren response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "bootId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "session": {
+                  "$ref": "#/$defs/SessionName"
+                },
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                },
+                "state": {
+                  "$ref": "#/$defs/AgentStatusState"
+                },
+                "authority": {
+                  "$ref": "#/$defs/AgentStatusAuthority"
+                },
+                "stale": {
+                  "type": "boolean"
+                },
+                "settled": {
+                  "type": "boolean",
+                  "description": "Fresh tracked state is idle, needs-input, done, failed, stopped or off, with no delivered task pending."
+                },
+                "cleanup": {
+                  "enum": [
+                    "cascade",
+                    "outlive",
+                    "none"
+                  ],
+                  "description": "The child's recorded cleanup policy; none for a child without one"
+                },
+                "lastEvent": {
+                  "$ref": "#/$defs/ChildEvent"
+                }
+              },
+              "required": [
+                "session",
+                "sessionId",
+                "state",
+                "settled",
+                "cleanup"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "sessionId",
+          "bootId",
+          "children"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure"
+      ]
+    },
+    "waitForSessionChildren": {
+      "route": "GET /api/session-control/children/wait",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:waitForSessionChildren:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "waitForSessionChildren request",
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/SessionSelector"
+          },
+          "children": {
+            "enum": [
+              "any",
+              "all"
+            ]
+          },
+          "timeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 600000
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991,
+            "description": "Used only with the same bootId."
+          },
+          "bootId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          }
+        },
+        "required": [
+          "session",
+          "children"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:waitForSessionChildren:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "waitForSessionChildren response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "session": {
+            "$ref": "#/$defs/SessionName"
+          },
+          "sessionId": {
+            "$ref": "#/$defs/SessionId"
+          },
+          "children": {
+            "enum": [
+              "any",
+              "all"
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "events",
+              "settled",
+              "no_children",
+              "timeout"
+            ],
+            "description": "timeout is a check-in result, not a failure."
+          },
+          "bootId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "since": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "The cursor used: the request since for the current boot, otherwise 0."
+          },
+          "cursor": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Pass as since with bootId to the next wait."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ChildEvent"
+            },
+            "maxItems": 100
+          },
+          "truncated": {
+            "const": true
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "session": {
+                  "$ref": "#/$defs/SessionName"
+                },
+                "sessionId": {
+                  "$ref": "#/$defs/SessionId"
+                }
+              },
+              "required": [
+                "session",
+                "sessionId"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ok",
+          "session",
+          "sessionId",
+          "children",
+          "outcome",
+          "bootId",
+          "since",
+          "cursor",
+          "events"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "429 ErrorEnvelope",
         "503 SessionStatusFailure"
       ]
     },
@@ -3899,6 +4535,9 @@
           "type": "string",
           "maxLength": 100,
           "description": "Unverified, informational sender session name."
+        },
+        "childEvent": {
+          "$ref": "#/$defs/ChildEvent"
         }
       },
       "required": [
@@ -3907,6 +4546,136 @@
         "message"
       ],
       "additionalProperties": false
+    },
+    "ChildEvent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "wolfpack.child_event/v1"
+        },
+        "eventId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bootId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Server process that assigned seq; a different bootId restarts sequences."
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "childSessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "childName": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "parentSessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "event": {
+          "enum": [
+            "blocked",
+            "error",
+            "done",
+            "exited",
+            "message"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/AgentStatusState"
+        },
+        "inputKind": {
+          "enum": [
+            "permission",
+            "question",
+            "auth"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "lastLines": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "maxItems": 5
+        },
+        "observedAt": {
+          "type": "string",
+          "description": "ISO timestamp"
+        },
+        "authority": {
+          "$ref": "#/$defs/AgentStatusAuthority"
+        },
+        "reason": {
+          "enum": [
+            "exit",
+            "killed"
+          ]
+        },
+        "exitCode": {
+          "type": "integer"
+        },
+        "signal": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "eventId",
+        "bootId",
+        "seq",
+        "childSessionId",
+        "childName",
+        "parentSessionId",
+        "event",
+        "state",
+        "observedAt"
+      ],
+      "additionalProperties": true,
+      "description": "Server-derived child session event (wolfpack.child_event/v1). Clients must ignore unknown optional fields; existing fields keep their names."
+    },
+    "ChildEventStreamEvent": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "child_event"
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "at": {
+          "type": "string",
+          "description": "ISO timestamp"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "childEvent": {
+          "$ref": "#/$defs/ChildEvent"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "kind",
+        "session",
+        "sessionId",
+        "childEvent"
+      ],
+      "additionalProperties": false,
+      "description": "Live GET /api/events child event; session/sessionId identify the parent."
     },
     "ParentNotifiedEvent": {
       "type": "object",
@@ -4918,6 +5687,84 @@
       ],
       "additionalProperties": true
     },
+    "RemoteFilePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Absolute path on the server machine; symlinks are followed"
+    },
+    "RemoteFileErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "INVALID_REQUEST",
+            "REQUEST_TOO_LARGE",
+            "PATH_NOT_ABSOLUTE",
+            "NOT_FOUND",
+            "PERMISSION_DENIED",
+            "NOT_A_FILE",
+            "SYMLINK_LOOP",
+            "DANGLING_SYMLINK",
+            "FILE_TOO_LARGE",
+            "FILE_EXISTS",
+            "BINARY_FILE",
+            "EDIT_MATCH_COUNT",
+            "IO_FAILED"
+          ]
+        },
+        "size": {
+          "type": "integer"
+        },
+        "maxBytes": {
+          "type": "integer"
+        },
+        "matches": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "error",
+        "code"
+      ],
+      "additionalProperties": false
+    },
+    "RemoteExecErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "INVALID_REQUEST",
+            "REQUEST_TOO_LARGE",
+            "CWD_NOT_ABSOLUTE",
+            "CWD_NOT_FOUND",
+            "CWD_NOT_DIRECTORY",
+            "COMMAND_NOT_FOUND",
+            "PERMISSION_DENIED",
+            "EXEC_BUSY",
+            "SPAWN_FAILED"
+          ]
+        },
+        "maxBytes": {
+          "type": "integer"
+        },
+        "maxConcurrent": {
+          "type": "integer",
+          "description": "Running-command limit (4); set with EXEC_BUSY"
+        }
+      },
+      "required": [
+        "error",
+        "code"
+      ],
+      "additionalProperties": false
+    },
     "GitFileChange": {
       "type": "object",
       "properties": {
@@ -5845,11 +6692,46 @@
         },
         "wolfpackSessionName": {
           "$ref": "#/$defs/SessionName"
+        },
+        "cleanup": {
+          "enum": [
+            "cascade",
+            "outlive"
+          ],
+          "description": "Recorded at spawn. cascade: killed when the parent is killed or dies. Absent on a pre-upgrade child, which never cascades."
         }
       },
       "required": [
         "wolfpackSessionId",
         "wolfpackSessionName"
+      ],
+      "additionalProperties": false
+    },
+    "CascadedChild": {
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "session": {
+          "$ref": "#/$defs/SessionName"
+        },
+        "outcome": {
+          "enum": [
+            "killed",
+            "already_gone",
+            "failed"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "description": "failed only: why the kill failed"
+        }
+      },
+      "required": [
+        "sessionId",
+        "session",
+        "outcome"
       ],
       "additionalProperties": false
     },

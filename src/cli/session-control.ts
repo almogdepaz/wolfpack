@@ -52,6 +52,7 @@ import type {
   SessionSendOutcome,
 } from "../session-send-contract.js";
 import { NOTIFY_UNDELIVERED_REASON, notifyDelivery } from "../notify-contract.js";
+import { CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, CHILD_WAIT_OUTCOMES, type ChildWaitMode } from "../child-event-contract.js";
 import {
   NOTIFY_PARENT_PROMPT,
   PLAN_FILE_UNREADABLE,
@@ -59,7 +60,8 @@ import {
 } from "../session-plan-contract.js";
 import type { SessionPlanRequest } from "../session-plan-contract.js";
 import type { NotifyDelivery } from "../notify-contract.js";
-import { call as callApi } from "./api.js";
+import { baseUrl, call as callApi, LONG_REQUEST_GRACE_MS, longRequestInit, proxyDenialFailure, serverTransportFailure } from "./api.js";
+import type { ServerTransportFailure } from "./api.js";
 import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
 import type { TaskWorkerPolicyDiagnostics, TaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
@@ -103,8 +105,8 @@ The server owns validation, naming, identity, and launch.`;
 }
 
 export function sessionOpenUsage(): string {
-  return `Usage: wolfpack session open <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-       wolfpack session open --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
+  return `Usage: wolfpack session open <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--json]
+       wolfpack session open --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
 
 Global selector: wolfpack --machine <short-name-or-fqdn> session open ...
 
@@ -117,13 +119,21 @@ export function agentUsage(): string {
 Global selector: wolfpack --machine <short-name-or-fqdn> agent <spawn|inbox> ...
 
 Commands:
-  wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-  wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
+  wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--json]
+  wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--task-worker-policy-file <path>] [--task-worker-dry-run] [--readiness-timeout-ms <1..60000>]] [--json]
   wolfpack agent notify-parent [--message <text>] [--json]
   wolfpack agent inbox [--since <seq>] [--json]
+  wolfpack agent wait --children any|all [--timeout <seconds>] [--since <seq> --boot-id <id>] [--json]
+  wolfpack agent children [--json]
 
 Spawns a child of the current Wolfpack agent session (same harness by default),
-notifies its parent's inbox and enrolled devices, or polls the current session's inbox.`;
+notifies its parent's inbox and enrolled devices, or polls the current session's inbox.
+wait blocks until a child event arrives (any) or every live child is settled (all);
+timeout (default 180 s) is a check-in result with exit 0. Pass the returned cursor
+and bootId as --since/--boot-id to the next wait. children lists the current
+session's live children. wait and children run on this host only.
+A spawned child is killed with its parent (POST /api/kill or parent exit), recursively;
+--outlive-parent keeps it running instead.`;
 }
 
 export function sessionUsage(): string {
@@ -176,6 +186,7 @@ export type ParsedSessionCommand =
     readonly promptFile?: string;
     readonly plan?: string;
     readonly notifyParent?: true;
+    readonly outliveParent?: true;
     readonly taskWorker?: true;
     readonly taskWorkerPolicyFile?: string;
     readonly taskWorkerDryRun?: true;
@@ -204,6 +215,16 @@ export type ParsedAgentCommand =
   | { readonly ok: true; readonly action: "inbox"; readonly since?: number; readonly output: OutputMode }
   | {
     readonly ok: true;
+    readonly action: "wait";
+    readonly mode: ChildWaitMode;
+    readonly timeoutMs: number;
+    readonly since?: number;
+    readonly bootId?: string;
+    readonly output: OutputMode;
+  }
+  | { readonly ok: true; readonly action: "children"; readonly output: OutputMode }
+  | {
+    readonly ok: true;
     readonly action: "spawn";
     readonly selector: ExistingProjectSelector;
     readonly harness?: OpenableHarness;
@@ -213,6 +234,7 @@ export type ParsedAgentCommand =
     readonly promptFile?: string;
     readonly plan?: string;
     readonly notifyParent?: true;
+    readonly outliveParent?: true;
     readonly taskWorker?: true;
     readonly taskWorkerPolicyFile?: string;
     readonly taskWorkerDryRun?: true;
@@ -255,6 +277,8 @@ interface ApiError {
   readonly status: number;
   readonly body: string;
   readonly code?: string;
+  /** Status 0 only: the server could not be reached at all. */
+  readonly transport?: ServerTransportFailure;
 }
 
 function structuredErrorCode(body: string): string | undefined {
@@ -282,10 +306,14 @@ async function call(
       target,
     );
   } catch (e: unknown) {
-    throw { status: 0, body: e instanceof Error ? e.message : String(e) } satisfies ApiError;
+    const transport = serverTransportFailure(e, `${baseUrl(target)}${path}`, target);
+    throw { status: 0, body: e instanceof Error ? e.message : String(e), ...(transport && { transport }) } satisfies ApiError;
   }
   if (!resp.ok) {
     const body = await resp.text();
+    const transport = proxyDenialFailure(resp, `${baseUrl(target)}${path}`, target);
+    // The proxy's 403 is not a server answer: report it like an unreachable server.
+    if (transport) throw { status: 0, body, transport } satisfies ApiError;
     throw { status: resp.status, body, code: structuredErrorCode(body) } satisfies ApiError;
   }
   return resp.json();
@@ -381,6 +409,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
   const nameValue = action === "open" ? (consumeLaunchValue(args, "--name") ?? consumeLaunchValue(args, "--session-name")) : null;
   const modelValue = action === "open" ? consumeLaunchValue(args, "--model") : null;
   const notifyParent = consumeFlag(args, "--notify-parent");
+  const outliveParent = consumeFlag(args, "--outlive-parent");
   const taskWorker = consumeFlag(args, "--task-worker");
   const taskWorkerPolicyFileValue = consumeLaunchValue(args, "--task-worker-policy-file");
   const taskWorkerDryRun = consumeFlag(args, "--task-worker-dry-run");
@@ -415,7 +444,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
   const validPromptSources = promptSources.length <= 1 && validPromptFile && validPlan;
   const validHarness = harnessValue === null
     || (harness !== undefined && (action === "create" || isOpenableHarness(harness)));
-  const validNotify = action !== "create" || !notifyParent;
+  const validNotify = action !== "create" || (!notifyParent && !outliveParent);
   const selector = parseExistingProjectSelector(project, projectDir);
   const readinessTimeoutMs = readinessTimeoutValue === null ? undefined : Number(readinessTimeoutValue);
   const validTaskWorker = !taskWorker || (
@@ -471,6 +500,7 @@ function parseLaunchSessionCommand(action: LaunchSessionAction, args: string[]):
     ...(promptFile !== undefined && { promptFile }),
     ...(plan !== undefined && { plan }),
     ...(notifyParent && { notifyParent: true }),
+    ...(outliveParent && { outliveParent: true }),
     ...(taskWorker && { taskWorker: true }),
     ...(taskWorkerPolicyFileValue !== null && { taskWorkerPolicyFile: taskWorkerPolicyFileValue }),
     ...(taskWorkerDryRun && { taskWorkerDryRun: true }),
@@ -603,9 +633,44 @@ export function parseSessionCommand(argv: readonly string[]): ParsedSessionComma
   return parseTargetSessionCommand(action, args, output);
 }
 
+const AGENT_WAIT_USAGE = "Usage: wolfpack agent wait --children any|all [--timeout <seconds>] [--since <seq> --boot-id <id>] [--json]";
+
+function parseAgentWaitOptions(args: string[], output: OutputMode): Extract<ParsedAgentCommand, { action: "wait" } | { ok: false }> {
+  const mode = consumeValue(args, "--children");
+  const timeout = consumeValue(args, "--timeout");
+  const since = consumeValue(args, "--since");
+  const bootId = consumeValue(args, "--boot-id");
+  const integer = (raw: string | null) => raw !== null && /^\d+$/.test(raw) && Number.isSafeInteger(Number(raw));
+  const timeoutSeconds = timeout === null ? CHILD_WAIT_LIMITS.DEFAULT_TIMEOUT_MS / 1000 : Number(timeout);
+  if (args.length > 0 || !CHILD_WAIT_MODES.includes(mode as ChildWaitMode)
+    || (timeout !== null && !integer(timeout))
+    || timeoutSeconds < 1 || timeoutSeconds * 1000 > CHILD_WAIT_LIMITS.MAX_TIMEOUT_MS
+    || (since !== null && !integer(since))
+    || (bootId !== null && (bootId.length === 0 || bootId.length > 100))
+    || ((since === null) !== (bootId === null))) {
+    return { ok: false, message: AGENT_WAIT_USAGE };
+  }
+  return {
+    ok: true,
+    action: "wait",
+    mode: mode as ChildWaitMode,
+    timeoutMs: timeoutSeconds * 1000,
+    ...(since !== null && { since: Number(since) }),
+    ...(bootId !== null && { bootId }),
+    output,
+  };
+}
+
 export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
   const [action, ...rest] = argv;
   const args = [...rest];
+  if (action === "wait" || action === "children") {
+    const { mode: output, shellRequested } = parseOutputMode(args);
+    if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
+    if (action === "wait") return parseAgentWaitOptions(args, output);
+    if (args.length > 0) return { ok: false, message: "Usage: wolfpack agent children [--json]" };
+    return { ok: true, action: "children", output };
+  }
   if (action === "inbox") {
     const { mode: output, shellRequested } = parseOutputMode(args);
     if (shellRequested) return { ok: false, message: "--shell is only valid for current-context" };
@@ -625,7 +690,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     return { ok: false, message: action ? `Unknown agent command: ${action}` : "Usage: wolfpack agent spawn <project> ..." };
   }
   const parsed = parseSessionCommand(["open", ...args]);
-  const usage = "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]";
+  const usage = "Usage: wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--task-worker [--readiness-timeout-ms <1..60000>]] [--json]";
   if (!parsed.ok) return { ok: false, message: usage };
   if (parsed.action !== "open") return { ok: false, message: "Usage: wolfpack agent spawn <project> ..." };
   return {
@@ -639,6 +704,7 @@ export function parseAgentCommand(argv: readonly string[]): ParsedAgentCommand {
     ...(parsed.promptFile !== undefined && { promptFile: parsed.promptFile }),
     ...(parsed.plan !== undefined && { plan: parsed.plan }),
     ...(parsed.notifyParent && { notifyParent: true }),
+    ...(parsed.outliveParent && { outliveParent: true }),
     ...(parsed.taskWorker && { taskWorker: true }),
     ...(parsed.taskWorkerPolicyFile !== undefined && { taskWorkerPolicyFile: parsed.taskWorkerPolicyFile }),
     ...(parsed.taskWorkerDryRun && { taskWorkerDryRun: true }),
@@ -695,6 +761,27 @@ function parseStructuredFailure(
   }
 }
 
+/**
+ * Report a server that could not be reached under the caller's usual code and exit,
+ * naming the URL, the cause and the sandbox hint instead of a bare generic message.
+ */
+function writeTransportError(
+  output: OutputMode,
+  code: string,
+  genericMessage: string,
+  exitCode: number,
+  transport: ServerTransportFailure,
+): number {
+  const message = `${genericMessage}: cannot reach the Wolfpack server at ${transport.url} (${transport.cause})`;
+  if (output === "json") {
+    jsonOut({ ok: false, error: { code, message, url: transport.url, cause: transport.cause, hint: transport.hint } });
+  } else {
+    printError(red(message));
+    printError(`hint: ${transport.hint}`);
+  }
+  return exitCode;
+}
+
 function mapApiError(e: unknown, output: OutputMode): number {
   const err = e as Partial<ApiError>;
   const failure = SESSION_API_FAILURES[err.status ?? 0] ?? {
@@ -702,6 +789,7 @@ function mapApiError(e: unknown, output: OutputMode): number {
     message: "session command failed",
     exitCode: SESSION_EXIT.GENERAL,
   };
+  if (err.transport) return writeTransportError(output, failure.code, failure.message, failure.exitCode, err.transport);
   const structured = output === "json" ? parseStructuredFailure(err.body, failure) : undefined;
   if (structured !== undefined) jsonOut(structured);
   else if (output === "json") jsonOut({ ok: false, error: { code: failure.code, message: failure.message } });
@@ -1007,6 +1095,9 @@ function mapCreateApiError(output: OutputMode, error: unknown): number {
       planPath,
     );
   }
+  if (apiError.transport) {
+    return writeTransportError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL, apiError.transport);
+  }
   return writeOpenError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
 }
 
@@ -1043,6 +1134,9 @@ function mapOpenApiError(output: OutputMode, error: unknown): number {
       SESSION_EXIT.BACKEND_UNAVAILABLE,
     );
   }
+  if (apiError.transport) {
+    return writeTransportError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL, apiError.transport);
+  }
   return writeOpenError(output, "CREATE_FAILED", "session creation failed", SESSION_EXIT.GENERAL);
 }
 
@@ -1056,6 +1150,7 @@ interface LaunchPromptSource {
 
 interface SessionOpenLaunchArgs extends LaunchPromptSource {
   readonly selector: ExistingProjectSelector;
+  readonly outliveParent?: true;
   readonly harness?: OpenableHarness;
   readonly sessionName?: string;
   readonly model?: string;
@@ -1173,6 +1268,7 @@ async function runSessionOpen(
         ...(taskWorkerPolicy !== undefined && { taskWorkerPolicy }),
         ...(parsed.taskWorkerDryRun && { taskWorkerDryRun: true }),
         ...(parsed.readinessTimeoutMs !== undefined && { readinessTimeoutMs: parsed.readinessTimeoutMs }),
+        ...(parsed.outliveParent && { outliveParent: true }),
         ...(initialPrompt !== undefined && { initialPrompt }),
         ...planRequest(parsed),
       }),
@@ -1323,6 +1419,91 @@ async function runNotifyParent(
   }
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSafeCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+interface ChildWaitEventLine {
+  readonly seq: number;
+  readonly childName: string;
+  readonly event: string;
+  readonly message?: string;
+}
+
+/** The fields the CLI prints; the JSON output passes the whole response through. */
+function isChildWaitResponse(value: unknown, expectedSessionId?: string): value is Record<string, unknown> & {
+  readonly outcome: string; readonly bootId: string; readonly cursor: number; readonly events: readonly ChildWaitEventLine[];
+} {
+  if (!isObjectRecord(value) || value.ok !== true || typeof value.bootId !== "string" || !isSafeCount(value.cursor)) return false;
+  if (!CHILD_WAIT_OUTCOMES.includes(value.outcome as typeof CHILD_WAIT_OUTCOMES[number])) return false;
+  if (expectedSessionId !== undefined && value.sessionId !== expectedSessionId) return false;
+  return Array.isArray(value.events) && value.events.length <= 100 && value.events.every(event => isObjectRecord(event)
+    && isSafeCount(event.seq) && typeof event.childName === "string" && typeof event.event === "string");
+}
+
+function isChildrenResponse(value: unknown, expectedSessionId?: string): value is Record<string, unknown> & {
+  readonly children: readonly { readonly session: string; readonly state: string; readonly settled: boolean; readonly lastEvent?: { readonly event: string } }[];
+} {
+  if (!isObjectRecord(value) || value.ok !== true || !Array.isArray(value.children)) return false;
+  if (expectedSessionId !== undefined && value.sessionId !== expectedSessionId) return false;
+  return value.children.every(child => isObjectRecord(child) && typeof child.session === "string"
+    && typeof child.state === "string" && typeof child.settled === "boolean"
+    && (child.lastEvent === undefined || (isObjectRecord(child.lastEvent) && typeof child.lastEvent.event === "string")));
+}
+
+/** Terminal-safe single line: server text never moves the cursor or starts an escape sequence. */
+const oneLine = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ");
+
+async function runAgentWait(
+  parsed: Extract<ParsedAgentCommand, { readonly action: "wait" }>,
+  session: string,
+  expectedSessionId?: string,
+): Promise<number> {
+  const query = new URLSearchParams({ session, children: parsed.mode, timeoutMs: String(parsed.timeoutMs) });
+  if (parsed.since !== undefined) query.set("since", String(parsed.since));
+  if (parsed.bootId !== undefined) query.set("bootId", parsed.bootId);
+  try {
+    // The server answers at its timeout; the grace bounds a lost response.
+    const data = await call(`/api/session-control/children/wait?${query}`, longRequestInit({}, parsed.timeoutMs + CHILD_WAIT_LIMITS.CLIENT_GRACE_MS));
+    if (!isChildWaitResponse(data, expectedSessionId)) {
+      return writeOpenError(parsed.output, "INVALID_CHILD_WAIT_RESPONSE", "invalid /api/session-control/children/wait response", SESSION_EXIT.GENERAL);
+    }
+    if (parsed.output === "json") jsonOut(data);
+    else {
+      print(`${data.outcome} (cursor ${data.cursor}, boot ${data.bootId})`);
+      for (const event of data.events) print(oneLine(`${event.seq} ${event.childName} ${event.event}${event.message ? `: ${event.message}` : ""}`));
+    }
+    // Every outcome, including timeout, is a result: the caller decides what to do next.
+    return SESSION_EXIT.OK;
+  } catch (error: unknown) {
+    return mapApiError(error, parsed.output);
+  }
+}
+
+async function runAgentChildren(
+  parsed: Extract<ParsedAgentCommand, { readonly action: "children" }>,
+  session: string,
+  expectedSessionId?: string,
+): Promise<number> {
+  try {
+    const data = await call(`/api/session-control/children?${new URLSearchParams({ session })}`, {}, undefined, 10_000);
+    if (!isChildrenResponse(data, expectedSessionId)) {
+      return writeOpenError(parsed.output, "INVALID_CHILDREN_RESPONSE", "invalid /api/session-control/children response", SESSION_EXIT.GENERAL);
+    }
+    if (parsed.output === "json") jsonOut(data);
+    else for (const child of data.children) {
+      print(oneLine(`${child.session} ${child.state}${child.settled ? " settled" : ""}${child.lastEvent ? ` (last: ${child.lastEvent.event})` : ""}`));
+    }
+    return SESSION_EXIT.OK;
+  } catch (error: unknown) {
+    return mapApiError(error, parsed.output);
+  }
+}
+
 export async function runAgentCommand(
   argv: readonly string[],
   target?: VerifiedMachineTarget,
@@ -1335,7 +1516,7 @@ export async function runAgentCommand(
     print(agentUsage());
     return SESSION_EXIT.OK;
   }
-  if (argv.length === 2 && (argv[0] === "notify-parent" || argv[0] === "inbox") && HELP_ALIASES.has(argv[1])) {
+  if (argv.length === 2 && ["notify-parent", "inbox", "wait", "children"].includes(argv[0]!) && HELP_ALIASES.has(argv[1])) {
     print(agentUsage());
     return SESSION_EXIT.OK;
   }
@@ -1356,6 +1537,17 @@ export async function runAgentCommand(
     if (!context.ok) return writeOpenError(parsed.output, context.code, context.message, SESSION_EXIT.NOT_FOUND);
     const selfId = process.env.WOLFPACK_SESSION_ID?.trim() || undefined;
     return runTargetSessionCommand({ ...parsed, session: selfId || context.parentSession }, target, selfId);
+  }
+  if (parsed.action === "wait" || parsed.action === "children") {
+    if (target) {
+      printError(red(`--machine is not supported for agent ${parsed.action}`));
+      return SESSION_EXIT.USAGE;
+    }
+    const context = resolveSessionOpenContext(process.env);
+    if (!context.ok) return writeOpenError(parsed.output, context.code, context.message, SESSION_EXIT.NOT_FOUND);
+    const selfId = process.env.WOLFPACK_SESSION_ID?.trim() || undefined;
+    const session = selfId || context.parentSession;
+    return parsed.action === "wait" ? runAgentWait(parsed, session, selfId) : runAgentChildren(parsed, session, selfId);
   }
   return runSessionOpen(parsed, target);
 }
@@ -1532,7 +1724,7 @@ async function runTargetSessionCommand(
       return sessionSendExit(data);
     }
     if (parsed.action === "prompt") {
-      const data = await call("/api/session-control/prompt", {
+      const data = await call("/api/session-control/prompt", longRequestInit({
         method: "POST",
         body: JSON.stringify({
           session: parsed.session,
@@ -1541,15 +1733,15 @@ async function runTargetSessionCommand(
           noEnter: parsed.noEnter,
           timeoutMs: parsed.timeoutMs,
         }),
-      }, target) as SessionPromptResponse;
+      }, parsed.timeoutMs + LONG_REQUEST_GRACE_MS), target) as SessionPromptResponse;
       if (parsed.output === "json") jsonOut(data, target);
       else if (data.outcome !== SESSION_PROMPT_OUTCOME.MATCHED) print(yellow(data.outcome));
       return SESSION_PROMPT_EXIT[data.outcome] ?? SESSION_EXIT.GENERAL;
     }
-    const data = await call("/api/session-control/wait", {
+    const data = await call("/api/session-control/wait", longRequestInit({
       method: "POST",
       body: JSON.stringify({ session: parsed.session, text: parsed.text, timeoutMs: parsed.timeoutMs }),
-    }, target);
+    }, parsed.timeoutMs + LONG_REQUEST_GRACE_MS), target);
     if (parsed.output === "json") jsonOut(data, target);
     return SESSION_EXIT.OK;
   } catch (e: unknown) {

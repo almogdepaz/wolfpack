@@ -211,10 +211,14 @@ describe("control api generated schema against runtime responses", () => {
       expect(validate(httpRequest("sendNotification"), request, artifact)).toEqual([]);
       const notified = await postJson("/api/notify", request);
       expect(validate(httpResponse("sendNotification"), notified, artifact)).toEqual([]);
-      expect(notified).toMatchObject({ parentInbox: { queued: true, seq: expect.any(Number) } });
-      const inbox = await getJson("/api/session-control/inbox?session=mock%3Awolf-1&since=0");
+      // Earlier tests in this process can leave child events in the same parent inbox; read from this notification on.
+      // Read seq before toMatchObject: Bun writes the asymmetric matchers into the received object.
+      const seq = (notified as { parentInbox?: { seq?: unknown } }).parentInbox?.seq;
+      if (typeof seq !== "number") throw new Error(`notify returned no parent inbox seq: ${JSON.stringify(notified)}`);
+      expect(notified).toMatchObject({ parentInbox: { queued: true, seq } });
+      const inbox = await getJson(`/api/session-control/inbox?session=mock%3Awolf-1&since=${seq - 1}`);
       expect(validate(httpResponse("getSessionInbox"), inbox, artifact)).toEqual([]);
-      expect(inbox).toMatchObject({ session: "wolf-1", sessionId: "mock:wolf-1", notifications: [expect.objectContaining({ message: "ready", from: "child" })] });
+      expect(inbox).toMatchObject({ session: "wolf-1", sessionId: "mock:wolf-1", notifications: [expect.objectContaining({ seq, message: "ready", from: "child" })] });
       expect(seen).toHaveLength(1);
       expect(validate({ $ref: "#/$defs/ParentNotifiedEvent" }, seen[0], artifact)).toEqual([]);
     } finally { unsubscribe(); }

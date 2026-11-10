@@ -34,11 +34,13 @@ import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { applyServiceAuthFile } from "./service-auth.js";
 import { logsCommand } from "./logs.js";
 import { EVENTS_USAGE, eventsCommand } from "./events.js";
+import { execCommand, fileCommand } from "./remote-ops.js";
 import { issueJwt } from "./api.js";
 import { isMachineDisplayName } from "../tailnet-machine-contract.js";
 import { extensionsCommand } from "./extensions.ts";
 import { extensionDataCommand, extensionDataUsage } from "./extension-data.ts";
 import {
+  commandOptionScope,
   extractMachineSelector,
   verifyMachineTarget,
 } from "./machine-target.js";
@@ -97,11 +99,15 @@ Commands:
   wolfpack session <action>        Inspect or control sessions
   wolfpack agent spawn <project>   Spawn a child agent (same harness by default)
   wolfpack agent inbox             Poll this agent session\u0027s parent-notification inbox
+  wolfpack agent wait --children any|all Wait for this agent session\u0027s children
+  wolfpack agent children          List this agent session\u0027s live children
   wolfpack session inbox <session> Poll a session\u0027s parent-notification inbox
   wolfpack kill <session-or-id> [--json] Kill a session
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack logs [--follow|--json]  Read or follow service logs
   wolfpack events [--kinds ..] [--json] Follow live session and task events
+  wolfpack file read|write|edit <path> Read, write or edit a file on the server machine
+  wolfpack exec --cwd <dir> -- <cmd>  Run a command on the server machine (no shell)
   wolfpack extensions <action>     Install and manage local extension packages
   wolfpack extension-data <action> Read/publish documents or put/delete extension blobs
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
@@ -276,6 +282,8 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
     ].includes(action ?? ""));
   }
   if (family === "extension-data") return command.length === 1 || (command.length === 2 && ["read", "publish", "put-blob", "delete-blob"].includes(action ?? ""));
+  if (family === "file") return command.length === 1 || (command.length === 2 && ["read", "write", "edit"].includes(action ?? ""));
+  if (family === "exec") return command.length === 1;
   return family === "agent"
     && (command.length === 1 || (command.length === 2 && (action === "spawn" || action === "inbox")));
 }
@@ -287,6 +295,8 @@ function isMachineCommandSupported(argv: readonly string[]): boolean {
     return ["create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt"].includes(action ?? "");
   }
   if (family === "extension-data") return ["read", "publish", "put-blob", "delete-blob"].includes(action ?? "");
+  if (family === "file") return ["read", "write", "edit"].includes(action ?? "");
+  if (family === "exec") return true;
   return family === "agent" && (action === "spawn" || action === "inbox");
 }
 
@@ -425,6 +435,8 @@ async function dispatchCommand(
     else process.exit(await extensionDataCommand(argv.slice(1), target));
     return;
   }
+  if (cmd === "file") return exitAfterOutput(await fileCommand(argv.slice(1), target));
+  if (cmd === "exec") return exitAfterOutput(await execCommand(argv.slice(1), target));
   if (cmd === "logs") {
     if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print("Usage: wolfpack logs [--follow] [--json] [--broker]");
     else process.exit(await logsCommand(argv.slice(1)));
@@ -452,8 +464,9 @@ async function dispatchCommand(
 async function main(): Promise<void> {
   const rawArgv = process.argv.slice(2);
   const extracted = extractMachineSelector(rawArgv);
-  if (!extracted.ok) emitMachineFailure(extracted.error, rawArgv.includes("--json"));
+  if (!extracted.ok) emitMachineFailure(extracted.error, commandOptionScope(rawArgv).includes("--json"));
   const argv = [...extracted.argv];
+  const jsonOutput = commandOptionScope(argv).includes("--json");
   let target: VerifiedMachineTarget | undefined;
   if (extracted.selector !== undefined && !isMachineHelpRequest(argv)) {
     if (!isMachineCommandSupported(argv)) {
@@ -461,13 +474,13 @@ async function main(): Promise<void> {
         code: "INVALID_MACHINE_SELECTOR",
         message: "--machine is not supported for this command",
         exitCode: 2,
-      }, argv.includes("--json"));
+      }, jsonOutput);
     }
     const verified = await verifyMachineTarget(extracted.selector, {
       tailscaleHostname: loadConfig()?.tailscaleHostname,
       jwt: issueJwt(),
     });
-    if (!verified.ok) emitMachineFailure(verified.error, argv.includes("--json"));
+    if (!verified.ok) emitMachineFailure(verified.error, jsonOutput);
     target = verified.target;
   }
   await dispatchCommand(argv, target);

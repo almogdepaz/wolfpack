@@ -7,7 +7,7 @@
  */
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
-export type Component = "pty" | "pty-backend" | "ws" | "http" | "auth" | "service" | "config" | "setup" | "broker-backend" | "backend" | "server" | "routes" | "doctor" | "push" | "session-observation" | "peer-notifications" | "task-relay";
+export type Component = "pty" | "pty-backend" | "ws" | "http" | "auth" | "service" | "config" | "setup" | "broker-backend" | "backend" | "server" | "routes" | "doctor" | "push" | "session-observation" | "peer-notifications" | "task-relay" | "session-cascade" | "remote-ops";
 
 const LEVEL_ORDER: Record<LogLevel, number> = {
   debug: 0,

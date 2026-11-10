@@ -431,6 +431,41 @@ describe("session control cli parsing", () => {
     });
   });
 
+  test("parses --outlive-parent for spawn and open and rejects it for create", () => {
+    expect(parseSessionCommand(["open", "wolfpack", "--outlive-parent"])).toMatchObject({ ok: true, action: "open", outliveParent: true });
+    expect(parseAgentCommand(["spawn", "wolfpack", "--outlive-parent"])).toMatchObject({ ok: true, action: "spawn", outliveParent: true });
+    expect(parseAgentCommand(["spawn", "wolfpack"])).not.toHaveProperty("outliveParent");
+    expect(parseSessionCommand(["create", "wolfpack", "--outlive-parent"]).ok).toBe(false);
+  });
+
+  test("open sends outliveParent only when --outlive-parent is given", () => {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "pi-main";
+      process.env.WOLFPACK_AGENT_KIND = "pi";
+      const bodies = [];
+      globalThis.fetch = async (url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return Response.json({ ok: true, session: "pi-main-sub-agent-1", sessionId: "id-1", project: "wolfpack", harness: "pi" });
+      };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      await runSessionCommand(["open", "wolfpack", "--outlive-parent", "--json"]);
+      await runSessionCommand(["open", "wolfpack", "--json"]);
+      console.error(JSON.stringify(bodies));
+      process.exit(0);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(0);
+    expect(JSON.parse(child.stderr.toString())).toEqual([
+      { project: "wolfpack", parentSession: "pi-main", outliveParent: true },
+      { project: "wolfpack", parentSession: "pi-main" },
+    ]);
+  });
+
   test("parses read with json output", () => {
     expect(parseSessionCommand(["read", "alpha", "--json"])).toEqual({
       ok: true,
@@ -950,5 +985,203 @@ describe("session control cli parsing", () => {
       NOT_SUBMITTED: 7,
       NOT_DELIVERED: 8,
     });
+  });
+});
+
+describe("unreachable server", () => {
+  function unreachableCli(args: string[], thrown: string): { exitCode: number; stdout: Buffer; stderr: Buffer } {
+    const script = `
+      globalThis.fetch = async () => { ${thrown} };
+      const { runSessionCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runSessionCommand(${JSON.stringify(args)}));
+    `;
+    return Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(),
+      env: { ...process.env, NO_COLOR: "1" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  }
+
+  const refused = `throw Object.assign(new TypeError("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" });`;
+  const blocked = `throw Object.assign(new TypeError("Was there a typo in the url or port?"), { code: "FailedToOpenSocket" });`;
+  const eperm = `throw Object.assign(new Error("connect EPERM 127.0.0.1"), { code: "EPERM" });`;
+
+  test("--json names the URL, the cause and the sandbox, and keeps the code and exit", () => {
+    for (const [thrown, cause] of [[refused, "ECONNREFUSED"], [blocked, "FailedToOpenSocket"], [eperm, "EPERM"]] as const) {
+      const child = unreachableCli(["inbox", "alpha", "--json"], thrown);
+      expect(child.exitCode, cause).toBe(SESSION_EXIT.GENERAL);
+      const body = JSON.parse(child.stdout.toString());
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe("SESSION_COMMAND_FAILED");
+      expect(body.error.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/session-control\/inbox$/);
+      expect(body.error.cause).toBe(cause);
+      expect(body.error.message).toContain(body.error.url);
+      expect(body.error.message).toContain(cause);
+      expect(body.error.hint).toContain("sandbox");
+    }
+  });
+
+  test("plain output prints the reason and the sandbox hint on stderr", () => {
+    const child = unreachableCli(["status", "alpha"], refused);
+    expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+    const stderr = child.stderr.toString();
+    expect(stderr).toMatch(/cannot reach the Wolfpack server at http:\/\/127\.0\.0\.1:\d+\/api\/session-control\/status \(ECONNREFUSED\)/);
+    expect(stderr).toContain("sandbox");
+  });
+
+  test("a sandbox proxy's plain-text 403 is reported as a proxy denial", () => {
+    const child = unreachableCli(["inbox", "alpha", "--json"], `return new Response("Connection blocked by network allowlist", { status: 403 });`);
+    expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+    const body = JSON.parse(child.stdout.toString());
+    expect(body.error.code).toBe("SESSION_COMMAND_FAILED");
+    expect(body.error.cause).toBe("proxy denial (HTTP 403)");
+    expect(body.error.hint).toContain("sandbox");
+  });
+
+  test("a connect code carried on the error cause counts", () => {
+    const child = unreachableCli(["inbox", "alpha", "--json"], `throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect"), { code: "ECONNREFUSED" }) });`);
+    expect(JSON.parse(child.stdout.toString()).error.cause).toBe("ECONNREFUSED");
+  });
+
+  test("a local failure without a connect code keeps the generic message", () => {
+    for (const thrown of [`throw new SyntaxError("Unexpected token");`, `throw new Error("offline");`]) {
+      const child = unreachableCli(["inbox", "alpha", "--json"], thrown);
+      expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+      expect(JSON.parse(child.stdout.toString())).toEqual({
+        ok: false,
+        error: { code: "SESSION_COMMAND_FAILED", message: "session command failed" },
+      });
+    }
+  });
+
+  test("a request deadline is not reported as an unreachable server", () => {
+    const child = unreachableCli(["inbox", "alpha", "--json"], `throw new DOMException("The operation timed out.", "TimeoutError");`);
+    expect(child.exitCode).toBe(SESSION_EXIT.GENERAL);
+    expect(JSON.parse(child.stdout.toString())).toEqual({
+      ok: false,
+      error: { code: "SESSION_COMMAND_FAILED", message: "session command failed" },
+    });
+  });
+});
+
+describe("agent wait and agent children", () => {
+  test("parses wait modes, the timeout in seconds and a boot-scoped since", () => {
+    expect(parseAgentCommand(["wait", "--children", "any"])).toEqual({ ok: true, action: "wait", mode: "any", timeoutMs: 180_000, output: "plain" });
+    expect(parseAgentCommand(["wait", "--children", "all", "--timeout", "600", "--since", "7", "--boot-id", "boot", "--json"])).toEqual({
+      ok: true, action: "wait", mode: "all", timeoutMs: 600_000, since: 7, bootId: "boot", output: "json",
+    });
+    expect(parseAgentCommand(["children", "--json"])).toEqual({ ok: true, action: "children", output: "json" });
+  });
+
+  test("rejects invalid wait and children arguments", () => {
+    for (const argv of [
+      ["wait"],
+      ["wait", "--children", "some"],
+      ["wait", "--children", "any", "--timeout", "0"],
+      ["wait", "--children", "any", "--timeout", "601"],
+      ["wait", "--children", "any", "--timeout", "1.5"],
+      ["wait", "--children", "any", "--since", "3"],
+      ["wait", "--children", "any", "--boot-id", "boot"],
+      ["wait", "--children", "any", "--since", "-1", "--boot-id", "boot"],
+      ["wait", "--children", "any", "--since", "1", "--boot-id", "x".repeat(101)],
+      ["wait", "--children", "any", "extra"],
+      ["wait", "--children", "any", "--shell"],
+      ["children", "extra"],
+    ]) {
+      expect(parseAgentCommand(argv).ok, argv.join(" ")).toBe(false);
+    }
+  });
+
+  function agentCli(args: string[], body: unknown): { exitCode: number; stdout: string; stderr: string } {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "lead";
+      process.env.WOLFPACK_SESSION_ID = "lead-id";
+      process.env.WOLFPACK_AGENT_KIND = "claude";
+      globalThis.fetch = async (url) => {
+        console.error("URL " + url);
+        return Response.json(${JSON.stringify(body)});
+      };
+      const { runAgentCommand } = await import("./src/cli/session-control.ts");
+      process.exit(await runAgentCommand(${JSON.stringify(args)}));
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe",
+    });
+    return { exitCode: child.exitCode, stdout: child.stdout.toString(), stderr: child.stderr.toString() };
+  }
+
+  const waitBody = {
+    ok: true, session: "lead", sessionId: "lead-id", children: "any", outcome: "timeout", bootId: "boot", since: 4, cursor: 4, events: [],
+  };
+
+  /** Record the fetch options of every request a long-wait CLI command makes. */
+  function longWaitFetchOptions(entry: "runAgentCommand" | "runSessionCommand", args: string[], body: unknown): { exitCode: number; options: unknown[] } {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "lead";
+      process.env.WOLFPACK_SESSION_ID = "lead-id";
+      process.env.WOLFPACK_AGENT_KIND = "claude";
+      const options = [];
+      globalThis.fetch = async (url, init) => {
+        options.push({ path: new URL(String(url)).pathname, timeout: init?.timeout ?? null, signal: init?.signal ? (init.signal.aborted ? "aborted" : "pending") : null });
+        return Response.json(${JSON.stringify(body)});
+      };
+      const { ${entry} } = await import("./src/cli/session-control.ts");
+      const code = await ${entry}(${JSON.stringify(args)});
+      console.error("OPTIONS " + JSON.stringify(options));
+      process.exit(code);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe",
+    });
+    return { exitCode: child.exitCode, options: JSON.parse(child.stderr.toString().match(/OPTIONS (.*)/)![1]!) };
+  }
+
+  test("agent wait --children and session wait replace Bun's ~360 s default fetch timeout with their own deadline", () => {
+    // Bun 1.4.2 fetch fails a response that stays silent ~360 s; both waits allow 600 s.
+    const children = longWaitFetchOptions("runAgentCommand", ["wait", "--children", "any", "--timeout", "600", "--json"], waitBody);
+    expect(children.exitCode).toBe(SESSION_EXIT.OK);
+    expect(children.options).toEqual([{ path: "/api/session-control/children/wait", timeout: false, signal: "pending" }]);
+    const session = longWaitFetchOptions("runSessionCommand", ["wait", "alpha", "ready", "--timeout-ms", "600000", "--json"],
+      { ok: true, session: "alpha", sessionId: "alpha-id", matched: true });
+    expect(session.exitCode).toBe(SESSION_EXIT.OK);
+    expect(session.options).toEqual([{ path: "/api/session-control/wait", timeout: false, signal: "pending" }]);
+  });
+
+  test("session prompt replaces Bun's ~360 s default fetch timeout with its own deadline", () => {
+    // session prompt allows --timeout-ms up to 600,000 and its route answers only when done.
+    const prompt = longWaitFetchOptions("runSessionCommand", ["prompt", "alpha", "run", "--until", "READY", "--timeout-ms", "600000", "--json"],
+      { ok: true, session: "alpha", sessionId: "id-alpha", outcome: "matched", outputBoundarySeq: "12" });
+    expect(prompt.exitCode).toBe(SESSION_EXIT.OK);
+    expect(prompt.options).toEqual([{ path: "/api/session-control/prompt", timeout: false, signal: "pending" }]);
+  });
+
+  test("a wait timeout is a successful check-in and the query carries the cursor of this session", () => {
+    const child = agentCli(["wait", "--children", "any", "--timeout", "5", "--since", "4", "--boot-id", "boot", "--json"], waitBody);
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    expect(JSON.parse(child.stdout)).toEqual(waitBody);
+    const url = new URL(child.stderr.match(/URL (\S+)/)![1]!);
+    expect(url.pathname).toBe("/api/session-control/children/wait");
+    expect(Object.fromEntries(url.searchParams)).toEqual({ session: "lead-id", children: "any", timeoutMs: "5000", since: "4", bootId: "boot" });
+  });
+
+  test("plain wait output keeps each event on one terminal-safe line", () => {
+    const event = { seq: 5, childName: "worker", event: "message", message: "a\u001b[2Jb\nc" };
+    const child = agentCli(["wait", "--children", "any"], { ...waitBody, outcome: "events", cursor: 5, events: [event] });
+    expect(child.exitCode).toBe(SESSION_EXIT.OK);
+    expect(child.stdout).toBe("events (cursor 5, boot boot)\n5 worker message: a [2Jb c\n");
+  });
+
+  test("rejects a wait response for another session and lists children", () => {
+    const other = agentCli(["wait", "--children", "all", "--json"], { ...waitBody, sessionId: "other-id" });
+    expect(other.exitCode).toBe(SESSION_EXIT.GENERAL);
+    expect(JSON.parse(other.stdout).error.code).toBe("INVALID_CHILD_WAIT_RESPONSE");
+    const list = agentCli(["children"], {
+      ok: true, session: "lead", sessionId: "lead-id", bootId: "boot",
+      children: [{ session: "worker", sessionId: "worker-id", state: "idle", settled: true, lastEvent: { event: "done" } }],
+    });
+    expect(list.exitCode).toBe(SESSION_EXIT.OK);
+    expect(list.stdout).toBe("worker idle settled (last: done)\n");
+    expect(list.stderr).toContain("/api/session-control/children?session=lead-id");
   });
 });

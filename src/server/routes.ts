@@ -30,11 +30,15 @@ import {
   getLocalMachineHandshake,
   validateProjectParam,
 } from "./http.js";
-import { activePtySessions, teardownPty } from "./websocket.js";
+import { activePtySessions } from "./websocket.js";
+import { observeDashboardSessions } from "./session-observation.js";
 import {
-  forgetSessionObservation,
-  observeDashboardSessions,
-} from "./session-observation.js";
+  cascadeChildCleanup,
+  claimSessionCleanup,
+  killSessionWithTeardown,
+  releaseSessionCleanup,
+} from "./session-cascade.js";
+import type { CascadedChild } from "../session-cascade-contract.js";
 export {
   __resetSessionObservationForTests,
   __runSessionNotificationObservationForTests,
@@ -45,6 +49,7 @@ import { createProjectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, createSessionControlRoutes } from "./session-control-routes.js";
 import { createPushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
 import { createEventRoutes } from "./event-routes.js";
+import { createRemoteOpsRoutes } from "./remote-ops-routes.js";
 
 const log = createLogger("routes");
 const RESIZE_BODY_KEYS = new Set(["session", "cols", "rows"]);
@@ -154,18 +159,39 @@ return {
     if (typeof selector !== "string" || !selector) return json(res, { error: "missing session" }, 400);
     const resolved = await resolveActiveSession(res, selector, ctx.backend);
     if (!resolved) return;
-    // Clean up any associated desktop PTY session (wp_*) before killing
-    teardownPty(resolved.name);
-    forgetSessionObservation(resolved.identity.wolfpackSessionId, resolved.name);
-    await getBackend().killSession(resolved.name);
+    const sessionId = resolved.identity.wolfpackSessionId;
+    // Claim before the kill: the parent's exit frame can arrive during it.
+    const claimed = claimSessionCleanup(sessionId);
+    try {
+      // Cleans up any associated desktop PTY session (wp_*) before killing.
+      await killSessionWithTeardown(getBackend(), resolved.name, sessionId);
+    } catch (error: unknown) {
+      if (claimed) releaseSessionCleanup(sessionId);
+      throw error;
+    }
+    let cascaded: CascadedChild[] = [];
+    let cascadeError: string | undefined;
+    if (claimed) {
+      try {
+        cascaded = await cascadeChildCleanup(getBackend(), sessionId);
+      } catch (error: unknown) {
+        // A later death notification can still cascade this parent.
+        releaseSessionCleanup(sessionId);
+        cascadeError = errMsg(error);
+        log.warn("kill cascade failed: session table unavailable", { sessionId, error: cascadeError });
+      }
+    }
     json(res, {
       ok: true,
       session: resolved.name,
-      sessionId: resolved.identity.wolfpackSessionId,
+      sessionId,
+      cascaded,
+      ...(cascadeError !== undefined && { cascadeError }),
     });
   },
 
   ...createSessionControlRoutes(ctx),
+  ...createRemoteOpsRoutes(),
 
   "POST /api/resize": async (req, res) => {
     const body = await parseObjectBody(req, res);

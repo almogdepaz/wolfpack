@@ -20,6 +20,8 @@ import { resetNotificationObservation } from "./session-observation.js";
 import { notifyDelivery } from "../notify-contract.js";
 import { defaultServerContext, type ServerContext } from "./context.js";
 import { appendParentNotification } from "./parent-inbox.js";
+import { childMessageEvent } from "./child-events.js";
+import { childEventSummary } from "../child-event-contract.js";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import { createLogger, errMsg } from "../log.js";
 
@@ -117,8 +119,12 @@ return {
         const inspection = await ctx.backend.inspectSession(sessionId);
         // Selectors can also be names; require this exact live incarnation.
         if (!exited && inspection.ok && inspection.alive && inspection.sessionId === sessionId && inspection.session === sessionName) {
-          const notification = { message, ...(from !== undefined && { from }) };
-          const { seq } = appendParentNotification(sessionId, notification);
+          // A message from a known child also becomes a structured child event.
+          const childEvent = childMessageEvent(sessionId, from, message, body => ctx.events.publishEvent(body));
+          const notification = childEvent
+            ? { message: childEventSummary(childEvent), from: childEvent.childName }
+            : { message, ...(from !== undefined && { from }) };
+          const { seq } = childEvent ?? appendParentNotification(sessionId, notification);
           parentInbox = { queued: true, seq };
           ctx.events.publishEvent({ kind: WOLFPACK_EVENT_KIND.PARENT_NOTIFIED, session: inspection.session, sessionId, seq, ...notification });
         }

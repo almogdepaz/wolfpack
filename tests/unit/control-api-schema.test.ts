@@ -115,6 +115,109 @@ describe("control api schema", () => {
     expect(validate(event, { id: 9, kind: "parent_notified", ...entry }, artifact)).not.toEqual([]);
   });
 
+  test("documents structured child events in the inbox and the event stream", () => {
+    const inbox = httpResponse("getSessionInbox");
+    const childEvent = {
+      kind: "wolfpack.child_event/v1",
+      eventId: "child-id:boot:3",
+      bootId: "boot",
+      seq: 3,
+      childSessionId: "child-id",
+      childName: "worker",
+      parentSessionId: "parent-id",
+      event: "blocked",
+      state: "needs-input",
+      inputKind: "permission",
+      message: "run rm?",
+      observedAt: "2026-11-09T00:00:00.000Z",
+      authority: "program",
+    };
+    const entry = { seq: 3, at: childEvent.observedAt, message: "blocked (permission): run rm?", from: "worker", childEvent };
+    expect(validate(inbox.response, { session: "parent", sessionId: "parent-id", bootId: "boot", notifications: [entry] }, artifact)).toEqual([]);
+    const exited = { ...childEvent, event: "exited", state: "working", reason: "exit", exitCode: 1, lastLines: ["a", "b"] };
+    expect(validate({ $ref: "#/$defs/ChildEvent" }, exited, artifact)).toEqual([]);
+    for (const invalid of [
+      { ...childEvent, event: "finished" },
+      { ...childEvent, kind: "wolfpack.child_event/v2" },
+      { ...childEvent, seq: 0 },
+      { ...childEvent, lastLines: Array(6).fill("x") },
+      { ...childEvent, message: "x".repeat(501) },
+    ]) {
+      expect(validate({ $ref: "#/$defs/ChildEvent" }, invalid, artifact)).not.toEqual([]);
+    }
+    const stream = { $ref: "#/$defs/ChildEventStreamEvent" };
+    expect(validate(stream, { id: 4, at: childEvent.observedAt, kind: "child_event", session: "parent", sessionId: "parent-id", childEvent }, artifact)).toEqual([]);
+    expect(validate(stream, { id: 4, at: childEvent.observedAt, kind: "child_event", session: "parent", sessionId: "parent-id" }, artifact)).not.toEqual([]);
+  });
+
+  test("documents the kill cascade and the recorded child policy", () => {
+    const kill = httpResponse("killSession");
+    const base = { ok: true, session: "lead", sessionId: "lead-id" };
+    expect(validate(kill, { ...base, cascaded: [
+      { sessionId: "kid-id", session: "kid", outcome: "killed" },
+      { sessionId: "gone-id", session: "gone", outcome: "already_gone" },
+      { sessionId: "stuck-id", session: "stuck", outcome: "failed", reason: "broker refused" },
+    ] }, artifact)).toEqual([]);
+    expect(validate(kill, base, artifact)).not.toEqual([]);
+    expect(validate(kill, { ...base, cascaded: [{ sessionId: "kid-id", session: "kid", outcome: "orphaned" }] }, artifact)).not.toEqual([]);
+    const parent = (artifact.$defs as JsonObject).ParentSessionIdentity as { properties: Record<string, { enum?: string[] }> };
+    expect(parent.properties.cleanup!.enum).toEqual(["cascade", "outlive"]);
+    const open = httpRequest("openSession");
+    const ordinary = { project: "wolfpack", parentSession: "pi-main" };
+    const worker = { projectDir: "/worktrees/wolfpack", parentSession: "claude-main", taskWorker: true };
+    expect(validate(open, { ...ordinary, outliveParent: true }, artifact)).toEqual([]);
+    expect(validate(open, { ...worker, outliveParent: true }, artifact)).toEqual([]);
+    expect(validate(open, { ...ordinary, outliveParent: false }, artifact)).not.toEqual([]);
+    expect(validate(httpRequest("createSession"), { project: "wolfpack", outliveParent: true }, artifact)).not.toEqual([]);
+  });
+
+  test("documents the child list and the child wait with timeout as a result", () => {
+    const childEvent = {
+      kind: "wolfpack.child_event/v1",
+      eventId: "child-id:boot:3",
+      bootId: "boot",
+      seq: 3,
+      childSessionId: "child-id",
+      childName: "worker",
+      parentSessionId: "parent-id",
+      event: "done",
+      state: "done",
+      observedAt: "2026-11-10T00:00:00.000Z",
+    };
+    expect(httpOperation("listSessionChildren")).toMatchObject({ route: "GET /api/session-control/children", stable: true });
+    const list = httpResponse("listSessionChildren");
+    const child = { session: "worker", sessionId: "child-id", state: "done", authority: "program", settled: true, cleanup: "cascade", lastEvent: childEvent };
+    expect(validate(list, { ok: true, session: "parent", sessionId: "parent-id", bootId: "boot", children: [child] }, artifact)).toEqual([]);
+    expect(validate(list, { ok: true, session: "parent", sessionId: "parent-id", bootId: "boot", children: [{ ...child, settled: undefined }] }, artifact)).not.toEqual([]);
+    expect(validate(list, { ok: true, session: "parent", sessionId: "parent-id", bootId: "boot", children: [{ ...child, cleanup: "later" }] }, artifact)).not.toEqual([]);
+
+    const wait = httpOperation("waitForSessionChildren");
+    expect(wait).toMatchObject({ route: "GET /api/session-control/children/wait", stable: true });
+    expect(wait.errors).toContain("429 ErrorEnvelope");
+    const request = httpRequest("waitForSessionChildren");
+    expect(validate(request, { session: "parent", children: "all", timeoutMs: 180_000, since: 2, bootId: "boot" }, artifact)).toEqual([]);
+    for (const invalid of [
+      { session: "parent" },
+      { session: "parent", children: "some" },
+      { session: "parent", children: "any", timeoutMs: 600_001 },
+      { session: "parent", children: "any", since: -1 },
+    ]) {
+      expect(validate(request, invalid, artifact)).not.toEqual([]);
+    }
+    const response = httpResponse("waitForSessionChildren");
+    const base = { ok: true, session: "parent", sessionId: "parent-id", children: "any", bootId: "boot", since: 2, cursor: 3 };
+    expect(validate(response, { ...base, outcome: "events", events: [childEvent] }, artifact)).toEqual([]);
+    expect(validate(response, { ...base, outcome: "timeout", events: [], cursor: 2, pending: [{ session: "worker", sessionId: "child-id" }] }, artifact)).toEqual([]);
+    expect(validate(response, { ...base, outcome: "events", events: [childEvent], truncated: true }, artifact)).toEqual([]);
+    for (const invalid of [
+      { ...base, outcome: "failed", events: [] },
+      { ...base, outcome: "events" },
+      { ...base, outcome: "events", events: [], truncated: false },
+    ]) {
+      expect(validate(response, invalid, artifact)).not.toEqual([]);
+    }
+  });
+
   test("documents endpoint-only push test delivery and its distinct failure envelope", () => {
     const operation = httpOperation("sendTestNotification");
     expect(operation).toMatchObject({ route: "POST /api/push/test", stable: true, auth: "jwt-when-configured" });
@@ -154,6 +257,47 @@ describe("control api schema", () => {
     expect(validate(remove.response, { digest, deleted: false }, artifact)).toEqual([]);
     expect(validate(remove.response, { digest, deleted: "false" }, artifact)).not.toEqual([]);
   });
+  test("publishes the authenticated remote file routes with their success and error shapes", () => {
+    const read = httpOperation("readRemoteFile");
+    const write = httpOperation("writeRemoteFile");
+    const edit = httpOperation("editRemoteFile");
+    expect([read.route, write.route, edit.route]).toEqual(["POST /api/file/read", "POST /api/file/write", "POST /api/file/edit"]);
+    for (const operation of [read, write, edit]) expect(operation.auth).toBe("jwt-when-configured");
+    expect(validate(read.request, { path: "/srv/a.txt" }, artifact)).toEqual([]);
+    expect(validate(read.request, { path: "/srv/a.txt", extra: 1 }, artifact)).not.toEqual([]);
+    expect(validate(read.response, { ok: true, path: "/a", resolvedPath: "/b", size: 2, binary: false, encoding: "utf8", content: "hi" }, artifact)).toEqual([]);
+    expect(validate(write.request, { path: "/a", encoding: "base64", content: "AA==", createOnly: true }, artifact)).toEqual([]);
+    expect(validate(write.request, { path: "/a", encoding: "hex", content: "00" }, artifact)).not.toEqual([]);
+    expect(validate(write.response, { ok: true, path: "/a", resolvedPath: "/a", size: 1, created: true }, artifact)).toEqual([]);
+    expect(validate(edit.request, { path: "/a", old: "x", new: "", all: true }, artifact)).toEqual([]);
+    expect(validate(edit.request, { path: "/a", old: "", new: "y" }, artifact)).not.toEqual([]);
+    expect(validate(edit.response, { ok: true, path: "/a", resolvedPath: "/a", size: 1, replacements: 2 }, artifact)).toEqual([]);
+    const envelope = resolveRef({ $ref: "#/$defs/RemoteFileErrorEnvelope" }, artifact);
+    expect(validate(envelope, { error: "old text matched 3 times; expected exactly 1", code: "EDIT_MATCH_COUNT", matches: 3 }, artifact)).toEqual([]);
+    expect(validate(envelope, { error: "x", code: "NOT_A_CODE" }, artifact)).not.toEqual([]);
+    expect(edit.errors).toContain("409 RemoteFileErrorEnvelope");
+  });
+
+  test("publishes the authenticated remote exec route with its result and error shapes", () => {
+    const exec = httpOperation("runRemoteCommand");
+    expect(exec.route).toBe("POST /api/exec");
+    expect(exec.auth).toBe("jwt-when-configured");
+    expect(validate(exec.request, { argv: ["git", "status"], cwd: "/srv", timeoutSeconds: 30 }, artifact)).toEqual([]);
+    expect(validate(exec.request, { argv: [], cwd: "/srv" }, artifact)).not.toEqual([]);
+    expect(validate(exec.request, { argv: ["ls"], cwd: "/srv", timeoutSeconds: 601 }, artifact)).not.toEqual([]);
+    expect(validate(exec.request, { argv: ["ls"], cwd: "/srv", env: { A: "1" } }, artifact)).not.toEqual([]);
+    expect(validate(exec.response, {
+      ok: true, cwd: "/srv", exitCode: null, signal: "SIGKILL", timedOut: true, durationMs: 5,
+      stdout: "", stdoutEncoding: "utf8", stdoutBytes: 0, stdoutTruncated: false,
+      stderr: "AA==", stderrEncoding: "base64", stderrBytes: 2000000, stderrTruncated: true,
+    }, artifact)).toEqual([]);
+    const envelope = resolveRef({ $ref: "#/$defs/RemoteExecErrorEnvelope" }, artifact);
+    expect(validate(envelope, { error: "busy", code: "EXEC_BUSY", maxConcurrent: 4 }, artifact)).toEqual([]);
+    expect(validate(envelope, { error: "x", code: "NOT_A_CODE" }, artifact)).not.toEqual([]);
+    expect(exec.errors).toContain("429 RemoteExecErrorEnvelope");
+    expect(exec.errors).toContain("401 ErrorEnvelope");
+  });
+
   test("publishes the runtime asset route with extension ID and immutable package digest", () => {
     expect(httpOperation("getInstalledExtensionAsset").route).toBe("GET /api/extensions/assets/{extensionId}/{packageDigest}/{assetPath}");
   });

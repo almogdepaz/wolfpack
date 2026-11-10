@@ -40,8 +40,13 @@ import {
   json,
   parseObjectBody,
 } from "./http.js";
-import { listParentNotifications } from "./parent-inbox.js";
+import { listParentNotifications, PARENT_INBOX_BOOT_ID } from "./parent-inbox.js";
+import { isChildSettled, noteChildInputDelivered } from "./child-events.js";
+import { ChildWaitBusyError, waitForChildren, type ChildWaitChild } from "./child-wait.js";
+import { CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, type ChildEventPayload, type ChildWaitMode } from "../child-event-contract.js";
 import { getAgentRuntimeStateStore } from "./agent-status.js";
+import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
+import { CHILD_CLEANUP, type ChildCleanupReport } from "../session-cascade-contract.js";
 import { resolveSessionSelector } from "./session-selector.js";
 import type { SessionSelectorResult } from "./session-selector.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
@@ -299,6 +304,98 @@ async function waitForSessionText(session: string, text: string, timeoutMs: numb
   });
 }
 
+/**
+ * Resolve a selector to a live session, or write the status failure envelope
+ * (503 no inspection, 404/409 not found/ambiguous, 410 dead) and return null.
+ * A backend error propagates to the caller.
+ */
+async function inspectLiveSession(res: ServerResponse, selector: string): Promise<SuccessfulSessionInspection | null> {
+  const backend = getBackend();
+  const inspect = backend.inspectSession;
+  if (!inspect) {
+    json(
+      res,
+      sessionStatusFailure(
+        selector,
+        SESSION_STATUS_ERROR.BACKEND_UNAVAILABLE,
+        { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
+      ),
+      503,
+    );
+    return null;
+  }
+  const inspection = await inspect.call(backend, selector);
+  if (!inspection.ok) {
+    const ambiguous = inspection.code === "AMBIGUOUS";
+    json(
+      res,
+      sessionStatusFailure(
+        selector,
+        ambiguous ? SESSION_STATUS_ERROR.AMBIGUOUS : SESSION_STATUS_ERROR.NOT_FOUND,
+        { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
+      ),
+      ambiguous ? 409 : 404,
+    );
+    return null;
+  }
+  if (!inspection.alive) {
+    json(
+      res,
+      sessionStatusFailure(
+        selector,
+        SESSION_STATUS_ERROR.DEAD,
+        { exists: true, alive: false, status: SESSION_TERMINAL_STATUS.DEAD },
+        { session: inspection.session, sessionId: inspection.sessionId },
+      ),
+      410,
+    );
+    return null;
+  }
+  return inspection;
+}
+
+/** The live children of a parent, sorted by name. Exited children are not listed. */
+async function liveChildren(parentSessionId: string): Promise<Array<ChildWaitChild & { readonly cleanup: ChildCleanupReport }>> {
+  const backend = getBackend();
+  const names = await backend.list();
+  const identities = await backend.listIdentities?.();
+  if (!identities) throw new Error("session identity unavailable");
+  return names.flatMap((name) => {
+    const identity = identities[name];
+    if (identity?.parentSession?.wolfpackSessionId !== parentSessionId || !sessionTerminalLiveness(name).alive) return [];
+    return [{
+      session: name,
+      sessionId: identity.wolfpackSessionId,
+      settled: isChildSettled(identity.wolfpackSessionId),
+      cleanup: identity.parentSession.cleanup ?? CHILD_CLEANUP.NONE,
+    }];
+  }).sort((left, right) => left.session.localeCompare(right.session));
+}
+
+/** The newest child event of each child in the parent inbox. */
+function lastChildEvents(parentSessionId: string): Map<string, ChildEventPayload> {
+  const last = new Map<string, ChildEventPayload>();
+  for (const entry of listParentNotifications(parentSessionId)) {
+    if (entry.childEvent) last.set(entry.childEvent.childSessionId, entry.childEvent);
+  }
+  return last;
+}
+
+function parseChildWaitQuery(url: URL): { mode: ChildWaitMode; timeoutMs: number; since?: number; bootId?: string } | null {
+  const mode = url.searchParams.get("children");
+  const timeoutRaw = url.searchParams.get("timeoutMs");
+  const sinceRaw = url.searchParams.get("since");
+  const bootId = url.searchParams.get("bootId");
+  if (!CHILD_WAIT_MODES.includes(mode as ChildWaitMode)) return null;
+  const timeoutMs = timeoutRaw === null ? CHILD_WAIT_LIMITS.DEFAULT_TIMEOUT_MS : Number(timeoutRaw);
+  if (timeoutRaw !== null && !/^\d+$/.test(timeoutRaw)) return null;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > CHILD_WAIT_LIMITS.MAX_TIMEOUT_MS) return null;
+  const since = sinceRaw === null ? undefined : Number(sinceRaw);
+  if (sinceRaw !== null && (!/^\d+$/.test(sinceRaw) || !Number.isSafeInteger(since))) return null;
+  if (bootId !== null && (bootId.length === 0 || bootId.length > 100)) return null;
+  return { mode: mode as ChildWaitMode, timeoutMs, ...(since !== undefined && { since }), ...(bootId !== null && { bootId }) };
+}
+
 async function inspectSessionRoute(req: IncomingMessage, res: ServerResponse, inbox = false): Promise<void> {
     res.setHeader("Cache-Control", "no-store");
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -309,46 +406,10 @@ async function inspectSessionRoute(req: IncomingMessage, res: ServerResponse, in
       return json(res, sessionStatusFailure(undefined, SESSION_STATUS_ERROR.INVALID_REQUEST), 400);
     }
     try {
-      const backend = getBackend();
-      const inspect = backend.inspectSession;
-      if (!inspect) {
-        return json(
-          res,
-          sessionStatusFailure(
-            selector,
-            SESSION_STATUS_ERROR.BACKEND_UNAVAILABLE,
-            { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
-          ),
-          503,
-        );
-      }
-      const inspection = await inspect.call(backend, selector);
-      if (!inspection.ok) {
-        const ambiguous = inspection.code === "AMBIGUOUS";
-        return json(
-          res,
-          sessionStatusFailure(
-            selector,
-            ambiguous ? SESSION_STATUS_ERROR.AMBIGUOUS : SESSION_STATUS_ERROR.NOT_FOUND,
-            { exists: false, alive: false, status: SESSION_TERMINAL_STATUS.UNAVAILABLE },
-          ),
-          ambiguous ? 409 : 404,
-        );
-      }
-      if (!inspection.alive) {
-        return json(
-          res,
-          sessionStatusFailure(
-            selector,
-            SESSION_STATUS_ERROR.DEAD,
-            { exists: true, alive: false, status: SESSION_TERMINAL_STATUS.DEAD },
-            { session: inspection.session, sessionId: inspection.sessionId },
-          ),
-          410,
-        );
-      }
+      const inspection = await inspectLiveSession(res, selector);
+      if (!inspection) return;
       if (inbox) {
-        return json(res, { session: inspection.session, sessionId: inspection.sessionId, notifications: listParentNotifications(inspection.sessionId, since) });
+        return json(res, { session: inspection.session, sessionId: inspection.sessionId, bootId: PARENT_INBOX_BOOT_ID, notifications: listParentNotifications(inspection.sessionId, since) });
       }
       const relay = await sessionRegistrations([inspection.sessionId]);
       return json(res, inspectedSessionStatusPayload(selector, inspection, relay.registrations.get(inspection.sessionId), relay.taskRelay));
@@ -392,6 +453,72 @@ return {
 
   "GET /api/session-control/status": (req, res) => inspectSessionRoute(req, res),
   "GET /api/session-control/inbox": (req, res) => inspectSessionRoute(req, res, true),
+
+  "GET /api/session-control/children": async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const selector = new URL(req.url ?? "/", "http://localhost").searchParams.get("session");
+    if (!selector) return json(res, sessionStatusFailure(undefined, SESSION_STATUS_ERROR.INVALID_REQUEST), 400);
+    try {
+      const parent = await inspectLiveSession(res, selector);
+      if (!parent) return;
+      const lastEvents = lastChildEvents(parent.sessionId);
+      const store = getAgentRuntimeStateStore();
+      const children = (await liveChildren(parent.sessionId)).map((child) => {
+        const runtimeState = store.get(child.sessionId);
+        const lastEvent = lastEvents.get(child.sessionId);
+        return {
+          session: child.session,
+          sessionId: child.sessionId,
+          state: runtimeState?.state ?? AGENT_STATUS_STATE.UNKNOWN,
+          ...(runtimeState && { authority: runtimeState.authority, stale: runtimeState.stale }),
+          settled: child.settled,
+          cleanup: child.cleanup,
+          ...(lastEvent && { lastEvent }),
+        };
+      });
+      return json(res, { ok: true, session: parent.session, sessionId: parent.sessionId, bootId: PARENT_INBOX_BOOT_ID, children });
+    } catch (error: unknown) {
+      log.warn("session children read failed", { error: errMsg(error) });
+      return json(res, sessionStatusFailure(selector, SESSION_STATUS_ERROR.BACKEND_UNAVAILABLE), 503);
+    }
+  },
+
+  "GET /api/session-control/children/wait": async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const selector = url.searchParams.get("session");
+    const query = parseChildWaitQuery(url);
+    if (!selector) return json(res, sessionStatusFailure(undefined, SESSION_STATUS_ERROR.INVALID_REQUEST), 400);
+    if (!query) {
+      return json(res, {
+        error: `children must be any or all; timeoutMs an integer from 1 to ${CHILD_WAIT_LIMITS.MAX_TIMEOUT_MS}; since a non-negative integer; bootId 1-100 characters`,
+        code: SESSION_STATUS_ERROR.INVALID_REQUEST,
+      }, 400);
+    }
+    // The client can go away during a long wait: stop waiting and write nothing.
+    const closed = new AbortController();
+    res.on("close", () => closed.abort());
+    try {
+      const parent = await inspectLiveSession(res, selector);
+      if (!parent) return;
+      const result = await waitForChildren({
+        parentSessionId: parent.sessionId,
+        ...query,
+        listChildren: () => liveChildren(parent.sessionId),
+        signal: closed.signal,
+      });
+      if (!result) return;
+      return json(res, { ok: true, session: parent.session, sessionId: parent.sessionId, children: query.mode, ...result });
+    } catch (error: unknown) {
+      if (closed.signal.aborted) return;
+      if (error instanceof ChildWaitBusyError) {
+        res.setHeader("Retry-After", "5");
+        return json(res, { error: error.message, code: "CHILD_WAIT_BUSY" }, 429);
+      }
+      log.warn("session children wait failed", { error: errMsg(error) });
+      return json(res, sessionStatusFailure(selector, SESSION_STATUS_ERROR.BACKEND_UNAVAILABLE), 503);
+    }
+  },
 
   "GET /api/session-control/snapshot": async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
@@ -457,11 +584,14 @@ return {
     const session = resolved.name;
     const sessionId = resolved.identity.wolfpackSessionId;
     const noEnter = body.noEnter === true;
+    // A task written with Enter arms the child's heuristic `busy → idle` done event.
+    const armChild = () => noteChildInputDelivered(sessionId, session, resolved.identity.parentSession);
     try {
       const streaming = streamingBackend();
       if (!streaming) {
         // Nothing to observe through: deliver as before and say so.
         await getBackend().send(session, body.text, noEnter);
+        if (!noEnter) armChild();
         return json(res, {
           ok: true,
           session,
@@ -477,12 +607,14 @@ return {
         observeMs,
         ensureSubmitted: body.ensureSubmitted === true,
         sessionName: session,
+        onSubmitWritten: armChild,
       });
       if (result.reason === SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE) {
         // Same status a failed write always had; the body says nothing was written.
         return json(res, { ok: false, error: "backend unavailable", session, sessionId, ...result }, 503);
       }
-      json(res, { ok: sessionSendOk(noEnter, result.outcome), session, sessionId, ...result });
+      const ok = sessionSendOk(noEnter, result.outcome);
+      json(res, { ok, session, sessionId, ...result });
     } catch (e: unknown) {
       log.warn("session-control send failed", { session: resolved.name, error: errMsg(e) });
       json(res, { error: "backend unavailable" }, 503);

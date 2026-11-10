@@ -8,7 +8,7 @@ Wolfpack exposes a scriptable session surface for agents and operators. The serv
 wolfpack --machine <short-name-or-fqdn> <control-command> ...
 ```
 
-The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `agent inbox`, `session status`, `session organization`, `session inbox`, `session read`, `session send`, `session wait`, `session prompt`, `kill`, and `events`. Other commands reject it.
+The global selector supports `list`/`ls`, `session create`, deprecated `session open`, `agent spawn`, `agent inbox`, `session status`, `session organization`, `session inbox`, `session read`, `session send`, `session wait`, `session prompt`, `kill`, `events`, `file`, and `exec`. Other commands reject it.
 
 A short name is expanded using the exact Tailnet suffix from configured `tailscaleHostname`. A full name must be a canonical HTTPS Tailnet hostname in that suffix; URLs, ports, paths, foreign suffixes, malformed or duplicate selectors, and missing configuration fail closed without a localhost fallback. Before any control request, the CLI sends an exact, bounded `GET /api/machine` probe with redirects disabled, a bounded timeout, and the normal Wolfpack JWT `Authorization` header when configured. The structured handshake must report the selected canonical origin and session-control capability.
 
@@ -130,8 +130,8 @@ After creation, a failed root/identity/liveness/endpoint check or deadline kills
 ## Spawn a child agent
 
 ```bash
-wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
-wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--json]
+wolfpack agent spawn <project> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--json]
+wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>] [--model <provider/model>] [--prompt|--prompt-file|--plan <value>] [--notify-parent] [--outlive-parent] [--json]
 ```
 
 - performs one `POST /api/session-open` request.
@@ -145,6 +145,7 @@ wolfpack agent spawn --project-dir <path> [--harness <agent>] [--name <session>]
 - supports `--plan <file>` and `--prompt-file <file>` like top-level creation.
 - `--notify-parent` adds a compact child instruction to call `wolfpack agent notify-parent` when done or blocked. That command queues the message in the live parent's inbox and also notifies enrolled human devices (see below).
 - stores structured parent ID/name metadata and sends a best-effort typed browser notification when opened.
+- records the child's cleanup policy in its parent identity: `cascade` by default, `outlive` with `--outlive-parent`. A `cascade` child is killed with its parent (see [Parent-owned teardown](#parent-owned-teardown)); an `outlive` child keeps running.
 - json success has the same fields as top-level creation, including stable `sessionId`; `harness` reports the child's harness.
 
 `wolfpack session open` remains a deprecated compatibility alias for `wolfpack agent spawn` and accepts the same selectors, optional `--harness`, and Pi-child model selection. It never means top-level creation.
@@ -168,6 +169,7 @@ wolfpack list --json
 wolfpack session status <session-or-id> [--json]
 wolfpack session inbox <session-or-id> [--since <seq>] [--json]
 wolfpack agent inbox [--since <seq>] [--json]
+wolfpack agent children [--json]
 wolfpack session read <session-or-id> [--json]
 ```
 
@@ -206,7 +208,7 @@ wolfpack kill <session-or-id> --json
 wolfpack --machine <short-name-or-fqdn> kill <session-or-id> --json
 ```
 
-`kill` accepts the same opaque selector rules as inspection. It uses Wolfpack's ordinary global API auth policy; `--machine` first verifies the configured Tailnet target and carries the normal JWT authorization when configured. A local JSON success is `{ "ok": true, "session": string, "sessionId": string }`; a remote JSON success retains those fields and adds verified `machine` identity. After success, verify teardown through the matching target's active-session list:
+`kill` accepts the same opaque selector rules as inspection. It uses Wolfpack's ordinary global API auth policy; `--machine` first verifies the configured Tailnet target and carries the normal JWT authorization when configured. A local JSON success is `{ "ok": true, "session": string, "sessionId": string, "cascaded": [...] }`; a remote JSON success retains those fields and adds verified `machine` identity. After success, verify teardown through the matching target's active-session list:
 
 ```bash
 wolfpack list --json
@@ -214,6 +216,19 @@ wolfpack --machine <short-name-or-fqdn> list --json
 ```
 
 The killed `sessionId` must be absent. Do not treat `/quit` as a substitute, and do not kill a session without explicit authority for that exact target.
+
+### Child cleanup cascade
+
+A child spawned with the default `cascade` policy is killed together with its parent. The cascade is recursive: each child's own recorded policy decides whether it follows its parent, so an `outlive` child and its subtree stay running. A child created before the policy existed has no recorded policy and never cascades.
+
+- triggers: a successful `POST /api/kill` of the parent, or the parent's death. Death means a lifecycle exit frame, or a dead or missing entry in a session table that the server read successfully. An unavailable read is not death.
+- `cascaded` in the kill response lists each cascade child as `{ sessionId, session, outcome, reason? }`. `outcome` is `killed`, `already_gone` (the child was already dead in the session table, or the broker answered the kill with `session_not_alive` or `unknown_session`; its own cascade children still follow their policy) or `failed` with a `reason`. A failed child keeps its children.
+- when the session table cannot be read after the kill, the parent is still killed, `cascaded` is empty and `cascadeError` gives the reason. A later death notification of that parent can still cascade.
+- a parent-death cascade logs each child at info (`parent death cascade`, with `parentSessionId` and `childSessionId`).
+- each session is cascaded at most once per server boot; a cycle or a second trigger does not kill again.
+- same machine only. The cascade reads and kills through the local backend and never calls a peer.
+- no cascade after a server restart: the first session table after startup is the baseline, so a parent that died while the server was down does not cascade its children. Kill them explicitly.
+- `wolfpack agent children --json` reports each child's `cleanup`: `cascade`, `outlive`, or `none` when no policy is recorded.
 
 ## Send and wait
 
@@ -225,10 +240,10 @@ wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] 
 
 - `send` writes through the broker input plane and appends Enter unless `--no-enter` is set. In a Claude session, Enter after non-empty text is its own write, ~100 ms after the text, because Claude Code reads text and Enter that arrive together as a paste and keeps the Enter as a newline; `--observe-ms` counts from that Enter. Writes to one Claude session wait for each other, so another `send` or `prompt` cannot land between a text and its Enter; that wait counts against the caller's deadline, and other sessions do not wait. Other harnesses get the text and Enter in one write. `prompt` writes the same way. Like `prompt`, the server pins the resolved `sessionId`, subscribes to output, then writes, and reports what it saw within `--observe-ms` (default 1500, max 10000). One deadline bounds each write, including the status reads before and after it and the subscribe; nothing is written once it has run out, and nothing observed after it counts, including a status read answered or stamped after it:
   - `delivery`: `delivered` (output, or a program status change the broker stamped after the write, followed it), `not_delivered` (nothing was written; `reason` is `target_unavailable`, `target_replaced`, `target_exited`, `replay_gap`, `backend_unavailable` (for example, the output subscription never became ready), or `timed_out` when the window ran out before the write could start, including while it waited for earlier writes to the same Claude session), or `unverified`.
-  - `outcome`: `submitted` (the program's OSC 7501 root status was seen `idle` and then moved to another state stamped after the write; a status the broker stamped at or before the write, even if its paced event arrives later, is not evidence, and a busy program going straight to `done` or `blocked` is not submission; records are ordered by that stamp, so a status read that returns a snapshot older than one already pushed, or taken before a clear that already arrived, is ignored, and two records with the same stamp but different states leave the outcome `unverified`), `pasted_not_submitted` (the text arrived but an `idle` status stayed untouched, so Enter was swallowed), `not_delivered`, or `unverified` (no status record, a busy or changed-but-idle status, no observed `idle` before the change, or no evidence). With `--no-enter` nothing is submitted and `outcome` mirrors `delivery`.
+  - `outcome`: `submitted` (the program's OSC 7501 root status was seen waiting and then left it with a record stamped after the write: `idle` to any other state, or `done` to `working`, `blocked` or `error`. Claude Code and Pi report `done` between turns, so `done` counts as waiting; `done` to `idle` or to a re-stamped `done` is not a new turn. A status the broker stamped at or before the write, even if its paced event arrives later, is not evidence, and a busy program going straight to `done` or `blocked` is not submission; records are ordered by that stamp, so a status read that returns a snapshot older than one already pushed, or taken before a clear that already arrived, is ignored, and two records with the same stamp but different states leave the outcome `unverified`), `pasted_not_submitted` (the text arrived but an `idle` or `done` status stayed untouched, so Enter was swallowed), `not_delivered`, or `unverified` (no status record, a busy status, a status that changed but stayed waiting, no observed waiting status before the change, or no evidence). With `--no-enter` nothing is submitted and `outcome` mirrors `delivery`.
   - `ok` is true for `submitted` or `unverified` (`delivered` or `unverified` with `--no-enter`); `observedMs` is the time watched after the write, never more than `--observe-ms` per write.
   - `--ensure-submitted` re-sends one `\r` when the first write reads as `pasted_not_submitted` and adds `retried: true` only when that `\r` was written; if it could not be written, the first result stands. It never retries twice or on any other outcome.
-  - Submission needs a program that reports OSC 7501 status (see [broker-protocol.md](broker-protocol.md#program-status-osc-7501)). An `idle` record left by a program that exited without clearing it (no OSC 133 shell integration) can make a shell command read as `pasted_not_submitted`.
+  - Submission needs a program that reports OSC 7501 status (see [broker-protocol.md](broker-protocol.md#program-status-osc-7501)). An `idle` record left by a program that exited without clearing it (no OSC 133 shell integration) can make a shell command read as `pasted_not_submitted`. A `done` record survives both exit and OSC 133 prompts, so the shell that an agent session leaves after Claude Code or Pi exits reads the same way, and `--ensure-submitted` then writes one extra `\r` to that shell.
   - Exit codes: `0` for `submitted`, `delivered` and `unverified`; `7` for `pasted_not_submitted`; `3` when not delivered because the target is gone or replaced; `6` when not delivered for any other reason. A backend that could not take the input still answers HTTP `503`, now with the outcome fields beside `error`; `--json` prints those validated fields with the generic `BACKEND_UNAVAILABLE` error. Plain output prints the outcome (yellow) unless it is `submitted` or `delivered`; `--json` prints the full response.
   - Servers from before outcome reporting answer `{ok, session, sessionId}` only; the CLI treats that as success (exit `0`).
 - `wait` checks the current snapshot, then subscribes from its sequence number with a bounded buffer and timeout.
@@ -241,7 +256,7 @@ wolfpack session prompt <session-or-id> <prompt...> --until <text> [--no-enter] 
 
 ### Notify and poll the parent inbox
 
-`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for full-startup children launched with `--notify-parent`. The CLI sends the parent ID/name from `WOLFPACK_PARENT_SESSION_ID` / `WOLFPACK_PARENT_SESSION_NAME` and an optional informational `from` from `WOLFPACK_SESSION_NAME`. The server queues the message only for that exact live parent ID **and** name, and still sends web push to the human's devices enrolled on this host (see [phone-pwa-notifications.md](phone-pwa-notifications.md)). Nothing is injected into the parent terminal.
+`wolfpack agent notify-parent [--message <text>] [--json]` wraps `POST /api/notify`; it is intended for full-startup children launched with `--notify-parent`. The CLI sends the parent ID/name from `WOLFPACK_PARENT_SESSION_ID` / `WOLFPACK_PARENT_SESSION_NAME` and an optional informational `from` from `WOLFPACK_SESSION_NAME`. The server queues the message only for that exact live parent ID **and** name, and still sends web push to the human's devices enrolled on this host (see [phone-pwa-notifications.md](phone-pwa-notifications.md)). The message itself is never typed into the parent terminal; a matching child's message becomes a [child event](#child-events), and only its enumerated fields can reach the parent as a [typed note](#delivery-to-the-parent-agent).
 
 - `POST /api/notify` retains `ok: true` for acceptance, `sent`, `failed`, `pruned`, `delivered` (`sent > 0`), and push-only `reason` when not delivered: `no_subscriptions` or `delivery_failed`. Rate limiting and push subscription handling are unchanged.
 - It also returns `parentInbox: {queued:true, seq}` or `{queued:false, reason:"no_parent"|"parent_not_found"}`. `no_parent` means no session target; `parent_not_found` means the exact live ID/name could not be confirmed (including backend unavailability). A same-name replacement is never substituted.
@@ -256,18 +271,67 @@ wolfpack agent inbox --json
 wolfpack agent inbox --since 12 --json
 wolfpack session inbox <parent-session-id> --since 12 --json
 # optional live follow (no replay)
-wolfpack events --session <parent-session-id> --kinds parent_notified --json
+wolfpack events --session <parent-session-id> --kinds parent_notified,child_event --json
 ```
 
 Both inbox commands call `GET /api/session-control/inbox?session=<name-or-id>[&since=<seq>]`, using the same selector and not-found/dead/ambiguous/unavailable envelopes as `session status`. `agent inbox` resolves the current agent session from its Wolfpack environment, preferring the injected stable ID; it uses the same missing/unsupported-context error path as spawn. Both support the verified `--machine` selector like status; this reads that host's inbox, not a cross-machine relay.
 
 Inbox reads are available to any caller with this host's ordinary API access, the same as `session status`. They are not parent-private and must not be treated as private child/parent messaging.
 
-The response is `{session, sessionId, notifications:[{seq, at, message, from?}]}`. `seq` starts at 1 per parent, `at` is an ISO timestamp, and `since` is a non-negative safe integer returning only entries with `seq > since`. Reads do not consume entries; retain the last sequence to avoid duplicates. Plain output is `seq at [from] message` per entry (sender omitted when absent); line breaks are replaced with spaces in human inbox/event lines, while JSON preserves the original text.
+The response is `{session, sessionId, bootId, notifications:[{seq, at, message, from?, childEvent?}]}`. `bootId` identifies the server process that assigned the sequences; when it changes, sequences restarted, so read again without `since`. `seq` starts at 1 per parent, `at` is an ISO timestamp, and `since` is a non-negative safe integer returning only entries with `seq > since`. Reads do not consume entries; retain the last sequence to avoid duplicates. Plain output is `seq at [from] message` per entry (sender omitted when absent); line breaks are replaced with spaces in human inbox/event lines, while JSON preserves the original text.
 
 Malformed inbox success replies exit `1`; JSON output is an `ok:false` error envelope with code `INVALID_INBOX_RESPONSE`, while plain output diagnoses the invalid inbox response on stderr. Both aliases validate identity, entries and limits before reporting success, including the exact stable self ID when known.
 
 The inbox is **memory-only**, retains only the newest **100** entries per parent, and is dropped on parent session exit. A server restart loses every inbox and resets sequences; slow/disconnected pollers may miss overwritten entries. It is not a durable task ledger or an acknowledgement protocol. Verify the child's actual work before cleanup. Pi coordinators keep using Pi Tasks `agent_task_done` / `agent_task_ack` for `--task-worker` endpoint children, which reject `--notify-parent`.
+
+#### Child events
+
+The server also tells a parent what its children did, with no child action. It derives events from the observed runtime state of every live session whose identity names a parent (`agent spawn` children), on this machine only. Each event is a parent inbox entry with a structured `childEvent` (kind `wolfpack.child_event/v1`) and a `child_event` live event:
+
+- `blocked`: the child's own status (OSC 7501 program status or the project status manifest) says it waits for input; carries `inputKind?` and the program's `message?`.
+- `error`: the child's own status says it failed.
+- `done`: the program reported `done`, or, for a child without program status, it went from busy to `idle` after a `session send` wrote a task with Enter to it. The send arms this when the write succeeds, not when its observation returns, so a child that finishes while the send is still observed is reported. A `--no-enter` send or a failed write does not arm it.
+- `exited`: the child session exited or was killed; carries `reason`, `exitCode?`/`signal?` and up to 5 `lastLines` of its last observed screen. The broker exit frame or a successful session table read reports it, whichever comes first, and the child gets one `exited` either way. The server remembers the last 1024 exited child session IDs, so an observation that read the child as live before its exit does not track it again. A table read reports a tracked child that is listed dead or is gone from the list, so an exit missed while the broker was disconnected is still reported. An exit found this way carries no `exitCode` or `signal`. While a kill reply is outstanding the table waits for it, and a successful kill reports `reason: "killed"`. An unavailable table reports nothing.
+- `message`: `agent notify-parent` from a sender whose unverified `from` name matches a live child of this parent. The entry keeps the message text; other senders stay plain notifications.
+
+`childEvent` fields: `kind`, `eventId` (child session ID, `bootId` and `seq`), `bootId`, `seq` (the entry's inbox sequence), `childSessionId`, `childName`, `parentSessionId`, `event`, `state` (the child's runtime state), optional `inputKind`, `message` (at most 500 code points), `lastLines`, `authority`, `reason`, `exitCode`, `signal`, and `observedAt`. New optional fields may be added; ignore unknown fields. The entry `message` is a one-line summary (for example `blocked (permission): run rm?`) and `from` is the child name.
+
+A child produces at most one event per entry into a state: repeated reports in the same state do not repeat the event. A child spawned by this server process is tracked from creation, so its first `blocked`, `error` or `done` is reported even when it is the first state observed. A child first seen after a server restart (restart recovery) uses that first observation as a baseline and produces no event, so events that happened while the server was down are lost. Screen heuristics alone never produce `blocked` or `error`. A `blocked` child event (program or manifest status) also starts a "Needs input" web push episode at the moment the child became blocked, so the push needs no screen change (see [phone-pwa-notifications.md](phone-pwa-notifications.md)). When the screen capture failed at that moment, the episode starts at the first observation with a fresh capture while the child is still blocked; a block whose episode already became due keeps that episode across a capture gap: it does not start another one, a delivered push is not sent again, and a failed push resumes its remaining retries. It goes through the same quiet-alert policy: it is sent after the quiet interval (30 s by default) if the child is still blocked, never in `disabled` mode, with the usual per-session debounce and retry limit. Recipients are frozen when the alert first becomes due and is emitted, as for every quiet alert: a device enrolled after the child blocked but before then gets the push, and a device enrolled later does not. An episode that a screen change already started is adopted, so one block sends one push. A screen change while the child stays blocked does not start a new push: the block keeps its episode until a fresh status shows the child left needs-input, and a later block pushes again. When the child leaves needs-input before the push is due, the episode that the block started is dropped, so no "Idle" alert follows without a screen change; an episode that a screen change started stays. When the block's episode replaced an earlier quiet alert that had already become due, that alert comes back: a failed push resumes its remaining retries and a delivered one is not sent again. It does not come back after the quiet-alert settings changed or when the child exited. Child events add no other push.
+
+#### Delivery to the parent agent
+
+The server also delivers each child event to the parent agent. The first available path wins:
+
+1. **Relay envelope.** If the parent session holds a live task-relay registration whose connect `protocolVersions` include `1001` (the child-event capability marker), the server accepts one envelope into that endpoint's inbox. The envelope keeps the relay wire version, comes from a server-owned source endpoint, has `envelopeId` `wolfpack.child_event:<eventId>`, and its `payload` is the `childEvent` object itself (`kind: "wolfpack.child_event/v1"`). Endpoints and peers cannot send a payload of that kind (`SOURCE_MISMATCH`), so one in a local inbox came from this server. Endpoints without the marker receive nothing, because a current adapter rejects a whole inbox page that holds an unknown payload. The server falls back to a typed note only when the relay definitely did not accept the envelope. When acceptance is uncertain (for example the relay worker reset after the request reached it), the event stays in the parent inbox and no note is typed, so the parent never gets the event twice. With the default SQLite relay, a child event that the relay accepted survives a server restart while the parent's plugin process stays alive; the parent inbox and event sequences do not. A relay storage failure (owner failure) during the send counts as uncertain acceptance.
+2. **Typed note.** Otherwise the server types one tagged line into the parent terminal, for example `[wolfpack] child events: worker-1 done; worker-2 blocked (permission) (details: wolfpack agent inbox --json)`. It types only when all of these hold:
+   - the parent's own OSC 7501 program status is fresh and `idle` or `done` (never `blocked`, `working` or `failed`, and never for manifest or screen-heuristic status);
+   - no viewer typed into the parent terminal in the last 60 s;
+   - at least 15 s passed since the previous note to that parent;
+   - `childEventTypedNotes` is not `false` in `~/.wolfpack/config.json` (read on each use; no restart needed).
+
+   Events that wait coalesce into one note: at most 8 are listed and the rest are counted as `+k more`. Events that arrive while a note is being sent wait for the next note. At most 50 events wait per parent; when more arrive, the oldest waiting events are dropped and counted in the next note. A note carries only the child name (reduced to `[A-Za-z0-9._-]`, at most 40 characters), the event, the input kind and exit details. It never carries `message` or `lastLines`, so a child cannot type instructions into its parent. The note uses the observed send path with `ensureSubmitted`. The status, viewer-input and setting guards are checked again right before each write, after the wait for earlier writes to that terminal: before the text, before its separate Enter, and before the `ensureSubmitted` retry Enter. Each check reads the parent's root program status fresh and refuses a parent that the exact-ID read reports as exited. The check uses the newest status from that read and from the status pushes that arrived during the read, ordered by broker stamp; it refuses when two different states carry the same newest stamp. A failed check writes nothing more, so an Enter alone never goes to a parent that stopped waiting. When the check fails before the text, the note stays queued and the attempt is not counted. When the check fails after the text and before its Enter (`partial_write_refused`, logged once as a warning with the parent and event IDs), the note text may remain unsent in the parent's input; the note is not typed again, and the events stay available through `wolfpack agent inbox`. When nothing was written for another reason, the events wait for up to 3 attempts. When the outcome is not `submitted`, the note is not typed again. Queued events are dropped after 30 minutes, when the parent exits, or when the setting turns notes off. The server checks the guards on each observation (about every 5 s), so a note can lag the event by that interval.
+3. **Inbox only.** Without either path the event stays in the parent inbox and on the event stream.
+
+Only interactive terminal input counts as viewer input; `session send` and typed notes do not. A viewer's own unsent text that is older than 60 s can be submitted together with a note.
+
+#### Wait for children
+
+```bash
+wolfpack agent children [--json]
+wolfpack agent wait --children any|all [--timeout <seconds>] [--since <seq> --boot-id <id>] [--json]
+```
+
+Both commands act for the current agent session (the injected stable ID, otherwise `WOLFPACK_SESSION_NAME`) on this machine; they reject `--machine`.
+
+- `agent children` calls `GET /api/session-control/children?session=<self>`. It lists the live children whose identity names this session, sorted by name, with `cleanup` (the recorded policy: `cascade`, `outlive` or `none`), `state` (the last recorded runtime state, or `unknown`), `authority` and `stale` when a state exists, `settled`, and `lastEvent` (the newest child event in the parent inbox, when one is retained).
+- `agent wait` calls `GET /api/session-control/children/wait?session=<self>&children=any|all&timeoutMs=<ms>[&since=<seq>&bootId=<id>]` and blocks until the server answers. `--timeout` is in seconds (default 180, maximum 600). The response has `outcome`, the child `events` after the cursor, `bootId`, `since` (the cursor used) and `cursor`.
+  - `any` returns `events` as soon as at least one child event is newer than the cursor, also one that already waited before the call. It returns `no_children` when there are no live children and no newer events.
+  - `all` returns `settled` when every live child is settled, and also when no live child remains but newer events exist; otherwise `no_children`. A child is settled when its last fresh tracked state is `idle`, `needs-input`, `done`, `failed`, `stopped` or `off` and no task delivered by `session send` is still pending. The server checks again about every second and at each child event, so a child that settles without an event is found. On a timeout, `pending` names the children that are not settled.
+  - `timeout` is a check-in result, not a failure: every outcome exits 0. Act on `outcome`.
+- Pass the returned `cursor` as `--since` together with the returned `bootId` as `--boot-id`. The cursor applies only to the same server boot: a missing or different boot ID reads every retained event of the current boot. `truncated: true` means the 100-entry inbox bound dropped entries after the cursor; read `wolfpack agent inbox --json` or `wolfpack agent children --json` to recover the current state.
+- At most 32 waits run at the same time per server; another wait gets HTTP 429 (`CHILD_WAIT_BUSY`, `Retry-After: 5`). A wait ends without an answer when its client disconnects.
+
+Wait results are wake-ups, not task-completion evidence. Verify the child's work and status before acting on it.
 
 ### Current session identity
 
@@ -283,6 +347,45 @@ This requires a **new session launched by the updated broker** and a reachable l
 
 The Agent Context skill can use verified self-identity when asked to update “this session,” without asking the user to copy or confirm a UUID. Explicitly targeting another session still requires its exact UUID. Activating a broker upgrade terminates its existing terminals; schedule that upgrade and then launch fresh sessions.
 
+## Read, write and edit files
+
+```bash
+wolfpack [--machine <short-name-or-fqdn>] file read <path> [--json]
+wolfpack [--machine <short-name-or-fqdn>] file write <path> (--stdin | --from <local-file>) [--create-only] [--json]
+wolfpack [--machine <short-name-or-fqdn>] file edit <path> --old <text> --new <text> [--all] [--json]
+```
+
+These commands reach any path that the wolfpack server user can access: the same power as a shell session on that machine. `POST /api/file/read`, `POST /api/file/write` and `POST /api/file/edit` sit behind the same global API gate as session create: the origin check, then JWT validation when JWT auth is configured, then the rate limits. There is no route-specific bypass and no extra authorization layer. When JWT auth is not configured, access is the same as for session create today: any client that passes the origin check can use them. `--machine` uses the verified Tailnet selector described above, and a failed handshake fails the command with no localhost fallback.
+
+- Paths: the server requires an absolute path. Without `--machine`, the CLI resolves a relative path against the local working directory; with `--machine`, it refuses a relative path before any request. Symlinks are followed like a shell follows them, and every result reports `resolvedPath`. A dangling symlink is refused (`DANGLING_SYMLINK`).
+- Size: files, write content and edit results are limited to 10 MiB (10485760 bytes). A larger file fails with `FILE_TOO_LARGE` and its `size`; the CLI refuses large local content before any request. Directories, FIFOs and other non-regular files fail with `NOT_A_FILE`.
+- `read`: text that round-trips through UTF-8 unchanged (a BOM is kept) is returned with `encoding: "utf8"`; other content is returned base64 with `binary: true`. Without `--json`, the CLI writes the exact bytes to stdout with no added newline.
+- `write`: the content goes to a temp file in the target's directory, is synced, and replaces the target in one rename, so a failed write leaves the old file intact. An existing file keeps its mode; a new file gets the default mode under the server umask. `--create-only` refuses an existing file (`FILE_EXISTS`), including one that appears during the write.
+- `edit`: exact text replacement in a UTF-8 text file (`BINARY_FILE` otherwise). Without `--all`, `--old` must match exactly once; zero or several matches fail with `EDIT_MATCH_COUNT` and `matches`, and the file stays unchanged. The result reports `replacements`. The write is atomic like `write`. `--old` must not be empty; `--new` may be empty, and either value may start with `-`.
+- Errors: `{ "error": message, "code": string, "size"?, "maxBytes"?, "matches"? }` with codes `INVALID_REQUEST`, `REQUEST_TOO_LARGE`, `PATH_NOT_ABSOLUTE`, `NOT_FOUND`, `PERMISSION_DENIED`, `NOT_A_FILE`, `SYMLINK_LOOP`, `DANGLING_SYMLINK`, `FILE_TOO_LARGE`, `FILE_EXISTS`, `BINARY_FILE`, `EDIT_MATCH_COUNT` and `IO_FAILED`. CLI `--json` failures are `{ "ok": false, "error": { "code", "message" }, ...details }`, plus `machine` for a remote target. Exit codes: `1` for a refused operation, `2` for a usage error, `5` for an auth failure.
+- Audit: each write and edit, successful or failed, is logged at info level by the `remote-ops` component with the path, byte count, replacement count or error code, and duration. File content is never logged.
+- Limits: there is no locking. Two concurrent edits of one file can lose one update. The rename replaces a hard link with a new file, and the replaced file is owned by the server user. Create-only needs hard-link support in the target filesystem.
+
+## Run commands
+
+```bash
+wolfpack [--machine <short-name-or-fqdn>] exec --cwd <dir> [--timeout <seconds>] [--json] -- <program> [args...]
+```
+
+`POST /api/exec` runs one program on the server machine as the wolfpack server user: the same power as a shell session there. It sits behind the same global API gate as session create and the file routes: the origin check, then JWT validation when JWT auth is configured, then the rate limits. There is no route-specific bypass. When JWT auth is not configured, any client that passes the origin check can run commands. `--machine` uses the verified Tailnet selector, and a failed handshake fails the command with no localhost fallback.
+
+- Arguments: everything after `--` is the argv, sent verbatim and run without a shell, so pipes, globs, `$VAR` and `~` are not expanded; run `sh -c '...'` explicitly when you need a shell. `--` is required, and options are read only before it, so the command's own flags (including `--json` or `--machine`) pass through unchanged. The program is resolved through the server's `PATH`. At most 1024 arguments; NUL bytes are refused.
+- `--cwd` is required and must be an existing directory (`CWD_NOT_FOUND`, `CWD_NOT_DIRECTORY`). The server requires an absolute path. Without `--machine`, the CLI resolves a relative `--cwd` locally; with `--machine`, it refuses a relative one before any request.
+- Environment: the command gets the server's environment, not the caller's; the request cannot set variables. stdin is closed.
+- Timeout: `--timeout` / `timeoutSeconds` defaults to 120 and is at most 600. The command runs in its own process group. On timeout the server kills the whole group with `SIGKILL` and reports `timedOut: true`. The group is also killed when the command exits (after up to 500 ms to read the remaining output), so background children cannot outlive the request, and when the client disconnects before the result.
+- Output: stdout and stderr are each kept up to 1 MiB (1048576 bytes). The rest is read and counted but dropped: `stdoutBytes`/`stderrBytes` give the total, and `stdoutTruncated`/`stderrTruncated` are set. Output that is valid UTF-8 is returned with `encoding: "utf8"`; other output is base64. A cut multi-byte character at the cap is dropped.
+- Result: `{ "ok": true, "cwd", "exitCode", "signal", "timedOut", "durationMs", "stdout", "stdoutEncoding", "stdoutBytes", "stdoutTruncated", "stderr", "stderrEncoding", "stderrBytes", "stderrTruncated" }`. `exitCode` is `null` when a signal ended the command.
+- Concurrency: at most 4 commands run at once per server; another request fails with `429` `EXEC_BUSY` and `maxConcurrent`.
+- Errors: `{ "error": message, "code": string, "maxBytes"?, "maxConcurrent"? }` with codes `INVALID_REQUEST`, `REQUEST_TOO_LARGE`, `CWD_NOT_ABSOLUTE`, `CWD_NOT_FOUND`, `CWD_NOT_DIRECTORY`, `COMMAND_NOT_FOUND`, `PERMISSION_DENIED`, `EXEC_BUSY` and `SPAWN_FAILED`.
+- CLI exit codes: without `--json`, the CLI writes the command's stdout and stderr bytes unchanged, notes truncation and timeout on stderr, and exits with the command's exit code, `124` on timeout, or `128` + the signal number. Those values can overlap the wolfpack codes below (`1` refused or unreachable, `2` usage, `5` auth). Use `--json` to tell them apart: it prints the result and exits `0` whenever the command ran, and failures use the usual `{ "ok": false, "error": { "code", "message" }, ... }` shape with exit `1`, `2` or `5`.
+- Audit: each exec, successful or failed, is logged at info level by the `remote-ops` component with the cwd, `argv[0]`, exit code or signal, timeout flag, output byte counts or error code, and duration. Other arguments and the output are never logged.
+- Limits: a child that leaves the process group (`setsid`, a daemonizing fork) is not killed by the group kill. The CLI waits for the result up to the timeout plus 30 seconds; if no result arrives by then, it gives up and the server kills the command on the disconnect.
+
 ## Follow live events
 
 ```bash
@@ -295,6 +398,7 @@ Streams `GET /api/events` (server-sent events, ordinary API auth). Kinds:
 - `session.exited` — `sessionId`, `session` (when known), `reason` (`exit` or `killed`), `exitCode?`, `signal?`
 - `session.state` — `session`, `sessionId?`, `state`, `label`, `transitionSequence`, plus `inputKind?` and `message?` when the state comes from the program's own OSC 7501 status report; published when an agent's runtime state transitions, including a blocked program switching to a different request (new `inputKind` or `message`) while staying `needs-input`. Observed every ~5s, so expect up to that much latency.
 - `parent_notified` — parent `session`, `sessionId`, inbox `seq`, `message`, optional unverified `from`; emitted when a parent inbox entry is queued. `--session` matches the parent name or ID, not the sender.
+- `child_event` — parent `session`, `sessionId`, and the structured `childEvent` described in [Child events](#child-events); emitted with the inbox entry. `--session` matches the parent or the child name or ID.
 - `task.updated` — `taskId`, `eventId`, `eventType` (canonical task event, e.g. `task.completed`), `sequence`; emitted by the machine holding the task's sender ledger.
 
 Every event also carries a per-server-process monotonic `id` and an ISO `at`. `--session` matches a name or stable id and excludes task events. `--json` prints one event object per line; otherwise one human line per event.
@@ -304,7 +408,7 @@ The stream is live-only: there is no replay, so events published while disconnec
 ## Exit codes
 
 - `0`: success
-- `1`: unexpected API failure or ambiguous selector
+- `1`: unexpected API failure or ambiguous selector. When the server could not be reached (a connect error such as `ECONNREFUSED`, `EPERM` or Bun's `FailedToOpenSocket`, or a sandbox network proxy's non-JSON HTTP `403`, reported as `proxy denial (HTTP 403)`), `session`/`agent` commands and `events` name the request URL and the cause and print a hint that a sandboxed agent cannot reach the local server (a reachability hint for `--machine` targets); `--json` adds `url`, `cause` and `hint` to `error` and keeps the command's usual `code` and exit code. A request deadline or an error without a connect code keeps the generic message.
 - `2`: usage error
 - `3`: missing/unknown project, session, or context
 - `4`: wait timeout

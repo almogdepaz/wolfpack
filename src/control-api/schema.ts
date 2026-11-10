@@ -3,6 +3,18 @@ import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
 import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
 import { MAX_GIT_DIFF_SECTION_BYTES, MAX_GIT_DIFF_UNTRACKED_BYTES } from "../extensions/git-diff-contract.ts";
+import {
+  REMOTE_EXEC_DEFAULT_TIMEOUT_SECONDS,
+  REMOTE_EXEC_ERRORS,
+  REMOTE_EXEC_MAX_ARGS,
+  REMOTE_EXEC_MAX_CONCURRENT,
+  REMOTE_EXEC_MAX_TIMEOUT_SECONDS,
+  REMOTE_EXEC_OUTPUT_MAX_BYTES,
+  REMOTE_FILE_ENCODINGS,
+  REMOTE_FILE_ERRORS,
+  REMOTE_FILE_MAX_BYTES,
+  REMOTE_FILE_MAX_PATH_LENGTH,
+} from "../remote-ops-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
 import { SESSION_ORGANIZATION_MAX_REQUEST_BYTES } from "../session-organization-contract.ts";
 import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
@@ -24,7 +36,9 @@ import {
 import { MAX_INITIAL_PROMPT_LENGTH } from "../validation.ts";
 import { SESSION_PLAN_MAX_PATH_LENGTH } from "../session-plan-contract.ts";
 import { NOTIFY_UNDELIVERED_REASON } from "../notify-contract.ts";
-import { WOLFPACK_EVENT_KIND } from "../events-contract.ts";
+import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND } from "../events-contract.ts";
+import { CHILD_EVENT_LIMITS, CHILD_EVENT_PAYLOAD_KIND, CHILD_EVENTS, CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, CHILD_WAIT_OUTCOMES } from "../child-event-contract.ts";
+import { CASCADE_OUTCOMES, CHILD_CLEANUP_POLICIES, CHILD_CLEANUP_REPORTS } from "../session-cascade-contract.ts";
 import { SESSION_ACTIVITY_DISPLAY_MAX_LENGTH } from "../session-activity.ts";
 import {
   QUIET_ALERT_KIND,
@@ -284,6 +298,7 @@ function sessionOpenRequestSchema(): JsonSchema {
       maxLength: MAX_INITIAL_PROMPT_LENGTH,
     },
     plan: ref("SessionOpenPlanRequest"),
+    outliveParent: { const: true, description: "Record the outlive cleanup policy: the child keeps running after its parent. Default: cascade" },
   };
   const taskWorkerProperties = {
     harness: ordinaryProperties.harness,
@@ -299,6 +314,7 @@ function sessionOpenRequestSchema(): JsonSchema {
     },
     taskWorkerPolicy: ref("TaskWorkerPolicyOverride"),
     taskWorkerDryRun: { const: true },
+    outliveParent: ordinaryProperties.outliveParent,
   };
   return {
     type: "object",
@@ -460,7 +476,47 @@ export const controlApiSource: ControlApiSource = {
     "relay profile metadata identifies the store epoch, not broker/worker readiness or endpoint durability; SQLite relay recovery requires the same live plugin processes with their RAM task state/outbox; plugin restart loses active tasks and never replays session history",
   ],
   defs: {
-    ParentNotification: object(parentNotificationProperties, ["seq", "at", "message"]),
+    ParentNotification: object({
+      ...parentNotificationProperties,
+      childEvent: ref("ChildEvent"),
+    }, ["seq", "at", "message"]),
+    ChildEvent: object({
+      kind: { const: CHILD_EVENT_PAYLOAD_KIND },
+      eventId: { type: "string", minLength: 1 },
+      bootId: { type: "string", minLength: 1, description: "Server process that assigned seq; a different bootId restarts sequences." },
+      seq: parentNotificationProperties.seq,
+      childSessionId: ref("SessionId"),
+      childName: ref("SessionName"),
+      parentSessionId: ref("SessionId"),
+      event: { enum: [...CHILD_EVENTS] },
+      state: ref("AgentStatusState"),
+      inputKind: { enum: [...PROGRAM_STATUS_KINDS] },
+      message: { type: "string", maxLength: CHILD_EVENT_LIMITS.MESSAGE_CODE_POINTS },
+      lastLines: {
+        ...arrayOf({ type: "string", maxLength: CHILD_EVENT_LIMITS.LAST_LINE_CODE_POINTS }),
+        maxItems: CHILD_EVENT_LIMITS.LAST_LINES,
+      },
+      observedAt: { type: "string", description: "ISO timestamp" },
+      authority: ref("AgentStatusAuthority"),
+      reason: { enum: [SESSION_EXIT_REASON.EXIT, SESSION_EXIT_REASON.KILLED] },
+      exitCode: { type: "integer" },
+      signal: { type: "integer" },
+    }, [
+      "kind", "eventId", "bootId", "seq", "childSessionId", "childName", "parentSessionId", "event", "state", "observedAt",
+    ], {
+      description: "Server-derived child session event (wolfpack.child_event/v1). Clients must ignore unknown optional fields; existing fields keep their names.",
+      additionalProperties: true,
+    }),
+    ChildEventStreamEvent: object({
+      kind: { const: WOLFPACK_EVENT_KIND.CHILD_EVENT },
+      id: { type: "integer", minimum: 1 },
+      at: { type: "string", description: "ISO timestamp" },
+      session: ref("SessionName"),
+      sessionId: ref("SessionId"),
+      childEvent: ref("ChildEvent"),
+    }, ["id", "at", "kind", "session", "sessionId", "childEvent"], {
+      description: "Live GET /api/events child event; session/sessionId identify the parent.",
+    }),
     ParentNotifiedEvent: object({
       ...parentNotificationProperties,
       kind: { const: WOLFPACK_EVENT_KIND.PARENT_NOTIFIED },
@@ -478,6 +534,20 @@ export const controlApiSource: ControlApiSource = {
     },
     ...volatileRelayDefinitions,
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
+    RemoteFilePath: { type: "string", minLength: 1, maxLength: REMOTE_FILE_MAX_PATH_LENGTH, description: "Absolute path on the server machine; symlinks are followed" },
+    RemoteFileErrorEnvelope: object({
+      error: string(),
+      code: { enum: [...REMOTE_FILE_ERRORS] },
+      size: integer(),
+      maxBytes: integer(),
+      matches: integer(),
+    }, ["error", "code"]),
+    RemoteExecErrorEnvelope: object({
+      error: string(),
+      code: { enum: [...REMOTE_EXEC_ERRORS] },
+      maxBytes: integer(),
+      maxConcurrent: { type: "integer", description: `Running-command limit (${REMOTE_EXEC_MAX_CONCURRENT}); set with EXEC_BUSY` },
+    }, ["error", "code"]),
     GitFileChange: object({ path: { type: "string", minLength: 1, maxLength: 4096 }, previousPath: { type: "string", minLength: 1, maxLength: 4096 }, status: { type: "string", enum: GIT_CHANGE_KINDS } }, ["path", "status"]),
     ProjectGitStatus: { oneOf: [
       object({ state: { const: "not-repository" } }, ["state"]),
@@ -639,7 +709,17 @@ export const controlApiSource: ControlApiSource = {
     ParentSessionIdentity: object({
       wolfpackSessionId: string(),
       wolfpackSessionName: ref("SessionName"),
+      cleanup: {
+        enum: [...CHILD_CLEANUP_POLICIES],
+        description: "Recorded at spawn. cascade: killed when the parent is killed or dies. Absent on a pre-upgrade child, which never cascades.",
+      },
     }, ["wolfpackSessionId", "wolfpackSessionName"]),
+    CascadedChild: object({
+      sessionId: ref("SessionId"),
+      session: ref("SessionName"),
+      outcome: { enum: [...CASCADE_OUTCOMES] },
+      reason: { type: "string", description: "failed only: why the kill failed" },
+    }, ["sessionId", "session", "outcome"]),
     PublicSessionIdentity: object({
       wolfpackSessionId: string(),
       wolfpackSessionName: ref("SessionName"),
@@ -1544,6 +1624,95 @@ export const controlApiSource: ControlApiSource = {
       }, ["brokerAvailable", "brokerReady", "counts"]),
       errors: ["503 ErrorEnvelope"],
     },
+    "POST /api/file/read": {
+      operationId: "readRemoteFile",
+      stable: false,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({ path: ref("RemoteFilePath") }, ["path"]),
+      response: object({
+        ok: { const: true },
+        path: string(),
+        resolvedPath: string(),
+        size: { type: "integer", minimum: 0, maximum: REMOTE_FILE_MAX_BYTES },
+        binary: boolean(),
+        encoding: { enum: [...REMOTE_FILE_ENCODINGS], description: "utf8 for text; base64 when binary is true" },
+        content: string(),
+      }, ["ok", "path", "resolvedPath", "size", "binary", "encoding", "content"]),
+      errors: ["400 RemoteFileErrorEnvelope", "401 ErrorEnvelope", "403 RemoteFileErrorEnvelope", "404 RemoteFileErrorEnvelope", "409 RemoteFileErrorEnvelope", "413 RemoteFileErrorEnvelope", "500 RemoteFileErrorEnvelope"],
+    },
+    "POST /api/file/write": {
+      operationId: "writeRemoteFile",
+      stable: false,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        path: ref("RemoteFilePath"),
+        encoding: { enum: [...REMOTE_FILE_ENCODINGS] },
+        content: string(),
+        createOnly: { const: true, description: "Refuse an existing file" },
+      }, ["path", "encoding", "content"]),
+      response: object({
+        ok: { const: true },
+        path: string(),
+        resolvedPath: string(),
+        size: { type: "integer", minimum: 0, maximum: REMOTE_FILE_MAX_BYTES },
+        created: boolean(),
+      }, ["ok", "path", "resolvedPath", "size", "created"]),
+      errors: ["400 RemoteFileErrorEnvelope", "401 ErrorEnvelope", "403 RemoteFileErrorEnvelope", "404 RemoteFileErrorEnvelope", "409 RemoteFileErrorEnvelope", "413 RemoteFileErrorEnvelope", "500 RemoteFileErrorEnvelope"],
+    },
+    "POST /api/file/edit": {
+      operationId: "editRemoteFile",
+      stable: false,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        path: ref("RemoteFilePath"),
+        old: { type: "string", minLength: 1, description: "Exact text; without all it must match exactly once" },
+        new: string(),
+        all: { const: true, description: "Replace every match" },
+      }, ["path", "old", "new"]),
+      response: object({
+        ok: { const: true },
+        path: string(),
+        resolvedPath: string(),
+        size: { type: "integer", minimum: 0, maximum: REMOTE_FILE_MAX_BYTES },
+        replacements: { type: "integer", minimum: 1 },
+      }, ["ok", "path", "resolvedPath", "size", "replacements"]),
+      errors: ["400 RemoteFileErrorEnvelope", "401 ErrorEnvelope", "403 RemoteFileErrorEnvelope", "404 RemoteFileErrorEnvelope", "409 RemoteFileErrorEnvelope", "413 RemoteFileErrorEnvelope", "500 RemoteFileErrorEnvelope"],
+    },
+    "POST /api/exec": {
+      operationId: "runRemoteCommand",
+      stable: false,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        argv: { type: "array", items: { type: "string" }, minItems: 1, maxItems: REMOTE_EXEC_MAX_ARGS,
+          description: "Program and arguments; run without a shell. The program is resolved through the server's PATH" },
+        cwd: { type: "string", minLength: 1, maxLength: REMOTE_FILE_MAX_PATH_LENGTH, description: "Absolute existing directory on the server machine" },
+        timeoutSeconds: { type: "integer", minimum: 1, maximum: REMOTE_EXEC_MAX_TIMEOUT_SECONDS,
+          description: `Default ${REMOTE_EXEC_DEFAULT_TIMEOUT_SECONDS}; on timeout the command's process group is killed` },
+      }, ["argv", "cwd"]),
+      response: object({
+        ok: { const: true },
+        cwd: string(),
+        exitCode: { type: ["integer", "null"], description: "null when a signal ended the command" },
+        signal: { type: ["string", "null"] },
+        timedOut: boolean(),
+        durationMs: { type: "integer", minimum: 0 },
+        stdout: string(),
+        stdoutEncoding: { enum: [...REMOTE_FILE_ENCODINGS], description: "utf8 for text; base64 otherwise" },
+        stdoutBytes: { type: "integer", minimum: 0, description: "Total bytes written, including bytes past the cap" },
+        stdoutTruncated: { type: "boolean", description: `true when output exceeded ${REMOTE_EXEC_OUTPUT_MAX_BYTES} bytes` },
+        stderr: string(),
+        stderrEncoding: { enum: [...REMOTE_FILE_ENCODINGS] },
+        stderrBytes: { type: "integer", minimum: 0 },
+        stderrTruncated: boolean(),
+      }, ["ok", "cwd", "exitCode", "signal", "timedOut", "durationMs", "stdout", "stdoutEncoding", "stdoutBytes", "stdoutTruncated",
+        "stderr", "stderrEncoding", "stderrBytes", "stderrTruncated"]),
+      errors: ["400 RemoteExecErrorEnvelope", "401 ErrorEnvelope", "403 RemoteExecErrorEnvelope", "404 RemoteExecErrorEnvelope",
+        "409 RemoteExecErrorEnvelope", "413 RemoteExecErrorEnvelope", "429 RemoteExecErrorEnvelope", "500 RemoteExecErrorEnvelope"],
+    },
     "POST /api/kill": {
       operationId: "killSession",
       stable: true,
@@ -1553,7 +1722,12 @@ export const controlApiSource: ControlApiSource = {
         ok: { const: true },
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
-      }, ["ok", "session", "sessionId"]),
+        cascaded: {
+          ...arrayOf(ref("CascadedChild")),
+          description: "Same-machine cascade children killed with this session, recursively, by each child's recorded policy",
+        },
+        cascadeError: { type: "string", description: "The session table was unavailable; no child was cascaded by this request" },
+      }, ["ok", "session", "sessionId", "cascaded"]),
       errors: ["400 ErrorEnvelope", "404 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },
     "GET /api/session-control/list": {
@@ -1613,6 +1787,7 @@ export const controlApiSource: ControlApiSource = {
       response: object({
         session: ref("SessionName"),
         sessionId: ref("SessionId"),
+        bootId: { type: "string", minLength: 1, description: "Server process that assigned seq; pass since only with the same bootId." },
         notifications: { ...arrayOf(ref("ParentNotification")), maxItems: 100 },
       }, ["session", "sessionId", "notifications"]),
       errors: [
@@ -1620,6 +1795,68 @@ export const controlApiSource: ControlApiSource = {
         "404 SessionStatusFailure",
         "409 SessionStatusFailure",
         "410 SessionStatusFailure",
+        "503 SessionStatusFailure",
+      ],
+    },
+    "GET /api/session-control/children": {
+      operationId: "listSessionChildren",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({ session: ref("SessionSelector") }, ["session"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        bootId: { type: "string", minLength: 1 },
+        children: arrayOf(object({
+          session: ref("SessionName"),
+          sessionId: ref("SessionId"),
+          state: ref("AgentStatusState"),
+          authority: ref("AgentStatusAuthority"),
+          stale: boolean(),
+          settled: { type: "boolean", description: "Fresh tracked state is idle, needs-input, done, failed, stopped or off, with no delivered task pending." },
+          cleanup: { enum: [...CHILD_CLEANUP_REPORTS], description: "The child's recorded cleanup policy; none for a child without one" },
+          lastEvent: ref("ChildEvent"),
+        }, ["session", "sessionId", "state", "settled", "cleanup"])),
+      }, ["ok", "session", "sessionId", "bootId", "children"]),
+      errors: [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "503 SessionStatusFailure",
+      ],
+    },
+    "GET /api/session-control/children/wait": {
+      operationId: "waitForSessionChildren",
+      stable: true,
+      auth: "jwt-when-configured",
+      request: object({
+        session: ref("SessionSelector"),
+        children: { enum: [...CHILD_WAIT_MODES] },
+        timeoutMs: { type: "integer", minimum: 1, maximum: CHILD_WAIT_LIMITS.MAX_TIMEOUT_MS },
+        since: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: "Used only with the same bootId." },
+        bootId: { type: "string", minLength: 1, maxLength: 100 },
+      }, ["session", "children"]),
+      response: object({
+        ok: { const: true },
+        session: ref("SessionName"),
+        sessionId: ref("SessionId"),
+        children: { enum: [...CHILD_WAIT_MODES] },
+        outcome: { enum: [...CHILD_WAIT_OUTCOMES], description: "timeout is a check-in result, not a failure." },
+        bootId: { type: "string", minLength: 1 },
+        since: { type: "integer", minimum: 0, description: "The cursor used: the request since for the current boot, otherwise 0." },
+        cursor: { type: "integer", minimum: 0, description: "Pass as since with bootId to the next wait." },
+        events: { ...arrayOf(ref("ChildEvent")), maxItems: 100 },
+        truncated: { const: true },
+        pending: arrayOf(object({ session: ref("SessionName"), sessionId: ref("SessionId") }, ["session", "sessionId"])),
+      }, ["ok", "session", "sessionId", "children", "outcome", "bootId", "since", "cursor", "events"]),
+      errors: [
+        "400 SessionStatusFailure",
+        "404 SessionStatusFailure",
+        "409 SessionStatusFailure",
+        "410 SessionStatusFailure",
+        "429 ErrorEnvelope",
         "503 SessionStatusFailure",
       ],
     },

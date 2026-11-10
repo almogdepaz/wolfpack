@@ -47,6 +47,7 @@ native SQLite is the default server storage; `WOLFPACK_TASK_RELAY_STORAGE=memory
 - `GET /api/task-relay/profile` returns `{ ok, profile: "volatile-v1", epoch, endpointPath: "/api/task-relay/volatile-v1", federation: "trusted-tailnet-v1" }`. the epoch identifies the store, not worker readiness or endpoint durability.
 - `POST /api/task-relay/volatile-v1` accepts `VolatileRequest`. `connect` accepts the baseline caller selector, generation, supported protocols and optional lease/epoch. fresh broker inspection resolves the canonical UUID; the receipt retains `endpoint` and `leaseExpiresAt`.
 - later commands carry `profile`, `epoch`, `callerSession`, `endpoint` plus `resolve`, `send`, `receive`, individual `acknowledge`, `disconnect` or `health`.
+- A `send` or peer envelope whose payload `kind` is `wolfpack.child_event/v1` fails `SOURCE_MISMATCH`: only the server sends that kind, and only to endpoints whose `protocolVersions` include the capability marker `1001` (see [delivery to the parent agent](session-control.md#delivery-to-the-parent-agent)).
 - `/resolve-peer` qualifies an endpoint only through host-verified current Tailnet topology. `/peer` is trusted relay ingress, not an endpoint route. immutable aliases bind both persisted epochs.
 - wrong/retired profiles, including the removed WIP `restart-safe-v1` profile, are not negotiated or advertised.
 
