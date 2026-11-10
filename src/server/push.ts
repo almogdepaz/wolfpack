@@ -803,11 +803,15 @@ export async function checkSessionTransitions(
     activeSessionIds.add(key);
     const alert = validQuietAlert(session, sessionId);
     if (!alert) {
-      // No fact is not retirement. Across a capture gap the observer can
-      // restore the same emitted episode (review A5-1); its attempts and
-      // pending endpoints then resume instead of restarting. A new episode
-      // replaces this state; removal and policy invalidation clear it.
-      if (machine) quietAlertRecipientSnapshots.delete(key);
+      // A local missing fact is not retirement. Across a capture gap the
+      // observer can restore the same emitted episode (review A5-1); its
+      // attempts and pending endpoints then resume instead of restarting. A
+      // new episode replaces this state; removal and policy invalidation
+      // clear it. A peer owns its facts: a missing peer fact retires it.
+      if (machine) {
+        quietAlertDeliveries.delete(key);
+        quietAlertRecipientSnapshots.delete(key);
+      }
       continue;
     }
     // The peer owns policy evaluation and keeps reporting an emitted episode
