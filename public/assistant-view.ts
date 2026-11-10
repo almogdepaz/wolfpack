@@ -163,7 +163,7 @@ export function createAssistantView(deps: {
   const field = (label: string, value: string) => value ? `<div><dt>${label}</dt><dd>${value}</dd></div>` : "";
   const project = (path?: string) => path ? `<span title="${escAttr(path)}">${esc(path.replace(/\/+$/, "").split("/").pop() || path)}</span>` : "";
   // Linked rule rows keep their intention title beside the session's context; today and starts already name it.
-  function rowContext(intention?: FocusIntention, session?: FocusSession) {
+  function rowContext(intention?: FocusIntention, session?: FocusSession, hidden = false) {
     const all = sessions();
     const local = deps.localMachineName();
     const manyMachines = new Set(all.map(s => s.machine)).size > 1;
@@ -171,7 +171,7 @@ export function createAssistantView(deps: {
     const targets = linked.length ? linked : [{ cwd: intention?.project, machine: intention?.machine, machineUrl: undefined }];
     const labels = [...new Set(targets.map(s => [project(s.cwd), s.machine && (manyMachines || s.machineUrl || s.machine !== local) ? esc(s.machine) : ""].filter(Boolean).join(" · ")).filter(Boolean))];
     const caption = [session && intention ? esc(intention.title) : "", labels.join(", ")].filter(Boolean).join(" · ");
-    return caption ? `<small class="focus-for">${caption}</small>` : "";
+    return caption ? `<small class="focus-for"${hidden ? " hidden" : ""}>${caption}</small>` : "";
   }
   // `open=""` is how innerHTML serializes the attribute, so an unchanged render still compares equal in replace().
   const card = (key: string, summary: string, body: string, extra = "") => `<details class="focus-card" data-focus-card="${escAttr(key)}"${openCards.has(key) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${key}`)}">${summary}</summary><dl class="focus-card-body">${body}</dl>${extra}</details>`;
@@ -261,7 +261,7 @@ export function createAssistantView(deps: {
   function sessionChip(session: FocusSession, key: string, hidden = false) {
     return `<button type="button"${hidden ? ' class="focus-chip-extra"' : ""}${sessionLocked() ? " disabled" : ""} data-focus-key="${escAttr(`${key}:${session.id}`)}" data-focus-session="${escAttr(session.id)}" title="${escAttr(session.name)}">${dot(session.state)}<span class="focus-chip-name">${esc(session.name)}</span></button>`;
   }
-  const compactChips = new Map<string, { count: number; width: number }>();
+  const compactChips = new Map<string, { count: number; width: number; showContext: boolean }>();
   // Compact presentation only: preserve link order within each attention tier.
   const chipAttention = (session: FocusSession) => session.state === "needs-input" || session.state === "failed" ? 0 : session.state === "working" ? 1 : 2;
   function chipsHtml(intention: FocusIntention) {
@@ -311,16 +311,20 @@ export function createAssistantView(deps: {
       width = Math.min(available, Math.ceil(width));
       more.textContent = original;
       chips.classList.remove("focus-chip-measure");
+      const context = summary.querySelector<HTMLElement>(".focus-for");
+      const duplicatesChip = count > 0 && context?.querySelector("span")?.textContent === chips.querySelector(".focus-chip-name")?.textContent;
+      // Leave at least ~8 characters plus the context's margin, or yield entirely.
+      const showContext = !duplicatesChip && titleSpace - range.getBoundingClientRect().width - width >= 74;
       const previous = compactChips.get(chips.dataset.focusChips!);
-      if (previous?.count !== count || previous.width !== width) {
-        compactChips.set(chips.dataset.focusChips!, { count, width });
+      if (previous?.count !== count || previous.width !== width || previous.showContext !== showContext) {
+        compactChips.set(chips.dataset.focusChips!, { count, width, showContext });
         changed = true;
       }
     }
     return changed;
   }
   function todayHtml(items: FocusIntention[]) {
-    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li style="--focus-chips-width:${compactChips.get(i.id)?.width ?? 0}px"${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i)}</span>`, intentionBody(i, `intention:${i.id}`))}${chipsHtml(i)}</li>`).join("")}</ul>`;
+    return `<ul class="focus-today" aria-label="Intentions">${items.map(i => `<li style="--focus-chips-width:${compactChips.get(i.id)?.width ?? 0}px"${i.done ? ' class="done"' : ""}><label class="focus-check"><input type="checkbox" data-focus-done="${escAttr(i.id)}" data-focus-key="${escAttr(i.id)}" aria-label="Done: ${escAttr(i.title)}"${i.done ? " checked" : ""}${locked() ? " disabled" : ""}></label>${card(`intention:${i.id}`, `<span class="focus-title">${esc(i.title)}${rowContext(i, undefined, isDesktop() && compactChips.get(i.id)?.showContext === false)}</span>`, intentionBody(i, `intention:${i.id}`))}${chipsHtml(i)}</li>`).join("")}</ul>`;
   }
   // The live dom holds the newest open state: a tap sets `open` at once, but the browser queues its toggle event, and a
   // render in between would rebuild the card from `openCards` and the toggle would then fire on the detached node (N6).
