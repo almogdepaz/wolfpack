@@ -126,6 +126,8 @@ describe("peer payload validation", () => {
     expect(parseActivityGit({ repos: [repo, { cwd: "/n", commits: [], error: "not a readable git repository" }] })?.repos).toHaveLength(2);
     expect(parseActivityGit({ repos: [{ ...repo, commonDir: "/w/.git" }] })?.repos[0]?.commonDir).toBe("/w/.git");
     expect(parseActivityGit({ repos: [{ ...repo, commonDir: 123 }] })).toBeNull();
+    expect(parseActivityGit({ repos: [{ ...repo, repository: false }] })?.repos[0]?.repository).toBe(false);
+    expect(parseActivityGit({ repos: [{ ...repo, repository: "false" }] })).toBeNull();
     expect(parseActivityGit({ repos: [{ cwd: "/w" }] })).toBeNull();
     expect(parseActivityGit({ repos: [{ ...repo, commits: [{ sha: 1 }] }] })).toBeNull();
     expect(parseActivityGit({})).toBeNull();

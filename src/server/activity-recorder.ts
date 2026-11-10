@@ -147,7 +147,7 @@ function readGitCommonDir(cwd: string): Promise<string | undefined> {
 export async function readGitLogs(cwds: readonly string[], from: number, to: number): Promise<ActivityGitRepo[]> {
   return Promise.all(cwds.slice(0, GIT_LOG_MAX_REPOS).map(async cwd => {
     const [log, commonDir] = await Promise.all([readGitLog(cwd, from, to), readGitCommonDir(cwd)]);
-    return { cwd, ...log, ...(commonDir && { commonDir }),
+    return { cwd, ...log, repository: !!commonDir || !log.error, ...(commonDir && { commonDir }),
       ...(!commonDir && !log.error && { error: "git common directory unavailable; worktree grouping may be incomplete" }) };
   }));
 }

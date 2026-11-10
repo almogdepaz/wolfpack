@@ -1819,7 +1819,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "bounded git log per active session cwd within ?from&to; optional commonDir identifies linked worktrees of one repository"
+              "description": "bounded git log per active session cwd within ?from&to; optional commonDir identifies linked worktrees of one repository; repository records repository detection so non-repository cwd reads can be folded separately"
             }
           }
         },

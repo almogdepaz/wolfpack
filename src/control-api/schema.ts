@@ -1406,7 +1406,7 @@ export const controlApiSource: ControlApiSource = {
     },
     "GET /api/activity/git": {
       operationId: "readActivityGit", stable: true, auth: "jwt-when-configured",
-      response: object({ repos: arrayOf({ type: "object", description: "bounded git log per active session cwd within ?from&to; optional commonDir identifies linked worktrees of one repository" }) }, ["repos"]), errors: ["400 ErrorEnvelope"],
+      response: object({ repos: arrayOf({ type: "object", description: "bounded git log per active session cwd within ?from&to; optional commonDir identifies linked worktrees of one repository; repository records repository detection so non-repository cwd reads can be folded separately" }) }, ["repos"]), errors: ["400 ErrorEnvelope"],
     },
     "GET /api/activity": {
       operationId: "readActivity", stable: true, auth: "jwt-when-configured",

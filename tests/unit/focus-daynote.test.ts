@@ -27,6 +27,24 @@ test("same display names on different installations never merge their repository
   expect(note.match(/### repo \(same name\)/g)).toHaveLength(2);
 });
 
+test("D2: non-repository directories fold once per owning machine without hiding repository errors", () => {
+  const note = dayNoteMarkdown("2026-11-09", window, [], [
+    { machine: "home", installationId: "one", cwd: "/home/u", repository: false, commits: [], error: "not a readable git repository" },
+    { machine: "home", installationId: "one", cwd: "/tmp/x", repository: false, commits: [], error: "not a readable git repository" },
+    { machine: "home", installationId: "one", cwd: "/tmp/x", repository: false, commits: [], error: "not a readable git repository" },
+    { machine: "peer", installationId: "two", cwd: "/home/u", repository: false, commits: [], error: "not a readable git repository" },
+    { machine: "home", installationId: "one", cwd: "/dev/repo", commonDir: "/dev/repo/.git", repository: true, commits: [], error: "commit objects unreadable" },
+    { machine: "peer", installationId: "two", cwd: "(all repositories)", commits: [], error: "invalid git payload" },
+  ]);
+  expect(note).toContain("- not repositories (home): /home/u, /tmp/x");
+  expect(note).toContain("- not repositories (peer): /home/u");
+  expect(note).not.toContain("### u");
+  expect(note).not.toContain("### x");
+  expect(note).toContain("### repo (home)");
+  expect(note).toContain("commit objects unreadable");
+  expect(note).toContain("invalid git payload");
+});
+
 test("day note repository blocks cap visible commits and count the remaining bounded facts", () => {
   const note = dayNoteMarkdown("2026-11-09", window, [], [{ machine: "home", cwd: "/dev/repo", commits: Array.from({ length: 25 }, (_, n) => commit(n)) }]);
   expect(note.match(/outcome \d+/g)).toHaveLength(20);

@@ -239,8 +239,17 @@ function sessionDayFacts(machine: { name: string; rows: ActivityRow[] }): string
 }
 const DAY_NOTE_COMMIT_CAP = 20;
 function gitDayFacts(git: GitRepoLog[]): string[] {
+  const directories = new Map<string, { machine: string; cwds: Set<string> }>();
   const groups = new Map<string, { machine: string; repo: string; cwds: Set<string>; commits: Map<string, ActivityGitRepo["commits"][number]>; errors: Set<string> }>();
   for (const repo of git) {
+    // Fold only explicitly classified directory reads, never unknown peer failures or real repo errors.
+    if (repo.repository === false && !repo.commonDir && !repo.commits.length) {
+      const machine = repo.installationId ?? repo.machine;
+      let group = directories.get(machine);
+      if (!group) directories.set(machine, group = { machine: repo.machine, cwds: new Set() });
+      group.cwds.add(repo.cwd);
+      continue;
+    }
     const identity = repo.commonDir ?? repo.cwd;
     const key = JSON.stringify([repo.installationId ?? repo.machine, identity]);
     let group = groups.get(key);
@@ -250,7 +259,7 @@ function gitDayFacts(git: GitRepoLog[]): string[] {
     if (repo.error) group.errors.add(repo.error);
   }
   const lines: string[] = [];
-  if (!groups.size) lines.push("- no repositories", "");
+  if (!groups.size && !directories.size) lines.push("- no repositories", "");
   for (const group of groups.values()) {
     lines.push(`### ${flat(projectName(group.repo))} (${flat(group.machine)})`, "", `worktrees: ${[...group.cwds].map(flat).join(" · ")}`, "");
     for (const error of group.errors) lines.push(`- ${flat(error)}`);
@@ -260,6 +269,7 @@ function gitDayFacts(git: GitRepoLog[]): string[] {
     if (commits.length > DAY_NOTE_COMMIT_CAP) lines.push(`- + ${commits.length - DAY_NOTE_COMMIT_CAP} more in the bounded log`);
     lines.push("");
   }
+  for (const group of directories.values()) lines.push(`- not repositories (${flat(group.machine)}): ${[...group.cwds].sort().map(flat).join(", ")}`, "");
   return lines;
 }
 function dayFacts(window: { start: number; end: number }, machines: { name: string; rows: ActivityRow[] }[], git: GitRepoLog[], unreached: UnreachedDayMachine[]): string[] {

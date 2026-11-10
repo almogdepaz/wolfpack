@@ -117,12 +117,12 @@ export function parseActivityPage(v: unknown): ActivityPeerPage | null {
   return { rows: v.rows.filter(isActivityRow), next: v.next as number, headSeq: v.headSeq as number, oldestSeq: v.oldestSeq as number | null, truncated: v.truncated,
     lastRowAt: v.lastRowAt as string | null, lastInputAt: v.lastInputAt as string | null, ...(typeof v.journalId === "string" && v.journalId !== "" && { journalId: v.journalId }) };
 }
-export interface ActivityGitRepo { cwd: string; commonDir?: string; commits: { sha: string; at: string; subject: string }[]; error?: string }
+export interface ActivityGitRepo { cwd: string; commonDir?: string; repository?: boolean; commits: { sha: string; at: string; subject: string }[]; error?: string }
 const isCommit = (v: unknown) => object(v) && str(v.sha, 64) && typeof v.at === "string" && v.at.length <= 64 && typeof v.subject === "string" && v.subject.length <= 4096;
 /** Validates a peer's `GET /api/activity/git` body. */
 export function parseActivityGit(v: unknown): { repos: ActivityGitRepo[] } | null {
   if (!object(v) || !Array.isArray(v.repos)) return null;
-  const ok = v.repos.every(r => object(r) && str(r.cwd) && opt(r.commonDir) && Array.isArray(r.commits) && r.commits.every(isCommit) && opt(r.error));
+  const ok = v.repos.every(r => object(r) && str(r.cwd) && opt(r.commonDir) && (r.repository === undefined || typeof r.repository === "boolean") && Array.isArray(r.commits) && r.commits.every(isCommit) && opt(r.error));
   return ok ? { repos: v.repos as ActivityGitRepo[] } : null;
 }
 
