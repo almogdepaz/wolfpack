@@ -72,7 +72,7 @@ for (const [state, inputKind, label, verb] of [
   await expect(page.locator("#terminal-view")).toBeVisible();
 });
 
-test("row context: project and remote machine stay visible on next and today", async ({ page }, info) => {
+test("row context: next and remote targets stay visible; compact today context yields to chips", async ({ page }, info) => {
   const width = info.project.name === "desktop" ? 1440 : 390;
   await page.setViewportSize({ width, height: 900 });
   await page.route("**/api/sessions", async route => {
@@ -96,8 +96,15 @@ test("row context: project and remote machine stay visible on next and today", a
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-today li").filter({ hasText: "fix broker leak" }).locator("summary .focus-for")).toHaveText("broker · remote-box");
-  await expect(view.locator(".focus-today li").filter({ hasText: "ship the focus assistant" }).locator("summary .focus-for")).toContainText("focus-ui");
-  for (const context of await view.locator("summary .focus-for").all()) await expect(context).toBeVisible();
+  const shipToday = view.locator(".focus-today li").filter({ hasText: "ship the focus assistant" });
+  await expect(shipToday.locator("summary .focus-for")).toContainText("focus-ui");
+  if (info.project.name === "desktop") {
+    // QA-36: compact context yields space to the linked-session chips, not the next row.
+    await expect(shipToday.locator("summary .focus-for")).toBeHidden();
+    await expect(shipToday.getByRole("button", { name: "prompt-project", exact: true })).toBeVisible();
+  } else await expect(shipToday.locator("summary .focus-for")).toBeVisible();
+  await expect(view.locator(".focus-today li").filter({ hasText: "fix broker leak" }).locator("summary .focus-for")).toBeVisible();
+  for (const context of await view.locator(".focus-next summary .focus-for").all()) await expect(context).toBeVisible();
   const linkedContext = view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary .focus-for");
   await expect(linkedContext).toHaveText("ship the focus assistant · focus-ui");
   expect(await linkedContext.evaluate(el => el.scrollWidth <= el.clientWidth), "intention and project fit without hiding the context").toBe(true);
