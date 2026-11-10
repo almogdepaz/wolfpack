@@ -2,6 +2,9 @@ import { test, expect, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startTestServer, type TestServer } from "./helpers";
+import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
+// Start-flow controls require the banner body; disclosure defaults are tested separately.
+test.beforeEach(async ({ page }) => { await page.addInitScript(key => localStorage.setItem(key, "1"), FOCUS_MOBILE_EXPANDED_KEY); });
 
 let server: TestServer;
 test.beforeAll(async () => {

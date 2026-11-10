@@ -1263,8 +1263,15 @@ const focusUi = createAssistantView({
   start: intention => {
     const group = intention.machine ? state.lastSessionGroups.find(g => g.machine.name === intention.machine || g.machine.url === intention.machine) : state.lastSessionGroups.find(g => !g.machine.url);
     if (intention.machine && !group?.online) { void showMachineUnavailable(); return; }
-    if (!intention.project) { void showProjectPicker(group?.machine.url, intention.id); return; }
-    pendingFocusStart = focusUi.captureStart(intention.id);
+    let start: FocusSessionStart;
+    try { start = focusUi.captureStart(intention.id); }
+    catch (error) {
+      pendingFocusStart = undefined;
+      void showAppDialog({ title: "Focus unavailable", message: errorMessage(error), confirmLabel: "Close", cancelLabel: null });
+      return;
+    }
+    if (!intention.project) { void showProjectPicker(group?.machine.url, start); return; }
+    pendingFocusStart = start;
     state.projectMachine = group?.machine.url || "";
     state.viewBeforePicker = "assistant";
     state.selectedProject = intention.project;
@@ -2819,8 +2826,8 @@ function returnFromProjectPicker(): void {
   showView(state.viewBeforePicker || "sessions");
 }
 
-async function showProjectPicker(machineUrl?: string, focusIntentionId?: string): Promise<void> {
-  pendingFocusStart = focusIntentionId ? focusUi.captureStart(focusIntentionId) : undefined;
+async function showProjectPicker(machineUrl?: string, focusStart?: FocusSessionStart): Promise<void> {
+  pendingFocusStart = focusStart;
   state.projectMachine = machineUrl || "";
   setState({ viewBeforePicker: state.currentView });
   showView("projects");
