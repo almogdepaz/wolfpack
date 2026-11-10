@@ -402,3 +402,54 @@ test("a gap between failed attempts does not reset the three-attempt budget (rev
   await stayBlocked(4);
   expect(sender.attempts()).toBe(3);
 });
+
+test("the reviewer's left-blocked-fresh-episode ordering: a block that ends before its episode is due leaves no quiet alert behind (review A5-2)", async () => {
+  writeQuietAlertMode(QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY);
+  await spawnChild();
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(31);
+  await observeAfter(31);
+  expect(payloads).toEqual([]);
+});
+
+test("a screen change while blocked still yields one quiet alert after the child leaves blocked (review A5-2)", async () => {
+  writeQuietAlertMode(QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY);
+  await spawnChild();
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  backend.setCapturePane(async () => "$ approve rm? [y/n]");
+  backend.setOutputSequence("worker", "1");
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(31);
+  await observeAfter(31);
+  expect(payloads).toEqual(["Wolfpack: worker: Idle"]);
+});
+
+test("a block that adopts a screen-change episode keeps it after the child leaves blocked (review A5-2)", async () => {
+  writeQuietAlertMode(QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY);
+  await spawnChild();
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  backend.setCapturePane(async () => "$ approve rm? [y/n]");
+  backend.setOutputSequence("worker", "1");
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(31);
+  await observeAfter(31);
+  expect(payloads).toEqual(["Wolfpack: worker: Idle"]);
+});

@@ -107,6 +107,13 @@ interface ChildBlockedEpisode {
    * delivery retries resume.
    */
   emitted?: QuietAlertPolicyState;
+  /**
+   * This block opened `episodeId` itself (the blocked-event bridge), not
+   * adopted a screen-change episode. When the child leaves blocked before
+   * that episode emits, it is retired: no quiet alert without a screen
+   * change (review A5-2).
+   */
+  opened?: true;
 }
 const childBlockedEpisodes = new Map<string, ChildBlockedEpisode>();
 const activityContinuityTokens = new Map<string, object>();
@@ -781,11 +788,11 @@ function reduceChildBlockedEpisode(
   if (observation.blockedNow) {
     childBlockedEpisodes.set(sessionKey, {});
   } else if (!observation.alive) {
-    childBlockedEpisodes.delete(sessionKey);
+    retireChildBlockedEpisode(sessionKey);
     return;
   } else if (!runtimeState.stale && runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT) {
     // Left needs-input; a stale state is no claim, as in `observeChildSession`.
-    childBlockedEpisodes.delete(sessionKey);
+    retireChildBlockedEpisode(sessionKey);
     return;
   }
   const blocked = childBlockedEpisodes.get(sessionKey);
@@ -796,12 +803,30 @@ function reduceChildBlockedEpisode(
     return;
   }
   if (episode && !episode.emitted) {
+    // A screen change opened this episode, not the bridge: it is never retired.
+    if (episode.episodeId !== blocked.episodeId) blocked.opened = undefined;
     blocked.episodeId = episode.episodeId;
     return;
   }
   const episodeId = randomUUID();
   reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, "fresh", observedAtMs, episodeId);
-  if (quietAlertHistory.get(sessionKey)?.episodeId === episodeId) blocked.episodeId = episodeId;
+  if (quietAlertHistory.get(sessionKey)?.episodeId === episodeId) {
+    blocked.episodeId = episodeId;
+    blocked.opened = true;
+  }
+}
+
+/**
+ * The child left blocked. An episode this block opened and that has not
+ * emitted is retired. An adopted episode, or a newer one from a screen
+ * change, stays (review A5-2).
+ */
+function retireChildBlockedEpisode(sessionKey: string): void {
+  const blocked = childBlockedEpisodes.get(sessionKey);
+  childBlockedEpisodes.delete(sessionKey);
+  if (!blocked?.opened) return;
+  const episode = quietAlertHistory.get(sessionKey);
+  if (episode?.episodeId === blocked.episodeId && !episode.emitted) quietAlertHistory.delete(sessionKey);
 }
 
 /** Authorities whose needs-input state is the session's own claim. */
