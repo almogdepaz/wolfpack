@@ -15,19 +15,25 @@ const TARGET = {
   },
 } as const;
 
-interface Run { readonly code: number; readonly stdout: Buffer; readonly stderr: string; readonly calls: Array<{ url: string; body: Record<string, unknown> }> }
+interface FetchOptions { readonly timeout: unknown; readonly signal: "pending" | "aborted" | null }
+interface Run {
+  readonly code: number; readonly stdout: Buffer; readonly stderr: string;
+  readonly calls: Array<{ url: string; body: Record<string, unknown> }>;
+  readonly fetchOptions: FetchOptions[];
+}
 
 /** Run `execCommand` in a child bun with a fetch stub; calls go to stderr after a `CALLS:` marker. */
 function runExec(args: readonly string[], options: { target?: boolean; reply?: unknown; status?: number; cwd?: string } = {}): Run {
   const script = `
-    const calls = [];
+    const calls = [], fetchOptions = [];
     globalThis.fetch = async (input, init) => {
       calls.push({ url: String(input), body: JSON.parse(String(init?.body ?? "{}")) });
+      fetchOptions.push({ timeout: init?.timeout ?? null, signal: init?.signal ? (init.signal.aborted ? "aborted" : "pending") : null });
       return Response.json(${JSON.stringify(options.reply ?? { ok: true })}, { status: ${options.status ?? 200} });
     };
     const { execCommand } = await import(${JSON.stringify(join(process.cwd(), "src/cli/remote-ops.ts"))});
     const code = await execCommand(${JSON.stringify(args)}, ${options.target ? JSON.stringify(TARGET) : "undefined"});
-    process.stderr.write("\\nCALLS:" + JSON.stringify(calls));
+    process.stderr.write("\\nCALLS:" + JSON.stringify({ calls, fetchOptions }));
     process.exit(code);
   `;
   const child = Bun.spawnSync([process.execPath, "-e", script], {
@@ -40,7 +46,8 @@ function runExec(args: readonly string[], options: { target?: boolean; reply?: u
   const stderr = child.stderr.toString();
   const marker = stderr.lastIndexOf("CALLS:");
   if (marker < 0) throw new Error(`execCommand did not finish: ${stderr}`);
-  return { code: child.exitCode ?? -1, stdout: child.stdout, stderr: stderr.slice(0, marker), calls: JSON.parse(stderr.slice(marker + "CALLS:".length)) };
+  const recorded = JSON.parse(stderr.slice(marker + "CALLS:".length)) as Pick<Run, "calls" | "fetchOptions">;
+  return { code: child.exitCode ?? -1, stdout: child.stdout, stderr: stderr.slice(0, marker), ...recorded };
 }
 
 function result(overrides: Record<string, unknown> = {}) {
@@ -53,6 +60,15 @@ function result(overrides: Record<string, unknown> = {}) {
 }
 
 describe("wolfpack exec", () => {
+  test("a long exec replaces Bun's ~360 s default fetch timeout with its own deadline", () => {
+    // Bun 1.4.2 fetch fails a response that stays silent ~360 s; --timeout allows 600 s.
+    for (const args of [["--cwd", "/srv", "--timeout", "600", "--json", "--", "sleep", "500"], ["--cwd", "/srv", "--json", "--", "true"]]) {
+      const run = runExec(args, { target: true, reply: result() });
+      expect(run.code, args.join(" ")).toBe(0);
+      expect(run.fetchOptions, args.join(" ")).toEqual([{ timeout: false, signal: "pending" }]);
+    }
+  });
+
   test("sends argv after -- verbatim to the verified machine; --json exits 0 with the result and machine", () => {
     const run = runExec(["--cwd", "/srv", "--timeout", "30", "--json", "--", "grep", "--json", "--help", "--machine", "z", "--"], {
       target: true, reply: result({ exitCode: 7, stdout: "x" }),

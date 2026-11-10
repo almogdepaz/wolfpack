@@ -1115,6 +1115,39 @@ describe("agent wait and agent children", () => {
     ok: true, session: "lead", sessionId: "lead-id", children: "any", outcome: "timeout", bootId: "boot", since: 4, cursor: 4, events: [],
   };
 
+  /** Record the fetch options of every request a long-wait CLI command makes. */
+  function longWaitFetchOptions(entry: "runAgentCommand" | "runSessionCommand", args: string[], body: unknown): { exitCode: number; options: unknown[] } {
+    const script = `
+      process.env.WOLFPACK_SESSION_NAME = "lead";
+      process.env.WOLFPACK_SESSION_ID = "lead-id";
+      process.env.WOLFPACK_AGENT_KIND = "claude";
+      const options = [];
+      globalThis.fetch = async (url, init) => {
+        options.push({ path: new URL(String(url)).pathname, timeout: init?.timeout ?? null, signal: init?.signal ? (init.signal.aborted ? "aborted" : "pending") : null });
+        return Response.json(${JSON.stringify(body)});
+      };
+      const { ${entry} } = await import("./src/cli/session-control.ts");
+      const code = await ${entry}(${JSON.stringify(args)});
+      console.error("OPTIONS " + JSON.stringify(options));
+      process.exit(code);
+    `;
+    const child = Bun.spawnSync([process.execPath, "-e", script], {
+      cwd: process.cwd(), env: { ...process.env, NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe",
+    });
+    return { exitCode: child.exitCode, options: JSON.parse(child.stderr.toString().match(/OPTIONS (.*)/)![1]!) };
+  }
+
+  test("agent wait --children and session wait replace Bun's ~360 s default fetch timeout with their own deadline", () => {
+    // Bun 1.4.2 fetch fails a response that stays silent ~360 s; both waits allow 600 s.
+    const children = longWaitFetchOptions("runAgentCommand", ["wait", "--children", "any", "--timeout", "600", "--json"], waitBody);
+    expect(children.exitCode).toBe(SESSION_EXIT.OK);
+    expect(children.options).toEqual([{ path: "/api/session-control/children/wait", timeout: false, signal: "pending" }]);
+    const session = longWaitFetchOptions("runSessionCommand", ["wait", "alpha", "ready", "--timeout-ms", "600000", "--json"],
+      { ok: true, session: "alpha", sessionId: "alpha-id", matched: true });
+    expect(session.exitCode).toBe(SESSION_EXIT.OK);
+    expect(session.options).toEqual([{ path: "/api/session-control/wait", timeout: false, signal: "pending" }]);
+  });
+
   test("a wait timeout is a successful check-in and the query carries the cursor of this session", () => {
     const child = agentCli(["wait", "--children", "any", "--timeout", "5", "--since", "4", "--boot-id", "boot", "--json"], waitBody);
     expect(child.exitCode).toBe(SESSION_EXIT.OK);

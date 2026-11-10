@@ -5492,7 +5492,8 @@ describe("parent inbox", () => {
         expect(res.status).toBe(200);
         expect(res.headers.get("cache-control")).toBe("no-store");
         const body = await res.json();
-        expect(body).toEqual({ session: "wolf-1", sessionId: "mock:wolf-1", notifications: [
+        // agent-comms adds bootId: the process that assigned these sequences; a cursor from another boot is stale.
+        expect(body).toEqual({ session: "wolf-1", sessionId: "mock:wolf-1", bootId: expect.any(String), notifications: [
           { seq: 1, at: expect.any(String), message: "ready", from: "child" },
           { seq: 2, at: expect.any(String), message: "blocked", from: "child" },
         ] });

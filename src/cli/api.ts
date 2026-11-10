@@ -37,6 +37,19 @@ const REMOTE_SERVER_UNREACHABLE_HINT =
 
 export const PROXY_DENIAL_CAUSE = "proxy denial (HTTP 403)";
 
+/** Extra time a long request allows past the server's own timeout before it gives up on the response. */
+export const LONG_REQUEST_GRACE_MS = 30_000;
+
+/**
+ * Request options for a call whose response may stay silent longer than Bun's default fetch
+ * timeout (~360 s in Bun 1.4.2, which then throws TimeoutError). Bun's `timeout: false` option,
+ * absent from its RequestInit typing, disables that default; the caller's deadline replaces it.
+ */
+export function longRequestInit(init: RequestInit, deadlineMs: number): RequestInit {
+  const options: RequestInit & { readonly timeout: false } = { ...init, timeout: false, signal: AbortSignal.timeout(deadlineMs) };
+  return options;
+}
+
 function transportFailure(url: string, cause: string, target: VerifiedMachineTarget | undefined): ServerTransportFailure {
   return {
     url: url.split("?")[0]!,

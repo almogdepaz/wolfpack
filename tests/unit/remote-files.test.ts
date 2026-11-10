@@ -241,6 +241,15 @@ describe("remote file routes", () => {
     expect(readFileSync(growing, "utf8")).toBe("ab");
   });
 
+  test("a replace-all whose result would exceed the cap is refused with its size before it is built", async () => {
+    const target = join(dir, "amplify.txt");
+    writeFileSync(target, "a".repeat(100_000));
+    const result = await edit(target, "a", "b".repeat(100_000), { all: true });
+    // 100,000 matches each grow by 99,999 bytes: 100,000 + 100,000 * 99,999 = 10,000,000,000 bytes.
+    expect(result).toMatchObject({ status: 413, body: { code: REMOTE_FILE_ERROR.FILE_TOO_LARGE, size: 10_000_000_000, maxBytes: REMOTE_FILE_MAX_BYTES } });
+    expect(readFileSync(target, "utf8")).toBe("a".repeat(100_000));
+  });
+
   test("write and edit log an audit line with the path and byte count, never the content", async () => {
     const path = join(dir, "secret.txt");
     const { lines } = await captureLog(async () => {

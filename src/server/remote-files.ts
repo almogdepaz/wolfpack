@@ -211,6 +211,9 @@ export async function editRemoteFile(
       { matches },
     );
   }
+  // Size the result before building it: a replace-all can expand small inputs past any allocation.
+  const resultSize = Buffer.byteLength(text, "utf8") + matches * (Buffer.byteLength(newText, "utf8") - Buffer.byteLength(oldText, "utf8"));
+  if (resultSize > REMOTE_FILE_MAX_BYTES) throw tooLarge(resultSize);
   const bytes = Buffer.from(parts.join(newText), "utf8");
   if (bytes.length > REMOTE_FILE_MAX_BYTES) throw tooLarge(bytes.length);
   await atomicReplace(target, bytes, false);

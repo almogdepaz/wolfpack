@@ -384,7 +384,7 @@ wolfpack [--machine <short-name-or-fqdn>] exec --cwd <dir> [--timeout <seconds>]
 - Errors: `{ "error": message, "code": string, "maxBytes"?, "maxConcurrent"? }` with codes `INVALID_REQUEST`, `REQUEST_TOO_LARGE`, `CWD_NOT_ABSOLUTE`, `CWD_NOT_FOUND`, `CWD_NOT_DIRECTORY`, `COMMAND_NOT_FOUND`, `PERMISSION_DENIED`, `EXEC_BUSY` and `SPAWN_FAILED`.
 - CLI exit codes: without `--json`, the CLI writes the command's stdout and stderr bytes unchanged, notes truncation and timeout on stderr, and exits with the command's exit code, `124` on timeout, or `128` + the signal number. Those values can overlap the wolfpack codes below (`1` refused or unreachable, `2` usage, `5` auth). Use `--json` to tell them apart: it prints the result and exits `0` whenever the command ran, and failures use the usual `{ "ok": false, "error": { "code", "message" }, ... }` shape with exit `1`, `2` or `5`.
 - Audit: each exec, successful or failed, is logged at info level by the `remote-ops` component with the cwd, `argv[0]`, exit code or signal, timeout flag, output byte counts or error code, and duration. Other arguments and the output are never logged.
-- Limits: a child that leaves the process group (`setsid`, a daemonizing fork) is not killed by the group kill. The CLI request has no deadline of its own beyond the server timeout.
+- Limits: a child that leaves the process group (`setsid`, a daemonizing fork) is not killed by the group kill. The CLI waits for the result up to the timeout plus 30 seconds; if no result arrives by then, it gives up and the server kills the command on the disconnect.
 
 ## Follow live events
 

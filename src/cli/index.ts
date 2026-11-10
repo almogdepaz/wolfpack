@@ -435,8 +435,8 @@ async function dispatchCommand(
     else process.exit(await extensionDataCommand(argv.slice(1), target));
     return;
   }
-  if (cmd === "file") process.exit(await fileCommand(argv.slice(1), target));
-  if (cmd === "exec") process.exit(await execCommand(argv.slice(1), target));
+  if (cmd === "file") return exitAfterOutput(await fileCommand(argv.slice(1), target));
+  if (cmd === "exec") return exitAfterOutput(await execCommand(argv.slice(1), target));
   if (cmd === "logs") {
     if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print("Usage: wolfpack logs [--follow] [--json] [--broker]");
     else process.exit(await logsCommand(argv.slice(1)));

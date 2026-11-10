@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { MACHINE_CAPABILITY } from "../../src/tailnet-machine-contract.ts";
 import type { Subprocess } from "bun";
 
@@ -26,7 +26,33 @@ function handshake(origin = ORIGIN): object {
   };
 }
 
-function spawnCli(args: readonly string[], fixtureUrl: string): Subprocess<"ignore", "pipe", "pipe"> {
+/**
+ * A slow pipe consumer: waits 100 ms, then reads 4 KiB every 2 ms and prints the byte count
+ * and SHA-256 of everything it received. Ordinary backpressure, not a timing race.
+ */
+const SLOW_READER = `
+  import { readSync } from "node:fs";
+  import { createHash } from "node:crypto";
+  Bun.sleepSync(100);
+  const hash = createHash("sha256"), chunk = Buffer.alloc(4096);
+  let bytes = 0;
+  for (;;) {
+    let read;
+    try { read = readSync(0, chunk, 0, chunk.length, null); }
+    catch (error) { if (error.code === "EAGAIN") { Bun.sleepSync(2); continue; } throw error; }
+    if (read === 0) break;
+    hash.update(chunk.subarray(0, read)); bytes += read;
+    Bun.sleepSync(2);
+  }
+  process.stdout.write(JSON.stringify({ bytes, sha256: hash.digest("hex") }));
+`;
+
+interface CliOptions {
+  /** Pipe the CLI's stdout into a slow reader; its exit code goes to this file. */
+  readonly slowPipeExitFile?: string;
+}
+
+function spawnCli(args: readonly string[], fixtureUrl: string, options: CliOptions = {}): Subprocess<"ignore", "pipe", "pipe"> {
   const home = mkdtempSync(join(tmpdir(), "wolfpack-remote-cli-"));
   tempHomes.push(home);
   mkdirSync(join(home, ".wolfpack"), { recursive: true });
@@ -46,7 +72,16 @@ function spawnCli(args: readonly string[], fixtureUrl: string): Subprocess<"igno
       return nativeFetch(${JSON.stringify(fixtureUrl)} + url.pathname + url.search, init);
     };
   `);
-  return Bun.spawn([process.execPath, "--preload", preload, cliEntry, ...args], {
+  const cli = [process.execPath, "--preload", preload, cliEntry, ...args];
+  let argv = cli;
+  if (options.slowPipeExitFile !== undefined) {
+    const reader = join(home, "slow-reader.ts");
+    writeFileSync(reader, SLOW_READER);
+    // $0 = exit file, $1 = bun, $2 = reader, the rest = the CLI argv.
+    argv = ["/bin/sh", "-c", 'exit_file=$0; bun=$1; reader=$2; shift 2; { "$@"; echo $? > "$exit_file"; } | "$bun" "$reader"',
+      options.slowPipeExitFile, process.execPath, reader, ...cli];
+  }
+  return Bun.spawn(argv, {
     cwd: root,
     env: {
       ...process.env,
@@ -286,5 +321,51 @@ describe("remote machine cli network boundary", () => {
     } finally {
       server.stop(true);
     }
+  });
+  describe("piped output reaches a slow reader in full", () => {
+    const content = randomBytes(1024 * 1024 + 4099);
+    const digest = createHash("sha256").update(content).digest("hex");
+
+    async function pipedRun(args: readonly string[], reply: object): Promise<{ readonly exitCode: string; readonly received: unknown; readonly stderr: string }> {
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        fetch(request) {
+          const path = new URL(request.url).pathname;
+          if (path === "/api/machine") return Response.json(handshake());
+          if (path === "/api/file/read" || path === "/api/exec") return Response.json(reply);
+          return new Response("unexpected", { status: 500 });
+        },
+      });
+      const exitDir = mkdtempSync(join(tmpdir(), "wolfpack-pipe-exit-"));
+      tempHomes.push(exitDir);
+      const exitFile = join(exitDir, "exit-code");
+      try {
+        const child = spawnCli(args, `http://127.0.0.1:${server.port}`, { slowPipeExitFile: exitFile });
+        const [, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+        return { exitCode: readFileSync(exitFile, "utf8").trim(), received: JSON.parse(stdout), stderr };
+      } finally {
+        server.stop(true);
+      }
+    }
+
+    test("file read of a 1 MiB binary file delivers every byte before exit 0", async () => {
+      const run = await pipedRun(["--machine", "peer", "file", "read", "/srv/blob.bin"], {
+        ok: true, path: "/srv/blob.bin", resolvedPath: "/srv/blob.bin", size: content.length, binary: true, encoding: "base64", content: content.toString("base64"),
+      });
+      expect(run.stderr).toBe("");
+      expect([run.exitCode, run.received]).toEqual(["0", { bytes: content.length, sha256: digest }]);
+    });
+
+    test("exec with 1 MiB of stdout delivers every byte before mirroring the exit code", async () => {
+      const kept = content.subarray(0, 1024 * 1024);
+      const run = await pipedRun(["--machine", "peer", "exec", "--cwd", "/srv", "--", "cat", "blob.bin"], {
+        ok: true, cwd: "/srv", exitCode: 3, signal: null, timedOut: false, durationMs: 1,
+        stdout: kept.toString("base64"), stdoutEncoding: "base64", stdoutBytes: kept.length, stdoutTruncated: false,
+        stderr: "", stderrEncoding: "utf8", stderrBytes: 0, stderrTruncated: false,
+      });
+      expect(run.stderr).toBe("");
+      expect([run.exitCode, run.received]).toEqual(["3", { bytes: kept.length, sha256: createHash("sha256").update(kept).digest("hex") }]);
+    });
   });
 });

@@ -60,7 +60,7 @@ import {
 } from "../session-plan-contract.js";
 import type { SessionPlanRequest } from "../session-plan-contract.js";
 import type { NotifyDelivery } from "../notify-contract.js";
-import { baseUrl, call as callApi, proxyDenialFailure, serverTransportFailure } from "./api.js";
+import { baseUrl, call as callApi, LONG_REQUEST_GRACE_MS, longRequestInit, proxyDenialFailure, serverTransportFailure } from "./api.js";
 import type { ServerTransportFailure } from "./api.js";
 import { parseTaskWorkerPolicyOverride } from "../task-worker-policy-contract.js";
 import { readBoundedTaskWorkerPolicyFile, TaskWorkerPolicyFileError } from "../task-worker-policy-file.js";
@@ -1468,7 +1468,7 @@ async function runAgentWait(
   if (parsed.bootId !== undefined) query.set("bootId", parsed.bootId);
   try {
     // The server answers at its timeout; the grace bounds a lost response.
-    const data = await call(`/api/session-control/children/wait?${query}`, {}, undefined, parsed.timeoutMs + CHILD_WAIT_LIMITS.CLIENT_GRACE_MS);
+    const data = await call(`/api/session-control/children/wait?${query}`, longRequestInit({}, parsed.timeoutMs + CHILD_WAIT_LIMITS.CLIENT_GRACE_MS));
     if (!isChildWaitResponse(data, expectedSessionId)) {
       return writeOpenError(parsed.output, "INVALID_CHILD_WAIT_RESPONSE", "invalid /api/session-control/children/wait response", SESSION_EXIT.GENERAL);
     }
@@ -1738,10 +1738,10 @@ async function runTargetSessionCommand(
       else if (data.outcome !== SESSION_PROMPT_OUTCOME.MATCHED) print(yellow(data.outcome));
       return SESSION_PROMPT_EXIT[data.outcome] ?? SESSION_EXIT.GENERAL;
     }
-    const data = await call("/api/session-control/wait", {
+    const data = await call("/api/session-control/wait", longRequestInit({
       method: "POST",
       body: JSON.stringify({ session: parsed.session, text: parsed.text, timeoutMs: parsed.timeoutMs }),
-    }, target);
+    }, parsed.timeoutMs + LONG_REQUEST_GRACE_MS), target);
     if (parsed.output === "json") jsonOut(data, target);
     return SESSION_EXIT.OK;
   } catch (e: unknown) {

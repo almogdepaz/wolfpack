@@ -8,10 +8,11 @@ import { readFileSync, statSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { VerifiedMachineTarget } from "./machine-target.js";
-import { baseUrl, call } from "./api.js";
+import { baseUrl, call, LONG_REQUEST_GRACE_MS, longRequestInit } from "./api.js";
 import { print, printApiJson, printError, printJson, red } from "./formatting.js";
 import { SESSION_EXIT } from "./session-control.js";
 import {
+  REMOTE_EXEC_DEFAULT_TIMEOUT_SECONDS,
   REMOTE_EXEC_MAX_TIMEOUT_SECONDS,
   REMOTE_EXEC_OUTPUT_MAX_BYTES,
   REMOTE_EXEC_ROUTE,
@@ -114,12 +115,14 @@ async function post(
   target: VerifiedMachineTarget | undefined,
   jsonOutput: boolean,
   label: string,
+  deadlineMs?: number,
 ): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly exitCode: number }> {
   const failed = (failure: Failure, failureTarget: VerifiedMachineTarget | undefined, exitCode: number) =>
     ({ ok: false as const, exitCode: emit(jsonOutput, failure, failureTarget, exitCode) });
   let response: Response;
   try {
-    response = await call(route, { method: "POST", body: JSON.stringify(body) }, target);
+    const init: RequestInit = { method: "POST", body: JSON.stringify(body) };
+    response = await call(route, deadlineMs === undefined ? init : longRequestInit(init, deadlineMs), target);
   } catch (error: unknown) {
     return failed({
       code: "SERVER_UNREACHABLE",
@@ -342,7 +345,8 @@ export async function execCommand(argv: readonly string[], target?: VerifiedMach
   }
   const cwd = target ? parsed.cwd : resolve(process.cwd(), parsed.cwd);
   const body = { argv: parsed.argv, cwd, ...(parsed.timeoutSeconds !== undefined && { timeoutSeconds: parsed.timeoutSeconds }) };
-  const posted = await post(REMOTE_EXEC_ROUTE, body, target, jsonOutput, "exec");
+  const deadlineMs = (parsed.timeoutSeconds ?? REMOTE_EXEC_DEFAULT_TIMEOUT_SECONDS) * 1000 + LONG_REQUEST_GRACE_MS;
+  const posted = await post(REMOTE_EXEC_ROUTE, body, target, jsonOutput, "exec", deadlineMs);
   if (!posted.ok) return posted.exitCode;
   if (jsonOutput) {
     printApiJson(posted.value, target);
