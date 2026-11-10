@@ -88,6 +88,19 @@ interface ObservationAuthority {
 
 const activityHistory = new Map<string, SessionActivityHistory>();
 const quietAlertHistory = new Map<string, QuietAlertPolicyState>();
+/**
+ * A child's block, from its `blocked` child event until a fresh observation
+ * shows it left needs-input (review A3-2). Kept apart from
+ * `quietAlertHistory`: a capture gap drops that episode, and the block must
+ * still alert once, without a new screen change.
+ */
+interface ChildBlockedEpisode {
+  /** The quiet episode that alerts for this block, once one is open. */
+  episodeId?: string;
+  /** Set when that episode emitted: this block has alerted. */
+  emitted?: QuietAlertPolicyState;
+}
+const childBlockedEpisodes = new Map<string, ChildBlockedEpisode>();
 const activityContinuityTokens = new Map<string, object>();
 const dashboardFingerprints = new Map<string, ActivityFingerprint>();
 const notificationFingerprints = new Map<string, ActivityFingerprint>();
@@ -127,6 +140,11 @@ onQuietAlertPolicyInvalidation((kind) => {
   // Unemitted episodes can still become needs-input without new rendered output.
   for (const [key, state] of quietAlertHistory) {
     if (kind === undefined || state.alert?.kind === kind) quietAlertHistory.delete(key);
+  }
+  // A block retires with its episode: it alerts again only after the child
+  // leaves needs-input and blocks again.
+  for (const [key, blocked] of childBlockedEpisodes) {
+    if (kind === undefined || blocked.emitted?.alert?.kind === kind) childBlockedEpisodes.delete(key);
   }
   dashboardObservationCache = null;
 });
@@ -330,7 +348,11 @@ function reduceSessionQuietAlert(
   });
   if (reduction.state) quietAlertHistory.set(sessionKey, reduction.state);
   else quietAlertHistory.delete(sessionKey);
-  if (reduction.event) recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
+  if (reduction.event) {
+    recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
+    const blocked = childBlockedEpisodes.get(sessionKey);
+    if (blocked?.episodeId === reduction.event.episodeId) blocked.emitted = reduction.state;
+  }
   return reduction.fact;
 }
 
@@ -483,6 +505,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
   }
   activityHistory.clear();
   quietAlertHistory.clear();
+  childBlockedEpisodes.clear();
   activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();
@@ -687,9 +710,12 @@ async function observeSessionFact(
       runtimeState,
       ...(currentRendered !== undefined && { rendered: currentRendered }),
     }, body => events.publishEvent(body));
-    if (childEvent?.event === CHILD_EVENT.BLOCKED && quietContinuity === "fresh") {
-      openBlockedQuietEpisode(sessionKey, identity.wolfpackSessionId, observedAtMs, authority);
-    }
+    reduceChildBlockedEpisode(sessionKey, identity.wolfpackSessionId, observedAtMs, authority, {
+      blockedNow: childEvent?.event === CHILD_EVENT.BLOCKED,
+      alive: brokerState === "alive",
+      runtimeState,
+      quietContinuity,
+    });
   }
   if (identity) {
     // Any session can be a parent; queued typed notes flush only when it is quiet.
@@ -715,17 +741,51 @@ async function observeSessionFact(
   };
 }
 
+interface ChildBlockObservation {
+  /** This observation raised the child event `blocked`. */
+  readonly blockedNow: boolean;
+  readonly alive: boolean;
+  readonly runtimeState: AgentRuntimeState;
+  readonly quietContinuity: "fresh" | "lost" | undefined;
+}
+
 /**
- * A blocked child event starts a quiet episode at the moment the child became
- * blocked, so the needs-input push needs no rendered screen change. An open
- * episode (for example one a screen change started) already alerts as
- * needs-input when due, so it is kept: one push per blocked episode.
+ * A blocked child event starts a quiet episode, so the needs-input push needs
+ * no rendered screen change. An open episode (for example one a screen change
+ * started) already alerts as needs-input when due, so it is adopted: one push
+ * per block. When the block has no fresh continuity (a capture gap), the
+ * episode opens at the first fresh observation while the child stays blocked.
+ * A block that alerted never opens another episode.
  */
-function openBlockedQuietEpisode(sessionKey: string, sessionId: string, observedAtMs: number, authority: ObservationAuthority): void {
+function reduceChildBlockedEpisode(
+  sessionKey: string,
+  sessionId: string,
+  observedAtMs: number,
+  authority: ObservationAuthority,
+  observation: ChildBlockObservation,
+): void {
   if (authority.policyEpoch !== quietAlertPolicyEpoch()) return;
+  const { runtimeState } = observation;
+  if (observation.blockedNow) {
+    childBlockedEpisodes.set(sessionKey, {});
+  } else if (!observation.alive) {
+    childBlockedEpisodes.delete(sessionKey);
+    return;
+  } else if (!runtimeState.stale && runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT) {
+    // Left needs-input; a stale state is no claim, as in `observeChildSession`.
+    childBlockedEpisodes.delete(sessionKey);
+    return;
+  }
+  const blocked = childBlockedEpisodes.get(sessionKey);
+  if (blocked === undefined || blocked.emitted !== undefined || observation.quietContinuity !== "fresh") return;
   const episode = quietAlertHistory.get(sessionKey);
-  if (episode && !episode.emitted) return;
-  reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, "fresh", observedAtMs, randomUUID());
+  if (episode && !episode.emitted) {
+    blocked.episodeId = episode.episodeId;
+    return;
+  }
+  const episodeId = randomUUID();
+  reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, "fresh", observedAtMs, episodeId);
+  if (quietAlertHistory.get(sessionKey)?.episodeId === episodeId) blocked.episodeId = episodeId;
 }
 
 /** Authorities whose needs-input state is the session's own claim. */
@@ -855,6 +915,9 @@ function pruneSessionObservationState(
   }
   for (const key of quietAlertHistory.keys()) {
     if (!activeSessionKeys.has(key)) quietAlertHistory.delete(key);
+  }
+  for (const key of childBlockedEpisodes.keys()) {
+    if (!activeSessionKeys.has(key)) childBlockedEpisodes.delete(key);
   }
   for (const key of activityContinuityTokens.keys()) {
     if (!activeSessionKeys.has(key)) activityContinuityTokens.delete(key);
@@ -1079,6 +1142,8 @@ export function forgetSessionObservation(sessionId: string, sessionName: string)
   activityHistory.delete(sessionName);
   quietAlertHistory.delete(sessionId);
   quietAlertHistory.delete(sessionName);
+  childBlockedEpisodes.delete(sessionId);
+  childBlockedEpisodes.delete(sessionName);
   activityContinuityTokens.delete(sessionId);
   activityContinuityTokens.delete(sessionName);
   dashboardFingerprints.delete(sessionId);
@@ -1101,6 +1166,7 @@ export function __resetSessionObservationForTests(): void {
   cancelProgramStatusRefresh();
   activityHistory.clear();
   quietAlertHistory.clear();
+  childBlockedEpisodes.clear();
   activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();

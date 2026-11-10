@@ -140,3 +140,82 @@ test("the disabled quiet-alert mode sends no push for a blocked child", async ()
   await observeAfter(31);
   expect(payloads).toEqual([]);
 });
+
+test("a child that became blocked during a capture gap gets one push after capture recovers, with no screen change (review A3-2)", async () => {
+  const { parentId } = await spawnChild();
+  let failCapture = false;
+  backend.setCapturePane(async () => {
+    if (failCapture) throw new Error("capture unavailable");
+    return "$ same screen";
+  });
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  failCapture = true;
+  backend.setOutputSequence("worker", "1");
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  expect(listParentNotifications(parentId).map(entry => entry.childEvent?.event)).toEqual(["blocked"]);
+  failCapture = false;
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  expect(payloads).toEqual(["Wolfpack: worker: Needs input (permission)"]);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(40);
+  expect(payloads).toHaveLength(1);
+});
+
+test("a child that leaves blocked during a capture gap gets no push after recovery", async () => {
+  // Also no fabricated quiet alert: the screen never changed.
+  writeQuietAlertMode(QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY);
+  await spawnChild();
+  let failCapture = false;
+  backend.setCapturePane(async () => {
+    if (failCapture) throw new Error("capture unavailable");
+    return "$ same screen";
+  });
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  failCapture = true;
+  backend.setOutputSequence("worker", "1");
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(1);
+  failCapture = false;
+  await observeAfter(1);
+  await observeAfter(31);
+  await observeAfter(31);
+  expect(payloads).toEqual([]);
+});
+
+test("a child pushed for its block gets no second push after a capture gap while still blocked", async () => {
+  await spawnChild();
+  let failCapture = false;
+  backend.setCapturePane(async () => {
+    if (failCapture) throw new Error("capture unavailable");
+    return "$ same screen";
+  });
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(5);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  expect(payloads).toEqual(["Wolfpack: worker: Needs input (permission)"]);
+  failCapture = true;
+  backend.setOutputSequence("worker", "1");
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  failCapture = false;
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+  expect(payloads).toHaveLength(1);
+});
