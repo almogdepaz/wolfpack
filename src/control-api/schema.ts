@@ -1376,6 +1376,12 @@ export const controlApiSource: ControlApiSource = {
       }, ["ok", "taskId", "eventId", "sequence", "event"]),
       errors: ["400 TaskApiErrorEnvelope", "404 TaskApiErrorEnvelope", "409 TaskApiErrorEnvelope", "413 TaskApiErrorEnvelope", "502 TaskApiErrorEnvelope", "503 TaskApiErrorEnvelope"],
     },
+    "POST /api/focus/home": {
+      operationId: "configureFocusHome", stable: true, auth: "jwt-when-configured",
+      request: object({ home: nullable({ type: "string", pattern: "^[a-zA-Z0-9_-]{1,128}$" }) }, ["home"]),
+      response: { ...object({ home: string(), installationId: string(), local: boolean() }, ["home", "installationId", "local"]), description: "Changes only this machine's focus home, live. Disable its assistant before moving away; moving here leaves the assistant off." },
+      errors: ["400 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
+    },
     "POST /api/focus/assistant": {
       operationId: "configureFocusAssistant", stable: true, auth: "jwt-when-configured",
       request: object({ enabled: boolean(), loginConfirmed: boolean() }, ["enabled"]),

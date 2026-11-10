@@ -70,6 +70,7 @@ test("peer clients use normal owner auth for focus reads and CAS writes; non-hom
     const current = await response.json();
     const body = JSON.stringify({ expectedRevision: current.revision, ops: [{ type: "add", intention: { id: "peer", title: "written from a peer client" } }] });
     expect((await fetch(`${base}/api/focus`, { method: "POST", body })).status).toBe(401);
+    expect((await fetch(`${base}/api/focus/home`, { method: "POST", body: JSON.stringify({ home: null }) })).status).toBe(401);
     expect((await fetch(`${base}/api/focus`, { method: "POST", headers, body })).status).toBe(200);
     expect((await (await fetch(`${base}/api/focus`, { headers })).json()).document.intentions[0].id).toBe("peer");
     const remoteCtx = createServerContext({ backend: new MockBackend(), config: { devDir: root, port: 19791, focus: { home: "other-install" } }, focusStore: ctx.focusStore });

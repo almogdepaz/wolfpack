@@ -2,9 +2,8 @@ import { randomUUID } from "node:crypto";
 import { isFocusOp, type FocusDocument, type FocusOp } from "../focus-contract.js";
 import { candidateEnumerationCandidates } from "../tailnet-machine-contract.js";
 import { call, issueJwt } from "./api.js";
-import { readFileSync } from "node:fs";
 import { CONFIG_PATH, loadConfig, parseConfig } from "./config.js";
-import { writePrivateJsonFile } from "../persistence.js";
+import { isFocusHome, readFocusHomeConfig, writeFocusHome } from "../focus-home.js";
 import { verifyMachineTarget, type VerifiedMachineTarget } from "./machine-target.js";
 import { print, printError, printJson } from "./formatting.js";
 
@@ -75,31 +74,21 @@ export function parseFocusHomeCommand(args: readonly string[]): { json: boolean;
   if (rest.length === 0) return { json };
   if (rest.length === 1 && rest[0] === "--clear") return { json, home: null };
   // Same shape config.json accepts for focus.home.
-  if (rest.length === 1 && !rest[0]!.startsWith("-") && /^[a-zA-Z0-9_-]{1,128}$/.test(rest[0]!)) return { json, home: rest[0] };
+  if (rest.length === 1 && !rest[0]!.startsWith("-") && isFocusHome(rest[0])) return { json, home: rest[0] };
   throw new Error("usage: wolfpack focus home [<installation-id>|--clear] [--json]");
 }
 interface FocusHomeIo { path: string; installationId(): string | Promise<string> }
 const focusHomeIo: FocusHomeIo = { path: CONFIG_PATH, installationId: async () => (await import("../tailnet-machine-installation.js")).getInstallationId() };
-function readRawConfig(path: string): Record<string, unknown> | null {
-  let raw: unknown;
-  try { raw = JSON.parse(readFileSync(path, "utf8")); } catch { return null; }
-  return parseConfig(raw) ? raw as Record<string, unknown> : null;
-}
 /**
  * Sets or clears only `focus` in config.json: the raw object is rewritten
  * atomically so keys this build does not parse are kept.
  */
 export async function focusHomeCommand(parsed: { json?: boolean; home?: string | null }, io: FocusHomeIo = focusHomeIo) {
-  const raw = readRawConfig(io.path);
+  const raw = readFocusHomeConfig(io.path);
   const self = await io.installationId();
   const current = (raw && parseConfig(raw)?.focus?.home) ?? null;
   if (parsed.home !== undefined) {
-    if (!raw) throw new Error("valid wolfpack config required");
-    const changed = current !== parsed.home;
-    if (changed) {
-      const { focus: _prior, ...rest } = raw;
-      writePrivateJsonFile(io.path, parsed.home === null ? rest : { ...rest, focus: { home: parsed.home } });
-    }
+    const { changed } = writeFocusHome(parsed.home, io.path);
     return { home: parsed.home ?? self, local: (parsed.home ?? self) === self, changed };
   }
   const home = current ?? self;

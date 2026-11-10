@@ -282,6 +282,7 @@
           <p class="assistant-setting-help">Keeps a short list of what you want to get done, orders your live sessions by it, and writes a note when the day goes quiet. Runs as one persistent pi terminal on the home machine.</p>
           <div class="assistant-setting-actions"><button id="assistant-setting-toggle" class="discover-btn" type="button">Enable assistant…</button><button id="assistant-setting-open" class="discover-btn" type="button" hidden>Open assistant ›</button></div>
           <p id="assistant-setting-error" class="notification-setting-status" data-state="error" role="status" aria-live="polite"></p>
+          <div class="assistant-home"><label class="settings-toggle" for="assistant-setting-home-select"><span>Home machine</span><select id="assistant-setting-home-select" aria-describedby="assistant-setting-home" disabled></select></label></div>
           <p id="assistant-setting-home" class="assistant-setting-help"></p>
           <form id="assistant-timing" class="assistant-timing" aria-label="Assistant routine timing" novalidate>
             <label class="settings-toggle">Day review after quiet (minutes)<input name="quietMinutes" type="number" min="15" max="480" step="1" inputmode="numeric" aria-describedby="assistant-timing-status"></label>

@@ -17,6 +17,7 @@ const isTransportFailure = (error: unknown) => !(error instanceof FocusOwnership
 export function createAssistantView(deps: {
   request: <T>(path: string, init?: RequestInit, machine?: string, interactive?: boolean) => Promise<T>;
   homeMachine: (id: string) => Machine | undefined;
+  homeMachines: () => { id: string; name: string; online: boolean }[];
   localMachineName: () => string;
   sessions: () => FocusSession[];
   /** Verify a cached assistant incarnation against the current owning session list. */
@@ -34,6 +35,9 @@ export function createAssistantView(deps: {
   confirm: (enabled: boolean) => Promise<boolean>;
 }) {
   let focus: FocusResponse | undefined;
+  let localOwner: Pick<FocusResponse, "home" | "installationId" | "local"> | undefined;
+  let homeGeneration = 0;
+  let homeChanging = false;
   let machine = "";
   let homeName = "sgt";
   let focusUnavailable = false;
@@ -171,7 +175,7 @@ export function createAssistantView(deps: {
     const targets = linked.length ? linked : [{ cwd: intention?.project, machine: intention?.machine, machineUrl: undefined }];
     const labels = [...new Set(targets.map(s => [project(s.cwd), s.machine && (manyMachines || s.machineUrl || s.machine !== local) ? esc(s.machine) : ""].filter(Boolean).join(" · ")).filter(Boolean))];
     const caption = [session && intention ? esc(intention.title) : "", labels.join(", ")].filter(Boolean).join(" · ");
-    return caption ? `<small class="focus-for"${hidden ? " hidden" : ""}>${caption}</small>` : "";
+    return caption ? `<small class="focus-for"${hidden ? ' hidden=""' : ""}>${caption}</small>` : "";
   }
   // `open=""` is how innerHTML serializes the attribute, so an unchanged render still compares equal in replace().
   const card = (key: string, summary: string, body: string, extra = "") => `<details class="focus-card" data-focus-card="${escAttr(key)}"${openCards.has(key) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${key}`)}">${summary}</summary><dl class="focus-card-body">${body}</dl>${extra}</details>`;
@@ -414,9 +418,10 @@ export function createAssistantView(deps: {
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
-    if (setting) setting.textContent = enabled ? `on · ${focusUnavailable && !offline() ? unavailableInfo : info}` : "off";
+    if (setting) setting.textContent = enabled ? `on · ${focusUnavailable && !offline() ? unavailableInfo : info}` : focusUnavailable ? (offline() ? `${homeName} offline · read-only` : unavailableInfo) : "off";
     const settingError = document.getElementById("assistant-setting-error");
     if (settingError) settingError.textContent = offline() ? "" : error || focus?.assistant?.error || "";
+    renderHomePicker();
     const settingHome = document.getElementById("assistant-setting-home");
     if (settingHome) settingHome.textContent = `Home: ${homeName}${focus?.assistant?.folder ? ` · ${focus.assistant.folder}` : ""}. Needs pi installed and logged in there (pi, then /login).`;
     const toggle = document.getElementById("assistant-setting-toggle") as HTMLButtonElement;
@@ -435,8 +440,11 @@ export function createAssistantView(deps: {
     opened = true;
     flight = (async () => {
       const epoch = writes;
+      const generation = homeGeneration;
       try {
         let response = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, undefined, false);
+        if (generation !== homeGeneration) return;
+        localOwner = { home: response.home, installationId: response.installationId, local: response.local };
         const home = response.local ? { key: "", name: "this machine" } : deps.homeMachine(response.home);
         homeName = home?.name ?? (focus?.home === response.home ? homeName : "sgt");
         if (focus && focus.home !== response.home) focus = { ...response, document: null };
@@ -444,6 +452,7 @@ export function createAssistantView(deps: {
         if (!response.local) {
           if (!home) { if (focus?.home !== response.home) focus = { ...response, document: null }; throw new TypeError(`${homeName} offline`); }
           const remote = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, machine, false);
+          if (generation !== homeGeneration) return;
           if (!remote.local || remote.installationId !== response.home) throw new FocusOwnershipError("focus home identity changed");
           response = remote;
         }
@@ -455,6 +464,7 @@ export function createAssistantView(deps: {
         for (const session of openSessions()) void loadContext(session);
         cache(focus);
       } catch (e) {
+        if (generation !== homeGeneration) return;
         if (e instanceof FocusOwnershipError) {
           terminalOwner = "rejected";
           if (focus) cache(focus);
@@ -514,6 +524,40 @@ export function createAssistantView(deps: {
         timingStatus(label && data?.expected ? `${label} must be ${data.expected}` : e instanceof Error ? e.message : "Could not save routine timing.", "error");
       }
     })();
+  });
+  function renderHomePicker() {
+    const select = document.getElementById("assistant-setting-home-select") as HTMLSelectElement | null;
+    if (!select) return;
+    select.disabled = busy || homeChanging || !localOwner;
+    if (!localOwner || homeChanging) return;
+    const self = deps.localMachineName();
+    const choices = new Map([[localOwner.installationId, { id: localOwner.installationId, name: self === "this machine" ? self : `${self} (this machine)`, online: true }]]);
+    for (const peer of deps.homeMachines()) if (!choices.has(peer.id)) choices.set(peer.id, peer);
+    if (!choices.has(localOwner.home)) choices.set(localOwner.home, { id: localOwner.home, name: localOwner.home, online: false });
+    const options = [...choices.values()].map(choice => `<option value="${escAttr(choice.id)}"${choice.online ? "" : ' disabled=""'} title="${escAttr(choice.id)}">${esc(choice.name)}${choice.online ? "" : " (offline)"}</option>`).join("");
+    if (select.innerHTML !== options) select.innerHTML = options;
+    select.value = localOwner.home;
+  }
+  document.getElementById("assistant-setting-home-select")?.addEventListener("change", event => {
+    const select = event.target as HTMLSelectElement;
+    if (!localOwner || busy || homeChanging) return;
+    const chosen = select.value;
+    const name = select.selectedOptions[0]!.textContent;
+    homeChanging = true;
+    select.disabled = true;
+    void run(async () => {
+      if (!await showAppDialog({ title: "Change home machine", message: `The focus document and assistant live on ${name}. This machine will read and write focus there. Disable this machine's assistant before moving away. Changing home does not enable an assistant.`, confirmLabel: "Change home", cancelLabel: "Cancel" })) return;
+      const saved = await deps.request<Pick<FocusResponse, "home" | "installationId" | "local">>("/focus/home", { method: "POST", body: JSON.stringify({ home: chosen === localOwner!.installationId ? null : chosen }) });
+      homeGeneration++;
+      localOwner = saved;
+      focus = undefined; answered = false; machine = ""; terminalOwner = "rejected";
+      deps.terminalTarget(null);
+      try { localStorage.removeItem(cacheKey); } catch { /* storage unavailable */ }
+      await flight; // Discard any old-owner poll before fetching the new owner.
+      await refresh();
+      if (focusUnavailable) throw transportFailure ? new TypeError(error) : new Error(error);
+      await loadTiming();
+    }).finally(() => { homeChanging = false; render(); });
   });
   function talk() { const target = terminalTarget(); if (target) deps.open(target.session, target.machine); }
   async function run(action: () => Promise<void>) {

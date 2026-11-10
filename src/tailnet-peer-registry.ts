@@ -96,6 +96,11 @@ export function isStableMachineIdentity(value: unknown): value is string {
     && UUID_PATTERN.test(value.slice(separator + 1));
 }
 
+/** Installation identity from the verified registry's canonical node:id key. */
+export function installationIdFromMachineIdentity(value: unknown): string | undefined {
+  return isStableMachineIdentity(value) ? value.slice(value.lastIndexOf(":") + 1) : undefined;
+}
+
 function boundedProbeOption(value: number | undefined, fallback: number, maximum: number): number {
   if (!Number.isInteger(value) || value === undefined || value < 1) return fallback;
   return Math.min(value, maximum);

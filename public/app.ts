@@ -185,6 +185,7 @@ import {
   retainedStaleMachines,
   TailnetPeerRegistry,
   isStableMachineIdentity,
+  installationIdFromMachineIdentity,
   probeTailnetCandidates,
 } from "../src/tailnet-peer-registry";
 import type {
@@ -1247,7 +1248,11 @@ const focusUi = createAssistantView({
   terminalTarget: (target, reason) => assistantPane.setTarget(target, reason),
   terminalSessionAvailable: target => !!target.sessionId && state.lastSessionGroups.some(g => g.online && (g.machine.url || "") === target.machine
     && g.sessions.some(s => isFocusAssistantSession(s) && s.name === target.session && s.identity?.wolfpackSessionId === target.sessionId)),
-  homeMachine: id => { const peer = tailnetPeers.entries().find(p => p.identity?.endsWith(":" + id)); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
+  homeMachine: id => { const peer = tailnetPeers.entries().find(p => installationIdFromMachineIdentity(p.identity) === id); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },
+  homeMachines: () => tailnetPeers.entries().flatMap(peer => {
+    const id = installationIdFromMachineIdentity(peer.identity);
+    return id ? [{ id, name: peer.displayName, online: peer.status === "ready" }] : [];
+  }),
   localMachineName: () => state.selfName || "this machine",
   // Pinned helpers can need attention, but their routine idle/done turns are not next actions.
   sessions: () => state.lastSessionGroups.filter(g => g.online).flatMap(g => withoutFocusAssistant(g.sessions).filter(s => s.pinned !== true || sessionTier(s) === SESSION_CARD_VIEW.NEED || sessionTier(s) === SESSION_CARD_VIEW.FAIL).map(s => ({ id: s.identity?.wolfpackSessionId ?? s.name, name: s.name, state: sessionRuntimeState(s), inputKind: s.runtimeState?.inputKind, changedAt: s.runtimeState?.state === "done" || s.runtimeState?.state === "idle" ? s.runtimeState.stoppedAt ?? s.runtimeState.changedAt : s.runtimeState?.changedAt, stoppedAt: s.runtimeState?.stoppedAt, unseen: s.runtimeState?.unseen, stoppedSequence: s.runtimeState?.stoppedSequence, acknowledgedSequence: s.runtimeState?.acknowledgedSequence, cwd: s.identity?.projectPath, machine: g.machine.name, machineUrl: g.machine.url, lastLine: s.lastLine }))),

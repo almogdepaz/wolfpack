@@ -15,11 +15,18 @@ export class FocusRuntime {
   readonly pins: PinnedSessionService;
   readonly queue: FocusSendQueue;
   readonly routines: FocusRoutines;
+  private settingsChange: Promise<unknown> = Promise.resolve();
+  /** Home moves and async assistant enable/disable must never race. */
+  configure<T>(change: () => T | Promise<T>): Promise<T> {
+    const next = this.settingsChange.then(change, change);
+    this.settingsChange = next.catch(() => undefined);
+    return next;
+  }
   private sampledSessionId?: string;
   private lastVerdict?: { at: number; id: string; verdict: { idle: boolean; needsInput: boolean } | undefined };
   private timer?: ReturnType<typeof setInterval>;
   constructor(private readonly ctx: ServerContext) {
-    this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => ctx.assistantService.pins });
+    this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => ctx.assistantService.pins.filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder) });
     this.queue = new FocusSendQueue(async (id, text) => {
       const { isAllowedSession } = await import("./http.js");
       if (!(await isAllowedSession("assistant", ctx.backend))) throw new Error("assistant session unavailable");
@@ -58,6 +65,7 @@ export class FocusRuntime {
   async status() {
     const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
+    const enabled = service.enabled && this.homeIsLocal();
     const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
     const id = session?.identity?.wolfpackSessionId;
     // Focus is a local document; optional live terminal enrichment must not
@@ -65,7 +73,7 @@ export class FocusRuntime {
     let unavailable = this.ctx.supervisor?.isBrokerReady() === false
       || (session?.runtimeState.authority === AGENT_STATUS_AUTHORITY.BROKER && session.runtimeState.state === AGENT_STATUS_STATE.UNKNOWN);
     let verdict: { idle: boolean; needsInput: boolean } | undefined;
-    if (id && service.enabled && !unavailable) {
+    if (id && enabled && !unavailable) {
       try { verdict = await this.verdict(id); }
       catch (error) {
         unavailable = true;
@@ -75,11 +83,11 @@ export class FocusRuntime {
     if (unavailable) this.lastVerdict = undefined;
     // A harness dialog (pi's trust / login / resume selects) has no semantic status and reads as idle from the
     // screen fallback; the harness verdict is what the user needs to see, with the terminal as the action.
-    const state = unavailable ? AGENT_STATUS_STATE.UNKNOWN : verdict?.needsInput ? AGENT_STATUS_STATE.NEEDS_INPUT : session?.runtimeState.state ?? (service.enabled ? "starting" : "off");
-    return { enabled: service.enabled, folder: service.folder, session: unavailable ? undefined : session?.name, sessionId: unavailable ? undefined : id,
+    const state = unavailable ? AGENT_STATUS_STATE.UNKNOWN : verdict?.needsInput ? AGENT_STATUS_STATE.NEEDS_INPUT : session?.runtimeState.state ?? (enabled ? "starting" : "off");
+    return { enabled, folder: service.folder, session: unavailable ? undefined : session?.name, sessionId: unavailable ? undefined : id,
       ...(unavailable && { unavailableReason: "sessions unavailable; reconnecting to the terminal broker" }),
       state, idle: verdict?.idle ?? false, queued: this.queue.size,
-      error: service.enabled ? this.queue.error ?? this.pins.errors.assistant : undefined };
+      error: enabled ? this.queue.error ?? this.pins.errors.assistant : undefined };
   }
   /** Every dashboard polls `/api/focus`; one screen sample serves them for a few seconds, per incarnation (a relaunch resamples). */
   private async verdict(id: string): Promise<{ idle: boolean; needsInput: boolean } | undefined> {
@@ -98,6 +106,7 @@ export class FocusRuntime {
   private async sample(): Promise<{ id: string; idle: boolean; needsInput: boolean; token: string } | undefined> {
     const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
+    if (!service.enabled || !this.homeIsLocal()) return undefined;
     const session = (await observeDashboardSessions(this.ctx)).find(s => s.name === "assistant" && s.identity?.projectPath === service.folder);
     if (!session?.identity?.wolfpackSessionId) return undefined;
     const fact = (await this.ctx.backend.listSessionFacts()).find(f => f.alive && f.identity?.wolfpackSessionId === session.identity?.wolfpackSessionId);

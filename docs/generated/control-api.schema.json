@@ -1570,6 +1570,63 @@
         "503 TaskApiErrorEnvelope"
       ]
     },
+    "configureFocusHome": {
+      "route": "POST /api/focus/home",
+      "stable": true,
+      "auth": "jwt-when-configured",
+      "request": {
+        "$id": "wolfpack:control-api:http:configureFocusHome:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "configureFocusHome request",
+        "type": "object",
+        "properties": {
+          "home": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9_-]{1,128}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "home"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:configureFocusHome:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "configureFocusHome response",
+        "type": "object",
+        "properties": {
+          "home": {
+            "type": "string"
+          },
+          "installationId": {
+            "type": "string"
+          },
+          "local": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "home",
+          "installationId",
+          "local"
+        ],
+        "additionalProperties": false,
+        "description": "Changes only this machine's focus home, live. Disable its assistant before moving away; moving here leaves the assistant off."
+      },
+      "errors": [
+        "400 ErrorEnvelope",
+        "409 ErrorEnvelope",
+        "503 ErrorEnvelope"
+      ]
+    },
     "configureFocusAssistant": {
       "route": "POST /api/focus/assistant",
       "stable": true,

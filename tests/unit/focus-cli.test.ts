@@ -56,6 +56,13 @@ test("focus home writes or clears focus.home in the configured config and keeps 
     expect(await focusHomeCommand({ json: false, home: "home-id" }, io)).toEqual({ home: "home-id", local: false, changed: true });
     expect(config()).toEqual({ devDir: "/dev", port: 18790, pinnedSessions: [], futureKey: { keep: true }, focus: { home: "home-id" } });
     expect(statSync(path).mode & 0o777).toBe(0o600);
+    const child = Bun.spawnSync([process.execPath, "src/cli/index.ts", "focus", "home", "other-home"], {
+      cwd: process.cwd(), env: { ...process.env, WOLFPACK_DIR: dir, WOLFPACK_TEST: "1", NO_COLOR: "1" }, stdout: "pipe", stderr: "pipe",
+    });
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout.toString()).toContain("restart wolfpack on this machine to apply"); // CLI is disk-only, unlike Settings.
+    expect(child.stderr.toString()).toBe("");
+    await focusHomeCommand({ home: "home-id" }, io);
     expect(await focusHomeCommand({ json: false }, io)).toEqual({ home: "home-id", local: false, changed: false });
     expect(await focusHomeCommand({ json: false, home: null }, io)).toEqual({ home: "self-id", local: true, changed: true });
     expect(config()).toEqual({ devDir: "/dev", port: 18790, pinnedSessions: [], futureKey: { keep: true } });

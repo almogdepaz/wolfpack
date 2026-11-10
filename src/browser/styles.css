@@ -2403,9 +2403,10 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
 .notification-setting-status { min-height: 18px; margin: 0 0 8px 48px; font-size: 12px; line-height: 1.45; color: var(--text-dim); }
 .quiet-alert-setting { margin: 8px 0 6px 48px; }
 .quiet-alert-setting-help { margin: 0 0 10px; color: var(--text-dim); font-size: 12px; line-height: 1.45; }
-.quiet-alert-setting .settings-toggle, .assistant-timing .settings-toggle, .task-worker-extension-setting .settings-toggle { justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-.quiet-alert-setting select, .quiet-alert-setting input, .assistant-timing input, .task-worker-extension-setting select { max-width: 290px; min-width: 0; min-height: 36px; padding: 6px 8px; color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); font: inherit; }
+.quiet-alert-setting .settings-toggle, .assistant-home .settings-toggle, .assistant-timing .settings-toggle, .task-worker-extension-setting .settings-toggle { justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.quiet-alert-setting select, .quiet-alert-setting input, .assistant-home select, .assistant-timing input, .task-worker-extension-setting select { max-width: 290px; min-width: 0; min-height: 36px; padding: 6px 8px; color: var(--text-primary); background: var(--bg-elevated); border: 1px solid var(--border-hover); border-radius: var(--radius-sm); font: inherit; }
 .quiet-alert-setting input, .assistant-timing input { width: 82px; }
+.assistant-home select { min-height: 44px; max-width: 100%; }
 .assistant-timing { max-width: 480px; margin-top: 12px; }
 .assistant-setting-state { margin: 0 0 8px; color: var(--text-secondary); font-size: 13px; }
 .assistant-setting-help { margin: 0 0 8px; color: var(--text-dim); font-size: 12px; line-height: 1.45; }
@@ -2684,10 +2685,12 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
   .quiet-alert-setting,
   .task-worker-extension-setting { margin-left: 0; }
   .quiet-alert-setting .settings-toggle,
+  .assistant-home .settings-toggle,
   .assistant-timing .settings-toggle,
   .task-worker-extension-setting .settings-toggle { flex-direction: column; align-items: stretch; gap: 8px; padding-block: 10px; }
   .quiet-alert-setting select,
   .quiet-alert-setting input,
+  .assistant-home select,
   .assistant-timing input,
   .task-worker-extension-setting select { max-width: 100%; width: 100%; min-height: 44px; font-size: 16px; }
   .settings-section-nav a,
