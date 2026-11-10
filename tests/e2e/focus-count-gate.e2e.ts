@@ -49,8 +49,12 @@ for (const [state, inputKind, unseen, label, verb] of [
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText(`${count} next${count ? ":" : ""}`);
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(count);
-  await expect(block.locator(":scope > small").last()).toContainText(`${count} next`);
+  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText(`${count} next`);
   if (label) await expect(block.getByRole("button", { name: `${verb} prompt-project ${label}`, exact: true })).toHaveText(`${verb} ›`);
+  if (info.project.name !== "desktop") {
+    const expand = block.getByRole("button", { name: /Expand assistant/ });
+    if (await expand.count()) await expand.tap();
+  }
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-next > li")).toHaveCount(count);

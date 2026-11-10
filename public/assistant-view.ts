@@ -5,6 +5,7 @@ import { emptyFocus, isFocusDocument, type FocusDocument, type FocusIntention, t
 import type { AssistantTiming } from "../src/focus-scheduler";
 import type { AssistantTerminalTarget } from "./assistant-terminal";
 import { showAppDialog } from "./app-dialog";
+import { createFocusMobileDisclosure } from "./focus-mobile-disclosure";
 import { isRequestTimeout } from "./fetch-timeout";
 import { isFocusHomeIdentity, type FocusHomeIdentity } from "../src/focus-home-contract";
 import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../src/focus-context";
@@ -71,6 +72,8 @@ export function createAssistantView(deps: {
   let busy = false;
   let opened = false;
   let showAllNext = false;
+  const dashboardDisclosure = createFocusMobileDisclosure();
+  let dashboardAttention = false;
   const pageNextCap = () => showAllNext ? Infinity : 5;
   let wasEnabled = false;
   let sidebarOwnsChooser = false;
@@ -440,10 +443,14 @@ export function createAssistantView(deps: {
       // The visible content (name, status, next) is the accessible name: an aria-label would hide what is shown (axe label-content-name-mismatch).
       tile.removeAttribute("aria-label");
     }
+    const needsYouCount = sessions().filter(session => session.state === "needs-input").length;
+    dashboardAttention = needsYouCount > 0 || sessions().some(session => session.state === "failed") || state === "needs you" || state === "failed" || !!r?.surfaced;
+    const dashboardExpanded = isDesktop() || dashboardDisclosure.expanded(dashboardAttention);
     const block = document.getElementById("dashboard-focus");
-    if (block) block.hidden = !enabled;
+    if (block) { block.hidden = !enabled; block.dataset.mobileCollapsed = String(!dashboardExpanded); }
+    const disclosure = `<button type="button" class="focus-mobile-toggle" data-focus-action="toggle-dashboard" data-focus-key="action:toggle-dashboard" aria-controls="dashboard-focus-details" aria-expanded="${dashboardExpanded}" aria-label="${dashboardExpanded ? "Collapse" : "Expand"} assistant ${escAttr(state)} ${needsYouCount} need you"><b>assistant</b> <span class="focus-title">${esc(state)}</span> <span>${needsYouCount} need you</span><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>`;
     const attn = state === "needs you" ? `<button type="button" class="focus-attn" data-focus-action="talk" data-focus-key="action:attn">${dot(state)} ${esc(info)} ›</button>` : "";
-    replace("dashboard-focus", !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`);
+    replace("dashboard-focus", !enabled ? "" : `${disclosure}<div id="dashboard-focus-details" class="focus-dashboard-body"${dashboardExpanded ? "" : ' hidden=""'}><div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml(3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}</div>`);
     replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml(pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
@@ -667,6 +674,10 @@ export function createAssistantView(deps: {
       const target = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
       if (!target) return;
       const action = target.dataset.focusAction;
+      if (action === "toggle-dashboard") {
+        if (!isDesktop()) { dashboardDisclosure.toggle(dashboardAttention); render(); }
+        return;
+      }
       if (action === "view") deps.show("assistant");
       if (action === "settings") deps.show("settings");
       if (action === "more-next") {

@@ -1,4 +1,7 @@
 import { test, expect } from "@playwright/test";
+import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
+// Row-content checks use an explicitly expanded dashboard; disclosure defaults have their own coverage.
+test.beforeEach(async ({ page }) => { await page.addInitScript(key => localStorage.setItem(key, "1"), FOCUS_MOBILE_EXPANDED_KEY); });
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startTestServer, type TestServer } from "./helpers";
@@ -200,7 +203,7 @@ test("counts: validated needs-you population and uncapped next totals agree", as
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="fail"] .n')).toHaveAttribute("data-count", "1");
   await expect(page.locator("#assistant-content .focus-next")).not.toContainText("count-6");
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("8 next:");
-  await expect(page.locator("#dashboard-focus > small").last()).toContainText("8 next");
+  await expect(page.locator("#dashboard-focus > .focus-dashboard-body > small").last()).toContainText("8 next");
   await expect(page.locator("#dashboard-focus .focus-next > li")).toHaveCount(3);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 8");
@@ -232,7 +235,7 @@ test("counts: sessions claimed only by done intentions fall through to unlinked 
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 next:");
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(3);
-  await expect(block.locator(":scope > small").last()).toContainText("3 next");
+  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText("3 next");
   for (const name of ["prompt-project", "blocked-explicit", "blocked-unlinked"]) await expect(block.getByRole("button", { name: `answer ${name} question`, exact: true })).toBeVisible();
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   await expect(page.locator("#assistant-content .focus-next > li")).toHaveCount(3);

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { writeFileSync } from "node:fs";
+import AxeBuilder from "@axe-core/playwright";
 import { startTestServer, type TestServer } from "./helpers";
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
@@ -7,6 +8,7 @@ test.afterAll(async () => { await server?.close(); });
 const peerOrigin = "https://scroll-peer.example.ts.net";
 type SessionFixture = { name: string; identity: Record<string, unknown>; runtimeState: Record<string, unknown>; [key: string]: unknown };
 type TouchSample = { moves: number; cancelled: number; trusted: number };
+declare global { interface Window { focusMobileCollapseTouch?: TouchSample } }
 
 async function realisticFocus(page: Page, needsInput = true) {
   await page.route("https://**", route => route.abort());
@@ -41,17 +43,17 @@ async function realisticFocus(page: Page, needsInput = true) {
     await route.fulfill({ response, json: body });
   });
   await page.addInitScript(() => {
-    const instrumented = window as Window & { focusTouch: TouchSample };
-    instrumented.focusTouch = { moves: 0, cancelled: 0, trusted: 0 };
+    window.focusMobileCollapseTouch = { moves: 0, cancelled: 0, trusted: 0 };
     document.addEventListener("touchmove", event => {
-      const sample = instrumented.focusTouch; sample.moves++; if (event.defaultPrevented) sample.cancelled++; if (event.isTrusted) sample.trusted++;
+      const sample = window.focusMobileCollapseTouch;
+      if (!sample) throw new Error("touch observer not initialized"); sample.moves++; if (event.defaultPrevented) sample.cancelled++; if (event.isTrusted) sample.trusted++;
     }, { passive: true });
   });
 }
 async function ready(page: Page) {
   await page.goto(server.baseUrl);
   await expect.poll(() => page.locator("#session-list .card").count()).toBeGreaterThanOrEqual(32);
-  await expect(page.locator("#dashboard-focus .focus-next > li")).toHaveCount(3);
+  await expect(page.locator("#dashboard-focus")).toBeVisible();
 }
 async function touchScroll(page: Page, startY?: number) {
   const viewport = page.viewportSize()!;
@@ -68,7 +70,9 @@ async function touchScroll(page: Page, startY?: number) {
 async function metrics(page: Page) {
   return page.evaluate(() => {
     const measure = (id: string) => { const el = document.getElementById(id)!; const r = el.getBoundingClientRect(); const css = getComputedStyle(el); return { client: el.clientHeight, scroll: el.scrollHeight, top: r.top, bottom: r.bottom, height: r.height, scrollTop: el.scrollTop, overflow: css.overflowY, position: css.position, flex: css.flex }; };
-    return { viewport: innerHeight, banner: measure("dashboard-focus"), page: measure("sessions-view"), list: measure("session-list"), controls: measure("session-dashboard-controls"), canvases: document.querySelectorAll("#sessions-view canvas").length, touch: (window as Window & { focusTouch: TouchSample }).focusTouch };
+    const touch = window.focusMobileCollapseTouch;
+    if (!touch) throw new Error("touch observer not initialized");
+    return { viewport: innerHeight, banner: measure("dashboard-focus"), page: measure("sessions-view"), list: measure("session-list"), controls: measure("session-dashboard-controls"), canvases: document.querySelectorAll("#sessions-view canvas").length, touch };
   });
 }
 async function touchToLastCard(page: Page) {
@@ -80,6 +84,57 @@ async function touchToLastCard(page: Page) {
   }
   await expect(last).toBeInViewport({ ratio: .9 });
 }
+
+test("phone disclosure keeps its choice across reload, shows attention, and has a 44px target", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "mobile disclosure");
+  await realisticFocus(page); await ready(page);
+  const toggle = page.getByRole("button", { name: /Collapse assistant/ });
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await expect(toggle).toContainText("6 need you");
+  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  await toggle.tap();
+  const expand = page.getByRole("button", { name: /Expand assistant/ });
+  await expect(expand).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator("#dashboard-focus-details")).toBeHidden();
+  expect((await page.locator("#dashboard-focus").boundingBox())!.height).toBeLessThanOrEqual(48);
+  await page.screenshot({ path: info.outputPath(`collapsed-${page.viewportSize()!.width}.png`) });
+  await page.reload();
+  await expect(expand).toHaveAttribute("aria-expanded", "false");
+  await expand.tap();
+  await expect(page.locator("#dashboard-focus-details")).toBeVisible();
+  await page.screenshot({ path: info.outputPath(`expanded-${page.viewportSize()!.width}.png`) });
+  await page.reload();
+  await expect(page.getByRole("button", { name: /Collapse assistant/ })).toHaveAttribute("aria-expanded", "true");
+  expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
+});
+
+test("quiet phones default collapsed; desktop keeps the full banner without a toggle", async ({ page }, info) => {
+  await realisticFocus(page, false); await ready(page);
+  if (info.project.name === "desktop") {
+    await expect(page.getByRole("button", { name: /Expand assistant|Collapse assistant/ })).toHaveCount(0);
+    await expect(page.locator("#dashboard-focus .focus-header")).toBeVisible();
+    await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true })).toBeVisible();
+    writeFileSync(info.outputPath("desktop-geometry.json"), JSON.stringify(await metrics(page), null, 2));
+    await page.screenshot({ path: info.outputPath("desktop-unchanged.png") });
+  } else {
+    await expect(page.getByRole("button", { name: /Expand assistant/ })).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("#dashboard-focus-details")).toBeHidden();
+  }
+});
+
+test("phone disclosure works when its storage access throws", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "mobile preference");
+  await page.addInitScript(() => {
+    const get = Storage.prototype.getItem, set = Storage.prototype.setItem;
+    Storage.prototype.getItem = function(key) { if (key === "wolfpack-focus-mobile-expanded-v1") throw new Error("blocked"); return get.call(this, key); };
+    Storage.prototype.setItem = function(key, value) { if (key === "wolfpack-focus-mobile-expanded-v1") throw new Error("blocked"); return set.call(this, key, value); };
+  });
+  await realisticFocus(page, false); await ready(page);
+  await page.getByRole("button", { name: /Expand assistant/ }).tap();
+  await expect(page.locator("#dashboard-focus-details")).toBeVisible();
+  await page.getByRole("button", { name: /Collapse assistant/ }).tap();
+  await expect(page.locator("#dashboard-focus-details")).toBeHidden();
+});
 
 test("Sessions touch scroll from the expanded assistant reaches the last session", async ({ page }, info) => {
   test.skip(info.project.name === "desktop", "phone reproduction / touch regression");

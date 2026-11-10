@@ -1,4 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
+import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
+// Row-content checks use an explicitly expanded dashboard; disclosure defaults have their own coverage.
+test.beforeEach(async ({ page }) => { await page.addInitScript(key => localStorage.setItem(key, "1"), FOCUS_MOBILE_EXPANDED_KEY); });
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { startTestServer, openSessionFromUi, toggleSessionGridFromUi, type TestServer } from "./helpers";
@@ -44,8 +47,10 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   const row = page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" });
   await expect(row.locator("summary")).toContainText("test-project stopped · 12m");
   await expect(row.locator("summary")).not.toContainText("needs you");
-  expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(44);
-  expect((await row.boundingBox())!.height).toBeLessThanOrEqual(46);
+  await expect.poll(async () => {
+    const box = await row.boundingBox();
+    return !!box && box.height >= 44 && box.height <= 46;
+  }, { message: "stopped row remains 44–46px tall across renders" }).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await row.locator("summary").click();
   await expect(row.getByText("state", { exact: true }).locator("..").locator("dd")).toHaveText("stopped · 12m");
@@ -79,7 +84,7 @@ test("QA-28: unreviewed done work stays stopped in next, footer and timeline unt
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next")).toContainText("prompt-project stopped");
-  await expect(block.locator(":scope > small").last()).not.toContainText("prompt-project finished");
+  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).not.toContainText("prompt-project finished");
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-done")).not.toContainText("prompt-project");
@@ -88,7 +93,7 @@ test("QA-28: unreviewed done work stays stopped in next, footer and timeline unt
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(view.locator(".focus-done")).toContainText("prompt-project finished");
   await expect(view.getByRole("heading", { name: /done today/ })).toContainText("1 session");
-  await expect(block.locator(":scope > small").last()).toContainText("prompt-project finished");
+  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText("prompt-project finished");
 });
 
 test("the seen 24-hour finished row uses the original stop time, not metadata time", async ({ page }) => {
