@@ -7,6 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, re
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { getMachineDisplayName } from "../../src/machine-display-name.ts";
+import { getInstallationId } from "../../src/tailnet-machine-installation.ts";
 import pkg from "../../package.json";
 import { SESSION_CREATE_ERROR } from "../../src/session-create-contract.ts";
 import {
@@ -3055,6 +3056,9 @@ describe("agent-native top-level session control", () => {
       (session: { sessionId: string }) => session.sessionId === "mock:wolf-1",
     );
     expect(listed).toEqual({
+      machine: getInstallationId(),
+      lastLine: "",
+      lastLineTrust: "untrusted-data",
       runtime: {
         changedAt: null,
         pinned: false,
@@ -3075,7 +3079,7 @@ describe("agent-native top-level session control", () => {
       harness: "custom",
       terminal: { exists: true, alive: true, status: "ready" },
     });
-    expect(listed).not.toHaveProperty("lastLine");
+    expect(listed).not.toHaveProperty("output");
 
     const status = await get(`/api/session-control/status?session=${selector}`);
     expect(status.status).toBe(200);
