@@ -7,6 +7,7 @@ import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-se
 import { focusLastLine } from "../src/focus-text";
 import { createFocusReceipts, focusSuggestionKey, type FocusSendReceipt } from "./focus-receipts";
 import type { AssistantTerminalTarget } from "./assistant-terminal";
+import { createDayNoteContent } from "./focus-day-note";
 import { showAppDialog } from "./app-dialog";
 import { isRequestTimeout } from "./fetch-timeout";
 import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../src/focus-context";
@@ -582,7 +583,7 @@ export function createAssistantView(deps: {
     const date = doc().daySummary?.date;
     if (!date) return;
     const note = await deps.request<{ markdown: string }>(`/focus/day-note?date=${date}`, undefined, machine);
-    if (await showAppDialog({ title: `Day note ${date}`, message: note.markdown, scroll: true, confirmLabel: "Mark read", cancelLabel: "Close" })) await write({ type: "seen-day-note", at: new Date().toISOString() });
+    if (await showAppDialog({ title: `Day note ${date}`, message: "The assistant's latest write-up.", content: createDayNoteContent(note.markdown), confirmLabel: "Mark read", cancelLabel: "Close" })) await write({ type: "seen-day-note", at: new Date().toISOString() });
   }
   const timingForm = document.getElementById("assistant-timing") as HTMLFormElement | null;
   const timingStatus = (text: string, state: string) => { const el = document.getElementById("assistant-timing-status"); if (el) { el.textContent = text; el.dataset.state = state; } };

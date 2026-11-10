@@ -2932,20 +2932,19 @@ body > header { height: 52px; min-height: 52px; }
 .focus-block .focus-nudge { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .assistant-column .focus-nudge { margin: 16px 0 0; padding: 14px 16px; border: 1px solid var(--hairline); border-left: 2px solid var(--accent); border-radius: var(--r-control); background: var(--surface-2); }
 .focus-nudge.from { color: var(--text-3); }
-.focus-nudge small { font-size: 12px; color: var(--text-3); }
 .focus-next, .focus-today, .focus-done { list-style: none; margin: 0; padding: 0; border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--surface-2); box-shadow: var(--gloss); overflow: hidden; }
 .focus-next > li + li, .focus-today > li + li, .focus-done li + li { border-top: 1px solid var(--hairline); }
 .focus-done li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 12px; font-size: 13px; color: var(--text-3); }
 /* Cards: the summary is the 44px row (text only); the action, checkbox and chips sit beside it in the row grid; the body opens under the title. */
 /* Both lists end their disclosure in the same column before the action edge. */
 /* Short focus-owned variables retain the unchanged stylesheet byte cap. */
-.focus-next, .focus-today { --f-aside: 74px; --f-gap: 10px; }
-.focus-next > li, .focus-today > li { display: grid; grid-template-columns: minmax(0, 1fr) var(--f-aside); align-items: start; column-gap: var(--f-gap); padding: 0 12px; font-size: 13px; color: var(--text-2); }
-.focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--f-chips) 12px var(--f-aside); }
+.focus-next, .focus-today { --aside: 74px; --gap: 10px; }
+.focus-next > li, .focus-today > li { display: grid; grid-template-columns: minmax(0, 1fr) var(--aside); align-items: start; column-gap: var(--gap); padding: 0 12px; font-size: 13px; color: var(--text-2); }
+.focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--f-chips) 12px var(--aside); }
 .focus-next > li:has(> .focus-card:not([open]) > summary:hover), .focus-today > li:has(> .focus-card:not([open]) > summary:hover) { background: var(--surface-3); }
 .focus-next .focus-card, .focus-today .focus-card { min-width: 0; margin: 0; color: inherit; font-size: inherit; grid-row: 1; }
 .focus-next .focus-card[open] { grid-column: 1 / -1; }
-.focus-next .focus-card[open] > summary, .focus-today .focus-card > summary { width: calc(100% - var(--f-aside) - var(--f-gap)); }
+.focus-next .focus-card[open] > summary, .focus-today .focus-card > summary { width: calc(100% - var(--aside) - var(--gap)); }
 .focus-today .focus-card { grid-column: 2 / -1; }
 .focus-today .focus-card > summary { display: grid; grid-template-columns: minmax(0, 1fr) var(--f-chips) 12px; }
 .focus-today .focus-card > summary::after { grid-column: 3; }
@@ -2981,11 +2980,12 @@ details.focus-context-more > summary::before, .assistant-column summary::before 
 details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-next .focus-action { grid-column: 2; grid-row: 1; justify-content: flex-end; min-height: 34px; margin-top: 5px; padding: 0 2px; border: 0; background: none; color: var(--accent); font-size: 12px; font-weight: 500; }
 .focus-block .focus-next { margin: 4px -18px 0; border: 0; border-block: 1px solid var(--hairline); border-radius: 0; background: transparent; box-shadow: none; }
-.focus-block .focus-next + small { margin-top: 12px; }
+.focus-block .focus-next + small, .focus-note h3 { margin-top: 12px; }
 .focus-block .focus-next > li { padding-inline: 18px; }
 .focus-rank { min-width: 14px; color: var(--text-4); font: 12px var(--font-mono); text-align: right; }
 .focus-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: 500; }
-.focus-title small, .focus-for { color: var(--text-3); font-size: 12px; font-weight: 400; }
+.focus-title small, .focus-for, .focus-nudge small { color: var(--text-3); font-size: 12px; font-weight: 400; }
+.focus-note summary { min-height: 44px; }
 .focus-today .focus-for { margin-left: 10px; }
 .focus-for { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Context absorbs contraction before the title's state/kind word; titles can still shrink once context runs out. */
@@ -3094,7 +3094,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-today .focus-title { white-space: normal; overflow-wrap: anywhere; }
   .focus-today .focus-for { display: block; margin: 0; }
   .focus-next .focus-action { min-height: 44px; margin-top: 0; padding-inline: 6px; }
-  .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--f-aside); }
+  .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--aside); }
   .focus-today .focus-check { min-width: 44px; padding: 0; justify-content: center; }
   .focus-today .focus-card > summary { grid-template-columns: minmax(0, 1fr) 12px; }
   .focus-today .focus-card > summary::after { grid-column: 2; }

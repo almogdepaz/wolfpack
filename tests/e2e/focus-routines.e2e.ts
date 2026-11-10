@@ -65,6 +65,9 @@ test("stale, peer not reached and unacked inbox; catch up now sends the catch-up
 });
 
 test("yesterday row opens the day note dialog; mark read hides it on every device", async ({ page }, info) => {
+  // Read after the 03:00 activity-day turn, even when the test runner starts before it.
+  const readingTime = new Date(); readingTime.setHours(12, 0, 0, 0);
+  await page.clock.setFixedTime(readingTime);
   const yesterday = localDay(Date.now() - 864e5);
   const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [{ type: "day-summary", summary: { date: yesterday, done: 4, carried: 2, questions: 1 } }] } })).ok()).toBe(true);
