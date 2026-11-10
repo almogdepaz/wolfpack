@@ -91,7 +91,7 @@ fn srt_unix_socket_bind_explanation_for(
         .unwrap_or_else(|| ".".to_string());
 
     Some(format!(
-        "wolfpack-broker cannot start inside srt: default srt blocks Unix domain socket bind/listen. socket: {}. Run broker startup/perf tests outside srt, use a host broker and let sandboxed clients connect to it, or use a dedicated srt settings file with network.allowUnixSockets including this socket path and filesystem.allowWrite including its parent directory ({}). Do not enable allowAllUnixSockets for default Ralph runs.",
+        "wolfpack-broker cannot start inside srt: default srt blocks Unix domain socket bind/listen. socket: {}. Run broker startup/perf tests outside srt, use a host broker and let sandboxed clients connect to it, or use a dedicated srt settings file with network.allowUnixSockets including this socket path and filesystem.allowWrite including its parent directory ({}).",
         socket_path.display(),
         parent,
     ))
@@ -137,6 +137,7 @@ mod tests {
         assert!(message.contains("network.allowUnixSockets"));
         assert!(message.contains("filesystem.allowWrite"));
         assert!(message.contains("/tmp"));
+        assert!(!message.contains("Ralph"));
     }
 
     #[test]
