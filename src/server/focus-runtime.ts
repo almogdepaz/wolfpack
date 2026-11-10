@@ -26,6 +26,7 @@ export class FocusRuntime {
   private lastVerdict?: { at: number; id: string; verdict: { idle: boolean; needsInput: boolean } | undefined };
   private timer?: ReturnType<typeof setInterval>;
   private tickFlight?: Promise<void>;
+  private lifetime = 0;
   constructor(private readonly ctx: ServerContext) {
     this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => ctx.assistantService.pins.filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder), prepareLaunch: pin => ctx.assistantService.prepareLaunch(pin) });
     this.queue = new FocusSendQueue(async (id, text) => {
@@ -56,13 +57,14 @@ export class FocusRuntime {
   homeIsLocal(): boolean { const id = getInstallationId(); return (this.ctx.config?.focus?.home ?? id) === id; }
   start(): void {
     if (this.timer) return;
+    this.lifetime++;
     try { this.ctx.assistantService.refreshSkill(); } catch (error) { log.warn("assistant skill refresh failed", { error: errMsg(error) }); }
     this.pins.start();
     this.routines.start();
     this.timer = setInterval(() => { void this.tick().catch(error => log.warn("assistant runtime unavailable", { error: errMsg(error) })); }, 1000);
     this.timer.unref();
   }
-  stop(): void { this.pins.stop(); this.routines.stop(); clearInterval(this.timer); this.timer = undefined; this.queue.clear("server stopped; queue discarded"); }
+  stop(): void { this.lifetime++; this.pins.stop(); this.routines.stop(); clearInterval(this.timer); this.timer = undefined; this.queue.clear("server stopped; queue discarded"); }
   async status() {
     const { observeDashboardSessions } = await import("./session-observation.js");
     const service = this.ctx.assistantService;
@@ -100,25 +102,31 @@ export class FocusRuntime {
     return this.lastVerdict.verdict;
   }
   tick(): Promise<void> {
+    const lifetime = this.lifetime;
+    const active = () => !!this.timer && lifetime === this.lifetime;
     return this.tickFlight ??= this.configure(async () => {
+      if (lifetime !== this.lifetime) return;
       const sample = this.queue.busy ? await this.sample() : undefined;
+      if (lifetime !== this.lifetime) return;
       if (sample) await this.queue.tick(sample);
       const service = this.ctx.assistantService;
-      if (!this.timer || !service.pins.some(pin => service.isManagedPin(pin)) || !this.homeIsLocal() || this.queue.busy || !service.conversationChanged()) return;
+      if (!active() || !service.pins.some(pin => service.isManagedPin(pin)) || !this.homeIsLocal() || this.queue.busy || !service.conversationChanged()) return;
       // Share the routine lock, not its cached status: a pull might still be about to publish an inbox.
       await this.routines.withNoInbox(async () => {
         const current = await this.sample();
-        if (!this.timer || !current?.idle || current.needsInput || this.queue.busy || !service.enabled || !this.homeIsLocal()) return;
+        if (!active() || !current?.idle || current.needsInput || this.queue.busy || !service.enabled || !this.homeIsLocal()) return;
         // Recheck incarnation and program token after asynchronous sampling; never kill by reusable name.
         const facts = await this.ctx.backend.listSessionFacts();
         const fact = facts.find(f => f.alive && f.identity?.wolfpackSessionId === current.id);
         const state = programStatusSource(fact?.programStatus, { observedAt: new Date().toISOString() });
-        if (!this.timer || !fact || fact.programStatus?.updatedAtMs !== current.programAt
+        if (!active() || !fact || fact.programStatus?.updatedAtMs !== current.programAt
           || (fact.programStatus && (!state || !piHarness.isIdle(state)))
           || (current.programAt === undefined && (!current.fallback || current.fallback.outputSequence === undefined
             || fact.outputSequence !== current.fallback.outputSequence || !genericHarness.isIdle(current.fallback)))
           || this.queue.busy || !service.enabled || !this.homeIsLocal()) return;
         await this.ctx.backend.killSessionById(current.id);
+        // stop() revokes this continuation even if the same runtime has since started again.
+        if (!active()) return;
         this.pins.reset("assistant");
         await this.pins.tick();
         this.lastVerdict = undefined;

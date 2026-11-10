@@ -6,6 +6,7 @@ import { AssistantService } from "../../src/server/assistant-service.ts";
 import { MockBackend } from "../../src/server/mock-backend.ts";
 import { createServerContext } from "../../src/server/context.ts";
 import { ActivityJournal } from "../../src/server/activity-journal.ts";
+import { __resetSessionObservationForTests } from "../../src/server/session-observation.ts";
 import { emptyCoverage } from "../../src/focus-coverage.ts";
 import { ACTIVITY_KIND } from "../../src/activity-journal.ts";
 import { writePrivateJsonFile } from "../../src/persistence.ts";
@@ -321,7 +322,64 @@ test.each(["unchanged", "advanced", "missing-final", "missing-sample"] as const)
       expect(t.kills).toEqual([]);
       expect(readFileSync(t.transcript, "utf8")).toBe("keep the active turn");
     }
-  } finally { setSystemTime(); t.close(); }
+  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
+});
+
+test("SR-R2: stop during an awaited kill revokes archive/create; a later start can reconcile", async () => {
+  const t = await fixture();
+  let release!: () => void;
+  let arrived!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const killing = new Promise<void>(resolve => { arrived = resolve; });
+  let flight: Promise<void> | undefined;
+  try {
+    writeFileSync(t.transcript, "shutdown owns this conversation");
+    await t.reopen();
+    const kill = t.backend.killSessionById.bind(t.backend);
+    t.backend.killSessionById = async id => { await kill(id); arrived(); await held; };
+    flight = t.ctx.focusRuntime.tick();
+    await Promise.race([killing, flight.then(() => { throw new Error("rotation ended before reaching the held kill"); })]);
+    t.ctx.focusRuntime.stop();
+    const launches = t.launches.length;
+    release();
+    await flight;
+    expect(t.launches).toHaveLength(launches);
+    expect(t.archived()).toEqual([]);
+    expect(readFileSync(t.transcript, "utf8")).toBe("shutdown owns this conversation");
+    t.ctx.focusRuntime.pins.reset("assistant"); // explicit later start, not a crash-backoff timing assertion
+    t.ctx.focusRuntime.start();
+    await t.ctx.focusRuntime.pins.tick();
+    expect(t.launches).toHaveLength(launches + 1);
+    expect(t.archived()).toEqual(["shutdown owns this conversation"]);
+  } finally { release(); await flight; t.close(); }
+});
+
+test("SR-R2: a new runtime lifetime cannot revive an old held rotation or clear new-start errors", async () => {
+  const t = await fixture();
+  let release!: () => void;
+  let arrived!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const killing = new Promise<void>(resolve => { arrived = resolve; });
+  let flight: Promise<void> | undefined;
+  try {
+    writeFileSync(t.transcript, "old lifetime");
+    await t.reopen();
+    const kill = t.backend.killSessionById.bind(t.backend);
+    t.backend.killSessionById = async id => { await kill(id); arrived(); await held; };
+    flight = t.ctx.focusRuntime.tick();
+    await Promise.race([killing, flight.then(() => { throw new Error("rotation ended before reaching the held kill"); })]);
+    t.ctx.focusRuntime.stop();
+    const create = t.backend.createSession.bind(t.backend);
+    t.backend.createSession = async () => { throw new Error("new lifetime startup failure"); };
+    t.ctx.focusRuntime.pins.reset("assistant");
+    t.ctx.focusRuntime.start();
+    await t.ctx.focusRuntime.pins.tick();
+    t.backend.createSession = create;
+    release();
+    await flight;
+    expect(await t.backend.list()).toEqual([]);
+    expect(t.ctx.focusRuntime.pins.errors.assistant).toBe("new lifetime startup failure");
+  } finally { release(); await flight; t.close(); }
 });
 
 test("a configured non-Pi assistant is not rotated by the managed skill protocol", async () => {
