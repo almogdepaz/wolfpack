@@ -109,6 +109,7 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
       // A child event arrived during the current children read.
       let invalidated = false;
       let lastChildren: readonly ChildWaitChild[] = [];
+      const deadline = performance.now() + request.timeoutMs;
       const result = (outcome: ChildWaitOutcome): ChildWaitResult => {
         const pending = request.mode === CHILD_WAIT_MODE.ALL ? pendingChildren(lastChildren) : [];
         return {
@@ -153,7 +154,15 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
             // An event during the read can name a child the read missed: the
             // read is stale for every outcome, so read again before deciding.
             // A re-check tick is no such evidence and keeps the read.
-            if (invalidated) { again = true; continue; }
+            if (invalidated) {
+              // A reader that emits on every read must not starve the timeout
+              // or an abort: check the deadline, then yield to the task queue.
+              if (performance.now() >= deadline) { onTimeout(); return; }
+              await new Promise<void>(resolve => setImmediate(resolve));
+              if (done) return;
+              again = true;
+              continue;
+            }
             // Read the inbox after the await: an event during it is not lost.
             const read = childEventsSince(request.parentSessionId, request.since, request.bootId);
             const outcome = decide(request.mode, children, read.events.length > 0);
@@ -166,15 +175,16 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
         }
       };
       const onAbort = () => finish(undefined);
+      function onTimeout(): void {
+        finish(result(request.mode === CHILD_WAIT_MODE.ANY && hasEvents() ? CHILD_WAIT_OUTCOME.EVENTS : CHILD_WAIT_OUTCOME.TIMEOUT));
+      }
       // Subscribe before the first check, so an event during it triggers another.
       const unsubscribe = onChildEvent(({ childEvent }) => {
         if (childEvent.parentSessionId !== request.parentSessionId) return;
         invalidated = true;
         void check();
       });
-      const timer = setTimeout(() => finish(result(
-        request.mode === CHILD_WAIT_MODE.ANY && hasEvents() ? CHILD_WAIT_OUTCOME.EVENTS : CHILD_WAIT_OUTCOME.TIMEOUT,
-      )), request.timeoutMs);
+      const timer = setTimeout(onTimeout, request.timeoutMs);
       // A child can settle without an event (for example working → idle without a task).
       const recheck = request.mode === CHILD_WAIT_MODE.ALL
         ? setInterval(() => void check(), request.recheckMs ?? CHILD_WAIT_LIMITS.RECHECK_MS)
