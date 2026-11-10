@@ -38,7 +38,7 @@ async function fixture(beforeInspect?: (selector: string) => Promise<void>) {
 test.skipIf(!source)("configured fresh generation replaces an empty predecessor; same generation and stale endpoint authority stay isolated", async () => {
   const f = await fixture();
   try {
-    const first = await f.open("a"), old = first.endpoint; await first.close();
+    const first = await f.open("a"), old = first.endpoint;
     const next = await f.open("a"); expect(next.endpoint).not.toEqual(old);
     f.clock.now += 61_000;
     await next.connect(); expect(next.endpoint).not.toEqual(old);
@@ -53,6 +53,11 @@ test.skipIf(!source)("configured fresh generation replaces an empty predecessor;
     await next.receive();
     expect(f.requests.filter(item => item.operation === "receive").at(-1).cursor).toBe("0");
     expect(next.listTasks()).toHaveLength(0);
+    // No predecessor tombstone exists in this zero-reference case. A normal
+    // delayed g1 renewal must not replace g2 with another fresh endpoint.
+    expect(await first.connect().then(() => undefined, (error: unknown) => error)).toMatchObject({ code: "RELAY_RESET" });
+    await next.connect(); expect(next.endpoint).toEqual(current);
+    expect(await f.gateway.request({ ...f.bound("a", current), operation: "health" })).toMatchObject({ ok: true });
   } finally { await f.close(); }
 });
 
