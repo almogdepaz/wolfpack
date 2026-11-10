@@ -495,6 +495,8 @@ export async function setup(options: SetupOptions = {}) {
     }),
     ...(displayName && { displayName }),
     ...(previousConfig?.claudeTaskIntegration === true && { claudeTaskIntegration: true }),
+    ...(previousConfig?.focus && { focus: previousConfig.focus }),
+    ...(previousConfig?.pinnedSessions !== undefined && { pinnedSessions: previousConfig.pinnedSessions }),
   };
   saveConfig(config);
   // The plist/unit embeds config values, while the remote-origin policy is

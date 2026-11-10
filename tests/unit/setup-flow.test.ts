@@ -3,6 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pkg from "../../package.json";
+import type { Config } from "../../src/config.ts";
 
 const root = process.cwd();
 const temporaryHomes: string[] = [];
@@ -41,6 +42,8 @@ interface SetupFlowFixture {
     readonly tailscaleHostname?: string;
     readonly displayName?: string;
     readonly claudeTaskIntegration?: boolean;
+    readonly focus?: Config["focus"];
+    readonly pinnedSessions?: Config["pinnedSessions"];
   };
 }
 
@@ -336,6 +339,32 @@ describe("first-run setup", () => {
     const result = runSetupFlow(home, { existingConfig, serviceInstalled: true, serviceRunning: true });
     expectSuccessfulSetup(result);
     expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual(existingConfig);
+  });
+
+  test.each([
+    ["non-interactive", undefined, true, true],
+    ["Claude enable", { interactive: true, answers: { "Enable the Claude task integration": "y", "Use sudo": "y" }, enableResult: { status: "enabled" } }, false, true],
+    ["Claude disable", { interactive: true, answers: { "Disable it": "y" } }, true, false],
+    ["Claude verification failure", { interactive: true, answers: { "Disable it": "n", "Use sudo": "y" }, enableResult: { status: "failed", reason: "fixture verification failure", retry: "wolfpack setup" } }, true, false],
+    ["Claude opt-in declined", { interactive: true, answers: { "Enable the Claude task integration": "n" } }, false, false],
+  ] as const)("preserves focus home and the assistant pin through %s setup", (_name, claude, enabledBefore, enabledAfter) => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const existingConfig: Config = {
+      devDir: home, port: 19863,
+      focus: { home: "remote-home" },
+      pinnedSessions: [{ name: "assistant", cwd: home, command: ["pi"], harness: "pi" }],
+      ...(enabledBefore && { claudeTaskIntegration: true }),
+    };
+    const result = runSetupFlow(home, {
+      existingConfig, providerCommands: ["claude"], claude,
+      serviceInstalled: true, serviceRunning: true,
+    });
+    expectSuccessfulSetup(result);
+    const saved = JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"));
+    expect(saved.focus).toEqual(existingConfig.focus);
+    expect(saved.pinnedSessions).toEqual(existingConfig.pinnedSessions);
+    expect(saved.claudeTaskIntegration).toBe(enabledAfter ? true : undefined);
   });
 
   test("non-interactive setup only points claude users at the interactive opt-in", () => {
