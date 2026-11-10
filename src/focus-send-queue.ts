@@ -19,7 +19,7 @@ export class FocusSendQueue {
   private outstanding?: Outstanding;
   private ticking = false;
   error?: string;
-  constructor(private readonly send: (id: string, text: string) => Promise<SendDelivery>, private readonly now: () => number = Date.now) {}
+  constructor(private readonly send: (id: string, text: string, origin: SendOrigin) => Promise<SendDelivery>, private readonly now: () => number = Date.now) {}
   get size(): number { return this.pending.length; }
   /** Items waiting, or a sent turn not yet observed to finish. */
   get busy(): boolean { return this.pending.length > 0 || this.outstanding !== undefined; }
@@ -52,7 +52,7 @@ export class FocusSendQueue {
       const slot: Outstanding = { id: item.id, token: sample.token, sawBusy: false };
       this.outstanding = slot;
       try {
-        const delivery = await this.send(item.id, item.text);
+        const delivery = await this.send(item.id, item.text, item.origin);
         if (delivery === "submitted") { item.settled?.("sent"); return; }
         // Written but not seen submitted within the window (a slow first status change, pi's usual case): the line
         // most likely arrived, so this is not a failure and nothing is reported as one. The routine counts it as a

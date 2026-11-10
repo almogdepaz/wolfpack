@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { AGENT_KIND } from "../agent-kind.js";
 import { loadConfig, saveConfig, type Config } from "../config.js";
@@ -8,6 +8,8 @@ import { readValidatedJsonFile, writePrivateFile, writePrivateJsonFile } from ".
 import type { PinnedSession } from "../pinned-sessions.js";
 import { detectProviderReadiness, type ProviderReadiness } from "../provider-readiness.js";
 import focusSkill from "../../skills/wolfpack-focus/SKILL.md" with { type: "text" };
+
+interface ConversationState { digest: string; readSkillPending?: boolean; generation?: string }
 
 export class AssistantService {
   readonly root: string;
@@ -83,20 +85,41 @@ export class AssistantService {
   private seededDigest(): string {
     return createHash("sha256").update(JSON.stringify([readFileSync(this.skillPath, "utf8"), readFileSync(join(this.folder, "AGENTS.md"), "utf8")])).digest("hex");
   }
+  private readConversation(): ConversationState | null {
+    return readValidatedJsonFile(this.conversationPath, "assistant conversation", (v): v is ConversationState => {
+      if (!v || typeof v !== "object" || !("digest" in v) || typeof v.digest !== "string" || !/^[a-f0-9]{64}$/.test(v.digest)) return false;
+      const pending = "readSkillPending" in v ? v.readSkillPending : undefined;
+      const generation = "generation" in v ? v.generation : undefined;
+      return (pending === undefined || typeof pending === "boolean") && (generation === undefined || typeof generation === "string")
+        && (pending !== true || typeof generation === "string");
+    });
+  }
   conversationChanged(): boolean {
-    const record = readValidatedJsonFile(this.conversationPath, "assistant conversation", (v): v is { digest: string } =>
-      !!v && typeof v === "object" && "digest" in v && typeof v.digest === "string" && /^[a-f0-9]{64}$/.test(v.digest));
     // An unrecorded legacy conversation cannot prove it loaded the current contract.
-    return record?.digest !== this.seededDigest();
+    return this.readConversation()?.digest !== this.seededDigest();
+  }
+  routinePrompt(text: string): { text: string; generation?: string } {
+    const record = this.readConversation();
+    return record?.readSkillPending ? { text: `Read .pi/skills/wolfpack-focus/SKILL.md first; ${text}`, generation: record.generation } : { text };
+  }
+  routineSent(generation: string | undefined): void {
+    if (generation === undefined) return;
+    const record = this.readConversation();
+    // A late result for a dead incarnation must not consume a new conversation's first-turn instruction.
+    if (record?.generation === generation && record.readSkillPending) writePrivateJsonFile(this.conversationPath, { ...record, readSkillPending: false });
   }
   /** Called only by the serialized pin reconciler after proving there is no live writer. */
   prepareLaunch(pin: PinnedSession): PinnedSession {
     if (!this.isManagedPin(pin)) return pin;
     this.validateConversationPaths();
     // Reseeding may restore bundled bytes; it must not erase evidence that this conversation saw a different seed.
-    const changed = this.conversationChanged();
+    const previous = this.readConversation();
+    const changed = previous?.digest !== this.seededDigest();
     this.refreshSkill();
-    if (changed || this.conversationChanged()) {
+    const digest = this.seededDigest();
+    const reseeded = previous?.digest !== digest;
+    const fresh = changed || reseeded || this.conversationFiles().length === 0;
+    if (changed || reseeded) {
       const files = this.conversationFiles();
       if (files.length) {
         const sessions = join(this.folder, "sessions");
@@ -108,7 +131,8 @@ export class AssistantService {
       }
     }
     // Persist before spawning; a failed archive/state write must never start another writer.
-    writePrivateJsonFile(this.conversationPath, { digest: this.seededDigest() });
+    writePrivateJsonFile(this.conversationPath, { digest, readSkillPending: fresh || previous?.readSkillPending === true,
+      generation: fresh ? randomUUID() : previous?.generation });
     return { ...pin, command: this.command() };
   }
   unpin(name: string): void {

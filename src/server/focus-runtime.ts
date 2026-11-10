@@ -29,11 +29,14 @@ export class FocusRuntime {
   private lifetime = 0;
   constructor(private readonly ctx: ServerContext) {
     this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder), prepareLaunch: pin => ctx.assistantService.prepareLaunch(pin) });
-    this.queue = new FocusSendQueue(async (id, text) => {
+    this.queue = new FocusSendQueue(async (id, text, origin) => {
+      const prompt = origin === "routine" ? ctx.assistantService.routinePrompt(text) : { text };
       const { isAllowedSession } = await import("./http.js");
       if (!(await isAllowedSession("assistant", ctx.backend))) throw new Error("assistant session unavailable");
-      const result = await ctx.backend.sendAndObserveSubmission(id, { text, noEnter: false, ensureSubmitted: true, observeMs: 1500 });
-      return sendDelivery(result.outcome);
+      const result = await ctx.backend.sendAndObserveSubmission(id, { text: prompt.text, noEnter: false, ensureSubmitted: true, observeMs: 1500 });
+      const delivery = sendDelivery(result.outcome);
+      ctx.assistantService.routineSent(prompt.generation);
+      return delivery;
     });
     this.routines = new FocusRoutines({
       folder: ctx.assistantService.folder,
@@ -49,7 +52,7 @@ export class FocusRuntime {
       queueBusy: () => this.queue.busy,
       enqueue: (text, settled) => {
         if (!this.sampledSessionId) throw new Error("assistant is not running");
-        this.queue.enqueue(this.sampledSessionId, `Read .pi/skills/wolfpack-focus/SKILL.md first; ${text}`, settled, "routine");
+        this.queue.enqueue(this.sampledSessionId, text, settled, "routine");
         void this.tick().catch(error => log.warn("assistant runtime unavailable", { error: errMsg(error) }));
       },
     });

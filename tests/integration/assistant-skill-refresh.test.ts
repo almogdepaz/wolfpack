@@ -468,6 +468,80 @@ test.each(["sessions-link", "archive-link", "sessions-file", "archive-file", "fa
   } finally { t.close(); }
 });
 
+test("D1: the first delivered routine alone gets read-first, surviving restarts before and after it", async () => {
+  const t = await fixture();
+  try {
+    writeFileSync(t.transcript, "resumable conversation");
+    await t.reopen("generation one"); // fresh conversation, but no routine sent before server restart
+    t.ctx.activityJournal.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "first", eventType: "updated" });
+    await t.ctx.focusRuntime.routines.tick({ manual: true });
+    await t.ctx.focusRuntime.tick();
+    expect(t.sends[0]).toMatch(/^Read \.pi\/skills\/wolfpack-focus\/SKILL\.md first; process inbox inbox\//);
+    const inbox = JSON.parse(readFileSync(join(t.assistant.folder, "routines.json"), "utf8")).inbox;
+    await t.ctx.focusRuntime.routines.ack(inbox.file);
+    await t.reopen("generation one", true); // keep the same conversation and the consumed persistent flag
+    setSystemTime(new Date(Date.now() + 2000)); // distinct routine filename, not a duplicate ack identity
+    t.state();
+    t.ctx.activityJournal.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "second", eventType: "updated" });
+    await t.ctx.focusRuntime.routines.tick({ manual: true });
+    await t.ctx.focusRuntime.tick();
+    expect(t.sends).toHaveLength(2);
+    expect(t.sends[1]).toStartWith("process inbox inbox/");
+    expect(JSON.parse(readFileSync(t.record, "utf8")).readSkillPending).toBe(false);
+  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
+});
+
+test("D1: enqueuing then discarding an undelivered routine does not consume the first-send flag", async () => {
+  const t = await fixture();
+  try {
+    t.state("working");
+    t.ctx.activityJournal.append({ kind: ACTIVITY_KIND.TASK_UPDATED, taskId: "waiting", eventType: "updated" });
+    await t.ctx.focusRuntime.routines.tick({ manual: true });
+    await t.ctx.focusRuntime.tick();
+    expect(t.sends).toEqual([]);
+    expect(t.ctx.focusRuntime.queue.size).toBe(1);
+    t.ctx.focusRuntime.queue.clear();
+    expect(JSON.parse(readFileSync(t.record, "utf8")).readSkillPending).toBe(true);
+  } finally { t.close(); }
+});
+
+test.each(["not_delivered", "unverified"] as const)("D1: first-turn flag follows actual send outcome (%s)", async outcome => {
+  const t = await fixture();
+  try {
+    t.backend.sendAndObserveSubmission = async () => outcome === "not_delivered"
+      ? { delivery: "not_delivered", outcome, reason: "target_exited", observedMs: 0 }
+      : { delivery: "delivered", outcome, observedMs: 1 };
+    t.ctx.focusRuntime.queue.enqueue("mock:assistant", "process inbox inbox/test.json", undefined, "routine");
+    await t.ctx.focusRuntime.tick();
+    expect(JSON.parse(readFileSync(t.record, "utf8")).readSkillPending).toBe(outcome === "not_delivered");
+  } finally { t.close(); }
+});
+
+test("D1: a late delivered result cannot consume a different conversation generation's pending prefix", async () => {
+  const t = await fixture();
+  let release!: () => void;
+  let arrived!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const sending = new Promise<void>(resolve => { arrived = resolve; });
+  let flight: Promise<void> | undefined;
+  try {
+    writeFileSync(t.transcript, "old conversation");
+    const old = JSON.parse(readFileSync(t.record, "utf8")).generation;
+    t.backend.sendAndObserveSubmission = async () => { arrived(); await held; return { delivery: "delivered", outcome: "submitted", observedMs: 1 }; };
+    t.ctx.focusRuntime.queue.enqueue("mock:assistant", "process inbox inbox/test.json", undefined, "routine");
+    flight = t.ctx.focusRuntime.tick();
+    await sending;
+    t.backend.setSessions([]); // broker replacement while the old result is still in flight
+    writeFileSync(join(t.assistant.folder, "AGENTS.md"), "new generation");
+    t.ctx.focusRuntime.pins.reset("assistant");
+    await t.ctx.focusRuntime.pins.tick();
+    expect(JSON.parse(readFileSync(t.record, "utf8")).generation).not.toBe(old);
+    release();
+    await flight;
+    expect(JSON.parse(readFileSync(t.record, "utf8")).readSkillPending).toBe(true);
+  } finally { release(); await flight; t.close(); }
+});
+
 test("a configured non-Pi assistant is not rotated by the managed skill protocol", async () => {
   const t = await fixture();
   try {
