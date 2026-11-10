@@ -201,12 +201,13 @@ export class VolatileRelayGateway {
         const caller = await this.#caller(value.callerSession);
         const input = { sessionId: caller.sessionId, generation: value.generation,
           protocolVersions: value.protocolVersions, leaseMs: value.leaseMs ?? RELAY_LIMITS.LEASE_MS };
+        const mode = value.epoch === undefined ? "connect" : "renew";
         let registration: RelayRegistration;
-        try { registration = this.#store.register(input, this.#now()); }
+        try { registration = this.#store.register(input, this.#now(), mode); }
         catch (error) {
           if (!(error instanceof MemoryRelayError) || error.code !== "RELAY_CAPACITY" || !this.#recoverable) throw error;
           await this.#reclaimRegistration();
-          registration = this.#store.register(input, this.#now());
+          registration = this.#store.register(input, this.#now(), mode);
         }
         return this.#success({ kind: "connected", endpoint: registration.endpoint, leaseExpiresAt: registration.leaseExpiresAt });
       }
@@ -231,8 +232,7 @@ export class VolatileRelayGateway {
             || value.envelope.source.id !== value.endpoint.id) fail("SOURCE_MISMATCH");
           if (value.envelope.protocolVersion !== RELAY_PROTOCOL_VERSION) fail("INVALID_REQUEST");
           if (isLocalRelay(value.envelope.target)) {
-            await this.#target(value.envelope.target.id); this.#checkOwner(value);
-            const accepted = this.#store.accept(this.epoch, value.envelope, this.#now());
+            const accepted = await this.#acceptLocal(value.envelope, value);
             return this.#success({ kind: "accepted", envelopeId: value.envelope.envelopeId, acceptanceId: accepted.acceptanceId,
               duplicate: accepted.kind === "duplicate", forwarding: "local" });
           }
@@ -314,16 +314,38 @@ export class VolatileRelayGateway {
       if (!current || current.generation !== target.generation || current.sessionId !== target.sessionId) fail("TARGET_NOT_REGISTERED");
       // An offline endpoint process may resume. Retain mail for the freshly proven broker incarnation,
       // without treating a stale lease alone as authority or replacing its generation.
-      this.#store.register({ sessionId: target.sessionId, generation: target.generation, protocolVersions: target.protocolVersions, leaseMs: RELAY_LIMITS.LEASE_MS }, this.#now());
+      this.#store.register({ sessionId: target.sessionId, generation: target.generation, protocolVersions: target.protocolVersions, leaseMs: RELAY_LIMITS.LEASE_MS }, this.#now(), "renew");
     }
     if (!this.#store.registration(this.epoch, id, this.#now())) fail("TARGET_NOT_REGISTERED");
+  }
+  async #acceptLocal(envelope: RelayEnvelope, binding?: VolatileBinding): Promise<ReturnType<MemoryRelayStore["accept"]>> {
+    if (!this.#recoverable) {
+      await this.#target(envelope.target.id);
+      if (binding) this.#checkOwner(binding);
+      return this.#store.accept(this.epoch, envelope, this.#now());
+    }
+    const terminal = this.#store.terminalAcceptance(this.epoch, envelope, this.#now());
+    if (terminal) return terminal;
+    try { await this.#target(envelope.target.id); }
+    catch (error) {
+      if (binding) this.#checkOwner(binding);
+      // The exact delivery may have been ACKed and its generation replaced
+      // while broker inspection awaited. Evidence can confirm it, not revive it.
+      const completed = this.#store.terminalAcceptance(this.epoch, envelope, this.#now());
+      if (completed) return completed;
+      throw error;
+    }
+    if (binding) this.#checkOwner(binding);
+    return this.#store.terminalAcceptance(this.epoch, envelope, this.#now())
+      ?? this.#store.accept(this.epoch, envelope, this.#now());
   }
   async #receivePeer(input: VolatilePeerRequest): Promise<VolatileResult> {
     if (!isOpaqueRelayId(input.sourceEpoch) || !isRelayEnvelope(input.envelope)
       || !isLocalRelay(input.envelope.source) || !isLocalRelay(input.envelope.target)) fail("INVALID_REQUEST");
-    await this.#target(input.envelope.target.id);
+    if (!this.#recoverable) await this.#target(input.envelope.target.id);
     const route = this.#store.peerRoute(this.epoch, input.origin, input.sourceEpoch);
-    const accepted = this.#store.accept(this.epoch, { ...input.envelope, source: { ...input.envelope.source, relay: route.id } }, this.#now());
+    const envelope = { ...input.envelope, source: { ...input.envelope.source, relay: route.id } };
+    const accepted = this.#recoverable ? await this.#acceptLocal(envelope) : this.#store.accept(this.epoch, envelope, this.#now());
     return this.#success({ kind: "accepted", envelopeId: input.envelope.envelopeId, acceptanceId: accepted.acceptanceId,
       duplicate: accepted.kind === "duplicate", forwarding: "local" });
   }

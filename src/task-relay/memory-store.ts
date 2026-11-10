@@ -39,6 +39,7 @@ function captured<T>(input: T, limit: number): T {
 
 interface RegistrationEntry {
   value: RelayRegistration;
+  current: boolean;
   mutation: bigint;
   readonly mailbox: Map<string, bigint>;
   cursor: bigint;
@@ -76,7 +77,8 @@ export type ForwardAttempt = { readonly kind: "attempt"; readonly token: string;
  * No filesystem, timers, network calls or process-global store registry. The
  * recovery wrapper commits primary rows; derived indexes remain RAM-only.
  * Methods linearize synchronously; the gateway owns fresh broker inspection and
- * trusted peer admission. Only memory-only generation replacement drops obligations.
+ * trusted peer admission. Only memory-only generation replacement drops obligations;
+ * durable noncurrent registrations retain terminal transport evidence, never task authority.
  */
 export class MemoryRelayStore {
   #epoch: string = randomUUID();
@@ -124,7 +126,7 @@ export class MemoryRelayStore {
   }
 
   /** sessionId must come from the gateway's fresh authoritative broker inspection. */
-  register(input: { readonly sessionId: string; readonly generation: string; readonly leaseMs: number; readonly protocolVersions: readonly number[] }, now: number): RelayRegistration {
+  register(input: { readonly sessionId: string; readonly generation: string; readonly leaseMs: number; readonly protocolVersions: readonly number[] }, now: number, mode: "connect" | "renew" = "connect"): RelayRegistration {
     time(now);
     const value = captured(input, 4096);
     if (!value || !keys(value, ["sessionId", "generation", "leaseMs", "protocolVersions"]) || !text(value.sessionId) || !text(value.generation)
@@ -135,6 +137,22 @@ export class MemoryRelayStore {
     const priorId = this.#sessions.get(value.sessionId);
     const prior = priorId === undefined ? undefined : this.#registrations.get(priorId);
     const existing = prior?.value.generation === value.generation ? prior : undefined;
+    if (mode !== "connect" && mode !== "renew") fail("INVALID_REQUEST");
+    if (this.#recoverable) {
+      // Normal bound clients send an epoch: they may renew, never create a new
+      // owner after their predecessor's bounded transport records are pruned.
+      if (mode === "renew" && !existing) fail("RELAY_RESET");
+      for (const entry of this.#registrations.values()) {
+        if (!entry.current && entry.value.sessionId === value.sessionId && entry.value.generation === value.generation) fail("RELAY_RESET");
+      }
+    }
+    const retainPrior = this.#recoverable && prior !== undefined && !existing && prior.references > 0;
+    if (retainPrior) {
+      for (const receipt of this.#receipts.values()) {
+        if ((receipt.state === "mailbox" || receipt.state === "forwarding")
+          && [receipt.source, receipt.target].some(endpoint => endpoint.relay === RELAY_ID && endpoint.id === prior.value.endpoint.id)) fail("RELAY_RESET");
+      }
+    }
     const registration: RelayRegistration = {
       endpoint: existing?.value.endpoint ?? { relay: RELAY_ID, id: randomUUID() },
       sessionId: value.sessionId, generation: value.generation,
@@ -143,17 +161,15 @@ export class MemoryRelayStore {
     };
     // Include space for the fixed-size cursor, references, and index ownership.
     const size = bytes(registration) + 128;
-    if ((!prior && this.#registrations.size >= this.#limits.registrations)
-      || this.#metadataBytes + size - (prior?.bytes ?? 0) > this.#limits.metadataBytes) fail("RELAY_CAPACITY");
-    // Preflight before discarding anything. A different generation cannot ever
-    // ACK its predecessor's mail or resume its forwarding attempts.
+    if (((!prior || retainPrior) && this.#registrations.size >= this.#limits.registrations)
+      || this.#metadataBytes + size - (retainPrior ? 0 : prior?.bytes ?? 0) > this.#limits.metadataBytes) fail("RELAY_CAPACITY");
+    // Lookup, obligation/limit checks and replacement are one synchronous journaled
+    // mutation. Keep both charges and every terminal receipt exactly as committed.
     if (prior && !existing) {
-      // This synchronous lookup/check/retirement is one journaled mutation.
-      // A fresh generation never inherits mail, receipts or forwarding authority.
-      if (this.#recoverable && prior.references) fail("RELAY_RESET");
-      this.#retire(prior);
+      if (retainPrior) { prior.current = false; prior.mutation = ++this.#registrationMutation; }
+      else this.#retire(prior);
     }
-    const entry = existing ?? { value: registration, mutation: 0n, mailbox: new Map(), cursor: 0n, mailboxBytes: 0, references: 0, bytes: 0 };
+    const entry = existing ?? { value: registration, current: true, mutation: 0n, mailbox: new Map(), cursor: 0n, mailboxBytes: 0, references: 0, bytes: 0 };
     this.#metadataBytes += size - entry.bytes;
     entry.value = registration; entry.mutation = ++this.#registrationMutation; entry.bytes = size;
     this.#registrations.set(registration.endpoint.id, entry);
@@ -180,7 +196,7 @@ export class MemoryRelayStore {
   retirementCandidate(epoch: string, now: number, after: string): { registration: RelayRegistration; mutation: string } | undefined {
     this.checkEpoch(epoch); time(now);
     if (!this.#recoverable) return;
-    const candidates = [...this.#registrations.values()].filter(entry => !entry.references && Date.parse(entry.value.leaseExpiresAt) <= now)
+    const candidates = [...this.#registrations.values()].filter(entry => entry.current && !entry.references && Date.parse(entry.value.leaseExpiresAt) <= now)
       .sort((a, b) => a.value.endpoint.id.localeCompare(b.value.endpoint.id));
     const entry = candidates.find(entry => entry.value.endpoint.id > after) ?? candidates[0];
     return entry && { registration: structuredClone(entry.value), mutation: entry.mutation.toString() };
@@ -190,7 +206,7 @@ export class MemoryRelayStore {
   retireRegistration(epoch: string, id: string, mutation: string, now: number): boolean {
     this.checkEpoch(epoch); time(now);
     const entry = this.#registrations.get(id);
-    if (!this.#recoverable || !entry || entry.references || entry.mutation.toString() !== mutation || Date.parse(entry.value.leaseExpiresAt) > now) return false;
+    if (!this.#recoverable || !entry?.current || entry.references || entry.mutation.toString() !== mutation || Date.parse(entry.value.leaseExpiresAt) > now) return false;
     this.#registrations.delete(id); this.#metadataBytes -= entry.bytes;
     if (this.#sessions.get(entry.value.sessionId) === id) this.#sessions.delete(entry.value.sessionId);
     this.#expiry.delete(`g:${id}`);
@@ -235,6 +251,17 @@ export class MemoryRelayStore {
 
   peerOrigin(epoch: string, id: string): string | undefined { this.checkEpoch(epoch); return this.#routes.get(id)?.origin; }
   peerEpoch(epoch: string, id: string): string | undefined { this.checkEpoch(epoch); return this.#routes.get(id)?.peerEpoch; }
+
+  /** Acceptance evidence only, not endpoint delivery/ACK authority. Call only
+   * after normal ingress authentication/origin/epoch checks. Never admit mail. */
+  terminalAcceptance(epoch: string, input: RelayEnvelope, now: number): { readonly kind: "duplicate"; readonly acceptanceId: string } | undefined {
+    this.checkEpoch(epoch); time(now);
+    const envelope = this.#envelope(input);
+    this.#source(envelope, now);
+    const receipt = this.#existing(envelope, now);
+    if (receipt?.acceptanceId && (receipt.state === "acknowledged" || receipt.state === "forwarded")) return { kind: "duplicate", acceptanceId: receipt.acceptanceId };
+    return undefined;
+  }
 
   accept(epoch: string, input: RelayEnvelope, now: number): { readonly kind: "accepted" | "duplicate"; readonly acceptanceId: string } {
     this.checkEpoch(epoch); time(now);
@@ -409,7 +436,7 @@ export class MemoryRelayStore {
   /** Persist primary state only. Caches, byte charges, mailbox and expiry indexes rebuild on reopen. */
   recoveryRows(): readonly RecoveryRow[] {
     const rows: RecoveryRow[] = [{ bucket: "identity", key: "relay", value: JSON.stringify({ epoch: this.#epoch, mutation: this.#registrationMutation.toString(), admissionFloor: this.#admissionFloor }) }];
-    for (const [key, entry] of this.#registrations) rows.push({ bucket: "registrations", key, value: JSON.stringify({ value: entry.value, mutation: entry.mutation.toString(), cursor: entry.cursor.toString() }) });
+    for (const [key, entry] of this.#registrations) rows.push({ bucket: "registrations", key, value: JSON.stringify({ value: entry.value, current: entry.current, mutation: entry.mutation.toString(), cursor: entry.cursor.toString() }) });
     for (const [key, route] of this.#routes) rows.push({ bucket: "routes", key, value: JSON.stringify({ id: route.id, origin: route.origin, peerEpoch: route.peerEpoch }) });
     for (const [key, receipt] of this.#receipts) rows.push({ bucket: "receipts", key, value: JSON.stringify(receipt) });
     for (const [key, value] of this.#payloads) rows.push({ bucket: "payloads", key, value });
@@ -430,10 +457,12 @@ export class MemoryRelayStore {
         const entry = JSON.parse(row.value), value = entry.value as RelayRegistration;
         if (!value || !text(value.sessionId) || !text(value.generation) || value.endpoint?.relay !== RELAY_ID || value.endpoint.id !== row.key || !isOpaqueRelayId(row.key)
           || !isRelayTimestamp(value.leaseExpiresAt) || !Array.isArray(value.protocolVersions) || !value.protocolVersions.includes(RELAY_PROTOCOL_VERSION)
-          || !decimal(entry.mutation) || BigInt(entry.mutation) > this.#registrationMutation || !decimal(entry.cursor) || this.#sessions.has(value.sessionId)) invalid();
+          || typeof entry.current !== "boolean" || !decimal(entry.mutation) || BigInt(entry.mutation) > this.#registrationMutation || !decimal(entry.cursor)
+          || (entry.current && this.#sessions.has(value.sessionId))) invalid();
         const size = bytes(value) + 128;
-        this.#registrations.set(row.key, { value, mutation: BigInt(entry.mutation), cursor: BigInt(entry.cursor), mailbox: new Map(), mailboxBytes: 0, references: 0, bytes: size });
-        this.#sessions.set(value.sessionId, row.key); this.#metadataBytes += size;
+        this.#registrations.set(row.key, { value, current: entry.current, mutation: BigInt(entry.mutation), cursor: BigInt(entry.cursor), mailbox: new Map(), mailboxBytes: 0, references: 0, bytes: size });
+        if (entry.current) this.#sessions.set(value.sessionId, row.key);
+        this.#metadataBytes += size;
       } else if (row.bucket === "routes") {
         const route = JSON.parse(row.value);
         if (route.id !== row.key || !isPeerRelayId(row.key) || !isOpaqueRelayId(route.peerEpoch) || !text(route.origin)) invalid();
@@ -451,6 +480,9 @@ export class MemoryRelayStore {
           || !Number.isSafeInteger(receipt.deadline) || !Number.isSafeInteger(receipt.attempts) || receipt.attempts < 0 || !Number.isSafeInteger(receipt.nextAttemptAt)
           || (receipt.cursor !== undefined && !decimal(receipt.cursor)) || (receipt.acceptanceId !== undefined && !isOpaqueRelayId(receipt.acceptanceId))
           || !receipt.source || !receipt.target) invalid();
+        if ((receipt.state !== "forwarding" && receipt.token !== undefined) || (receipt.state === "unconfirmed" && receipt.acceptanceId !== undefined)
+          || (receipt.state === "acknowledged" && receipt.target.relay !== RELAY_ID)
+          || ((receipt.state === "forwarded" || receipt.state === "unconfirmed") && (receipt.source.relay !== RELAY_ID || !isPeerRelayId(receipt.target.relay)))) invalid();
         // An interrupted request is not a result. Retry the same persisted envelope after reopen.
         receipt.token = undefined;
         this.#receipts.set(row.key, receipt); this.#receiptBytes += receipt.bytes;
@@ -462,7 +494,11 @@ export class MemoryRelayStore {
     }
     for (const receipt of this.#receipts.values()) {
       for (const endpoint of [receipt.source, receipt.target]) {
-        if (endpoint.relay === RELAY_ID) { const entry = this.#registrations.get(endpoint.id); if (!entry) invalid(); entry!.references++; }
+        if (endpoint.relay === RELAY_ID) {
+          const entry = this.#registrations.get(endpoint.id);
+          if (!entry || (!entry.current && (receipt.state === "mailbox" || receipt.state === "forwarding"))) invalid();
+          entry!.references++;
+        }
         else if (!this.#routes.has(endpoint.relay)) invalid();
       }
       const payload = this.#payloads.get(receipt.id);
@@ -486,6 +522,7 @@ export class MemoryRelayStore {
     }
     for (const id of this.#payloads.keys()) if (!this.#receipts.has(id)) invalid();
     for (const entry of this.#registrations.values()) {
+      if (!entry.current && !entry.references) invalid();
       const ordered = [...entry.mailbox].sort((a, b) => a[1] < b[1] ? -1 : 1);
       entry.mailbox.clear(); for (const [id, cursor] of ordered) entry.mailbox.set(id, cursor);
       if (entry.mailbox.size > this.#limits.mailboxItems || entry.mailboxBytes > this.#limits.mailboxBytes || new Set(entry.mailbox.values()).size !== entry.mailbox.size) invalid();
@@ -512,7 +549,7 @@ export class MemoryRelayStore {
 
   #activeRegistration(id: string, now: number): RegistrationEntry | undefined {
     const entry = this.#registrations.get(id);
-    return entry && this.#sessions.get(entry.value.sessionId) === id && Date.parse(entry.value.leaseExpiresAt) > now ? entry : undefined;
+    return entry?.current && this.#sessions.get(entry.value.sessionId) === id && Date.parse(entry.value.leaseExpiresAt) > now ? entry : undefined;
   }
 
   #source(envelope: RelayEnvelope, now: number): void {
@@ -612,7 +649,12 @@ export class MemoryRelayStore {
       const entry = this.#registrations.get(endpoint.id);
       if (!entry) continue; // A retired sender does not revoke another endpoint's accepted mail.
       entry.references--;
-      if (!entry.references && !this.#recoverable) this.#expiry.set(`g:${endpoint.id}`, Date.parse(entry.value.leaseExpiresAt));
+      if (!entry.references && !entry.current) {
+        // Only noncurrent terminal-only transport records are lifecycle garbage.
+        // Current generations still need fresh authoritative broker retirement.
+        this.#registrations.delete(endpoint.id); this.#metadataBytes -= entry.bytes;
+        this.#expiry.delete(`g:${endpoint.id}`);
+      } else if (!entry.references && !this.#recoverable) this.#expiry.set(`g:${endpoint.id}`, Date.parse(entry.value.leaseExpiresAt));
     }
   }
 

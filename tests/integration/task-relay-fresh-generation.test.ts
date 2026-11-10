@@ -56,12 +56,18 @@ test.skipIf(!source)("configured fresh generation replaces an empty predecessor;
   } finally { await f.close(); }
 });
 
-test.skipIf(!source)("a delayed target inspection cannot resurrect a replaced empty generation", async () => {
+for (const retained of [false, true]) test.skipIf(!source)(`a delayed target inspection cannot resurrect a replaced generation (retained=${retained})`, async () => {
   let delay = false, entered!: () => void, release!: () => void;
   const observed = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
   const f = await fixture(async selector => { if (delay && selector !== "a" && selector !== "b") { entered(); await gate; } });
   try {
     const a = await f.open("a"), b = await f.open("b"), old = a.endpoint;
+    if (retained) {
+      const completed = { envelopeId: randomUUID(), protocolVersion: 2, source: b.endpoint, target: old,
+        createdAt: new Date(f.clock.now).toISOString(), payload: "already transport-ACKed" };
+      expect(await f.gateway.request({ ...f.bound("b", b.endpoint), operation: "send", envelope: completed })).toMatchObject({ ok: true });
+      expect(await f.gateway.request({ ...f.bound("a", old), operation: "acknowledge", envelopeId: completed.envelopeId })).toMatchObject({ ok: true });
+    }
     delay = true;
     const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: b.endpoint, target: old,
       createdAt: new Date(f.clock.now).toISOString(), payload: "late send must not revive predecessor" };
@@ -70,6 +76,24 @@ test.skipIf(!source)("a delayed target inspection cannot resurrect a replaced em
     expect(await pending).toMatchObject({ ok: false, error: { code: "TARGET_NOT_REGISTERED" } });
     await next.receive(); expect(next.listTasks()).toHaveLength(0);
     expect(await f.gateway.request({ ...f.bound("a", next.endpoint), operation: "health" })).toMatchObject({ ok: true });
+  } finally { release(); await f.close(); }
+});
+
+test.skipIf(!source)("an exact retry remains confirmed when its mailbox becomes terminal and retained during broker inspection", async () => {
+  let delay = false, entered!: () => void, release!: () => void;
+  const observed = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture(async selector => { if (delay && selector !== "a" && selector !== "b") { entered(); await gate; } });
+  try {
+    const a = await f.open("a"), b = await f.open("b");
+    const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: b.endpoint, target: a.endpoint,
+      createdAt: new Date(f.clock.now).toISOString(), payload: "already accepted, concurrently ACKed" };
+    const send = () => f.gateway.request({ ...f.bound("b", b.endpoint), operation: "send", envelope });
+    const accepted = await send() as any; expect(accepted.ok).toBe(true);
+    delay = true; const pending = send(); await observed;
+    expect(await f.gateway.request({ ...f.bound("a", a.endpoint), operation: "acknowledge", envelopeId: envelope.envelopeId })).toMatchObject({ ok: true });
+    const fresh = await f.open("a"); release();
+    expect(await pending).toMatchObject({ ok: true, value: { duplicate: true, acceptanceId: accepted.value.acceptanceId } });
+    await fresh.receive(); expect(fresh.listTasks()).toHaveLength(0);
   } finally { release(); await f.close(); }
 });
 
@@ -89,7 +113,7 @@ test.skipIf(!source)("mail arriving during fresh-generation inspection prevents 
   } finally { release(); await f.close(); }
 });
 
-test.skipIf(!source)("completed transport receipts block a configured fresh client for exactly their eight-day retention", async () => {
+test.skipIf(!source)("completed transport receipts retain evidence without blocking a configured fresh client or reviving a stale client after pruning", async () => {
   const f = await fixture();
   try {
     const a = await f.open("a"), b = await f.open("b");
@@ -108,15 +132,28 @@ test.skipIf(!source)("completed transport receipts block a configured fresh clie
     f.clock.now += 61_000; await a.connect(); await b.connect(); await a.receive();
     expect(a.endpoint).toEqual(old);
     expect(BigInt(f.requests.filter(item => item.operation === "receive" && item.callerSession === "a").at(-1).cursor)).toBeGreaterThan(0n);
-    await a.close();
-    await expect(f.open("a")).rejects.toMatchObject({ code: "RELAY_RESET" });
-    f.clock.now = completedAt + RESTART_SAFE_RELAY_TIMING.receiptMs - 1; f.gateway.maintenance();
-    await b.connect();
-    await expect(f.open("a")).rejects.toMatchObject({ code: "RELAY_RESET" });
-    f.clock.now += 2; f.gateway.maintenance(); await b.connect();
-    expect((await health()).value.store.receipts).toBe(0);
+    const oldConnect = f.requests.filter(item => item.operation === "connect" && item.callerSession === "a").at(-1);
     const fresh = await f.open("a"); expect(fresh.endpoint).not.toEqual(old);
     expect(fresh.listTasks()).toHaveLength(0); await fresh.receive();
     expect(f.requests.filter(item => item.operation === "receive" && item.callerSession === "a").at(-1).cursor).toBe("0");
+    expect((await health()).value.store).toMatchObject({ registrations: 3, sessions: 2, activeItems: 0 });
+    expect(await f.gateway.request(oldConnect)).toMatchObject({ ok: false, error: { code: "RELAY_RESET" } });
+    for (const operation of ["send", "receive", "acknowledge"]) {
+      const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: old, target: fresh.endpoint,
+        createdAt: new Date(f.clock.now).toISOString(), payload: "no predecessor authority" };
+      const extra = operation === "send" ? { envelope } : operation === "receive" ? { cursor: "0" } : { envelopeId: envelope.envelopeId };
+      expect(await f.gateway.request({ ...f.bound("a", old), operation, ...extra })).toMatchObject({ ok: false, error: { code: "REGISTRATION_EXPIRED" } });
+    }
+    const newTask = await fresh.createTask({ target: b.endpoint, task: "fresh tools work immediately", timeoutMs: 300_000 });
+    await drain(b); expect(b.getTask(newTask.taskId).task).toBe("fresh tools work immediately");
+    f.clock.now = completedAt + RESTART_SAFE_RELAY_TIMING.receiptMs + 1; f.gateway.maintenance();
+    await fresh.connect(); await b.connect();
+    expect((await health()).value.store).toMatchObject({ registrations: 2, sessions: 2 });
+    // This still-live predecessor has not attempted reconnect since replacement.
+    // Its normal epoch-bearing renewal must stay fenced after its tombstone is gone.
+    const endpoint = fresh.endpoint;
+    expect(await a.connect().then(() => undefined, (error: unknown) => error)).toMatchObject({ code: "RELAY_RESET" });
+    await fresh.connect(); expect(fresh.endpoint).toEqual(endpoint);
+    expect(fresh.getTask(newTask.taskId).task).toBe("fresh tools work immediately");
   } finally { await f.close(); }
 });

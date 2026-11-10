@@ -107,6 +107,47 @@ for (const ownerAuth of [false, true]) test(`production trusted-Tailnet HTTP acc
   } finally { await f.close(); }
 }, 30_000);
 
+test("trusted peer lost-response retry uses terminal predecessor evidence without granting fresh endpoint authority", async () => {
+  const f = await fixture(true, "sqlite");
+  try {
+    const a = await f.connect("a", "sender"), old = await f.connect("b", "receiver");
+    const resolved = await f.post("a", { ...a, origin: origin("b"), target: old.endpoint }, route + "/resolve-peer");
+    expect(resolved.status).toBe(200);
+    const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: a.endpoint, target: resolved.body.value.endpoint,
+      createdAt: new Date().toISOString(), payload: "committed before the response was lost" };
+    writeFileSync(join(f.roots.a!, "network-mode"), "drop-next");
+    expect((await f.post("a", { ...a, operation: "send", envelope })).body).toMatchObject({ ok: false, error: { code: "PEER_UNREACHABLE" } });
+    const frame = JSON.parse(readFileSync(join(f.roots.a!, "last-forward.json"), "utf8")), peer = JSON.parse(frame.raw);
+    expect((await f.post("b", { ...old, operation: "receive", cursor: "0" })).body.value.deliveries).toHaveLength(1);
+    expect((await f.post("b", { ...old, operation: "acknowledge", envelopeId: envelope.envelopeId })).status).toBe(200);
+    const committed = await f.post("b", peer, route + "/peer");
+    const acceptanceId = committed.body.value.acceptanceId;
+    const current = await f.connect("b", "receiver"); expect(current.endpoint).not.toEqual(old.endpoint);
+    await f.restart(["a", "b"]); await pause(1050);
+    const retry = await f.post("a", { ...a, operation: "send", envelope });
+    expect(retry.body).toMatchObject({ ok: true, value: { duplicate: true, acceptanceId } });
+    expect(JSON.parse(readFileSync(join(f.roots.a!, "last-forward.json"), "utf8"))).toEqual(frame);
+    expect((await f.post("b", { ...current, operation: "receive", cursor: "0" })).body.value).toMatchObject({ deliveries: [], nextCursor: "0" });
+    for (const operation of ["send", "receive", "acknowledge"]) {
+      const extra = operation === "send" ? { envelope: { ...envelope, source: old.endpoint, target: current.endpoint } }
+        : operation === "receive" ? { cursor: "0" } : { envelopeId: envelope.envelopeId };
+      expect((await f.post("b", { ...old, operation, ...extra })).body).toMatchObject({ ok: false, error: { code: "REGISTRATION_EXPIRED" } });
+    }
+    expect((await f.post("b", { ...current, operation: "acknowledge", envelopeId: envelope.envelopeId })).body.ok).toBe(false);
+    for (const changed of [
+      { ...peer.envelope, payload: "changed immutable retry" },
+      { ...peer.envelope, source: { ...peer.envelope.source, id: randomUUID() } },
+      { ...peer.envelope, target: current.endpoint },
+    ]) expect((await f.post("b", { ...peer, envelope: changed }, route + "/peer")).body).toMatchObject({ ok: false, error: { code: "ENVELOPE_CONFLICT" } });
+    expect((await f.post("b", { ...peer, envelope: { ...peer.envelope, envelopeId: randomUUID() } }, route + "/peer")).body).toMatchObject({ ok: false, error: { code: "TARGET_NOT_REGISTERED" } });
+    expect((await f.post("b", { ...peer, epoch: randomUUID() }, route + "/peer")).body).toMatchObject({ ok: false, error: { code: "PEER_POLICY_REQUIRED" } });
+    expect((await f.post("b", { ...peer, sourceEpoch: randomUUID() }, route + "/peer")).body.ok).toBe(false);
+    expect((await f.post("b", { ...peer, origin: origin("unknown") }, route + "/peer")).status).toBe(403);
+    expect((await fetch(f.bases.b + route + "/peer", { method: "POST", headers: { "content-type": "application/json" }, body: frame.raw })).status).toBe(401);
+    expect((await f.post("b", { ...current, operation: "health" })).body.value.store).toMatchObject({ activeItems: 0, receipts: 1, registrations: 2, sessions: 1 });
+  } finally { await f.close(); }
+}, 30_000);
+
 const piSource = process.env.WOLFPACK_PI_TASKS_SOURCE;
 test.skipIf(!piSource)("normal pinned RAM cores authenticate locally and complete through CLI-qualified trusted HTTP peers", async () => {
   expect(isAbsolute(piSource!)).toBe(true); expect(process.env.WOLFPACK_PI_TASKS_REVISION).toMatch(/^[0-9a-f]{40}$/);
