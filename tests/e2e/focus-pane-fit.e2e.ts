@@ -96,14 +96,15 @@ for (const width of [1440, 1280]) for (const motion of ["normal", "fallback race
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
   // Sample beyond the normal resize settlement window, rather than accepting
   // one transiently fitting frame or missing a delayed duplicate resize.
-  const sample = () => page.evaluate(() => new Promise<{ t: number; mount: number; canvas: number; right: number; mountRight: number }[]>(resolve => {
-    const frames: { t: number; mount: number; canvas: number; right: number; mountRight: number }[] = [];
+  const sample = () => page.evaluate(() => new Promise<{ t: number; mount: number; canvas: number; right: number; mountRight: number; sidebarAnimating: boolean }[]>(resolve => {
+    const frames: { t: number; mount: number; canvas: number; right: number; mountRight: number; sidebarAnimating: boolean }[] = [];
     const start = performance.now();
     const tick = () => {
       const canvas = document.querySelector<HTMLCanvasElement>("#assistant-pane canvas")!;
       const box = canvas.getBoundingClientRect();
       const mount = canvas.parentElement!.getBoundingClientRect();
-      frames.push({ t: performance.now() - start, mount: mount.width, canvas: box.width, right: box.right, mountRight: mount.right });
+      const sidebarAnimating = document.getElementById("desktop-sidebar")!.getAnimations().some(animation => animation instanceof CSSTransition && animation.transitionProperty === "margin-left" && animation.playState !== "finished");
+      frames.push({ t: performance.now() - start, mount: mount.width, canvas: box.width, right: box.right, mountRight: mount.right, sidebarAnimating });
       if (performance.now() - start >= 2_500) resolve(frames);
       else requestAnimationFrame(tick);
     };
@@ -127,7 +128,7 @@ for (const width of [1440, 1280]) for (const motion of ["normal", "fallback race
     const sent = geometry.slice(before);
     stages.push({ action, frames, geometry: sent });
     if (motion === "fallback race" && action === "Unpin sidebar") {
-      expect.soft(frames.some(f => f.t >= 200 && f.mount < initial.mount - 1), "the 200ms fallback races an unfinished margin transition").toBe(true);
+      expect.soft(frames.some(f => f.t >= 200 && f.sidebarAnimating), "the 200ms fallback races an unfinished margin transition").toBe(true);
     }
     expect.soft(frames.slice(-10).every(f => f.canvas > 0 && f.canvas <= f.mount + 1 && f.right <= f.mountRight + 1), `${action}: canvas fits the settled mount`).toBe(true);
     expect.soft(sent, `${action}: exactly one geometry frame, without reattach`).toHaveLength(1);

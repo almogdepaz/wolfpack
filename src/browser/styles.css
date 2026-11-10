@@ -2292,6 +2292,7 @@ body:not(:has(#terminal-view.visible)) #workspace-restore,#workspace-restore[hid
   #sidebar-session-controls { padding: 12px 8px 0; }
   #desktop-sidebar { width: 272px; flex-shrink: 0; display: flex; flex-direction: column; transition: margin-left 0.2s ease; z-index: 50; height: 100dvh; }
   #desktop-sidebar.collapsed { margin-left: -272px; }
+  body:not(.sidebar-pinned) #desktop-sidebar { position: fixed; inset: 0 auto 0 0; }
   .sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .sidebar-header h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .sidebar-controls { display: flex; gap: 4px; }
