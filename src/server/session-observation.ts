@@ -97,14 +97,14 @@ const quietAlertHistory = new Map<string, QuietAlertPolicyState>();
 interface ChildBlockedEpisode {
   /** The quiet episode that alerts for this block, once one is open. */
   episodeId?: string;
-  /** That episode emitted: this block has alerted and never alerts again. */
-  alerted?: true;
   /**
-   * The emitted episode while it is still the session's episode. A screen
-   * change while the child stays blocked opens a new episode; this state
-   * replaces it in the same observation (review A3-3), so the same episode
-   * repeats and its delivery retries continue. Cleared when the episode is
-   * gone (a capture gap), because push delivery then forgot it.
+   * That episode once policy emitted it: this block has alerted and never
+   * opens another episode. Emission is not delivery: push delivery owns the
+   * attempts and pending endpoints of this episode. A screen change (review
+   * A3-3) or a capture gap (review A5-1) while the child stays blocked
+   * replaces or drops the session's episode; this state is restored at the
+   * next fresh observation, so the same episode repeats its fact and its
+   * delivery retries resume.
    */
   emitted?: QuietAlertPolicyState;
 }
@@ -360,7 +360,6 @@ function reduceSessionQuietAlert(
     recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
     const blocked = childBlockedEpisodes.get(sessionKey);
     if (blocked?.episodeId === reduction.event.episodeId) {
-      blocked.alerted = true;
       blocked.emitted = reduction.state;
     }
   }
@@ -767,7 +766,8 @@ interface ChildBlockObservation {
  * per block. When the block has no fresh continuity (a capture gap), the
  * episode opens at the first fresh observation while the child stays blocked.
  * A block that alerted never opens another episode: its emitted episode stays
- * the session's episode until the child leaves needs-input.
+ * the session's episode until the child leaves needs-input, also across a
+ * capture gap, so push delivery resumes that episode's bounded retries.
  */
 function reduceChildBlockedEpisode(
   sessionKey: string,
@@ -791,11 +791,8 @@ function reduceChildBlockedEpisode(
   const blocked = childBlockedEpisodes.get(sessionKey);
   if (blocked === undefined || observation.quietContinuity !== "fresh") return;
   const episode = quietAlertHistory.get(sessionKey);
-  if (blocked.alerted) {
-    if (episode === undefined) blocked.emitted = undefined;
-    else if (episode.episodeId === blocked.emitted?.episodeId) return;
-    else if (blocked.emitted !== undefined) quietAlertHistory.set(sessionKey, blocked.emitted);
-    else quietAlertHistory.delete(sessionKey);
+  if (blocked.emitted !== undefined) {
+    if (episode?.episodeId !== blocked.emitted.episodeId) quietAlertHistory.set(sessionKey, blocked.emitted);
     return;
   }
   if (episode && !episode.emitted) {

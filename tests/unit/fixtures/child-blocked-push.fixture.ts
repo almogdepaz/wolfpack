@@ -305,3 +305,100 @@ test("a child pushed for its block gets no second push after a capture gap and a
   await observeAfter(31);
   expect(payloads).toHaveLength(1);
 });
+
+/** A sender that fails the first `failures` attempts, then succeeds; counts attempts and successes. */
+function failingSender(failures: number): { attempts: () => number; delivered: () => number } {
+  let attempts = 0;
+  let delivered = 0;
+  _testing.sessionPushSender = async (_payload, endpoints) => {
+    attempts += 1;
+    if (attempts <= failures) return { sent: 0, failed: endpoints.size, pruned: 0, successfulEndpoints: [], failedEndpoints: [...endpoints] };
+    delivered += 1;
+    return { sent: endpoints.size, failed: 0, pruned: 0, successfulEndpoints: [...endpoints], failedEndpoints: [] };
+  };
+  return { attempts: () => attempts, delivered: () => delivered };
+}
+
+/** Working, then blocked; the first push attempt runs after the policy delay. */
+async function blockAndAttemptPush(capture: { fail: boolean }, screen: { text: string }): Promise<void> {
+  backend.setCapturePane(async () => {
+    if (capture.fail) throw new Error("capture unavailable");
+    return screen.text;
+  });
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(31);
+}
+
+async function captureGap(capture: { fail: boolean }, outputSequence: string): Promise<void> {
+  capture.fail = true;
+  backend.setOutputSequence("worker", outputSequence);
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  capture.fail = false;
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+}
+
+async function stayBlocked(times: number): Promise<void> {
+  for (let i = 0; i < times; i++) {
+    setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+    await observeAfter(31);
+  }
+}
+
+test("the reviewer's failed-push-gap-recovery ordering: a failed blocked push retries after a capture gap and succeeds once (review A5-1)", async () => {
+  await spawnChild();
+  const sender = failingSender(1);
+  const capture = { fail: false };
+  await blockAndAttemptPush(capture, { text: "unchanged screen" });
+  expect(sender.attempts()).toBe(1);
+  await captureGap(capture, "1");
+  await stayBlocked(3);
+  expect(sender.attempts()).toBe(2);
+  expect(sender.delivered()).toBe(1);
+});
+
+test("the reviewer's failed-push-gap-redraw ordering: a redraw after the gap keeps the retry of the same episode (review A5-1)", async () => {
+  await spawnChild();
+  const sender = failingSender(1);
+  const capture = { fail: false };
+  const screen = { text: "unchanged screen" };
+  await blockAndAttemptPush(capture, screen);
+  expect(sender.attempts()).toBe(1);
+  await captureGap(capture, "1");
+  screen.text = "permission prompt redraw";
+  backend.setOutputSequence("worker", "2");
+  setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+  await observeAfter(1);
+  await stayBlocked(3);
+  expect(sender.attempts()).toBe(2);
+  expect(sender.delivered()).toBe(1);
+});
+
+test("a blocked push that always fails stops at three attempts, with or without a capture gap (review A5-1)", async () => {
+  await spawnChild();
+  const sender = failingSender(Number.POSITIVE_INFINITY);
+  const capture = { fail: false };
+  await blockAndAttemptPush(capture, { text: "unchanged screen" });
+  await stayBlocked(4);
+  expect(sender.attempts()).toBe(3);
+  await captureGap(capture, "1");
+  await stayBlocked(3);
+  expect(sender.attempts()).toBe(3);
+});
+
+test("a gap between failed attempts does not reset the three-attempt budget (review A5-1)", async () => {
+  await spawnChild();
+  const sender = failingSender(Number.POSITIVE_INFINITY);
+  const capture = { fail: false };
+  await blockAndAttemptPush(capture, { text: "unchanged screen" });
+  await captureGap(capture, "1");
+  await stayBlocked(1);
+  await captureGap(capture, "2");
+  await stayBlocked(4);
+  expect(sender.attempts()).toBe(3);
+});

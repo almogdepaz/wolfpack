@@ -764,7 +764,7 @@ async function deliverQuietAlert(
   if ((!session.notificationMachine && policyEpoch < quietAlertPolicyEpoch(alert.kind)) || !canInitiate()) return;
   quietAlertDeliveries.set(key, ownership);
   const delivery = await sendSessionPush(quietAlertPayload(session, sessionId, alert), targetEndpoints);
-  // A new activity episode, continuity loss, restrictive policy change, or removal can retire
+  // A new activity episode, restrictive policy change, or removal can retire
   // this entry while the transport is in flight. Never let stale completion
   // consume or clear the newer episode.
   if ((!session.notificationMachine && policyEpoch < quietAlertPolicyEpoch(alert.kind)) || quietAlertDeliveries.get(key) !== ownership) return;
@@ -803,8 +803,10 @@ export async function checkSessionTransitions(
     activeSessionIds.add(key);
     const alert = validQuietAlert(session, sessionId);
     if (!alert) {
-      if (!machine && policyEpoch !== quietAlertPolicyEpoch()) continue;
-      quietAlertDeliveries.delete(key);
+      // No fact is not retirement. Across a capture gap the observer can
+      // restore the same emitted episode (review A5-1); its attempts and
+      // pending endpoints then resume instead of restarting. A new episode
+      // replaces this state; removal and policy invalidation clear it.
       if (machine) quietAlertRecipientSnapshots.delete(key);
       continue;
     }
