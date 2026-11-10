@@ -356,6 +356,11 @@ export function createAssistantView(deps: {
     // receipt or delivery, using a new read rather than a held pre-tap poll.
     await flight; requireOwner(owner);
     await refresh(); requireOwner(owner);
+    // refresh keeps read-only cached rows on failure; they cannot authorize a send.
+    if (focusUnavailable || !answered || !focus?.document || focus.home !== owner.home) {
+      const message = error || "focus is unavailable; changes were not saved";
+      throw transportFailure ? new TypeError(message) : new Error(message);
+    }
     if (!currentAction(actionKey)) return;
     const key = suggestionKey(row);
     const prior = receiptFor(row);

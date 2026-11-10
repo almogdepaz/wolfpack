@@ -6,6 +6,7 @@ import { join } from "node:path";
 let local: TestServer, remote: TestServer;
 const origin = "https://race-peer.example.ts.net";
 const peerId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
+declare global { interface Window { focusPreflightReceiptWrites?: number } }
 test.beforeEach(async () => { local = await startTestServer({ focusAssistant: true }); remote = await startTestServer({ focusAssistant: true }); });
 test.afterEach(async ({ page }) => { await page.close(); await local?.close(); await remote?.close(); });
 async function open(page: Page) {
@@ -55,6 +56,42 @@ async function seedTriage(page: Page, done = false) {
     await route.fulfill({ response, json: body });
   });
 }
+
+for (const failure of ["aborted during move", "same-owner 503"] as const) test(`TM-R1: ${failure} preflight refuses send and every receipt write`, async ({ page }) => {
+  await page.addInitScript(() => {
+    window.focusPreflightReceiptWrites = 0;
+    const put = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key === "wolfpack-focus-send-receipts-v1") window.focusPreflightReceiptWrites!++;
+      return put.call(this, key, value);
+    };
+  });
+  await seedTriage(page); await open(page); await page.locator("#assistant-setting-open").click();
+  const identity = await (await fetch(local.baseUrl + "/api/focus")).json();
+  const receiptBefore = await page.evaluate(() => localStorage.getItem("wolfpack-focus-send-receipts-v1"));
+  const gate = latch(), arrived = latch();
+  const sends: unknown[] = [];
+  await page.route("**/api/session-control/send", async route => { sends.push(route.request().postDataJSON()); await route.fulfill({ json: { outcome: "submitted" } }); });
+  await page.route(`${local.baseUrl}/api/focus`, async route => {
+    if (route.request().method() !== "GET") return route.continue();
+    arrived.release(); await gate.promise;
+    if (failure === "aborted during move") return route.abort();
+    return route.fulfill({ status: 503, json: { home: identity.home, installationId: identity.installationId, local: true, error: "fixture focus store unreadable" } });
+  });
+  try {
+    await page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+    await arrived.promise;
+    if (failure === "aborted during move") await moveFromAnotherClient();
+    gate.release();
+    await expect(page.locator("#assistant-content .focus-header")).toContainText("read-only");
+    // refresh renders while run() is busy; the enabled picker proves its finally
+    // completed, so neither a late send nor a receipt mutation escapes this check.
+    await expect(page.locator("#assistant-setting-home-select")).toBeEnabled();
+    expect(sends).toEqual([]);
+    expect(await page.evaluate(() => window.focusPreflightReceiptWrites)).toBe(0);
+    expect(await page.evaluate(() => localStorage.getItem("wolfpack-focus-send-receipts-v1"))).toBe(receiptBefore);
+  } finally { gate.release(); }
+});
 
 test("merge: a suggestion tapped after the home moved is refused before send or receipt persistence", async ({ page }) => {
   await seedTriage(page); await open(page); await page.locator("#assistant-setting-open").click();
