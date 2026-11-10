@@ -79,7 +79,7 @@ Spawning a child grants the spawning coordinator cleanup authority for that exac
 
 ## task recovery identity
 
-with default SQLite relay storage, existing `volatile-v1` clients automatically resume transport after server/relay restart while the same plugin processes and RAM task state/outbox remain alive. plugin/agent-process restart is not recovered. do not create replacement sessions, replay tool actions or send a second assignment to repair a recoverable interruption. inspect structured status and stable task IDs; acceptance, model incorporation, terminal result, parent verification and parent ACK remain separate. corrupt/unverifiable server storage blocks recovery. explicit memory-only server storage retains weaker restart-loss behavior; the wire profile does not negotiate endpoint persistence. see the source [relay recovery contract](../../docs/task-recovery.md).
+with default SQLite relay storage, existing `volatile-v1` clients automatically resume transport after server/relay restart while the same plugin processes and RAM task state/outbox remain alive. plugin/agent-process restart is not recovered. do not create replacement sessions, replay tool actions or send a second assignment to repair a recoverable interruption. inspect structured status and stable task IDs; acceptance, model incorporation, terminal result, parent verification and parent ACK remain separate. corrupt/unverifiable server storage blocks recovery. explicit memory-only server storage retains weaker restart-loss behavior; the wire profile does not negotiate endpoint persistence. see the source [relay recovery contract](https://github.com/almogdepaz/wolfpack/blob/main/docs/task-recovery.md).
 
 ## References — load only when needed
 
