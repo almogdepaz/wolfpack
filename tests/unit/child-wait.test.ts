@@ -190,6 +190,25 @@ describe("waitForChildren", () => {
     expect(calls).toBe(2);
   });
 
+  test("all: an event during a settled children read invalidates it; the reread finds a new working child", async () => {
+    let release!: () => void;
+    let calls = 0;
+    const pending = waitForChildren({
+      parentSessionId: PARENT.wolfpackSessionId, mode: "all", timeoutMs: 50, recheckMs: 60_000,
+      listChildren: () => {
+        calls += 1;
+        if (calls > 1) return Promise.resolve([child("a", true), child("b", false)]);
+        return new Promise(resolve => { release = () => resolve([child("a", true)]); });
+      },
+    });
+    await tick();
+    emitMessage("b", "started");
+    release();
+    const result = await pending;
+    expect(result).toMatchObject({ outcome: "timeout", pending: [{ session: "b", sessionId: "b-id" }] });
+    expect(calls).toBe(2);
+  });
+
   test("resolves to undefined on abort and rejects when the children read fails", async () => {
     const controller = new AbortController();
     const pending = waitForChildren({

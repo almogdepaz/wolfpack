@@ -143,6 +143,9 @@ export async function waitForChildren(request: ChildWaitRequest): Promise<ChildW
             const children = await request.listChildren();
             if (done) return;
             lastChildren = children;
+            // An event during the read can name a child the read missed: the
+            // read is stale for every outcome, so read again before deciding.
+            if (again) continue;
             // Read the inbox after the await: an event during it is not lost.
             const read = childEventsSince(request.parentSessionId, request.since, request.bootId);
             const outcome = decide(request.mode, children, read.events.length > 0);

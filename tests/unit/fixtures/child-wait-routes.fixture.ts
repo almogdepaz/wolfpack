@@ -126,3 +126,38 @@ test("a client that goes away ends the wait without a reply", async () => {
   const raced = await Promise.race([pending.reply.then(() => "replied"), new Promise(resolve => setTimeout(() => resolve("silent"), 250))]);
   expect(raced).toBe("silent");
 });
+
+test("wait all rereads a settled children snapshot that a child event invalidated", async () => {
+  observe("idle");
+  const list = backend.list.bind(backend);
+  let held = false;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  backend.list = async () => {
+    const names = await list();
+    if (held) return names;
+    held = true;
+    await gate;
+    return names;
+  };
+  const pending = get(wait, "/api/session-control/children/wait?session=lead&children=all&timeoutMs=50");
+  try {
+    while (!held) await new Promise(resolve => setTimeout(resolve, 0));
+    const late = await backend.createSession("late", "/tmp", "claude", loadSettings, { parentSession });
+    observeChildSession({
+      sessionId: late.wolfpackSessionId,
+      name: "late",
+      parentSession,
+      alive: true,
+      runtimeState: { state: "working", authority: "fallback", freshness: "fresh", source: "screen-fallback", label: "working", stale: false, observedAt: "t", changedAt: "t", transitionSequence: 1, unseen: false },
+    }, publish);
+    childMessageEvent(parent.wolfpackSessionId, "late", "started", publish);
+    release();
+    const response = await pending.reply;
+    expect(response.body).toMatchObject({ outcome: "timeout", pending: [{ session: "late", sessionId: late.wolfpackSessionId }] });
+  } finally {
+    release();
+    backend.list = list;
+    backend.setSessionAlive("late", false);
+  }
+});
