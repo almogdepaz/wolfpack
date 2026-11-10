@@ -586,6 +586,34 @@ test("L5: scheduled tick warnings are latched until error change or recovery", a
   } finally { capture.mockRestore(); t.close(); }
 }, 15000);
 
+test("SR-R2: stop while the post-kill reconcile list is held still forbids launch preparation", async () => {
+  const t = await fixture();
+  let release!: () => void;
+  let arrived!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const listing = new Promise<void>(resolve => { arrived = resolve; });
+  let flight: Promise<void> | undefined;
+  try {
+    writeFileSync(t.transcript, "no late archive");
+    await t.reopen();
+    const list = t.backend.listSessionFacts.bind(t.backend);
+    t.backend.listSessionFacts = async () => {
+      const facts = await list();
+      if (t.kills.length && !facts.some(f => f.name === "assistant")) { arrived(); await held; }
+      return facts;
+    };
+    flight = t.ctx.focusRuntime.tick();
+    await Promise.race([listing, flight.then(() => { throw new Error("rotation ended before held reconciliation"); })]);
+    t.ctx.focusRuntime.stop();
+    const launches = t.launches.length;
+    release();
+    await flight;
+    expect(t.launches).toHaveLength(launches);
+    expect(t.archived()).toEqual([]);
+    expect(readFileSync(t.transcript, "utf8")).toBe("no late archive");
+  } finally { release(); await flight; t.close(); }
+});
+
 test("a configured non-Pi assistant is not rotated by the managed skill protocol", async () => {
   const t = await fixture();
   try {

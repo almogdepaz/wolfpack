@@ -29,7 +29,18 @@ export class FocusRuntime {
   private lifetime = 0;
   private tickError?: string;
   constructor(private readonly ctx: ServerContext) {
-    this.pins = new PinnedSessionService({ backend: ctx.backend, pins: () => (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder), prepareLaunch: pin => ctx.assistantService.prepareLaunch(pin) });
+    // The reconciler is single-flight: bind its async facts read to the runtime lifetime that selected these pins.
+    let pinLifetime = this.lifetime;
+    this.pins = new PinnedSessionService({ backend: ctx.backend,
+      pins: () => {
+        pinLifetime = this.lifetime;
+        return (ctx.assistantService.config?.pinnedSessions ?? []).filter(pin => this.homeIsLocal() || pin.name !== "assistant" || pin.cwd !== ctx.assistantService.folder);
+      },
+      prepareLaunch: pin => {
+        if (ctx.assistantService.isManagedPin(pin) && pinLifetime !== this.lifetime) throw new Error("assistant launch revoked: runtime stopped or restarted");
+        return ctx.assistantService.prepareLaunch(pin);
+      },
+    });
     this.queue = new FocusSendQueue(async (id, text, origin) => {
       const prompt = origin === "routine" ? ctx.assistantService.routinePrompt(text) : { text };
       const { isAllowedSession } = await import("./http.js");
@@ -146,6 +157,7 @@ export class FocusRuntime {
         if (!active()) return;
         this.pins.reset("assistant");
         await this.pins.tick();
+        if (!active()) return;
         this.lastVerdict = undefined;
       });
     }).finally(() => { this.tickFlight = undefined; });
