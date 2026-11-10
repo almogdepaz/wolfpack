@@ -9,6 +9,7 @@ import { createLogger, errMsg } from "../log.js";
 
 const log = createLogger("server");
 const GIT_TIMEOUT_MS = 2000;
+const RECENT_INPUT_MS = 60_000;
 export interface GitHead { branch?: string; head?: string }
 
 /** Branch + HEAD for a cwd; empty outside a repository or on any git failure. */
@@ -32,6 +33,7 @@ export class ActivityRecorder {
   private unsubscribe?: () => void;
   private readonly known = new Map<string, Known>();
   private readonly presence = new Set<string>();
+  private readonly latestInput = new Map<string, number>();
   private presenceBucket = "";
   private pending = new Set<Promise<void>>();
 
@@ -97,9 +99,18 @@ export class ActivityRecorder {
     }
   }
 
+  /** Live input presence, including events deduplicated out of the five-minute journal. No input bytes retained. */
+  hasRecentInput(session: string): boolean {
+    const recorded = this.options.journal.inputAt(session);
+    const at = Math.max(this.latestInput.get(session) ?? -Infinity, recorded ? Date.parse(recorded) : -Infinity);
+    return (this.options.now ?? Date.now)() - at < RECENT_INPUT_MS;
+  }
   /** Input reached a PTY from a browser or the cli. Records presence only, never the bytes. */
   notePresence(session: string, source: InputSource): void {
-    const bucket = presenceBucket((this.options.now ?? Date.now)());
+    const now = (this.options.now ?? Date.now)();
+    for (const [name, at] of this.latestInput) if (now - at >= RECENT_INPUT_MS) this.latestInput.delete(name);
+    this.latestInput.set(session, now);
+    const bucket = presenceBucket(now);
     if (bucket !== this.presenceBucket) { this.presenceBucket = bucket; this.presence.clear(); }
     if (this.presence.has(session)) return;
     this.presence.add(session);

@@ -155,6 +155,9 @@ export class ActivityJournal {
     }
   }
 
+  /** Most recent journaled input-presence fact for this session, restored on server restart. */
+  inputAt(session: string): string | undefined { this.open(); return this.lastInputBySession.get(session); }
+
   /** `exceptSession` leaves one session's input out of `lastInputAt` (the assistant's own typing). */
   status(options: { exceptSession?: string } = {}): ActivityJournalStatus {
     this.open();

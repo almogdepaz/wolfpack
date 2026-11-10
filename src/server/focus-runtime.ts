@@ -113,6 +113,12 @@ export class FocusRuntime {
       if (!active() || !service.pins.some(pin => service.isManagedPin(pin)) || !this.homeIsLocal() || this.queue.busy || !service.conversationChanged()) return;
       // Share the routine lock, not its cached status: a pull might still be about to publish an inbox.
       await this.routines.withNoInbox(async () => {
+        const { activePtySessions } = await import("./websocket.js");
+        const userActive = () => {
+          const attached = activePtySessions.get("assistant");
+          return !!(attached?.viewer || attached?.pendingViewer) || this.ctx.activityRecorder.hasRecentInput("assistant");
+        };
+        if (userActive()) return;
         const current = await this.sample();
         if (!active() || !current?.idle || current.needsInput || this.queue.busy || !service.enabled || !this.homeIsLocal()) return;
         // Recheck incarnation and program token after asynchronous sampling; never kill by reusable name.
@@ -123,7 +129,7 @@ export class FocusRuntime {
           || (fact.programStatus && (!state || !piHarness.isIdle(state)))
           || (current.programAt === undefined && (!current.fallback || current.fallback.outputSequence === undefined
             || fact.outputSequence !== current.fallback.outputSequence || !genericHarness.isIdle(current.fallback)))
-          || this.queue.busy || !service.enabled || !this.homeIsLocal()) return;
+          || this.queue.busy || userActive() || !service.enabled || !this.homeIsLocal()) return;
         await this.ctx.backend.killSessionById(current.id);
         // stop() revokes this continuation even if the same runtime has since started again.
         if (!active()) return;

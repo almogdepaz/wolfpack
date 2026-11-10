@@ -20,7 +20,7 @@ async function fixture() {
   let assistant = service("generation one");
   await assistant.enable(true);
   const backend = new MockBackend();
-  const journal = new ActivityJournal({ dir: join(root, "activity") });
+  let journal = new ActivityJournal({ dir: join(root, "activity") });
   const launches: string[][] = [];
   const kills: string[] = [];
   const sends: string[] = [];
@@ -42,8 +42,9 @@ async function fixture() {
   return {
     root, backend, launches, kills, sends, state, transcript, record, archive, archived,
     get ctx() { return ctx; }, get assistant() { return assistant; },
-    async reopen(skill = "generation two") {
+    async reopen(skill = "generation two", reopenJournal = false) {
       ctx.focusRuntime.stop();
+      if (reopenJournal) { journal.close(); journal = new ActivityJournal({ dir: join(root, "activity") }); }
       assistant = service(skill);
       ctx = createServerContext({ backend, config, assistantService: assistant, activityJournal: journal });
       ctx.focusRuntime.start();
@@ -380,6 +381,59 @@ test("SR-R2: a new runtime lifetime cannot revive an old held rotation or clear 
     expect(await t.backend.list()).toEqual([]);
     expect(t.ctx.focusRuntime.pins.errors.assistant).toBe("new lifetime startup failure");
   } finally { release(); await flight; t.close(); }
+});
+
+test.each(["viewer", "pendingViewer"] as const)("L3: an interactive %s defers rotation until detached", async which => {
+  const t = await fixture();
+  const { activePtySessions } = await import("../../src/server/websocket.ts");
+  const { default: WebSocket } = await import("ws");
+  const before = activePtySessions.get("assistant");
+  try {
+    writeFileSync(t.transcript, "user draft");
+    await t.reopen();
+    // Only the existing registry's presence fact is used; no socket transport is constructed.
+    activePtySessions.set("assistant", { alive: true, viewer: null, pendingViewer: null, proc: null, [which]: Object.create(WebSocket.prototype) });
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual([]);
+    activePtySessions.delete("assistant");
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual(["mock:assistant"]);
+  } finally { if (before) activePtySessions.set("assistant", before); else activePtySessions.delete("assistant"); t.close(); }
+});
+
+test("L3: every input presence refreshes the 60s gate, including repeats in one journal bucket", async () => {
+  const t = await fixture();
+  try {
+    writeFileSync(t.transcript, "recent user input");
+    await t.reopen();
+    const at = Date.UTC(2026, 10, 10, 20, 0, 1);
+    setSystemTime(new Date(at));
+    __resetSessionObservationForTests();
+    t.ctx.activityRecorder.notePresence("assistant", "browser");
+    setSystemTime(new Date(at + 59_000));
+    t.ctx.activityRecorder.notePresence("assistant", "cli"); // same five-minute bucket, still fresh input
+    setSystemTime(new Date(at + 60_000));
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual([]);
+    setSystemTime(new Date(at + 119_000));
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual(["mock:assistant"]);
+  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
+});
+
+test("L3: journaled recent input survives a server restart", async () => {
+  const t = await fixture();
+  try {
+    writeFileSync(t.transcript, "recent input across restart");
+    const at = Date.now();
+    t.ctx.activityRecorder.notePresence("assistant", "browser");
+    await t.reopen("generation two", true);
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual([]);
+    setSystemTime(new Date(at + 61_000));
+    await t.ctx.focusRuntime.tick();
+    expect(t.kills).toEqual(["mock:assistant"]);
+  } finally { setSystemTime(); __resetSessionObservationForTests(); t.close(); }
 });
 
 test("a configured non-Pi assistant is not rotated by the managed skill protocol", async () => {
