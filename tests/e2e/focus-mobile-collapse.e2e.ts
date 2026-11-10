@@ -91,13 +91,16 @@ test("phone disclosure keeps its choice across reload, shows attention, and has 
   const toggle = page.getByRole("button", { name: /Collapse assistant/ });
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   await expect(toggle).toContainText("6 need you");
-  expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  const target = await toggle.boundingBox();
+  expect(target!.height).toBeGreaterThanOrEqual(44);
+  expect(target!.width).toBeGreaterThanOrEqual(44);
   await toggle.tap();
   const expand = page.getByRole("button", { name: /Expand assistant/ });
   await expect(expand).toHaveAttribute("aria-expanded", "false");
   await expect(page.locator("#dashboard-focus-details")).toBeHidden();
   expect((await page.locator("#dashboard-focus").boundingBox())!.height).toBeLessThanOrEqual(48);
   await page.screenshot({ path: info.outputPath(`collapsed-${page.viewportSize()!.width}.png`) });
+  expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await page.reload();
   await expect(expand).toHaveAttribute("aria-expanded", "false");
   await expand.tap();
@@ -106,6 +109,13 @@ test("phone disclosure keeps its choice across reload, shows attention, and has 
   await page.reload();
   await expect(page.getByRole("button", { name: /Collapse assistant/ })).toHaveAttribute("aria-expanded", "true");
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
+  const phone = page.viewportSize()!;
+  await page.getByRole("button", { name: /Collapse assistant/ }).tap();
+  await page.setViewportSize({ width: 1280, height: 844 });
+  await expect(page.locator("#dashboard-focus-details")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Expand assistant|Collapse assistant/ })).toHaveCount(0);
+  await page.setViewportSize(phone);
+  await expect(page.getByRole("button", { name: /Expand assistant/ })).toHaveAttribute("aria-expanded", "false");
 });
 
 test("quiet phones default collapsed; desktop keeps the full banner without a toggle", async ({ page }, info) => {
@@ -134,6 +144,13 @@ test("phone disclosure works when its storage access throws", async ({ page }, i
   await expect(page.locator("#dashboard-focus-details")).toBeVisible();
   await page.getByRole("button", { name: /Collapse assistant/ }).tap();
   await expect(page.locator("#dashboard-focus-details")).toBeHidden();
+});
+
+test("collapsed phones can touch-scroll to the last session", async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "mobile scroll surface");
+  await realisticFocus(page); await ready(page);
+  await page.getByRole("button", { name: /Collapse assistant/ }).tap();
+  await touchToLastCard(page);
 });
 
 test("Sessions touch scroll from the expanded assistant reaches the last session", async ({ page }, info) => {

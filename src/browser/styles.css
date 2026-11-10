@@ -3085,12 +3085,17 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 @media (max-width: 768px) {
   .assistant-column { padding: 16px 16px 40px; }
   .assistant-column > header, .focus-next .focus-title small { display: none; }
-  .focus-block { margin: 10px 16px 8px; padding: 14px; }
+  #sessions-view { overflow-y: auto; }
+  #session-list { flex: none; overflow: visible; }
+  .focus-block { position: relative; flex: none; margin: 10px 16px 8px; padding: 14px; }
   .focus-block[data-mobile-collapsed=true] { padding-block: 0; }
   .focus-block .focus-mobile-toggle { display: flex; width: 100%; gap: 8px; padding: 0; border: 0; background: none; text-align: left; }
   .focus-mobile-toggle .focus-title { color: var(--text-3); font: inherit; }
   .focus-mobile-toggle svg { flex: none; }
   .focus-mobile-toggle[aria-expanded=true] svg { transform: rotate(180deg); }
+  .focus-block .focus-mobile-toggle[aria-expanded=true] { position: absolute; top: 14px; right: 14px; width: 44px; }
+  .focus-mobile-toggle[aria-expanded=true] > :not(svg) { display: none; }
+  .focus-block[data-mobile-collapsed=false] .focus-header { padding-right: 50px; }
   .focus-block .focus-next { margin-inline: -14px; }
   .focus-block .focus-nudge { font-size: 16px; -webkit-line-clamp: 3; }
   .focus-block .focus-next > li { padding-inline: 14px; }

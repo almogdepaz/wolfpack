@@ -760,7 +760,7 @@ test("native touch preserves pre-hold name scrolling and commits a held machine 
     touchPoints: [{ x, y: y - 120, radiusX: 2, radiusY: 2, force: 1, id: 1 }],
   });
   await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-  await expect.poll(() => page.locator("#session-list").evaluate(element => element.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => page.locator("#sessions-view").evaluate(element => element.scrollTop)).toBeGreaterThan(0);
 
   peerSessionCount = 1;
   await page.goto(server.baseUrl);

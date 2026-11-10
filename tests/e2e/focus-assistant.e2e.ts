@@ -1,4 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
+import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
+// Existing assistant controls are exercised with the dashboard explicitly expanded.
+test.beforeEach(async ({ page }) => { await page.addInitScript(key => localStorage.setItem(key, "1"), FOCUS_MOBILE_EXPANDED_KEY); });
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
