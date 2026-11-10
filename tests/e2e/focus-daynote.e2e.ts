@@ -21,7 +21,7 @@ test.beforeEach(async ({ page }) => {
   ] } })).ok()).toBe(true);
 });
 
-for (const width of [1440, 1280, 390]) test(`day note ${width} opens the latest readable write-up first, with raw facts collapsed and mark-read intact`, async ({ page }, info) => {
+for (const width of [1440, 1280, 390]) test(`day note ${width} opens all readable write-ups first, with raw facts collapsed and mark-read intact`, async ({ page }, info) => {
   test.skip(info.project.name === "desktop" ? width === 390 : width !== 390, "viewport belongs to the matching project");
   await page.setViewportSize({ width, height: 900 });
   await note(`# ${day}\n\n## sessions\n\n- generated session facts\n\n## assistant\n\nEarlier write-up.\n\n---\n\n# later · after today\n\n<!-- generated untrusted data -->\n\n## git\n\n- generated commit facts\n\n## assistant\n\n${latest}`);
@@ -29,10 +29,14 @@ for (const width of [1440, 1280, 390]) test(`day note ${width} opens the latest 
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await page.getByRole("button", { name: `Read day note for ${day}`, exact: true }).click();
   const dialog = page.locator("#app-dialog");
-  const writeUp = dialog.getByRole("region", { name: "Latest assistant write-up", exact: true });
+  await expect(dialog.locator(".focus-note > section")).toContainText("Earlier write-up.");
+  const writeUp = dialog.getByRole("region", { name: "Assistant write-ups", exact: true });
   await expect(writeUp.getByRole("heading")).toHaveText(["done", "still open", "needs you tomorrow"]);
   await expect(writeUp.getByRole("listitem")).toHaveCount(6);
-  await expect(writeUp).not.toContainText("Earlier write-up");
+  await expect(writeUp).toContainText("Earlier write-up.");
+  const authored = await writeUp.textContent();
+  expect(authored!.indexOf("Earlier write-up.")).toBeLessThan(authored!.indexOf("The review is finished."));
+  await expect(writeUp).toContainText("later · after today");
   await expect(writeUp).toContainText("Review <img src=x onerror=alert(1)> as literal text.");
   await expect(dialog.locator("img")).toHaveCount(0);
   const details = dialog.locator("details");
@@ -48,18 +52,24 @@ for (const width of [1440, 1280, 390]) test(`day note ${width} opens the latest 
   await page.screenshot({ path: info.outputPath(`day-note-${width}.png`), fullPage: true });
   await details.locator("summary").click();
   await expect(details.locator("pre")).toContainText("generated commit facts");
-  await expect(details.locator("pre")).toContainText("Earlier write-up.");
+  await expect(details.locator("pre")).not.toContainText("Earlier write-up.");
+  await expect(details.locator("pre")).not.toContainText("The review is finished.");
   await page.locator("#app-dialog-confirm").click();
   await expect(page.locator("#assistant-content .focus-yesterday")).toHaveCount(0);
 });
 
-for (const empty of ["no heading", "pending update"] as const) test(`day note ${empty}: no write-up yet, generated facts stay reachable but collapsed`, async ({ page }) => {
-  await note(empty === "no heading" ? `# ${day}\n\n## sessions\n- raw activity only` : `# ${day}\n\n## assistant\nEarlier prose\n\n---\n# later\n## sessions\n- raw activity only\n\n## assistant\n\n`);
+for (const empty of ["no heading", "pending update", "none answered"] as const) test(`day note ${empty}: authored reviews stay visible and generated facts stay collapsed`, async ({ page }) => {
+  await note(empty === "no heading" ? `# ${day}\n\n## sessions\n- raw activity only` : `# ${day}\n\n## assistant\n${empty === "pending update" ? "Earlier prose" : ""}\n\n---\n\n# later · after 2026-11-09T18:00:00.000Z\n\n## sessions\n- raw activity only\n\n## assistant\n\n`);
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await page.getByRole("button", { name: `Read day note for ${day}`, exact: true }).click();
   const dialog = page.locator("#app-dialog");
-  await expect(dialog.getByRole("region", { name: "Latest assistant write-up", exact: true })).toHaveText("No assistant write-up yet.");
+  const authored = dialog.getByRole("region", { name: "Assistant write-ups", exact: true });
+  if (empty === "pending update") {
+    await expect(authored).toContainText("Earlier prose");
+    await expect(authored).not.toContainText("No assistant write-up yet.");
+  } else await expect(authored).toContainText("No assistant write-up yet.");
+  if (empty !== "no heading") await expect(authored).toContainText("Update pending.");
   await expect(dialog.locator("details")).not.toHaveAttribute("open");
   await dialog.locator("summary").click();
   await expect(dialog.locator("pre")).toContainText("raw activity only");

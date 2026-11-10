@@ -583,7 +583,7 @@ export function createAssistantView(deps: {
     const date = doc().daySummary?.date;
     if (!date) return;
     const note = await deps.request<{ markdown: string }>(`/focus/day-note?date=${date}`, undefined, machine);
-    if (await showAppDialog({ title: `Day note ${date}`, message: "The assistant's latest write-up.", content: createDayNoteContent(note.markdown), confirmLabel: "Mark read", cancelLabel: "Close" })) await write({ type: "seen-day-note", at: new Date().toISOString() });
+    if (await showAppDialog({ title: `Day note ${date}`, message: "The day's assistant write-ups.", content: createDayNoteContent(note.markdown), confirmLabel: "Mark read", cancelLabel: "Close" })) await write({ type: "seen-day-note", at: new Date().toISOString() });
   }
   const timingForm = document.getElementById("assistant-timing") as HTMLFormElement | null;
   const timingStatus = (text: string, state: string) => { const el = document.getElementById("assistant-timing-status"); if (el) { el.textContent = text; el.dataset.state = state; } };
