@@ -15,7 +15,8 @@ const {
 const { __resetChildEventsForTests } = await import("../../../src/server/child-events.ts");
 const { clearParentInbox, listParentNotifications } = await import("../../../src/server/parent-inbox.ts");
 const { PROGRAM_STATUS_STATE } = await import("../../../src/program-status-contract.ts");
-const { QUIET_ALERT_MODE } = await import("../../../src/quiet-alert-policy.ts");
+const { QUIET_ALERT_KIND, QUIET_ALERT_MODE } = await import("../../../src/quiet-alert-policy.ts");
+const { invalidateQuietAlertPolicy } = await import("../../../src/quiet-alert-policy-invalidation.ts");
 
 // A blocked child event must reach the phone through the quiet-alert policy
 // even when the child's screen never changes (review R4).
@@ -452,4 +453,79 @@ test("a block that adopts a screen-change episode keeps it after the child leave
   await observeAfter(31);
   await observeAfter(31);
   expect(payloads).toEqual(["Wolfpack: worker: Idle"]);
+});
+
+/** A rendered quiet episode emits and its first push fails; `block` runs between that attempt and two quiet observations. */
+async function failRenderedQuietPush(block: () => Promise<void>, quietObservations = 2): Promise<void> {
+  writeQuietAlertMode(QUIET_ALERT_MODE.QUIET_AFTER_ACTIVITY);
+  await spawnChild();
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(0);
+  backend.setCapturePane(async () => "real rendered progress");
+  backend.setOutputSequence("worker", "1");
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(1);
+  setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+  await observeAfter(31);
+  await block();
+  for (let i = 0; i < quietObservations; i++) {
+    setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+    await observeAfter(31);
+  }
+}
+
+test("the reviewer's replaced-emitted-quiet-retry ordering: a short block restores the failed episode's retry (review A7-3)", async () => {
+  const sender = failingSender(1);
+  await failRenderedQuietPush(async () => {
+    expect(sender.attempts()).toBe(1);
+    setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+    await observeAfter(1);
+    setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+    await observeAfter(1);
+  });
+  expect(sender.attempts()).toBe(2);
+  expect(sender.delivered()).toBe(1);
+});
+
+test("the reviewer's replaced-emitted-quiet-retry control: without a block the failed episode retries once (review A7-3)", async () => {
+  const sender = failingSender(1);
+  await failRenderedQuietPush(async () => {
+    expect(sender.attempts()).toBe(1);
+    setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+    await observeAfter(1);
+    setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+    await observeAfter(1);
+  });
+  expect(sender.attempts()).toBe(2);
+  expect(sender.delivered()).toBe(1);
+});
+
+test("new real activity during a short block supersedes the failed episode: no restore, a fresh attempt budget (review A7-3)", async () => {
+  const sender = failingSender(Number.POSITIVE_INFINITY);
+  await failRenderedQuietPush(async () => {
+    expect(sender.attempts()).toBe(1);
+    setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+    await observeAfter(1);
+    backend.setCapturePane(async () => "newer rendered progress");
+    backend.setOutputSequence("worker", "2");
+    setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+    await observeAfter(1);
+    setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+    await observeAfter(1);
+  }, 5);
+  // The failed episode used 1 of its 3 attempts; the newer episode has its own 3.
+  expect(sender.attempts()).toBe(4);
+});
+
+test("a policy invalidation during a short block supersedes the failed episode: no restore (review A7-3)", async () => {
+  const sender = failingSender(Number.POSITIVE_INFINITY);
+  await failRenderedQuietPush(async () => {
+    expect(sender.attempts()).toBe(1);
+    setChildStatus(PROGRAM_STATUS_STATE.BLOCKED, "permission");
+    await observeAfter(1);
+    invalidateQuietAlertPolicy(QUIET_ALERT_KIND.QUIET);
+    setChildStatus(PROGRAM_STATUS_STATE.WORKING);
+    await observeAfter(1);
+  }, 4);
+  expect(sender.attempts()).toBe(1);
 });
