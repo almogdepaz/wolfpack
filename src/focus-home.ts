@@ -2,11 +2,10 @@ import { readFileSync } from "node:fs";
 import { CONFIG_PATH, parseConfig } from "./config.js";
 import { writePrivateJsonFile } from "./persistence.js";
 
-export const FOCUS_HOME_DISABLE_FIRST = "Disable this machine's assistant first, then change its home machine.";
+import { isFocusHome } from "./focus-home-contract.js";
+export { isFocusHome } from "./focus-home-contract.js";
 
-export function isFocusHome(value: unknown): value is string | null {
-  return value === null || typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
-}
+export const FOCUS_HOME_DISABLE_FIRST = "Disable this machine's assistant first, then change its home machine.";
 export function readFocusHomeConfig(path = CONFIG_PATH): Record<string, unknown> | null {
   try { const raw: unknown = JSON.parse(readFileSync(path, "utf8")); return parseConfig(raw) ? raw as Record<string, unknown> : null; }
   catch { return null; }

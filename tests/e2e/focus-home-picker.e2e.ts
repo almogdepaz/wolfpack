@@ -1,5 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { startTestServer, type TestServer } from "./helpers";
+import { writeFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { ASSISTANT_TIMING_DEFAULTS } from "../../src/focus-scheduler";
 let server: TestServer;
 const peerId = "2af8af29-c4fe-44f9-9a99-9a0e35952d74";
@@ -7,7 +9,7 @@ const origin = "https://picker-peer.example.ts.net";
 test.beforeEach(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterEach(async () => { await server?.close(); });
 async function peer(page: Page) {
-  const state = { online: true, owner: true };
+  const state = { online: true, owner: true, storeError: false };
   await page.route("https://**", route => route.abort());
   await page.route("**/api/tailnet/v1/candidates", route => route.fulfill({ json: { candidates: [
     { hostname: "picker-peer.example.ts.net", tailnetNodeId: "n-picker", origin, online: state.online },
@@ -20,8 +22,12 @@ async function peer(page: Page) {
     wolfpack: { version: "1.7.0" }, capabilities: ["sessions", "terminal-websocket", "push-subscription"],
   } }) : route.abort());
   await page.route(`${origin}/api/sessions`, route => state.online ? route.fulfill({ headers, json: { sessions: [] } }) : route.abort());
-  await page.route(`${origin}/api/focus**`, route => state.online ? route.fulfill({ headers, json: { home: peerId, installationId: peerId, local: state.owner, document: null, revision: 0,
-    assistant: { enabled: false, folder: "/remote/assistant", state: "off", queued: 0 } } }) : route.abort());
+  await page.route(`${origin}/api/focus**`, route => {
+    if (!state.online) return route.abort();
+    if (state.storeError) return route.fulfill({ status: 503, headers, json: { home: peerId, installationId: peerId, local: true, error: "peer store unreadable" } });
+    return route.fulfill({ headers, json: { home: peerId, installationId: peerId, local: state.owner, document: null, revision: 0,
+      assistant: { enabled: false, folder: "/remote/assistant", state: "off", queued: 0 } } });
+  });
   await page.route(`${origin}/api/settings`, route => route.fulfill({ headers, json: { settings: { assistant: ASSISTANT_TIMING_DEFAULTS } } }));
   return state;
 }
@@ -32,6 +38,41 @@ async function settings(page: Page) {
   await expect(page.getByRole("combobox", { name: "Home machine", exact: true })).toBeEnabled();
   await expect(page.getByRole("combobox", { name: "Home machine", exact: true }).locator(`option[value='${peerId}']`)).toHaveText("Studio");
 }
+
+test("L3: the picker works on first paint with a corrupt local store", async ({ page }, info) => {
+  await peer(page);
+  expect((await fetch(server.baseUrl + "/api/focus/assistant", { method: "POST", body: JSON.stringify({ enabled: false }) })).status).toBe(200);
+  const before = await (await fetch(server.baseUrl + "/api/focus")).json();
+  const path = join(server.home, ".wolfpack/assistant/focus.json");
+  writeFileSync(path, "{broken");
+  await page.goto(server.baseUrl);
+  await page.locator(info.project.name === "desktop" ? "#expanded-settings-btn" : "#mobile-settings").click();
+  const select = page.getByRole("combobox", { name: "Home machine", exact: true });
+  await expect(select).toBeEnabled();
+  await expect(select).toHaveValue(before.installationId);
+  await expect(select.locator(`option[value='${peerId}']`)).toHaveText("Studio");
+  await select.selectOption(peerId);
+  await page.locator("#app-dialog-confirm").click();
+  await expect(select).toBeEnabled();
+  expect((await (await fetch(server.baseUrl + "/api/focus")).json()).home).toBe(peerId);
+  expect(readFileSync(path, "utf8")).toBe("{broken");
+});
+
+test("L3: remote 503 identity never replaces the serving machine's identity", async ({ page }) => {
+  const state = await peer(page); await settings(page);
+  const select = page.getByRole("combobox", { name: "Home machine", exact: true });
+  const self = await select.inputValue();
+  await page.locator("#assistant-setting-toggle").click(); await page.locator("#app-dialog-confirm").click();
+  await expect(page.locator("#assistant-setting-status")).toHaveText("off");
+  state.storeError = true;
+  await select.selectOption(peerId); await page.locator("#app-dialog-confirm").click();
+  await expect(select).toBeEnabled();
+  await expect(page.locator("#assistant-setting-error")).toContainText("peer store unreadable");
+  await expect(select.locator(`option[value='${self}']`)).toContainText("this machine");
+  await expect(select.locator(`option[value='${peerId}']`)).toHaveText("Studio");
+  await select.selectOption(self); await page.locator("#app-dialog-confirm").click();
+  await expect.poll(async () => (await (await fetch(server.baseUrl + "/api/focus")).json()).local).toBe(true);
+});
 
 test("home picker confirms local-only changes, refuses an enabled assistant, and cancels without writing", async ({ page }, info) => {
   await peer(page);

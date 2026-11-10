@@ -6,10 +6,11 @@ import type { AssistantTiming } from "../src/focus-scheduler";
 import type { AssistantTerminalTarget } from "./assistant-terminal";
 import { showAppDialog } from "./app-dialog";
 import { isRequestTimeout } from "./fetch-timeout";
+import { isFocusHomeIdentity, type FocusHomeIdentity } from "../src/focus-home-contract";
 import { AGENT_CONTEXT_DOCUMENT_PATH, agentContextEnabled, extensionUnavailable, summarizeAgentContext } from "../src/focus-context";
 interface AssistantStatus { enabled: boolean; folder: string; state: string; session?: string; sessionId?: string; queued: number; error?: string; unavailableReason?: string }
 interface RoutineStatus { catchingUp: { machines: number; since: string | null; unconfirmed?: true } | null; yesterday?: { date: string; note: boolean; endsAt: string }; stale: { since: string } | null; unreachable: { name: string; since: string | null }[]; surfaced: { sends: number } | null; notice?: string; error?: string }
-interface FocusResponse { home: string; installationId: string; local: boolean; document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
+interface FocusResponse extends FocusHomeIdentity { document: FocusDocument | null; revision: number; assistant?: AssistantStatus; routines?: RoutineStatus }
 interface Machine { key: string; name: string }
 class FocusOwnershipError extends Error {}
 const HOME_CHANGED = "not saved — the home changed; review the current home and try again.";
@@ -39,7 +40,7 @@ export function createAssistantView(deps: {
   confirm: (enabled: boolean) => Promise<boolean>;
 }) {
   let focus: FocusResponse | undefined;
-  let localOwner: Pick<FocusResponse, "home" | "installationId" | "local"> | undefined;
+  let localOwner: FocusHomeIdentity | undefined;
   let homeGeneration = 0;
   let homeChanging = false;
   let timingOwner: HomeOwner | undefined;
@@ -471,7 +472,21 @@ export function createAssistantView(deps: {
       const epoch = writes;
       let generation = homeGeneration;
       try {
-        let response = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, undefined, false);
+        let response: FocusResponse;
+        try { response = await deps.request<FocusResponse>(open ? "/focus?open=1" : "/focus", undefined, undefined, false); }
+        catch (e) {
+          // Only the serving machine's error can identify the local owner;
+          // a remote 503 describes that peer, not this installation.
+          const identity: unknown = (e as { data?: unknown })?.data;
+          if (generation === homeGeneration && isFocusHomeIdentity(identity)) {
+            const changed = acceptOwner(identity);
+            generation = homeGeneration;
+            const home = identity.local ? { key: "", name: "this machine" } : deps.homeMachine(identity.home);
+            machine = home?.key ?? ""; homeName = home?.name ?? identity.home;
+            if (changed) focus = undefined;
+          }
+          throw e;
+        }
         if (generation !== homeGeneration) return;
         const changed = acceptOwner({ home: response.home, installationId: response.installationId, local: response.local });
         generation = homeGeneration;

@@ -28,7 +28,7 @@ export function createFocusRoutes(ctx: ServerContext) {
         if (current.local && new URL(req.url ?? "/", "http://localhost").searchParams.get("open") === "1") void ctx.focusRuntime.routines.tick();
         json(res, { ...current, ...(current.local && { assistant: await ctx.focusRuntime.status(), routines: ctx.focusRuntime.routines.status(current.document?.daySummary?.date) }) });
       }
-      catch (error) { json(res, { error: errMsg(error) }, 503); }
+      catch (error) { json(res, { ...identity(), error: errMsg(error) }, 503); }
     },
     "POST /api/focus/home": async (req: IncomingMessage, res: ServerResponse) => {
       const body = await parseObjectBody(req, res);

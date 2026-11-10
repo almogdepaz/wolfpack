@@ -39,7 +39,7 @@ async function fixture(detectProviders?: () => Promise<ProviderReadiness[]>) {
   });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { ctx, backend, service, config, path, raw, homeArrived, partialArrived,
+  return { base, ctx, backend, service, config, path, raw, homeArrived, partialArrived,
     beginPartial(path: string, body: unknown) {
       const text = JSON.stringify(body);
       let req!: ReturnType<typeof request>;
@@ -148,6 +148,20 @@ test("moving home drains an old journal pull and subsequent ticks do not pull fo
     expect(pulls).toBe(1);
     expect((await f.get()).local).toBe(false);
   } finally { release(); await f.close(); }
+});
+
+test("L3: corrupt local focus still supplies store-independent identity for a live home change", async () => {
+  const f = await fixture();
+  try {
+    f.ctx.focusStore.update(0, [{ type: "add", intention: { id: "seed", title: "seed" } }]);
+    writeFileSync(f.ctx.focusStore.path, "{broken");
+    const response = await fetch(f.base + "/api/focus");
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ home: getInstallationId(), installationId: getInstallationId(), local: true, error: expect.any(String) });
+    expect((await f.post({ home: "healthy-peer" })).status).toBe(200);
+    expect(await f.get()).toMatchObject({ home: "healthy-peer", local: false });
+    expect(readFileSync(f.ctx.focusStore.path, "utf8")).toBe("{broken");
+  } finally { await f.close(); }
 });
 
 test("an enabled local assistant refuses a home move; invalid disk config never changes live ownership", async () => {

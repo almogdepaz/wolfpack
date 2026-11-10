@@ -1706,7 +1706,7 @@
         "additionalProperties": false
       },
       "errors": [
-        "503 ErrorEnvelope"
+        "503 FocusUnavailableEnvelope"
       ]
     },
     "updateFocus": {
@@ -5317,6 +5317,30 @@
         "error"
       ],
       "additionalProperties": true
+    },
+    "FocusUnavailableEnvelope": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "home": {
+          "type": "string"
+        },
+        "installationId": {
+          "type": "string"
+        },
+        "local": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "error",
+        "home",
+        "installationId",
+        "local"
+      ],
+      "additionalProperties": false
     },
     "GitFileChange": {
       "type": "object",

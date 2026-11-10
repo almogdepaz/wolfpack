@@ -478,6 +478,7 @@ export const controlApiSource: ControlApiSource = {
     },
     ...volatileRelayDefinitions,
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
+    FocusUnavailableEnvelope: object({ error: string(), home: string(), installationId: string(), local: boolean() }, ["error", "home", "installationId", "local"]),
     GitFileChange: object({ path: { type: "string", minLength: 1, maxLength: 4096 }, previousPath: { type: "string", minLength: 1, maxLength: 4096 }, status: { type: "string", enum: GIT_CHANGE_KINDS } }, ["path", "status"]),
     ProjectGitStatus: { oneOf: [
       object({ state: { const: "not-repository" } }, ["state"]),
@@ -1391,7 +1392,7 @@ export const controlApiSource: ControlApiSource = {
       operationId: "getFocus", stable: true, auth: "jwt-when-configured",
       response: object({ home: string(), installationId: string(), local: boolean(), document: { type: ["object", "null"] }, revision: integer(), assistant: { type: "object" },
         routines: { type: "object", description: "Render-ready routine state from src/server/focus-routines.ts (home only); ?open=1 also requests a debounced catch-up" } }, ["home", "installationId", "local", "document", "revision"]),
-      errors: ["503 ErrorEnvelope"],
+      errors: ["503 FocusUnavailableEnvelope"],
     },
     "POST /api/focus": {
       operationId: "updateFocus", stable: true, auth: "jwt-when-configured",
