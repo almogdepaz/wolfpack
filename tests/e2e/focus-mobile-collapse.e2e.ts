@@ -10,13 +10,15 @@ type SessionFixture = { name: string; identity: Record<string, unknown>; runtime
 type TouchSample = { moves: number; cancelled: number; trusted: number };
 declare global { interface Window { focusMobileCollapseTouch?: TouchSample } }
 
-async function realisticFocus(page: Page, needsInput = true) {
+async function realisticFocus(page: Page, needsInput = true, triage: "none" | "suggest" | "needs-you" = "none") {
+  const episode = new Date().toISOString();
   await page.route("https://**", route => route.abort());
   const sessions = (template: SessionFixture, machine: string) => Array.from({ length: 16 }, (_, i) => ({ ...template,
     name: `${machine}-project-${String(i).padStart(2, "0")}`,
     identity: { ...template.identity, wolfpackSessionId: `mock:${machine}-${i}`, projectPath: `/work/${machine}-project-${i}` },
-    runtimeState: { ...template.runtimeState, state: needsInput && i < 3 ? "needs-input" : i < 8 ? "working" : "idle", inputKind: needsInput && i < 3 ? "question" : undefined,
-      authority: "program", stale: false, unseen: true, changedAt: new Date().toISOString() },
+    runtimeState: { ...template.runtimeState, state: triage === "suggest" && machine === "local" && i === 0 ? "done" : needsInput && i < 3 ? "needs-input" : i < 8 ? "working" : "idle", inputKind: needsInput && i < 3 ? "question" : undefined,
+      authority: "program", stale: false, unseen: true, changedAt: episode,
+      ...(triage === "suggest" && machine === "local" && i === 0 ? { stoppedAt: episode, stoppedSequence: 5, acknowledgedSequence: 0 } : {}) },
   }));
   await page.route(url => url.origin === server.baseUrl && url.pathname === "/api/sessions", async route => {
     const response = await route.fetch(); const body = await response.json();
@@ -39,6 +41,10 @@ async function realisticFocus(page: Page, needsInput = true) {
     body.document.intentions = Array.from({ length: 6 }, (_, i) => ({ id: `today-${i}`, title: ["Ship the release safely", "Review the database migration", "Resolve the broker leak", "Finish the mobile dashboard", "Document the rollout", "Follow up on the incident"][i], done: false,
       createdAt: new Date().toISOString(), sessions: [`mock:local-${i}`, `mock:studio-${i}`] }));
     body.document.nudge = { text: "Several agents are waiting for a decision. Review the migration, confirm release access, then continue the rollout.", updatedAt: new Date().toISOString(), author: "assistant" };
+    if (triage !== "none") body.document.next = { updatedAt: episode, author: "assistant", rows: [
+      triage === "suggest" ? { ref: { machine: body.installationId, sessionId: "mock:local-0" }, stoppedAt: episode, verdict: "suggest", reason: "The rollout is ready to continue", suggestion: "Continue with the approved rollout." }
+        : { ref: needsInput ? { machine: body.installationId, sessionId: "mock:local-0" } : { intentionId: "today-0" }, ...(needsInput ? { stoppedAt: episode } : {}), verdict: "needs-you", reason: "Choose the rollout window" },
+    ] };
     delete body.routines;
     await route.fulfill({ response, json: body });
   });
@@ -84,6 +90,27 @@ async function touchToLastCard(page: Page) {
   }
   await expect(last).toBeInViewport({ ratio: .9 });
 }
+
+for (const scenario of [
+  { triage: "suggest" as const, needsInput: false, label: "0 need you · 1 suggestion" },
+  { triage: "needs-you" as const, needsInput: false, label: "1 need you" },
+  { triage: "needs-you" as const, needsInput: true, label: "6 need you" },
+]) test(`phone attention includes ${scenario.triage} (${scenario.needsInput ? "session" : "no session input"}) without double-counting`, async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "mobile triage disclosure");
+  await realisticFocus(page, scenario.needsInput, scenario.triage); await ready(page);
+  const toggle = page.locator('#dashboard-focus [data-focus-action="toggle-dashboard"]');
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await toggle.tap();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(toggle).toContainText(scenario.label);
+  await expect(toggle.locator("span").last()).toBeVisible();
+  await expect(page.locator("#dashboard-focus-details")).toBeHidden();
+  await toggle.tap();
+  if (scenario.triage === "suggest") {
+    await expect(page.locator("#dashboard-focus .focus-draft p")).toHaveText("Continue with the approved rollout.");
+    await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to local-project-00", exact: true })).toBeVisible();
+  }
+});
 
 test("phone disclosure keeps its choice across reload, shows attention, and has a 44px target", async ({ page }, info) => {
   test.skip(info.project.name === "desktop", "mobile disclosure");
