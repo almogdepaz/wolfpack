@@ -347,6 +347,25 @@ This requires a **new session launched by the updated broker** and a reachable l
 
 The Agent Context skill can use verified self-identity when asked to update “this session,” without asking the user to copy or confirm a UUID. Explicitly targeting another session still requires its exact UUID. Activating a broker upgrade terminates its existing terminals; schedule that upgrade and then launch fresh sessions.
 
+## Read, write and edit files
+
+```bash
+wolfpack [--machine <short-name-or-fqdn>] file read <path> [--json]
+wolfpack [--machine <short-name-or-fqdn>] file write <path> (--stdin | --from <local-file>) [--create-only] [--json]
+wolfpack [--machine <short-name-or-fqdn>] file edit <path> --old <text> --new <text> [--all] [--json]
+```
+
+These commands reach any path that the wolfpack server user can access: the same power as a shell session on that machine. `POST /api/file/read`, `POST /api/file/write` and `POST /api/file/edit` sit behind the same global API gate as session create: the origin check, then JWT validation when JWT auth is configured, then the rate limits. There is no route-specific bypass and no extra authorization layer. When JWT auth is not configured, access is the same as for session create today: any client that passes the origin check can use them. `--machine` uses the verified Tailnet selector described above, and a failed handshake fails the command with no localhost fallback.
+
+- Paths: the server requires an absolute path. Without `--machine`, the CLI resolves a relative path against the local working directory; with `--machine`, it refuses a relative path before any request. Symlinks are followed like a shell follows them, and every result reports `resolvedPath`. A dangling symlink is refused (`DANGLING_SYMLINK`).
+- Size: files, write content and edit results are limited to 10 MiB (10485760 bytes). A larger file fails with `FILE_TOO_LARGE` and its `size`; the CLI refuses large local content before any request. Directories, FIFOs and other non-regular files fail with `NOT_A_FILE`.
+- `read`: text that round-trips through UTF-8 unchanged (a BOM is kept) is returned with `encoding: "utf8"`; other content is returned base64 with `binary: true`. Without `--json`, the CLI writes the exact bytes to stdout with no added newline.
+- `write`: the content goes to a temp file in the target's directory, is synced, and replaces the target in one rename, so a failed write leaves the old file intact. An existing file keeps its mode; a new file gets the default mode under the server umask. `--create-only` refuses an existing file (`FILE_EXISTS`), including one that appears during the write.
+- `edit`: exact text replacement in a UTF-8 text file (`BINARY_FILE` otherwise). Without `--all`, `--old` must match exactly once; zero or several matches fail with `EDIT_MATCH_COUNT` and `matches`, and the file stays unchanged. The result reports `replacements`. The write is atomic like `write`. `--old` must not be empty; `--new` may be empty, and either value may start with `-`.
+- Errors: `{ "error": message, "code": string, "size"?, "maxBytes"?, "matches"? }` with codes `INVALID_REQUEST`, `REQUEST_TOO_LARGE`, `PATH_NOT_ABSOLUTE`, `NOT_FOUND`, `PERMISSION_DENIED`, `NOT_A_FILE`, `SYMLINK_LOOP`, `DANGLING_SYMLINK`, `FILE_TOO_LARGE`, `FILE_EXISTS`, `BINARY_FILE`, `EDIT_MATCH_COUNT` and `IO_FAILED`. CLI `--json` failures are `{ "ok": false, "error": { "code", "message" }, ...details }`, plus `machine` for a remote target. Exit codes: `1` for a refused operation, `2` for a usage error, `5` for an auth failure.
+- Audit: each write and edit, successful or failed, is logged at info level by the `remote-ops` component with the path, byte count, replacement count or error code, and duration. File content is never logged.
+- Limits: there is no locking. Two concurrent edits of one file can lose one update. The rename replaces a hard link with a new file, and the replaced file is owned by the server user. Create-only needs hard-link support in the target filesystem.
+
 ## Follow live events
 
 ```bash

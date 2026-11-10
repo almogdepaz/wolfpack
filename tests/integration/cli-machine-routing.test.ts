@@ -171,6 +171,55 @@ describe("remote machine cli network boundary", () => {
     });
   }
 
+  test("routes file commands through the verified machine handshake with authentication", async () => {
+    const requests: Array<{ readonly path: string; readonly authorization: string | null; readonly body: unknown }> = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(request) {
+        const url = new URL(request.url);
+        requests.push({ path: url.pathname, authorization: request.headers.get("authorization"), body: request.method === "POST" ? await request.json() : null });
+        if (url.pathname === "/api/machine") return Response.json(handshake());
+        if (url.pathname === "/api/file/read") return Response.json({ ok: true, path: "/srv/a.txt", resolvedPath: "/srv/a.txt", size: 2, binary: false, encoding: "utf8", content: "hi" });
+        return new Response("unexpected", { status: 500 });
+      },
+    });
+    try {
+      const child = spawnCli(["--machine", "peer", "file", "read", "/srv/a.txt", "--json"], `http://127.0.0.1:${server.port}`);
+      const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      expect(exitCode).toBe(0);
+      expect(stderr).toBe("");
+      expect(requests.map(({ path }) => path)).toEqual(["/api/machine", "/api/file/read"]);
+      expect(requests.every(({ authorization }) => authorization?.startsWith("Bearer ") === true)).toBe(true);
+      expect(requests[1]!.body).toEqual({ path: "/srv/a.txt" });
+      expect(JSON.parse(stdout)).toMatchObject({ content: "hi", machine: (handshake() as { readonly machine: object }).machine });
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("a file command fails before any request when the machine handshake fails", async () => {
+    const paths: string[] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        paths.push(path);
+        if (path === "/api/machine") return Response.json(handshake("https://other.example.ts.net"));
+        return Response.json({ ok: true });
+      },
+    });
+    try {
+      const child = spawnCli(["--machine", "peer", "file", "write", "/srv/a.txt", "--stdin", "--json"], `http://127.0.0.1:${server.port}`);
+      const [exitCode] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+      expect(exitCode).toBe(1);
+      expect(paths).toEqual(["/api/machine"]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("origin mismatch fails before mutation without localhost fallback", async () => {
     const paths: string[] = [];
     const server = Bun.serve({

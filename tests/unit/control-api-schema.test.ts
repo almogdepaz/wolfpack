@@ -257,6 +257,27 @@ describe("control api schema", () => {
     expect(validate(remove.response, { digest, deleted: false }, artifact)).toEqual([]);
     expect(validate(remove.response, { digest, deleted: "false" }, artifact)).not.toEqual([]);
   });
+  test("publishes the authenticated remote file routes with their success and error shapes", () => {
+    const read = httpOperation("readRemoteFile");
+    const write = httpOperation("writeRemoteFile");
+    const edit = httpOperation("editRemoteFile");
+    expect([read.route, write.route, edit.route]).toEqual(["POST /api/file/read", "POST /api/file/write", "POST /api/file/edit"]);
+    for (const operation of [read, write, edit]) expect(operation.auth).toBe("jwt-when-configured");
+    expect(validate(read.request, { path: "/srv/a.txt" }, artifact)).toEqual([]);
+    expect(validate(read.request, { path: "/srv/a.txt", extra: 1 }, artifact)).not.toEqual([]);
+    expect(validate(read.response, { ok: true, path: "/a", resolvedPath: "/b", size: 2, binary: false, encoding: "utf8", content: "hi" }, artifact)).toEqual([]);
+    expect(validate(write.request, { path: "/a", encoding: "base64", content: "AA==", createOnly: true }, artifact)).toEqual([]);
+    expect(validate(write.request, { path: "/a", encoding: "hex", content: "00" }, artifact)).not.toEqual([]);
+    expect(validate(write.response, { ok: true, path: "/a", resolvedPath: "/a", size: 1, created: true }, artifact)).toEqual([]);
+    expect(validate(edit.request, { path: "/a", old: "x", new: "", all: true }, artifact)).toEqual([]);
+    expect(validate(edit.request, { path: "/a", old: "", new: "y" }, artifact)).not.toEqual([]);
+    expect(validate(edit.response, { ok: true, path: "/a", resolvedPath: "/a", size: 1, replacements: 2 }, artifact)).toEqual([]);
+    const envelope = resolveRef({ $ref: "#/$defs/RemoteFileErrorEnvelope" }, artifact);
+    expect(validate(envelope, { error: "old text matched 3 times; expected exactly 1", code: "EDIT_MATCH_COUNT", matches: 3 }, artifact)).toEqual([]);
+    expect(validate(envelope, { error: "x", code: "NOT_A_CODE" }, artifact)).not.toEqual([]);
+    expect(edit.errors).toContain("409 RemoteFileErrorEnvelope");
+  });
+
   test("publishes the runtime asset route with extension ID and immutable package digest", () => {
     expect(httpOperation("getInstalledExtensionAsset").route).toBe("GET /api/extensions/assets/{extensionId}/{packageDigest}/{assetPath}");
   });

@@ -34,6 +34,7 @@ import { runAgentCommand, runSessionCommand } from "./session-control.js";
 import { applyServiceAuthFile } from "./service-auth.js";
 import { logsCommand } from "./logs.js";
 import { EVENTS_USAGE, eventsCommand } from "./events.js";
+import { fileCommand } from "./remote-ops.js";
 import { issueJwt } from "./api.js";
 import { isMachineDisplayName } from "../tailnet-machine-contract.js";
 import { extensionsCommand } from "./extensions.ts";
@@ -104,6 +105,7 @@ Commands:
   wolfpack attach [session]        Attach this terminal to a session
   wolfpack logs [--follow|--json]  Read or follow service logs
   wolfpack events [--kinds ..] [--json] Follow live session and task events
+  wolfpack file read|write|edit <path> Read, write or edit a file on the server machine
   wolfpack extensions <action>     Install and manage local extension packages
   wolfpack extension-data <action> Read/publish documents or put/delete extension blobs
   wolfpack uninstall --yes         Remove Wolfpack configuration and services
@@ -278,6 +280,7 @@ function isMachineHelpRequest(argv: readonly string[]): boolean {
     ].includes(action ?? ""));
   }
   if (family === "extension-data") return command.length === 1 || (command.length === 2 && ["read", "publish", "put-blob", "delete-blob"].includes(action ?? ""));
+  if (family === "file") return command.length === 1 || (command.length === 2 && ["read", "write", "edit"].includes(action ?? ""));
   return family === "agent"
     && (command.length === 1 || (command.length === 2 && (action === "spawn" || action === "inbox")));
 }
@@ -289,6 +292,7 @@ function isMachineCommandSupported(argv: readonly string[]): boolean {
     return ["create", "open", "organization", "status", "inbox", "read", "send", "wait", "prompt"].includes(action ?? "");
   }
   if (family === "extension-data") return ["read", "publish", "put-blob", "delete-blob"].includes(action ?? "");
+  if (family === "file") return ["read", "write", "edit"].includes(action ?? "");
   return family === "agent" && (action === "spawn" || action === "inbox");
 }
 
@@ -427,6 +431,7 @@ async function dispatchCommand(
     else process.exit(await extensionDataCommand(argv.slice(1), target));
     return;
   }
+  if (cmd === "file") process.exit(await fileCommand(argv.slice(1), target));
   if (cmd === "logs") {
     if (argv.length === 2 && HELP_ALIASES.has(argv[1] ?? "")) print("Usage: wolfpack logs [--follow] [--json] [--broker]");
     else process.exit(await logsCommand(argv.slice(1)));

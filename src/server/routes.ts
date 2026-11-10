@@ -49,6 +49,7 @@ import { createProjectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, createSessionControlRoutes } from "./session-control-routes.js";
 import { createPushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
 import { createEventRoutes } from "./event-routes.js";
+import { createRemoteOpsRoutes } from "./remote-ops-routes.js";
 
 const log = createLogger("routes");
 const RESIZE_BODY_KEYS = new Set(["session", "cols", "rows"]);
@@ -190,6 +191,7 @@ return {
   },
 
   ...createSessionControlRoutes(ctx),
+  ...createRemoteOpsRoutes(),
 
   "POST /api/resize": async (req, res) => {
     const body = await parseObjectBody(req, res);

@@ -2516,6 +2516,237 @@
         "503 ErrorEnvelope"
       ]
     },
+    "readRemoteFile": {
+      "route": "POST /api/file/read",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:readRemoteFile:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readRemoteFile request",
+        "type": "object",
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/RemoteFilePath"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:readRemoteFile:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "readRemoteFile response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "path": {
+            "type": "string"
+          },
+          "resolvedPath": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760
+          },
+          "binary": {
+            "type": "boolean"
+          },
+          "encoding": {
+            "enum": [
+              "utf8",
+              "base64"
+            ],
+            "description": "utf8 for text; base64 when binary is true"
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "path",
+          "resolvedPath",
+          "size",
+          "binary",
+          "encoding",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 RemoteFileErrorEnvelope",
+        "401 ErrorEnvelope",
+        "403 RemoteFileErrorEnvelope",
+        "404 RemoteFileErrorEnvelope",
+        "409 RemoteFileErrorEnvelope",
+        "413 RemoteFileErrorEnvelope",
+        "500 RemoteFileErrorEnvelope"
+      ]
+    },
+    "writeRemoteFile": {
+      "route": "POST /api/file/write",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:writeRemoteFile:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "writeRemoteFile request",
+        "type": "object",
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/RemoteFilePath"
+          },
+          "encoding": {
+            "enum": [
+              "utf8",
+              "base64"
+            ]
+          },
+          "content": {
+            "type": "string"
+          },
+          "createOnly": {
+            "const": true,
+            "description": "Refuse an existing file"
+          }
+        },
+        "required": [
+          "path",
+          "encoding",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:writeRemoteFile:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "writeRemoteFile response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "path": {
+            "type": "string"
+          },
+          "resolvedPath": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760
+          },
+          "created": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "path",
+          "resolvedPath",
+          "size",
+          "created"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 RemoteFileErrorEnvelope",
+        "401 ErrorEnvelope",
+        "403 RemoteFileErrorEnvelope",
+        "404 RemoteFileErrorEnvelope",
+        "409 RemoteFileErrorEnvelope",
+        "413 RemoteFileErrorEnvelope",
+        "500 RemoteFileErrorEnvelope"
+      ]
+    },
+    "editRemoteFile": {
+      "route": "POST /api/file/edit",
+      "stable": false,
+      "auth": "jwt-when-configured",
+      "requestContentType": "application/json",
+      "request": {
+        "$id": "wolfpack:control-api:http:editRemoteFile:request",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "editRemoteFile request",
+        "type": "object",
+        "properties": {
+          "path": {
+            "$ref": "#/$defs/RemoteFilePath"
+          },
+          "old": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact text; without all it must match exactly once"
+          },
+          "new": {
+            "type": "string"
+          },
+          "all": {
+            "const": true,
+            "description": "Replace every match"
+          }
+        },
+        "required": [
+          "path",
+          "old",
+          "new"
+        ],
+        "additionalProperties": false
+      },
+      "response": {
+        "$id": "wolfpack:control-api:http:editRemoteFile:response",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "editRemoteFile response",
+        "type": "object",
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "path": {
+            "type": "string"
+          },
+          "resolvedPath": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10485760
+          },
+          "replacements": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "ok",
+          "path",
+          "resolvedPath",
+          "size",
+          "replacements"
+        ],
+        "additionalProperties": false
+      },
+      "errors": [
+        "400 RemoteFileErrorEnvelope",
+        "401 ErrorEnvelope",
+        "403 RemoteFileErrorEnvelope",
+        "404 RemoteFileErrorEnvelope",
+        "409 RemoteFileErrorEnvelope",
+        "413 RemoteFileErrorEnvelope",
+        "500 RemoteFileErrorEnvelope"
+      ]
+    },
     "killSession": {
       "route": "POST /api/kill",
       "stable": true,
@@ -5310,6 +5541,51 @@
         "error"
       ],
       "additionalProperties": true
+    },
+    "RemoteFilePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "description": "Absolute path on the server machine; symlinks are followed"
+    },
+    "RemoteFileErrorEnvelope": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "code": {
+          "enum": [
+            "INVALID_REQUEST",
+            "REQUEST_TOO_LARGE",
+            "PATH_NOT_ABSOLUTE",
+            "NOT_FOUND",
+            "PERMISSION_DENIED",
+            "NOT_A_FILE",
+            "SYMLINK_LOOP",
+            "DANGLING_SYMLINK",
+            "FILE_TOO_LARGE",
+            "FILE_EXISTS",
+            "BINARY_FILE",
+            "EDIT_MATCH_COUNT",
+            "IO_FAILED"
+          ]
+        },
+        "size": {
+          "type": "integer"
+        },
+        "maxBytes": {
+          "type": "integer"
+        },
+        "matches": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "error",
+        "code"
+      ],
+      "additionalProperties": false
     },
     "GitFileChange": {
       "type": "object",

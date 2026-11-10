@@ -3,6 +3,12 @@ import { EXTENSION_BLOB_LIMITS } from "../extensions/blob-store.ts";
 import { EXTENSION_PEER_ERROR } from "../extensions/selected-host-contract.ts";
 import { GIT_CHANGE_KINDS, MAX_GIT_STATUS_FILES } from "../extensions/git-status-contract.ts";
 import { MAX_GIT_DIFF_SECTION_BYTES, MAX_GIT_DIFF_UNTRACKED_BYTES } from "../extensions/git-diff-contract.ts";
+import {
+  REMOTE_FILE_ENCODINGS,
+  REMOTE_FILE_ERRORS,
+  REMOTE_FILE_MAX_BYTES,
+  REMOTE_FILE_MAX_PATH_LENGTH,
+} from "../remote-ops-contract.ts";
 import { SESSION_CREATE_ERROR } from "../session-create-contract.ts";
 import { SESSION_ORGANIZATION_MAX_REQUEST_BYTES } from "../session-organization-contract.ts";
 import { SESSION_SNAPSHOT_FRESHNESS } from "../session-snapshot-contract.ts";
@@ -522,6 +528,14 @@ export const controlApiSource: ControlApiSource = {
     },
     ...volatileRelayDefinitions,
     ErrorEnvelope: object({ error: string() }, ["error"], { additionalProperties: true }),
+    RemoteFilePath: { type: "string", minLength: 1, maxLength: REMOTE_FILE_MAX_PATH_LENGTH, description: "Absolute path on the server machine; symlinks are followed" },
+    RemoteFileErrorEnvelope: object({
+      error: string(),
+      code: { enum: [...REMOTE_FILE_ERRORS] },
+      size: integer(),
+      maxBytes: integer(),
+      matches: integer(),
+    }, ["error", "code"]),
     GitFileChange: object({ path: { type: "string", minLength: 1, maxLength: 4096 }, previousPath: { type: "string", minLength: 1, maxLength: 4096 }, status: { type: "string", enum: GIT_CHANGE_KINDS } }, ["path", "status"]),
     ProjectGitStatus: { oneOf: [
       object({ state: { const: "not-repository" } }, ["state"]),
@@ -1597,6 +1611,63 @@ export const controlApiSource: ControlApiSource = {
         }, ["broker"]),
       }, ["brokerAvailable", "brokerReady", "counts"]),
       errors: ["503 ErrorEnvelope"],
+    },
+    "POST /api/file/read": {
+      operationId: "readRemoteFile",
+      stable: false,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({ path: ref("RemoteFilePath") }, ["path"]),
+      response: object({
+        ok: { const: true },
+        path: string(),
+        resolvedPath: string(),
+        size: { type: "integer", minimum: 0, maximum: REMOTE_FILE_MAX_BYTES },
+        binary: boolean(),
+        encoding: { enum: [...REMOTE_FILE_ENCODINGS], description: "utf8 for text; base64 when binary is true" },
+        content: string(),
+      }, ["ok", "path", "resolvedPath", "size", "binary", "encoding", "content"]),
+      errors: ["400 RemoteFileErrorEnvelope", "401 ErrorEnvelope", "403 RemoteFileErrorEnvelope", "404 RemoteFileErrorEnvelope", "409 RemoteFileErrorEnvelope", "413 RemoteFileErrorEnvelope", "500 RemoteFileErrorEnvelope"],
+    },
+    "POST /api/file/write": {
+      operationId: "writeRemoteFile",
+      stable: false,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        path: ref("RemoteFilePath"),
+        encoding: { enum: [...REMOTE_FILE_ENCODINGS] },
+        content: string(),
+        createOnly: { const: true, description: "Refuse an existing file" },
+      }, ["path", "encoding", "content"]),
+      response: object({
+        ok: { const: true },
+        path: string(),
+        resolvedPath: string(),
+        size: { type: "integer", minimum: 0, maximum: REMOTE_FILE_MAX_BYTES },
+        created: boolean(),
+      }, ["ok", "path", "resolvedPath", "size", "created"]),
+      errors: ["400 RemoteFileErrorEnvelope", "401 ErrorEnvelope", "403 RemoteFileErrorEnvelope", "404 RemoteFileErrorEnvelope", "409 RemoteFileErrorEnvelope", "413 RemoteFileErrorEnvelope", "500 RemoteFileErrorEnvelope"],
+    },
+    "POST /api/file/edit": {
+      operationId: "editRemoteFile",
+      stable: false,
+      auth: "jwt-when-configured",
+      requestContentType: "application/json",
+      request: object({
+        path: ref("RemoteFilePath"),
+        old: { type: "string", minLength: 1, description: "Exact text; without all it must match exactly once" },
+        new: string(),
+        all: { const: true, description: "Replace every match" },
+      }, ["path", "old", "new"]),
+      response: object({
+        ok: { const: true },
+        path: string(),
+        resolvedPath: string(),
+        size: { type: "integer", minimum: 0, maximum: REMOTE_FILE_MAX_BYTES },
+        replacements: { type: "integer", minimum: 1 },
+      }, ["ok", "path", "resolvedPath", "size", "replacements"]),
+      errors: ["400 RemoteFileErrorEnvelope", "401 ErrorEnvelope", "403 RemoteFileErrorEnvelope", "404 RemoteFileErrorEnvelope", "409 RemoteFileErrorEnvelope", "413 RemoteFileErrorEnvelope", "500 RemoteFileErrorEnvelope"],
     },
     "POST /api/kill": {
       operationId: "killSession",
