@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,27 @@ const workflow = Bun.YAML.parse(readFileSync(join(repo, ".github", "workflows", 
   jobs: { test: { steps: Array<{ run?: string }> } };
 };
 const gate = readFileSync(join(repo, "scripts", "ci-gate.sh"), "utf8");
+
+function requireCompatibleBash(): string {
+  // Server imports can reorder shared-process PATH. Probe stable executable
+  // paths instead of letting the gate's env shebang select an older Bash.
+  const candidates = ["/opt/homebrew/bin/bash", "/usr/local/bin/bash", "/usr/bin/bash", "/bin/bash"];
+  const diagnostics: string[] = [];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) { diagnostics.push(`${candidate}: missing`); continue; }
+    try {
+      const probe = Bun.spawnSync([candidate, "--noprofile", "--norc", "-c",
+        'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"'], { timeout: 5000 });
+      const version = /^(\d+)\.(\d+)$/.exec(probe.stdout.toString());
+      if (probe.exitCode === 0 && version &&
+          (Number(version[1]) > 4 || (Number(version[1]) === 4 && Number(version[2]) >= 4))) return candidate;
+      diagnostics.push(`${candidate}: exit ${probe.exitCode}, version ${probe.stdout.toString()}, ${probe.stderr.toString()}`);
+    } catch (error) {
+      diagnostics.push(`${candidate}: ${String(error)}`);
+    }
+  }
+  throw new Error(`CI gate test requires Bash >= 4.4; no compatible executable found. ${diagnostics.join("; ")}`);
+}
 
 test("CI provisions its required Playwright browsers before the complete integration shard", () => {
   const steps = workflow.jobs.test.steps;
@@ -37,7 +58,7 @@ test("CI provisions its required Playwright browsers before the complete integra
 import { appendFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify({ pid: process.pid, args: process.argv.slice(2) }) + "\\n");
 `, { mode: 0o700 });
-    const result = Bun.spawnSync([join(root, "scripts", "ci-gate.sh"), "integration"], {
+    const result = Bun.spawnSync([requireCompatibleBash(), "--noprofile", "--norc", join(root, "scripts", "ci-gate.sh"), "integration"], {
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, WOLFPACK_BROKER_BIN: recorder },
     });
     expect(result.stderr.toString()).toBe("");
