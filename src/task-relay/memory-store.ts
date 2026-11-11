@@ -20,10 +20,10 @@ export const MEMORY_RELAY_LIMITS = Object.freeze({
 export const MEMORY_RELAY_TIMING = Object.freeze({ retryMs: 1000, deadlineMs: 120_000, receiptMs: 900_000, clockSkewMs: 30_000 });
 type Limits = { readonly [K in keyof typeof MEMORY_RELAY_LIMITS]: number };
 export type MemoryRelayCode = "RELAY_CAPACITY" | "RELAY_RESET" | "INVALID_REQUEST" | "INVALID_CURSOR"
-  | "REGISTRATION_EXPIRED" | "TARGET_NOT_REGISTERED" | "CROSS_RELAY_ENDPOINT" | "ENVELOPE_CONFLICT" | "ENVELOPE_EXPIRED";
+  | "SESSION_ALREADY_REGISTERED" | "REGISTRATION_EXPIRED" | "TARGET_NOT_REGISTERED" | "CROSS_RELAY_ENDPOINT" | "ENVELOPE_CONFLICT" | "ENVELOPE_EXPIRED";
 export class MemoryRelayError extends Error {
-  constructor(readonly code: MemoryRelayCode) { super(code); }
-  get retryable(): boolean { return this.code === "RELAY_CAPACITY"; }
+  constructor(readonly code: MemoryRelayCode, readonly retryAfterMs?: number) { super(code); }
+  get retryable(): boolean { return this.code === "RELAY_CAPACITY" || this.code === "SESSION_ALREADY_REGISTERED"; }
 }
 function fail(code: MemoryRelayCode): never { throw new MemoryRelayError(code); }
 const bytes = (value: unknown): number => Buffer.byteLength(canonicalJson(value));
@@ -145,6 +145,10 @@ export class MemoryRelayStore {
       for (const entry of this.#registrations.values()) {
         if (!entry.current && entry.value.sessionId === value.sessionId && entry.value.generation === value.generation) fail("RELAY_RESET");
       }
+    }
+    if (mode === "connect" && prior && !existing) {
+      const remaining = Date.parse(prior.value.leaseExpiresAt) - now;
+      if (remaining > 0) throw new MemoryRelayError("SESSION_ALREADY_REGISTERED", remaining);
     }
     const retainPrior = this.#recoverable && prior !== undefined && !existing && prior.references > 0;
     if (retainPrior) {

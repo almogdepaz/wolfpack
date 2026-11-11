@@ -53,6 +53,8 @@ native SQLite is the default server storage; `WOLFPACK_TASK_RELAY_STORAGE=memory
 
 results remain `{ ok, profile, epoch, value }` or `{ ok: false, profile, epoch?, error: { code, message, retryable, mayHaveBeenDelivered?, retryAfterMs?, ownerFatal? } }`. see the generated schema and `src/task-relay/volatile-protocol.ts` for exact shapes.
 
+the first live registration owns each session. a different fresh generation receives retryable `SESSION_ALREADY_REGISTERED` and the remaining lease as `retryAfterMs`; disconnect or lease expiry permits replacement. same-generation renewal remains unchanged.
+
 server SQLite recovery preserves accepted mail, receipts, registrations, forwarding state and the store epoch in a private versioned SQLite journal. session-name reuse cannot access a different canonical UUID's endpoint. live plugins keep semantic state and outbox in RAM; plugin-process recovery is excluded. commits precede acceptance and external forwarding. a failed worker is replaced only after confirmed termination; the caller retries the same recorded protocol identity, not task execution. unresolved outcomes remain explicit. the [storage and recovery contract](task-recovery.md) defines private permissions, bounded retention, corruption/version refusal, compatibility and verification limits.
 
 session reads continue to isolate optional relay metadata from broker truth. `taskRelay: { status: "unavailable", recovery }` omits endpoint/transport metadata without declaring a live broker session dead. missing registration alone is not degradation, and liveness is not model readiness. see [relay degradation and recovery](session-control.md#relay-degradation-and-recovery).

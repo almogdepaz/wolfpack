@@ -84,7 +84,7 @@ export function relayOwnerFailureResult(failure: RelayOwnerFailureData, profile:
 export function volatileFailure(code: VolatileCode, epoch?: string, retryAfterMs?: number, profile: typeof MEMORY_RELAY_PROFILE = MEMORY_RELAY_PROFILE): VolatileResult {
   return { ok: false, profile, ...(epoch && { epoch }), error: {
     code, message: code,
-    retryable: ["RELAY_CAPACITY", "RELAY_UNAVAILABLE", "PEER_UNREACHABLE", "RELAY_STORAGE_RECOVERING"].includes(code),
+    retryable: ["SESSION_ALREADY_REGISTERED", "RELAY_CAPACITY", "RELAY_UNAVAILABLE", "PEER_UNREACHABLE", "RELAY_STORAGE_RECOVERING"].includes(code),
     ...(["RELAY_RESET", "DELIVERY_UNCONFIRMED", "PEER_UNREACHABLE", "RELAY_UNAVAILABLE"].includes(code) && { mayHaveBeenDelivered: true as const }),
     ...(retryAfterMs !== undefined && { retryAfterMs }),
   } };

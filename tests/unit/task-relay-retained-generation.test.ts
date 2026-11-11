@@ -17,6 +17,7 @@ for (const prune of ["maintenance", "lookup"] as const) test(`native terminal-on
     const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: source.endpoint, target: old.endpoint, createdAt: new Date(now).toISOString(), payload: "completed transport" };
     const accepted = store.accept(store.epoch, envelope, now); store.acknowledge(store.epoch, old.endpoint.id, envelope.envelopeId, now);
     const evidence = receipts(store), before = store.stats(), successor = registration(a.sessionId);
+    store.disconnect(store.epoch, a.sessionId, old.endpoint.id, now);
     const fresh = store.register(successor, now + 1);
     expect(fresh.endpoint).not.toEqual(old.endpoint);
     expect(store.inbox(store.epoch, fresh.endpoint.id, "0", now + 1).deliveries).toEqual([]);
@@ -53,7 +54,7 @@ for (const limit of ["registrations", "metadataBytes"] as const) test(`terminal-
     owner.store.accept(owner.store.epoch, envelope, now); owner.store.acknowledge(owner.store.epoch, old.endpoint.id, envelope.envelopeId, now);
     const before = owner.store.stats(), rows = owner.store.recoveryRows(); owner.close();
     owner = createRecoveryStore({ root, limits: limit === "registrations" ? { registrations: 1 } : { metadataBytes: before.metadataBytes * 2 - 1 } });
-    expect(() => owner.store.register(registration(input.sessionId), now + 1)).toThrow("RELAY_CAPACITY");
+    expect(() => owner.store.register(registration(input.sessionId), now + 60_000)).toThrow("RELAY_CAPACITY");
     expect(owner.store.recoveryRows()).toEqual(rows); expect(owner.store.stats()).toEqual(before);
     expect(owner.store.register(input, now, "renew").endpoint).toEqual(old.endpoint);
   } finally { owner.close(); rmSync(root, { recursive: true, force: true }); }
@@ -74,7 +75,7 @@ for (const state of ["mailbox", "in-flight", "retryable"] as const) test(`fresh 
       if (state === "retryable" && attempt.kind === "attempt") store.finishForward(store.epoch, envelope.envelopeId, attempt.token, { kind: "retryable" }, now);
     }
     const rows = store.recoveryRows();
-    expect(() => store.register(registration(input.sessionId), now + 1)).toThrow("RELAY_RESET");
+    expect(() => store.register(registration(input.sessionId), now + 60_000)).toThrow("RELAY_RESET");
     expect(store.recoveryRows()).toEqual(rows);
   } finally { owner.close(); rmSync(root, { recursive: true, force: true }); }
 });
@@ -91,6 +92,7 @@ test("terminal unconfirmed forwarding stays unknown through generation replaceme
     store.finishForward(store.epoch, envelope.envelopeId, attempt.token, { kind: "rejected" }, now);
     expect(store.terminalAcceptance(store.epoch, envelope, now)).toBeUndefined();
     const evidence = receipts(store), receiptBytes = store.stats().receiptBytes;
+    store.disconnect(store.epoch, input.sessionId, old.endpoint.id, now);
     const next = store.register(registration(input.sessionId), now + 1);
     owner.close(); owner = createRecoveryStore({ root }); store = owner.store;
     expect(receipts(store)).toEqual(evidence); expect(store.stats().receiptBytes).toBe(receiptBytes);
@@ -110,12 +112,13 @@ test("repeated empty fresh generations do not accumulate history while retained 
     store.accept(store.epoch, envelope, now); store.acknowledge(store.epoch, old.endpoint.id, envelope.envelopeId, now);
     let current = old;
     for (let index = 0; index < 20; index++) {
+      store.disconnect(store.epoch, input.sessionId, current.endpoint.id, now + 1);
       current = store.register(registration(input.sessionId), now + 1);
       expect(store.stats()).toMatchObject({ registrations: 2, sessions: 1, receipts: 1 });
     }
     const latest = { ...envelope, envelopeId: randomUUID(), source: current.endpoint, target: current.endpoint };
     store.accept(store.epoch, latest, now + 1); store.acknowledge(store.epoch, current.endpoint.id, latest.envelopeId, now + 1);
-    expect(() => store.register(registration(input.sessionId), now + 1)).toThrow("RELAY_CAPACITY");
+    expect(() => store.register(registration(input.sessionId), now + 60_001)).toThrow("RELAY_CAPACITY");
     expect(store.registration(store.epoch, current.endpoint.id, now + 1)?.endpoint).toEqual(current.endpoint);
     expect(store.stats()).toMatchObject({ registrations: 2, sessions: 1, receipts: 2 });
   } finally { owner.close(); rmSync(root, { recursive: true, force: true }); }

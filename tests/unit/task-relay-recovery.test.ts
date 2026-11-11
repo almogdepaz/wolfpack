@@ -53,7 +53,7 @@ test("durable registrations fence stale generations; bounded receipt expiry neve
     const target = store.register({ sessionId: b, generation, leaseMs: 60_000, protocolVersions: [2] }, now);
     const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: source.endpoint, target: target.endpoint, createdAt: new Date(now).toISOString(), payload: "opaque" };
     const accepted = store.accept(store.epoch, envelope, now);
-    expect(() => store.register({ sessionId: a, generation: randomUUID(), leaseMs: 60_000, protocolVersions: [2] }, now)).toThrow("RELAY_RESET");
+    expect(() => store.register({ sessionId: a, generation: randomUUID(), leaseMs: 60_000, protocolVersions: [2] }, now + 60_000)).toThrow("RELAY_RESET");
     store.acknowledge(store.epoch, target.endpoint.id, envelope.envelopeId, now);
     owner.close(); owner = createRecoveryStore({ root: directory }); store = owner.store;
     const renew = (at: number) => { for (const sessionId of [a, b]) store.register({ sessionId, generation, leaseMs: 60_000, protocolVersions: [2] }, at); };

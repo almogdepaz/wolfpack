@@ -119,6 +119,7 @@ describe("bounded volatile relay engine", () => {
     expect(f.store.stats()).toMatchObject({ activeItems: 1, registrations: 2 });
     code(() => f.store.inbox(f.epoch, f.target.id, "0", NOW + RELAY_LIMITS.MAX_LEASE_MS), "REGISTRATION_EXPIRED");
     expect(f.registration("target", "g", NOW + 10_000_000).endpoint).toEqual(f.target);
+    f.store.disconnect(f.epoch, "target", f.target.id, NOW + 10_000_000);
     const replacement = f.registration("target", "new", NOW + 10_000_000).endpoint;
     expect(replacement.id).not.toBe(f.target.id);
     code(() => f.store.acknowledge(f.epoch, f.target.id, "pending", NOW + 10_000_000), "REGISTRATION_EXPIRED");
@@ -132,6 +133,7 @@ describe("bounded volatile relay engine", () => {
     for (let generation = 0; generation < 32; generation++) {
       for (let item = 0; item < 2; item++) f.store.accept(f.epoch, { ...f.envelope(`${generation}-${item}`), target }, NOW);
       const old = target;
+      f.store.disconnect(f.epoch, "target", old.id, NOW);
       target = f.registration("target", `new-${generation}`).endpoint;
       code(() => f.store.inbox(f.epoch, old.id, "0", NOW), "REGISTRATION_EXPIRED");
       code(() => f.store.acknowledge(f.epoch, old.id, `${generation}-0`, NOW), "REGISTRATION_EXPIRED");
@@ -146,6 +148,7 @@ describe("bounded volatile relay engine", () => {
     const f = fixture();
     const sent = f.envelope("accepted-before-sender-loss");
     f.store.accept(f.epoch, sent, NOW);
+    f.store.disconnect(f.epoch, "source", f.source.id, NOW);
     f.registration("source", "replacement");
     expect(f.store.registration(f.epoch, f.source.id, NOW)).toBeUndefined();
     expect(f.store.stats()).toMatchObject({ activeItems: 1, receipts: 1, registrations: 2 });
@@ -165,6 +168,7 @@ describe("bounded volatile relay engine", () => {
     f.store.accept(f.epoch, { ...f.envelope("incoming"), source: f.target, target: f.source }, NOW);
     f.store.accept(f.epoch, f.envelope("completed"), NOW);
     f.store.acknowledge(f.epoch, f.target.id, "completed", NOW);
+    f.store.disconnect(f.epoch, "source", f.source.id, NOW);
     const source = f.registration("source", "new").endpoint;
     expect(f.store.stats()).toMatchObject({ activeItems: 0, activeBytes: 0, receipts: 0, receiptBytes: 0, registrations: 2, expiryEntries: 2, routes: 1 });
     expect(f.store.finishForward(f.epoch, outbound.envelopeId, attempt.token, { kind: "confirmed", acceptanceId: randomUUID() }, NOW)).toBe(false);
@@ -176,7 +180,7 @@ describe("bounded volatile relay engine", () => {
     const f = fixture({ limits: { metadataBytes: fixture().store.stats().metadataBytes } });
     f.store.accept(f.epoch, f.envelope("owned"), NOW);
     const before = f.store.stats();
-    code(() => f.registration("target", "x".repeat(512)), "RELAY_CAPACITY");
+    code(() => f.registration("target", "x".repeat(512), NOW + RELAY_LIMITS.MAX_LEASE_MS), "RELAY_CAPACITY");
     expect(f.store.stats()).toEqual(before);
     expect(f.store.registrationForSession(f.epoch, "target", NOW)!.endpoint).toEqual(f.target);
     expect(f.store.inbox(f.epoch, f.target.id, "0", NOW).deliveries.map(item => item.envelope.envelopeId)).toEqual(["owned"]);
