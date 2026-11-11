@@ -42,7 +42,7 @@ async function seed(page: Page, done = false) {
     for (const s of body.sessions) if (s.name !== "assistant") {
       s.identity.projectPath = "/work/focus";
       s.lastLine = "Step 2 done. Continue with step 3?";
-      s.runtimeState = { ...s.runtimeState, state: done || s.name === "another-project" ? "done" : "needs-input", inputKind: done ? undefined : "question", changedAt: episode, stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, stale: false, freshness: "fresh" };
+      s.runtimeState = { ...s.runtimeState, state: s.name === "another-project" ? "idle" : done ? "done" : "needs-input", inputKind: done ? undefined : "question", changedAt: episode, stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, stale: false, freshness: "fresh" };
     }
     await route.fulfill({ response, json: body });
   });
@@ -495,7 +495,7 @@ test("R1: a newer needs-you episode stays visible and disabled when the local li
     if (phase === "unavailable") return route.fulfill({ status: 503, json: { error: "broker not connected" } });
     const response = await route.fetch(); const body = await response.json();
     const s = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
-    s.runtimeState = { ...s.runtimeState, state: phase === "stopped" ? "done" : "needs-input", changedAt: phase === "stopped" ? episode : "2026-11-09T12:01:00Z", stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0 };
+    s.runtimeState = { ...s.runtimeState, state: phase === "stopped" ? "idle" : "needs-input", changedAt: phase === "stopped" ? episode : "2026-11-09T12:01:00Z", stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0 };
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);

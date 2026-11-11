@@ -22,12 +22,13 @@ test("assistant order survives merge; unjudged needs-you above, other new rules 
   expect(ids(mergeFocus(focus, sessions, { ...options, cap: 2 }))).toEqual(["urgent", "b"]);
   expect(focus.next?.rows.map(r => r.verdict)).toEqual(["suggest", "needs-you"]);
 });
-test("quiet suppresses only the judged machine/session/episode, never acknowledges; a new episode resurfaces", () => {
+test("quiet hides idle only; done retains its reason and never acknowledges; a new episode resurfaces", () => {
   const focus = doc([triage("a", "quiet")]);
   const a = session("a");
   const peer = session("a", "done", "other");
-  expect(ids(mergeFocus(focus, [a, peer], { ...options, cap: 10 }))).toEqual(["a"]);
-  expect(mergeFocus(focus, [a, peer], { ...options, cap: 10 }).rows[0]?.session?.machineInstallationId).toBe("other");
+  expect(ids(mergeFocus(focus, [a, peer], { ...options, cap: 10 }))).toEqual(["a", "a"]);
+  expect(mergeFocus(focus, [a, peer], { ...options, cap: 10 }).rows[0]).toMatchObject({ session: a, triage: { verdict: "quiet" }, reason: "Reason for a" });
+  expect(mergeFocus(focus, [{ ...a, state: "idle" }], options).rows).toEqual([]);
   expect(a.unseen).toBe(true); expect(a.stoppedSequence).toBe(3);
   expect(ids(mergeFocus(focus, [{ ...a, stoppedAt: "2026-11-09T12:01:00.000Z" }], options))).toEqual(["a"]);
   expect(mergeFocus(focus, [{ ...a, state: "working" }], options).rows).toEqual([]);
@@ -51,7 +52,7 @@ for (const verdict of ["quiet", "suggest"] as const) test(`R1: stale ${verdict} 
 test("ttl boundary, off and stale return rules alone with an honest order status", () => {
   const focus = doc([triage("a", "quiet")]);
   const sessions = [session("a")];
-  expect(mergeFocus(focus, sessions, { ...options, now: now + 4 * 3600_000 - 1 }).rows).toEqual([]);
+  expect(mergeFocus(focus, sessions, { ...options, now: now + 4 * 3600_000 - 1 }).rows[0]?.triage?.verdict).toBe("quiet");
   const expired = mergeFocus(focus, sessions, { ...options, now: now + 4 * 3600_000 });
   expect(ids(expired)).toEqual(["a"]); expect(expired.order).toBe("expired");
   expect(expired.rows[0]?.source).toBe("rules");
@@ -72,7 +73,9 @@ test("unreachable peer refs are retained and disabled; reachable missing refs an
 test("L4: equivalent episode timestamps match in reachable and cached paths", () => {
   for (const reachable of [true, false]) {
     const a = { ...session("a"), stoppedAt: "2026-11-09T14:00:00+02:00" };
-    expect(mergeFocus(doc([triage("a", "quiet")]), [a], { ...options, machineReachable: () => reachable }).rows).toEqual([]);
+    const quiet = mergeFocus(doc([triage("a", "quiet")]), [a], { ...options, machineReachable: () => reachable });
+    expect(quiet.rows).toHaveLength(reachable ? 1 : 0);
+    if (reachable) expect(quiet.rows[0]?.triage?.verdict).toBe("quiet");
     const suggestion = mergeFocus(doc([triage("a", "suggest")]), [a], { ...options, machineReachable: () => reachable });
     expect(suggestion.rows[0]?.source).toBe("assistant");
   }

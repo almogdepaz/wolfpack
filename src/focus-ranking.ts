@@ -16,6 +16,8 @@ export interface FocusSession {
   machine?: string;
   machineUrl?: string;
   machineInstallationId?: string;
+  parentId?: string;
+  children?: { total: number; working: number; status: string };
   /** Shown in the card body only; ranking ignores it. */
   lastLine?: string;
 }
@@ -144,7 +146,7 @@ export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[]
     }
     if (!row) continue;
     judged.add(focusNextRefKey(ref));
-    if (triage.verdict !== "quiet") assistant.push({ ...row, source: "assistant", triage, reason: triage.reason });
+    if (triage.verdict !== "quiet" || row.session?.state === AGENT_STATUS_STATE.DONE && stoppedUnseen(row.session)) assistant.push({ ...row, source: "assistant", triage, reason: triage.reason });
   }
   const unjudged = rules.filter(row => !judged.has(rowKey(row))).map(row => ({ ...row, source: "new-rules" as const }));
   return {
@@ -152,6 +154,27 @@ export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[]
       ...unjudged.filter(row => !row.session || !needsYou(row.session))].slice(0, cap),
     order: "assistant", updatedAt: next.updatedAt,
   };
+}
+export interface FocusCard { row: FocusAction; kind: "action" | "suggest" | "done" }
+/** Classify the full merge before presentation caps. Attention always beats delegation suppression. */
+export function focusCards(rows: readonly FocusAction[], sessions: readonly FocusSession[]): {
+  cards: FocusCard[]; waiting: FocusSession[]; working: number; notReached: FocusAction[];
+} {
+  const cards: FocusCard[] = [];
+  const waiting = sessions.filter(s => stoppedUnseen(s) && (s.children?.working ?? 0) > 0 && !needsYou(s));
+  const notReached: FocusAction[] = [];
+  for (const row of rows) {
+    const s = row.session;
+    if (s && needsYou(s) || row.triage?.verdict === "needs-you") cards.push({ row, kind: "action" });
+    else if (row.triage?.verdict === "suggest" && (row.triage.suggestion || row.triage.doneIntention)) cards.push({ row, kind: "suggest" });
+    else if (row.unavailable && !s) notReached.push(row);
+    else if (s && stoppedUnseen(s)) {
+      if ((s.children?.working ?? 0) > 0) continue;
+      if (s.parentId && sessions.some(parent => parent.id === s.parentId && parent.machineInstallationId === s.machineInstallationId && parent.machineUrl === s.machineUrl)) continue;
+      if (s.state === AGENT_STATUS_STATE.DONE || !row.triage) cards.push({ row, kind: "done" });
+    }
+  }
+  return { cards, waiting, working: sessions.filter(s => s.state === AGENT_STATUS_STATE.WORKING).length, notReached };
 }
 export type FocusDoneItem = { at: string; kind: "intention"; intention: FocusIntention } | { at: string; kind: "session"; intention: FocusIntention; session: FocusSession };
 /** Today's timeline: ticked intentions and linked finishes, excluding stopped-unseen work until reviewed. `day` maps a timestamp to its day label. */
