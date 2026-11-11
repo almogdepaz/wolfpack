@@ -201,8 +201,7 @@
     },
     "reskin-review.e2e.ts": {
       "projects": [
-        "desktop",
-        "iphone-se"
+        "desktop"
       ]
     },
     "selected-host-loader.e2e.ts": {
@@ -761,11 +760,13 @@
     },
     "reskin-review.e2e.ts": {
       "projects": [
-        "iphone-14"
+        "iphone-14",
+        "iphone-se"
       ],
       "reason": "Control C hit-target assertion failed during PR-tier verification",
       "failing": [
-        "[iphone-14] M1 Control C is hittable and preserves terminal focus"
+        "[iphone-14] M1 Control C is hittable and preserves terminal focus",
+        "[iphone-se] M1 Control C is hittable and preserves terminal focus"
       ]
     },
     "selected-host-extensions.e2e.ts": {
