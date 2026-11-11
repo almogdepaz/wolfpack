@@ -34,20 +34,20 @@ let context = createServerContext({ taskRoot: join(TEST_DIR, "owned-gateway"), e
 // Retain the production event-publisher bridge until the D3a characterization.
 setDefaultServerContext(context);
 
-const { createServerInstance, __globalRateLimiter } = await import("../../src/server/index.ts") as any;
+const { createServerInstance, } = await import("../../src/server/index.ts") as any;
 const { EVENTS_MAX_STREAMS } = await import("../../src/server/event-routes.ts");
 const { shouldAuthenticateApiPath } = await import("../../src/server/http.ts");
 const { parseSseEvents, WOLFPACK_EVENT_KIND } = await import("../../src/events-contract.ts");
 const { notifyProgramStatusChanged } = await import("../../src/server/program-status-signal.ts");
 type WolfpackEvent = import("../../src/events-contract.ts").WolfpackEvent;
 
-let { server, wss } = createServerInstance(context);
+let { server, wss, globalRateLimiter } = createServerInstance(context, { allowLocalOrigins: true });
 let base = "";
 
 async function listenWithContext(): Promise<void> {
   context = createServerContext({ taskRoot: join(TEST_DIR, "owned-gateway"), events: new EventBus(), jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0, backend: mockBackend });
   setDefaultServerContext(context);
-  ({ server, wss } = createServerInstance(context));
+  ({ server, wss, globalRateLimiter } = createServerInstance(context, { allowLocalOrigins: true }));
   await new Promise<void>((resolve) => {
     (server as Server).listen(0, "127.0.0.1", () => {
       base = `http://127.0.0.1:${((server as Server).address() as AddressInfo).port}`;
@@ -68,7 +68,7 @@ async function closeServerContext(): Promise<void> {
 
 beforeEach(async () => {
   await closeServerContext();
-  __globalRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
   mockBackend.setSessions([]);
   await listenWithContext();
 });

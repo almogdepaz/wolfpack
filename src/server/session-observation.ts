@@ -1071,7 +1071,7 @@ export function createSessionObservation(context: ServerContext, cacheTtlMs = 50
     // stalled network map must not hold the next local observation behind it.
     peerNotificationObservationPromise = (async () => {
       const { observePeerNotifications } = await import("./peer-notifications.ts");
-      for (const peer of await observePeerNotifications()) {
+      for (const peer of await observePeerNotifications(undefined, context.readTailscaleStatus)) {
         await context.push.checkSessionTransitions(peer.sessions, quietAlertPolicyEpoch(), () => context.push.getSubscriptionCount() > 0, peer.machine);
       }
     })().catch((error: unknown) => {

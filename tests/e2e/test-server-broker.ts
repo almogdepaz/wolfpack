@@ -9,15 +9,6 @@
  */
 import type { AddressInfo } from "node:net";
 
-process.env.WOLFPACK_TEST = "1";
-
-const { mock: bunMock } = await import("bun:test");
-const realHttp = await import("../../src/server/http.ts");
-await bunMock.module("../../src/server/http.js", () => ({
-  ...realHttp,
-  enumerateLocalTailnetCandidates: async () => ({ candidates: [] }),
-}));
-
 const socketPath = process.env.WOLFPACK_BROKER_SOCKET;
 if (!socketPath) {
   process.stderr.write("WOLFPACK_BROKER_SOCKET is required\n");
@@ -64,10 +55,10 @@ if (!brokerReady) {
 }
 
 const backend = new BrokerBackend(brokerClient);
-const context = createServerContext({ backend, terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS) });
+const context = createServerContext({ backend, readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS) });
 
 const { createServerInstance } = await import("../../src/server/index.ts");
-const { server } = createServerInstance(context);
+const { server } = createServerInstance(context, { allowLocalOrigins: true });
 
 const origError = console.error;
 console.error = (...args: unknown[]) => {

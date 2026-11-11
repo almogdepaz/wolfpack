@@ -8,7 +8,7 @@ describe("context-owned backend", () => {
   });
 
   test("default construction provides the backend contract", () => {
-    const { backend } = createServerContext();
+    const { backend } = createServerContext({ startSupervisor: false });
     expect(backend).toBeDefined();
     expect(typeof backend.list).toBe("function");
     expect(typeof backend.createSession).toBe("function");
@@ -16,10 +16,10 @@ describe("context-owned backend", () => {
   });
 
   test("constructing another context does not replace an owned backend", () => {
-    const first = createServerContext();
+    const first = createServerContext({ startSupervisor: false });
     const mock = new MockBackend();
     const second = createServerContext({ backend: mock });
-    const third = createServerContext();
+    const third = createServerContext({ startSupervisor: false });
     expect(second.backend).toBe(mock);
     expect(first.backend).not.toBe(third.backend);
     expect(third.backend).not.toBe(mock);
@@ -27,11 +27,11 @@ describe("context-owned backend", () => {
   });
 
   test("default construction does not require prior global initialization", () => {
-    expect(createServerContext().backend).toBeDefined();
+    expect(createServerContext({ startSupervisor: false }).backend).toBeDefined();
   });
 
   test("context retains the same backend instance", () => {
-    const context = createServerContext();
+    const context = createServerContext({ startSupervisor: false });
     const backend = context.backend;
     expect(context.backend).toBe(backend);
     expect(context.backend).toBe(backend);

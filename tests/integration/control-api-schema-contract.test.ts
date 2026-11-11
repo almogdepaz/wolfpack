@@ -63,17 +63,15 @@ mockBackend.listIdentities = async () => {
 };
 let selectedBackend = mockBackend;
 const { createServerContext } = await import("../../src/server/context.ts");
-const context = createServerContext({ devDir: TEST_DEV_DIR, jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0,
+const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), devDir: TEST_DEV_DIR, jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0,
   get backend() { return selectedBackend; },
   taskRoot: join(TEST_DEV_DIR, "tasks"), taskRelayRoot: join(TEST_DEV_DIR, "relay"),
 });
 
 const {
   createServerInstance,
-  __globalRateLimiter,
-  __pollRateLimiter,
 } = await import("../../src/server/index.ts") as any;
-const { server } = createServerInstance(context);
+const { server, globalRateLimiter, pollRateLimiter } = createServerInstance(context, { allowLocalOrigins: true });
 
 let base = "";
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf-8")) as JsonObject;
@@ -114,8 +112,8 @@ async function postJson(path: string, body: unknown): Promise<unknown> {
 }
 
 beforeEach(() => {
-  __globalRateLimiter._map.clear();
-  __pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
 });
 
 beforeAll(async () => {
@@ -132,8 +130,8 @@ beforeAll(async () => {
 afterAll(async () => {
   (server as Server).close();
   await context.close();
-  __globalRateLimiter._map.clear();
-  __pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
   rmSync(rawTmpDir, { recursive: true, force: true });
 
   for (const [key, value] of Object.entries(PRIOR_ENV)) {

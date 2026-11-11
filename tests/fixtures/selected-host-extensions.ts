@@ -9,6 +9,7 @@ import { validateJwtHs256, extractBearerToken } from "../../src/auth.ts";
 import { buildMachineHandshake } from "../../src/tailnet-machine-contract.ts";
 import { ExtensionRuntime } from "../../src/extensions/runtime.ts";
 import { ExtensionRouteService } from "../../src/server/extension-routes.ts";
+import { enumerateLocalTailnetCandidates } from "../../src/server/http.ts";
 import { createServerContext } from "../../src/server/context.ts";
 import { MockBackend } from "../../src/server/mock-backend.ts";
 import type { ExtensionPeerFetch } from "../../src/server/extension-peer-proxy.ts";
@@ -127,14 +128,14 @@ export async function createSelectedHostFixture(options: { readonly timeoutMs?: 
     return fetch(`${peer.base}${url.pathname}${url.search}`, init);
   };
   const serviceOptions = { runtime: localRuntime, backend: { listSessionFacts: async () => [] },
-    peerProxy: { fetchImpl, ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }) } };
+    peerProxy: { candidates: () => enumerateLocalTailnetCandidates(async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}")), fetchImpl, ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), ...(options.maxActive === undefined ? {} : { maxActive: options.maxActive }) } };
   class FixtureLocalRoutes extends ExtensionRouteService {
     override async handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
       if (await options.handleLocalRequest?.(req, res, url)) return true;
       return super.handle(req, res, url);
     }
   }
-  const context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }), extensionRouteService: new FixtureLocalRoutes(serviceOptions) });
+  const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }), extensionRouteService: new FixtureLocalRoutes(serviceOptions) });
   const { createServerInstance } = await import("../../src/server/index.ts");
   const { server } = createServerInstance(context); const base = await listen(server);
   return {

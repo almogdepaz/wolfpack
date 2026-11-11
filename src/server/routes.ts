@@ -90,7 +90,7 @@ return {
 
   "GET /api/machine": async (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    const handshake = await getLocalMachineHandshake(VERSION);
+    const handshake = await getLocalMachineHandshake(VERSION, ctx.readTailscaleStatus);
     if (!handshake) return json(res, { error: "tailnet machine identity unavailable" }, 503);
     json(res, handshake);
   },
@@ -203,11 +203,11 @@ return {
   },
 
   "GET /api/tailnet/v1/candidates": async (_req, res) => {
-    json(res, await enumerateLocalTailnetCandidates());
+    json(res, await enumerateLocalTailnetCandidates(ctx.readTailscaleStatus));
   },
 
   "GET /api/discover": async (_req, res) => {
-    const discovery = await enumerateLocalTailnetCandidates();
+    const discovery = await enumerateLocalTailnetCandidates(ctx.readTailscaleStatus);
     res.setHeader("Deprecation", "true");
     res.setHeader("Link", '</api/tailnet/v1/candidates>; rel="successor-version"');
     json(res, {

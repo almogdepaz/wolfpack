@@ -439,12 +439,12 @@ export async function getLocalMachineHandshake(
   }
 }
 
-export async function enumerateLocalTailnetCandidates(): Promise<{
+export async function enumerateLocalTailnetCandidates(readStatus: typeof readLocalTailscaleStatus = readLocalTailscaleStatus): Promise<{
   readonly candidates: readonly TailnetMachineCandidate[];
   readonly error?: string;
 }> {
   try {
-    const enumeration = enumerateTailnetCandidates(await readLocalTailscaleStatus());
+    const enumeration = enumerateTailnetCandidates(await readStatus());
     if (enumeration.kind === "valid") return { candidates: enumeration.candidates };
     log.warn("tailnet candidate enumeration unavailable", { error: "invalid local status" });
     return { candidates: [], error: "failed to query tailscale" };

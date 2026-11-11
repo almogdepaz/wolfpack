@@ -23,7 +23,7 @@ test("a stalled peer cannot hold local observation or the next local pass", asyn
   const handshake = buildMachineHandshake({ tailscaleHostname: "peer.test.ts.net", tailscaleNodeId: "n123", installationId: "12345678-1234-4234-8234-123456789abc", displayName: "peer", version: "1.0.0" });
   saveConfig({ devDir: "/tmp", port: 18799, tailscaleHostname: "home.test.ts.net" });
   process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({ BackendState: "Running", Self: { ID: "home", DNSName: "home.test.ts.net", Online: true }, Peer: { peer: { ID: "n123", DNSName: "peer.test.ts.net", Online: true } } });
-  const context = createServerContext({ backend: new EmptyBackend({ sessions: [] }), observationCacheTtlMs: 0 });
+  const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), backend: new EmptyBackend({ sessions: [] }), observationCacheTtlMs: 0 });
   context.push.addSubscription({ endpoint, keys: { p256dh: "x", auth: "x" } });
   globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0]) => {
     peerRequests++;

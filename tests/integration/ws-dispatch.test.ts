@@ -12,8 +12,6 @@ process.env.WOLFPACK_TEST = "1";
 
 const {
   createServerInstance,
-  __wsConnectionsByIp,
-  __reserveWsConnection,
   MAX_WS_CONNECTIONS_PER_IP,
 } = await import("../../src/server/index.ts");
 const { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } = await import("../../src/ws-constants.ts");
@@ -26,7 +24,7 @@ const __ptySpawnAttempts = new Map<string, number>();
 const context = createServerContext({ backend: mockBackend, onTerminalAttachAttempt: session => __ptySpawnAttempts.set(session, (__ptySpawnAttempts.get(session) ?? 0) + 1) });
 const { activePtySessions: __activePtySessions } = context.terminals;
 
-const { server, wss } = createServerInstance(context);
+const { server, wss, wsConnectionsByIp, reserveWsConnection } = createServerInstance(context, { allowLocalOrigins: true });
 
 // ── Test setup ──
 
@@ -114,11 +112,11 @@ test("WebSocket transport caps payloads before application parsing", () => {
 });
 
 test("WebSocket connection reservations reject an IP at the active cap", () => {
-  __wsConnectionsByIp.set("127.0.0.1", MAX_WS_CONNECTIONS_PER_IP);
+  wsConnectionsByIp.set("127.0.0.1", MAX_WS_CONNECTIONS_PER_IP);
   try {
-    expect(__reserveWsConnection("127.0.0.1")).toBe(false);
+    expect(reserveWsConnection("127.0.0.1")).toBe(false);
   } finally {
-    __wsConnectionsByIp.clear();
+    wsConnectionsByIp.clear();
   }
 });
 

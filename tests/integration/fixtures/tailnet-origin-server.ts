@@ -10,7 +10,7 @@ const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const context = createServerContext({ backend: new MockBackend({ sessions: ["dispatch-session"] }) });
 
 const { createServerInstance } = await import("../../../src/server/index.ts");
-const { server } = createServerInstance(context);
+const { server } = createServerInstance(context, { allowLocalOrigins: true });
 
 process.on("message", (message: unknown) => {
   if (!message || typeof message !== "object") return;

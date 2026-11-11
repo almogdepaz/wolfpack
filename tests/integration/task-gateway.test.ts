@@ -33,8 +33,6 @@ const { MockBackend, } = await import("../../src/test-hooks.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const {
   createServerInstance,
-  __globalRateLimiter,
-  __pollRateLimiter,
 } = await import("../../src/server/index.ts");
 const { TASK_EVENT_TYPE, TASK_LIMITS, hashImmutableAssignment } = await import("../../src/tasks/domain.ts");
 const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/domain.ts");
@@ -53,12 +51,12 @@ class PiBackend extends MockBackend {
 
 let backend = new PiBackend({ sessions: ["parent", "receiver"] });
 const context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(), get backend() { return backend; } });
-const { server } = createServerInstance(context);
+const { server, globalRateLimiter, pollRateLimiter } = createServerInstance(context, { allowLocalOrigins: true });
 let base = "";
 
 beforeAll(async () => {
-  __pollRateLimiter._map.clear();
-  __globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
   await new Promise<void>((resolve) => (server as Server).listen(0, "127.0.0.1", () => {
     base = `http://127.0.0.1:${((server as Server).address() as AddressInfo).port}`;
     resolve();
@@ -67,8 +65,8 @@ beforeAll(async () => {
 
 afterAll(() => {
   (server as Server).close();
-  __pollRateLimiter._map.clear();
-  __globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
   rmSync(root, { recursive: true, force: true });
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
     if (key === "WOLFPACK_TEST") continue;

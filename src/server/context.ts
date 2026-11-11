@@ -1,3 +1,6 @@
+import { readLocalTailscaleStatus } from "./tailscale-status.js";
+import { enumerateLocalTailnetCandidates } from "./http.js";
+import { getRelayPeerTransport } from "./relay-peer-transport.ts";
 import { createPushService } from "./push.js";
 import { createTerminalSessions, type TerminalSessionOptions } from "./websocket.js";
 import type { ClaudeManagedSettingsDropIn } from "../claude-integration.js";
@@ -36,6 +39,7 @@ export type ServerBackend = SessionBackend & PtyBackendMethods & SessionPromptBa
  * single-owner guard. Close owned workers before reusing their roots.
  */
 export interface ServerContext {
+  readonly readTailscaleStatus: typeof readLocalTailscaleStatus;
   readonly push: ReturnType<typeof createPushService>;
   readonly terminals: ReturnType<typeof createTerminalSessions>;
   readonly jwtAuthConfig: JwtAuthConfig;
@@ -84,6 +88,7 @@ interface ServiceCache {
 }
 
 export interface ServerContextOptions extends Partial<Omit<ServerContext, "close" | "flushRuntimeState">> {
+  readonly startSupervisor?: boolean;
   readonly observationCacheTtlMs?: number;
   readonly terminalPrefillDelayMs?: number;
   readonly onTerminalAttachAttempt?: TerminalSessionOptions["onAttachAttempt"];
@@ -113,10 +118,11 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
   const viewerInput = cache.viewerInput ??= overrides.backend?.viewerInput ?? overrides.supervisor?.viewerInput ?? createViewerInput();
   const supervisor = overrides.supervisor ?? (overrides.backend ? undefined : new BrokerSupervisor({
     events, sessionIdentityStore, childEvents, sessionDeath, viewerInput,
-    claudeManagedSettingsDropIn: overrides.claudeManagedSettingsDropIn, start: !process.env.WOLFPACK_TEST,
+    claudeManagedSettingsDropIn: overrides.claudeManagedSettingsDropIn, start: overrides.startSupervisor ?? true,
   }));
   const backend = overrides.backend ?? supervisedBackend(supervisor!);
   const context: ServerContext = {
+    readTailscaleStatus: overrides.readTailscaleStatus ?? readLocalTailscaleStatus,
     get push() { return cache.push ??= createPushService(); },
     get terminals() { return cache.terminals ??= createTerminalSessions(context, { prefillDelayMs: overrides.terminalPrefillDelayMs, onAttachAttempt: overrides.onTerminalAttachAttempt }); },
     devDir: overrides.devDir,
@@ -144,7 +150,8 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     get taskRelayGateway() {
       return cache.taskRelayGateway ??= createTaskRelayGateway({ root: overrides.taskRelayRoot ?? process.env.WOLFPACK_TASK_RELAY_ROOT,
         peerOrigin: context.config ? remoteUrl(context.config) ?? undefined : undefined,
-        inspectSession: selector => context.backend.inspectSession(selector) });
+        inspectSession: selector => context.backend.inspectSession(selector),
+        peerFetch: (input, init) => getRelayPeerTransport(context.taskRelayGateway, context.config ? remoteUrl(context.config) ?? undefined : undefined, context.readTailscaleStatus).forward(input, init) });
     },
     get sessionOrganization() {
       return overrides.sessionOrganization ?? (cache.sessionOrganization ??= new SessionOrganizationService());
@@ -163,7 +170,8 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
       supervisor?.close();
     },
     get extensionRouteService() {
-      return cache.extensionRouteService ??= new ExtensionRouteService({ backend: { listSessionFacts: () => context.backend.listSessionFacts() } });
+      return cache.extensionRouteService ??= new ExtensionRouteService({ backend: { listSessionFacts: () => context.backend.listSessionFacts() },
+        peerProxy: { candidates: () => enumerateLocalTailnetCandidates(context.readTailscaleStatus) } });
     },
   };
   return context;
@@ -181,6 +189,7 @@ export function resetDefaultServerContext(): void { current = undefined; }
 
 /** Lazy compatibility view: old route exports follow test overrides without opening a broker on import. */
 export const defaultServerContext: ServerContext = {
+  get readTailscaleStatus() { return getDefaultServerContext().readTailscaleStatus; },
   get push() { return getDefaultServerContext().push; },
   get terminals() { return getDefaultServerContext().terminals; },
   get devDir() { return getDefaultServerContext().devDir; },

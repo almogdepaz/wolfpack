@@ -116,14 +116,12 @@ function useBackend(backend: import("../../src/server/context.ts").ServerBackend
 // Reset rate limiters so they don't interfere
 const {
   createServerInstance,
-  __pollRateLimiter,
-  __globalRateLimiter,
 } = await import("../../src/server/index.ts") as any;
 
 const { AgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
 
 
-let { server, wss } = createServerInstance(testContext);
+let { server, wss, pollRateLimiter, globalRateLimiter } = createServerInstance(testContext, { allowLocalOrigins: true });
 
 let base = "";
 
@@ -169,7 +167,7 @@ async function listenWithContext(claudeManagedSettingsDropIn?: ClaudeManagedSett
     get backend() { return selectedBackend; }, events: new EventBus(), config: null,
   });
   setDefaultServerContext(testContext);
-  ({ server, wss } = createServerInstance(testContext));
+  ({ server, wss, pollRateLimiter, globalRateLimiter } = createServerInstance(testContext, { allowLocalOrigins: true }));
   await new Promise<void>((resolve) => {
     (server as Server).listen(0, "127.0.0.1", () => {
       const port = ((server as Server).address() as AddressInfo).port;
@@ -187,8 +185,8 @@ async function restartServer(claudeManagedSettingsDropIn?: ClaudeManagedSettings
 beforeEach(async () => {
   await closeServerContext();
   // Reset rate limiters before each test
-  __pollRateLimiter._map.clear();
-  __globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
   // The replacement context owns fresh push delivery and rate-limit state.
   testContext.terminals.activePtySessions.clear();
   rmSync(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!, { force: true });

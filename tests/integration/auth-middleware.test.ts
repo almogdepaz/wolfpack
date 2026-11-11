@@ -17,15 +17,12 @@ const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 
 
-const context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: ["auth-session"] }) });
+const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: ["auth-session"] }) });
 
 const {
-  __pollRateLimiter,
-  __wsConnectionsByIp,
-  __wsUpgradeRateLimiter,
   createServerInstance,
 } = await import("../../src/server/index.ts");
-const { server } = createServerInstance(context);
+const { server, pollRateLimiter, wsConnectionsByIp, wsUpgradeRateLimiter } = createServerInstance(context, { allowLocalOrigins: true });
 
 const AUTH_SECRET = process.env.WOLFPACK_JWT_SECRET!;
 const AUTH_AUDIENCE = "wolfpack-client";
@@ -341,7 +338,7 @@ describe("JWT auth middleware", () => {
   });
 
   test("keeps verified Tailscale Serve users in separate poll quotas", async () => {
-    __pollRateLimiter._map.clear();
+    pollRateLimiter._map.clear();
     const headers = (login: string): HeadersInit => ({
       Authorization: `Bearer ${createValidToken()}`,
       "Tailscale-User-Login": login,
@@ -358,8 +355,8 @@ describe("JWT auth middleware", () => {
   });
 
   test("binds WebSocket tickets to the verified Tailscale Serve user", async () => {
-    __wsUpgradeRateLimiter._map.clear();
-    __wsConnectionsByIp.clear();
+    wsUpgradeRateLimiter._map.clear();
+    wsConnectionsByIp.clear();
     const issue = async (login = "alice@example.test"): Promise<string> => {
       const response = await fetch(`${baseUrl}/api/auth/ws-ticket`, {
         method: "POST",

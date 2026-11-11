@@ -54,19 +54,17 @@ const { MockBackend, } = await import("../../src/test-hooks.ts");
 
 
 const { createServerContext } = await import("../../src/server/context.ts");
-const context = createServerContext({ devDir: testRoot, jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }) });
+const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), devDir: testRoot, jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }) });
 
 const {
   createServerInstance,
-  __globalRateLimiter,
-  __pollRateLimiter,
 } = await import("../../src/server/index.ts");
-const { server } = createServerInstance(context);
+const { server, globalRateLimiter, pollRateLimiter } = createServerInstance(context, { allowLocalOrigins: true });
 let base = "";
 
 beforeAll(async () => {
-  __pollRateLimiter._map.clear();
-  __globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
   await new Promise<void>((resolve) => {
     (server as Server).listen(0, "127.0.0.1", () => {
       const port = ((server as Server).address() as AddressInfo).port;
@@ -78,8 +76,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve, reject) => (server as Server).close(error => error ? reject(error) : resolve()));
-  __pollRateLimiter._map.clear();
-  __globalRateLimiter._map.clear();
+  pollRateLimiter._map.clear();
+  globalRateLimiter._map.clear();
   rmSync(testRoot, { recursive: true, force: true });
 
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
@@ -213,8 +211,8 @@ describe("direct machine contract routes", () => {
           expect(response.status).toBe(200);
           expect(await response.json()).toEqual(route.invalid);
         }
-        __pollRateLimiter._map.clear();
-        __globalRateLimiter._map.clear();
+        pollRateLimiter._map.clear();
+        globalRateLimiter._map.clear();
       }
 
       process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({ Self: validSelf, Peer: {} });

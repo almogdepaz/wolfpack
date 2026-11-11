@@ -3,15 +3,15 @@ import { loadConfig, remoteUrl } from "../config.ts";
 import { issueJwt } from "../jwt-issue.ts";
 import { RelayPeerTransport } from "../task-relay/peer-transport.ts";
 import type { RelayGateway } from "../task-relay/worker-protocol.ts";
-import { readRelayPeerTopology } from "./tailscale-status.ts";
+import { readRelayPeerTopology, readLocalTailscaleStatus } from "./tailscale-status.ts";
 import { isLoopbackAddress } from "./client-address.ts";
 
 const owners = new WeakMap<RelayGateway, RelayPeerTransport>();
-export function getRelayPeerTransport(gateway: RelayGateway, origin?: string): RelayPeerTransport {
+export function getRelayPeerTransport(gateway: RelayGateway, origin?: string, readStatus: typeof readLocalTailscaleStatus = readLocalTailscaleStatus): RelayPeerTransport {
   let transport = owners.get(gateway);
   if (!transport) {
     const config = loadConfig(), configuredOrigin = origin ?? (config ? remoteUrl(config) ?? undefined : undefined);
-    transport = new RelayPeerTransport({ topology: () => readRelayPeerTopology(configuredOrigin), epoch: () => gateway.volatileEpoch(), jwt: issueJwt });
+    transport = new RelayPeerTransport({ topology: () => readRelayPeerTopology(configuredOrigin, readStatus), epoch: () => gateway.volatileEpoch(), jwt: issueJwt });
     owners.set(gateway, transport);
   }
   return transport;

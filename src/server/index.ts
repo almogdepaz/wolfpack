@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { validateRequestJwt, getCachedJwtAuthConfig, verifyJwtAuthAtStartup } from "../auth.js";
 import { SHELL } from "./shell.js";
 import { resolveLoginShellPath } from "./login-shell-path.js";
-import { createServerContext, defaultServerContext, setDefaultServerContext, type ServerContext } from "./context.js";
+import { createServerContext, setDefaultServerContext, type ServerContext, type ServerContextOptions } from "./context.js";
 import { createRoutes } from "./routes.js";
 import {
   json,
@@ -23,14 +23,13 @@ import {
 import { createLogger, errMsg, writeFatalError } from "../log.js";
 import { isValidSessionName } from "../validation.js";
 import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
-import { childEventTypedNotesEnabled, loadConfig, WOLFPACK_DIR } from "../config.js";
+import { childEventTypedNotesEnabled, WOLFPACK_DIR } from "../config.js";
 import {
   SESSION_SEND_DEFAULT_OBSERVE_MS, SESSION_SEND_DELIVERY, SESSION_SEND_FAILURE_REASON, SESSION_SEND_OUTCOME,
 } from "../session-send-contract.js";
 import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { createHostPolicy } from "./host-policy.js";
-import { readLocalTailscaleStatus } from "./tailscale-status.js";
 import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
 import { installShutdownSignalHandlers } from "./shutdown.js";
 
@@ -38,36 +37,6 @@ const log = createLogger("server");
 
 const PORT =
   Number(process.env.WOLFPACK_PORT) || Number(process.argv[2]) || 18790;
-
-// inherit user's full PATH from login shell — launchd PATH is minimal
-const loginShellPath = resolveLoginShellPath({ shell: SHELL, currentPath: process.env.PATH || "", home: process.env.HOME });
-if (loginShellPath.path) process.env.PATH = loginShellPath.path;
-if (loginShellPath.source === "fallback") {
-  log.warn("login shell PATH unavailable; using fallback PATH", { shell: SHELL, reason: loginShellPath.reason });
-}
-
-// Cross-origin Tailnet access derives solely from the canonical hostname that
-// setup persisted after Serve verification. No forwarded/request header can
-// expand this authority.
-const configuredServer = loadConfig();
-const configuredTailnetHostname = configuredServer?.tailscaleHostname;
-const hostPolicy = createHostPolicy({
-  configuredHostname: configuredTailnetHostname,
-  extraHosts: configuredServer?.allowedHosts ?? [],
-  readSelfStatus: () => readLocalTailscaleStatus(true),
-});
-const originPolicy = createTailnetOriginPolicy({
-  port: PORT,
-  tailscaleHostname: configuredTailnetHostname,
-  testMode: Boolean(process.env.WOLFPACK_TEST),
-});
-if (!configuredTailnetHostname) {
-  log.warn("no verified tailscaleHostname in config — remote browser access will be blocked by CORS", { hint: "run 'wolfpack setup' to fix" });
-}
-
-function isAllowedOrigin(origin: string): boolean {
-  return originPolicy.isAllowed(origin);
-}
 
 // ── Rate limiting ──
 
@@ -78,41 +47,62 @@ const POLL_HEAVY_PATHS = new Set([
   "/api/tailnet/v1/candidates",
   "/api/discover",
 ]);
-const pollRateLimiter = createPerIpRateLimiter(10);
-
-/** Global limit for all routes (120 req/s per IP). */
-const globalRateLimiter = createPerIpRateLimiter(120);
-/** WebSocket upgrade attempts per second per IP, before auth/backend work. */
-const wsUpgradeRateLimiter = createPerIpRateLimiter(20);
-const MAX_WS_CONNECTIONS_PER_IP = 32;
-const wsConnectionsByIp = new Map<string, number>();
-
-function reserveWsConnection(ip: string): boolean {
-  const current = wsConnectionsByIp.get(ip) ?? 0;
-  if (current >= MAX_WS_CONNECTIONS_PER_IP) return false;
-  wsConnectionsByIp.set(ip, current + 1);
-  return true;
-}
-
-function releaseWsConnection(ip: string): void {
-  const current = wsConnectionsByIp.get(ip) ?? 0;
-  if (current <= 1) wsConnectionsByIp.delete(ip);
-  else wsConnectionsByIp.set(ip, current - 1);
-}
-
-export {
-  pollRateLimiter as __pollRateLimiter,
-  globalRateLimiter as __globalRateLimiter,
-  wsUpgradeRateLimiter as __wsUpgradeRateLimiter,
-  wsConnectionsByIp as __wsConnectionsByIp,
-  reserveWsConnection as __reserveWsConnection,
-  MAX_WS_CONNECTIONS_PER_IP,
-};
+export const MAX_WS_CONNECTIONS_PER_IP = 32;
 
 // ── Server factory ──
 
-/** Create an isolated server + WebSocketServer pair. Used by tests for parallel isolation. */
-export function createServerInstance(ctx: ServerContext = defaultServerContext): { server: ReturnType<typeof createServer>; wss: InstanceType<typeof WebSocketServer> } {
+export interface ServerInstanceOptions {
+  readonly port?: number;
+  /** Also permit HTTP origins on 127.0.0.1 at arbitrary ports; production defaults to false. */
+  readonly allowLocalOrigins?: boolean;
+}
+
+/** Create an isolated server, WebSocketServer and request quotas. */
+export function createServerInstance(ctx: ServerContext, options: ServerInstanceOptions = {}) {
+  // Cross-origin Tailnet access derives solely from the canonical hostname that
+  // setup persisted after Serve verification. No forwarded/request header can
+  // expand this authority.
+  const configuredServer = ctx.config;
+  const configuredTailnetHostname = configuredServer?.tailscaleHostname;
+  const hostPolicy = createHostPolicy({
+    configuredHostname: configuredTailnetHostname,
+    extraHosts: configuredServer?.allowedHosts ?? [],
+    readSelfStatus: () => ctx.readTailscaleStatus(true),
+  });
+  const originPolicy = createTailnetOriginPolicy({
+    port: options.port ?? PORT,
+    tailscaleHostname: configuredTailnetHostname,
+    testMode: options.allowLocalOrigins ?? false,
+  });
+  if (!configuredTailnetHostname) {
+    log.warn("no verified tailscaleHostname in config — remote browser access will be blocked by CORS", { hint: "run 'wolfpack setup' to fix" });
+  }
+
+  function isAllowedOrigin(origin: string): boolean {
+    return originPolicy.isAllowed(origin);
+  }
+
+  const pollRateLimiter = createPerIpRateLimiter(10);
+
+  /** Global limit for all routes (120 req/s per IP). */
+  const globalRateLimiter = createPerIpRateLimiter(120);
+  /** WebSocket upgrade attempts per second per IP, before auth/backend work. */
+  const wsUpgradeRateLimiter = createPerIpRateLimiter(20);
+  const wsConnectionsByIp = new Map<string, number>();
+
+  function reserveWsConnection(ip: string): boolean {
+    const current = wsConnectionsByIp.get(ip) ?? 0;
+    if (current >= MAX_WS_CONNECTIONS_PER_IP) return false;
+    wsConnectionsByIp.set(ip, current + 1);
+    return true;
+  }
+
+  function releaseWsConnection(ip: string): void {
+    const current = wsConnectionsByIp.get(ip) ?? 0;
+    if (current <= 1) wsConnectionsByIp.delete(ip);
+    else wsConnectionsByIp.set(ip, current - 1);
+  }
+
   const routes = createRoutes(ctx);
   const wss = new WebSocketServer({
     noServer: true,
@@ -273,12 +263,8 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
     }
   });
 
-  return { server, wss };
+  return { server, wss, pollRateLimiter, globalRateLimiter, wsUpgradeRateLimiter, wsConnectionsByIp, reserveWsConnection };
 }
-
-// Stable exports also support embedders that attach listeners before startup.
-// Handlers use the lazy default context view, bound by startServer below.
-const { server, wss } = createServerInstance(defaultServerContext);
 
 function onUnhandledRejection(reason: unknown): void {
   try {
@@ -296,8 +282,15 @@ function onUncaughtException(error: unknown): void {
   }
 }
 
-export async function startServer(port = PORT, host = "127.0.0.1", overrides: Partial<ServerContext> = {}): Promise<void> {
+export async function startServer(port = PORT, host = "127.0.0.1", overrides: ServerContextOptions & ServerInstanceOptions = {}): Promise<ReturnType<typeof createServerInstance>> {
   assertSupportedBunRuntime();
+  // inherit user's full PATH from login shell — launchd PATH is minimal
+  const loginShellPath = resolveLoginShellPath({ shell: SHELL, currentPath: process.env.PATH || "", home: process.env.HOME });
+  if (loginShellPath.path) process.env.PATH = loginShellPath.path;
+  if (loginShellPath.source === "fallback") {
+    log.warn("login shell PATH unavailable; using fallback PATH", { shell: SHELL, reason: loginShellPath.reason });
+  }
+
   // Bun already exits 1; add structured diagnostics without installing on import.
   // Stable listeners avoid duplicate registration if an embedder restarts the server.
   if (!process.listeners("unhandledRejection").includes(onUnhandledRejection)) {
@@ -330,6 +323,8 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   // WOLFPACK_BACKEND env var is accepted for back-compat but ignored).
   const ctx = createServerContext({ ...overrides, jwtAuthConfig: authCfg });
   setDefaultServerContext(ctx);
+  const instance = createServerInstance(ctx, { ...overrides, port });
+  const { server, wss } = instance;
   log.info("backend initialized", { type: "broker" });
 
   // Verify the broker handshake before listening so we surface a clear error
@@ -400,14 +395,5 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
     log.info("server started", { url: `http://localhost:${port}/` });
     process.send?.({ type: SERVER_LISTENING, port });
   });
-}
-
-export { server, wss };
-
-// Auto-start unless in test mode
-if (!process.env.WOLFPACK_TEST) {
-  startServer().catch((err: unknown) => {
-    log.error("server start failed", { error: err instanceof Error ? err.message : String(err) });
-    process.exit(1);
-  });
+  return instance;
 }

@@ -7,11 +7,9 @@ import { ExtensionRuntime } from "../../src/extensions/runtime.ts";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { MockBackend } from "../../src/server/mock-backend.ts";
-import { createServerContext, getDefaultServerContext, setDefaultServerContext } from "../../src/server/context.ts";
+import { createServerContext } from "../../src/server/context.ts";
 import { createTaskRoutes } from "../../src/server/task-routes.ts";
-import { TaskGateway } from "../../src/tasks/gateway.ts";
 import { ExtensionRouteService } from "../../src/server/extension-routes.ts";
-import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
 
 process.env.WOLFPACK_TEST = "1";
 
@@ -180,19 +178,32 @@ test("fresh contexts retain their own task root and backend inspector", async ()
 
 test("direct gateways without inspectors fail closed instead of consulting the default backend", async () => {
   const root = mkdtempSync(join(tmpdir(), "context-no-inspector-"));
-  const previous = getDefaultServerContext();
-  const backend = new InspectableBackend("legacy", root);
-  setDefaultServerContext(createServerContext({ backend }));
-  const tasks = new TaskGateway({ root: join(root, "tasks") });
-  const relay = new WorkerRelayGateway({ root: join(root, "relay") });
   try {
-    expect(await tasks.inbox("legacy", "0", false)).toMatchObject({ ok: false, error: { code: "STORE_UNAVAILABLE" } });
-    expect(await relay.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "legacy", generation: "generation", protocolVersions: [2] }))
-      .toMatchObject({ ok: false, error: { code: "RELAY_UNAVAILABLE" } });
-    expect(backend.inspected).toEqual([]);
-  } finally {
-    await relay.close();
-    setDefaultServerContext(previous);
-    rmSync(root, { recursive: true, force: true });
-  }
+    // Isolate the legacy publisher binding without constructing a cold production supervisor.
+    const child = Bun.spawn([process.execPath, "-e", `
+      const { MockBackend } = await import("./src/server/mock-backend.ts");
+      const { createServerContext, setDefaultServerContext } = await import("./src/server/context.ts");
+      const { TaskGateway } = await import("./src/tasks/gateway.ts");
+      const { WorkerRelayGateway } = await import("./src/task-relay/worker-client.ts");
+      const backend = new MockBackend({ sessions: ["legacy"] });
+      let inspected = 0;
+      backend.inspectSession = async () => { inspected++; throw new Error("default backend consulted"); };
+      const context = createServerContext({ backend });
+      setDefaultServerContext(context);
+      const tasks = new TaskGateway({ root: ${JSON.stringify(join(root, "tasks"))} });
+      const relay = new WorkerRelayGateway({ root: ${JSON.stringify(join(root, "relay"))} });
+      try {
+        const task = await tasks.inbox("legacy", "0", false);
+        const result = await relay.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "legacy", generation: "generation", protocolVersions: [2] });
+        console.log(JSON.stringify({ task, relay: result, inspected }));
+      } finally { await relay.close(); await context.close(); }
+    `], { stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    expect(code, stderr).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({
+      task: { ok: false, error: { code: "STORE_UNAVAILABLE" } },
+      relay: { ok: false, error: { code: "RELAY_UNAVAILABLE" } },
+      inspected: 0,
+    });
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

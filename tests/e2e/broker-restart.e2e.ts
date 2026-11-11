@@ -72,7 +72,6 @@ async function spawnWolfpack(opts: { socketPath: string; devDir: string }): Prom
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
-        WOLFPACK_TEST: "1",
         WOLFPACK_BROKER_SOCKET: opts.socketPath,
         WOLFPACK_DEV_DIR: opts.devDir,
       },

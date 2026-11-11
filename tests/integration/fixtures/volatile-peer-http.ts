@@ -32,7 +32,7 @@ class PiBackend extends MockBackend {
       projectPath: root, agentKind: "pi" as const, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() }]));
   }
 }
-const context = createServerContext({ backend: new PiBackend({ sessions: ["sender", "receiver"] }) });
+const context = createServerContext({ readTailscaleStatus: async () => JSON.parse(process.env.WOLFPACK_TAILSCALE_STATUS_JSON ?? "{}"), backend: new PiBackend({ sessions: ["sender", "receiver"] }) });
 await context.taskRelayGateway.initialize();
 const { server, wss } = createServerInstance(context);
 let stopping = false;

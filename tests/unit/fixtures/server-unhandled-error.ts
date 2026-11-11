@@ -4,14 +4,14 @@ const mode = process.argv[2];
 const marker = "server-fatal-probe-" + mode;
 const events = ["unhandledRejection", "uncaughtException"] as const;
 const before = events.map(event => process.listenerCount(event));
-const { server, startServer } = await import("../../../src/server/index.ts");
+const { startServer } = await import("../../../src/server/index.ts");
 if (mode === "import-only") {
   console.log(JSON.stringify({ before, after: events.map(event => process.listenerCount(event)) }));
   process.exit(0);
 }
 if (mode !== "unhandledRejection" && mode !== "uncaughtException") throw new Error("unknown failure mode");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
-await startServer(0, "127.0.0.1", { backend: new MockBackend({ sessions: [] }) });
+const { server } = await startServer(0, "127.0.0.1", { backend: new MockBackend({ sessions: [] }) });
 if (!server.listening) await new Promise<void>(resolve => server.once("listening", resolve));
 console.log("SERVER_FATAL_PROBE_READY");
 setImmediate(function triggerUnhandledFailure() {

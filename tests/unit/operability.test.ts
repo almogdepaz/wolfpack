@@ -20,7 +20,7 @@ describe("operability contracts", () => {
 
   test("reports degraded while the configured broker transport is disconnected", () => {
     process.env.WOLFPACK_TEST = "1";
-    const context = createServerContext();
+    const context = createServerContext({ startSupervisor: false });
     const router = context.supervisor!;
     (router as any)._brokerAvailable = true;
     (router as any).brokerClient = { isConnected: () => false };
@@ -33,7 +33,7 @@ describe("operability contracts", () => {
 
   test("reports the broker release and protocol version, null until a hello succeeds", () => {
     process.env.WOLFPACK_TEST = "1";
-    const context = createServerContext();
+    const context = createServerContext({ startSupervisor: false });
     const router = context.supervisor!;
     (router as any)._brokerAvailable = true;
     (router as any).brokerClient = { isConnected: () => true };
