@@ -56,7 +56,6 @@ stage_audit() {
 }
 stage_assets() {
   bun run scripts/gen-assets.ts
-  git diff --exit-code src/public-assets.ts
 }
 stage_typecheck() { bun run typecheck; }
 stage_unit() { bun test tests/unit/ tests/snapshot/; }

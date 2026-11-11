@@ -78,7 +78,7 @@ jobs:
       - name: Audit dependencies
         run: scripts/ci-gate.sh audit
 
-      - name: Generate and check embedded assets
+      - name: Generate embedded assets
         run: scripts/ci-gate.sh assets
 
       - name: Typecheck (root + public/)
@@ -180,6 +180,9 @@ jobs:
 
       - name: Build authoritative Ghostty broker binary
         run: scripts/ci-gate.sh broker-build
+
+      - name: Generate embedded assets for the test preload guard
+        run: scripts/ci-gate.sh assets
 
       - name: Run real broker snapshot hydration/reflow integration
         env:
