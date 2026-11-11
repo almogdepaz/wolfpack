@@ -74,8 +74,6 @@ process.env.WOLFPACK_SETTINGS_PATH = TEST_SETTINGS_PATH;
 process.env.WOLFPACK_TASK_RELAY_ROOT = TEST_TASK_RELAY_ROOT;
 process.env.WOLFPACK_TASK_WORKER_POLICY_PATH = TEST_TASK_WORKER_POLICY_PATH;
 
-const { __resetTaskRelayGatewayForTests, getTaskRelayGateway } = await import("../../src/server/task-gateways.ts");
-await __resetTaskRelayGatewayForTests();
 const { __resetJwtAuthConfig, __setDevDir, __setClaudeManagedSettingsDropInDirectory } = await import("../../src/test-hooks.ts");
 const { DuplicateSessionError } = await import("../../src/server/backend-contract.ts");
 const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
@@ -188,7 +186,7 @@ beforeEach(() => {
 afterAll(async () => {
   __resetAgentRuntimeStateStoreForTests();
   (server as Server).close();
-  await __resetTaskRelayGatewayForTests();
+  await testContext.close();
   if (PRIOR_WOLFPACK_TASK_RELAY_ROOT === undefined) delete process.env.WOLFPACK_TASK_RELAY_ROOT;
   else process.env.WOLFPACK_TASK_RELAY_ROOT = PRIOR_WOLFPACK_TASK_RELAY_ROOT;
   if (PRIOR_WOLFPACK_TASK_WORKER_POLICY_PATH === undefined) delete process.env.WOLFPACK_TASK_WORKER_POLICY_PATH;
@@ -208,7 +206,7 @@ afterAll(async () => {
 
 describe("API fixture isolation", () => {
   test("keeps the task relay gateway under the suite temp dev directory", () => {
-    expect(getTaskRelayGateway().root).toBe(TEST_TASK_RELAY_ROOT);
+    expect(testContext.taskRelayGateway.root).toBe(TEST_TASK_RELAY_ROOT);
   });
 });
 
@@ -2626,14 +2624,16 @@ describe("GET /api/sessions", () => {
 describe("session-control relay lookup batching", () => {
   test("lists stable-ID memory registrations in one RPC, sees retirement, and skips empty-list queries", async () => {
     const { WorkerRelayGateway } = await import("../../src/task-relay/worker-client.ts");
-    const { __setTaskRelayGatewayForTests } = await import("../../src/server/task-gateways.ts");
     const relayRoot = mkdtempSync(join(TEST_DEV_DIR, "relay-list-batch-"));
     const names = Array.from({ length: 20 }, (_, i) => `relay-list-${19 - i}`);
     const backend = new MockBackend({ sessions: names });
-    useBackend(backend);
     const identities = await backend.listIdentities();
-    const gateway = new WorkerRelayGateway({ root: relayRoot, inspectSession: selector => testContext.backend.inspectSession!(selector) });
-    await __setTaskRelayGatewayForTests(gateway);
+    const gateway = new WorkerRelayGateway({ root: relayRoot, inspectSession: selector => backend.inspectSession(selector) });
+    const context = createServerContext({ backend, taskRelayGateway: gateway });
+    const instance = createServerInstance(context);
+    await new Promise<void>(resolve => instance.server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${(instance.server.address() as AddressInfo).port}`;
+    const get = (path: string) => fetch(base + path);
     const registrations = [];
     for (const name of names) {
       const result = await gateway.volatile({ profile: "volatile-v1", operation: "connect", callerSession: name, generation: "process-1", protocolVersions: [2] });
@@ -2675,8 +2675,10 @@ describe("session-control relay lookup batching", () => {
       expect(empty.status).toBe(200); expect(await empty.json()).toEqual({ sessions: [] });
       expect(lookup).not.toHaveBeenCalled();
     } finally {
-      lookup.mockRestore(); await __resetTaskRelayGatewayForTests();
-      useBackend(mockBackend); rmSync(relayRoot, { recursive: true, force: true });
+      lookup.mockRestore();
+      await new Promise<void>(resolve => { instance.server.close(() => resolve()); instance.server.closeAllConnections(); });
+      instance.wss.close(); await context.close();
+      rmSync(relayRoot, { recursive: true, force: true });
     }
   });
 });
@@ -2987,7 +2989,7 @@ describe("agent-native top-level session control", () => {
     mockBackend.setSessions([]);
     mockBackend.setOnBeforeCreate((name) => {
       queueMicrotask(() => {
-        void getTaskRelayGateway().volatile({
+        void testContext.taskRelayGateway.volatile({
           profile: "volatile-v1", operation: "connect", callerSession: name,
           generation: `test-${name}`,
           protocolVersions: [2],
@@ -3038,7 +3040,7 @@ describe("agent-native top-level session control", () => {
     mockBackend.setSessions([]);
     mockBackend.setOnBeforeCreate((name) => {
       queueMicrotask(() => {
-        void getTaskRelayGateway().volatile({
+        void testContext.taskRelayGateway.volatile({
           profile: "volatile-v1", operation: "connect", callerSession: name,
           generation: `test-${name}`,
           protocolVersions: [2],

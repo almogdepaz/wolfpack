@@ -118,7 +118,7 @@ const rewrittenFetch: typeof globalThis.fetch = Object.assign((input: RequestInf
 }, { preconnect: nativeFetch.preconnect });
 globalThis.fetch = rewrittenFetch;
 
-const { createServerContext, setDefaultServerContext } = await import("../../../src/server/context.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 
 class PeerBackend extends MockBackend {
@@ -134,16 +134,15 @@ class PeerBackend extends MockBackend {
   }
 }
 
-const context = createServerContext({ backend: new PeerBackend({ sessions: [role === "sender" ? "parent" : "receiver"] }) });
-// The gateway compatibility accessors are removed in C2.
-setDefaultServerContext(context);
-const { getTaskGateway, __resetTaskGatewayForTests } = await import("../../../src/server/task-gateways.ts");
-if (process.env.WOLFPACK_TEST_FAST_RETRY === "1") {
+const { TaskGateway } = await import("../../../src/tasks/gateway.ts");
+const backend = new PeerBackend({ sessions: [role === "sender" ? "parent" : "receiver"] });
+const context = createServerContext({ backend, taskGateway: new TaskGateway({
+  root: taskRoot, inspectSession: selector => backend.inspectSession(selector),
   // Accelerate only peer retry backoff, not HTTP keepalive or unrelated deadlines.
-  __resetTaskGatewayForTests({ root: taskRoot, sleep: () => new Promise((resolve) => setTimeout(resolve, 1)) });
-}
+  ...(process.env.WOLFPACK_TEST_FAST_RETRY === "1" ? { sleep: () => new Promise<void>(resolve => setTimeout(resolve, 1)) } : {}),
+}) });
 const { createServerInstance } = await import("../../../src/server/index.ts");
-await getTaskGateway().initialize();
+await context.taskGateway.initialize();
 const { server } = createServerInstance(context);
 
 server.listen(listenPort, "127.0.0.1", () => {

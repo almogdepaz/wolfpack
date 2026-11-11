@@ -1,16 +1,16 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { ExtensionRuntime, getExtensionRuntime, __setExtensionRuntimeForTests } from "../../src/extensions/runtime.ts";
+import { ExtensionRuntime } from "../../src/extensions/runtime.ts";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { MockBackend } from "../../src/server/mock-backend.ts";
 import { createServerContext, getDefaultServerContext, setDefaultServerContext } from "../../src/server/context.ts";
 import { createTaskRoutes } from "../../src/server/task-routes.ts";
 import { TaskGateway } from "../../src/tasks/gateway.ts";
-import { getTaskGateway, getTaskRelayGateway, __resetTaskGatewayForTests } from "../../src/server/task-gateways.ts";
+import { ExtensionRouteService } from "../../src/server/extension-routes.ts";
 import { WorkerRelayGateway } from "../../src/task-relay/worker-client.ts";
 
 process.env.WOLFPACK_TEST = "1";
@@ -35,12 +35,21 @@ class InspectableBackend extends MockBackend {
   }
 }
 
+test("closing an unused context does not construct its lazy services", async () => {
+  const root = mkdtempSync(join(tmpdir(), "context-cold-close-"));
+  const taskRoot = join(root, "tasks"), taskRelayRoot = join(root, "relay");
+  const context = createServerContext({ backend: new MockBackend({ sessions: [] }), taskRoot, taskRelayRoot });
+  try {
+    await context.close();
+    await context.close();
+    expect(existsSync(taskRoot)).toBe(false);
+    expect(existsSync(taskRelayRoot)).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 // Interleave real sends at the authority check, not a timing-dependent sleep.
 test("a task request cannot rebind another context's in-flight session inspector", async () => {
   const root = mkdtempSync(join(tmpdir(), "context-task-"));
-  const previousRoot = process.env.WOLFPACK_TASK_ROOT;
-  process.env.WOLFPACK_TASK_ROOT = join(root, "legacy");
-  __resetTaskGatewayForTests();
   const a = new InspectableBackend("a", root), b = new InspectableBackend("b", root);
   let entered!: () => void, release!: () => void;
   const blocked = new Promise<void>(resolve => { entered = resolve; });
@@ -67,8 +76,6 @@ test("a task request cannot rebind another context's in-flight session inspector
   } finally {
     release();
     await Promise.all(servers.map(server => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); })));
-    __resetTaskGatewayForTests();
-    if (previousRoot === undefined) delete process.env.WOLFPACK_TASK_ROOT; else process.env.WOLFPACK_TASK_ROOT = previousRoot;
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -95,18 +102,24 @@ test("context relay workers retain their own inspectors after another context se
       expect(backends[1]!.inspected).toContain("b");
       expect(backends[0]!.inspected).not.toContain("b");
       expect(a!.taskRelayGateway).not.toBe(relayB);
+      await b!.close();
+      await expect(relayB.initialize()).rejects.toThrow();
+      expect(await a!.taskRelayGateway.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "a", generation: "generation", protocolVersions: [2] })).toMatchObject({ ok: true, value: { kind: "connected" } });
+      const replacement = createServerContext({ backend: backends[1]!, taskRelayRoot: join(root, "b", "relay") });
+      try {
+        expect(await replacement.taskRelayGateway.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "b", generation: "replacement", protocolVersions: [2] })).toMatchObject({ ok: true, value: { kind: "connected" } });
+      } finally { await replacement.close(); }
     } finally {
       await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
     }
   } finally {
-    await Promise.all(contexts.map(context => context.taskRelayGateway.close()));
+    await Promise.all(contexts.map(context => context.close()));
     rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("extension document authority follows the HTTP context, not the default backend", async () => {
   const root = mkdtempSync(join(tmpdir(), "context-extension-"));
-  const previousRuntime = getExtensionRuntime();
   const source = join(root, "source");
   mkdirSync(source);
   writeFileSync(join(source, "package.json"), JSON.stringify({
@@ -115,13 +128,12 @@ test("extension document authority follows the HTTP context, not the default bac
   }));
   writeFileSync(join(source, "ui.js"), "export default () => null;");
   writeFileSync(join(source, "schema.json"), JSON.stringify({ type: "object", properties: { schemaVersion: { const: 1 } } }));
-  const runtime = new ExtensionRuntime({ root: join(root, "runtime"), installationId: randomUUID() });
   const { createServerInstance } = await import("../../src/server/index.ts");
   const backends = ["a", "b"].map(name => new InspectableBackend(name, root, randomUUID()));
-  const servers = backends.map(backend => createServerInstance(createServerContext({ backend })).server);
+  const runtimes = backends.map(backend => new ExtensionRuntime({ root: join(root, backend.name, "runtime"), installationId: randomUUID() }));
+  const servers = backends.map((backend, index) => createServerInstance(createServerContext({ backend, extensionRouteService: new ExtensionRouteService({ runtime: runtimes[index]!, backend }) })).server);
   try {
-    await runtime.install({ source, trustBrowserCode: true });
-    __setExtensionRuntimeForTests(runtime);
+    await Promise.all(runtimes.map(runtime => runtime.install({ source, trustBrowserCode: true })));
     for (const server of servers) await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const publish = (index: number, scope: string) => fetch(`http://127.0.0.1:${(servers[index]!.address() as AddressInfo).port}/api/extensions/documents/context-fixture/context`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -132,42 +144,36 @@ test("extension document authority follows the HTTP context, not the default bac
     expect((await publish(1, backends[1]!.id)).status).toBe(200);
   } finally {
     await Promise.all(servers.map(server => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); })));
-    __setExtensionRuntimeForTests(previousRuntime);
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("server-side gateway getters retain default-backend inspection", async () => {
+test("context gateway getters retain their owning backend inspection", async () => {
   const root = mkdtempSync(join(tmpdir(), "context-fallback-"));
-  const previous = getDefaultServerContext();
   const backend = new InspectableBackend("legacy", root);
-  setDefaultServerContext(createServerContext({ backend, taskRoot: join(root, "tasks"), taskRelayRoot: join(root, "relay") }));
-  const tasks = getTaskGateway();
-  const relay = getTaskRelayGateway();
+  const context = createServerContext({ backend, taskRoot: join(root, "tasks"), taskRelayRoot: join(root, "relay") });
+  const tasks = context.taskGateway;
+  const relay = context.taskRelayGateway;
   try {
     const taskResult = await tasks.inbox("legacy", "0", false);
     const relayResult = await relay.volatile({ profile: "volatile-v1", operation: "connect", callerSession: "legacy", generation: "generation", protocolVersions: [2] });
     expect({ taskResult, relayResult }).toMatchObject({ taskResult: { ok: true }, relayResult: { ok: true, value: { kind: "connected" } } });
     expect(backend.inspected.filter(selector => selector === "legacy").length).toBeGreaterThanOrEqual(2);
   } finally {
-    await relay.close();
-    setDefaultServerContext(previous);
+    await context.close();
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("server-side task reset options retain the owning default backend inspector", async () => {
-  const root = mkdtempSync(join(tmpdir(), "context-reset-"));
-  const previous = getDefaultServerContext();
+test("fresh contexts retain their own task root and backend inspector", async () => {
+  const root = mkdtempSync(join(tmpdir(), "context-owned-task-"));
   const backend = new InspectableBackend("legacy", root);
-  setDefaultServerContext(createServerContext({ backend }));
+  const context = createServerContext({ backend, taskRoot: join(root, "tasks") });
   try {
-    __resetTaskGatewayForTests({ root: join(root, "tasks") });
-    expect(await getTaskGateway().inbox("legacy", "0", false)).toMatchObject({ ok: true });
+    expect(await context.taskGateway.inbox("legacy", "0", false)).toMatchObject({ ok: true });
     expect(backend.inspected).toContain("legacy");
   } finally {
-    __resetTaskGatewayForTests();
-    setDefaultServerContext(previous);
+    await context.close();
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -8,7 +8,9 @@ import type { AddressInfo } from "node:net";
 import { validateJwtHs256, extractBearerToken } from "../../src/auth.ts";
 import { buildMachineHandshake } from "../../src/tailnet-machine-contract.ts";
 import { ExtensionRuntime } from "../../src/extensions/runtime.ts";
-import { ExtensionRouteService, __setExtensionRouteServiceForTests } from "../../src/server/extension-routes.ts";
+import { ExtensionRouteService } from "../../src/server/extension-routes.ts";
+import { createServerContext } from "../../src/server/context.ts";
+import { MockBackend } from "../../src/server/mock-backend.ts";
 import type { ExtensionPeerFetch } from "../../src/server/extension-peer-proxy.ts";
 import type { SessionBackend } from "../../src/server/backend-contract.ts";
 
@@ -132,14 +134,14 @@ export async function createSelectedHostFixture(options: { readonly timeoutMs?: 
       return super.handle(req, res, url);
     }
   }
-  __setExtensionRouteServiceForTests(new FixtureLocalRoutes(serviceOptions));
+  const context = createServerContext({ backend: new MockBackend({ sessions: [] }), extensionRouteService: new FixtureLocalRoutes(serviceOptions) });
   const { createServerInstance } = await import("../../src/server/index.ts");
-  const { server } = createServerInstance(); const base = await listen(server);
+  const { server } = createServerInstance(context); const base = await listen(server);
   return {
     root, peers, localRuntime, base, localToken: fixtureToken(localSecret), fetchTrace, updateTopology, redirectBase, redirectTrace,
     async close() {
       await close(server); for (const peer of peers) await close(peer.server); await close(redirectServer);
-      __setExtensionRouteServiceForTests(undefined); __resetJwtAuthConfig();
+      await context.close(); __resetJwtAuthConfig();
       if (previousSecret === undefined) delete process.env.WOLFPACK_JWT_SECRET; else process.env.WOLFPACK_JWT_SECRET = previousSecret;
       if (previousStatus === undefined) delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON; else process.env.WOLFPACK_TAILSCALE_STATUS_JSON = previousStatus;
       rmSync(root, { recursive: true, force: true });

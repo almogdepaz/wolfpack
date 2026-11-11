@@ -20,10 +20,7 @@ import {
   type ExtensionApiErrorCode,
 } from "../extensions/runtime-contract.ts";
 import type { SessionBackend } from "./backend-contract.ts";
-import {
-  getDefaultServerContext,
-  getServerContextServiceCache,
-} from "./context.ts";
+import { getDefaultServerContext } from "./context.ts";
 import {
   json,
   parseObjectBody,
@@ -580,17 +577,4 @@ export class ExtensionRouteService {
       this.gitRequests--;
     }
   }
-}
-/** @deprecated Use the owning ServerContext.extensionRouteService. */
-export function getExtensionRouteService(): ExtensionRouteService {
-  return getDefaultServerContext().extensionRouteService;
-}
-export function __setExtensionRouteServiceForTests(
-  value: ExtensionRouteService | undefined,
-): void {
-  if (!process.env.WOLFPACK_TEST)
-    throw new Error("test-only extension route override");
-  getServerContextServiceCache(
-    getDefaultServerContext(),
-  ).extensionRouteService = value;
 }

@@ -961,10 +961,3 @@ let runtime: ExtensionRuntime | undefined;
 export function getExtensionRuntime() {
   return (runtime ??= new ExtensionRuntime());
 }
-export function __setExtensionRuntimeForTests(
-  value: ExtensionRuntime | undefined,
-) {
-  if (!process.env.WOLFPACK_TEST)
-    throw new Error("test-only extension runtime override");
-  runtime = value;
-}

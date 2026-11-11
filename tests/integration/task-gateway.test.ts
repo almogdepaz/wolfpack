@@ -32,7 +32,7 @@ const {
   MockBackend,
 } = await import("../../src/test-hooks.ts");
 __resetJwtAuthConfig();
-const { createServerContext, getDefaultServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const {
   createServerInstance,
   __globalRateLimiter,
@@ -42,9 +42,6 @@ const { TASK_EVENT_TYPE, TASK_LIMITS, hashImmutableAssignment } = await import("
 const { RELAY_ID, RELAY_PROTOCOL_VERSION } = await import("../../src/task-relay/domain.ts");
 const { TASK_LEDGER_ROLE, TaskStore } = await import("../../src/tasks/store.ts");
 const { TaskGateway } = await import("../../src/tasks/gateway.ts");
-const { __resetTaskGatewayForTests } = await import("../../src/server/task-gateways.ts");
-
-__resetTaskGatewayForTests();
 
 class PiBackend extends MockBackend {
   override async listIdentities() {
@@ -58,9 +55,6 @@ class PiBackend extends MockBackend {
 
 let backend = new PiBackend({ sessions: ["parent", "receiver"] });
 const context = createServerContext({ get backend() { return backend; } });
-// C2 will replace gateway reset hooks with owned gateway lifetimes.
-const previousContext = getDefaultServerContext();
-setDefaultServerContext(context);
 const { server } = createServerInstance(context);
 let base = "";
 
@@ -77,9 +71,7 @@ afterAll(() => {
   (server as Server).close();
   __pollRateLimiter._map.clear();
   __globalRateLimiter._map.clear();
-  __resetTaskGatewayForTests();
   rmSync(root, { recursive: true, force: true });
-  setDefaultServerContext(previousContext);
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
     if (key === "WOLFPACK_TEST") continue;
     if (value === undefined) delete process.env[key];
@@ -2366,9 +2358,12 @@ describe("local task gateway", () => {
 
   test("does not persist an HTTP preflight rejection before one valid retry", async () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-preflight-retry-${process.pid}-${Date.now()}`);
-    const previousTaskRoot = process.env.WOLFPACK_TASK_ROOT;
-    process.env.WOLFPACK_TASK_ROOT = taskRoot;
-    __resetTaskGatewayForTests();
+    const instance = createServerInstance(createServerContext({ backend, taskRoot }));
+    await new Promise<void>(resolve => instance.server.listen(0, "127.0.0.1", resolve));
+    const taskBase = `http://127.0.0.1:${(instance.server.address() as AddressInfo).port}`;
+    const request = (path: string, method: "POST", body: unknown) => fetch(taskBase + path, {
+      method, headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+    });
     const body = { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "retry after preflight correction" };
 
     try {
@@ -2389,9 +2384,8 @@ describe("local task gateway", () => {
       expect(ledgers.filter((ledger) => ledger.key.taskId === receipt.taskId && ledger.key.role === TASK_LEDGER_ROLE.RECEIVER)).toHaveLength(1);
       expect(new Set(ledgers.map((ledger) => ledger.key.taskId))).toEqual(new Set([receipt.taskId]));
     } finally {
-      __resetTaskGatewayForTests();
-      if (previousTaskRoot === undefined) delete process.env.WOLFPACK_TASK_ROOT;
-      else process.env.WOLFPACK_TASK_ROOT = previousTaskRoot;
+      await new Promise<void>(resolve => { instance.server.close(() => resolve()); instance.server.closeAllConnections(); });
+      instance.wss.close();
       rmSync(taskRoot, { recursive: true, force: true });
     }
   });

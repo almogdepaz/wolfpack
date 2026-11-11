@@ -26,28 +26,19 @@ export interface ServerContext {
   readonly taskRelayGateway: RelayGateway;
   readonly extensionRouteService: ExtensionRouteService;
   readonly sessionOrganization: SessionOrganizationService;
+  /** Close owned workers without constructing services that were never used. */
+  close(): Promise<void>;
 }
 
-// Context-owned lazy instances. Compatibility test hooks reset only the default
-// context cache, without constructing workers or rebinding a live inspector.
+// Context-owned lazy instances; closing a context does not replace its services.
 interface ServiceCache {
   taskGateway?: TaskGateway;
   taskRelayGateway?: RelayGateway;
   extensionRouteService?: ExtensionRouteService;
   sessionOrganization?: SessionOrganizationService;
 }
-const serviceCaches = new WeakMap<ServerContext, ServiceCache>();
-/** @internal Compatibility shim lookup; request handlers use context properties. */
-export function getServerContextServiceCache(context: ServerContext): ServiceCache;
-export function getServerContextServiceCache(): ServiceCache | undefined;
-export function getServerContextServiceCache(context = current): ServiceCache | undefined {
-  if (!context) return undefined;
-  let cache = serviceCaches.get(context);
-  if (!cache) { cache = {}; serviceCaches.set(context, cache); }
-  return cache;
-}
 
-export interface ServerContextOptions extends Partial<ServerContext> {
+export interface ServerContextOptions extends Partial<Omit<ServerContext, "close">> {
   readonly taskRoot?: string;
   readonly taskRelayRoot?: string;
 }
@@ -77,11 +68,11 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     get sessionOrganization() {
       return overrides.sessionOrganization ?? (cache.sessionOrganization ??= new SessionOrganizationService());
     },
+    async close() { await cache.taskRelayGateway?.close(); },
     get extensionRouteService() {
       return cache.extensionRouteService ??= new ExtensionRouteService({ backend: { listSessionFacts: () => context.backend.listSessionFacts() } });
     },
   };
-  serviceCaches.set(context, cache);
   return context;
 }
 
@@ -105,4 +96,5 @@ export const defaultServerContext: ServerContext = {
   get taskRelayGateway() { return getDefaultServerContext().taskRelayGateway; },
   get extensionRouteService() { return getDefaultServerContext().extensionRouteService; },
   get sessionOrganization() { return getDefaultServerContext().sessionOrganization; },
+  async close() { await current?.close(); },
 };

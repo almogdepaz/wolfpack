@@ -13,7 +13,9 @@ process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_JWT_SECRET = "extension-routes-test-secret-long-enough";
 const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts"); __resetJwtAuthConfig();
 const { ExtensionRuntime } = await import("../../src/extensions/runtime.ts");
-const { ExtensionRouteService, __setExtensionRouteServiceForTests } = await import("../../src/server/extension-routes.ts");
+const { ExtensionRouteService } = await import("../../src/server/extension-routes.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
+const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");
 const scope = "b0a80123-1234-4234-9234-123456789abc";
 const temp = mkdtempSync(join(tmpdir(), "wolfpack-extension-route-"));
@@ -25,10 +27,17 @@ const project = join(temp, "project"); mkdirSync(project);
 expect(Bun.spawnSync(["git", "init", "--initial-branch=main", project], { stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
 writeFileSync(join(project, "new <file>.ts"), "hello\n");
 const backend = { async listSessionFacts() { return [{ name: "live", alive: true, identity: { wolfpackSessionId: scope, projectPath: project } }]; } } as any;
-__setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, backend }));
-const { server } = createServerInstance(); let base = "";
+let safeMode = false;
+let { server, wss } = createServerInstance(createServerContext({ backend: new MockBackend({ sessions: [] }), extensionRouteService: new ExtensionRouteService({ runtime, backend, safeMode: () => safeMode }) })); let base = "";
+async function serveWithService(extensionRouteService: InstanceType<typeof ExtensionRouteService>) {
+  await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
+  wss.close();
+  ({ server, wss } = createServerInstance(createServerContext({ backend: new MockBackend({ sessions: [] }), extensionRouteService })));
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
 beforeAll(async () => { await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => { base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`; resolve(); })); });
-afterAll(async () => { await new Promise<void>((resolve) => server.close(() => resolve())); __setExtensionRouteServiceForTests(undefined); __resetJwtAuthConfig(); rmSync(temp, { recursive: true, force: true }); delete process.env.WOLFPACK_JWT_SECRET; });
+afterAll(async () => { await new Promise<void>((resolve) => server.close(() => resolve())); wss.close(); __resetJwtAuthConfig(); rmSync(temp, { recursive: true, force: true }); delete process.env.WOLFPACK_JWT_SECRET; });
 function token() { const crypto = require("node:crypto"); const now = Math.floor(Date.now() / 1000); const h = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url"); const p = Buffer.from(JSON.stringify({ iat: now, exp: now + 60 })).toString("base64url"); return `${h}.${p}.${crypto.createHmac("sha256", process.env.WOLFPACK_JWT_SECRET).update(`${h}.${p}`).digest("base64url")}`; }
 describe("extension HTTP routes", () => {
   test("blob routes authenticate, bound, verify and idempotently store/delete raw bytes", async () => {
@@ -47,7 +56,8 @@ describe("extension HTTP routes", () => {
     expect((await fetch(`${path}?session=live`, { method: "DELETE", headers })).status).toBe(400);
     expect((await fetch(`${path}?session=11111111-1111-4111-8111-111111111111`, { method: "DELETE", headers })).status).toBe(409);
     runtime.setEnabled("route-fixture", false); expect((await put()).status).toBe(409); runtime.setEnabled("route-fixture", true);
-    __setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, backend, safeMode: () => true })); expect((await put()).status).toBe(409); __setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, backend }));
+    safeMode = true;
+    try { expect((await put()).status).toBe(409); } finally { safeMode = false; }
     const noBlob = join(temp, "no-blob"); mkdirSync(noBlob); writeFileSync(join(noBlob, "package.json"), JSON.stringify({ name: "no-blob", version: "1.0.0", wolfpack: { manifestVersion: 1, apiVersion: 1, id: "no-blob", skills: [], documents: [] } })); await runtime.install({ source: noBlob, trustBrowserCode: true });
     expect((await fetch(`${base}/api/extensions/blobs/no-blob/${digest}?session=${scope}`, { method: "PUT", headers, body: bytes })).status).toBe(400);
     const catalog = await (await fetch(`${base}/api/extensions`, { headers })).json(); contract("listInstalledExtensions", catalog);
@@ -71,7 +81,7 @@ describe("extension HTTP routes", () => {
     const bytes = Buffer.from([42, 43]), digest = require("node:crypto").createHash("sha256").update(bytes).digest("hex");
     let alive = true, safeMode = false, checks = 0, began!: () => void;
     const started = new Promise<void>(resolve => { began = resolve; });
-    __setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, safeMode: () => safeMode, backend: { listSessionFacts: async () => { const facts = [{ name: "reused", alive, identity: { wolfpackSessionId: scope } }]; if (++checks === 1) began(); return facts; } } as any }));
+    await serveWithService(new ExtensionRouteService({ runtime, safeMode: () => safeMode, backend: { listSessionFacts: async () => { const facts = [{ name: "reused", alive, identity: { wolfpackSessionId: scope } }]; if (++checks === 1) began(); return facts; } } as any }));
     const upload = request(`${base}/api/extensions/blobs/route-fixture/${digest}?session=${scope}`, { method: "PUT", headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/octet-stream" } });
     const result = new Promise<number>( (resolve, reject) => { upload.on("response", response => { response.resume(); response.on("end", () => resolve(response.statusCode!)); }); upload.on("error", reject); });
     try {
@@ -85,7 +95,7 @@ describe("extension HTTP routes", () => {
       const { ExtensionBlobStore } = await import("../../src/extensions/blob-store.ts"); expect(new ExtensionBlobStore({ root: runtime.root }).read({ installationId: runtime.installationId, extensionId: "route-fixture" }, digest)).toBeNull();
     } finally {
       upload.destroy(); const manifest = JSON.parse(readFileSync(join(source, "package.json"), "utf8")); manifest.version = "1.0.0"; writeFileSync(join(source, "package.json"), JSON.stringify(manifest)); await runtime.install({ source, trustBrowserCode: true }); runtime.setEnabled("route-fixture", true);
-      __setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, backend }));
+      await serveWithService(new ExtensionRouteService({ runtime, backend }));
     }
   });
   test("concurrent PUTs at the installation count quota admit exactly one", async () => {
@@ -136,7 +146,6 @@ describe("extension HTTP routes", () => {
   });
   test("project status rejects disabled/safe-mode scopes and bounds concurrent work with a liveness recheck", async () => {
     const headers = { Authorization: `Bearer ${token()}` };
-    const route = `${base}/api/extensions/project/git-status/route-fixture?session=${scope}`;
     let safeMode = false, alive = true, calls = 0;
     let release!: () => void, ready!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
@@ -145,7 +154,8 @@ describe("extension HTTP routes", () => {
       backend: { listSessionFacts: async () => [{ name: "reusable-name", alive, identity: { wolfpackSessionId: scope, projectPath: project } }] } as any,
       readGitStatus: async path => { expect(path).toBe(project); if (++calls === 2) ready(); await pending; return { state: "not-repository" }; },
     });
-    __setExtensionRouteServiceForTests(service);
+    await serveWithService(service);
+    const route = `${base}/api/extensions/project/git-status/route-fixture?session=${scope}`;
     try {
       runtime.setEnabled("route-fixture", false);
       expect((await fetch(route, { headers })).status).toBe(409); expect(calls).toBe(0);
@@ -160,7 +170,7 @@ describe("extension HTTP routes", () => {
       alive = true; expect((await fetch(route, { headers })).status).toBe(200); expect(calls).toBe(3);
     } finally {
       release(); runtime.setEnabled("route-fixture", true);
-      __setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, backend }));
+      await serveWithService(new ExtensionRouteService({ runtime, backend }));
     }
   });
   test("Git diff is authenticated, exact-session scoped, read-only and diffs untracked files as new files", async () => {
@@ -182,7 +192,6 @@ describe("extension HTTP routes", () => {
   });
   test("Git diff shares the project work bound with status and maps reader failures to PROJECT_UNAVAILABLE", async () => {
     const headers = { Authorization: `Bearer ${token()}` };
-    const status = `${base}/api/extensions/project/git-status/route-fixture?session=${scope}`, diff = `${base}/api/extensions/project/git-diff/route-fixture?session=${scope}`;
     let statusCalls = 0, diffCalls = 0, fail = false, safeMode = false;
     let release!: () => void, ready!: () => void;
     const pending = new Promise<void>(resolve => { release = resolve; });
@@ -192,7 +201,8 @@ describe("extension HTTP routes", () => {
       readGitStatus: async () => { statusCalls++; check(); await pending; return { state: "not-repository" }; },
       readGitDiff: async path => { expect(path).toBe(project); diffCalls++; check(); await pending; if (fail) throw new Error("Git diff unavailable"); return { state: "ready", staged: "diff --git a/x b/x\n", unstaged: "", truncated: true }; },
     });
-    __setExtensionRouteServiceForTests(service);
+    await serveWithService(service);
+    const status = `${base}/api/extensions/project/git-status/route-fixture?session=${scope}`, diff = `${base}/api/extensions/project/git-diff/route-fixture?session=${scope}`;
     try {
       runtime.setEnabled("route-fixture", false);
       expect((await fetch(diff, { headers })).status).toBe(409); expect(diffCalls).toBe(0);
@@ -214,7 +224,7 @@ describe("extension HTTP routes", () => {
       expect(failed.status).toBe(503); expect(await failed.json()).toMatchObject({ error: { code: "PROJECT_UNAVAILABLE", message: "Git diff unavailable for this project" } });
     } finally {
       release(); runtime.setEnabled("route-fixture", true);
-      __setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime, backend }));
+      await serveWithService(new ExtensionRouteService({ runtime, backend }));
     }
   });
   test("requires normal API auth and only delivers installed allowlisted JS", async () => { expect((await fetch(`${base}/api/extensions`)).status).toBe(401); const headers = { Authorization: `Bearer ${token()}` }; const catalog = await fetch(`${base}/api/extensions`, { headers }); expect(catalog.status).toBe(200); const item = (await catalog.json() as any).installations.find((item: any) => item.extensionId === "route-fixture"); const asset = await fetch(`${base}${item.ui.url}`, { headers }); expect(asset.status).toBe(200); expect(asset.headers.get("cache-control")).toBe("no-store"); expect(asset.headers.get("x-wolfpack-extension-digest")).toBe(item.ui.digest); const denied = await fetch(`${base}/api/extensions/assets/${item.extensionId}/${item.package.digest}/package.json`, { headers }); expect(denied.status).toBe(404); });

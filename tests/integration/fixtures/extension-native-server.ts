@@ -11,7 +11,7 @@ process.env.WOLFPACK_TEST = "1";
 const socketPath = process.env.WOLFPACK_BROKER_SOCKET;
 if (!socketPath) throw new Error("WOLFPACK_BROKER_SOCKET is required");
 
-const { createServerContext, setDefaultServerContext } = await import("../../../src/server/context.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
 const { BrokerClient } = await import("../../../src/broker/client.ts");
 const { BrokerBackend } = await import("../../../src/server/broker-backend.ts");
 
@@ -29,10 +29,8 @@ if (!connected) throw new Error("real broker connection timed out");
 const ping = await client.request("list_sessions", {});
 if (ping.status !== "ok") throw new Error("real broker list_sessions failed");
 const context = createServerContext({ backend: new BrokerBackend(client) });
-setDefaultServerContext(context);
 
 const { createServerInstance } = await import("../../../src/server/index.ts");
-const { __resetTaskRelayGatewayForTests } = await import("../../../src/server/task-gateways.ts");
 const { server } = createServerInstance(context);
 server.listen(Number(process.env.WOLFPACK_PORT) || 0, "127.0.0.1", () => {
   process.stdout.write(`READY:${(server.address() as AddressInfo).port}\n`);
@@ -40,7 +38,7 @@ server.listen(Number(process.env.WOLFPACK_PORT) || 0, "127.0.0.1", () => {
 
 async function stop(): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  await __resetTaskRelayGatewayForTests();
+  await context.close();
   client.close();
 }
 process.on("SIGTERM", () => { void stop().finally(() => process.exit(0)); });

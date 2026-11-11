@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeEach, expect, test } from "bun:test";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -22,11 +22,10 @@ const token = (() => {
   const value = `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ sub: "fixture", aud: "volatile-http", exp: Math.floor(Date.now() / 1000) + 600 })}`;
   return `${value}.${createHmac("sha256", secret).update(value).digest("base64url")}`;
 })();
-const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
+const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
 const { getTaskRelayProfile } = await import("../../src/task-relay/gateway.ts");
-const { getTaskRelayGateway, __resetTaskRelayGatewayForTests } = await import("../../src/server/task-gateways.ts");
 const { WorkerRelayGateway } = await import("../../src/task-relay/worker-client.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");
 const { VOLATILE_HTTP_LIMITS } = await import("../../src/server/volatile-relay-routes.ts");
@@ -39,27 +38,38 @@ class PiBackend extends MockBackend {
   }
 }
 let backend = new PiBackend({ sessions: ["sender", "receiver"] });
-const context = createServerContext({ get backend() { return backend; } });
-// C2 will replace gateway reset hooks with owned gateway lifetimes.
-setDefaultServerContext(context);
-const { server, wss } = createServerInstance(context);
+let context = createServerContext({ get backend() { return backend; } });
+let instance: ReturnType<typeof createServerInstance> | undefined;
+async function closeServer() {
+  if (instance) {
+    const { server, wss } = instance;
+    await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
+    wss.close(); instance = undefined;
+  }
+  await context.close();
+}
+async function listenWithContext(next: typeof context, port = 0) {
+  await closeServer(); context = next;
+  instance = createServerInstance(context);
+  await new Promise<void>(resolve => instance!.server.listen(port, "127.0.0.1", resolve));
+  base = `http://127.0.0.1:${(instance.server.address() as AddressInfo).port}`;
+}
 let base = "", gateway: InstanceType<typeof WorkerRelayGateway>;
 const path = "/api/task-relay/volatile-v1";
 const headers = { "content-type": "application/json", authorization: `Bearer ${token}` };
-beforeAll(async () => { await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`; });
 beforeEach(async () => {
-  await __resetTaskRelayGatewayForTests();
   process.env.WOLFPACK_TASK_RELAY_ROOT = relayRoot; process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1";
   process.env.WOLFPACK_TASK_RELAY_STORAGE = "memory";
   process.env.WOLFPACK_JWT_SECRET = secret; process.env.WOLFPACK_JWT_AUDIENCE = "volatile-http"; __resetJwtAuthConfig();
   backend = new PiBackend({ sessions: ["sender", "receiver"] });
-  gateway = getTaskRelayGateway() as InstanceType<typeof WorkerRelayGateway>;
+  await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot }));
+  gateway = context.taskRelayGateway as InstanceType<typeof WorkerRelayGateway>;
   expect(gateway).toBeInstanceOf(WorkerRelayGateway); await gateway.initialize();
 });
 afterAll(async () => {
-  try { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); wss.close(); }
+  try { await closeServer(); }
   finally {
-    await __resetTaskRelayGatewayForTests();
+    await context.close();
     expect(readFileSync(sentinel)).toEqual(original);
     rmSync(root, { recursive: true, force: true });
     __resetJwtAuthConfig(); // Clear while the test-only guard is still active, even when run alone.
@@ -67,7 +77,8 @@ afterAll(async () => {
   }
 });
 async function post(body: unknown, route = path) {
-  const response = await fetch(base + route, { method: "POST", headers, body: JSON.stringify(body) });
+  // Reset tests replace the listener on its owned port; do not pool a socket across lifetimes.
+  const response = await fetch(base + route, { method: "POST", headers: { ...headers, connection: "close" }, body: JSON.stringify(body) });
   const payload = await response.json() as any;
   if (route === path) expect(validate({ $ref: "#/$defs/VolatileResponse" }, payload, schema)).toEqual([]);
   return { response, body: payload };
@@ -82,19 +93,20 @@ function envelope(source: { relay: string; id: string }, target: { relay: string
 }
 
 test("explicit memory startup keeps wire selection frozen and obsolete state untouched", async () => {
-  await __resetTaskRelayGatewayForTests(); delete process.env.WOLFPACK_TASK_RELAY_PROFILE;
+  delete process.env.WOLFPACK_TASK_RELAY_PROFILE;
+  await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot }));
   expect(getTaskRelayProfile()).toBe("volatile-v1");
   const defaultBinding = await connect("sender");
   expect(defaultBinding.epoch).toBeString();
   expect(readFileSync(sentinel)).toEqual(original);
-  await __resetTaskRelayGatewayForTests(); process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
+  await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot })); process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
   expect(() => getTaskRelayProfile()).toThrow("unsupported task relay profile");
-  expect(() => getTaskRelayGateway()).toThrow("unsupported task relay profile");
-  process.env.WOLFPACK_TASK_RELAY_PROFILE = "typo"; expect(() => getTaskRelayGateway()).toThrow("unsupported task relay profile");
+  expect(() => context.taskRelayGateway).toThrow("unsupported task relay profile");
+  process.env.WOLFPACK_TASK_RELAY_PROFILE = "typo"; expect(() => context.taskRelayGateway).toThrow("unsupported task relay profile");
   expect(readFileSync(sentinel)).toEqual(original);
-  process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1"; gateway = getTaskRelayGateway() as typeof gateway;
+  process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1"; gateway = context.taskRelayGateway as typeof gateway;
   process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
-  expect(getTaskRelayProfile()).toBe("volatile-v1"); expect(getTaskRelayGateway()).toBe(gateway);
+  expect(getTaskRelayProfile()).toBe("volatile-v1"); expect(context.taskRelayGateway).toBe(gateway);
 });
 
 test("real middleware protects metadata and both ingress lanes; valid JWT does not authorize peers", async () => {
@@ -186,7 +198,9 @@ test("HTTP delivers opaque content, checks full conflicts, and preserves individ
   expect((await post({ ...b, operation: "acknowledge", envelopeId: second.envelopeId })).body.value.duplicate).toBe(false);
   expect((await post({ ...b, operation: "acknowledge", envelopeId: second.envelopeId })).body.value.duplicate).toBe(true);
   expect((await post({ ...b, operation: "receive", cursor: "0" })).body.value.deliveries.map((item: any) => item.cursor)).toEqual(["1"]);
-  await __resetTaskRelayGatewayForTests(); gateway = getTaskRelayGateway() as typeof gateway; await gateway.initialize();
+  const originalBase = base;
+  await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot }), Number(new URL(base).port)); gateway = context.taskRelayGateway as typeof gateway; await gateway.initialize();
+  expect(base).toBe(originalBase);
   expect((await post({ ...b, operation: "receive", cursor: "0" })).body).toMatchObject({ ok: false, error: { code: "RELAY_RESET", retryable: false, mayHaveBeenDelivered: true } });
   expect(await gateway.volatileEpoch()).not.toBe(b.epoch);
   const fresh = await connect("receiver"); expect(fresh.endpoint).not.toEqual(b.endpoint);
@@ -247,7 +261,7 @@ test.skipIf(!piSource)("actual pinned RAM core traverses production HTTP middlew
   expect(execFileSync("git", ["-C", piSource, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim()).toBe("");
   const { createTaskStore, createVolatileTaskSession } = await import(pathToFileURL(join(piSource, "src/index.ts")).href);
   const aStore = createTaskStore(); let bStore = createTaskStore();
-  const authenticatedFetch = ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, { ...init, headers: { ...init?.headers, authorization: headers.authorization } })) as typeof fetch;
+  const authenticatedFetch = ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, { ...init, headers: { ...init?.headers, authorization: headers.authorization, connection: "close" } })) as typeof fetch;
   const open = (callerSession: string, store: any) => createVolatileTaskSession({ callerSession, store, url: base + path, fetch: authenticatedFetch });
   const a = open("sender", aStore); let b = open("receiver", bStore);
   try {
@@ -258,7 +272,7 @@ test.skipIf(!piSource)("actual pinned RAM core traverses production HTTP middlew
     b = open("receiver", bStore); bc = await b.connect(); // Transport replacement inside the same RAM lifetime.
     expect(await bc.receive()).toEqual([]);
     expect(bStore.getReceiveCursor()).toBe("1");
-    await __resetTaskRelayGatewayForTests(); gateway = getTaskRelayGateway() as typeof gateway; await gateway.initialize();
+    await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot }), Number(new URL(base).port)); gateway = context.taskRelayGateway as typeof gateway; await gateway.initialize();
     // Await on the normal JS path before matching: Bun's eager .rejects matcher
     // can starve this same-process HTTP/worker response until the transport deadline.
     const resetError = await bc.receive().then(() => undefined, (error: unknown) => error);

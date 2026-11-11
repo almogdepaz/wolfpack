@@ -28,9 +28,11 @@ mock.module("../../../src/server/persistence.ts", () => ({
 }));
 const { ExtensionRuntime } = await import("../../../src/extensions/runtime.ts");
 const { getInstallationId } = await import("../../../src/tailnet-machine-installation.ts");
-const { ExtensionRouteService, __setExtensionRouteServiceForTests } = await import("../../../src/server/extension-routes.ts");
+const { ExtensionRouteService } = await import("../../../src/server/extension-routes.ts");
 const { __resetJwtAuthConfig } = await import("../../../src/test-hooks.ts");
 __resetJwtAuthConfig();
+const { createServerContext } = await import("../../../src/server/context.ts");
+const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { createServerInstance } = await import("../../../src/server/index.ts");
 const backend = { async listSessionFacts() { return [{ name: "review", alive: true, identity: { wolfpackSessionId: scope } }]; } } as any;
 
@@ -66,8 +68,8 @@ function token() {
 }
 const routeRuntime = runtime();
 await install(routeRuntime, fixture());
-__setExtensionRouteServiceForTests(new ExtensionRouteService({ runtime: routeRuntime, backend }));
-const { server } = createServerInstance();
+const context = createServerContext({ backend: new MockBackend({ sessions: [] }), extensionRouteService: new ExtensionRouteService({ runtime: routeRuntime, backend }) });
+const { server } = createServerInstance(context);
 let base: string;
 beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -75,7 +77,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  __setExtensionRouteServiceForTests(undefined);
+  await context.close();
   rmSync(scratch, { recursive: true, force: true });
 });
 const intended = "/api/extensions/documents/review/context";
