@@ -1,3 +1,4 @@
+import { expandFocusCard } from "./focus-card-helpers";
 import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -49,8 +50,13 @@ for (const [state, inputKind, unseen, label, verb] of [
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText(`${count} next${count ? ":" : ""}`);
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(count);
-  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText(`${count} next`);
-  if (label) await expect(block.getByRole("button", { name: `${verb} prompt-project ${label}`, exact: true })).toHaveText(`${verb} ›`);
+  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText(`${count} ${count === 1 ? "needs" : "need"} you`);
+  if (label) {
+    const row = block.locator(".focus-next > li");
+    await expect(row.locator(".focus-tag")).toHaveText(state === "failed" ? "failed" : verb === "open" ? "needs you" : verb!);
+    await expandFocusCard(row);
+    await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toHaveText("open ›");
+  }
   if (info.project.name !== "desktop") {
     const expand = block.getByRole("button", { name: /Expand assistant/ });
     if (await expand.count()) await expand.tap();
@@ -58,8 +64,8 @@ for (const [state, inputKind, unseen, label, verb] of [
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-next > li")).toHaveCount(count);
-  await expect(view.locator(":scope > h2").first()).toHaveText(`next ${count}`);
-  if (label) await expect(view.getByRole("button", { name: `${verb} prompt-project ${label}`, exact: true })).toHaveText(`${verb} ›`);
+  await expect(view.locator(":scope > h2").first()).toHaveText(`next ${count ? "1 needs you" : "0"}`);
+  if (label) await expect(view.getByRole("button", { name: "Open prompt-project", exact: true })).toHaveText("open ›");
   else await expect(view.locator(".focus-next, .focus-done")).toHaveCount(0);
   if (process.env.WOLFPACK_FOCUS_SHOTS && (inputKind === "permission" || state === "idle")) {
     mkdirSync(process.env.WOLFPACK_FOCUS_SHOTS, { recursive: true });

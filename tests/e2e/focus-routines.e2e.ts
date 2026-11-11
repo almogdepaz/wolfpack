@@ -76,7 +76,7 @@ test("yesterday row opens the day note dialog; mark read hides it on every devic
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-view");
-  await expect(view.locator(".focus-yesterday")).toContainText("yesterday4 done · 2 carried over · 1 question");
+  await expect(view.locator(".focus-yesterday")).toContainText("yesterday· 1 question for you · 2 carried over · 4 done");
   expect((await new AxeBuilder({ page }).include("#assistant-view").analyze()).violations).toEqual([]);
   await view.getByRole("button", { name: `Read day note for ${yesterday}` }).click();
   const dialog = page.locator("#app-dialog");

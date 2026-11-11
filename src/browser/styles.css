@@ -2953,9 +2953,15 @@ body > header { height: 52px; min-height: 52px; }
 .focus-block .focus-nudge { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .assistant-column .focus-nudge { margin: 16px 0 0; padding: 14px 16px; border: 1px solid var(--hairline); border-left: 2px solid var(--accent); border-radius: var(--r-control); background: var(--surface-2); }
 .focus-nudge.from { color: var(--text-3); }
-.focus-today, .focus-done { list-style: none; margin: 0; padding: 0; border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--surface-2); box-shadow: var(--gloss); overflow: hidden; }
-.focus-today > li + li, .focus-done li + li { border-top: 1px solid var(--hairline); }
-.focus-done li { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 7px 12px; font-size: 13px; color: var(--text-3); }
+.focus-today { list-style: none; margin: 0; padding: 0; border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--surface-2); box-shadow: var(--gloss); overflow: hidden; }
+.focus-today > li + li { border-top: 1px solid var(--hairline); }
+.focus-done h3 { margin: 18px 0 6px; color: var(--text-3); font: 500 12px var(--font-ui); }
+.focus-done ul { list-style: none; margin: 0; padding: 0; }
+.focus-done > ul > li { padding: 6px 0; }
+.focus-done li > div, .focus-done li li { display: flex; align-items: center; gap: 10px; min-height: 34px; font-size: 13px; color: var(--text-2); }
+.focus-done ul ul { padding-left: 18px; }
+.focus-done li li { color: var(--text-3); font-size: 12px; }
+.focus-questions { color: var(--attn); }
 /* Cards: the summary is the 44px row (text only); the action, checkbox and chips sit beside it in the row grid; the body opens under the title. */
 /* Both lists end their disclosure in the same column before the action edge. */
 /* Short focus-owned variables retain the unchanged stylesheet byte cap. */

@@ -30,7 +30,7 @@ async function open(page: Page) {
   });
   await page.goto(local.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
-  for (const row of await page.locator("#assistant-content .focus-next > li").all()) await expandFocusCard(row);
+  for (const row of await page.locator("#assistant-content .focus-next > li").filter({ hasText: "The original home's recommendation" }).all()) await expandFocusCard(row);
   await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "Home machine", exact: true }).locator(`option[value='${peerId}']`)).toHaveText("Race peer");
 }

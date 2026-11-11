@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { focusCards, type FocusAction, rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSessionLabel, focusActionVerb, type FocusSession } from "../../src/focus-ranking.ts";
+import { focusCards, groupFocusDone, type FocusAction, rankFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSessionLabel, focusActionVerb, type FocusSession } from "../../src/focus-ranking.ts";
 import { emptyFocus, reduceFocus } from "../../src/focus-contract.ts";
 const now = "2026-11-06T12:00:00.000Z";
 test("card classifier follows precedence, retains assistant actions, and counts non-cards before caps", () => {
@@ -172,6 +172,17 @@ test("stopped-unseen work is not a finished item in today's timeline until revie
   expect(doneToday(doc(), [reviewed], Date.parse(now), at => at.slice(0, 10)).filter(i => i.kind === "session")).toMatchObject([{ session: { id: "linked" } }]);
 });
 
+test("done grouping nests finishes once per intention and separates the still-open decision", () => {
+  const focus = reduceFocus(doc(), [{ type: "done", id: "a" }], "2026-11-06T10:05:00.000Z");
+  const finished = session("linked", "done", "2026-11-06T11:00:00.000Z");
+  const openFinish = session("b1", "done", "2026-11-06T11:30:00.000Z", "/b");
+  const grouped = groupFocusDone(doneToday(focus, [finished, openFinish], Date.parse(now), at => at.slice(0, 10)));
+  expect(grouped.finished.map(g => [g.intention.id, g.at, g.sessions.map(s => s.session.id)])).toEqual([
+    ["c", now, []], ["a", "2026-11-06T10:05:00.000Z", ["linked"]],
+  ]);
+  expect(grouped.open.map(g => [g.intention.id, g.sessions.map(s => s.session.id)])).toEqual([["b", ["b1"]]]);
+  expect(groupFocusDone([])).toEqual({ finished: [], open: [] });
+});
 test("done today lists ticked intentions and finished linked sessions of the day, newest first", () => {
   const nowMs = Date.parse(now);
   const ticked = reduceFocus(doc(), [{ type: "done", id: "a" }], "2026-11-06T10:05:00.000Z");

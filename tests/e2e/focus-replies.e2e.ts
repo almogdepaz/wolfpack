@@ -67,3 +67,22 @@ for (const inputKind of ["permission", "auth"] as const) test(`${inputKind} with
   await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toBeEnabled();
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
 });
+
+for (const inputKind of ["permission", "auth"] as const) test(`${inputKind} with an assistant suggestion keeps its approved box`, async ({ page }) => {
+  const episode = "2026-11-11T10:00:00Z";
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [
+    { type: "next", author: "assistant", rows: [{ ref: { machine: current.installationId, sessionId: "mock:prompt-project" }, stoppedAt: episode, verdict: "suggest", reason: "Use the approved answer", suggestion: "Approved response" }] },
+  ] } })).ok()).toBe(true);
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    session.runtimeState = { ...session.runtimeState, state: "needs-input", inputKind, changedAt: episode, stoppedAt: episode };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "prompt-project" });
+  await expandFocusCard(row);
+  await expect(row.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue("Approved response");
+  await expect(row.getByRole("button", { name: "Send to prompt-project", exact: true })).toBeEnabled();
+});

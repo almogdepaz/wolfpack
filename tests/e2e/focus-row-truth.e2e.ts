@@ -217,7 +217,7 @@ test("counts: validated needs-you population and uncapped next totals agree", as
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="fail"] .n')).toHaveAttribute("data-count", "1");
   await expect(page.locator("#assistant-content .focus-next")).not.toContainText("count-6");
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("8 next:");
-  await expect(page.locator("#dashboard-focus > .focus-dashboard-body > small").last()).toContainText("8 next");
+  await expect(page.locator("#dashboard-focus > .focus-dashboard-body > small").last()).toContainText("8 need you");
   await expect(page.locator("#dashboard-focus .focus-next > li")).toHaveCount(3);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 8 need you");
@@ -249,7 +249,7 @@ test("counts: sessions claimed only by done intentions fall through to unlinked 
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 next:");
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(3);
-  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText("3 next");
+  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText("3 need you");
   for (const name of ["prompt-project", "blocked-explicit", "blocked-unlinked"]) {
     const row = block.locator(".focus-next > li").filter({ hasText: name });
     await expandFocusCard(row);

@@ -1,6 +1,6 @@
 import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
 import { esc, escAttr, isDesktop } from "./app-state";
-import { focusCards, mergeFocus, stoppedUnseen, linkedFocusSessions, doneToday, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
+import { focusCards, mergeFocus, stoppedUnseen, linkedFocusSessions, doneToday, groupFocusDone, type FocusDoneGroup, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, focusNextRefKey, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-send-contract";
@@ -461,13 +461,15 @@ export function createAssistantView(deps: {
       const block = field.closest<HTMLElement>(".focus-draft")!;
       const send = block.querySelector<HTMLButtonElement>("[data-focus-next][aria-describedby]");
       if (send) send.disabled = readOnly || !text.trim();
+      const tag = block.closest("details")?.querySelector<HTMLElement>(".focus-tag");
+      if (tag && row?.triage?.suggestion) tag.textContent = `reply ready${!delivered && text !== row.triage.suggestion ? " · edited" : ""}`;
       let reset = block.querySelector<HTMLButtonElement>("[data-focus-reset]");
       if (row?.triage?.suggestion && !delivered && text !== row.triage.suggestion) {
         if (!reset) {
           reset = document.createElement("button");
           reset.type = "button"; reset.textContent = "reset";
           reset.dataset.focusReset = key; reset.dataset.focusKey = `reset:${key}`;
-          block.insertBefore(reset, block.querySelector("[data-focus-mark-done]"));
+          block.insertBefore(reset, block.querySelector("[data-focus-mark-done], [data-focus-session]"));
         }
         reset.disabled = readOnly;
       } else reset?.remove();
@@ -579,10 +581,13 @@ export function createAssistantView(deps: {
     const summary = `${current.intentions.filter(i => i.done).length} of ${current.intentions.length} done`;
     // "know when items are done": today's ticks and finishes carry a time; the rest of the list stays as it was.
     const done = doneToday(current, sessions(), Date.now(), doneDay);
-    const latest = done[0] && ` · ${done[0].kind === "intention" ? `✓ ${esc(done[0].intention.title)}` : `${esc(done[0].session.name)} finished`} ${clock(done[0].at)}`;
-    const doneHtml = done.length ? `<h2>done today <small>${plural(done.filter(i => i.kind === "intention").length, "intention")} · ${plural(done.filter(i => i.kind === "session").length, "session")}</small></h2><ul class="focus-done" aria-label="Done today">${done.map(i => `<li><span class="focus-time">${clock(i.at)}</span>${i.kind === "intention"
-      ? `<span class="focus-what">✓ ${esc(i.intention.title)}</span><button type="button" data-focus-undo="${escAttr(i.intention.id)}" data-focus-key="${escAttr(`undo:${i.intention.id}`)}" aria-label="Undo done: ${escAttr(i.intention.title)}"${locked() ? " disabled" : ""}>undo</button>`
-      : `<span class="focus-what"><b>${esc(i.session.name)}</b> finished · for ${esc(i.intention.title)}</span><button type="button" data-focus-session="${escAttr(i.session.id)}" data-focus-key="${escAttr(`done:${i.intention.id}:${i.session.id}`)}"${sessionLocked() ? " disabled" : ""}>open ›</button>`}</li>`).join("")}</ul>` : "";
+    const grouped = groupFocusDone(done);
+    const doneGroupHtml = (groups: FocusDoneGroup[], finished: boolean) => groups.length ? `<h3>${finished ? "finished" : "work finished, intention still open"}</h3><ul aria-label="${finished ? "Finished intentions" : "Finished work still open"}">${groups.map(group => {
+      const i = group.intention;
+      return `<li><div><span class="focus-what">${finished ? "✓" : "○"} ${esc(i.title)}</span>${finished ? `<span class="focus-time">${clock(group.at)}</span><button type="button" data-focus-undo="${escAttr(i.id)}" data-focus-key="${escAttr(`undo:${i.id}`)}" aria-label="Undo done: ${escAttr(i.title)}"${locked() ? " disabled" : ""}>undo</button>`
+        : `<button type="button" data-focus-complete="${escAttr(i.id)}" data-focus-key="${escAttr(`complete:${i.id}`)}" aria-label="Mark done: ${escAttr(i.title)}"${locked() ? " disabled" : ""}>done ›</button>`}</div>${group.sessions.length ? `<ul>${group.sessions.map(({ session, at }) => `<li><span class="focus-what">· ${esc(session.name)}${session.machine ? ` · ${esc(session.machine)}` : ""} · <span class="focus-time">${clock(at)}</span></span>${!finished ? `<button type="button" data-focus-session="${escAttr(session.id)}" data-focus-key="${escAttr(`done:${i.id}:${session.id}`)}" aria-label="Open ${escAttr(session.name)}"${sessionLocked() ? " disabled" : ""}>open ›</button>` : ""}</li>`).join("")}</ul>` : ""}</li>`;
+    }).join("")}</ul>` : "";
+    const doneHtml = done.length ? `<h2>done today <small>${grouped.finished.length} finished · ${grouped.open.length} finished work still open</small></h2><div class="focus-done">${doneGroupHtml(grouped.finished, true)}${doneGroupHtml(grouped.open, false)}</div>` : "";
     const open = current.intentions.filter(i => !(i.done && i.doneAt && doneDay(i.doneAt) === localDay(Date.now())));
     const r = routines();
     const catching = r?.catchingUp;
@@ -607,7 +612,7 @@ export function createAssistantView(deps: {
     const noteDay = r?.yesterday?.date === summaryDay?.date ? r?.yesterday : undefined;
     const dayEnd = summaryDay && (noteDay ? Date.parse(noteDay.endsAt) : new Date(`${summaryDay.date}T00:00`).getTime() + 864e5);
     const yesterday = summaryDay && !(current.seenDayNoteAt && Date.parse(current.seenDayNoteAt) >= dayEnd!)
-      ? `<div class="focus-yesterday"><h2>${dayName(summaryDay.date)}</h2><span>${summaryDay.done} done · ${summaryDay.carried} carried over · ${summaryDay.questions} question${summaryDay.questions === 1 ? "" : "s"}</span>${button("day-note", "read ›", `Read day note for ${summaryDay.date}`, noteDay?.note === false)}</div>` : "";
+      ? `<div class="focus-yesterday"><h2>${dayName(summaryDay.date)}</h2><span>· <span${summaryDay.questions ? ' class="focus-questions"' : ""}>${plural(summaryDay.questions, "question")} for you</span> · ${summaryDay.carried} carried over · ${summaryDay.done} done</span>${button("day-note", "read ›", `Read day note for ${summaryDay.date}`, noteDay?.note === false)}</div>` : "";
     // The dot follows the user's move: amber while a routine waits, red when focus is unavailable.
     const tone = dot(focusUnavailable ? "failed" : r?.surfaced ? "needs you" : state);
     const sessionNotice = answered && !focusUnavailable && !terminalUnavailable() && deps.sessionsUnavailable() ? "<small>sessions unavailable</small>" : "";
@@ -658,7 +663,7 @@ export function createAssistantView(deps: {
       const details = document.getElementById("dashboard-focus-details");
       if (details) details.hidden = !dashboardExpanded;
     }
-    const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml("d", 3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
+    const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml("d", 3) + `<small>${nextCount - doneCards} ${nextCount - doneCards === 1 ? "needs" : "need"} you${doneCards ? ` · ${doneCards} done to review` : ""}${current.intentions.length ? ` · today ${summary}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
     replace("dashboard-focus-details", dashboardBody);
     replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${esc(nextSummary)}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     syncReplyControls();
@@ -977,6 +982,7 @@ export function createAssistantView(deps: {
       });
       if (action === "day-note") void run(readDayNote);
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
+      if (target.dataset.focusComplete) void run(() => write({ type: "done", id: target.dataset.focusComplete! }));
       if (target.dataset.focusStart) {
         if (sessionLocked()) return;
         const intention = doc().intentions.find(i => i.id === target.dataset.focusStart && !i.done);

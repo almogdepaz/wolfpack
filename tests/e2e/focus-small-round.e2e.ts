@@ -58,7 +58,7 @@ test("QA-36: today context yields instead of duplicating a project-named chip", 
   }
 });
 
-test("QA-35: next-row times fit completely or are hidden", async ({ page }, info) => {
+test("QA-35: next-card times stay readable in metadata", async ({ page }, info) => {
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch(); const body = await response.json();
@@ -71,9 +71,10 @@ test("QA-35: next-row times fit completely or are hidden", async ({ page }, info
   await openAssistant(page);
   for (const width of info.project.name === "desktop" ? [1280, 1440] : [390]) {
     await page.setViewportSize({ width, height: 900 });
-    const stamp = page.locator("#assistant-content .focus-next > li").filter({ hasText: "broker-leak-worker-3" }).locator(".focus-title small");
+    const stamp = page.locator("#assistant-content .focus-next > li").filter({ hasText: "broker-leak-worker-3" }).locator(".focus-meta");
     await expect(stamp).toHaveCount(1);
-    if (width === 1280) await expect(stamp).toBeHidden();
+    await expect(stamp).toBeVisible();
+    await expect(stamp).toContainText("3h");
     await expect.poll(() => stamp.evaluate(el => {
       if (getComputedStyle(el).display === "none") return true;
       return el.getBoundingClientRect().right <= el.parentElement!.getBoundingClientRect().right + 1;

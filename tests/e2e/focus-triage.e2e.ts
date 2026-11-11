@@ -214,6 +214,7 @@ test("intention-ref suggestions put the reason on the row and the intention insi
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const row = page.locator("#assistant-content .focus-next > li").filter({ hasText: "Tomorrow is ready" });
   await expect(row.locator("summary")).not.toContainText("Plan tomorrow");
+  await expect(row.locator("textarea")).toHaveCount(0);
   await row.locator("summary").click();
   await expect(row.locator(".focus-card-body")).toContainText("Plan tomorrow");
   await row.getByRole("button", { name: "Mark done: Plan tomorrow", exact: true }).click();
@@ -245,6 +246,8 @@ test("editable reply stays shared across hosts and live renders without replacin
   await expect(page.locator("#dashboard-focus").getByRole("button", { name: "reset", exact: true })).toHaveCount(0);
   const edited = "Review my edited reply; keep the scope unchanged.";
   await dashboard.fill(edited);
+  await expect(page.locator("#dashboard-focus .focus-next > li").first().locator(".focus-draft button").last()).toHaveAccessibleName("Open prompt-project");
+  await expect(page.locator("#dashboard-focus .focus-next > li").first().locator(".focus-tag")).toHaveText("reply ready · edited");
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const reply = field("#assistant-content");
   await expect(reply).toHaveValue(edited);
@@ -258,6 +261,8 @@ test("editable reply stays shared across hosts and live renders without replacin
   expect(await element!.evaluate(el => el === document.activeElement)).toBe(true);
   expect(await reply.evaluate(el => { const field = el as HTMLTextAreaElement; return [field.selectionStart, field.selectionEnd, field.selectionDirection]; })).toEqual([7, 15, "backward"]);
   await expect(reply).toHaveValue(edited);
+  await expect(page.locator("#assistant-content .focus-next > li").first().locator(".focus-draft button").last()).toHaveAccessibleName("Open prompt-project");
+  await expect(page.locator("#assistant-content .focus-next > li").first().locator(".focus-tag")).toHaveText("reply ready · edited");
   await expect(dashboard).toHaveValue(edited);
   await expect(page.locator("#assistant-content").getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveAccessibleDescription(edited);
   expect(saved.revision).toBeGreaterThan(0);

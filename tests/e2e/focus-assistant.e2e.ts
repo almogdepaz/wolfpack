@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
 // Existing assistant controls are exercised with the dashboard explicitly expanded.
 test.beforeEach(async ({ page }) => { await page.addInitScript(key => localStorage.setItem(key, "1"), FOCUS_MOBILE_EXPANDED_KEY); });
+import { expandFocusCard } from "./focus-card-helpers";
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -92,10 +93,11 @@ test("enabling is one button and one dialog; the assistant then opens for its fi
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block).toBeVisible();
-  await expect(block.getByRole("button", { name: /start.*ship focus/i })).toBeVisible();
-  await expect(block).toContainText(/1 of 2 done · ✓ reply to issue \d\d:\d\d/);
+  await expect(block.getByRole("button", { name: /start.*ship focus/i })).toHaveCount(0);
+  await expect(block).toContainText("1 needs you · today 1 of 2 done");
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
-  await block.getByRole("button", { name: /prompt-project/ }).click();
+  await expandFocusCard(block.locator(".focus-next > li").filter({ hasText: "prompt-project" }));
+  await block.getByRole("button", { name: "Open prompt-project", exact: true }).click();
   await expect(page.locator("#terminal-view")).toBeVisible();
   if (info.project.name === "desktop") await expect(page.locator("#sidebar-assistant")).toBeVisible();
   if (info.project.name === "desktop") {
@@ -105,6 +107,7 @@ test("enabling is one button and one dialog; the assistant then opens for its fi
 });
 
 test("cached home-offline focus is read-only and still ranks live sessions", async ({ page }) => {
+  await withBlockedPromptProject(page);
   await page.goto(server.baseUrl);
   await expect(page.locator("#dashboard-focus .focus-next")).toBeVisible();
   await page.route(url => url.pathname === "/api/focus", route => route.abort("failed"));
@@ -120,6 +123,7 @@ test("cached home-offline focus is read-only and still ranks live sessions", asy
 });
 
 test("before the first focus response a cached copy is shown as it was, never as offline", async ({ page }) => {
+  await withBlockedPromptProject(page);
   await page.goto(server.baseUrl);
   await expect(page.locator("#dashboard-focus .focus-next")).toBeVisible();
   let release!: () => void;

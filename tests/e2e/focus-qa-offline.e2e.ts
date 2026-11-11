@@ -1,3 +1,4 @@
+import { expandFocusCard } from "./focus-card-helpers";
 import { test, expect } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -100,7 +101,8 @@ for (const firstFetchFails of [false, true]) test(`P1: cold ${firstFetchFails ? 
       await expect(page.locator("#dashboard-focus .focus-header")).toContainText("sessions unavailable");
       await expect(page.locator("#assistant-content .focus-header")).toContainText("sessions unavailable");
     } else {
-      await expect(page.locator("#dashboard-focus .focus-next button").first()).toBeEnabled();
+      await expandFocusCard(page.locator("#dashboard-focus .focus-next > li").first());
+      await expect(page.locator("#dashboard-focus .focus-next [data-focus-session]").first()).toBeEnabled();
       expect(await page.evaluate(() => (window as unknown as { coldSessionNotices: string[] }).coldSessionNotices)).toEqual([]);
     }
     expect(duringPending, "a pending first fetch is not an outage, including transient DOM mutations").toEqual([]);
@@ -128,10 +130,11 @@ for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.locator(".focus-next button").first()).toBeEnabled();
+  await expandFocusCard(view.locator(".focus-next > li").first());
+  await expect(view.locator(".focus-next [data-focus-session]").first()).toBeEnabled();
   localDown = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(view.locator(".focus-next button").first()).toBeDisabled({ timeout: 10_000 });
+  await expect(view.locator(".focus-next [data-focus-session]").first()).toBeDisabled({ timeout: 10_000 });
   await expect(view.locator(".focus-header")).toContainText("sessions unavailable", { timeout: 1_000 });
   await expect(view.locator(".focus-header")).not.toContainText("read-only");
   await view.locator(".focus-today summary .focus-title").first().click();
@@ -154,7 +157,7 @@ for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state
   await page.locator("#assistant-terminal-focus").click();
   localDown = false;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(view.locator(".focus-next button").first()).toBeEnabled({ timeout: 10_000 });
+  await expect(view.locator(".focus-next [data-focus-session]").first()).toBeEnabled({ timeout: 10_000 });
   await expect(view.locator(".focus-header")).not.toContainText("sessions unavailable");
 });
 
@@ -254,7 +257,7 @@ test("S2: a retired peer installation leaves the offline snapshot before local r
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next");
   await expect(next).toContainText("retired-worker", { timeout: 10_000 });
-  await expect(next.locator("li").filter({ hasText: "retired-worker" }).locator("summary .focus-for")).toHaveText("peer · focus peer");
+  await expect(next.locator("li").filter({ hasText: "retired-worker" }).locator("summary .focus-meta")).toContainText("peer · focus peer");
   if (process.env.WOLFPACK_FOCUS_SHOTS) await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-peer-${width}.png`), fullPage: true });
   localDown = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -271,7 +274,7 @@ test("S2: a retired peer installation leaves the offline snapshot before local r
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(next).toContainText("replacement-worker", { timeout: 10_000 });
   await expect(next).not.toContainText("retired-worker");
-  await expect(next.locator("button").first()).toBeEnabled();
+  await expect(next.locator("[data-focus-session]").first()).toBeEnabled();
 });
 
 test("QA-26: assistant settings explain offline state without a bare transport error", async ({ page, context }) => {
@@ -487,7 +490,8 @@ test("QA-14: self-offline keeps last known next rows, disabled, then recovers", 
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.locator(".focus-next")).toContainText("prompt-project question");
+  await expect(view.locator(".focus-next")).toContainText("prompt-project asks a question");
+  await expandFocusCard(view.locator(".focus-next > li").first());
   const summaries = await view.locator(".focus-next .focus-card > summary").allTextContents();
   await context.setOffline(true);
   await expect(view).toContainText("offline · read-only", { timeout: 15_000 });
@@ -498,5 +502,5 @@ test("QA-14: self-offline keeps last known next rows, disabled, then recovers", 
   await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeDisabled();
   await context.setOffline(false);
   await expect(view).not.toContainText("offline · read-only", { timeout: 15_000 });
-  await expect(view.locator(".focus-next button").first()).toBeEnabled();
+  await expect(view.locator(".focus-next [data-focus-session]").first()).toBeEnabled();
 });

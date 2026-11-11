@@ -177,6 +177,25 @@ export function focusCards(rows: readonly FocusAction[], sessions: readonly Focu
   return { cards, waiting, working: sessions.filter(s => s.state === AGENT_STATUS_STATE.WORKING).length, notReached };
 }
 export type FocusDoneItem = { at: string; kind: "intention"; intention: FocusIntention } | { at: string; kind: "session"; intention: FocusIntention; session: FocusSession };
+export interface FocusDoneGroup {
+  intention: FocusIntention;
+  at: string;
+  sessions: Extract<FocusDoneItem, { kind: "session" }>[];
+}
+/** Outcome first: each intention owns its finishes, even when its checkbox is still open. */
+export function groupFocusDone(items: readonly FocusDoneItem[]): { finished: FocusDoneGroup[]; open: FocusDoneGroup[] } {
+  const groups = new Map<string, FocusDoneGroup>();
+  for (const item of items) {
+    let group = groups.get(item.intention.id);
+    if (!group) {
+      group = { intention: item.intention, at: item.intention.done ? item.intention.doneAt ?? item.at : item.at, sessions: [] };
+      groups.set(item.intention.id, group);
+    }
+    if (item.kind === "session") group.sessions.push(item);
+  }
+  const ordered = [...groups.values()].sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  return { finished: ordered.filter(g => g.intention.done), open: ordered.filter(g => !g.intention.done) };
+}
 /** Today's timeline: ticked intentions and linked finishes, excluding stopped-unseen work until reviewed. `day` maps a timestamp to its day label. */
 export function doneToday(doc: FocusDocument, sessions: readonly FocusSession[], now: number, day: (at: string) => string): FocusDoneItem[] {
   const today = day(new Date(now).toISOString());

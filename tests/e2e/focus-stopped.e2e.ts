@@ -105,12 +105,12 @@ test("QA-28: unreviewed done work stays stopped in next, footer and timeline unt
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-done")).not.toContainText("prompt-project");
-  await expect(view.getByRole("heading", { name: /done today/ })).toContainText("0 sessions");
+  await expect(view.getByRole("heading", { name: /done today/ })).toContainText("0 finished work still open");
   f.review();
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(view.locator(".focus-done")).toContainText("prompt-project finished");
-  await expect(view.getByRole("heading", { name: /done today/ })).toContainText("1 session");
-  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText("prompt-project finished");
+  await expect(view.locator(".focus-done")).toContainText("prompt-project");
+  await expect(view.getByRole("heading", { name: /done today/ })).toContainText("1 finished work still open");
+  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).not.toContainText("prompt-project");
 });
 
 test("QA-33: reviewed done leaves next and keeps its original stop time in done today", async ({ page }) => {
@@ -124,7 +124,7 @@ test("QA-33: reviewed done leaves next and keeps its original stop time in done 
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.locator(".focus-next li").filter({ hasText: "prompt-project" })).toHaveCount(0);
-  const row = view.locator(".focus-done li").filter({ hasText: "prompt-project finished" });
+  const row = view.locator(".focus-done li li").filter({ hasText: "prompt-project" });
   await expect(row).toBeVisible();
   await expect(row.locator(".focus-time")).toHaveText(stopClock);
 });

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { expandFocusCard } from "./focus-card-helpers";
 import { startTestServer, type TestServer } from "./helpers";
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
@@ -23,7 +24,9 @@ test("opening a child agent from a next row expands its parent in the sidebar", 
   const list = page.locator("#session-list");
   await expect(list.locator(".delegation-parent-card", { hasText: "test-project" })).toBeVisible();
   await expect(list.locator(".sub-session-card")).toHaveCount(0);
-  await page.locator("#dashboard-focus .focus-next li").filter({ hasText: "prompt-project" }).getByRole("button", { name: /prompt-project/ }).click();
+  const row = page.locator("#dashboard-focus .focus-next li").filter({ hasText: "prompt-project" });
+  await expandFocusCard(row);
+  await row.getByRole("button", { name: "Open prompt-project", exact: true }).click();
   await expect(page.locator("#terminal-view")).toBeVisible();
   const sidebar = page.locator("#sidebar-session-list");
   await expect(sidebar.locator(".sub-session-card", { hasText: "prompt-project" })).toBeVisible();
@@ -37,7 +40,9 @@ test("on a phone the session list shows the opened child agent when the user com
   const list = page.locator("#session-list");
   await expect(list.locator(".delegation-parent-card", { hasText: "test-project" })).toBeVisible();
   await expect(list.locator(".sub-session-card")).toHaveCount(0);
-  await page.locator("#dashboard-focus .focus-next li").filter({ hasText: "prompt-project" }).getByRole("button", { name: /prompt-project/ }).click();
+  const row = page.locator("#dashboard-focus .focus-next li").filter({ hasText: "prompt-project" });
+  await expandFocusCard(row);
+  await row.getByRole("button", { name: "Open prompt-project", exact: true }).click();
   await expect(page.locator("#terminal-view")).toBeVisible();
   await page.locator("#back-btn").click();
   await expect(list.locator(".sub-session-card", { hasText: "prompt-project" })).toBeVisible();
