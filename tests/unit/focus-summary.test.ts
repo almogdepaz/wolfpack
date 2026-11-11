@@ -58,6 +58,44 @@ describe("bounded focus summary", () => {
   for (const fixture of screens) {
     test(fixture.name, () => expect(focusSummary(fixture.screen.split("\n"), fixture.harness)).toEqual(fixture.expected));
   }
+  const piFooter = ["──────────────────", "❯", "──────────────────", "~/dev/app (main)", "↑114k ↓21k 54%/200k  gpt-6.1-sol • high"];
+  const claudeFooter = ["──────────────────", "❯", "──────────────────", "Opus 5.5 | tokens 32k | ctx 18%"];
+  for (const body of [
+    ["The approved plan is ready.", "$5 per day is the limit; may I proceed?"],
+    ["R2 still fails on iphone-se", "W1 flaky retry", "$12 per month extra…", "Shall I proceed?"],
+    ["↑3 files staged, ready", "Shall I proceed?"],
+  ]) {
+    test(`pi preserves stats-like prose with a real footer: ${body[0]}`, () => {
+      expect(focusSummary([...body, ...piFooter], "pi")).toEqual(body);
+    });
+  }
+  for (const body of [
+    ["The local change is ready.", "$5 per day is the estimate.", "May I proceed?"],
+    ["R2 is ready for review", "Shall I merge?"],
+    ["$5", "R2", "W1", "↑3"],
+  ]) {
+    test(`pi never cuts body rows without a footer: ${body[0]}`, () => {
+      expect(focusSummary(body, "pi")).toEqual(body);
+    });
+  }
+  test("pi preserves whole stats-token body rows above the input region", () => {
+    const body = ["$5", "R2", "W1", "↑3"];
+    expect(focusSummary([...body, ...piFooter], "pi")).toEqual(body);
+  });
+  for (const input of ["❯ yes but first run the", '❯ Try "refactor <filepath>"']) {
+    test(`claude skips the bottom input row without clearing the message: ${input}`, () => {
+      expect(focusSummary(["● The plan is approved.", "  Shall I implement the first step?", "──────────────────", input, "──────────────────", "Opus 5.5 | tokens 32k | ctx 18%"], "claude"))
+        .toEqual(["The plan is approved.", "Shall I implement the first step?"]);
+    });
+  }
+  test("claude preserves indented command examples inside the message", () => {
+    expect(focusSummary(["● Which local command should I run?", "  ❯ bun test", "  ❯ bun run typecheck", ...claudeFooter], "claude"))
+      .toEqual(["Which local command should I run?", "❯ bun test", "❯ bun run typecheck"]);
+  });
+  test("claude selects the new assistant block after a real user turn", () => {
+    expect(focusSummary(["● Earlier answer.", "❯ Prepare the local checks.", "● Ready. Shall I proceed?", ...claudeFooter], "claude"))
+      .toEqual(["Ready. Shall I proceed?"]);
+  });
   test("keeps the last four rows in reading order", () => {
     expect(focusSummary(["one", "two", "three", "four", "five", ">"], "pi")).toEqual(["two", "three", "four", "five"]);
   });

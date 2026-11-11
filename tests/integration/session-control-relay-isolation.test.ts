@@ -207,6 +207,43 @@ test("list returns meaningful pi/claude rows without changing other harness prev
   }
 });
 
+test("list preserves stopped pi cost questions and claude command examples or drafts", async () => {
+  const { observeDashboardSessions, __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+  const cases = [
+    { harness: "pi", body: ["The approved plan is ready.", "$5 per day is the limit; may I proceed?"],
+      rows: ["The approved plan is ready.", "$5 per day is the limit; may I proceed?", "──────────────────", "❯", "──────────────────", "~/dev/app (main)", "↑114k ↓21k 54%/200k  gpt-6.1-sol • high"] },
+    { harness: "claude", body: ["Which local command should I run?", "❯ bun test", "❯ bun run typecheck"],
+      rows: ["● Which local command should I run?", "  ❯ bun test", "  ❯ bun run typecheck", "──────────────────", "❯", "──────────────────", "⏵⏵ auto mode on (shift+tab to cycle)"] },
+    ...["❯ yes but first run the", '❯ Try "refactor <filepath>"'].map(input => ({ harness: "claude", body: ["Shall I implement the first step?"],
+      rows: ["● Shall I implement the first step?", "──────────────────", input, "──────────────────", "Opus 5.5 | tokens 32k | ctx 18%"] })),
+  ];
+  for (const scenario of cases) {
+    const f = await fixture();
+    __resetSessionObservationForTests();
+    try {
+      f.backend.agentKind = scenario.harness;
+      f.backend.setCapturePane(async () => "Preparing the approved plan.\n❯");
+      f.backend.setProgramStatus("live", { id: "", state: "working", app: scenario.harness, updatedAtMs: Date.now() });
+      await observeDashboardSessions(f.ctx);
+      f.backend.setCapturePane(async () => scenario.rows.join("\n"));
+      f.backend.setOutputSequence("live", "1");
+      f.backend.setProgramStatus("live", { id: "", state: "done", app: scenario.harness, updatedAtMs: Date.now() + 1 });
+      await observeDashboardSessions(f.ctx);
+      const capture = spyOn(f.backend, "capturePane");
+      try {
+        const response = await f.read("list");
+        const live = response.body.sessions.find((s: any) => s.sessionId === LIVE_ID);
+        expect(response.status).toBe(200);
+        expect(live.summary).toEqual(scenario.body);
+        expect(live.lastLine).toBe(scenario.body.at(-1));
+        expect(live.lastLineTrust).toBe("untrusted-data");
+        expect(live.runtime).toMatchObject({ state: "done", stopped: true, stoppedAt: expect.any(String) });
+        expect(capture).not.toHaveBeenCalled();
+      } finally { capture.mockRestore(); }
+    } finally { __resetSessionObservationForTests(); await f.close(); }
+  }
+});
+
 test("list runtime facts exclude server-owned pinned stops", async () => {
   const { getAgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
   const store = getAgentRuntimeStateStore();
