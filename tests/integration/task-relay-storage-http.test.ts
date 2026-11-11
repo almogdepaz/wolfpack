@@ -15,7 +15,7 @@ test("production HTTP preserves permanent storage-owner failures without blanket
   const seed = createRecoveryStore({ root }); seed.close();
   const db = new Database(join(root, "restart-safe-v1.sqlite")); db.exec("PRAGMA user_version=99"); db.close();
   const gateway = createTaskRelayGateway({ root, storage: "sqlite" });
-  const routes = createVolatileRelayRoutes(createServerContext({ taskRelayGateway: gateway, config: null }));
+  const routes = createVolatileRelayRoutes(createServerContext({ taskRelayGateway: gateway, config: null, startSupervisor: false }));
   const server = createServer((req, res) => { void routes["POST /api/task-relay/volatile-v1"]!(req, res); });
   try {
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
