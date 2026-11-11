@@ -44,6 +44,12 @@ The Rust broker has its own tests under `broker/tests/` — run with `cargo test
 
 The broker refuses a group- or other-writable socket parent, so tests must create every directory that holds a broker socket with mode `0700` (`mkdtempSync` already does; `mkdirSync` and `tempfile::tempdir()` inherit the umask).
 
+## Formatting and lint
+
+Run `cargo fmt --manifest-path broker/Cargo.toml` for Rust formatting and `bun run lint` for report-only ESLint checks. Prettier is configured, but the TypeScript reformat and its CI enforcement are deferred until `recovery/restart-safe-relay` (`2c0027fc`) lands; do not run a repository-wide `bun run format` as part of this round. `bun run format:check` is a manual report and currently reports unformatted files. The follow-up must measure Prettier options, verify build hashes, and record the formatting commit in `.git-blame-ignore-revs` before enabling a TypeScript format gate.
+
+Run `git config blame.ignoreRevsFile .git-blame-ignore-revs` locally to keep blame useful across formatting commits.
+
 ## Asset Pipeline
 
 Frontend entrypoints live in `public/`; readable CSS lives in `src/browser/styles.css`. The server doesn't serve from disk — browser assets are embedded into the binary:
