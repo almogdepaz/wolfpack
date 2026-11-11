@@ -11,13 +11,15 @@ type SessionFixture = { name: string; identity: Record<string, unknown>; runtime
 type TouchSample = { moves: number; cancelled: number; trusted: number };
 declare global { interface Window { focusMobileCollapseTouch?: TouchSample } }
 
-async function realisticFocus(page: Page, needsInput = true, triage: "none" | "suggest" | "needs-you" | "scroll" = "none") {
+async function realisticFocus(page: Page, needsInput = true, triage: "none" | "suggest" | "needs-you" | "scroll" | "questions" | "failures" = "none") {
   const episode = new Date().toISOString();
   await page.route("https://**", route => route.abort());
+  const suggestedAttention = triage === "questions" || triage === "failures";
   const sessions = (template: SessionFixture, machine: string) => Array.from({ length: 16 }, (_, i) => ({ ...template,
     name: `${machine}-project-${String(i).padStart(2, "0")}`,
     identity: { ...template.identity, wolfpackSessionId: `mock:${machine}-${i}`, projectPath: `/work/${machine}-project-${i}` },
-    runtimeState: { ...template.runtimeState, state: (triage === "suggest" && i === 0 || triage === "scroll" && i < 3) && machine === "local" ? "done" : needsInput && i < 3 ? "needs-input" : i < 8 ? "working" : "idle", inputKind: needsInput && i < 3 ? "question" : undefined,
+    runtimeState: { ...template.runtimeState, state: suggestedAttention ? i < 3 && machine === "local" ? triage === "failures" ? "failed" : "needs-input" : "working"
+      : (triage === "suggest" && i === 0 || triage === "scroll" && i < 3) && machine === "local" ? "done" : needsInput && i < 3 ? "needs-input" : i < 8 ? "working" : "idle", inputKind: needsInput && i < 3 ? "question" : undefined,
       authority: "program", stale: false, unseen: true, changedAt: episode,
       ...((triage === "suggest" && i === 0 || triage === "scroll" && i < 3) && machine === "local" ? { stoppedAt: episode, stoppedSequence: 5, acknowledgedSequence: 0 } : {}) },
   }));
@@ -41,7 +43,7 @@ async function realisticFocus(page: Page, needsInput = true, triage: "none" | "s
     const response = await route.fetch(); const body = await response.json();
     body.document.intentions = Array.from({ length: 6 }, (_, i) => ({ id: `today-${i}`, title: ["Ship the release safely", "Review the database migration", "Resolve the broker leak", "Finish the mobile dashboard", "Document the rollout", "Follow up on the incident"][i], done: false,
       createdAt: new Date().toISOString(), sessions: [`mock:local-${i}`, `mock:studio-${i}`] }));
-    if (triage === "scroll") body.document.next = { updatedAt: episode, author: "assistant", rows: Array.from({ length: 3 }, (_, i) => ({
+    if (["scroll", "questions", "failures"].includes(triage)) body.document.next = { updatedAt: episode, author: "assistant", rows: Array.from({ length: 3 }, (_, i) => ({
       ref: { machine: body.installationId, sessionId: `mock:local-${i}` }, stoppedAt: episode, verdict: "suggest", reason: "The rollout is ready to continue", suggestion: `Continue rollout step ${i + 1}.`,
     })) };
     else if (triage !== "none") body.document.next = { updatedAt: episode, author: "assistant", rows: [
@@ -176,6 +178,17 @@ for (const scenario of [
     await row.scrollIntoViewIfNeeded();
     await page.screenshot({ path: info.outputPath("suggest-390.png") });
   }
+});
+
+for (const triage of ["questions", "failures"] as const) test(`an oversized phone panel retains live ${triage} even when their cards have suggestions`, async ({ page }, info) => {
+  test.skip(info.project.name === "desktop", "mobile action precedence");
+  await realisticFocus(page, triage === "questions", triage); await ready(page);
+  const panel = page.locator("#dashboard-focus");
+  await expect(panel.locator('.focus-next > [data-kind="suggest"]')).toHaveCount(3);
+  await expect(panel.locator(".focus-tag")).toHaveText(Array(3).fill("reply ready"));
+  await expect(panel.locator('[data-focus-action="toggle-dashboard"]')).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator("#dashboard-focus-details")).toBeVisible();
+  expect(await panel.evaluate(el => el.scrollHeight > innerHeight * .6), "the test exceeds the cap rather than only exercising a short panel").toBe(true);
 });
 
 test("a phone defaults a capped reply-only panel to collapsed, but retains an explicit expansion", async ({ page }, info) => {

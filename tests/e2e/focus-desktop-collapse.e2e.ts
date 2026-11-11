@@ -5,7 +5,7 @@ import { startTestServer, type TestServer } from "./helpers";
 let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
-async function fixture(page: Page, denied = false, attention?: { id: number; at: string }) {
+async function fixture(page: Page, denied = false, attention?: { id: number; at: string }, suggestion?: { text: string }) {
   const episode = new Date().toISOString();
   await page.addInitScript(({ denied }) => {
     localStorage.setItem("wolfpack-sidebar-pinned", "1");
@@ -35,6 +35,8 @@ async function fixture(page: Page, denied = false, attention?: { id: number; at:
     body.document.next = { updatedAt: episode, author: "assistant", rows: [
       { ref: { machine: body.installationId, sessionId: "mock:work-1" }, stoppedAt: episode, verdict: "suggest", reason: "The approved work is ready", suggestion: "Continue the approved work." },
     ] };
+    if (suggestion) body.document.next.rows.push({ ref: { machine: body.installationId, sessionId: "mock:work-0" }, stoppedAt: episode,
+      verdict: "suggest", reason: "Choose the next approved step", suggestion: suggestion.text });
     delete body.routines;
     await route.fulfill({ response, json: body });
   });
@@ -128,6 +130,20 @@ for (const surface of ["main", "sidebar"]) test(`Space activation survives a dat
   await expect(page.locator("#dashboard-focus .focus-notes")).toContainText("The data refresh completed.");
   await page.keyboard.up("Space");
   await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+});
+
+test("suggestion-only edits do not reopen the same physical desktop attention episode", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "desktop attention");
+  const suggestion = { text: "Continue with the approved first step." };
+  await fixture(page, false, undefined, suggestion);
+  const toggle = page.locator("#dashboard-focus-toggle");
+  await expect(page.locator('#dashboard-focus textarea[aria-label="reply to work-0"]')).toHaveValue(suggestion.text);
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  suggestion.text = "Continue with updated wording for the same step.";
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator('#dashboard-focus textarea[aria-label="reply to work-0"]')).toHaveValue(suggestion.text);
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
 });
 

@@ -7,10 +7,6 @@ const PI_STATS = /^(?:(?:[↑↓RW]\d+(?:\.\d+)?[kM]?|CH\d+(?:\.\d+)?%|\$\d+(?:\
 const RULE = /^[\s\u2500-\u257f─—-]+$/u;
 const EMPTY_PROMPT = /^[›>❯$▏▎▍▌▋▊▉█│┃]+$/u;
 const PI_STATUS = /^(?:[─—-]+\s*)?[⠁-⣿]\s+(?:Working|Thinking|Compacting|Running|Waiting)\b/iu;
-const CLAUDE_STATUS = /^(?:[✻✽✶✳✢·]\s+[a-z]+(?:…|\.{3})(?:\s.*)?|(?:[✻✽✶✳✢·]\s+)?[a-z]+ for (?:\d+h )?(?:\d+m )?\d+s)$/iu;
-// Tool blocks share the message bullet, but their function-call header and output
-// are not an assistant message. Keep the preceding message until the next one.
-const CLAUDE_TOOL = /^●\s+(?:[A-Z]\w*|mcp__\w+)\(/u;
 const CLAUDE_CHROME = /^(?:(?:Opus|Sonnet|Haiku)\s+[\d.]+\s*\|.*\b(?:tokens|ctx)\b|\/clear to save\b|⏵⏵ auto mode on \(shift\+tab to cycle\)|✔ Update installed · \/restart to apply|[✻✽✶✳✢·]\s+(?:Working|Thinking|Compacting|Running|Waiting|Cooked|Worked)\b)/iu;
 
 /** Last meaningful visible rows, not authenticated agent text or a transcript.
@@ -52,7 +48,6 @@ export function focusSummary(rows: readonly string[], harness: string): string[]
     if (topRule >= 0 && inputIndex >= 0) lines = lines.filter((_, index) => index !== inputIndex);
   }
   let meaningful: string[] = [];
-  let claudeTool = false;
   for (let line of lines) {
     if (RULE.test(line) || EMPTY_PROMPT.test(line)) continue;
     if (harness === AGENT_KIND.PI.id) {
@@ -60,12 +55,8 @@ export function focusSummary(rows: readonly string[], harness: string): string[]
         || /^Update available: \S+ → \S+$/u.test(line)
         || /^Run .+pi-coding-agent.* to update\.$/u.test(line)) continue;
     } else {
-      if (CLAUDE_CHROME.test(line) || CLAUDE_STATUS.test(line)) continue;
-      if (/^●\s/u.test(line)) {
-        claudeTool = CLAUDE_TOOL.test(line);
-        if (!claudeTool) { meaningful = []; line = line.replace(/^●\s+/u, ""); }
-      }
-      if (claudeTool) continue;
+      if (CLAUDE_CHROME.test(line)) continue;
+      if (/^●\s/u.test(line)) { meaningful = []; line = line.replace(/^●\s+/u, ""); }
     }
     meaningful.push(line);
   }

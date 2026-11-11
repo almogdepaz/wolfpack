@@ -652,18 +652,21 @@ export function createAssistantView(deps: {
     const tileState = focusUnavailable ? (offline() ? "offline" : "focus unavailable") : !focus?.document ? "set focus" : terminalUnavailable() ? "unavailable" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
     const tileStatus = `${tileState ? `${tileState} · ` : ""}${tileSummary}`;
     const fullTileStatus = `${tileState ? `${tileState} · ` : ""}${nextSummary}`;
+    const attentionCards = cards.filter(card => card.kind === "action");
     const needsYouCount = actionCards;
     const suggestions = replyReady;
     const attentionLabel = nextSummary;
     dashboardAttention = needsYouCount > 0 || suggestions > 0 || sessions().some(session => session.state === "failed") || state === "needs you" || state === "failed" || !!r?.surfaced;
     if (answered && deps.sessionsAvailable()) {
-      const attentionKeys = new Set(cards.filter(card => card.kind === "action").map(({ row }) => describeAction(row)?.key ?? ""));
+      const attentionKeys = new Set(attentionCards.map(({ row }) => row.session
+        ? focusReplyKey({ machine: row.session.machineInstallationId ?? "", sessionId: row.session.id }, row.session.stoppedAt ?? row.session.changedAt ?? "")
+        : focusNextRefKey(row.triage!.ref)));
       // Seed on load, so a saved collapse survives reload. Only newly arriving
       // attention overrides it; a manual collapse after that survives polls.
       if (isDesktop() && desktopAttentionKeys && [...attentionKeys].some(key => !desktopAttentionKeys!.has(key)) && !desktopDisclosure.expanded(dashboardAttention)) desktopDisclosure.toggle(dashboardAttention);
       desktopAttentionKeys = attentionKeys;
     }
-    mobileAttention = dashboardAttention && (!mobileOverCap || actionCards > 0 || state === "needs you");
+    mobileAttention = dashboardAttention && (!mobileOverCap || attentionCards.length > 0 || state === "needs you");
     const dashboardExpanded = isDesktop() ? desktopDisclosure.expanded(dashboardAttention) : mobileDisclosure.expanded(mobileAttention);
     const sidebarExpanded = desktopDisclosure.expanded(dashboardAttention);
     // Keep frame buttons attached across polls: replacing a focused button between Space down/up cancels native activation.
@@ -706,7 +709,7 @@ export function createAssistantView(deps: {
     // from rendered content; a stored/in-memory user preference still wins.
     if (!isDesktop() && mobileDefaultPending && !mobileOverCap && dashboardExpanded && answered && deps.sessionsAvailable() && block?.clientHeight) {
       mobileOverCap = block.scrollHeight > innerHeight * .6;
-      if (mobileOverCap && !actionCards && state !== "needs you" && dashboardExpanded && !mobileDisclosure.expanded(false)) { render(); return; }
+      if (mobileOverCap && !attentionCards.length && state !== "needs you" && dashboardExpanded && !mobileDisclosure.expanded(false)) { render(); return; }
     }
     syncReplyControls();
     for (const field of document.querySelectorAll<HTMLElement>("[data-focus-clamped]")) {
