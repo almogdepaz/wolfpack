@@ -1,4 +1,4 @@
-import { observedSessionLastLine } from "./session-observation.js";
+import { observedSessionLastLine, observedSessionSummary } from "./session-observation.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
 import { stoppedUnseen } from "../focus-ranking.js";
 import { createSessionOrganizationRoutes } from "./session-organization-routes.ts";
@@ -387,8 +387,11 @@ return {
         const identity = identities[name]!;
         const runtime = getAgentRuntimeStateStore().get(identity.wolfpackSessionId);
         const pinned = ctx.assistantService.pins.some(pin => pin.name === name);
+        const summary = observedSessionSummary(identity.wolfpackSessionId);
+        const lastLine = identity.agentKind === "pi" || identity.agentKind === "claude"
+          ? summary.at(-1) ?? "" : observedSessionLastLine(identity.wolfpackSessionId);
         return { ...sessionStatusPayload(name, identity, relay.registrations.get(identity.wolfpackSessionId), relay.taskRelay),
-          machine: getInstallationId(), lastLine: observedSessionLastLine(identity.wolfpackSessionId), lastLineTrust: "untrusted-data",
+          machine: getInstallationId(), lastLine, summary, lastLineTrust: "untrusted-data",
           runtime: { state: runtime?.state ?? "unknown", changedAt: runtime?.changedAt ?? null, ...(runtime?.inputKind && { inputKind: runtime.inputKind }),
             stoppedAt: runtime?.stoppedAt ?? null, pinned,
             unseen: runtime?.unseen ?? false, stopped: !pinned && runtime ? stoppedUnseen(runtime) : false } };

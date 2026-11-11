@@ -157,6 +157,7 @@ test("list exposes an incarnation-pinned bounded untrusted last line without rea
     expect(live.lastLine).toStartWith("untrusted ");
     expect(live.lastLine).not.toMatch(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/u);
     expect(Array.from(live.lastLine).length).toBeLessThanOrEqual(300);
+    expect(live.summary).toEqual([live.lastLine]);
     expect(live.lastLineTrust).toBe("untrusted-data");
     expect(live.machine).toBe(getInstallationId());
     expect(capture).not.toHaveBeenCalled();
@@ -166,9 +167,44 @@ test("list exposes an incarnation-pinned bounded untrusted last line without rea
     const identitySpy = spyOn(f.backend, "listIdentities").mockImplementation(async () => {
       const values = await identities(); values.live!.wolfpackSessionId = "66666666-6666-4666-8666-666666666666"; return values;
     });
-    expect((await f.read("list")).body.sessions.find((s: any) => s.session === "live").lastLine).toBe("");
+    const replacement = (await f.read("list")).body.sessions.find((s: any) => s.session === "live");
+    expect(replacement.lastLine).toBe("");
+    expect(replacement.summary).toEqual([]);
     identitySpy.mockRestore();
   } finally { __resetSessionObservationForTests(); await f.close(); }
+});
+
+test("list returns meaningful pi/claude rows without changing other harness previews", async () => {
+  const { observeDashboardSessions, __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
+  for (const harness of ["pi", "claude", "shell", "custom", "codex", "gemini", "cursor"]) {
+    const f = await fixture();
+    __resetSessionObservationForTests();
+    try {
+      f.backend.agentKind = harness;
+      const message = ["The approved plan is ready.", "The local checks passed.", "Shall I go ahead?"];
+      const footer = harness === "claude" ? "Opus 5.5 | tokens 32k | ctx 18%" : "↑114k ↓21k $4.396 (sub)";
+      f.backend.setCapturePane(async () => [...message, "──────────────────", "❯", footer].join("\n"));
+      await observeDashboardSessions(f.ctx);
+      const capture = spyOn(f.backend, "capturePane");
+      capture.mockClear();
+      try {
+        const live = (await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID);
+        expect(live.summary).toEqual(harness === "pi" || harness === "claude" ? message : []);
+        expect(live.lastLine).toBe(harness === "pi" || harness === "claude" ? "Shall I go ahead?" : footer);
+        expect(live.lastLineTrust).toBe("untrusted-data");
+        expect(validate({ $ref: "#/$defs/SessionStatus" }, live, schema)).toEqual([]);
+        expect(capture).not.toHaveBeenCalled();
+      } finally { capture.mockRestore(); }
+      if (harness === "pi") {
+        f.backend.setCapturePane(async () => "──────────────────\n❯\n↑114k ↓21k $4.396 (sub)");
+        f.backend.setOutputSequence("live", "1");
+        await observeDashboardSessions(f.ctx);
+        const empty = (await f.read("list")).body.sessions.find((s: any) => s.sessionId === LIVE_ID);
+        expect(empty.summary).toEqual([]);
+        expect(empty.lastLine).toBe("");
+      }
+    } finally { __resetSessionObservationForTests(); await f.close(); }
+  }
 });
 
 test("list runtime facts exclude server-owned pinned stops", async () => {

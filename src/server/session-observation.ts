@@ -1,4 +1,5 @@
 import { focusLastLine } from "../focus-text.js";
+import { focusSummary } from "../focus-summary.js";
 import { randomUUID } from "node:crypto";
 import type { SessionMeta } from "../session-meta-contract.js";
 import { AGENT_STATUS_AUTHORITY, AGENT_STATUS_FRESHNESS, AGENT_STATUS_STATE } from "../agent-status-contract.js";
@@ -133,6 +134,7 @@ onQuietAlertPolicyInvalidation((kind) => {
 interface KnownSessionSummary {
   readonly name: string;
   readonly lastLine: string;
+  readonly summary?: readonly string[];
   readonly identity?: PublicSessionIdentity;
 }
 
@@ -190,6 +192,13 @@ export function observedSessionLastLine(sessionId: string): string {
     if (summary.identity?.wolfpackSessionId === sessionId) return focusLastLine(summary.lastLine);
   }
   return "";
+}
+/** Focus-owned rows from the same observer sample, pinned to its exact UUID. */
+export function observedSessionSummary(sessionId: string): readonly string[] {
+  for (const summary of knownSessionSummaries.values()) {
+    if (summary.identity?.wolfpackSessionId === sessionId) return summary.summary ?? [];
+  }
+  return [];
 }
 let nextObservationOwnership = 0;
 let latestAuthoritativeObservation = 0;
@@ -698,7 +707,9 @@ async function observeSessionFact(
     ...(outputSequence !== undefined && { outputSequence }),
     ...(identity && { identity }),
   };
-  knownSessionSummaries.set(name, { name, lastLine, ...(identity && { identity }) });
+  knownSessionSummaries.set(name, { name, lastLine,
+    summary: focusSummary((currentRendered ?? "").split("\n"), identity?.agentKind ?? ""),
+    ...(identity && { identity }) });
   return {
     sessionKey,
     observedAtMs,

@@ -3058,6 +3058,7 @@ describe("agent-native top-level session control", () => {
     expect(listed).toEqual({
       machine: getInstallationId(),
       lastLine: "",
+      summary: [],
       lastLineTrust: "untrusted-data",
       runtime: {
         changedAt: null,
