@@ -35,7 +35,7 @@ function runChild(mode: string, serviceLog = false, value: "error" | "null" | "c
   }
 }
 
-async function runChildWithSlowPipe(mode: string) {
+async function runChildWithSlowPipe(mode: string, neverDrain = false) {
   const { root, env } = childFixture();
   const child = spawn(process.execPath, [join(import.meta.dirname, "fixtures", "server-unhandled-error.ts"), mode, "large"], {
     cwd: join(import.meta.dirname, "..", ".."), env, stdio: ["ignore", "pipe", "pipe"],
@@ -43,22 +43,36 @@ async function runChildWithSlowPipe(mode: string) {
   let stdout = "";
   const chunks: Buffer[] = [];
   let resume: ReturnType<typeof setTimeout> | undefined;
+  let readyAt: number | undefined;
+  let exitAfterReadyMs: number | undefined;
   child.stderr.on("data", chunk => chunks.push(Buffer.from(chunk)));
   child.stderr.pause();
   child.stdout.on("data", chunk => {
     stdout += chunk.toString();
-    if (resume === undefined && stdout.includes("SERVER_FATAL_PROBE_READY\n")) {
-      // Hold a real pipe closed to reads while the child emits >2 MiB.
-      resume = setTimeout(() => child.stderr.resume(), 150);
+    if (readyAt === undefined && stdout.includes("SERVER_FATAL_PROBE_READY\n")) {
+      readyAt = performance.now();
+      if (neverDrain) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => child.kill("SIGKILL"), 3000);
+      } else {
+        // Hold a real pipe closed to reads while the child emits >2 MiB.
+        resume = setTimeout(() => child.stderr.resume(), 150);
+      }
     }
   });
-  const timeout = setTimeout(() => { child.kill("SIGKILL"); child.stderr.resume(); }, 10000);
+  child.once("exit", () => {
+    if (readyAt !== undefined) exitAfterReadyMs = performance.now() - readyAt;
+    // Drain only after exit so close/reaping can finish without relieving
+    // backpressure while the never-draining producer is alive.
+    if (neverDrain) child.stderr.resume();
+  });
+  let timeout = setTimeout(() => { child.kill("SIGKILL"); child.stderr.resume(); }, 10000);
   try {
     const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       child.once("error", reject);
       child.once("close", (code, signal) => resolve({ code, signal }));
     });
-    return { ...result, stdout, stderr: Buffer.concat(chunks).toString("utf8") };
+    return { ...result, stdout, stderr: Buffer.concat(chunks).toString("utf8"), exitAfterReadyMs };
   } finally {
     clearTimeout(timeout);
     clearTimeout(resume);
@@ -95,6 +109,15 @@ for (const [mode, message] of [
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ msg: message, error: "server-fatal-probe-" + mode });
     expect(errors[0]!.stack).toBe("large-stack-start\n" + "é".repeat(1024 * 1024) + "\nlarge-stack-end");
+  }, 15000);
+  test(`${mode} exits after the two-second write deadline when stderr never drains`, async () => {
+    const result = await runChildWithSlowPipe(mode, true);
+    expect(result.stdout.split("\n")).toContain("SERVER_FATAL_PROBE_READY");
+    expect(result.signal).toBeNull();
+    expect(result.code).toBe(1);
+    expect(result.exitAfterReadyMs).toBeGreaterThanOrEqual(1900);
+    expect(result.exitAfterReadyMs).toBeLessThan(3000);
+    expect(Buffer.byteLength(result.stderr)).toBeLessThan(2 * 1024 * 1024);
   }, 15000);
   test(`${mode} exits 1 even if stderr is closed`, () => {
     const result = runChild(mode, false, "closed-stderr");

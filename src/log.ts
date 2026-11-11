@@ -88,20 +88,24 @@ function emit(level: LogLevel, component: Component, msg: string, extra?: Record
   }
 }
 
-/** Complete the fatal record before the caller forces process exit. */
+const FATAL_WRITE_TIMEOUT_MS = 2_000;
+
+/** Complete the fatal record within the retry budget, or let the caller exit. */
 export function writeFatalError(component: Component, msg: string, extra?: Record<string, unknown>): void {
+  const deadline = performance.now() + FATAL_WRITE_TIMEOUT_MS;
   const bytes = Buffer.from(formatRecord("error", component, msg, extra));
   let offset = 0;
   while (offset < bytes.length) {
+    if (performance.now() >= deadline) throw new Error("fatal log write deadline exceeded");
     try {
       const written = writeSync(2, bytes, offset, bytes.length - offset);
       if (written === 0) throw new Error("fatal log write made no progress");
       offset += written;
     } catch (error) {
-      // Bun can leave stderr nonblocking after server startup. Wait for the
-      // reader rather than abandoning a partially written fatal record.
+      // Bun can leave stderr nonblocking after server startup. Wait only
+      // within the deadline; a stalled reader must not prevent server exit.
       if (error instanceof Error && "code" in error && error.code === "EAGAIN") {
-        Bun.sleepSync(10);
+        Bun.sleepSync(Math.max(0, Math.min(10, deadline - performance.now())));
         continue;
       }
       throw error;
