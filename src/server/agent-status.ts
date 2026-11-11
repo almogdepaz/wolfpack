@@ -741,7 +741,7 @@ export class AgentRuntimeStateStore {
     if (this.persistTimer || this.inFlight || this.draining) return;
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
-      this.startPersist();
+      void this.startPersist();
     }, RUNTIME_STATE_PERSIST_DEBOUNCE_MS);
     this.persistTimer.unref();
   }

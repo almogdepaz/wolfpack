@@ -342,7 +342,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   await ctx.taskGateway.initialize();
   const taskRelay = ctx.taskRelayGateway;
   await taskRelay.initialize();
-  ctx.backend.cleanupOrphans();
+  void ctx.backend.cleanupOrphans();
   const stopChildEventDelivery = startChildEventDelivery({
     hostEnvelope: input => taskRelay.hostEnvelope(input),
     send: async (sessionId, sessionName, text, writeGuard) => {
@@ -366,8 +366,8 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   server.once("close", () => {
     stopChildCleanupCascade();
     stopChildEventDelivery();
-    taskRelay.close();
-    stopSessionNotificationObserver();
+    void taskRelay.close();
+    void stopSessionNotificationObserver();
   });
 
   server.on("error", (err: NodeJS.ErrnoException) => {

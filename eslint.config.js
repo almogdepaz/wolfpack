@@ -27,8 +27,8 @@ const config = tseslint.config(
   },
 );
 
-// Preserve disabled rules and rule options; all enabled rules are report-only.
-export default config.map((entry) => ({
+// Preserve disabled rules and rule options; base rules remain report-only.
+export default [...config.map((entry) => ({
   ...entry,
   ...(entry.rules && {
     rules: Object.fromEntries(Object.entries(entry.rules).map(([name, value]) => {
@@ -36,4 +36,7 @@ export default config.map((entry) => ({
       return [name, [severity === "off" || severity === 0 ? "off" : "warn", ...options]];
     })),
   }),
-}));
+})), {
+  files: ["src/**/*.ts"],
+  rules: { "@typescript-eslint/no-floating-promises": "error" },
+}];
