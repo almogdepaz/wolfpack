@@ -1,3 +1,5 @@
+import Ajv2020, { type ValidateFunction } from "ajv/dist/2020.js";
+
 export type JsonObject = Record<string, unknown>;
 
 export function isJsonObject(value: unknown): value is JsonObject {
@@ -16,135 +18,30 @@ export function resolveControlApiSchemaRef(schema: JsonObject, root: JsonObject)
   return definition;
 }
 
-export function validateControlApiSchemaValue(
-  schema: unknown,
-  value: unknown,
-  root: JsonObject,
-  path = "$",
-): string[] {
+// Composed schemas declare required properties outside the local branch.
+const ajv = new Ajv2020({ allErrors: true, strict: true, strictRequired: false, validateSchema: true, addUsedSchema: false });
+ajv.addFormat("uuid", /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i);
+ajv.addFormat("date-time", {
+  validate: (s: string) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/i.test(s) && !Number.isNaN(Date.parse(s)),
+});
+const validators = new WeakMap<object, ValidateFunction>();
+
+export function validateControlApiSchemaValue(schema: unknown, value: unknown, root: JsonObject, path = "$"): string[] {
   if (!isJsonObject(schema)) return [];
-  const resolved = resolveControlApiSchemaRef(schema, root);
-  if (resolved !== schema) return validateControlApiSchemaValue(resolved, value, root, path);
-
-  if (isJsonObject(resolved.not)) {
-    const { not: forbidden, ...withoutNot } = resolved;
-    const errors = validateControlApiSchemaValue(withoutNot, value, root, path);
-    return validateControlApiSchemaValue(forbidden, value, root, path).length === 0
-      ? [...errors, `${path} matched a forbidden schema`]
-      : errors;
+  let validate = validators.get(schema);
+  if (!validate) {
+    const input = Object.hasOwn(schema, "$defs") ? schema : { ...schema, $defs: root.$defs };
+    validate = ajv.compile(input);
+    validators.set(schema, validate);
   }
-
-  if (Array.isArray(resolved.anyOf)) {
-    const variants = resolved.anyOf.map(candidate => validateControlApiSchemaValue(candidate, value, root, path));
-    return variants.some(errors => errors.length === 0)
-      ? []
-      : [`${path} did not match anyOf: ${variants.map(errors => errors.join(", ")).join(" | ")}`];
-  }
-
-  if (Array.isArray(resolved.oneOf)) {
-    const variants = resolved.oneOf.map(candidate => validateControlApiSchemaValue(candidate, value, root, path));
-    return variants.filter(errors => errors.length === 0).length === 1
-      ? []
-      : [`${path} did not match exactly one variant: ${variants.map(errors => errors.join(", ")).join(" | ")}`];
-  }
-
-  if (Array.isArray(resolved.allOf)) {
-    const { allOf: _allOf, ...withoutAllOf } = resolved;
-    return [
-      ...resolved.allOf.flatMap(candidate => validateControlApiSchemaValue(candidate, value, root, path)),
-      ...validateControlApiSchemaValue(withoutAllOf, value, root, path),
-    ];
-  }
-
-  if ("const" in resolved && value !== resolved.const) {
-    return [`${path} expected const ${JSON.stringify(resolved.const)}`];
-  }
-  if (Array.isArray(resolved.enum) && !resolved.enum.some(candidate => candidate === value)) {
-    return [`${path} expected one of ${JSON.stringify(resolved.enum)}`];
-  }
-
-  if (typeof resolved.type === "string") {
-    if (resolved.type === "object" && !isJsonObject(value)) return [`${path} expected object`];
-    if (resolved.type === "array" && !Array.isArray(value)) return [`${path} expected array`];
-    if (resolved.type === "string" && typeof value !== "string") return [`${path} expected string`];
-    if (resolved.type === "number" && typeof value !== "number") return [`${path} expected number`];
-    if (resolved.type === "integer" && !Number.isInteger(value)) return [`${path} expected integer`];
-    if (resolved.type === "boolean" && typeof value !== "boolean") return [`${path} expected boolean`];
-    if (resolved.type === "null" && value !== null) return [`${path} expected null`];
-  }
-
-  if (typeof value === "string") {
-    const errors: string[] = [];
-    const codePointLength = Array.from(value).length;
-    if (typeof resolved.minLength === "number" && codePointLength < resolved.minLength) errors.push(`${path} is too short`);
-    if (typeof resolved.maxLength === "number" && codePointLength > resolved.maxLength) errors.push(`${path} is too long`);
-    if (typeof resolved.pattern === "string" && !new RegExp(resolved.pattern).test(value)) errors.push(`${path} failed pattern ${resolved.pattern}`);
-    if (resolved.format === "uuid" && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value)) {
-      errors.push(`${path} expected uuid`);
-    }
-    if (errors.length > 0) return errors;
-  }
-
-  if (typeof value === "number") {
-    const errors: string[] = [];
-    if (typeof resolved.minimum === "number" && value < resolved.minimum) errors.push(`${path} is below minimum ${resolved.minimum}`);
-    if (typeof resolved.maximum === "number" && value > resolved.maximum) errors.push(`${path} is above maximum ${resolved.maximum}`);
-    if (errors.length > 0) return errors;
-  }
-
-  if (Array.isArray(value)) {
-    const errors: string[] = [];
-    if (typeof resolved.minItems === "number" && value.length < resolved.minItems) errors.push(`${path} has too few items`);
-    if (typeof resolved.maxItems === "number" && value.length > resolved.maxItems) errors.push(`${path} has too many items`);
-    if (resolved.uniqueItems === true && new Set(value.map(item => JSON.stringify(item))).size !== value.length) {
-      errors.push(`${path} has duplicate items`);
-    }
-    if (isJsonObject(resolved.contains) && !value.some(item => validateControlApiSchemaValue(resolved.contains, item, root, path).length === 0)) {
-      errors.push(`${path} is missing a required item`);
-    }
-    if (isJsonObject(resolved.items)) {
-      errors.push(...value.flatMap((item, index) => validateControlApiSchemaValue(resolved.items, item, root, `${path}[${index}]`)));
-    }
-    return errors;
-  }
-
-  if (isJsonObject(value)) {
-    const properties = isJsonObject(resolved.properties) ? resolved.properties : {};
-    const keys = Object.keys(value);
-    const required = Array.isArray(resolved.required) ? resolved.required : [];
-    const errors: string[] = [];
-    if (typeof resolved.maxProperties === "number" && keys.length > resolved.maxProperties) {
-      errors.push(`${path} has too many properties`);
-    }
-    if (isJsonObject(resolved.propertyNames)) {
-      errors.push(...keys.flatMap((key) => validateControlApiSchemaValue(resolved.propertyNames, key, root, `${path}.${key}`)));
-    }
-    for (const key of required) {
-      if (typeof key === "string" && !(key in value)) errors.push(`${path}.${key} is required`);
-    }
-    if (isJsonObject(resolved.dependentRequired)) {
-      for (const [key, dependents] of Object.entries(resolved.dependentRequired)) {
-        if (!(key in value) || !Array.isArray(dependents)) continue;
-        for (const dependent of dependents) {
-          if (typeof dependent === "string" && !(dependent in value)) {
-            errors.push(`${path}.${dependent} is required by ${path}.${key}`);
-          }
-        }
-      }
-    }
-    for (const [key, child] of Object.entries(properties)) {
-      if (key in value) errors.push(...validateControlApiSchemaValue(child, value[key], root, `${path}.${key}`));
-    }
-    for (const key of keys) {
-      if (Object.hasOwn(properties, key)) continue;
-      if (resolved.additionalProperties === false) {
-        errors.push(`${path}.${key} is not allowed`);
-      } else if (isJsonObject(resolved.additionalProperties)) {
-        errors.push(...validateControlApiSchemaValue(resolved.additionalProperties, value[key], root, `${path}.${key}`));
-      }
-    }
-    return errors;
-  }
-
-  return [];
+  if (validate(value)) return [];
+  return (validate.errors ?? []).map(error => {
+    const base = path + error.instancePath.split("/").slice(1).map(part => {
+      const decoded = part.replaceAll("~1", "/").replaceAll("~0", "~");
+      return /^\d+$/.test(decoded) ? `[${decoded}]` : `.${decoded}`;
+    }).join("");
+    return error.keyword === "required"
+      ? `${base}.${error.params.missingProperty} is required`
+      : `${base} ${error.message}`;
+  });
 }
