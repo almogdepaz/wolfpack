@@ -2,6 +2,9 @@ import { afterAll } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { assertPublicAssetsPresent } from "./public-assets-guard.ts";
+
+assertPublicAssetsPresent(join(import.meta.dirname, "..", "src", "public-assets.ts"));
 
 const taskRelayRoot = mkdtempSync(join(tmpdir(), "wolfpack-test-task-relay-"));
 // Every ~/.wolfpack store (push keys/subscriptions, settings, runtime state,
