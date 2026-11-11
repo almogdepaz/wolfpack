@@ -3,7 +3,7 @@ import { focusLastLine } from "./focus-text.js";
 
 // Whole Pi stats rows, with an optional model/reasoning status after the
 // double-space separator. This is display filtering, never runtime evidence.
-const PI_STATS = /^(?:(?:[↑↓RW]\d+(?:\.\d+)?[kM]?|CH\d+(?:\.\d+)?%|\$\d+(?:\.\d+)?|\(sub\)|(?:\d+(?:\.\d+)?%|\?)\s*\/\d+(?:\.\d+)?[kM]?)\s*)+(?:\s{2,}(?:\([\w-]+\)\s+)?[\w.-]+(?:\s+•\s+\w+(?:\s+\w+)*)?)?$/;
+const PI_STATS = /^(?:(?:[↑↓RW]\d+(?:\.\d+)?[kM]?|CH\d+(?:\.\d+)?%|\$\d+(?:\.\d+)?|\((?:sub|auto)\)|(?:\d+(?:\.\d+)?%|\?)\s*\/\d+(?:\.\d+)?[kM]?)\s*)+(?:\s{2,}(?:\([\w-]+\)\s+)?[\w.-]+(?:\s+•\s+\w+(?:\s+\w+)*)?)?$/;
 const RULE = /^[\s\u2500-\u257f─—-]+$/u;
 const EMPTY_PROMPT = /^[›>❯$▏▎▍▌▋▊▉█│┃]+$/u;
 const PI_STATUS = /^(?:[─—-]+\s*)?[⠁-⣿]\s+(?:Working|Thinking|Compacting|Running|Waiting)\b/iu;
@@ -15,16 +15,29 @@ export function focusSummary(rows: readonly string[], harness: string): string[]
   if (harness !== AGENT_KIND.PI.id && harness !== AGENT_KIND.CLAUDE.id) return [];
   let lines = rows.map(focusLastLine).filter(Boolean);
   if (harness === AGENT_KIND.PI.id) {
-    // Only the bottom input/footer block may contain removable stats. Body
-    // tokens and cost-bearing prose must survive, even without any footer.
-    const inputIndex = lines.findLastIndex(line => EMPTY_PROMPT.test(line));
-    if (inputIndex >= 0) {
-      for (let i = lines.length - 1; i >= Math.max(inputIndex + 1, lines.length - 6); i--) {
-        if (!PI_STATS.test(lines[i]!)) continue;
-        const start = i > 0 && /^(?:~\/|\/|…)/u.test(lines[i - 1]!) ? i - 1 : i;
-        lines = lines.slice(0, start);
-        break;
+    // The startup update notice is a bounded box, not arbitrary update prose.
+    for (let i = 0; i + 4 < lines.length; i++) {
+      if (RULE.test(lines[i]!) && lines[i + 1] === "Update Available"
+        && /^New version \S+ is available\. Run pi update$/u.test(lines[i + 2]!)
+        && lines[i + 3] === "Changelog: https://pi.dev/changelog" && RULE.test(lines[i + 4]!)) {
+        lines.splice(i, 5);
+        i--;
       }
+    }
+    // Pi 1.x has a ruled editor without a prompt glyph. Require cwd/stats
+    // below its rule before removing that footer and any stray editor stderr.
+    // Stats-like body prose without either input/footer shape stays visible.
+    const inputIndex = lines.findLastIndex(line => EMPTY_PROMPT.test(line));
+    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 6); i--) {
+      if (!PI_STATS.test(lines[i]!)) continue;
+      let start = i > 0 && /^(?:~\/|\/|…)/u.test(lines[i - 1]!) ? i - 1 : i;
+      if (!(inputIndex >= 0 && i > inputIndex)) {
+        if (start === i || !RULE.test(lines[start - 1] ?? "")) continue;
+        while (start > 0 && RULE.test(lines[start - 1]!)) start--;
+        if (start >= 2 && /^fatal: not a git repository\b/u.test(lines[start - 1]!) && RULE.test(lines[start - 2]!)) start -= 2;
+      }
+      lines = lines.slice(0, start);
+      break;
     }
   } else {
     // A draft/placeholder in the final ruled input region is chrome, not a

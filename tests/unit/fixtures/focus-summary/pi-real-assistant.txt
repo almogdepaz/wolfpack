@@ -1,0 +1,40 @@
+ t":"2026-11-11T00:56:58.838Z","verdict":"quiet","reason":"reviewer stopped; no visible user decision or review
+ outcome."},
+ -13
+ {"ref":{"machine":"42f0786d-a0f2-4f17-98f4-b60041e623e4","sessionId":"a71f5f29-db17-4770-b61d-1345d9b383e0"},"stoppedA
+ t":"2026-11-10T17:48:47.172Z","verdict":"quiet","reason":"paper results remain unknown, with no visible decision
+ requested."}
+ +11
+ {"ref":{"machine":"42f0786d-a0f2-4f17-98f4-b60041e623e4","sessionId":"9bf78dae-da2f-48dc-b088-405562c4e936"},"stoppedA
+ t":"2026-11-11T00:56:58.838Z","verdict":"quiet","reason":"reviewer reports 306 tests passing in a removed private
+ copy; no user decision visible."},
+ +12
+ {"ref":{"machine":"42f0786d-a0f2-4f17-98f4-b60041e623e4","sessionId":"a71f5f29-db17-4770-b61d-1345d9b383e0"},"stoppedA
+ t":"2026-11-10T17:48:47.172Z","verdict":"needs-you","reason":"decide whether to activate Luna 6: the summary reports
+ 18/21 benchmark checks passed and explicitly awaits your decision; activation is not approved here."}
+  14 ]
+
+
+
+ $ wolfpack focus next next.json --json && wolfpack focus nudge 'start with the botwash scope decision in me-2. polybot
+ also awaits your Luna 6 activation decision after reporting 18/21 benchmark checks passed; “wtf” still needs a
+ concrete outcome.' --json && wolfpack activity ack catch-up-20261111T010532Z.json
+
+ ... (73 earlier lines, ctrl+o to expand)
+ visible."},{"ref":{"machine":"42f0786d-a0f2-4f17-98f4-b60041e623e4","sessionId":"a71f5f29-db17-4770-b61d-1345d9b383e0"
+ },"stoppedAt":"2026-11-10T17:48:47.172Z","verdict":"needs-you","reason":"decide whether to activate Luna 6: the
+ summary reports 18/21 benchmark checks passed and explicitly awaits your decision; activation is not approved
+ here."}],"author":"assistant","updatedAt":"2026-11-11T01:06:01.402Z"}}
+ acked catch-up-20261111T010532Z.json
+
+ Took 0.4s
+
+
+ processed and acked. refreshed both machines and next actions; flagged polybot’s Luna 6 activation decision. botwash
+ remains first.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+fatal: not a git repository (or any of the parent directories): .git
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/.wolfpack/assistant
+↑20k ↓640 R112k CH88.7% $0.348 (sub) 9.1%/272k (auto)                                (openai-codex) gpt-6-astra • medium
