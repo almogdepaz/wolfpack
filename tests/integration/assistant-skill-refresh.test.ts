@@ -27,7 +27,7 @@ async function fixture() {
   const create = backend.createSession.bind(backend);
   backend.createSession = async (...args) => { launches.push([...(args[4]?.pinnedCommand ?? [])]); return create(...args); };
   const kill = backend.killSessionById.bind(backend);
-  backend.killSessionById = async id => { kills.push(id); await kill(id); };
+  backend.killSessionById = async id => { kills.push(id); return kill(id); };
   backend.sendAndObserveSubmission = async (_id, options) => { sends.push(options.text); return { delivery: "delivered", outcome: "submitted", observedMs: 1 }; };
   let ctx = createServerContext({ backend, config, assistantService: assistant, activityJournal: journal });
   ctx.focusRuntime.start();
@@ -337,7 +337,7 @@ test("SR-R2: stop during an awaited kill revokes archive/create; a later start c
     writeFileSync(t.transcript, "shutdown owns this conversation");
     await t.reopen();
     const kill = t.backend.killSessionById.bind(t.backend);
-    t.backend.killSessionById = async id => { await kill(id); arrived(); await held; };
+    t.backend.killSessionById = async id => { const disposition = await kill(id); arrived(); await held; return disposition; };
     flight = t.ctx.focusRuntime.tick();
     await Promise.race([killing, flight.then(() => { throw new Error("rotation ended before reaching the held kill"); })]);
     t.ctx.focusRuntime.stop();
@@ -366,7 +366,7 @@ test("SR-R2: a new runtime lifetime cannot revive an old held rotation or clear 
     writeFileSync(t.transcript, "old lifetime");
     await t.reopen();
     const kill = t.backend.killSessionById.bind(t.backend);
-    t.backend.killSessionById = async id => { await kill(id); arrived(); await held; };
+    t.backend.killSessionById = async id => { const disposition = await kill(id); arrived(); await held; return disposition; };
     flight = t.ctx.focusRuntime.tick();
     await Promise.race([killing, flight.then(() => { throw new Error("rotation ended before reaching the held kill"); })]);
     t.ctx.focusRuntime.stop();

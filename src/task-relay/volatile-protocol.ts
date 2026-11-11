@@ -37,6 +37,29 @@ export interface VolatilePeerRequest {
   readonly origin: string;
   readonly envelope: RelayEnvelope;
 }
+/** Host-only: the server sends one envelope from its own source endpoint. */
+export interface VolatileHostEnvelopeRequest {
+  /** Stable wolfpack session id of the target endpoint's owner. */
+  readonly targetSession: string;
+  /** The target registration must advertise this protocol number. */
+  readonly requiredProtocol: number;
+  readonly envelopeId: string;
+  readonly payload: unknown;
+  readonly createdAt: string;
+}
+/** Whether a failed host envelope may still sit in the target inbox. */
+export const HOST_ENVELOPE_ACCEPTANCE = {
+  /** The relay definitely did not accept it. */
+  REJECTED: "rejected",
+  /** The request reached the relay, which may have accepted it (for example `RELAY_RESET` after the send). */
+  UNCERTAIN: "uncertain",
+} as const;
+export type HostEnvelopeAcceptance = (typeof HOST_ENVELOPE_ACCEPTANCE)[keyof typeof HOST_ENVELOPE_ACCEPTANCE];
+export type VolatileHostEnvelopeResult =
+  | { readonly kind: "accepted"; readonly duplicate: boolean }
+  /** No live registration for the target, or it does not advertise the protocol. */
+  | { readonly kind: "unsupported" }
+  | { readonly kind: "failed"; readonly code: VolatileCode; readonly acceptance: HostEnvelopeAcceptance };
 export type VolatileCode = MemoryRelayCode | RelayOwnerFailureCode | "RELAY_STORAGE_RECOVERING" | "RELAY_PROFILE_REQUIRED" | "CALLER_NOT_FOUND" | "CALLER_DEAD"
   | "SOURCE_MISMATCH" | "RELAY_UNAVAILABLE" | "PEER_UNREACHABLE" | "DELIVERY_UNCONFIRMED";
 export type VolatileValue =
@@ -61,7 +84,7 @@ export function relayOwnerFailureResult(failure: RelayOwnerFailureData, profile:
 export function volatileFailure(code: VolatileCode, epoch?: string, retryAfterMs?: number, profile: typeof MEMORY_RELAY_PROFILE = MEMORY_RELAY_PROFILE): VolatileResult {
   return { ok: false, profile, ...(epoch && { epoch }), error: {
     code, message: code,
-    retryable: ["RELAY_CAPACITY", "RELAY_UNAVAILABLE", "PEER_UNREACHABLE", "RELAY_STORAGE_RECOVERING"].includes(code),
+    retryable: ["SESSION_ALREADY_REGISTERED", "RELAY_CAPACITY", "RELAY_UNAVAILABLE", "PEER_UNREACHABLE", "RELAY_STORAGE_RECOVERING"].includes(code),
     ...(["RELAY_RESET", "DELIVERY_UNCONFIRMED", "PEER_UNREACHABLE", "RELAY_UNAVAILABLE"].includes(code) && { mayHaveBeenDelivered: true as const }),
     ...(retryAfterMs !== undefined && { retryAfterMs }),
   } };

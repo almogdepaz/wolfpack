@@ -2,7 +2,14 @@ import type { GatewayOptions } from "./gateway.ts";
 import type { RelayGateway } from "./worker-protocol.ts";
 import { WorkerRelayGateway, captureOptions } from "./worker-client.ts";
 import { RelayOwnerFailure, RelayRecoveryCooldown } from "./owner-failure.ts";
-import { relayOwnerFailureResult, volatileFailure, type VolatileResult } from "./volatile-protocol.ts";
+import {
+  HOST_ENVELOPE_ACCEPTANCE,
+  relayOwnerFailureResult,
+  volatileFailure,
+  type VolatileHostEnvelopeRequest,
+  type VolatileHostEnvelopeResult,
+  type VolatileResult,
+} from "./volatile-protocol.ts";
 
 /** Server-owned recovery, never mutation replay. Failed owners terminate before
  * a single-flight half-open replacement; each failed cycle backs off up to 30s. */
@@ -93,6 +100,14 @@ export class RecoveryRelayGateway implements RelayGateway {
   volatile(input: unknown) { return this.#result(owner => owner.volatile(input)); }
   volatilePeer(input: unknown) { return this.#result(owner => owner.volatilePeer(input)); }
   volatileTopology(input: unknown) { return this.#result(owner => owner.volatileTopology(input)); }
+  /** The owner reports its own acceptance; a failure to obtain an owner means no worker received the request. */
+  async hostEnvelope(input: VolatileHostEnvelopeRequest): Promise<VolatileHostEnvelopeResult> {
+    try { return await this.#perform(owner => owner.hostEnvelope(input)); }
+    catch (error) {
+      const code = error instanceof RelayOwnerFailure || error instanceof RelayRecoveryCooldown ? error.code : "RELAY_UNAVAILABLE";
+      return { kind: "failed", code, acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED };
+    }
+  }
   async close() {
     this.#closed = true;
     await this.#replacing?.catch(() => undefined);

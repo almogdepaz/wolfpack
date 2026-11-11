@@ -64,9 +64,21 @@ function isMachineSelectorArgument(value: string): boolean {
   return value === MACHINE_SELECTOR || value.startsWith(`${MACHINE_SELECTOR}=`);
 }
 
+/**
+ * The arguments wolfpack itself reads. `exec` passes everything after `--` to the
+ * remote command verbatim, so a selector or `--json` there is the command's.
+ * The leading `--machine <name>` pair, if present, is skipped.
+ */
+export function commandOptionScope(argv: readonly string[]): readonly string[] {
+  const command = argv[0] === MACHINE_SELECTOR ? argv.slice(2) : argv;
+  if (command[0] !== "exec") return argv;
+  const separator = command.indexOf("--");
+  return separator < 0 ? argv : argv.slice(0, argv.length - command.length + separator);
+}
+
 export function extractMachineSelector(argv: readonly string[]): ExtractedMachineSelector {
   if (!isMachineSelectorArgument(argv[0] ?? "")) {
-    if (argv.some(isMachineSelectorArgument)) {
+    if (commandOptionScope(argv).some(isMachineSelectorArgument)) {
       return {
         ok: false,
         error: failure(
@@ -96,7 +108,7 @@ export function extractMachineSelector(argv: readonly string[]): ExtractedMachin
     };
   }
   const remaining = argv.slice(2);
-  if (remaining.some(isMachineSelectorArgument)) {
+  if (commandOptionScope(remaining).some(isMachineSelectorArgument)) {
     return {
       ok: false,
       error: failure("INVALID_MACHINE_SELECTOR", "duplicate --machine selector", 2),

@@ -36,6 +36,36 @@ test("parent notifications filter by parent name or id and render for humans", (
   expect(formatEventLine({ ...event, from: "child\nagent", message: "ready\r\nfor review" })).toBe("t parent_notified parent seq=2 [child agent] ready  for review");
 });
 
+test("child events filter by parent or child and render for humans", () => {
+  const event: WolfpackEvent = {
+    id: 9,
+    at: "t",
+    kind: WOLFPACK_EVENT_KIND.CHILD_EVENT,
+    session: "parent",
+    sessionId: "parent-id",
+    childEvent: {
+      kind: "wolfpack.child_event/v1",
+      eventId: "child-id:boot:1",
+      bootId: "boot",
+      seq: 1,
+      childSessionId: "child-id",
+      childName: "worker",
+      parentSessionId: "parent-id",
+      event: "blocked",
+      state: "needs-input",
+      inputKind: "question",
+      message: "which\nbranch?",
+      observedAt: "t",
+    },
+  };
+  expect(parseEventFilter(new URLSearchParams("kinds=child_event")).ok).toBe(true);
+  for (const session of ["parent", "parent-id", "worker", "child-id"]) {
+    expect(matchesEventFilter(event, { session })).toBe(true);
+  }
+  expect(matchesEventFilter(event, { session: "other" })).toBe(false);
+  expect(formatEventLine(event)).toBe("t child_event parent worker blocked needs-input (question) which branch?");
+});
+
 describe("parseEventFilter", () => {
   test("empty params match every kind and session", () => {
     const parsed = parseEventFilter(new URLSearchParams());

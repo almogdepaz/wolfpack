@@ -22,9 +22,11 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
-import { DuplicateSessionError, UnsupportedTerminalKeyError } from "./backend-contract.js";
+import { noteViewerInput } from "./viewer-input.js";
+import { DuplicateSessionError, SESSION_KILL_DISPOSITION, UnsupportedTerminalKeyError } from "./backend-contract.js";
 import type {
   CapturePaneOptions,
+  SessionKillDisposition,
   PtyBackendMethods,
   SessionAttachLease,
   SessionBackend,
@@ -58,7 +60,7 @@ import type {
 } from "../broker/client.js";
 import type { ControlResponse, EventBody, OutputBinaryFrame } from "../broker/codec.js";
 import type { SessionInspectionResult } from "../session-status-contract.js";
-import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND } from "../events-contract.js";
+import { SESSION_EXIT_REASON, WOLFPACK_EVENT_KIND, type SessionExitReason } from "../events-contract.js";
 import { publishEvent } from "./event-bus.js";
 import { notifyProgramStatusChanged } from "./program-status-signal.js";
 import {
@@ -74,6 +76,8 @@ import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-cont
 import { resolveWolfpackDir } from "../wolfpack-dir.js";
 import { CMD_REGEX } from "../validation.js";
 import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
+import { childSessionExited, childTrackingMark, noteChildCreated, reconcileChildEvents } from "./child-events.js";
+import { noteSessionAlive, noteSessionExit, noteSessionTable, sessionTableMark } from "./session-death.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { PROGRAM_STATUS_STATE, parseBrokerProgramStatusRecord } from "../program-status-contract.js";
@@ -89,6 +93,7 @@ import type {
   SessionSendObservationOptions,
   SessionSendObservationResult,
   SessionSendOutcome,
+  SessionSendWriteGuard,
 } from "../session-send-contract.js";
 import {
   plainLine,
@@ -323,6 +328,24 @@ const SESSION_SEND_STATUS_READ_MAX_MS = 200;
  * ambiguous and counts as before it. A clear carries no stamp, so its arrival
  * time stands in: a read that returns later may have been taken before it.
  */
+/**
+ * Root states in which a program waits for input. Claude Code and Pi report `done`
+ * between turns; a fresh Pi or a cancelled turn reports `idle`.
+ */
+function isWaitingState(record: ProgramStatusRecord | undefined): boolean {
+  return record?.state === PROGRAM_STATUS_STATE.IDLE || record?.state === PROGRAM_STATUS_STATE.DONE;
+}
+
+/**
+ * `idle` to any other state keeps its established meaning. `done` counts only when the
+ * next state is not waiting: `done` to `idle` or to a re-stamped `done` is not a new turn.
+ */
+function leftWaitingState(previous: ProgramStatusRecord | undefined, record: ProgramStatusRecord): boolean {
+  if (previous?.state === PROGRAM_STATUS_STATE.IDLE) return record.state !== PROGRAM_STATUS_STATE.IDLE;
+  if (previous?.state === PROGRAM_STATUS_STATE.DONE) return !isWaitingState(record);
+  return false;
+}
+
 class SendStatusTimeline {
   /** Latest record stamped at or before the write; undefined when none or unread. */
   baseline: ProgramStatusRecord | undefined;
@@ -334,18 +357,25 @@ class SendStatusTimeline {
   private newestMs: number | undefined;
   /** The record that set `newestMs`; undefined when a clear set it. */
   private newest: ProgramStatusRecord | undefined;
+  /** Another record shares the newest stamp with a different state. */
+  private newestAmbiguous = false;
 
   admit(record: ProgramStatusRecord | undefined, writtenAtMs: number | undefined): void {
     if (record === undefined) {
       this.newestMs = Math.max(this.newestMs ?? 0, Date.now());
       this.newest = undefined;
+      this.newestAmbiguous = false;
     } else if (this.newestMs !== undefined && record.updatedAtMs <= this.newestMs) {
       // Placing a stale record by its stamp could only invent an edge; drop it.
-      if (record.updatedAtMs === this.newest?.updatedAtMs && record.state !== this.newest.state) this.ambiguous = true;
+      if (record.updatedAtMs === this.newest?.updatedAtMs && record.state !== this.newest.state) {
+        this.ambiguous = true;
+        this.newestAmbiguous = true;
+      }
       return;
     } else {
       this.newestMs = record.updatedAtMs;
       this.newest = record;
+      this.newestAmbiguous = false;
     }
     if (writtenAtMs === undefined) {
       this.baseline = record;
@@ -364,19 +394,30 @@ class SendStatusTimeline {
     this.after.push(record);
   }
 
+  /**
+   * The newest admitted root state, by stamp (a clear by its arrival): what a
+   * write may be authorized from. Undefined when nothing was admitted or two
+   * states share the newest stamp.
+   */
+  latest(): { readonly record: ProgramStatusRecord | undefined } | undefined {
+    if (this.newestMs === undefined || this.newestAmbiguous) return undefined;
+    return { record: this.newest };
+  }
+
   /** A record the broker stamped after the write arrived, so the status changed since. */
   changed(): boolean {
     return this.after.some((record) => record !== undefined);
   }
 
-  /** An observed `idle` directly followed by a non-idle record stamped after the write. */
+  /**
+   * An observed waiting record directly followed by one stamped after the write that left it:
+   * `idle` followed by any other state, or `done` followed by a state that is not waiting.
+   */
   submitted(): boolean {
     if (this.ambiguous) return false;
     let previous = this.baseline;
     for (const record of this.after) {
-      if (previous?.state === PROGRAM_STATUS_STATE.IDLE && record !== undefined && record.state !== PROGRAM_STATUS_STATE.IDLE) {
-        return true;
-      }
+      if (record !== undefined && leftWaitingState(previous, record)) return true;
       previous = record;
     }
     return false;
@@ -408,11 +449,11 @@ function classifySendAttempt(
     return { delivery: SESSION_SEND_DELIVERY.DELIVERED, outcome: SESSION_SEND_OUTCOME.SUBMITTED };
   }
   if (!delivered) return unverified;
-  // Only an untouched idle record proves the program sat on the text:
-  // pacing can fold idle->working->idle into one idle with a new timestamp.
+  // Only an untouched waiting record proves the program sat on the text:
+  // pacing can fold idle->working->idle (or done->working->done) into one record with a new timestamp.
   const pasted = !evidence.statusUnknown
     && !status.ambiguous
-    && status.baseline?.state === PROGRAM_STATUS_STATE.IDLE
+    && isWaitingState(status.baseline)
     && status.after.length === 0;
   return {
     delivery: SESSION_SEND_DELIVERY.DELIVERED,
@@ -464,10 +505,20 @@ interface ObservedInputSpec<T> {
   readonly onOutput: (frame: OutputBinaryFrame, observation: InputObservation<T>) => void;
   /** Runs after the first write, before a separate Enter. */
   readonly onInputSent?: (observation: InputObservation<T>) => void;
+  /** Runs after a successful submitting write: the text with Enter, or its separate Enter. */
+  readonly onSubmitWritten?: () => void;
   /** Runs synchronously before subscribing, for callers with other evidence sources. */
   readonly bind?: (observation: InputObservation<T>) => void;
   /** Runs once the subscription is ready; a result settles the call without writing. */
   readonly beforeWrite?: () => T | undefined;
+  /**
+   * Awaited right before each write (the input and a separate Enter), after the
+   * wait for earlier writes; false writes nothing more and settles with `onRefused`.
+   */
+  readonly writeGuard?: {
+    readonly allows: () => Promise<boolean>;
+    readonly onRefused: () => T;
+  };
 }
 
 class BrokerRpcError extends Error {
@@ -576,6 +627,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   }
 
   async listSessionFacts(): Promise<SessionListFact[]> {
+    const trackedBefore = childTrackingMark();
+    const tableMark = sessionTableMark();
     const sessions = await this.brokerSessions();
     const identitySessions: Array<{
       wolfpackSessionId: string;
@@ -626,7 +679,19 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       if (!liveIds.has(id)) this.idToAgentKind.delete(id);
     }
     reconcileParentInboxes(liveIds);
+    // A known child that is dead or gone in this table has exited, even if
+    // its exit frame was lost; the lifecycle path shares the deduplication.
+    reconcileChildEvents(liveIds, { trackedBefore, exitReason: id => this.tableExitReason(id), publish: this.emitEvent });
+    // Same evidence for the cleanup cascade: a parent dead or gone in this table died.
+    noteSessionTable(liveIds, tableMark);
     return facts;
+  }
+
+  /** The reason for an exit found in the session table; undefined while a kill reply is outstanding. */
+  private tableExitReason(id: string): SessionExitReason | undefined {
+    const kill = this.killRequests.get(id);
+    if (kill && kill.inFlight > 0) return undefined;
+    return kill?.succeeded ? SESSION_EXIT_REASON.KILLED : SESSION_EXIT_REASON.EXIT;
   }
 
   async listIdentities(): Promise<Record<string, PublicSessionIdentity>> {
@@ -813,6 +878,10 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       parentSession: options?.parentSession,
       externalAgent: options?.externalAgent,
     });
+    // Same synchronous step as the identity capture: no observer pass can see
+    // this child's lineage before it is tracked as created in this boot.
+    if (options?.parentSession) noteChildCreated(session.id, session.name, options.parentSession);
+    noteSessionAlive(session.id);
     log.info("session created", { name: session.name, id: session.id, cwd, cmd: agentCmd });
     return toPublicSessionIdentity(identity);
   }
@@ -823,7 +892,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     await this.killSessionById(id);
   }
 
-  async killSessionById(id: string): Promise<void> {
+  async killSessionById(id: string): Promise<SessionKillDisposition> {
     // SIGHUP (1) - interactive bash ignores SIGTERM, but SIGHUP propagates to
     // the foreground process group via the controlling PTY and reliably tears
     // down nested shells (e.g. `bash -lic /bin/zsh`).
@@ -839,17 +908,21 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       kill.inFlight--;
       this.settleKillRequest(id, kill);
     }
+    let disposition: SessionKillDisposition = SESSION_KILL_DISPOSITION.KILLED;
     if (resp.status === "error") {
       const code = resp.error?.code;
+      // Idempotent: the broker no longer runs this session, so the kill is not an error.
       if (code !== "unknown_session" && code !== "session_not_alive") {
         throw new BrokerRpcError(code ?? "internal_error", resp.error?.message ?? "kill failed");
       }
+      disposition = SESSION_KILL_DISPOSITION.ALREADY_GONE;
     }
     const name = this.idToInfo.get(id)?.name;
     if (name !== undefined && this.nameToId.get(name) === id) this.nameToId.delete(name);
     this.idToInfo.delete(id);
     this.idToAgentKind.delete(id);
     getSessionIdentityStore().deleteById(id);
+    return disposition;
   }
 
   async hasSession(name: string): Promise<boolean> {
@@ -969,10 +1042,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       observeMs: options.observeMs,
       priorDelivered: false,
       sessionName: options.sessionName,
+      onSubmitWritten: options.onSubmitWritten,
+      writeGuard: options.writeGuard,
     });
     if (
       options.noEnter
       || !options.ensureSubmitted
+      || first.writeRefused
       || first.outcome !== SESSION_SEND_OUTCOME.PASTED_NOT_SUBMITTED
     ) {
       return first;
@@ -984,9 +1060,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       observeMs: options.observeMs,
       priorDelivered: true,
       sessionName: options.sessionName,
+      onSubmitWritten: options.onSubmitWritten,
+      writeGuard: options.writeGuard,
     });
     // A retry that could not be written sent nothing: the first verdict stands.
-    if (retry.delivery === SESSION_SEND_DELIVERY.NOT_DELIVERED) return first;
+    if (retry.delivery === SESSION_SEND_DELIVERY.NOT_DELIVERED) {
+      return retry.writeRefused ? { ...first, writeRefused: true } : first;
+    }
     return {
       delivery: retry.delivery,
       outcome: retry.outcome,
@@ -1005,6 +1085,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       readonly observeMs: number;
       readonly priorDelivered: boolean;
       readonly sessionName: string | undefined;
+      readonly onSubmitWritten: (() => void) | undefined;
+      readonly writeGuard: SessionSendWriteGuard | undefined;
     },
   ): Promise<SessionSendObservationResult> {
     // One deadline covers the baseline read, subscribe, write and final read;
@@ -1014,6 +1096,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const deadlineMs = Date.now() + attempt.observeMs + settleMs;
     const statusReadMs = Math.min(SESSION_SEND_STATUS_READ_MAX_MS, Math.floor(attempt.observeMs / 4));
     const status = new SendStatusTimeline();
+    // Write authorization (review A4-1): every pushed record and every read,
+    // ordered by stamp, so a read older than a push cannot authorize a write.
+    const authority = new SendStatusTimeline();
     let outputSeen = false;
     let observation: InputObservation<SendAttemptStop> | undefined;
     const observed: SendAttemptStop = { kind: "observed" };
@@ -1025,15 +1110,22 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     // room for the settle gap before it; past this, nothing is written.
     const writeByMs = deadlineMs - statusReadMs;
     const windowSpent = (): boolean => Date.now() >= writeByMs - settleMs;
+    let writeRefused = false;
+    const { writeGuard } = attempt;
+    const refusedMark = (): { readonly writeRefused?: true } => (writeRefused ? { writeRefused: true } : {});
     // Listen before reading the baseline so no pushed change falls between them.
     const unsubscribeStatus = this.onProgramStatusById(sessionId, (record) => {
       if (Date.now() > deadlineMs) return;
+      authority.admit(record, undefined);
       status.admit(record, observation?.inputSentAtMs);
       if (observation?.inputSent && decided()) observation.finish(observed);
     });
     try {
       const initial = await this.rootProgramStatusWithin(sessionId, Date.now() + statusReadMs, "baseline");
-      if (initial) status.admit(initial.record, undefined);
+      if (initial) {
+        status.admit(initial.record, undefined);
+        authority.admit(initial.record, undefined);
+      }
       // A timer cannot interrupt a busy turn, so check the clock before subscribing and writing.
       if (windowSpent()) return notDeliveredSend(SESSION_SEND_FAILURE_REASON.TIMED_OUT);
       const targetUnavailableOutcome = () => this.targetUnavailableOutcome(sessionId, attempt.sessionName ?? name);
@@ -1055,13 +1147,31 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
         onSubscribeError: (error) => stopUnlessWritten(this.subscribeErrorOutcome(error, targetUnavailableOutcome)),
         // A failed Enter after a written text still delivered the text.
         onWriteError: () => stopUnlessWritten(SESSION_SEND_FAILURE_REASON.BACKEND_UNAVAILABLE),
+        onSubmitWritten: attempt.onSubmitWritten,
+        // Read the root status again at each write: the baseline read can be
+        // stale after the wait for earlier writes or the settle gap. The read's
+        // own exact-ID liveness decides, and its record counts only if no newer
+        // push or clear arrived meanwhile (review A4-1).
+        writeGuard: writeGuard && {
+          allows: async () => {
+            const current = await this.rootProgramStatusWithin(sessionId, Math.min(writeByMs, Date.now() + statusReadMs), "guard");
+            if (current?.alive !== true || this.idToInfo.get(sessionId)?.alive === false) return false;
+            authority.admit(current.record, undefined);
+            const latest = authority.latest();
+            return latest !== undefined && writeGuard(latest.record);
+          },
+          onRefused: () => {
+            writeRefused = true;
+            return stopUnlessWritten(SESSION_SEND_FAILURE_REASON.TARGET_UNAVAILABLE);
+          },
+        },
         onOutput: (frame, current) => {
           if (!current.inputSent || frame.data.length === 0 || Date.now() > deadlineMs) return;
           outputSeen = true;
           if (attempt.noEnter) current.finish(observed);
         },
       });
-      if (stop.kind === "not_delivered") return notDeliveredSend(stop.reason);
+      if (stop.kind === "not_delivered") return { ...notDeliveredSend(stop.reason), ...refusedMark() };
       const writtenAtMs = observation?.inputSentAtMs;
       let statusUnknown = false;
       if (!decided()) {
@@ -1079,18 +1189,19 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           priorDelivered: attempt.priorDelivered,
         }),
         observedMs: writtenAtMs === undefined ? 0 : Math.max(0, Math.min(Date.now(), deadlineMs) - writtenAtMs),
+        ...refusedMark(),
       };
     } finally {
       unsubscribeStatus();
     }
   }
 
-  /** Reads the root status record, or undefined when the read fails or is not handled by `untilMs`. */
+  /** Reads the root status record and exact-ID liveness, or undefined when the read fails or is not handled by `untilMs`. */
   private async rootProgramStatusWithin(
     sessionId: string,
     untilMs: number,
-    phase: "baseline" | "final",
-  ): Promise<{ readonly record: ProgramStatusRecord | undefined } | undefined> {
+    phase: "baseline" | "guard" | "final",
+  ): Promise<{ readonly record: ProgramStatusRecord | undefined; readonly alive: boolean } | undefined> {
     const timeoutMs = untilMs - Date.now();
     if (timeoutMs <= 0) return undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1098,7 +1209,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     try {
       const read = await Promise.race([
         this.exactSessionInfo(sessionId, timeoutMs)
-          .then((session) => ({ record: parseBrokerProgramStatusRecord(session.program_status) })),
+          .then((session) => ({ record: parseBrokerProgramStatusRecord(session.program_status), alive: session.alive })),
         expired,
       ]);
       // A busy turn can run the response before an expired timer, so check the clock and stamp too.
@@ -1314,9 +1425,15 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
       pendingOutput.length = 0;
       if (settled) return await settle();
       const separateEnter = spec.submit && spec.separateEnter && spec.input !== "";
+      const guardAllows = async (): Promise<boolean> => {
+        if (!spec.writeGuard || await spec.writeGuard.allows()) return true;
+        observation.finish(spec.writeGuard.onRefused());
+        return false;
+      };
       const write = async (): Promise<void> => {
         // A call that settled or ran out of time while it waited in the queue writes nothing.
         if (settled) return;
+        if (!(await guardAllows()) || settled) return;
         const stop = spec.beforeWrite?.();
         if (stop !== undefined) {
           observation.finish(stop);
@@ -1339,16 +1456,23 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
           return;
         }
         spec.onInputSent?.(observation);
-        if (!separateEnter) return;
-        // The text is delivered, so its Enter follows even if the call has settled meanwhile.
+        if (!separateEnter) {
+          if (spec.submit) spec.onSubmitWritten?.();
+          return;
+        }
+        // The text is delivered, so its Enter follows even if the call has settled
+        // meanwhile, unless the write guard refuses it.
         await delay(SESSION_SUBMIT_SETTLE_MS);
+        if (!(await guardAllows())) return;
         observation.inputSentAtMs = Date.now();
         try {
           this.client.writeInput(sessionId, TEXT_ENCODER.encode(ENTER_INPUT));
         } catch {
           observation.inputSentAtMs = undefined;
           observation.finish(spec.onWriteError());
+          return;
         }
+        spec.onSubmitWritten?.();
       };
       if (!spec.separateEnter) {
         await write();
@@ -1431,6 +1555,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     if (!id) return false;
     try {
       this.client.writeInput(id, toBytes(data));
+      // Only interactive viewers use this path; typed child-event notes wait for a quiet viewer.
+      noteViewerInput(id);
       return true;
     } catch (e: unknown) {
       log.warn("writeToTerminal failed", { name, error: errMsg(e) });
@@ -1615,11 +1741,20 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
 
   private emitSessionExited(id: string, exit: PendingSessionExit, killed: boolean, killName: string | undefined): void {
     const name = exit.name ?? killName;
+    const reason = killed ? SESSION_EXIT_REASON.KILLED : SESSION_EXIT_REASON.EXIT;
+    // The parent learns about the exit through its inbox and the event stream.
+    childSessionExited(id, {
+      reason,
+      ...(exit.exitCode !== undefined && { exitCode: exit.exitCode }),
+      ...(exit.signal !== undefined && { signal: exit.signal }),
+    }, this.emitEvent);
+    // The cleanup cascade treats a lifecycle exit as death evidence.
+    noteSessionExit(id);
     this.emitEvent({
       kind: WOLFPACK_EVENT_KIND.SESSION_EXITED,
       sessionId: id,
       ...(name !== undefined && { session: name }),
-      reason: killed ? SESSION_EXIT_REASON.KILLED : SESSION_EXIT_REASON.EXIT,
+      reason,
       ...(exit.exitCode !== undefined && { exitCode: exit.exitCode }),
       ...(exit.signal !== undefined && { signal: exit.signal }),
     });

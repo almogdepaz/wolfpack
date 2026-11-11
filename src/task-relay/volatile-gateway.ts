@@ -1,7 +1,7 @@
 import type { SessionInspectionResult } from "../session-status-contract.ts";
 import { canonicalTailnetOrigin } from "../tailnet-machine-contract.ts";
 import { createLogger } from "../log.ts";
-import { RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION, isLocalRelay, isOpaqueRelayId, isRelayEndpoint, isRelayEnvelope } from "./domain.ts";
+import { RELAY_ID, RELAY_LIMITS, RELAY_PROTOCOL_VERSION, isHostOnlyPayload, isLocalRelay, isOpaqueRelayId, isRelayEndpoint, isRelayEnvelope, isRelayTimestamp } from "./domain.ts";
 import type { RelayEnvelope, RelayRegistration } from "./domain.ts";
 import { RelayOwnerFailure } from "./owner-failure.ts";
 import { createRecoveryStore } from "./recovery-store.ts";
@@ -11,8 +11,11 @@ import type { TaskRelayRegistration } from "./registration.ts";
 import type { BoundedRelayInvestigation } from "./investigation.ts";
 import { createSuspensionInclusiveElapsedNow } from "./suspension-inclusive-clock.ts";
 import { captureRelayWire } from "./worker-protocol.ts";
-import { VOLATILE_GATEWAY_LIMITS as LIMIT, VOLATILE_PEER_PATH, volatileFailure } from "./volatile-protocol.ts";
-import type { VolatileBinding, VolatileCode, VolatilePeerRequest, VolatileRequest, VolatileResult, VolatileValue, VolatileTopologyRequest } from "./volatile-protocol.ts";
+import { HOST_ENVELOPE_ACCEPTANCE, VOLATILE_GATEWAY_LIMITS as LIMIT, VOLATILE_PEER_PATH, volatileFailure } from "./volatile-protocol.ts";
+import type {
+  VolatileBinding, VolatileCode, VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult, VolatilePeerRequest, VolatileRequest,
+  VolatileResult, VolatileValue, VolatileTopologyRequest,
+} from "./volatile-protocol.ts";
 
 const log = createLogger("task-relay");
 const MAINTENANCE_INTERVAL_MS = 1_000;
@@ -23,6 +26,15 @@ const fields: Readonly<Record<string, readonly string[]>> = {
   receive: ["cursor", "limit"], acknowledge: ["envelopeId"], disconnect: [], health: [],
   receivePeer: ["epoch", "sourceEpoch", "origin", "envelope"],
 };
+/**
+ * The server's own source registration. Endpoint registrations take their
+ * session id from a fresh broker inspection, which returns a session UUID, so
+ * no endpoint can connect as or send as the server source. Sends to it fail
+ * `#target`: `/` is not valid in a session name, so inspection finds nothing,
+ * and `#target` also requires the inspected id to equal the stored one.
+ */
+const HOST_SOURCE_SESSION = "wolfpack-server/host";
+const HOST_SOURCE_GENERATION = "host";
 const text = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 512;
 class GatewayError extends Error { constructor(readonly code: VolatileCode) { super(code); } }
 function fail(code: VolatileCode): never { throw new GatewayError(code); }
@@ -171,6 +183,40 @@ export class VolatileRelayGateway {
     }
     return registrations;
   }
+  /**
+   * Host-only: accept one server-originated envelope into a session's inbox.
+   * The target must hold a live registration that advertises
+   * `requiredProtocol`; otherwise nothing is sent.
+   */
+  async hostEnvelope(input: VolatileHostEnvelopeRequest): Promise<VolatileHostEnvelopeResult> {
+    try {
+      if (this.#stop.signal.aborted) fail("RELAY_RESET");
+      let value: VolatileHostEnvelopeRequest;
+      try { value = captureRelayWire(input, RELAY_LIMITS.HTTP_BODY_BYTES).value; } catch { return fail("INVALID_REQUEST"); }
+      if (!value || !text(value.targetSession) || !Number.isInteger(value.requiredProtocol) || !text(value.envelopeId)
+        || !isRelayTimestamp(value.createdAt)) fail("INVALID_REQUEST");
+      const now = this.#now();
+      const target = this.#store.registrationForSession(this.epoch, value.targetSession, now);
+      if (!target || !target.protocolVersions.includes(value.requiredProtocol)) return { kind: "unsupported" };
+      // Renewed on every send: an idle server source expires like any other.
+      const source = this.#store.register({ sessionId: HOST_SOURCE_SESSION, generation: HOST_SOURCE_GENERATION,
+        leaseMs: RELAY_LIMITS.MAX_LEASE_MS, protocolVersions: [RELAY_PROTOCOL_VERSION] }, now);
+      // #acceptLocal checks the target's live owner, and in SQLite mode applies the journal's terminal-acceptance rules.
+      const accepted = await this.#acceptLocal({ envelopeId: value.envelopeId, protocolVersion: RELAY_PROTOCOL_VERSION,
+        source: source.endpoint, target: target.endpoint, payload: value.payload, createdAt: value.createdAt });
+      return { kind: "accepted", duplicate: accepted.kind === "duplicate" };
+    } catch (error) {
+      // The owner is poisoned, not an ordinary request rejection; the worker client decides acceptance.
+      if (error instanceof RelayOwnerFailure) throw error;
+      if (error instanceof GatewayError && error.code === "TARGET_NOT_REGISTERED") return { kind: "unsupported" };
+      // Nothing awaits after the synchronous store accept, and a storage failure
+      // after it is an owner failure (rethrown above), so a failure here means
+      // the envelope was not accepted.
+      return { kind: "failed", code: this.#stop.signal.aborted ? "RELAY_RESET"
+        : error instanceof GatewayError || error instanceof MemoryRelayError ? error.code : "RELAY_UNAVAILABLE",
+        acceptance: HOST_ENVELOPE_ACCEPTANCE.REJECTED };
+    }
+  }
   request(input: unknown): Promise<VolatileResult> { return this.#run(input, "endpoint"); }
   /** Host-only input derived from freshly verified topology, never endpoint URLs. */
   topology(input: unknown): Promise<VolatileResult> { return this.#run(input, "topology"); }
@@ -229,7 +275,7 @@ export class VolatileRelayGateway {
         }
         case "send": {
           if (!isRelayEnvelope(value.envelope) || value.envelope.source.relay !== RELAY_ID
-            || value.envelope.source.id !== value.endpoint.id) fail("SOURCE_MISMATCH");
+            || value.envelope.source.id !== value.endpoint.id || isHostOnlyPayload(value.envelope.payload)) fail("SOURCE_MISMATCH");
           if (value.envelope.protocolVersion !== RELAY_PROTOCOL_VERSION) fail("INVALID_REQUEST");
           if (isLocalRelay(value.envelope.target)) {
             const accepted = await this.#acceptLocal(value.envelope, value);
@@ -253,7 +299,8 @@ export class VolatileRelayGateway {
     } catch (error) {
       if (error instanceof RelayOwnerFailure) throw error; // The owner is poisoned, not an ordinary request rejection.
       return this.#failure(this.#stop.signal.aborted ? "RELAY_RESET"
-        : error instanceof GatewayError || error instanceof MemoryRelayError ? error.code : "RELAY_UNAVAILABLE", this.epoch);
+        : error instanceof GatewayError || error instanceof MemoryRelayError ? error.code : "RELAY_UNAVAILABLE", this.epoch,
+        error instanceof MemoryRelayError ? error.retryAfterMs : undefined);
     } finally { if (peer) this.#peers--; else this.#ordinary--; }
   }
 
@@ -342,6 +389,8 @@ export class VolatileRelayGateway {
   async #receivePeer(input: VolatilePeerRequest): Promise<VolatileResult> {
     if (!isOpaqueRelayId(input.sourceEpoch) || !isRelayEnvelope(input.envelope)
       || !isLocalRelay(input.envelope.source) || !isLocalRelay(input.envelope.target)) fail("INVALID_REQUEST");
+    // Host-only payloads describe this machine; a peer cannot originate them.
+    if (isHostOnlyPayload(input.envelope.payload)) fail("SOURCE_MISMATCH");
     if (!this.#recoverable) await this.#target(input.envelope.target.id);
     const route = this.#store.peerRoute(this.epoch, input.origin, input.sourceEpoch);
     const envelope = { ...input.envelope, source: { ...input.envelope.source, relay: route.id } };

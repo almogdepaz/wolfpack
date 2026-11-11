@@ -66,6 +66,30 @@ describe("global machine selector", () => {
   });
 });
 
+describe("global machine selector and exec", () => {
+  test("a selector-shaped argument after exec's -- belongs to the remote command", () => {
+    expect(extractMachineSelector(["--machine", "peer", "exec", "--cwd", "/srv", "--", "grep", "--machine", "x", "--machine=y"])).toEqual({
+      ok: true,
+      selector: "peer",
+      argv: ["exec", "--cwd", "/srv", "--", "grep", "--machine", "x", "--machine=y"],
+    });
+    expect(extractMachineSelector(["exec", "--cwd", "/srv", "--", "grep", "--machine", "x"])).toEqual({
+      ok: true,
+      selector: undefined,
+      argv: ["exec", "--cwd", "/srv", "--", "grep", "--machine", "x"],
+    });
+  });
+
+  test.each([
+    ["exec option before --", ["exec", "--machine", "peer", "--cwd", "/srv", "--", "ls"]],
+    ["duplicate before --", ["--machine", "peer", "exec", "--machine", "other", "--", "ls"]],
+    ["other command after --", ["session", "send", "s", "--", "--machine", "peer"]],
+  ] as const)("still rejects a selector in an %s", (_name, argv) => {
+    const parsed = extractMachineSelector(argv);
+    expect(parsed.ok).toBe(false);
+  });
+});
+
 describe("machine origin resolution", () => {
   test("resolves a short name and a canonical same-tailnet fqdn", () => {
     expect(resolveMachineOrigin("peer", CONFIGURED_HOSTNAME)).toEqual({ ok: true, origin: ORIGIN });

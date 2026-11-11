@@ -39,6 +39,7 @@ test.skipIf(!source)("configured fresh generation replaces an empty predecessor;
   const f = await fixture();
   try {
     const first = await f.open("a"), old = first.endpoint;
+    expect(await f.gateway.request({ ...f.bound("a", old), operation: "disconnect" })).toMatchObject({ ok: true });
     const next = await f.open("a"); expect(next.endpoint).not.toEqual(old);
     f.clock.now += 61_000;
     await next.connect(); expect(next.endpoint).not.toEqual(old);
@@ -77,7 +78,9 @@ for (const retained of [false, true]) test.skipIf(!source)(`a delayed target ins
     const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: b.endpoint, target: old,
       createdAt: new Date(f.clock.now).toISOString(), payload: "late send must not revive predecessor" };
     const pending = f.gateway.request({ ...f.bound("b", b.endpoint), operation: "send", envelope });
-    await observed; const next = await f.open("a"); release();
+    await observed;
+    expect(await f.gateway.request({ ...f.bound("a", old), operation: "disconnect" })).toMatchObject({ ok: true });
+    const next = await f.open("a"); release();
     expect(await pending).toMatchObject({ ok: false, error: { code: "TARGET_NOT_REGISTERED" } });
     await next.receive(); expect(next.listTasks()).toHaveLength(0);
     expect(await f.gateway.request({ ...f.bound("a", next.endpoint), operation: "health" })).toMatchObject({ ok: true });
@@ -96,25 +99,32 @@ test.skipIf(!source)("an exact retry remains confirmed when its mailbox becomes 
     const accepted = await send() as any; expect(accepted.ok).toBe(true);
     delay = true; const pending = send(); await observed;
     expect(await f.gateway.request({ ...f.bound("a", a.endpoint), operation: "acknowledge", envelopeId: envelope.envelopeId })).toMatchObject({ ok: true });
+    expect(await f.gateway.request({ ...f.bound("a", a.endpoint), operation: "disconnect" })).toMatchObject({ ok: true });
     const fresh = await f.open("a"); release();
     expect(await pending).toMatchObject({ ok: true, value: { duplicate: true, acceptanceId: accepted.value.acceptanceId } });
     await fresh.receive(); expect(fresh.listTasks()).toHaveLength(0);
   } finally { release(); await f.close(); }
 });
 
-test.skipIf(!source)("mail arriving during fresh-generation inspection prevents predecessor replacement", async () => {
+test.skipIf(!source)("mail arriving during fresh-generation inspection belongs only to the retired lifetime", async () => {
   let delay = false, entered!: () => void, release!: () => void;
   const observed = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
   const f = await fixture(async selector => { if (delay && selector === "a") { entered(); await gate; } });
   try {
     const a = await f.open("a"), b = await f.open("b"); delay = true;
-    const pending = f.open("a").then(() => undefined, error => error);
+    const pending = f.open("a");
     await observed;
     const envelope = { envelopeId: randomUUID(), protocolVersion: 2, source: b.endpoint, target: a.endpoint,
       createdAt: new Date(f.clock.now).toISOString(), payload: "accepted during inspection" };
     expect(await f.gateway.request({ ...f.bound("b", b.endpoint), operation: "send", envelope })).toMatchObject({ ok: true });
-    release(); expect(await pending).toMatchObject({ code: "RELAY_RESET" });
-    expect(await f.gateway.request({ ...f.bound("a", a.endpoint), operation: "receive", cursor: "0" })).toMatchObject({ ok: true, value: { deliveries: [{ envelope }] } });
+    // The live owner still wins. After disconnect, unread old-lifetime mail is discarded.
+    delay = false;
+    expect(await f.gateway.request({ ...f.bound("a", a.endpoint), operation: "disconnect" })).toMatchObject({ ok: true });
+    release(); const fresh = await pending;
+    expect(fresh.endpoint).not.toEqual(a.endpoint);
+    await fresh.receive(); expect(fresh.listTasks()).toHaveLength(0);
+    expect(await f.gateway.request({ ...f.bound("a", a.endpoint), operation: "receive", cursor: "0" })).toMatchObject({ ok: false, error: { code: "REGISTRATION_EXPIRED" } });
+    expect(await f.gateway.request({ ...f.bound("b", b.endpoint), operation: "send", envelope })).toMatchObject({ ok: false, error: { code: "TARGET_NOT_REGISTERED" } });
   } finally { release(); await f.close(); }
 });
 
@@ -138,6 +148,7 @@ test.skipIf(!source)("completed transport receipts retain evidence without block
     expect(a.endpoint).toEqual(old);
     expect(BigInt(f.requests.filter(item => item.operation === "receive" && item.callerSession === "a").at(-1).cursor)).toBeGreaterThan(0n);
     const oldConnect = f.requests.filter(item => item.operation === "connect" && item.callerSession === "a").at(-1);
+    expect(await f.gateway.request({ ...f.bound("a", old), operation: "disconnect" })).toMatchObject({ ok: true });
     const fresh = await f.open("a"); expect(fresh.endpoint).not.toEqual(old);
     expect(fresh.listTasks()).toHaveLength(0); await fresh.receive();
     expect(f.requests.filter(item => item.operation === "receive" && item.callerSession === "a").at(-1).cursor).toBe("0");

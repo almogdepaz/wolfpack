@@ -3,7 +3,7 @@ import { types as utilTypes } from "node:util";
 import type { TaskRelayRegistration } from "./registration.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { SessionInspectionResult } from "../session-status-contract.ts";
-import type { VolatileResult } from "./volatile-protocol.ts";
+import type { VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult, VolatileResult } from "./volatile-protocol.ts";
 
 export interface RelayGateway {
   readonly root: string;
@@ -17,11 +17,13 @@ export interface RelayGateway {
   volatile(input: unknown): Promise<VolatileResult>;
   volatilePeer(input: unknown): Promise<VolatileResult>;
   volatileTopology(input: unknown): Promise<VolatileResult>;
+  /** Host-only server-originated envelope; never reachable from endpoint or peer ingress. */
+  hostEnvelope(input: VolatileHostEnvelopeRequest): Promise<VolatileHostEnvelopeResult>;
 }
 
-export type RelayWorkerGateway = Pick<RelayGateway, "initialize" | "registrationsForSessions" | "volatileEpoch" | "volatile" | "volatilePeer" | "volatileTopology">;
+export type RelayWorkerGateway = Pick<RelayGateway, "initialize" | "registrationsForSessions" | "volatileEpoch" | "volatile" | "volatilePeer" | "volatileTopology" | "hostEnvelope">;
 export const RELAY_WORKER_METHODS = [
-  "initialize", "registrationsForSessions", "volatileEpoch", "volatile", "volatilePeer", "volatileTopology",
+  "initialize", "registrationsForSessions", "volatileEpoch", "volatile", "volatilePeer", "volatileTopology", "hostEnvelope",
 ] as const satisfies readonly (keyof RelayWorkerGateway)[];
 export type RelayWorkerMethod = typeof RELAY_WORKER_METHODS[number];
 export const RELAY_WORKER_LIMITS = {

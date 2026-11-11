@@ -35,6 +35,8 @@ import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event
 import type { WolfpackEvent } from "../../src/events-contract";
 import { onProgramStatusChanged } from "../../src/server/program-status-signal";
 import { appendParentNotification, clearParentInbox, listParentNotifications } from "../../src/server/parent-inbox";
+import { __resetChildEventsForTests, observeChildSession } from "../../src/server/child-events";
+import { __resetViewerInputForTests, lastViewerInputAt } from "../../src/server/viewer-input";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -485,6 +487,148 @@ test("raw UUID lifecycle facts and inbox cleanup precede deferred public kill cl
   } finally {
     unsubscribe(); settleKill(okResp({ kind: "kill_session" })); await kill.catch(() => {});
     clearParentInbox(SESSION_UUID_1);
+  }
+});
+
+describe("child exits from the lifecycle and the session table", () => {
+  const parentId = "22222222-2222-4222-8222-222222222222";
+  const parentSession = { wolfpackSessionId: parentId, wolfpackSessionName: "lead" };
+  let kinds: string[] = [];
+  let childEvents: Array<Record<string, unknown>> = [];
+  let exactBackend: BrokerBackend;
+
+  function track(id = SESSION_UUID_1, name = "worker"): void {
+    observeChildSession({
+      sessionId: id,
+      name,
+      parentSession,
+      alive: true,
+      runtimeState: {
+        state: "working", authority: "program", freshness: "fresh", source: "program-status", label: "working",
+        stale: false, observedAt: "t", changedAt: "t", transitionSequence: 1, unseen: false,
+      },
+      rendered: "compiling\nfailed: 2 tests",
+    }, () => {});
+  }
+
+  /** The parent stays live in every table, so its inbox is kept. */
+  function table(...sessions: Array<{ id: string; name: string; alive: boolean }>): void {
+    const rows = [{ id: parentId, name: "lead", alive: true }, ...sessions];
+    client.setHandler("list_sessions", () => okResp({ sessions: rows.map(session => sessionInfo(session)) }));
+  }
+
+  beforeEach(() => {
+    clearParentInbox(parentId);
+    __resetChildEventsForTests();
+    kinds = [];
+    childEvents = [];
+    exactBackend = new BrokerBackend(client, event => {
+      kinds.push(event.kind);
+      if (event.kind === "child_event") childEvents.push(event.childEvent as unknown as Record<string, unknown>);
+    });
+  });
+
+  afterEach(() => {
+    clearParentInbox(parentId);
+    __resetChildEventsForTests();
+  });
+
+  test("lifecycle before the table read: one exited with the exit code, then the dead and absent table add nothing", async () => {
+    track();
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 3 });
+    table({ id: SESSION_UUID_1, name: "worker", alive: false });
+    await exactBackend.listSessionFacts();
+    table();
+    await exactBackend.listSessionFacts();
+    expect(kinds.filter(kind => kind !== "session.created")).toEqual(["child_event", "session.exited"]);
+    expect(childEvents).toEqual([expect.objectContaining({
+      event: "exited", reason: "exit", exitCode: 3, state: "working", childSessionId: SESSION_UUID_1,
+      parentSessionId: parentId, lastLines: ["compiling", "failed: 2 tests"],
+    })]);
+    expect(listParentNotifications(parentId)).toEqual([expect.objectContaining({ message: "exited (exit code 3)", from: "worker" })]);
+  });
+
+  test("table read before the lifecycle: a confirmed dead child is exited once; the late exit frame adds only the public event", async () => {
+    track();
+    table({ id: SESSION_UUID_1, name: "worker", alive: false });
+    await exactBackend.listSessionFacts();
+    await exactBackend.listSessionFacts();
+    exactBackend.ingestEvent({ event: "session_exited", session_id: SESSION_UUID_1, exit_code: 3 });
+    expect(kinds.filter(kind => kind !== "session.created")).toEqual(["child_event", "session.exited"]);
+    expect(childEvents).toEqual([expect.objectContaining({
+      event: "exited", reason: "exit", state: "working", lastLines: ["compiling", "failed: 2 tests"],
+    })]);
+    expect(childEvents[0]).not.toHaveProperty("exitCode");
+  });
+
+  test("an exit missed during a disconnect is recovered from the dead table, and a child gone from the table is exited too", async () => {
+    track(SESSION_UUID_1, "worker");
+    track(SESSION_UUID_2, "helper");
+    // The broker client was disconnected: no exit frame ever arrives.
+    client.requestError = new Error("broker disconnected");
+    await expect(exactBackend.listSessionFacts()).rejects.toThrow("broker disconnected");
+    client.requestError = null;
+    // Unavailable facts are not terminal: nothing was reported.
+    expect(childEvents).toEqual([]);
+    table({ id: SESSION_UUID_1, name: "worker", alive: false });
+    await exactBackend.listSessionFacts();
+    expect(childEvents.map(event => [event.childName, event.event, event.reason])).toEqual([
+      ["worker", "exited", "exit"],
+      ["helper", "exited", "exit"],
+    ]);
+    table();
+    await exactBackend.listSessionFacts();
+    expect(childEvents).toHaveLength(2);
+  });
+
+  test("a child listed dead while its kill reply is outstanding waits for the reply and reports killed", async () => {
+    track();
+    let settleKill!: (response: ControlResponse) => void;
+    client.setHandler("kill_session", () => new Promise<ControlResponse>(resolve => { settleKill = resolve; }));
+    const kill = exactBackend.killSessionById(SESSION_UUID_1);
+    table({ id: SESSION_UUID_1, name: "worker", alive: false });
+    await exactBackend.listSessionFacts();
+    expect(childEvents).toEqual([]);
+    settleKill(okResp({ kind: "kill_session" }));
+    await kill;
+    // The exit frame was lost; the next table read reports the kill.
+    await exactBackend.listSessionFacts();
+    expect(childEvents.map(event => [event.event, event.reason])).toEqual([["exited", "killed"]]);
+  });
+
+  test("a table read that started before a child was created does not report it as gone", async () => {
+    let releaseList!: () => void;
+    const listGate = new Promise<void>(resolve => { releaseList = resolve; });
+    client.setHandler("list_sessions", async () => { await listGate; return okResp({ sessions: [] }); });
+    const listing = exactBackend.listSessionFacts();
+    await Promise.resolve();
+    client.setHandler("create_session", () => okResp({ session: sessionInfo({ name: "fresh-child", id: SESSION_UUID_1 }) }));
+    await exactBackend.createSession("fresh-child", "/tmp/proj", "claude", loadSettings, { agentKind: "claude", parentSession });
+    releaseList();
+    await listing;
+    expect(childEvents).toEqual([]);
+  });
+});
+
+test("a child created through the backend reports its first event state, but a restored child does not", async () => {
+  const parentId = "22222222-2222-4222-8222-222222222222";
+  clearParentInbox(parentId);
+  __resetChildEventsForTests();
+  const parentSession = { wolfpackSessionId: parentId, wolfpackSessionName: "lead" };
+  const blocked = {
+    state: "needs-input", authority: "program", freshness: "fresh", source: "program-status", label: "needs input",
+    stale: false, observedAt: "t", changedAt: "t", transitionSequence: 1, unseen: false,
+  } as const;
+  try {
+    client.setHandler("create_session", () => okResp({ session: sessionInfo({ name: "fresh-child", id: SESSION_UUID_1 }) }));
+    await backend.createSession("fresh-child", "/tmp/proj", "claude", loadSettings, { agentKind: "claude", parentSession });
+    observeChildSession({ sessionId: SESSION_UUID_1, name: "fresh-child", parentSession, alive: true, runtimeState: blocked }, () => {});
+    // Not created by this process (restart recovery): the first sight is a baseline.
+    observeChildSession({ sessionId: SESSION_UUID_2, name: "restored-child", parentSession, alive: true, runtimeState: blocked }, () => {});
+    expect(listParentNotifications(parentId)).toEqual([expect.objectContaining({ from: "fresh-child", message: expect.stringContaining("blocked") })]);
+  } finally {
+    clearParentInbox(parentId);
+    __resetChildEventsForTests();
   }
 });
 
@@ -1181,6 +1325,19 @@ describe("BrokerBackend send/sendKey/writeToTerminal route through input_binary"
     expect(Array.from(client.inputs[0].data)).toEqual([0x01, 0x02, 0x03]);
   });
 
+  test("writeToTerminal records viewer input for the session id; a failed write records nothing", () => {
+    __resetViewerInputForTests();
+    const before = Date.now();
+    client.inputError = new Error("input plane down");
+    expect(backend.writeToTerminal("live", "x")).toBe(false);
+    expect(lastViewerInputAt(SESSION_UUID_1)).toBeUndefined();
+    client.inputError = null;
+    expect(backend.writeToTerminal("live", "x")).toBe(true);
+    expect(lastViewerInputAt(SESSION_UUID_1)).toBeGreaterThanOrEqual(before);
+    expect(backend.writeToTerminal("ghost", "x")).toBe(false);
+    __resetViewerInputForTests();
+  });
+
   test("writeToTerminal reports false for unknown sessions", () => {
     expect(backend.writeToTerminal("ghost", "hi")).toBe(false);
     expect(client.inputs.length).toBe(0);
@@ -1545,6 +1702,51 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(result).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
     expect(result.observedMs).toBeGreaterThanOrEqual(0);
     expect(inputs()).toEqual(["run tests\r"]);
+  });
+
+  test("a program resting at done that starts working after the write took the input", async () => {
+    // Claude Code and Pi report `done` between turns instead of `idle`.
+    rootStatus = status("done", 1);
+    client.onWriteInput = (sessionId) => {
+      client.emit(sessionId, encoder.encode("run tests"), 18n);
+      pushStatus(afterWrite("working"));
+    };
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 1_000, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+  });
+
+  test("reports pasted_not_submitted when output arrives but a done status stays untouched", async () => {
+    rootStatus = status("done", 1);
+    client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("run tests"), 18n);
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: false,
+    })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+  });
+
+  test("a done baseline that moves to another waiting state is not submission", async () => {
+    for (const next of ["idle", "done"]) {
+      rootStatus = status("done", 1);
+      client.onWriteInput = (sessionId) => {
+        client.emit(sessionId, encoder.encode("hello"), 18n);
+        pushStatus(afterWrite(next));
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "hello", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      }), next).toMatchObject({ delivery: "delivered", outcome: "unverified" });
+    }
+  });
+
+  test("ensureSubmitted re-sends one carriage return after a paste onto a done status", async () => {
+    rootStatus = status("done", 1);
+    client.onWriteInput = (sessionId, data) => {
+      if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+      else client.emit(sessionId, encoder.encode("run tests"), 18n);
+    };
+    expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: true,
+    })).toMatchObject({ delivery: "delivered", outcome: "submitted", retried: true });
+    expect(inputs()).toEqual(["run tests\r", "\r"]);
   });
 
   test("events before the write move the baseline instead of counting as evidence", async () => {
@@ -1917,6 +2119,36 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
     expect(inputs()).toEqual(["hello\r"]);
   });
 
+  test("reports a written submit before the observation returns, and never for noEnter or a failed write", async () => {
+    rootStatus = status("idle", 1);
+    const marks: string[] = [];
+    client.onWriteInput = () => { marks.push("write"); };
+    const onSubmitWritten = () => { marks.push("submit-written"); };
+    // Nothing reaches the program status, so the observation waits out its window.
+    const submitted = backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "run tests", noEnter: false, observeMs: 60, ensureSubmitted: false, onSubmitWritten,
+    }).then(result => { marks.push("returned"); return result; });
+    await submitted;
+    expect(marks).toEqual(["write", "submit-written", "returned"]);
+
+    marks.length = 0;
+    await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+      text: "draft", noEnter: true, observeMs: 30, ensureSubmitted: false, onSubmitWritten,
+    });
+    expect(marks).toEqual(["write"]);
+
+    marks.length = 0;
+    client.inputError = new Error("broker gone");
+    try {
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: false, onSubmitWritten,
+      })).toMatchObject({ delivery: "not_delivered" });
+    } finally {
+      client.inputError = null;
+    }
+    expect(marks).toEqual([]);
+  });
+
   describe("claude sessions", () => {
     beforeEach(async () => {
       client.setHandler("list_sessions", () => okResp({
@@ -1941,6 +2173,17 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
       expect(inputs()).toEqual([text, "\r"]);
       expect(writtenAt[1]! - writtenAt[0]!).toBeGreaterThanOrEqual(SESSION_SUBMIT_SETTLE_MS - 1);
       expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+    });
+
+    test("a separate Enter reports the written submit only after the Enter write", async () => {
+      rootStatus = status("idle", 1);
+      const marks: string[] = [];
+      client.onWriteInput = (_sessionId, data) => { marks.push(new TextDecoder().decode(data) === "\r" ? "enter" : "text"); };
+      await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "run tests", noEnter: false, observeMs: 30, ensureSubmitted: false,
+        onSubmitWritten: () => { marks.push("submit-written"); },
+      });
+      expect(marks).toEqual(["text", "enter", "submit-written"]);
     });
 
     test("a status record between the text and its Enter is baseline, not submission", async () => {
@@ -1975,6 +2218,28 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
       client.onWriteInput = (sessionId) => client.emit(sessionId, encoder.encode("❯ say Q4"), 19n);
       expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
         text: "say Q4", noEnter: false, observeMs: 30, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
+    });
+
+    test("a done baseline that starts working after the separate Enter took the input", async () => {
+      // P0-2: Claude Code rests at `done` between turns; every submitted send read `unverified`.
+      rootStatus = status("done", 1);
+      client.onWriteInput = (sessionId, data) => {
+        if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+        else client.emit(sessionId, data, 18n);
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "reply with just the word PONG", noEnter: false, observeMs: 200, ensureSubmitted: false,
+      })).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+      expect(inputs()).toEqual(["reply with just the word PONG", "\r"]);
+
+      client.inputs.length = 0;
+      rootStatus = status("done", Date.now());
+      client.onWriteInput = (sessionId, data) => {
+        if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 19n);
+      };
+      expect(await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+        text: "draft", noEnter: false, observeMs: 30, ensureSubmitted: false,
       })).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted" });
     });
 
@@ -2015,6 +2280,191 @@ describe("BrokerBackend.sendAndObserveSubmission", () => {
       });
       expect(result.delivery).toBe("delivered");
       expect(inputs()).toEqual(["run tests"]);
+    });
+
+    describe("write guard (typed child-event notes, review A2-1)", () => {
+      let allowed: boolean;
+      let guardStates: (string | undefined)[];
+      const writeGuard = (root: { readonly state: string } | undefined): boolean => {
+        guardStates.push(root?.state);
+        return allowed && (root?.state === "idle" || root?.state === "done");
+      };
+
+      beforeEach(() => {
+        allowed = true;
+        guardStates = [];
+      });
+
+      test("a guard that holds is checked with a fresh root status before the text and before its Enter", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+          else client.emit(sessionId, data, 18n);
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note", "\r"]);
+        expect(guardStates).toEqual(["idle", "idle"]);
+        expect(result).toMatchObject({ delivery: "delivered", outcome: "submitted" });
+        expect(result.writeRefused).toBeUndefined();
+      });
+
+      test("a parent that starts working after the baseline read gets nothing", async () => {
+        let reads = 0;
+        client.setHandler("session_info", () => okResp({
+          session: { ...sessionInfo({ name: "live", id: SESSION_UUID_1 }), program_status: status(++reads === 1 ? "idle" : "working", reads) },
+        }));
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual([]);
+        expect(result).toMatchObject({ delivery: "not_delivered", writeRefused: true });
+      });
+
+      test("a guard that fails while the note waits behind another write gets nothing", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (_sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+        };
+        const [, result] = await Promise.all([
+          backend.send("live", "viewer text"),
+          backend.sendAndObserveSubmission(SESSION_UUID_1, {
+            text: "note", noEnter: false, observeMs: 1_000, ensureSubmitted: true, writeGuard,
+          }),
+        ]);
+        expect(inputs()).toEqual(["viewer text", "\r"]);
+        expect(result).toMatchObject({ delivery: "not_delivered", writeRefused: true });
+      });
+
+      test("a guard that fails between the text and its Enter writes no Enter", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") return;
+          client.emit(sessionId, data, 18n);
+          allowed = false;
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note"]);
+        expect(result.writeRefused).toBe(true);
+        expect(result.delivery).not.toBe("not_delivered");
+      });
+
+      test("a status that leaves idle between the text and its Enter writes no Enter", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") return;
+          client.emit(sessionId, data, 18n);
+          pushStatus(afterWrite("blocked"));
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note"]);
+        expect(result.writeRefused).toBe(true);
+      });
+
+      test("a guard that fails before the ensureSubmitted retry writes no retry Enter", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 18n);
+          // The Enter is swallowed, then a viewer types before the retry.
+          else allowed = false;
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 30, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note", "\r"]);
+        expect(result).toMatchObject({ delivery: "delivered", outcome: "pasted_not_submitted", writeRefused: true });
+        expect(result.retried).toBeUndefined();
+      });
+
+      /**
+       * A guard read that captures one state while a push with another state
+       * lands before its response returns (review A4-1). `readNumber` picks the read.
+       */
+      function racedGuardRead(
+        readNumber: number,
+        captured: string,
+        pushed: { readonly state: string; readonly stamp: (capturedStamp: number) => number },
+      ): () => number {
+        let reads = 0;
+        client.setHandler("session_info", async () => {
+          if (++reads !== readNumber) return sessionInfoResponse();
+          const capturedStamp = Date.now();
+          rootStatus = status(captured, capturedStamp);
+          const response = sessionInfoResponse();
+          await sleep(5);
+          pushStatus(status(pushed.state, pushed.stamp(capturedStamp)));
+          return response;
+        });
+        return () => reads;
+      }
+      const staleGuardRead = (readNumber: number): () => number =>
+        racedGuardRead(readNumber, "idle", { state: "blocked", stamp: captured => captured + 10 });
+
+      test("a guard read older than a pushed blocked status writes no Enter (review A4-1)", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 18n);
+        };
+        // Read 1 is the baseline, read 2 guards the text, read 3 guards the Enter.
+        staleGuardRead(3);
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note"]);
+        expect(result.writeRefused).toBe(true);
+      });
+
+      test("a guard read and a push with the same stamp and different states write no Enter (review A4-1)", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 18n);
+        };
+        // The order of blocked and idle with one stamp is unknown, so neither authorizes.
+        racedGuardRead(3, "blocked", { state: "idle", stamp: captured => captured });
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 200, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual(["note"]);
+        expect(result.writeRefused).toBe(true);
+      });
+
+      test("a guard read older than a pushed blocked status writes no retry Enter (review A4-1)", async () => {
+        rootStatus = status("idle", 1);
+        client.onWriteInput = (sessionId, data) => {
+          // The first Enter is swallowed: the status stays idle.
+          if (new TextDecoder().decode(data) !== "\r") client.emit(sessionId, data, 18n);
+        };
+        // Attempt 1: baseline, text guard, Enter guard, final. Attempt 2: baseline, retry Enter guard.
+        const reads = staleGuardRead(6);
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 30, ensureSubmitted: true, writeGuard,
+        });
+        expect(reads()).toBeGreaterThanOrEqual(6);
+        expect(inputs()).toEqual(["note", "\r"]);
+        expect(result.writeRefused).toBe(true);
+      });
+
+      test("a fresh exact-ID read that reports the parent dead writes nothing, also with a live cache (review A4-1)", async () => {
+        rootStatus = status("idle", 1);
+        client.setHandler("session_info", () => okResp({
+          session: { ...sessionInfo({ name: "live", id: SESSION_UUID_1, alive: false }), program_status: rootStatus },
+        }));
+        client.onWriteInput = (sessionId, data) => {
+          if (new TextDecoder().decode(data) === "\r") pushStatus(afterWrite("working"));
+          else client.emit(sessionId, data, 18n);
+        };
+        const result = await backend.sendAndObserveSubmission(SESSION_UUID_1, {
+          text: "note", noEnter: false, observeMs: 30, ensureSubmitted: true, writeGuard,
+        });
+        expect(inputs()).toEqual([]);
+        expect(result).toMatchObject({ delivery: "not_delivered", writeRefused: true });
+        expect(result.retried).toBeUndefined();
+      });
     });
   });
 

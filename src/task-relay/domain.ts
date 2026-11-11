@@ -1,3 +1,5 @@
+import { CHILD_EVENT_PAYLOAD_KIND } from "../child-event-contract.ts";
+
 export const RELAY_ID = "wolfpack-pi-tasks-v2";
 export const RELAY_PROTOCOL_VERSION = 2;
 
@@ -147,6 +149,16 @@ export type RelayResult<T> =
 
 export function relayFailure(code: RelayErrorCode, message: string, retryable = false): RelayResult<never> {
   return { ok: false, error: { code, message, retryable } };
+}
+
+/**
+ * Payload kinds only the server originates. Endpoints and peers cannot send
+ * them, so an adapter can trust that such a payload came from this server.
+ */
+const HOST_ONLY_PAYLOAD_KINDS: ReadonlySet<string> = new Set([CHILD_EVENT_PAYLOAD_KIND]);
+
+export function isHostOnlyPayload(payload: unknown): boolean {
+  return isRecord(payload) && typeof payload.kind === "string" && HOST_ONLY_PAYLOAD_KINDS.has(payload.kind);
 }
 
 export function isLocalRelay(endpoint: RelayEndpoint): boolean {

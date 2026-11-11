@@ -99,7 +99,8 @@ export class TaskWorkerReadinessError extends Error {
 
 export interface TaskWorkerReadinessBackend {
   inspectSession?(selector: string): Promise<SessionInspectionResult>;
-  killSessionById?(sessionId: string): Promise<void>;
+  /** Rollback kill; the disposition is not used. */
+  killSessionById?(sessionId: string): Promise<unknown>;
 }
 
 interface WaitForTaskWorkerReadinessInput extends TaskWorkerTransportLookup {

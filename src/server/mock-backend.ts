@@ -15,6 +15,7 @@ import type {
   SessionPrefillOptions,
 } from "./backend.js";
 import { DuplicateSessionError } from "./backend.js";
+import { SESSION_KILL_DISPOSITION, type SessionKillDisposition } from "./backend-contract.js";
 import { SESSION_PROMPT_OUTCOME } from "../session-prompt-contract.js";
 import { SESSION_SEND_DELIVERY, SESSION_SEND_OUTCOME } from "../session-send-contract.js";
 import type {
@@ -78,6 +79,8 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
   lastSendObservationArgs: { sessionId: string; options: SessionSendObservationOptions } | null = null;
   /** Result sendAndObserveSubmission reports for a live session; null reports `unverified`. */
   sendObservation: SessionSendObservationResult | null = null;
+  /** Runs after the write, while sendAndObserveSubmission still observes. */
+  duringSendObservation: (() => void | Promise<void>) | null = null;
   private readonly _outputSubscribers = new Map<string, Set<(data: Uint8Array) => void>>();
   private readonly _outputHistory = new Map<string, Array<{ seq: bigint; data: Uint8Array }>>();
   private _nextOutputSeq = 1n;
@@ -227,9 +230,11 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
     this._parentSessions.delete(name);
   }
 
-  async killSessionById(sessionId: string): Promise<void> {
+  async killSessionById(sessionId: string): Promise<SessionKillDisposition> {
     const name = [...this._sessions].find((candidate) => `mock:${candidate}` === sessionId);
-    if (name !== undefined) await this.killSession(name);
+    if (name === undefined) return SESSION_KILL_DISPOSITION.ALREADY_GONE;
+    await this.killSession(name);
+    return SESSION_KILL_DISPOSITION.KILLED;
   }
 
   async hasSession(name: string): Promise<boolean> {
@@ -288,7 +293,18 @@ export class MockBackend implements SessionBackend, PtyBackendMethods, SessionPr
         observedMs: 0,
       };
     }
+    if (options.writeGuard && !options.writeGuard(this._programStatus.get(identity.wolfpackSessionName))) {
+      return {
+        delivery: SESSION_SEND_DELIVERY.NOT_DELIVERED,
+        outcome: SESSION_SEND_OUTCOME.NOT_DELIVERED,
+        reason: SESSION_PROMPT_OUTCOME.TARGET_UNAVAILABLE,
+        observedMs: 0,
+        writeRefused: true,
+      };
+    }
     await this.send(identity.wolfpackSessionName, options.text, options.noEnter);
+    if (!options.noEnter) options.onSubmitWritten?.();
+    await this.duringSendObservation?.();
     return this.sendObservation ?? {
       delivery: SESSION_SEND_DELIVERY.UNVERIFIED,
       outcome: SESSION_SEND_OUTCOME.UNVERIFIED,

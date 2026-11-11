@@ -353,6 +353,7 @@ describe("first-run setup", () => {
     const existingConfig: Config = {
       devDir: home, port: 19863,
       focus: { home: "remote-home" },
+      childEventTypedNotes: false,
       pinnedSessions: [{ name: "assistant", cwd: home, command: ["pi"], harness: "pi" }],
       ...(enabledBefore && { claudeTaskIntegration: true }),
     };
@@ -364,7 +365,17 @@ describe("first-run setup", () => {
     const saved = JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"));
     expect(saved.focus).toEqual(existingConfig.focus);
     expect(saved.pinnedSessions).toEqual(existingConfig.pinnedSessions);
+    expect(saved.childEventTypedNotes).toBe(false);
     expect(saved.claudeTaskIntegration).toBe(enabledAfter ? true : undefined);
+  });
+
+  test("preserves the child-event typed-note opt-out when it rewrites the config", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const existingConfig = { devDir: home, port: 18790, childEventTypedNotes: false };
+    const result = runSetupFlow(home, { existingConfig, serviceInstalled: true, serviceRunning: true });
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual(existingConfig);
   });
 
   test("non-interactive setup only points claude users at the interactive opt-in", () => {

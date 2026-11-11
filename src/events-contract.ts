@@ -4,6 +4,7 @@
  */
 import type { AgentStatusState } from "./agent-status-contract.js";
 import type { ProgramStatusKind } from "./program-status-contract.js";
+import type { ChildEventPayload } from "./child-event-contract.js";
 
 export const EVENTS_PATH = "/api/events";
 
@@ -13,6 +14,7 @@ export const WOLFPACK_EVENT_KIND = {
   SESSION_STATE: "session.state",
   TASK_UPDATED: "task.updated",
   PARENT_NOTIFIED: "parent_notified",
+  CHILD_EVENT: "child_event",
 } as const;
 
 export type WolfpackEventKind = typeof WOLFPACK_EVENT_KIND[keyof typeof WOLFPACK_EVENT_KIND];
@@ -27,6 +29,13 @@ export const SESSION_EXIT_REASON = {
 export type SessionExitReason = typeof SESSION_EXIT_REASON[keyof typeof SESSION_EXIT_REASON];
 
 export type WolfpackEventBody =
+  | {
+    readonly kind: typeof WOLFPACK_EVENT_KIND.CHILD_EVENT;
+    /** The parent session: `--session <parent>` filters follow `parent_notified`. */
+    readonly session: string;
+    readonly sessionId: string;
+    readonly childEvent: ChildEventPayload;
+  }
   | {
     readonly kind: typeof WOLFPACK_EVENT_KIND.PARENT_NOTIFIED;
     readonly session: string;
@@ -77,7 +86,10 @@ export type WolfpackEvent = WolfpackEventBody & { readonly id: number; readonly 
 
 export interface WolfpackEventFilter {
   readonly kinds?: ReadonlySet<WolfpackEventKind>;
-  /** Matches a session name or stable session id. Task events never match. */
+  /**
+   * Matches a session name or stable session id. Task events never match.
+   * `child_event` matches its parent or its child.
+   */
   readonly session?: string;
 }
 
@@ -116,6 +128,8 @@ export function matchesEventFilter(event: WolfpackEventBody, filter: WolfpackEve
   if (filter.kinds && !filter.kinds.has(event.kind)) return false;
   if (filter.session === undefined) return true;
   if (event.kind === WOLFPACK_EVENT_KIND.TASK_UPDATED) return false;
+  if (event.kind === WOLFPACK_EVENT_KIND.CHILD_EVENT
+    && (event.childEvent.childName === filter.session || event.childEvent.childSessionId === filter.session)) return true;
   return event.session === filter.session || event.sessionId === filter.session;
 }
 
@@ -135,6 +149,13 @@ export function formatEventLine(event: WolfpackEvent): string {
       return `${event.at} ${event.kind} ${event.session} seq=${event.seq}${event.from !== undefined ? ` [${event.from}]` : ""} ${event.message}`.replace(/[\r\n\u2028\u2029]/g, " ");
     case WOLFPACK_EVENT_KIND.TASK_UPDATED:
       return `${event.at} ${event.kind} ${event.taskId} ${event.eventType}`;
+    case WOLFPACK_EVENT_KIND.CHILD_EVENT: {
+      const child = event.childEvent;
+      const parts = [event.at, event.kind, event.session, child.childName, child.event, child.state];
+      if (child.inputKind !== undefined) parts.push(`(${child.inputKind})`);
+      if (child.message !== undefined) parts.push(child.message);
+      return parts.join(" ").replace(/[\r\n\u2028\u2029]/g, " ");
+    }
   }
 }
 

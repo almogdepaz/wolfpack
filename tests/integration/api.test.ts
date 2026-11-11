@@ -3136,6 +3136,7 @@ describe("agent-native top-level session control", () => {
       ok: true,
       session: "wolf-1",
       sessionId: "mock:wolf-1",
+      cascaded: [],
     });
     expect(await mockBackend.hasSession("wolf-1")).toBe(false);
   });
@@ -3225,6 +3226,7 @@ describe("POST /api/create", () => {
     expect(mockBackend.lastCreateArgs?.parentSession).toEqual({
       wolfpackSessionId: "mock:wolf-1",
       wolfpackSessionName: "wolf-1",
+      cleanup: "cascade",
     });
     expect(frames.map((frame) => JSON.parse(frame))).toContainEqual({
       type: "sub_session_opened",
@@ -3261,6 +3263,7 @@ describe("POST /api/create", () => {
     expect(child.identity.parentSession).toEqual({
       wolfpackSessionId: "mock:wolf-1",
       wolfpackSessionName: "wolf-1",
+      cleanup: "cascade",
     });
   });
 
@@ -3641,6 +3644,7 @@ describe("POST /api/session-open", () => {
       parentSession: {
         wolfpackSessionId: "mock:wolf-1",
         wolfpackSessionName: "wolf-1",
+        cleanup: "cascade",
       },
       model,
       initialPrompt: prompt,
@@ -4238,7 +4242,7 @@ describe("session control API", () => {
     expect(validateSchema(responseSchema("sendSessionInput"), data, controlApiSchema)).toEqual([]);
     expect(mockBackend.lastSendObservationArgs).toEqual({
       sessionId: "mock:wolf-1",
-      options: { text: "echo hi", noEnter: false, observeMs: 1_500, ensureSubmitted: false, sessionName: "wolf-1" },
+      options: { text: "echo hi", noEnter: false, observeMs: 1_500, ensureSubmitted: false, sessionName: "wolf-1", onSubmitWritten: expect.any(Function) },
     });
     expect(mockBackend.lastSendArgs).toEqual({ name: "wolf-1", text: "echo hi", noEnter: false });
   });
@@ -5501,7 +5505,8 @@ describe("parent inbox", () => {
         expect(res.status).toBe(200);
         expect(res.headers.get("cache-control")).toBe("no-store");
         const body = await res.json();
-        expect(body).toEqual({ session: "wolf-1", sessionId: "mock:wolf-1", notifications: [
+        // agent-comms adds bootId: the process that assigned these sequences; a cursor from another boot is stale.
+        expect(body).toEqual({ session: "wolf-1", sessionId: "mock:wolf-1", bootId: expect.any(String), notifications: [
           { seq: 1, at: expect.any(String), message: "ready", from: "child" },
           { seq: 2, at: expect.any(String), message: "blocked", from: "child" },
         ] });

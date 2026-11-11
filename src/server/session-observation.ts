@@ -50,6 +50,9 @@ import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import type { EventBus } from "../event-bus.js";
 let notificationContext: ServerContext = defaultServerContext;
 import { onProgramStatusChanged } from "./program-status-signal.js";
+import { CHILD_EVENT } from "../child-event-contract.js";
+import { observeChildSession } from "./child-events.js";
+import { hasPendingChildEventNotes, observeChildEventParent } from "./child-event-delivery.js";
 
 const log = createLogger("session-observation");
 const SESSION_NOTIFICATION_OBSERVATION_INTERVAL_MS = 5_000;
@@ -88,6 +91,46 @@ interface ObservationAuthority {
 
 const activityHistory = new Map<string, SessionActivityHistory>();
 const quietAlertHistory = new Map<string, QuietAlertPolicyState>();
+/**
+ * A child's block, from its `blocked` child event until a fresh observation
+ * shows it left needs-input (review A3-2). Kept apart from
+ * `quietAlertHistory`: a capture gap drops that episode, and the block must
+ * still alert once, without a new screen change.
+ */
+interface ChildBlockedEpisode {
+  /** The quiet episode that alerts for this block, once one is open. */
+  episodeId?: string;
+  /**
+   * That episode once policy emitted it: this block has alerted and never
+   * opens another episode. Emission is not delivery: push delivery owns the
+   * attempts and pending endpoints of this episode. A screen change (review
+   * A3-3) or a capture gap (review A5-1) while the child stays blocked
+   * replaces or drops the session's episode; this state is restored at the
+   * next fresh observation, so the same episode repeats its fact and its
+   * delivery retries resume.
+   */
+  emitted?: QuietAlertPolicyState;
+  /**
+   * This block opened `episodeId` itself (the blocked-event bridge), not
+   * adopted a screen-change episode. When the child leaves blocked before
+   * that episode emits, it is retired: no quiet alert without a screen
+   * change (review A5-2).
+   */
+  opened?: ChildBlockedBridge;
+}
+
+/** What the blocked-event bridge replaced when it opened its episode. */
+interface ChildBlockedBridge {
+  readonly sessionId: string;
+  readonly policyEpoch: number;
+  /**
+   * The emitted rendered episode the bridge replaced. Retiring the bridge
+   * restores it, so push delivery resumes its attempts, pending endpoints
+   * and debounce (review A7-3).
+   */
+  readonly replaced?: QuietAlertPolicyState;
+}
+const childBlockedEpisodes = new Map<string, ChildBlockedEpisode>();
 const activityContinuityTokens = new Map<string, object>();
 const dashboardFingerprints = new Map<string, ActivityFingerprint>();
 const notificationFingerprints = new Map<string, ActivityFingerprint>();
@@ -127,6 +170,11 @@ onQuietAlertPolicyInvalidation((kind) => {
   // Unemitted episodes can still become needs-input without new rendered output.
   for (const [key, state] of quietAlertHistory) {
     if (kind === undefined || state.alert?.kind === kind) quietAlertHistory.delete(key);
+  }
+  // A block retires with its episode: it alerts again only after the child
+  // leaves needs-input and blocks again.
+  for (const [key, blocked] of childBlockedEpisodes) {
+    if (kind === undefined || blocked.emitted?.alert?.kind === kind) childBlockedEpisodes.delete(key);
   }
   dashboardObservationCache = null;
 });
@@ -346,7 +394,13 @@ function reduceSessionQuietAlert(
   });
   if (reduction.state) quietAlertHistory.set(sessionKey, reduction.state);
   else quietAlertHistory.delete(sessionKey);
-  if (reduction.event) recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
+  if (reduction.event) {
+    recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
+    const blocked = childBlockedEpisodes.get(sessionKey);
+    if (blocked?.episodeId === reduction.event.episodeId) {
+      blocked.emitted = reduction.state;
+    }
+  }
   return reduction.fact;
 }
 
@@ -499,6 +553,7 @@ function observeUnavailableSessions(policyEpoch: number, observationOwnership: n
   }
   activityHistory.clear();
   quietAlertHistory.clear();
+  childBlockedEpisodes.clear();
   activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();
@@ -697,6 +752,26 @@ async function observeSessionFact(
     },
   }, { persist: false });
   publishRuntimeTransition(name, identity?.wolfpackSessionId, previousTransitionSequence, runtimeState, events);
+  if (identity?.parentSession) {
+    const childEvent = observeChildSession({
+      sessionId: identity.wolfpackSessionId,
+      name,
+      parentSession: identity.parentSession,
+      alive: brokerState === "alive",
+      runtimeState,
+      ...(currentRendered !== undefined && { rendered: currentRendered }),
+    }, body => events.publishEvent(body));
+    reduceChildBlockedEpisode(sessionKey, identity.wolfpackSessionId, observedAtMs, authority, {
+      blockedNow: childEvent?.event === CHILD_EVENT.BLOCKED,
+      alive: brokerState === "alive",
+      runtimeState,
+      quietContinuity,
+    });
+  }
+  if (identity) {
+    // Any session can be a parent; queued typed notes flush only when it is quiet.
+    observeChildEventParent({ sessionId: identity.wolfpackSessionId, name, alive: brokerState === "alive", runtimeState });
+  }
   const summary = {
     ...displayProjection,
     name,
@@ -719,9 +794,98 @@ async function observeSessionFact(
   };
 }
 
-/** The program itself says it waits on the user; that alert is never withheld. */
-function needsInputAlert(runtimeState: AgentRuntimeState): QuietAlertKindFields | undefined {
-  if (runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT || runtimeState.authority !== AGENT_STATUS_AUTHORITY.PROGRAM) {
+interface ChildBlockObservation {
+  /** This observation raised the child event `blocked`. */
+  readonly blockedNow: boolean;
+  readonly alive: boolean;
+  readonly runtimeState: AgentRuntimeState;
+  readonly quietContinuity: "fresh" | "lost" | undefined;
+}
+
+/**
+ * A blocked child event starts a quiet episode, so the needs-input push needs
+ * no rendered screen change. An open episode (for example one a screen change
+ * started) already alerts as needs-input when due, so it is adopted: one push
+ * per block. When the block has no fresh continuity (a capture gap), the
+ * episode opens at the first fresh observation while the child stays blocked.
+ * A block that alerted never opens another episode: its emitted episode stays
+ * the session's episode until the child leaves needs-input, also across a
+ * capture gap, so push delivery resumes that episode's bounded retries.
+ */
+function reduceChildBlockedEpisode(
+  sessionKey: string,
+  sessionId: string,
+  observedAtMs: number,
+  authority: ObservationAuthority,
+  observation: ChildBlockObservation,
+): void {
+  if (authority.policyEpoch !== quietAlertPolicyEpoch()) return;
+  const { runtimeState } = observation;
+  if (observation.blockedNow) {
+    childBlockedEpisodes.set(sessionKey, {});
+  } else if (!observation.alive) {
+    retireChildBlockedEpisode(sessionKey);
+    return;
+  } else if (!runtimeState.stale && runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT) {
+    // Left needs-input; a stale state is no claim, as in `observeChildSession`.
+    retireChildBlockedEpisode(sessionKey, sessionId);
+    return;
+  }
+  const blocked = childBlockedEpisodes.get(sessionKey);
+  if (blocked === undefined || observation.quietContinuity !== "fresh") return;
+  const episode = quietAlertHistory.get(sessionKey);
+  if (blocked.emitted !== undefined) {
+    if (episode?.episodeId !== blocked.emitted.episodeId) quietAlertHistory.set(sessionKey, blocked.emitted);
+    return;
+  }
+  if (episode && !episode.emitted) {
+    // A screen change opened this episode, not the bridge: it is never retired.
+    if (episode.episodeId !== blocked.episodeId) blocked.opened = undefined;
+    blocked.episodeId = episode.episodeId;
+    return;
+  }
+  const episodeId = randomUUID();
+  reduceSessionQuietAlert(sessionKey, sessionId, observedAtMs, "fresh", observedAtMs, episodeId);
+  if (quietAlertHistory.get(sessionKey)?.episodeId === episodeId) {
+    blocked.episodeId = episodeId;
+    blocked.opened = { sessionId, policyEpoch: quietAlertPolicyEpoch(), ...(episode?.emitted && { replaced: episode }) };
+  }
+}
+
+/**
+ * The child left blocked. An episode this block opened and that has not
+ * emitted is retired. An adopted episode, or a newer one from a screen
+ * change, stays (review A5-2). The emitted episode the bridge replaced comes
+ * back while the session and policy epoch are the same (review A7-3);
+ * `liveSessionId` is undefined when the child is gone.
+ */
+function retireChildBlockedEpisode(sessionKey: string, liveSessionId?: string): void {
+  const blocked = childBlockedEpisodes.get(sessionKey);
+  childBlockedEpisodes.delete(sessionKey);
+  if (blocked?.opened === undefined) return;
+  const episode = quietAlertHistory.get(sessionKey);
+  if (episode === undefined || episode.episodeId !== blocked.episodeId || episode.emitted) return;
+  const bridge = blocked.opened;
+  const { replaced } = bridge;
+  if (replaced !== undefined && bridge.sessionId === liveSessionId && bridge.policyEpoch === quietAlertPolicyEpoch()) {
+    quietAlertHistory.set(sessionKey, replaced);
+  } else {
+    quietAlertHistory.delete(sessionKey);
+  }
+}
+
+/** Authorities whose needs-input state is the session's own claim. */
+const NEEDS_INPUT_AUTHORITIES: ReadonlySet<AgentRuntimeState["authority"]> = new Set([AGENT_STATUS_AUTHORITY.PROGRAM]);
+/** A child's manifest status also raises `blocked` child events, so it alerts the same way. */
+const CHILD_NEEDS_INPUT_AUTHORITIES: ReadonlySet<AgentRuntimeState["authority"]> = new Set([
+  AGENT_STATUS_AUTHORITY.PROGRAM,
+  AGENT_STATUS_AUTHORITY.MANIFEST,
+]);
+
+/** The session itself says it waits on the user; that alert is never withheld. */
+function needsInputAlert(runtimeState: AgentRuntimeState, child: boolean): QuietAlertKindFields | undefined {
+  const authorities = child ? CHILD_NEEDS_INPUT_AUTHORITIES : NEEDS_INPUT_AUTHORITIES;
+  if (runtimeState.state !== AGENT_STATUS_STATE.NEEDS_INPUT || !authorities.has(runtimeState.authority)) {
     return undefined;
   }
   return {
@@ -800,7 +964,9 @@ function reduceCollectedQuietAlerts(
   return pending.map(({ sessionKey, observedAtMs, quietContinuity, summary }) => {
     if (quietContinuity === undefined) return summary;
     const sessionId = summary.identity?.wolfpackSessionId;
-    const alert = quietContinuity === "fresh" ? needsInputAlert(summary.runtimeState) : undefined;
+    const alert = quietContinuity === "fresh"
+      ? needsInputAlert(summary.runtimeState, summary.identity?.parentSession !== undefined)
+      : undefined;
     const busy = quietContinuity === "fresh" && alert === undefined && sessionId !== undefined
       ? findBusyDescendant(sessionId, childrenByParentId, observedAtMs - quietAfterMs)
       : undefined;
@@ -835,6 +1001,9 @@ function pruneSessionObservationState(
   }
   for (const key of quietAlertHistory.keys()) {
     if (!activeSessionKeys.has(key)) quietAlertHistory.delete(key);
+  }
+  for (const key of childBlockedEpisodes.keys()) {
+    if (!activeSessionKeys.has(key)) childBlockedEpisodes.delete(key);
   }
   for (const key of activityContinuityTokens.keys()) {
     if (!activeSessionKeys.has(key)) activityContinuityTokens.delete(key);
@@ -938,8 +1107,20 @@ function schedulePeerNotificationObservation(): void {
   });
 }
 
+/**
+ * Child events reach the parent inbox even when nobody subscribes to push or
+ * the event stream, so a live child session keeps the observer running. This
+ * costs one session list per tick only while there are no subscribers. Queued
+ * typed notes also keep it running: only an observation flushes them.
+ */
+async function hasLiveChildSession(): Promise<boolean> {
+  const facts = await listAvailableSessionFacts(notificationContext);
+  return facts?.some(fact => fact.alive && fact.identity?.parentSession !== undefined) ?? false;
+}
+
 async function runSessionNotificationObservation(pass: ObservationPass = "full"): Promise<readonly ObservedSessionSummary[]> {
-  if (getSubscriptionCount() === 0 && notificationContext.events.eventSubscriberCount() === 0) return [];
+  if (getSubscriptionCount() === 0 && notificationContext.events.eventSubscriberCount() === 0
+    && !sessionNotificationObservationPromise && !hasPendingChildEventNotes() && !await hasLiveChildSession()) return [];
   if (sessionNotificationObservationPromise) {
     if (pass !== "full" || sessionNotificationObservationPass === "full") return sessionNotificationObservationPromise;
     // A program-status pass does not measure output: a full pass asked for
@@ -1050,6 +1231,8 @@ export function forgetSessionObservation(sessionId: string, sessionName: string)
   activityHistory.delete(sessionName);
   quietAlertHistory.delete(sessionId);
   quietAlertHistory.delete(sessionName);
+  childBlockedEpisodes.delete(sessionId);
+  childBlockedEpisodes.delete(sessionName);
   activityContinuityTokens.delete(sessionId);
   activityContinuityTokens.delete(sessionName);
   dashboardFingerprints.delete(sessionId);
@@ -1072,6 +1255,7 @@ export function __resetSessionObservationForTests(): void {
   cancelProgramStatusRefresh();
   activityHistory.clear();
   quietAlertHistory.clear();
+  childBlockedEpisodes.clear();
   activityContinuityTokens.clear();
   dashboardFingerprints.clear();
   notificationFingerprints.clear();

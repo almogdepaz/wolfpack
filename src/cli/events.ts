@@ -1,7 +1,8 @@
 /**
  * `wolfpack events` — follow the server's live event stream.
  */
-import { call } from "./api.js";
+import { baseUrl, call, proxyDenialFailure, serverTransportFailure } from "./api.js";
+import type { ServerTransportFailure } from "./api.js";
 import type { VerifiedMachineTarget } from "./machine-target.js";
 import { print, printError, red } from "./formatting.js";
 import { SESSION_EXIT } from "./session-control.js";
@@ -55,6 +56,12 @@ export async function consumeEventStream(
   }
 }
 
+function printTransportFailure(transport: ServerTransportFailure): number {
+  printError(red(`  events: cannot reach the Wolfpack server at ${transport.url} (${transport.cause})`));
+  printError(`  hint: ${transport.hint}`);
+  return SESSION_EXIT.GENERAL;
+}
+
 export async function eventsCommand(argv: readonly string[], target?: VerifiedMachineTarget): Promise<number> {
   const options = parseEventsOptions(argv);
   if (!options) {
@@ -72,9 +79,13 @@ export async function eventsCommand(argv: readonly string[], target?: VerifiedMa
   try {
     response = await call(path, {}, target);
   } catch (error: unknown) {
+    const transport = serverTransportFailure(error, `${baseUrl(target)}${path}`, target);
+    if (transport) return printTransportFailure(transport);
     printError(red(`  events: could not reach the wolfpack server (${error instanceof Error ? error.message : String(error)})`));
     return SESSION_EXIT.GENERAL;
   }
+  const denial = proxyDenialFailure(response, `${baseUrl(target)}${path}`, target);
+  if (denial) return printTransportFailure(denial);
   if (!response.ok || !response.body) {
     const body = await response.json().catch(() => ({})) as { error?: unknown };
     printError(red(`  events: ${typeof body.error === "string" ? body.error : `HTTP ${response.status}`}`));

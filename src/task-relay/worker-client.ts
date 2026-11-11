@@ -7,9 +7,9 @@ import { createLogger } from "../log.ts";
 import { resolveWolfpackDir } from "../wolfpack-dir.ts";
 import type { RelayEndpoint } from "./domain.ts";
 import type { GatewayOptions } from "./gateway.ts";
-import { volatileFailure, relayOwnerFailureResult, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
+import { HOST_ENVELOPE_ACCEPTANCE, volatileFailure, relayOwnerFailureResult, VOLATILE_GATEWAY_LIMITS } from "./volatile-protocol.ts";
 import { readPeerResponse, withPeerAbort } from "./peer-response.ts";
-import type { VolatileResult } from "./volatile-protocol.ts";
+import type { VolatileHostEnvelopeRequest, VolatileHostEnvelopeResult, VolatileResult } from "./volatile-protocol.ts";
 import {
   RELAY_WORKER_LIMITS as LIMIT, captureRelayWire, RelayWireBudgetError,
   type RelayGateway, type RelayWorkerGateway, type RelayWorkerMethod, type WorkerMessage, type CallbackRequest,
@@ -53,6 +53,8 @@ export function captureOptions(input: WorkerGatewayOptions): WorkerGatewayOption
   return Object.freeze(Object.assign(captureRelayWire(scalars, LIMIT.requestBytes).value, callbacks)) as unknown as WorkerGatewayOptions;
 }
 class WorkerUnavailable extends Error {}
+/** Turns true once the worker holds the request: only then can its mutation have committed (review A4-3). */
+interface PostTracker { posted: boolean }
 class InvalidWorkerRequest extends Error {}
 interface Pending {
   resolve(value: unknown): void;
@@ -226,6 +228,9 @@ export class WorkerRelayGateway implements RelayGateway {
   }
 
   #call<M extends RelayWorkerMethod>(method: M, ...input: Parameters<RelayWorkerGateway[M]>): Promise<Awaited<ReturnType<RelayWorkerGateway[M]>>> {
+    return this.#request(method, input);
+  }
+  #request<M extends RelayWorkerMethod>(method: M, input: Parameters<RelayWorkerGateway[M]>, tracker?: PostTracker): Promise<Awaited<ReturnType<RelayWorkerGateway[M]>>> {
     if (this.#closed) return Promise.reject(this.#unavailable());
     const peer = method === "volatilePeer";
     const count = [...this.#pending.values()].filter(p => p.peer === peer).length;
@@ -245,9 +250,12 @@ export class WorkerRelayGateway implements RelayGateway {
     this.#worker.ref();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => this.#fail("relay request timed out; worker stopped to bound outstanding work"), this.#requestMs);
-      this.#pending.set(id, { resolve: value => resolve(value as Awaited<ReturnType<RelayWorkerGateway[M]>>), reject, timer, bytes, peer });
+      const pending: Pending = { resolve: value => resolve(value as Awaited<ReturnType<RelayWorkerGateway[M]>>), reject, timer, bytes, peer };
+      this.#pending.set(id, pending);
       void this.#ready.then(() => {
-        if (!this.#closed) this.#worker.postMessage({ kind: "request", id, method, args });
+        if (this.#closed) return;
+        this.#worker.postMessage({ kind: "request", id, method, args });
+        if (tracker) tracker.posted = true;
       }).catch(() => this.#fail("relay worker transport unavailable"));
     });
   }
@@ -273,6 +281,19 @@ export class WorkerRelayGateway implements RelayGateway {
   volatile(input: unknown) { return this.#volatileResult("volatile", input); }
   volatilePeer(input: unknown) { return this.#volatileResult("volatilePeer", input); }
   volatileTopology(input: unknown) { return this.#volatileResult("volatileTopology", input); }
+  async hostEnvelope(input: VolatileHostEnvelopeRequest): Promise<VolatileHostEnvelopeResult> {
+    const tracker: PostTracker = { posted: false };
+    try { return await this.#request("hostEnvelope", [input], tracker); }
+    catch (error) {
+      // Uncertain when the worker received the request before failing, or when an
+      // owner failure says the commit may have happened (SQLite commits after the in-memory accept).
+      const ownerFailure = error instanceof RelayOwnerFailure ? error : undefined;
+      const uncertain = tracker.posted || ownerFailure?.failure.mayHaveBeenDelivered === true;
+      return { kind: "failed",
+        code: error instanceof InvalidWorkerRequest ? "INVALID_REQUEST" : ownerFailure ? ownerFailure.code : this.#closed ? "RELAY_RESET" : "RELAY_UNAVAILABLE",
+        acceptance: uncertain ? HOST_ENVELOPE_ACCEPTANCE.UNCERTAIN : HOST_ENVELOPE_ACCEPTANCE.REJECTED };
+    }
+  }
   initialize() { return this.#call("initialize"); }
   registrationsForSessions(...args: Parameters<RelayGateway["registrationsForSessions"]>) { return this.#call("registrationsForSessions", ...args); }
   async endpointForSession(id: string): Promise<RelayEndpoint | undefined> { return (await this.registrationsForSessions([id])).get(id)?.endpoint; }

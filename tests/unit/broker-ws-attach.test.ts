@@ -18,6 +18,7 @@ import {
   type SessionLifecycleEvent,
   type SessionListFact,
 } from "../../src/server/backend";
+import { SESSION_KILL_DISPOSITION, type SessionKillDisposition } from "../../src/server/backend-contract";
 import { __getTestState } from "../../src/test-hooks";
 import { handlePtyWs, teardownPty } from "../../src/server/websocket";
 import { classifyDisconnect } from "../../src/take-control-logic";
@@ -137,7 +138,9 @@ class FakeBrokerBackend implements SessionBackend, PtyBackendMethods {
   async listSessionFacts(): Promise<Array<{ name: string; alive: boolean }>> { return [...this.alive].map((name) => ({ name, alive: true })); }
   async createSession(): Promise<never> { throw new Error("not implemented in attach tests"); }
   async killSession(name: string): Promise<void> { this.alive.delete(name); }
-  async killSessionById(sessionId: string): Promise<void> { this.alive.delete(sessionId); }
+  async killSessionById(sessionId: string): Promise<SessionKillDisposition> {
+    return this.alive.delete(sessionId) ? SESSION_KILL_DISPOSITION.KILLED : SESSION_KILL_DISPOSITION.ALREADY_GONE;
+  }
   async hasSession(name: string): Promise<boolean> { return this.alive.has(name); }
   async capturePane(): Promise<string> { return ""; }
   async captureSessionSnapshotById(): Promise<never> { throw new Error("not implemented in attach tests"); }
