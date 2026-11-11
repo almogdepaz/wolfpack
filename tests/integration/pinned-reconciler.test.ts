@@ -314,7 +314,8 @@ test("enable requires login confirmation, seeds only focus skill, resumes by pat
     expect(readFileSync(skill, "utf8")).toContain("never suggest replies that would change this running assistant");
     expect(readFileSync(skill, "utf8")).toContain("its current conversation, its seeded skill or settings, enabling/restarting it, or its focus home");
     expect(readFileSync(skill, "utf8")).toContain("development work on the wolfpack focus code in other sessions follows the normal rules, including the reserved decisions");
-    expect(readFileSync(skill, "utf8")).toContain("obvious go-ahead matching the intention → `suggest`");
+    expect(readFileSync(skill, "utf8")).toContain("trivial, low-risk go-ahead within the session's already-stated plan or task → `suggest`");
+    expect(readFileSync(skill, "utf8")).toContain("a matching focus intention is not required for a trivial go-ahead");
     expect(readFileSync(skill, "utf8")).toContain("options with a recommendation → `suggest`");
     expect(readFileSync(skill, "utf8")).toContain("wolfpack focus next next.json");
     expect(readFileSync(skill, "utf8")).toContain("never use `wolfpack session read` for triage");
