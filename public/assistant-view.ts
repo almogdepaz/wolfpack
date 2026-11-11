@@ -5,7 +5,7 @@ import { emptyFocus, isFocusDocument, focusNextRefKey, type FocusDocument, type 
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-send-contract";
 import { focusLastLine } from "../src/focus-text";
-import { createFocusReceipts, focusSuggestionKey, FOCUS_REPLY_MAX_LENGTH, type FocusSendReceipt } from "./focus-receipts";
+import { createFocusReceipts, focusSuggestionKey, focusReplyKey, FOCUS_REPLY_MAX_LENGTH, type FocusSendReceipt } from "./focus-receipts";
 import type { AssistantTerminalTarget } from "./assistant-terminal";
 import { createDayNoteContent } from "./focus-day-note";
 import { showAppDialog } from "./app-dialog";
@@ -313,30 +313,32 @@ export function createAssistantView(deps: {
     : `${row.triage && "sessionId" in row.triage.ref ? row.triage.ref.sessionId : "session"} · not reached`;
   // Persist the user-tap fence before sending; a reload cannot turn uncertain delivery into a retry.
   const sent = createFocusReceipts({ getItem: key => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) });
-  const suggestionKey = (row: FocusAction) => row.triage ? focusSuggestionKey(row.triage) : "";
+  const canReply = (row: FocusAction) => !!row.session && (!!row.triage?.suggestion || row.session.state !== "needs-input" || !["permission", "auth"].includes(row.session.inputKind ?? ""));
+  const receiptKey = (row: FocusAction) => row.triage?.suggestion ? focusSuggestionKey(row.triage) : row.session
+    ? focusReplyKey({ machine: row.session.machineInstallationId ?? "", sessionId: row.session.id }, row.session.stoppedAt ?? row.session.changedAt ?? "") : "";
   const drafts = new Map<string, string>();
   function receiptFor(row: FocusAction): FocusSendReceipt | undefined {
-    if (!row.triage?.suggestion) return;
-    try { return sent.get(suggestionKey(row)); }
+    if (!canReply(row)) return;
+    try { return sent.get(receiptKey(row)); }
     catch (e) {
       error = e instanceof Error ? e.message : "Suggestion receipts unavailable; check the session.";
       return { label: error, at: new Date().toISOString(), state: "check" };
     }
   }
   const doneSuggestion = (row: FocusAction) => doc().intentions.find(i => i.id === row.triage?.doneIntention && !i.done);
-  type RowAction = "send" | "done" | "open" | "start" | "intention";
+  type RowAction = "reply" | "done" | "open" | "start" | "intention";
   const renderedActions = new Map<string, { kind: RowAction; row: FocusAction }>();
   function describeAction(row: FocusAction, forceDone = false) {
     const done = doneSuggestion(row);
     if (forceDone && !done) return;
-    const kind: RowAction = forceDone ? "done" : row.triage?.suggestion ? "send" : done ? "done"
+    const kind: RowAction = forceDone ? "done" : canReply(row) ? "reply" : done ? "done"
       : row.session ? "open" : row.kind === "start" ? "start" : "intention";
     const ref = row.triage?.ref ?? (row.session
       ? { machine: row.session.machineInstallationId ?? "", sessionId: row.session.id }
       : row.intention ? { intentionId: row.intention.id } : undefined);
     if (!ref) return;
     const key = JSON.stringify([localOwner?.home ?? focus?.home, homeGeneration, focusNextRefKey(ref), Date.parse(row.triage?.stoppedAt ?? row.session?.stoppedAt ?? row.session?.changedAt ?? ""),
-      kind, kind === "send" ? row.triage?.suggestion : null, kind === "done" ? done?.id : null]);
+      kind, kind === "reply" ? row.triage?.suggestion : null, kind === "done" ? done?.id : null]);
     return { key, kind, row };
   }
   function bindAction(row: FocusAction, forceDone = false): string {
@@ -354,8 +356,8 @@ export function createAssistantView(deps: {
     announce("This action changed; review the updated row.");
     render();
   }
-  async function sendSuggestion(row: FocusAction, actionKey: string, text: string) {
-    if (!row.session || !row.triage?.suggestion || row.unavailable) return;
+  async function sendReply(row: FocusAction, actionKey: string, text: string) {
+    if (!row.session || !canReply(row) || row.unavailable) return;
     const owner = captureOwner();
     // A session send is not a home-server CAS write: validate its owner before any
     // receipt or delivery, using a new read rather than a held pre-tap poll.
@@ -367,7 +369,7 @@ export function createAssistantView(deps: {
       throw transportFailure ? new TypeError(message) : new Error(message);
     }
     if (!currentAction(actionKey)) return;
-    const key = suggestionKey(row);
+    const key = receiptKey(row);
     const prior = receiptFor(row);
     if (prior && prior.state !== "retry") return;
     const remember = (label: string, state: "sending" | "sent" | "check" | "retry" = "check") => {
@@ -409,28 +411,29 @@ export function createAssistantView(deps: {
       const receipt = receiptFor(row);
       const done = doneSuggestion(row);
       const suggest = !!row.triage?.suggestion;
+      const replyBox = canReply(row);
       const actionKey = bindAction(row);
       const delivered = receipt?.state === "sent" || receipt?.state === "check";
       const reply = ((delivered || receipt?.state === "sending") ? receipt?.text : undefined) ?? drafts.get(actionKey) ?? row.triage?.suggestion ?? "";
       const readOnly = sessionLocked() || row.unavailable || delivered || receipt?.state === "sending";
       const name = row.session?.name ?? title;
       const messageId = `fd-${host}-${index}`;
-      const verb = suggest ? receipt?.state === "sending" ? "sending…" : receipt?.state === "retry" ? `retry send to ${name}` : `send to ${name}` : done ? "done" : row.kind === "intention" ? "review" : focusActionVerb(row);
+      const verb = replyBox ? receipt?.state === "sending" ? "sending…" : receipt?.state === "retry" ? `retry send to ${name}` : `send to ${name}` : done ? "done" : row.kind === "intention" ? "review" : focusActionVerb(row);
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.machineInstallationId ?? ""}:${row.session.id}` : row.intention ? `start:${row.intention.id}` : `unavailable:${JSON.stringify(row.triage?.ref)}`;
       if (row.session) renderedSessions.set(key, row.session);
-      const actionName = suggest ? `Send to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
-      const action = suggest && (receipt?.state === "sent" || receipt?.state === "check") ? "" : `<button type="button"${suggest ? ` aria-describedby="${messageId}-description"` : ' class="focus-action"'}${sessionLocked() || row.unavailable || (suggest && (!reply.trim() || receipt && receipt.state !== "retry")) ? " disabled" : ""} data-focus-next="${escAttr(actionKey)}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(actionName)}">${esc(verb)}${verb === "sending…" ? "" : '<span aria-hidden="true"> ›</span>'}</button>`;
+      const actionName = replyBox ? `Send to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
+      const action = replyBox && (receipt?.state === "sent" || receipt?.state === "check") ? "" : `<button type="button"${replyBox ? ` aria-describedby="${messageId}-description"` : ' class="focus-action"'}${sessionLocked() || row.unavailable || (replyBox && (!reply.trim() || receipt && receipt.state !== "retry")) ? " disabled" : ""} data-focus-next="${escAttr(actionKey)}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(actionName)}">${esc(verb)}${verb === "sending…" ? "" : '<span aria-hidden="true"> ›</span>'}</button>`;
       const open = row.session ? `<button type="button" data-focus-session="${escAttr(row.session.id)}" data-focus-key="${escAttr(`open:${key}`)}" aria-label="${escAttr(`Open ${name}`)}"${sessionLocked() ? " disabled" : ""}>open<span aria-hidden="true"> ›</span></button>` : "";
       const meta = row.session ? [`<b>${esc(name)}</b>`, row.session.changedAt && age(row.session.changedAt), project(row.session.cwd), new Set(sessions().map(s => s.machine)).size > 1 && esc(row.session.machine ?? "")].filter(Boolean).join(" · ") : [project(row.intention?.project), row.intention?.machine && row.intention.machine !== deps.localMachineName() ? esc(row.intention.machine) : ""].filter(Boolean).join(" · ");
       const summary = `<span class="focus-tag">${esc(cardTag(row))}${suggest && drafts.has(actionKey) && reply !== row.triage?.suggestion && !delivered ? " · edited" : ""}</span><span class="focus-title">${esc(cardHeadline(row))}</span><span class="focus-meta">${meta}</span>`;
       const lineChars = Array.from(row.session?.lastLine ?? "");
       const lastLine = lineChars.length > 160 ? "…" + lineChars.slice(-160).join("") : lineChars.join("");
-      const draft = suggest ? `<div id="${messageId}-caption" class="focus-caption">message to ${esc(name)} · typed into its terminal and submitted</div><textarea id="${messageId}" data-focus-reply="${escAttr(actionKey)}" data-focus-key="${escAttr(`reply:${actionKey}`)}" aria-label="${escAttr(`reply to ${name}`)}" aria-describedby="${messageId}-caption" maxlength="${FOCUS_REPLY_MAX_LENGTH}" rows="1"${readOnly ? " readonly" : ""}>${esc(reply)}</textarea><span id="${messageId}-description" class="visually-hidden">${esc(reply)}</span>${receipt && receipt.state !== "sending" ? `<small role="status"${receipt.state === "sent" ? "" : ' class="focus-notes"'}>${receipt.state === "sent" ? `✓ ${esc(receipt.label)} · ${age(receipt.at)} ago` : esc(receipt.label)}</small>` : ""}${action} ${!delivered && reply !== row.triage!.suggestion! ? `<button type="button" data-focus-reset="${escAttr(actionKey)}" data-focus-key="${escAttr(`reset:${actionKey}`)}"${readOnly ? " disabled" : ""}>reset</button>` : ""}${done ? `<button type="button" data-focus-mark-done="${escAttr(bindAction(row, true))}"${sessionLocked() || row.unavailable ? " disabled" : ""}>done ›</button>` : ""}` : "";
+      const draft = replyBox ? `<div id="${messageId}-caption" class="focus-caption">message to ${esc(name)} · typed into its terminal and submitted</div><textarea id="${messageId}" data-focus-reply="${escAttr(actionKey)}" data-focus-key="${escAttr(`reply:${actionKey}`)}" aria-label="${escAttr(`reply to ${name}`)}" aria-describedby="${messageId}-caption" placeholder="${kind === "done" ? "follow up with" : "reply to"} ${escAttr(name)}…" maxlength="${FOCUS_REPLY_MAX_LENGTH}" rows="1"${readOnly ? " readonly" : ""}>${esc(reply)}</textarea><span id="${messageId}-description" class="visually-hidden">${esc(reply)}</span>${receipt && receipt.state !== "sending" ? `<small role="status"${receipt.state === "sent" ? "" : ' class="focus-notes"'}>${receipt.state === "sent" ? `✓ ${esc(receipt.label)} · ${age(receipt.at)} ago` : esc(receipt.label)}</small>` : ""}${action} ${suggest && !delivered && reply !== row.triage!.suggestion! ? `<button type="button" data-focus-reset="${escAttr(actionKey)}" data-focus-key="${escAttr(`reset:${actionKey}`)}"${readOnly ? " disabled" : ""}>reset</button>` : ""}${done ? `<button type="button" data-focus-mark-done="${escAttr(bindAction(row, true))}" aria-label="${escAttr(`Mark done: ${done.title}`)}" data-focus-key="${escAttr(`done:${key}`)}"${sessionLocked() || row.unavailable ? " disabled" : ""}>done ›</button>` : ""}` : "";
       const body = row.session ? field(`last line from ${esc(name)}`, lastLine ? `<q><code>${esc(lastLine)}</code></q>` : "")
         + (row.triage ? `<div data-focus-clamped hidden><dt>assistant</dt><dd>${esc(row.reason)}</dd></div>` : "") + field("for", esc(row.intention?.title ?? ""))
         : row.intention ? intentionBody(row.intention, key, row.triage?.reason ?? "no live session") : field("reason", esc(row.reason));
-      const controls = `<div class="focus-draft">${draft}${!suggest && (!row.session || done) ? action : ""}${row.unavailable ? '<p class="focus-notes">not reached</p>' : ""}${open}</div>`;
+      const controls = `<div class="focus-draft">${draft}${!replyBox && (!row.session || done) ? action : ""}${row.session && !replyBox ? '<span class="focus-caption">answer in the terminal</span>' : ""}${row.unavailable ? '<p class="focus-notes">not reached</p>' : ""}${open}</div>`;
       return `<li data-kind="${kind}"${index >= 3 && !expanded ? ' class="focus-extra"' : ""}>${card(key, summary, body, row.session ? contextHtml(row.session) : "", controls)}</li>`;
     }).join("")}</ol>`;
   }
@@ -451,7 +454,7 @@ export function createAssistantView(deps: {
       const send = block.querySelector<HTMLButtonElement>("[data-focus-next]");
       if (send) send.disabled = readOnly || !text.trim();
       let reset = block.querySelector<HTMLButtonElement>("[data-focus-reset]");
-      if (row && !delivered && text !== row.triage?.suggestion) {
+      if (row?.triage?.suggestion && !delivered && text !== row.triage.suggestion) {
         if (!reset) {
           reset = document.createElement("button");
           reset.type = "button"; reset.textContent = "reset";
@@ -555,7 +558,7 @@ export function createAssistantView(deps: {
     const assistantError = terminalUnavailable() ? "" : focus?.assistant?.error;
     const next = nextRows(pageNextCap());
     const allNext = nextRows(Infinity);
-    const draftKeys = new Set(allNext.filter(row => row.triage?.suggestion && receiptFor(row)?.state !== "sent").map(row => describeAction(row)?.key));
+    const draftKeys = new Set(allNext.filter(row => canReply(row) && receiptFor(row)?.state !== "sent").map(row => describeAction(row)?.key));
     for (const key of drafts.keys()) if (!draftKeys.has(key)) drafts.delete(key);
     const nextCount = allNext.length;
     const visibleNext = isDesktop() ? 5 : 3;
@@ -898,7 +901,7 @@ export function createAssistantView(deps: {
       if (!(field instanceof HTMLTextAreaElement) || !field.dataset.focusReply || field.readOnly) return;
       const key = field.dataset.focusReply;
       const action = renderedActions.get(key);
-      if (!action || action.kind !== "send") return;
+      if (!action || action.kind !== "reply") return;
       drafts.set(key, field.value);
       syncReplyControls();
     });
@@ -954,7 +957,7 @@ export function createAssistantView(deps: {
       if (locked()) return;
       if (target.dataset.focusReset) {
         const action = currentAction(target.dataset.focusReset);
-        if (action?.kind === "send") { drafts.delete(action.key); render(); }
+        if (action?.kind === "reply") { drafts.delete(action.key); render(); }
         return;
       }
       if (action === "catch-up") void run(async () => {
@@ -971,10 +974,10 @@ export function createAssistantView(deps: {
         const action = currentAction(rowAction);
         if (!action) return;
         const { row, kind } = action;
-        if (kind === "send") {
-          const text = drafts.get(rowAction) ?? row.triage!.suggestion!;
+        if (kind === "reply") {
+          const text = drafts.get(rowAction) ?? row.triage?.suggestion ?? "";
           if (!text.trim() || text.length > FOCUS_REPLY_MAX_LENGTH || /[\r\n]/.test(text)) return;
-          void run(() => sendSuggestion(row, rowAction, text));
+          void run(() => sendReply(row, rowAction, text));
           return;
         }
         if (kind === "done") { void run(() => write({ type: "done", id: row.triage!.doneIntention! })); return; }

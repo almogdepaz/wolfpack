@@ -9,10 +9,10 @@ async function openFocus(page: Page) {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expandFocusCard(page.locator("#assistant-content .focus-next > li").first());
-  await expect(page.locator("#assistant-content .focus-next button").first()).toBeEnabled();
+  await expect(page.locator("#assistant-content .focus-next [data-focus-session]").first()).toBeEnabled();
 }
 
-for (const control of [".focus-next button", "input[data-focus-done]"]) {
+for (const control of [".focus-next [data-focus-session]", "input[data-focus-done]"]) {
   test(`R1: outage refresh returns a newly disabled ${control} to the visible list`, async ({ page }) => {
     let down = false;
     await page.route(url => url.pathname === "/api/focus", route => down ? route.abort() : route.continue());

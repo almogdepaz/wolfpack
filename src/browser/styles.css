@@ -2944,7 +2944,7 @@ body > header { height: 52px; min-height: 52px; }
 .focus-header > small { font-size: 12.5px; }
 /* The assistant page: talk (the way to reach the assistant) and settings share the header's right edge. */
 .focus-header-actions { display: flex; gap: 8px; margin-left: auto; }
-.focus-header-actions .focus-talk, .focus-draft [data-focus-next] { border-color: var(--accent-border); color: var(--accent); }
+.focus-header-actions .focus-talk, .focus-draft [data-focus-next], .focus-draft:not(:has(textarea)) [data-focus-session] { border-color: var(--accent-border); color: var(--accent); }
 .focus-header-actions .focus-talk:hover { color: var(--accent); }
 .focus-header .focus-attn, .focus-header .focus-attn:hover { border-color: var(--attn-line); background: var(--attn-tint); color: var(--attn); font-weight: 600; }
 .focus-notes { display: block; margin: 10px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--attn); }

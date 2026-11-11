@@ -1,9 +1,20 @@
 import { expect, test } from "bun:test";
-import { createFocusReceipts, focusSuggestionKey } from "../../public/focus-receipts";
+import { createFocusReceipts, focusSuggestionKey, focusReplyKey } from "../../public/focus-receipts";
 import type { FocusTriage } from "../../src/focus-contract";
 const row: FocusTriage = { ref: { machine: "home", sessionId: "session" }, stoppedAt: "2026-11-09T12:00:00.000Z", verdict: "suggest", reason: "Continue", suggestion: "Continue the plan." };
 const receipt = { label: "sent to session", state: "sent" as const, at: "2026-11-09T12:00:00.000Z" };
 function storage() { let value: string | null = null; return { getItem: (_key: string) => value, setItem: (_key: string, next: string) => { value = next; } }; }
+test("empty-box replies fence the physical ref and episode, independently of edited text", () => {
+  const ref = { machine: "home", sessionId: "session" };
+  const key = focusReplyKey(ref, row.stoppedAt!);
+  expect(JSON.parse(key)).toEqual([JSON.parse(focusSuggestionKey(row))[0], Date.parse(row.stoppedAt!), "reply"]);
+  expect(focusReplyKey({ sessionId: "session", machine: "home" }, "2026-11-09T14:00:00+02:00")).toBe(key);
+  expect(focusReplyKey(ref, "2026-11-09T12:01:00Z")).not.toBe(key);
+  expect(focusReplyKey({ ...ref, machine: "peer" }, row.stoppedAt!)).not.toBe(key);
+  const data = storage();
+  createFocusReceipts(data).put(key, { ...receipt, text: "the user's reply" });
+  expect(createFocusReceipts(data).get(key)).toMatchObject({ state: "sent", text: "the user's reply" });
+});
 test("R3: stable receipt identity survives equivalent ref and episode serialization", () => {
   const original = focusSuggestionKey(row);
   expect(focusSuggestionKey({ ...row, ref: { sessionId: "session", machine: "home" }, stoppedAt: "2026-11-09T14:00:00+02:00" })).toBe(original);

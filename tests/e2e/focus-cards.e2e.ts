@@ -43,6 +43,8 @@ test("a next row expands to its session details; the action acts without togglin
   await page.keyboard.press("Space");
   await expect(card).toHaveAttribute("open", "");
   await page.keyboard.press("Tab");
+  await expect(row.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
   await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);

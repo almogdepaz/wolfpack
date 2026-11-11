@@ -466,7 +466,7 @@ test("a draft is dropped when its original action leaves the next rows", async (
   await expect(reply).not.toBeEditable();
   await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send to prompt-project", exact: true })).toBeDisabled();
   await reply.evaluate(el => (el as HTMLTextAreaElement).blur());
-  await expect(reply).toHaveCount(0);
+  await expect(reply).toHaveValue("");
   await write(page, [{ type: "next", author: "assistant", rows }]);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(reply).toHaveValue(draft);
@@ -643,7 +643,8 @@ for (const outcome of ["submitted", "unverified"] as const) test(`R3: ${outcome}
   await expect(page.locator("#dashboard-focus")).toContainText("Same draft, new formatting");
   await expect(button).toHaveCount(0);
   await page.reload();
-  await expect(page.locator("#dashboard-focus .focus-draft textarea")).toHaveValue(draft);
+  await expandFocusCard(page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator('textarea[aria-label="reply to prompt-project"]') }));
+  await expect(page.locator('#dashboard-focus textarea[aria-label="reply to prompt-project"]')).toHaveValue(draft);
   await expect(button).toHaveCount(0);
   await expect(page.locator("#dashboard-focus")).toContainText(outcome === "submitted" ? "sent to prompt-project" : "delivery unconfirmed");
   expect(sends).toBe(1);

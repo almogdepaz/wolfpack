@@ -1,4 +1,4 @@
-import { focusNextRefKey, type FocusTriage } from "../src/focus-contract";
+import { focusNextRefKey, type FocusTriage, type FocusNextRef } from "../src/focus-contract";
 // User-approved one-line suggestion editor limit; session-send itself has only a request-body byte cap.
 export const FOCUS_REPLY_MAX_LENGTH = 2000;
 export interface FocusSendReceipt { label: string; at: string; state: "sending" | "sent" | "check" | "retry"; text?: string }
@@ -16,6 +16,10 @@ function validReceipt(value: unknown): value is FocusSendReceipt {
 }
 export function focusSuggestionKey(row: FocusTriage): string {
   return JSON.stringify([focusNextRefKey(row.ref), Date.parse(row.stoppedAt ?? ""), row.suggestion]);
+}
+/** Free-text replies are fenced by episode, never by the user's changing draft. */
+export function focusReplyKey(ref: FocusNextRef, stoppedAt: string): string {
+  return JSON.stringify([focusNextRefKey(ref), Date.parse(stoppedAt), "reply"]);
 }
 /** Browser-owned duplicate-send fences, not B2's server-side send log. Persist before
  * any network write. Reclaim only settled fences older than seven days; recent and
