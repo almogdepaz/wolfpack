@@ -86,7 +86,8 @@ for (const width of [1440, 1280]) test(`desktop disclosure shares main/sidebar s
   await sidebarToggle.focus(); await page.keyboard.press("Enter");
   await expect(sidebarToggle).toBeFocused();
   await expect(sidebarToggle).toHaveAttribute("aria-expanded", "false");
-  await expect(tile).toContainText("1 needs you · 1 reply ready");
+  await expect(tile.locator(".assistant-tile-head")).toContainText("1 needs you +1");
+  await expect(page.locator("#sidebar-assistant-nav")).toHaveAccessibleDescription("1 needs you · 1 reply ready");
   await expect(page.locator("#sidebar-assistant-details")).toBeHidden();
   await expect(page.locator("#assistant-content .focus-nudge")).toBeVisible();
   expect(await page.locator("#assistant-pane").boundingBox()).toEqual(pane);

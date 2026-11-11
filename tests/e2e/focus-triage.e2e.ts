@@ -586,7 +586,7 @@ test("expired triage returns quiet stops to rules and names the expiry", async (
   await expect(page.locator("#dashboard-focus")).toContainText("by rules · order expired");
   await expect(page.locator("#dashboard-focus .focus-next")).toContainText("another-project");
   await expect(page.locator("#dashboard-focus .focus-next")).not.toContainText(draft);
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 needs you · 1 done:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 needs you +1:");
 });
 
 for (const mode of ["send", "done"] as const) test(`R4/L1: an expired visible ${mode} action cannot become another row's action`, async ({ page }) => {

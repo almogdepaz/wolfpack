@@ -584,7 +584,15 @@ export function createAssistantView(deps: {
     const replyReady = cards.filter(({ row }) => !!row.triage?.suggestion).length;
     const doneCards = cards.filter(card => card.kind === "done").length;
     const actionCards = nextCount - replyReady - doneCards;
-    const nextSummary = [actionCards ? `${actionCards} ${actionCards === 1 ? "needs" : "need"} you` : "", replyReady ? `${replyReady} reply ready` : "", doneCards ? `${doneCards} done` : ""].filter(Boolean).join(" · ") || "0";
+    const nextCounts = [
+      { count: actionCards, text: `${actionCards} ${actionCards === 1 ? "needs" : "need"} you` },
+      { count: replyReady, text: `${replyReady} reply ready` },
+      { count: doneCards, text: `${doneCards} done` },
+    ].filter(item => item.count > 0);
+    const nextSummary = nextCounts.map(item => item.text).join(" · ") || "0";
+    const firstCount = nextCounts[0];
+    const remainingCards = nextCount - (firstCount?.count ?? 0);
+    const tileSummary = firstCount ? `${firstCount.text}${remainingCards ? ` +${remainingCards}` : ""}` : "0";
     const visibleNext = isDesktop() ? 5 : 3;
     const moreNext = !showAllNext && nextCount > visibleNext ? `<p>${button("more-next", `show ${nextCount - visibleNext} more`)}</p>` : "";
     const summary = `${current.intentions.filter(i => i.done).length} of ${current.intentions.length} done`;
@@ -632,7 +640,8 @@ export function createAssistantView(deps: {
     if (closing && document.getElementById("assistant-view")?.classList.contains("visible")) deps.show("sessions");
     const tile = document.getElementById("sidebar-assistant");
     const tileState = focusUnavailable ? (offline() ? "offline" : "focus unavailable") : !focus?.document ? "set focus" : terminalUnavailable() ? "unavailable" : state === "needs you" ? state : state === "failed" ? "failed" : r?.surfaced ? "needs you" : catching ? "reading" : r?.stale ? `quiet ${age(r.stale.since)}` : null;
-    const tileStatus = `${tileState ? `${tileState} · ` : ""}${nextSummary}`;
+    const tileStatus = `${tileState ? `${tileState} · ` : ""}${tileSummary}`;
+    const fullTileStatus = `${tileState ? `${tileState} · ` : ""}${nextSummary}`;
     const needsYouCount = actionCards;
     const suggestions = replyReady;
     const attentionLabel = nextSummary;
@@ -655,12 +664,12 @@ export function createAssistantView(deps: {
       tile.dataset.tone = focusUnavailable || terminalUnavailable() || state === "failed" ? "failed" : state === "needs you" || r?.surfaced ? "attn" : catching || state === "working" ? "busy" : "rest";
       const countedNext = tileState === null;
       const upNext = next[0] ? `<i aria-hidden="true">next</i> ${countedNext ? "" : '<span class="visually-hidden">next:</span> '}${esc(cardHeadline(next[0]))}` : esc(current.nudge?.text || (focus?.document ? "nothing queued" : "set your focus"));
-      const head = sidebarExpanded ? `${TILE_MARK}<b>assistant<span class="visually-hidden">,</span></b><span class="assistant-tile-state">${tone}${tileStatus}${countedNext && next[0] ? '<span class="visually-hidden">:</span>' : ""}</span>`
-        : `<span class="visually-hidden">assistant</span>${tone}<span class="focus-title">${esc(tileState ?? state)}</span><span>${esc(attentionLabel)}</span>`;
-      if (!tile.firstElementChild) replace("sidebar-assistant", `<button id="sidebar-assistant-nav" type="button" data-focus-action="view" data-focus-key="action:sidebar-view"></button>${disclosureFrame("sidebar-assistant-toggle")}`);
-      replace("sidebar-assistant-nav", `<span class="assistant-tile-head">${head}</span><span id="sidebar-assistant-details" class="assistant-tile-next"${sidebarExpanded ? "" : ' hidden=""'}>${upNext}</span>`);
+      const head = sidebarExpanded ? `${TILE_MARK}<b>assistant<span class="visually-hidden">,</span></b><span class="assistant-tile-state" title="${escAttr(fullTileStatus)}">${tone}${esc(tileStatus)}${countedNext && next[0] ? '<span class="visually-hidden">:</span>' : ""}</span>`
+        : `<span class="visually-hidden">assistant</span>${tone}<span class="focus-title">${esc(tileState ?? state)}</span><span>${esc(tileSummary)}</span>`;
+      if (!tile.firstElementChild) replace("sidebar-assistant", `<button id="sidebar-assistant-nav" type="button" aria-describedby="sidebar-assistant-summary" data-focus-action="view" data-focus-key="action:sidebar-view"></button>${disclosureFrame("sidebar-assistant-toggle")}`);
+      replace("sidebar-assistant-nav", `<span class="assistant-tile-head">${head}</span><span id="sidebar-assistant-details" class="assistant-tile-next"${sidebarExpanded ? "" : ' hidden=""'}>${upNext}</span><span id="sidebar-assistant-summary" hidden>${esc(fullTileStatus)}</span>`);
       disclosure("sidebar-assistant-toggle", "sidebar-assistant-details", sidebarExpanded, false);
-      tile.title = current.nudge?.text ?? info;
+      tile.title = `${fullTileStatus}${current.nudge?.text ? ` · ${current.nudge.text}` : ""}`;
     }
     const block = document.getElementById("dashboard-focus");
     if (block) { block.hidden = !enabled; block.dataset.mobileCollapsed = String(!dashboardExpanded); }

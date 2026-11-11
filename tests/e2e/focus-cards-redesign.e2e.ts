@@ -86,7 +86,11 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
   const view = page.locator("#assistant-content");
   await expect.soft(view.locator(":scope > h2").first()).toHaveText(`next ${counts}`);
   if (desktop) {
-    await expect.soft(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText(`${counts}:`);
+    const pill = page.locator("#sidebar-assistant .assistant-tile-state");
+    await expect(pill).toHaveText("1 needs you +2:");
+    await expect(pill).toHaveAttribute("title", counts);
+    await expect(page.locator("#sidebar-assistant-nav")).toHaveAccessibleDescription(counts);
+    expect((await pill.boundingBox())!.height, "the tile count stays on one line").toBeLessThanOrEqual(20);
     expect(await page.locator("#sidebar-assistant .assistant-tile-state").evaluate(el => {
       const rect = el.getBoundingClientRect(), button = el.closest("button")!.getBoundingClientRect();
       return rect.right <= button.right && el.scrollWidth <= el.clientWidth;
