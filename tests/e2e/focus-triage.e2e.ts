@@ -448,7 +448,7 @@ for (const outcome of ["submitted", "unverified", "pasted_not_submitted", "not_d
   await expect(panel.getByRole("button", { name: "reset", exact: true })).toHaveCount(0);
   const receipts = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-send-receipts-v1")!));
   expect(receipts).toHaveLength(1);
-  expect(JSON.parse(receipts[0][0])[2]).toBe(draft);
+  expect(JSON.parse(receipts[0][0])).toMatchObject(["suggest", expect.any(String), expect.any(Number), draft]);
   expect(receipts[0][1].text).toBe(edited);
   await page.reload();
   await expandFocusCard(panel.locator(".focus-next > li").first());

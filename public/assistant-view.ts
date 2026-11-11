@@ -321,7 +321,15 @@ export function createAssistantView(deps: {
   const drafts = new Map<string, string>();
   function receiptFor(row: FocusAction): FocusSendReceipt | undefined {
     if (!canReply(row)) return;
-    try { return sent.get(receiptKey(row)); }
+    try {
+      const key = receiptKey(row);
+      const receipt = sent.get(key);
+      if (receipt && receipt.state !== "retry") return receipt;
+      const fence = sent.forEpisode(key);
+      // A different recommendation is not the message already delivered. Keep its
+      // own draft visible, but never authorize another send for the same stop.
+      return fence ? { ...fence, state: "check", label: "a reply was already sent for this stop · check the session", text: undefined } : receipt;
+    }
     catch (e) {
       error = e instanceof Error ? e.message : "Suggestion receipts unavailable; check the session.";
       return { label: error, at: new Date().toISOString(), state: "check" };
