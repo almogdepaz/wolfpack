@@ -494,6 +494,7 @@ export async function setup(options: SetupOptions = {}) {
       tailscaleHostname: verifiedRemoteHostname ?? previousConfig?.tailscaleHostname,
     }),
     ...(displayName && { displayName }),
+    ...(previousConfig?.allowedHosts && { allowedHosts: previousConfig.allowedHosts }),
     ...(previousConfig?.claudeTaskIntegration === true && { claudeTaskIntegration: true }),
     ...(previousConfig?.childEventTypedNotes === false && { childEventTypedNotes: false as const }),
   };

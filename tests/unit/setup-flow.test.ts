@@ -39,6 +39,7 @@ interface SetupFlowFixture {
     readonly devDir: string;
     readonly port: number;
     readonly tailscaleHostname?: string;
+    readonly allowedHosts?: string[];
     readonly displayName?: string;
     readonly claudeTaskIntegration?: boolean;
   };
@@ -327,6 +328,22 @@ describe("first-run setup", () => {
     expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual({ devDir: home, port: 18790 });
     expect(cleared.stdout).toContain("SERVICE_RESTART={\"broker\":false,\"skipBrokerSessionWarning\":true}");
     expect(cleared.stdout).not.toContain("SERVICE_REFRESH=");
+  });
+
+  test("preserves existing allowedHosts when it rewrites the config", () => {
+    const home = mkdtempSync(join(tmpdir(), "wolfpack-setup-flow-"));
+    temporaryHomes.push(home);
+    const existingConfig = {
+      devDir: home,
+      port: 18790,
+      allowedHosts: ["proxy.example", "fd7a:115c:a1e0::1"],
+    };
+    const result = runSetupFlow(home, { existingConfig, setupOptions: { port: 24444 } });
+    expectSuccessfulSetup(result);
+    expect(JSON.parse(readFileSync(join(home, ".wolfpack", "config.json"), "utf-8"))).toEqual({
+      ...existingConfig,
+      port: 24444,
+    });
   });
 
   test("preserves the Claude task integration opt-in when it rewrites the config", () => {
