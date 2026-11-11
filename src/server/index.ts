@@ -289,8 +289,26 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
 // Handlers use the lazy default context view, bound by startServer below.
 const { server, wss } = createServerInstance(defaultServerContext);
 
+function onUnhandledRejection(reason: unknown): void {
+  log.error("unhandled rejection", { error: errMsg(reason), stack: reason instanceof Error ? reason.stack : undefined });
+  process.exit(1);
+}
+
+function onUncaughtException(error: unknown): void {
+  log.error("uncaught exception", { error: errMsg(error), stack: error instanceof Error ? error.stack : undefined });
+  process.exit(1);
+}
+
 export async function startServer(port = PORT, host = "127.0.0.1", overrides: Partial<ServerContext> = {}): Promise<void> {
   assertSupportedBunRuntime();
+  // Bun already exits 1; add structured diagnostics without installing on import.
+  // Stable listeners avoid duplicate registration if an embedder restarts the server.
+  if (!process.listeners("unhandledRejection").includes(onUnhandledRejection)) {
+    process.once("unhandledRejection", onUnhandledRejection);
+  }
+  if (!process.listeners("uncaughtException").includes(onUncaughtException)) {
+    process.once("uncaughtException", onUncaughtException);
+  }
   // Verify JWT auth configuration BEFORE any listeners are bound. We fail
   // hard on misconfiguration (secret set but rejected) so a typo can never
   // silently disable authentication. A missing secret is surfaced as a
