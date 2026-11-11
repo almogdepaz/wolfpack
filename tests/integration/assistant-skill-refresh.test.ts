@@ -210,6 +210,8 @@ test("custom AGENTS is preserved and digested; a missing seed is repaired and fi
     const agents = join(t.assistant.folder, "AGENTS.md");
     const original = readFileSync(agents, "utf8");
     expect(original).toContain("Read .pi/skills/wolfpack-focus/SKILL.md before working");
+    expect(original).toContain("durable intentions, next-action order, and notes");
+    expect(original).not.toContain("nudge");
     writeFileSync(t.transcript, "old AGENTS conversation");
     writeFileSync(agents, "custom user instructions");
     await t.ctx.focusRuntime.tick();
