@@ -21,12 +21,6 @@ edc-context/
 src/public-assets.ts
 docs/generated/
 
-# plan 006 formats these
-src/extensions/runtime.ts
-src/extensions/blob-store.ts
-src/server/extension-routes.ts
-tests/unit/extension-runtime-transaction.test.ts
-
 # recovery/restart-safe-relay (2c0027fc) overlap: remove these lines and run prettier --write on them after that branch lands; add the commit to .git-blame-ignore-revs
 src/control-api/schema.ts
 src/control-api/volatile-relay-schema.ts
