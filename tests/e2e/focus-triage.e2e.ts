@@ -41,6 +41,7 @@ async function seed(page: Page, done = false) {
     body.sessions = body.sessions.filter((s: { name: string }) => ["assistant", "prompt-project", "another-project"].includes(s.name));
     for (const s of body.sessions) if (s.name !== "assistant") {
       s.identity.projectPath = "/work/focus";
+      s.lastLine = "Step 2 done. Continue with step 3?";
       s.runtimeState = { ...s.runtimeState, state: done || s.name === "another-project" ? "done" : "needs-input", inputKind: done ? undefined : "question", changedAt: episode, stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, stale: false, freshness: "fresh" };
     }
     await route.fulfill({ response, json: body });
@@ -69,9 +70,20 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   const view = page.locator("#assistant-content");
   await expect(view.locator(":scope > h2").first()).toHaveText("next 2");
   const row = view.locator(".focus-next > li").first();
-  await expect(row.locator("summary")).toContainText("The approved plan is ready to continue");
-  await expect(row.locator("summary")).not.toContainText("Ship the focus assistant");
-  await expect(row.locator(".focus-draft")).toContainText(`to prompt-project`);
+  await expect(row.locator("summary")).not.toContainText("The approved plan is ready to continue");
+  await expect(row.locator(".focus-draft")).toContainText("assistant: The approved plan is ready to continue");
+  await expect(row.locator(".focus-draft small").first()).toHaveText("last line from prompt-project: Step 2 done. Continue with step 3?");
+  const send = row.locator(".focus-draft").getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  await expect(send).toHaveText("send suggestion to prompt-project ›");
+  await expect(send).toHaveAttribute("aria-describedby", await row.locator(".focus-draft p").getAttribute("id") ?? "missing-id");
+  await expect(send).toHaveAccessibleDescription(draft);
+  expect(await block.locator(".focus-draft p").first().getAttribute("id")).toMatch(/^fd-d-\d+$/);
+  await expect(row.locator(".focus-draft p")).toHaveAttribute("id", /^fd-p-\d+$/);
+  await expect(row.locator(":scope > .focus-action")).toHaveText("open ›");
+  await expect(row.locator(":scope > .focus-action")).toHaveAccessibleName("Open prompt-project");
+  await expect(row.locator("summary .focus-for")).toContainText("focus");
+  await expect(row.locator(".focus-draft")).toContainText("will be typed into prompt-project");
+  await expect(row.locator(".focus-draft")).toContainText("and submitted:");
   await expect(row.locator(".focus-draft p")).toHaveText(draft);
   expect(await row.locator(".focus-draft p").innerText(), "the visible draft preserves exact spacing").toBe(draft);
   await expect(view.locator(".focus-next")).toContainText("new · by rules");
@@ -83,15 +95,80 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await row.locator("summary").click();
   await expect(row.locator(".focus-card-body")).toContainText("Ship the focus assistant");
   await row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
-  await expect(row).toContainText("sent to prompt-project");
-  await expect(row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+  await expect(row.locator('[role="status"]')).toContainText("✓ sent to prompt-project");
+  await expect(row.locator(".focus-draft")).toContainText("typed into prompt-project");
+  await expect(row.locator(".focus-draft")).not.toContainText("will be typed");
+  await expect(send).toHaveCount(0);
   expect(sends).toHaveLength(1);
   expect(sends[0]).toMatchObject({ session: "mock:prompt-project", text: draft });
   await write(page, [{ type: "note", text: "force a fresh focus revision" }]);
   await page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus" && response.request().method() === "GET");
   await expect(row).toContainText("sent to prompt-project");
-  await expect(row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+  await expect(send).toHaveCount(0);
   expect(sends).toHaveLength(1);
+});
+
+for (const lastLine of ["", "Earlier output: " + "x".repeat(170) + " <terminal> Continue?"]) test(`suggest captions handle ${lastLine ? "long untrusted" : "empty"} last lines and long target names`, async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await seed(page);
+  const name = "continuation-worker-with-a-very-long-name";
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    const session = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    session.name = name; session.lastLine = lastLine;
+    session.runtimeState = { ...session.runtimeState, state: "needs-input", changedAt: episode, stoppedAt: episode };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft p") });
+  const send = row.getByRole("button", { name: `Send suggestion to ${name}`, exact: true });
+  await expect(send).toHaveText(`send suggestion to ${name} ›`);
+  await expect(send).toHaveAccessibleDescription(draft);
+  const bounds = await row.locator(".focus-draft").boundingBox();
+  const buttonBounds = await send.boundingBox();
+  expect(buttonBounds!.x + buttonBounds!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
+  expect(buttonBounds!.height).toBeGreaterThanOrEqual(44);
+  expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
+  await expect(row.locator(".focus-draft")).toContainText(`will be typed into ${name} ·`);
+  if (lastLine) {
+    await expect(row.locator(".focus-draft q")).toHaveText("…" + lastLine.slice(-160));
+    await expect(row.locator(".focus-draft q > *")).toHaveCount(0);
+    await row.locator("summary").click();
+    await expect(row.locator(".focus-card-body code")).toHaveText(lastLine);
+  } else await expect(row.locator(".focus-draft q")).toHaveCount(0);
+  await row.getByRole("button", { name: `Open ${name}`, exact: true }).click();
+  await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
+});
+
+for (const outcome of ["not_delivered", "pasted_not_submitted"] as const) test(`suggest sending and ${outcome} feedback stay beside the exact draft`, async ({ page }) => {
+  await seed(page);
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let sends = 0;
+  await page.route("**/api/session-control/send", async route => {
+    sends++; await held;
+    await route.fulfill({ json: { outcome } });
+  });
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft p") });
+  const send = row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  try {
+    await send.click();
+    await expect(send).toBeDisabled();
+    await expect(send).toHaveText("sending…");
+    await expect(row.locator('[role="status"]')).toHaveCount(0);
+    release();
+    await expect(row.locator('[role="status"]')).toHaveText(outcome === "not_delivered" ? "not sent · try again" : "pasted, not submitted · check the session");
+    await expect(row.locator(".focus-draft p")).toHaveText(draft);
+    await expect(row.locator(".focus-draft")).toContainText("will be typed into prompt-project");
+    await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toBeEnabled();
+    if (outcome === "not_delivered") {
+      await expect(send).toBeEnabled();
+      await expect(send).toHaveText("send suggestion to prompt-project ›");
+      await expect(send).toHaveAccessibleDescription(draft);
+    } else await expect(send).toHaveCount(0);
+    expect(sends).toBe(1);
+  } finally { release(); }
 });
 
 test("done suggestion uses the existing done/undo operations, never sends", async ({ page }) => {
@@ -169,7 +246,7 @@ test("R2: known peer suggestions survive a broker/list outage, but not an author
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(page.locator(`.machine-group.offline[data-machine="n-peer:${peer.id}"]`).first()).toBeVisible();
   await expect(row).toContainText("not reached");
-  await expect(row.locator(".focus-action")).toBeDisabled();
+  await expect(row.locator(".focus-draft [data-focus-next]")).toBeDisabled();
   peer.state.listing = "empty";
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(row).toHaveCount(0);
@@ -295,13 +372,14 @@ for (const outcome of ["submitted", "unverified"] as const) test(`R3: ${outcome}
   await page.goto(server.baseUrl);
   const button = page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
   await button.click();
-  await expect(button).toBeDisabled();
+  await expect(button).toHaveCount(0);
   await write(page, [{ type: "next", author: "assistant", rows: [{ ref: { sessionId: "mock:prompt-project", machine }, stoppedAt: episode.replace("Z", "+00:00"), verdict: "suggest", reason: "Same draft, new formatting", suggestion: draft }] }]);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(page.locator("#dashboard-focus")).toContainText("Same draft, new formatting");
-  await expect(button).toBeDisabled();
+  await expect(button).toHaveCount(0);
   await page.reload();
-  await expect(button).toBeDisabled();
+  await expect(page.locator("#dashboard-focus .focus-draft p")).toHaveText(draft);
+  await expect(button).toHaveCount(0);
   await expect(page.locator("#dashboard-focus")).toContainText(outcome === "submitted" ? "sent to prompt-project" : "delivery unconfirmed");
   expect(sends).toBe(1);
 });
@@ -330,5 +408,5 @@ test("an uncertain user send stays visible and cannot be tapped again", async ({
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
   await expect(page.locator("#dashboard-focus")).toContainText("delivery unconfirmed · check the session");
-  await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+  await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toHaveCount(0);
 });

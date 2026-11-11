@@ -107,8 +107,17 @@ for (const scenario of [
   await expect(page.locator("#dashboard-focus-details")).toBeHidden();
   await toggle.tap();
   if (scenario.triage === "suggest") {
-    await expect(page.locator("#dashboard-focus .focus-draft p")).toHaveText("Continue with the approved rollout.");
-    await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to local-project-00", exact: true })).toBeVisible();
+    const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft p") });
+    const send = row.locator(".focus-draft").getByRole("button", { name: "Send suggestion to local-project-00", exact: true });
+    await expect(row.locator(".focus-draft p")).toHaveText("Continue with the approved rollout.");
+    await expect(row.locator(".focus-draft")).toContainText("will be typed into local-project-00");
+    await expect(row.locator(":scope > .focus-action")).toHaveText("open ›");
+    await expect(send).toBeVisible();
+    await expect(send).toHaveAccessibleDescription("Continue with the approved rollout.");
+    expect((await send.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await row.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: info.outputPath("suggest-390.png") });
   }
 });
 
