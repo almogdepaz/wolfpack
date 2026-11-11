@@ -1,6 +1,6 @@
 import { readLocalTailscaleStatus } from "./tailscale-status.js";
 import { enumerateLocalTailnetCandidates } from "./http.js";
-import { getRelayPeerTransport } from "./relay-peer-transport.ts";
+import { createRelayPeerTransport } from "./relay-peer-transport.ts";
 import { createPushService } from "./push.js";
 import { createTerminalSessions, type TerminalSessionOptions } from "./websocket.js";
 import type { ClaudeManagedSettingsDropIn } from "../claude-integration.js";
@@ -58,6 +58,7 @@ export interface ServerContext {
   readonly supervisor?: BrokerSupervisor;
   readonly taskGateway: TaskGateway;
   readonly taskRelayGateway: RelayGateway;
+  readonly relayPeerTransport: ReturnType<typeof createRelayPeerTransport>;
   readonly extensionRouteService: ExtensionRouteService;
   readonly sessionOrganization: SessionOrganizationService;
   readonly agentRuntimeStateStore: AgentRuntimeStateStore;
@@ -81,13 +82,14 @@ interface ServiceCache {
   childEventDelivery?: ReturnType<typeof createChildEventDeliveryOwner>;
   taskGateway?: TaskGateway;
   taskRelayGateway?: RelayGateway;
+  relayPeerTransport?: ReturnType<typeof createRelayPeerTransport>;
   extensionRouteService?: ExtensionRouteService;
   sessionOrganization?: SessionOrganizationService;
   agentRuntimeStateStore?: AgentRuntimeStateStore;
   sessionIdentityStore?: SessionIdentityStore;
 }
 
-export interface ServerContextOptions extends Partial<Omit<ServerContext, "close" | "flushRuntimeState">> {
+export interface ServerContextOptions extends Partial<Omit<ServerContext, "close" | "flushRuntimeState" | "relayPeerTransport">> {
   readonly startSupervisor?: boolean;
   readonly observationCacheTtlMs?: number;
   readonly terminalPrefillDelayMs?: number;
@@ -151,7 +153,11 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
       return cache.taskRelayGateway ??= createTaskRelayGateway({ root: overrides.taskRelayRoot ?? process.env.WOLFPACK_TASK_RELAY_ROOT,
         peerOrigin: context.config ? remoteUrl(context.config) ?? undefined : undefined,
         inspectSession: selector => context.backend.inspectSession(selector),
-        peerFetch: (input, init) => getRelayPeerTransport(context.taskRelayGateway, context.config ? remoteUrl(context.config) ?? undefined : undefined, context.readTailscaleStatus).forward(input, init) });
+        peerFetch: (input, init) => context.relayPeerTransport.forward(input, init) });
+    },
+    get relayPeerTransport() {
+      return cache.relayPeerTransport ??= createRelayPeerTransport(context.taskRelayGateway,
+        context.config ? remoteUrl(context.config) ?? undefined : undefined, context.readTailscaleStatus);
     },
     get sessionOrganization() {
       return overrides.sessionOrganization ?? (cache.sessionOrganization ??= new SessionOrganizationService());
@@ -208,6 +214,7 @@ export const defaultServerContext: ServerContext = {
   get supervisor() { return getDefaultServerContext().supervisor; },
   get taskGateway() { return getDefaultServerContext().taskGateway; },
   get taskRelayGateway() { return getDefaultServerContext().taskRelayGateway; },
+  get relayPeerTransport() { return getDefaultServerContext().relayPeerTransport; },
   get extensionRouteService() { return getDefaultServerContext().extensionRouteService; },
   get sessionOrganization() { return getDefaultServerContext().sessionOrganization; },
   get agentRuntimeStateStore() { return getDefaultServerContext().agentRuntimeStateStore; },

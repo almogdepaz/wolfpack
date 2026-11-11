@@ -6,12 +6,16 @@ import type { RelayGateway } from "../task-relay/worker-protocol.ts";
 import { readRelayPeerTopology, readLocalTailscaleStatus } from "./tailscale-status.ts";
 import { isLoopbackAddress } from "./client-address.ts";
 
+export function createRelayPeerTransport(gateway: RelayGateway, origin?: string, readStatus: typeof readLocalTailscaleStatus = readLocalTailscaleStatus): RelayPeerTransport {
+  const config = loadConfig(), configuredOrigin = origin ?? (config ? remoteUrl(config) ?? undefined : undefined);
+  return new RelayPeerTransport({ topology: () => readRelayPeerTopology(configuredOrigin, readStatus), epoch: () => gateway.volatileEpoch(), jwt: issueJwt });
+}
+
 const owners = new WeakMap<RelayGateway, RelayPeerTransport>();
 export function getRelayPeerTransport(gateway: RelayGateway, origin?: string, readStatus: typeof readLocalTailscaleStatus = readLocalTailscaleStatus): RelayPeerTransport {
   let transport = owners.get(gateway);
   if (!transport) {
-    const config = loadConfig(), configuredOrigin = origin ?? (config ? remoteUrl(config) ?? undefined : undefined);
-    transport = new RelayPeerTransport({ topology: () => readRelayPeerTopology(configuredOrigin, readStatus), epoch: () => gateway.volatileEpoch(), jwt: issueJwt });
+    transport = createRelayPeerTransport(gateway, origin, readStatus);
     owners.set(gateway, transport);
   }
   return transport;
