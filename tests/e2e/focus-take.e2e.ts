@@ -8,8 +8,10 @@ let server: TestServer;
 const episode = "2026-11-09T12:00:00.000Z";
 const text = "Choose the plan first; the release depends on that choice.";
 const shots = join(homedir(), ".cache/focus-take-shots");
-test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); mkdirSync(shots, { recursive: true }); });
-test.afterAll(async () => { await server?.close(); });
+// Each test owns its poll budget; rapid offline/refresh tests must not inherit
+// an exhausted server token bucket from an earlier test in this file.
+test.beforeEach(async () => { server = await startTestServer({ focusAssistant: true }); mkdirSync(shots, { recursive: true }); });
+test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: "wait" }); await server?.close(); });
 async function write(page: Page, ops: unknown[]) {
   const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   const response = await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops } });
