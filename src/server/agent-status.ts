@@ -756,11 +756,11 @@ export class AgentRuntimeStateStore {
   }
 
   private async persist(): Promise<boolean> {
-    const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
     // Capture before yielding; later semantic changes remain dirty for one
     // follow-up window, rather than being cleared by this older write.
     this.dirty = false;
     try {
+      const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
       const contents = `${JSON.stringify(this.file, null, 2)}\n`;
       await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
       try {
