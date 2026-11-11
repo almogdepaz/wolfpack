@@ -31,7 +31,6 @@ async function fixture(page: Page, denied = false) {
   await page.route(url => url.origin === server.baseUrl && url.pathname === "/api/focus", async route => {
     const response = await route.fetch(); const body = await response.json();
     body.document.intentions = [];
-    body.document.nudge = { text: "Review the pending decision, then continue the approved work.", author: "assistant", updatedAt: episode };
     body.document.next = { updatedAt: episode, author: "assistant", rows: [
       { ref: { machine: body.installationId, sessionId: "mock:work-1" }, stoppedAt: episode, verdict: "suggest", reason: "The approved work is ready", suggestion: "Continue the approved work." },
     ] };
@@ -89,7 +88,7 @@ for (const width of [1440, 1280]) test(`desktop disclosure shares main/sidebar s
   await expect(tile.locator(".assistant-tile-head")).toContainText("1 needs you +1");
   await expect(page.locator("#sidebar-assistant-nav")).toHaveAccessibleDescription("1 needs you · 1 reply ready");
   await expect(page.locator("#sidebar-assistant-details")).toBeHidden();
-  await expect(page.locator("#assistant-content .focus-nudge")).toBeVisible();
+  await expect(page.locator("#assistant-content .focus-next > li").first()).toBeVisible();
   expect(await page.locator("#assistant-pane").boundingBox()).toEqual(pane);
   const sideTarget = (await sidebarToggle.boundingBox())!;
   expect(sideTarget.width).toBeGreaterThanOrEqual(44); expect(sideTarget.height).toBeGreaterThanOrEqual(44);
@@ -121,11 +120,11 @@ for (const surface of ["main", "sidebar"]) test(`Space activation survives a dat
   await page.keyboard.down("Space");
   await page.route(url => url.origin === server.baseUrl && url.pathname === "/api/focus", async route => {
     const response = await route.fetch(); const body = await response.json();
-    body.document.nudge = { text: "The data refresh completed.", author: "assistant", updatedAt: new Date().toISOString() };
+    body.routines.notice = "The data refresh completed.";
     await route.fulfill({ response, json: body });
   });
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(page.locator("#dashboard-focus .focus-nudge")).toHaveText("The data refresh completed.");
+  await expect(page.locator("#dashboard-focus .focus-notes")).toContainText("The data refresh completed.");
   await page.keyboard.up("Space");
   await expect(toggle).toBeFocused();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");

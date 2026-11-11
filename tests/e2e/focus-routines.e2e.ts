@@ -30,14 +30,15 @@ test.beforeEach(async ({ page }, info) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
 });
 
-test("sgt just booted: catching up since … with machine count, nudge greyed from an earlier day", async ({ page }, info) => {
+test("sgt just booted: catching up since … with machine count and cards", async ({ page }, info) => {
   const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   expect(current.routines).toMatchObject({ unreachable: [], surfaced: null });
   await withRoutines(page, { catchingUp: { machines: 2, since: ago(30) } });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block).toContainText(/reading activity since \w+ \d\d:\d\d · 2 machines/);
-  await expect(block.locator(".focus-nudge.from")).toBeVisible();
+  await expect(block.locator(".focus-next > li").first()).toBeVisible();
+  await expect(block.locator(".focus-nudge")).toHaveCount(0);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   await shot(page, "catching-up", info.project.name === "desktop");
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();

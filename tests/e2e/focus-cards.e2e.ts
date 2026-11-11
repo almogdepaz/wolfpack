@@ -51,9 +51,11 @@ test("a next row expands to its session details; the action acts without togglin
   expect(await page.evaluate(noHorizontalScroll)).toBe(true);
   // a focus write bumps the revision; the next poll re-renders the block and the card stays open
   const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
-  expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [{ type: "nudge", text: "Answer prompt-project, then ship.", author: "assistant" }] } })).ok()).toBe(true);
-  await expect(block).toContainText("Answer prompt-project, then ship.", { timeout: 15_000 });
+  expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: current.revision, ops: [{ type: "edit", id: "ship", patch: { title: "Answer prompt-project, then ship." } }] } })).ok()).toBe(true);
+  await expect(block.locator(".focus-next")).toContainText("Answer prompt-project, then ship.", { timeout: 15_000 });
   await expect(card).toHaveAttribute("open", "");
+  const updated = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  expect((await page.request.post(`${server.baseUrl}/api/focus`, { data: { expectedRevision: updated.revision, ops: [{ type: "edit", id: "ship", patch: { title: "ship the focus assistant" } }] } })).ok()).toBe(true);
   // keyboard: the summary toggles natively; the action follows it in the tab order
   await row.locator(".focus-card > summary").focus();
   await page.keyboard.press("Enter");

@@ -41,7 +41,6 @@ async function realisticFocus(page: Page, needsInput = true, triage: "none" | "s
     const response = await route.fetch(); const body = await response.json();
     body.document.intentions = Array.from({ length: 6 }, (_, i) => ({ id: `today-${i}`, title: ["Ship the release safely", "Review the database migration", "Resolve the broker leak", "Finish the mobile dashboard", "Document the rollout", "Follow up on the incident"][i], done: false,
       createdAt: new Date().toISOString(), sessions: [`mock:local-${i}`, `mock:studio-${i}`] }));
-    body.document.nudge = { text: "Several agents are waiting for a decision. Review the migration, confirm release access, then continue the rollout.", updatedAt: new Date().toISOString(), author: "assistant" };
     if (triage === "scroll") body.document.next = { updatedAt: episode, author: "assistant", rows: Array.from({ length: 3 }, (_, i) => ({
       ref: { machine: body.installationId, sessionId: `mock:local-${i}` }, stoppedAt: episode, verdict: "suggest", reason: "The rollout is ready to continue", suggestion: `Continue rollout step ${i + 1}.`,
     })) };

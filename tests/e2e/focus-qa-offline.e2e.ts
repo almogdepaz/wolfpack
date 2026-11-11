@@ -217,7 +217,7 @@ test("R3: broker outage overrides a pending catch-up on every surface and recove
   await expect.soft(tile).not.toHaveAttribute("data-tone", "busy");
   await expect.soft(tile).toContainText("unavailable");
   await expect.soft(page.locator("#dashboard-focus .focus-spin, #assistant-content .focus-spin")).toHaveCount(0);
-  await expect.soft(view.locator(".focus-nudge")).not.toHaveClass(/\bfrom\b/);
+  await expect.soft(view.locator(".focus-nudge")).toHaveCount(0);
   const cached = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!));
   expect(cached.routines.catchingUp).toMatchObject({ machines: 1, unconfirmed: true });
   expect(cached.assistant.queued).toBe(3);
@@ -421,7 +421,7 @@ test("QA-30: a remote focus home keeps its terminal on the owning machine after 
     if (failed) return route.fulfill({ status: 503, ...json({ error: "remote focus store unreadable" }) });
     const response = await route.fetch({ url: `${server.baseUrl}/api/focus` }); const body = await response.json();
     body.local = true; body.home = id; body.installationId = id;
-    body.document.nudge.text = `remote focus read ${++remoteReads}`;
+    body.routines.notice = `remote focus read ${++remoteReads}`;
     await route.fulfill({ response, ...json(body) });
   });
   // Keep the external peer socket at its transport boundary; no remote service is contacted.
@@ -432,13 +432,13 @@ test("QA-30: a remote focus home keeps its terminal on the owning machine after 
   // that observed ready state instead of racing the next five-second poll.
   await expect(page.locator(`.machine-group[data-machine="n-home:${id}"]`).first()).toBeVisible();
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(page.locator("#dashboard-focus .focus-nudge")).toHaveText(/^remote focus read /);
+  await expect(page.locator("#dashboard-focus .focus-notes")).toContainText(/remote focus read /);
   const opened = page.waitForResponse(response => new URL(response.url()).origin === origin && new URL(response.url()).pathname === "/api/focus");
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await (await opened).finished();
   // The socket may mount from the previous projection before the open-refresh
   // finishes. Observe that refresh's rendered document before failing the store.
-  await expect(page.locator("#assistant-content .focus-nudge")).toHaveText(`remote focus read ${remoteReads}`);
+  await expect(page.locator("#assistant-content .focus-notes")).toContainText(`remote focus read ${remoteReads}`);
   await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await expect.poll(() => sockets.length).toBeGreaterThan(0);
   expect(new URL(sockets[0]!).origin).toBe(origin.replace("https:", "wss:"));

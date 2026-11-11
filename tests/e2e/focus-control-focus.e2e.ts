@@ -86,8 +86,7 @@ for (const [name, selector, dashboard = false, expand = false] of [
       intention.done = false;
       delete intention.doneAt;
       intention.sessions = ["mock:prompt-project", "mock:another-project", ...extras.map(name => `mock:${name}`)];
-      body.document.nudge = { text: `Focus refresh ${render}`, updatedAt: new Date().toISOString(), author: "assistant" };
-      body.routines = { catchingUp: null, stale: { since: new Date(Date.now() - 900_000).toISOString() }, unreachable: [], surfaced: null };
+      body.routines = { catchingUp: null, stale: { since: new Date(Date.now() - 900_000).toISOString() }, unreachable: [], surfaced: null, notice: `Focus refresh ${render}` };
       await route.fulfill({ response, json: body });
     });
     if (dashboard) await page.goto(server.baseUrl);
@@ -101,7 +100,7 @@ for (const [name, selector, dashboard = false, expand = false] of [
     const previous = await control.elementHandle();
     render++;
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-    await expect(host.locator(".focus-nudge")).toHaveText(`Focus refresh ${render}`);
+    await expect(host.locator(".focus-notes")).toContainText(`Focus refresh ${render}`);
     expect(await previous!.evaluate(el => el.isConnected), "a changed render actually replaced the control").toBe(false);
     await expect(control).toBeFocused();
   });

@@ -36,7 +36,7 @@ for (const failure of ["identity", "not-owner"] as const) test(`C1: cached reloa
     expect(home.sockets, "cached rejection survives reload followed by a store-only error").toHaveLength(1);
     home.state.failure = "none";
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-    await expect(page.locator("#assistant-content .focus-nudge")).toHaveText(/^remote focus read /);
+    await expect(page.locator("#assistant-content .focus-notes")).toContainText(/remote focus read /);
     await expect(page.locator("#assistant-content").getByRole("button", { name: "Talk to assistant" })).toBeEnabled();
     await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
     await expect.poll(() => home.sockets.length).toBe(2);

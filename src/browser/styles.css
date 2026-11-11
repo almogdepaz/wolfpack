@@ -2949,10 +2949,6 @@ body > header { height: 52px; min-height: 52px; }
 .focus-header .focus-attn, .focus-header .focus-attn:hover { border-color: var(--attn-line); background: var(--attn-tint); color: var(--attn); font-weight: 600; }
 .focus-notes { display: block; margin: 10px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--attn); }
 .focus-notes > span { display: inline-block; max-width: 100%; margin-right: 14px; }
-.focus-nudge { margin: 12px 0 10px; font-size: 17px; line-height: 1.45; letter-spacing: -.01em; color: var(--text-1); overflow-wrap: anywhere; text-wrap: pretty; }
-.focus-block .focus-nudge { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.assistant-column .focus-nudge { margin: 16px 0 0; padding: 14px 16px; border: 1px solid var(--hairline); border-left: 2px solid var(--accent); border-radius: var(--r-control); background: var(--surface-2); }
-.focus-nudge.from { color: var(--text-3); }
 .focus-today, .focus-done > ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--hairline); border-radius: var(--r-card); background: var(--surface-2); box-shadow: var(--gloss); overflow: hidden; }
 .focus-today > li + li { border-top: 1px solid var(--hairline); }
 .focus-done ul { list-style: none; margin: 0; padding: 0; }
@@ -3021,7 +3017,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-next [data-focus-clamped][hidden] { display: none; }
 .focus-block .focus-next + small, .focus-note h3 { margin-top: 12px; }
 .focus-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: 500; }
-.focus-title small, .focus-for, .focus-nudge small { color: var(--text-3); font-size: 12px; font-weight: 400; }
+.focus-title small, .focus-for { color: var(--text-3); font-size: 12px; font-weight: 400; }
 .focus-header .dot { display: inline-block; }
 .focus-note summary { min-height: 44px; }
 .focus-today .focus-for { margin-left: 10px; }
@@ -3111,7 +3107,6 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   #sessions-view { overflow-y: auto; }
   #session-list { flex: none; overflow: visible; }
   .focus-block { flex: none; margin: 10px 16px 8px; padding: 14px; }
-  .focus-block .focus-nudge { font-size: 16px; -webkit-line-clamp: 3; }
   .focus-block button, .assistant-column button, .focus-terminal-header button { min-height: 44px; }
   .focus-notes button { min-height: 0; }
   .focus-header > button:not(:last-child):not(.focus-attn), .focus-done button, .focus-yesterday button, .assistant-column summary { min-height: 44px; }

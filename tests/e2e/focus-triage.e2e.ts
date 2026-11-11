@@ -18,6 +18,10 @@ async function write(page: Page, ops: unknown[]) {
   expect(response.ok()).toBe(true);
   return response.json();
 }
+async function updateReason(page: Page, reason: string) {
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  return write(page, [{ type: "next", author: "assistant", rows: current.document.next.rows.map((row: Record<string, unknown>, index: number) => index === 0 ? { ...row, reason } : row) }]);
+}
 async function seed(page: Page, done = false) {
   const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   machine = current.installationId;
@@ -254,7 +258,7 @@ test("editable reply stays shared across hosts and live renders without replacin
   await reply.focus();
   await reply.evaluate(el => (el as HTMLTextAreaElement).setSelectionRange(7, 15, "backward"));
   const element = await reply.elementHandle();
-  const saved = await write(page, [{ type: "nudge", text: "A live update must not discard your reply.", author: "assistant" }]);
+  const saved = await updateReason(page, "A live update must not discard your reply.");
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!).revision)).toBe(saved.revision);
   await expect(reply).toBeFocused();
@@ -267,7 +271,7 @@ test("editable reply stays shared across hosts and live renders without replacin
   await expect(page.locator("#assistant-content").getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveAccessibleDescription(edited);
   expect(saved.revision).toBeGreaterThan(0);
   await reply.evaluate(el => (el as HTMLTextAreaElement).blur());
-  await expect(page.locator("#assistant-content .focus-nudge")).toHaveText("A live update must not discard your reply.");
+  await expect(page.locator("#assistant-content .focus-next > li").first().locator("summary .focus-title")).toHaveText("A live update must not discard your reply.");
   const reset = page.locator("#assistant-content").getByRole("button", { name: "reset", exact: true });
   await expect(reset).toBeVisible();
   await page.screenshot({ path: join(process.env.HOME!, ".cache/focus-edit-collapse-shots", `suggest-edited-${info.project.name === "desktop" ? "desktop" : "390"}.png`), fullPage: true });
@@ -295,14 +299,15 @@ for (const host of ["dashboard-focus", "assistant-content"] as const) for (const
   const text = "edited before leaving the editor";
   const message = `Deferred ${input} blur ${host}`;
   await reply.fill(text);
-  const saved = await write(page, [{ type: "nudge", text: message, author: "assistant" }]);
+  const saved = await updateReason(page, message);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!).revision)).toBe(saved.revision);
   await expect(reply).toBeFocused();
-  await expect(panel.locator(".focus-nudge")).not.toHaveText(message);
+  const headline = panel.locator(".focus-next > li").first().locator("summary .focus-title");
+  await expect(headline).not.toHaveText(message);
   if (input === "keyboard") {
     await reply.press("Tab");
-    await expect(panel.locator(".focus-nudge")).toHaveText(message, { timeout: 1500 });
+    await expect(headline).toHaveText(message, { timeout: 1500 });
     await expect(send).toBeFocused();
     await expect(reply).toHaveValue(text);
     await page.keyboard.press("Enter");
@@ -318,7 +323,7 @@ for (const host of ["dashboard-focus", "assistant-content"] as const) for (const
   }
   await expect.poll(() => sends.length).toBe(1);
   expect(sends[0].text).toBe(text);
-  await expect(panel.locator(".focus-nudge")).toHaveText(message);
+  await expect(headline).toHaveText(message);
 });
 
 for (const host of ["dashboard-focus", "assistant-content"] as const) test(`native IME replacement stays attached in ${host} through input and live refresh`, async ({ page }, info) => {
@@ -360,7 +365,7 @@ for (const host of ["dashboard-focus", "assistant-content"] as const) test(`nati
       await cdp.send("Input.imeSetComposition", { text, selectionStart: text.length, selectionEnd: text.length });
       stages.push({ host, text, value: await reply.inputValue() });
       if (text === "ni") {
-        const saved = await write(page, [{ type: "nudge", text: `Live IME update for ${host}.`, author: "assistant" }]);
+        const saved = await updateReason(page, `Live IME update for ${host}.`);
         await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
         await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!).revision)).toBe(saved.revision);
       }
@@ -376,7 +381,7 @@ for (const host of ["dashboard-focus", "assistant-content"] as const) test(`nati
     await expect(panel.getByRole("button", { name: "Send to prompt-project", exact: true })).toBeEnabled();
     await expect(panel.getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveAccessibleDescription("你");
     await reply.evaluate(el => (el as HTMLTextAreaElement).blur());
-    await expect(panel.locator(".focus-nudge")).toHaveText(`Live IME update for ${host}.`);
+    await expect(panel.locator(".focus-next > li").first().locator("summary .focus-title")).toHaveText(`Live IME update for ${host}.`);
     await expect(reply).toHaveValue("你");
   } finally { await cdp.detach(); }
 });

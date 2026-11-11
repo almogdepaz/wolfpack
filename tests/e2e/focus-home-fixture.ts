@@ -37,7 +37,7 @@ export async function remoteFocusHome(page: Page, server: TestServer) {
     body.local = state.failure !== "not-owner";
     body.home = id;
     body.installationId = state.failure === "identity" ? "42d17268-cde1-4b14-990a-44e468ec6333" : id;
-    body.document.nudge.text = `remote focus read ${++reads}`;
+    body.routines.notice = `remote focus read ${++reads}`;
     if (state.failure === "identity" || state.failure === "not-owner") rejected++;
     await route.fulfill({ response, ...json(body) });
   });
@@ -53,11 +53,11 @@ export async function remoteFocusHome(page: Page, server: TestServer) {
     async openHealthy() {
       await page.goto(server.baseUrl);
       await this.ready();
-      await expect(page.locator("#dashboard-focus .focus-nudge")).toHaveText(/^remote focus read /);
+      await expect(page.locator("#dashboard-focus .focus-notes")).toContainText(/remote focus read /);
       const opened = page.waitForResponse(response => new URL(response.url()).origin === origin && new URL(response.url()).pathname === "/api/focus");
       await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
       await (await opened).finished();
-      await expect(page.locator("#assistant-content .focus-nudge")).toHaveText(`remote focus read ${reads}`);
+      await expect(page.locator("#assistant-content .focus-notes")).toContainText(`remote focus read ${reads}`);
       await expect(page.locator("#assistant-pane")).toBeHidden();
       await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
       await expect.poll(() => sockets.length).toBe(1);

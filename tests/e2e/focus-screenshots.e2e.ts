@@ -33,7 +33,8 @@ test("focus screenshot and layout evidence", async ({ page }, info) => {
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block).toContainText("Ship the focus assistant today");
+  await expect(block.locator(".focus-next > li").first()).toBeVisible();
+  await expect(block.locator(".focus-nudge")).toHaveCount(0);
   await expect(block.locator("span.focus-meta").filter({ hasText: "prompt-project" })).toBeVisible();
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   const screenshots = join(process.cwd(), process.env.WOLFPACK_FOCUS_SHOTS ?? ".plans/screenshots");
