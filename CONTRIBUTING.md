@@ -21,11 +21,17 @@ For an end-to-end local install (build + service install + restart) on macOS, us
 ## Testing
 
 ```bash
-bun test                                  # all bun tests
-bun test tests/unit/                      # unit tests only
-bun test tests/unit/validation.test.ts    # single file
-bunx playwright test                      # e2e (uses test-server harness)
+bun run check:ci                           # full local/CI gate (requires Bash 4.4+)
+scripts/ci-gate.sh --list                  # stages and their commands; does not run them
+scripts/ci-gate.sh context typecheck       # selected stages
+bun test tests/unit/validation.test.ts     # focused work
 ```
+
+The gate requires the existing build prerequisites and Playwright browsers; it does not install them. The audit stage uses the network and runs only with `CI=true` or `--with-audit`. Integration and PR-tier e2e fail if no broker binary exists instead of silently skipping broker coverage.
+
+`tests/e2e/tiers.json` assigns each spec/project pair to `pr`, `full`, or `quarantine`. Run `bun run scripts/e2e-tiers.ts --check` after changing the manifest. Quarantine records failing test names and a reason; green projects of the same file can stay in PR. PR reports go to `artifacts/e2e-pr/<project>.json`, or the directory in `PLAYWRIGHT_JSON_OUTPUT_DIR`.
+
+Run e2e with isolated `HOME` and `ZDOTDIR`, explicit paths to existing Playwright/Bun caches, and `WOLFPACK_TEST_PORT=18899`. Some broker fixtures inherit the environment and start login shells; they do not all isolate shell startup themselves. Do not use an operator's shell startup files for fixture sessions.
 
 Layout:
 
@@ -100,6 +106,6 @@ Without the verified Ghostty VT bundle, Cargo fails closed instead of downloadin
 ## PR Conventions
 
 - Branch off `main`
-- Tests must pass (`bun test`)
+- The CI gate passes (`bun run check:ci`)
 - Keep PRs focused — one feature or fix per PR
 - Match existing style; no large unrelated refactors mixed in
