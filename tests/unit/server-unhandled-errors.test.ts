@@ -18,7 +18,7 @@ function childFixture() {
   return { root, env };
 }
 
-function runChild(mode: string, serviceLog = false, value: "error" | "null" | "closed-stderr" = "error") {
+function runChild(mode: string, serviceLog = false, value: "error" | "null" | "undefined" | "closed-stderr" = "error") {
   const { root, env } = childFixture();
   let fd: number | undefined;
   try {
@@ -93,6 +93,17 @@ test("importing the server does not install process failure handlers", () => {
   const counts = records(result.stdout).find(row => "before" in row)!;
   expect(counts).toBeDefined();
   expect(counts.after).toEqual(counts.before);
+});
+
+test("unhandledRejection logs undefined and exits 1", () => {
+  const result = runChild("unhandledRejection", false, "undefined");
+  expect(result.error).toBeUndefined();
+  expect(result.stdout.split("\n")).toContain("SERVER_FATAL_PROBE_READY");
+  expect(result.status, result.stderr).toBe(1);
+  expect(result.signal).toBeNull();
+  expect(records(result.stderr)).toContainEqual(expect.objectContaining({
+    level: "error", component: "server", msg: "unhandled rejection", error: "undefined",
+  }));
 });
 
 for (const [mode, message] of [

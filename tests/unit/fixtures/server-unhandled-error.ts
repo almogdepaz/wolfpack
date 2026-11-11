@@ -15,7 +15,8 @@ await startServer(0, "127.0.0.1", { backend: new MockBackend({ sessions: [] }) }
 if (!server.listening) await new Promise<void>(resolve => server.once("listening", resolve));
 console.log("SERVER_FATAL_PROBE_READY");
 setImmediate(function triggerUnhandledFailure() {
-  const error = process.argv[3] === "null" ? null : new Error(marker);
+  const error = process.argv[3] === "null" ? null
+    : process.argv[3] === "undefined" ? undefined : new Error(marker);
   if (error && process.argv[3] === "large") {
     error.stack = "large-stack-start\n" + "é".repeat(1024 * 1024) + "\nlarge-stack-end";
   }
