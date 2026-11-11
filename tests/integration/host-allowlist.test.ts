@@ -22,17 +22,17 @@ process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
 });
 
 const root = mkdtempSync(join(tmpdir(), "wolfpack-host-allowlist-"));
-const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
 const { EventBus } = await import("../../src/event-bus.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { classifyRequestClient } = await import("../../src/server/operability.ts");
-__resetJwtAuthConfig();
+
 const {
   createServerInstance, __globalRateLimiter, __wsUpgradeRateLimiter,
   __wsConnectionsByIp, MAX_WS_CONNECTIONS_PER_IP,
 } = await import("../../src/server/index.ts");
-const context = createServerContext({
+const context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(),
   backend: new MockBackend({ sessions: [] }),
   events: new EventBus(),
   config: null,
@@ -62,7 +62,7 @@ afterAll(async () => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-  __resetJwtAuthConfig();
+
   if (priorEnv.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
   else process.env.WOLFPACK_TEST = priorEnv.WOLFPACK_TEST;
 });

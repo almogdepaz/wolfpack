@@ -5,14 +5,13 @@ import type { AddressInfo } from "node:net";
 process.env.WOLFPACK_TEST = "1";
 
 const { createServerInstance } = await import("../../src/server/index.ts");
-const { __getTestState } = await import("../../src/test-hooks.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-const { activePtySessions: __activePtySessions } = __getTestState();
 
 const FAKE_SESSIONS = ["prompt-sess", "reconnect-sess"];
 const mockBackend = new MockBackend({ sessions: FAKE_SESSIONS });
 const context = createServerContext({ backend: mockBackend });
+const { activePtySessions: __activePtySessions } = context.terminals;
 
 const { server } = createServerInstance(context);
 

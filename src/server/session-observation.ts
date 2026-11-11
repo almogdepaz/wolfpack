@@ -31,14 +31,7 @@ import {
 import type { AgentRuntimeState, AgentRuntimeStateStore } from "./agent-status.js";
 import type { ServerContext } from "./context.js";
 import type { SessionBackend, SessionListFact } from "./backend.js";
-import {
-  checkSessionTransitions,
-  clearQuietAlertRecipientSnapshots,
-  forgetQuietAlertRecipientSnapshots,
-  getSubscriptionCount,
-  pruneQuietAlertRecipientSnapshots,
-  recordQuietAlertEmission,
-} from "./push.js";
+
 import { loadSettings } from "./project-settings-routes.js";
 import type { PublicSessionIdentity } from "./session-identity.js";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
@@ -383,7 +376,7 @@ export function createSessionObservation(context: ServerContext, cacheTtlMs = 50
     if (reduction.state) quietAlertHistory.set(sessionKey, reduction.state);
     else quietAlertHistory.delete(sessionKey);
     if (reduction.event) {
-      recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
+      context.push.recordQuietAlertEmission(sessionId, reduction.event.episodeId, reduction.event.kind);
       const blocked = childBlockedEpisodes.get(sessionKey);
       if (blocked?.episodeId === reduction.event.episodeId) {
         blocked.emitted = reduction.state;
@@ -547,7 +540,7 @@ export function createSessionObservation(context: ServerContext, cacheTtlMs = 50
     notificationFingerprints.clear();
     renderedFingerprintFlights.clear();
     runtimeRenderedFingerprints.clear();
-    clearQuietAlertRecipientSnapshots(policyEpoch);
+    context.push.clearQuietAlertRecipientSnapshots(policyEpoch);
     const observedAt = new Date().toISOString();
     const store = ctx.agentRuntimeStateStore;
     const summariesBySessionKey = new Map<string, KnownSessionSummary>();
@@ -1003,7 +996,7 @@ export function createSessionObservation(context: ServerContext, cacheTtlMs = 50
     }
     store.prune(activeSessionKeys, { persist: false });
     store.flush();
-    pruneQuietAlertRecipientSnapshots(activeSessionKeys, authority.policyEpoch);
+    context.push.pruneQuietAlertRecipientSnapshots(activeSessionKeys, authority.policyEpoch);
   }
 
   async function collectSessionObservation(
@@ -1073,13 +1066,13 @@ export function createSessionObservation(context: ServerContext, cacheTtlMs = 50
   }
 
   function schedulePeerNotificationObservation(): void {
-    if (peerNotificationObservationPromise || getSubscriptionCount() === 0) return;
+    if (peerNotificationObservationPromise || context.push.getSubscriptionCount() === 0) return;
     // Peer collection has its own flight, not its own delivery machinery. Even a
     // stalled network map must not hold the next local observation behind it.
     peerNotificationObservationPromise = (async () => {
       const { observePeerNotifications } = await import("./peer-notifications.ts");
       for (const peer of await observePeerNotifications()) {
-        await checkSessionTransitions(peer.sessions, quietAlertPolicyEpoch(), () => getSubscriptionCount() > 0, peer.machine);
+        await context.push.checkSessionTransitions(peer.sessions, quietAlertPolicyEpoch(), () => context.push.getSubscriptionCount() > 0, peer.machine);
       }
     })().catch((error: unknown) => {
       log.warn("peer notification relay failed", { error: errMsg(error) });
@@ -1101,7 +1094,7 @@ export function createSessionObservation(context: ServerContext, cacheTtlMs = 50
 
   async function runSessionNotificationObservation(pass: ObservationPass = "full"): Promise<readonly ObservedSessionSummary[]> {
     const ctx = context;
-    if (getSubscriptionCount() === 0 && context.events.eventSubscriberCount() === 0
+    if (context.push.getSubscriptionCount() === 0 && context.events.eventSubscriberCount() === 0
       && !sessionNotificationObservationPromise && !context.childEventDelivery.hasPendingChildEventNotes() && !await hasLiveChildSession()) return [];
     if (sessionNotificationObservationPromise) {
       if (pass !== "full" || sessionNotificationObservationPass === "full") return sessionNotificationObservationPromise;
@@ -1123,7 +1116,7 @@ export function createSessionObservation(context: ServerContext, cacheTtlMs = 50
       }
       // Captures/reductions above require the global epoch. Once emitted, each
       // kind has its own policy fence; newer observations still retire this batch.
-      await checkSessionTransitions(observation.sessions.map((session) => {
+      await context.push.checkSessionTransitions(observation.sessions.map((session) => {
         const sessionKey = session.identity?.wolfpackSessionId ?? session.name;
         return {
           ...session,
@@ -1224,7 +1217,7 @@ export function createSessionObservation(context: ServerContext, cacheTtlMs = 50
     renderedFingerprintFlights.delete(sessionName);
     runtimeRenderedFingerprints.delete(sessionId);
     runtimeRenderedFingerprints.delete(sessionName);
-    forgetQuietAlertRecipientSnapshots([sessionId, sessionName]);
+    context.push.forgetQuietAlertRecipientSnapshots([sessionId, sessionName]);
   }
 
   function resetNotificationObservation(): void {

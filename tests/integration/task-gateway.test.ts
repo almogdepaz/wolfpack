@@ -27,11 +27,9 @@ process.env.WOLFPACK_TASK_ROOT = join(root, "tasks");
 mkdirSync(parentProject, { recursive: true });
 mkdirSync(receiverProject, { recursive: true });
 
-const {
-  __resetJwtAuthConfig,
-  MockBackend,
-} = await import("../../src/test-hooks.ts");
-__resetJwtAuthConfig();
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
+const { MockBackend, } = await import("../../src/test-hooks.ts");
+
 const { createServerContext } = await import("../../src/server/context.ts");
 const {
   createServerInstance,
@@ -54,7 +52,7 @@ class PiBackend extends MockBackend {
 }
 
 let backend = new PiBackend({ sessions: ["parent", "receiver"] });
-const context = createServerContext({ get backend() { return backend; } });
+const context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(), get backend() { return backend; } });
 const { server } = createServerInstance(context);
 let base = "";
 
@@ -77,7 +75,7 @@ afterAll(() => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-  __resetJwtAuthConfig();
+
   if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
   else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
 });
@@ -2358,7 +2356,7 @@ describe("local task gateway", () => {
 
   test("does not persist an HTTP preflight rejection before one valid retry", async () => {
     const taskRoot = join(tmpdir(), `wolfpack-task-preflight-retry-${process.pid}-${Date.now()}`);
-    const instance = createServerInstance(createServerContext({ backend, taskRoot }));
+    const instance = createServerInstance(createServerContext({ jwtAuthConfig: getJwtAuthConfig(), backend, taskRoot }));
     await new Promise<void>(resolve => instance.server.listen(0, "127.0.0.1", resolve));
     const taskBase = `http://127.0.0.1:${(instance.server.address() as AddressInfo).port}`;
     const request = (path: string, method: "POST", body: unknown) => fetch(taskBase + path, {
@@ -2411,13 +2409,13 @@ describe("local task gateway", () => {
 
 describe("task gateway → event bus", () => {
   test("publishes task.updated for each canonical event appended", async () => {
-    const { __resetEventBusForTests, subscribeEvents } = await import("../../src/server/event-bus.ts");
-    __resetEventBusForTests();
+    const { EventBus } = await import("../../src/event-bus.ts");
+    const events = new EventBus();
     const seen: Array<{ readonly kind: string; readonly taskId?: string; readonly eventType?: string }> = [];
-    const unsubscribe = subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => seen.push(event as never));
+    const unsubscribe = events.subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => seen.push(event as never));
     const taskRoot = join(tmpdir(), `wolfpack-task-events-${process.pid}-${Date.now()}`);
     try {
-      const gateway = new TaskGateway({ inspectSession: (selector: string) => context.backend.inspectSession(selector), root: taskRoot });
+      const gateway = new TaskGateway({ inspectSession: (selector: string) => context.backend.inspectSession(selector), root: taskRoot, store: new TaskStore({ root: taskRoot, publishEvent: body => events.publishEvent(body) }) });
       const sent = await gateway.send({ callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "emit events", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: undefined, rawBody: undefined });
       if (!sent.ok) throw new Error("expected task send");
       const completed = await gateway.complete({ callerSession: "receiver", taskId: sent.taskId, status: "completed", result: { summary: "done", result: undefined, error: undefined, artifacts: undefined }, rawBody: undefined });
@@ -2433,10 +2431,10 @@ describe("task gateway → event bus", () => {
   });
 
   test("publishes each committed canonical event exactly once when replica propagation fails", async () => {
-    const { __resetEventBusForTests, subscribeEvents } = await import("../../src/server/event-bus.ts");
-    __resetEventBusForTests();
+    const { EventBus } = await import("../../src/event-bus.ts");
+    const events = new EventBus();
     const published: string[] = [];
-    const unsubscribe = subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => {
+    const unsubscribe = events.subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => {
       if (event.kind === "task.updated") published.push(event.eventId);
     });
     const taskRoot = join(tmpdir(), `wolfpack-task-events-fault-${process.pid}-${Date.now()}`);
@@ -2444,6 +2442,7 @@ describe("task gateway → event bus", () => {
       let failNextReplica = false;
       const store = new TaskStore({
         root: taskRoot,
+        publishEvent: body => events.publishEvent(body),
         testHooks: {
           beforeFsync: (step, path) => {
             if (failNextReplica && step === "ledger-file" && path.includes("/ledgers/receiver/")) {
@@ -2466,7 +2465,7 @@ describe("task gateway → event bus", () => {
       expect(published).toEqual(canonicalIds);
 
       // Restart recovery repairs projections without replaying committed events.
-      const restarted = new TaskGateway({ inspectSession: (selector: string) => context.backend.inspectSession(selector), root: taskRoot });
+      const restarted = new TaskGateway({ inspectSession: (selector: string) => context.backend.inspectSession(selector), root: taskRoot, store: new TaskStore({ root: taskRoot, publishEvent: body => events.publishEvent(body) }) });
       await restarted.initialize();
       expect(published).toEqual(canonicalIds);
     } finally {
@@ -2476,10 +2475,10 @@ describe("task gateway → event bus", () => {
   });
 
   test("publishes a receipt confirmation committed during restart reconciliation", async () => {
-    const { __resetEventBusForTests, subscribeEvents } = await import("../../src/server/event-bus.ts");
-    __resetEventBusForTests();
+    const { EventBus } = await import("../../src/event-bus.ts");
+    const events = new EventBus();
     const published: string[] = [];
-    const unsubscribe = subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => {
+    const unsubscribe = events.subscribeEvents({ kinds: new Set(["task.updated"] as const) }, (event) => {
       if (event.kind === "task.updated") published.push(event.eventId);
     });
     const taskRoot = join(tmpdir(), `wolfpack-task-events-receipt-${process.pid}-${Date.now()}`);
@@ -2489,6 +2488,7 @@ describe("task gateway → event bus", () => {
         root: taskRoot,
         store: new TaskStore({
           root: taskRoot,
+          publishEvent: body => events.publishEvent(body),
           testHooks: {
             beforeFsync: (step, path) => {
               if (step === "ledger-file" && path.includes("/ledgers/receiver/") && ++receiverLedgerWrites === 3) throw new Error("simulated received replica crash");
@@ -2500,7 +2500,7 @@ describe("task gateway → event bus", () => {
       const body = { callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "receipt events", context: undefined, role: undefined, preflight: undefined, metadata: undefined, onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: "receipt-events", rawBody: undefined };
       await expect(crashing.send(body)).rejects.toThrow("could not append task ledger record");
 
-      const restarted = new TaskGateway({ inspectSession: (selector: string) => context.backend.inspectSession(selector), root: taskRoot });
+      const restarted = new TaskGateway({ inspectSession: (selector: string) => context.backend.inspectSession(selector), root: taskRoot, store: new TaskStore({ root: taskRoot, publishEvent: body => events.publishEvent(body) }) });
       const receipt = await restarted.send(body);
       if (!receipt.ok) throw new Error("expected recovered receipt");
       const status = await restarted.status("parent", receipt.taskId);

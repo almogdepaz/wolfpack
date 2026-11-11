@@ -1,4 +1,8 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ControlResponse } from "../../src/broker/codec";
 import { MockBackend } from "../../src/server/mock-backend";
 import {
   BrokerSupervisor as BackendRouter,
@@ -7,19 +11,57 @@ import {
 import { createServerContext } from "../../src/server/context";
 const backendFor = (supervisor: BackendRouter) => createServerContext({ supervisor }).backend;
 
-/**
- * Construct a BackendRouter with a mock broker injected. Live broker startup
- * is disabled explicitly, so the constructor leaves `broker` null — we patch it in directly.
- */
-function createTestRouter(opts?: { brokerMock?: MockBackend }): {
-  router: BackendRouter;
-  brokerMock: MockBackend;
-} {
-  const brokerMock = opts?.brokerMock ?? new MockBackend();
-  const router = new BackendRouter({ start: false });
-  (router as any).broker = brokerMock;
-  (router as any)._brokerAvailable = true;
-  return { router, brokerMock };
+type Reply = (method: string) => Promise<Omit<ControlResponse, "id">>;
+const cleanups: Array<() => void> = [];
+afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
+
+function createTestRouter(opts: { brokerMock?: MockBackend; backends?: MockBackend[]; respond?: Reply } = {}) {
+  const brokerMock = opts.brokerMock ?? new MockBackend();
+  const root = mkdtempSync(join(tmpdir(), "wolfpack-supervisor-"));
+  const socketPath = join(root, "broker.sock");
+  writeFileSync(socketPath, "");
+  const methods: string[] = [];
+  let respond: Reply = opts.respond ?? (async () => ({ status: "ok", payload: { kind: "hello", protocol_version: 2, broker_version: "fixture" } }));
+  const transports: Array<{ connected: boolean; closed: boolean }> = [];
+  let tick: () => Promise<void> = async () => { throw new Error("watchdog not scheduled"); };
+  let interval = 0;
+  let stopped = false;
+  let now = 0;
+  let backendIndex = 0;
+  const router = new BackendRouter({
+    socketPath,
+    now: () => now,
+    sleep: async ms => { now += ms; },
+    scheduleWatchdog(callback, intervalMs) { tick = callback; interval = intervalMs; return () => { stopped = true; }; },
+    createClient() {
+      const transport = { connected: true, closed: false };
+      transports.push(transport);
+      return {
+        request: async method => { methods.push(method); return { id: 0, ...await respond(method) }; },
+        start() {},
+        close() { transport.closed = true; transport.connected = false; },
+        isConnected: () => transport.connected,
+        snapshotSubscribe: async () => { throw new Error("unexpected snapshot"); },
+        snapshotSubscribeAnsi: async () => { throw new Error("unexpected ANSI snapshot"); },
+        writeInput() { throw new Error("unexpected input"); },
+        subscribeOutput() { throw new Error("unexpected output subscription"); },
+        subscribe: async () => { throw new Error("unexpected subscribe"); },
+        unsubscribe: async () => {},
+        cancelSubscription: async () => {},
+        outputSequence: () => undefined,
+      };
+    },
+    createBackend: () => Object.assign(opts.backends?.[backendIndex++] ?? brokerMock, {
+      ingestEvent() {}, handleBrokerConnected() {}, handleBrokerDisconnected() {},
+      handleReplayTruncated() {}, handleResubscribeError() {},
+    }),
+  });
+  cleanups.push(() => { router.close(); rmSync(root, { recursive: true, force: true }); });
+  return { router, brokerMock, methods, transports, tick: () => tick(), interval,
+    setRespond(value: Reply) { respond = value; },
+    removeSocket() { unlinkSync(socketPath); },
+    now: () => now, stopped: () => stopped,
+  };
 }
 
 const loadSettings = () => ({ agentCmd: "shell" });
@@ -131,14 +173,17 @@ describe("BrokerSupervisor", () => {
   });
 
   test("session facades follow recovery while streaming backends stay pinned", async () => {
-    const router = new BackendRouter({ start: false });
     const first = new MockBackend({ sessions: ["session"], capturePane: async () => "first" });
     const second = new MockBackend({ sessions: ["session"], capturePane: async () => "second" });
-    router.__setBrokerForTest(first);
+    const fixture = createTestRouter({ backends: [first, second] });
+    const { router } = fixture;
     const ctx = createServerContext({ supervisor: router });
     const retained = ctx.backend;
     const streaming = router.backend()!;
-    router.__setBrokerForTest(second);
+    fixture.setRespond(async () => { throw new Error("disconnected"); });
+    expect(await router.verifyBrokerHandshake()).toBe(false);
+    fixture.setRespond(async () => ({ status: "ok", payload: { kind: "hello", protocol_version: 2, broker_version: "replacement" } }));
+    await fixture.tick();
     expect(await retained.capturePane("session")).toBe("second");
     expect(await streaming.capturePane("session")).toBe("first");
     expect(ctx.backend).toBe(retained);
@@ -153,12 +198,12 @@ describe("BrokerSupervisor", () => {
     });
 
     test("distinguishes configured broker availability from live transport readiness", () => {
-      const { router } = createTestRouter();
-      (router as any).brokerClient = { isConnected: () => false };
+      const { router, transports } = createTestRouter();
+      transports[0].connected = false;
       expect(router.isBrokerAvailable()).toBe(true);
       expect(router.isBrokerReady()).toBe(false);
 
-      (router as any).brokerClient = { isConnected: () => true };
+      transports[0].connected = true;
       expect(router.isBrokerReady()).toBe(true);
     });
 
@@ -168,17 +213,9 @@ describe("BrokerSupervisor", () => {
     });
 
     describe("verifyBrokerHandshake hello negotiation", () => {
-      function routerWithClient(respond: (method: string) => Promise<unknown>) {
-        const { router } = createTestRouter();
-        const methods: string[] = [];
-        let closed = false;
-        (router as any).brokerClient = {
-          close: () => { closed = true; },
-          isConnected: () => true,
-          request: async (method: string) => { methods.push(method); return respond(method); },
-          start() {},
-        };
-        return { router, methods, closed: () => closed };
+      function routerWithClient(respond: Reply) {
+        const fixture = createTestRouter({ respond });
+        return { ...fixture, closed: () => fixture.transports[0].closed };
       }
 
       test("records the broker and protocol version from a compatible hello", async () => {
@@ -230,85 +267,55 @@ describe("BrokerSupervisor", () => {
   });
 
   describe("recovery watchdog", () => {
-    // The watchdog uses `checkBrokerSocketExists` (existsSync). To avoid
-    // touching real filesystem state, we point `brokerSocketPath` at /tmp
-    // for the "socket present" branch (existsSync("/tmp") is always true)
-    // and at a guaranteed-missing path for the "socket gone" branch. The
-    // expensive parts (BrokerClient startup, real handshake) are stubbed.
-
-    test("watchdog no-ops while broker is healthy", async () => {
-      const { router, brokerMock } = createTestRouter();
-      // `_brokerAvailable=true` was set by createTestRouter; verify the
-      // watchdog tick exits early without touching anything.
-      let verifyCalls = 0;
-      (router as any).verifyBrokerHandshake = async () => { verifyCalls++; return true; };
-      await router._watchdogTickForTest();
-      expect(verifyCalls).toBe(0);
-      expect(router.isBrokerAvailable()).toBe(true);
-      void brokerMock;
+    test("uses the production 5s interval and no-ops while healthy", async () => {
+      const fixture = createTestRouter();
+      expect(fixture.interval).toBe(5000);
+      await fixture.tick();
+      expect(fixture.methods).toEqual([]);
+      expect(fixture.router.isBrokerReady()).toBe(true);
     });
 
-    test("watchdog flips broker back to available when handshake succeeds", async () => {
-      const router = new BackendRouter({ start: false });
-      // Pretend we just had a wedge: socket exists, client torn down,
-      // availability flag is false.
-      (router as any).brokerSocketPath = "/tmp"; // exists
-      (router as any).brokerClient = null;
-      (router as any).broker = null;
-      (router as any)._brokerAvailable = false;
-
-      let starts = 0;
-      let verifies = 0;
-      (router as any).startBrokerClient = function fakeStart() {
-        starts++;
-        (this as any).brokerClient = { close() {}, isConnected() { return true; }, request: async () => ({ status: "ok" }), start() {} };
-        (this as any).broker = {};
-      };
-      (router as any).verifyBrokerHandshake = async () => { verifies++; return true; };
-
-      await router._watchdogTickForTest();
-      expect(starts).toBe(1);
-      expect(verifies).toBe(1);
-      expect(router.isBrokerAvailable()).toBe(true);
-
-      // Second tick is a no-op because broker is healthy again.
-      await router._watchdogTickForTest();
-      expect(verifies).toBe(1);
+    test("restarts a failed client and recovers through the real handshake", async () => {
+      const fixture = createTestRouter({ respond: async () => { throw new Error("wedged"); } });
+      expect(await fixture.router.verifyBrokerHandshake()).toBe(false);
+      expect(fixture.transports[0].closed).toBe(true);
+      fixture.setRespond(async () => ({ status: "ok", payload: { kind: "hello", protocol_version: 2, broker_version: "recovered" } }));
+      await fixture.tick();
+      expect(fixture.transports).toHaveLength(2);
+      expect(fixture.router.isBrokerReady()).toBe(true);
+      expect(fixture.router.getBrokerVersion()?.brokerVersion).toBe("recovered");
+      await fixture.tick();
+      expect(fixture.methods).toEqual(["hello", "hello"]);
     });
 
-    test("watchdog keeps retrying while handshake fails", async () => {
-      const router = new BackendRouter({ start: false });
-      (router as any).brokerSocketPath = "/tmp";
-      (router as any)._brokerAvailable = false;
-      (router as any).brokerClient = null;
-      let verifies = 0;
-      (router as any).startBrokerClient = function fakeStart() {
-        (this as any).brokerClient = { close() {}, isConnected() { return true; }, request: async () => ({ status: "ok" }), start() {} };
-        (this as any).broker = {};
-      };
-      (router as any).verifyBrokerHandshake = async () => {
-        verifies++;
-        // Real verify tears client down on fail.
-        (router as any).brokerClient = null;
-        (router as any).broker = null;
-        return false;
-      };
-
-      await router._watchdogTickForTest();
-      await router._watchdogTickForTest();
-      await router._watchdogTickForTest();
-      expect(verifies).toBe(3);
-      expect(router.isBrokerAvailable()).toBe(false);
+    test("keeps retrying failed handshakes without keeping failed clients", async () => {
+      const fixture = createTestRouter({ respond: async () => { throw new Error("wedged"); } });
+      expect(await fixture.router.verifyBrokerHandshake()).toBe(false);
+      for (let i = 0; i < 3; i++) await fixture.tick();
+      expect(fixture.methods).toHaveLength(4);
+      expect(fixture.transports.every(client => client.closed)).toBe(true);
+      expect(fixture.router.isBrokerAvailable()).toBe(false);
     });
 
-    test("watchdog is a no-op when the socket file is missing", async () => {
-      const router = new BackendRouter({ start: false });
-      (router as any).brokerSocketPath = "/tmp/wp-definitely-missing-watchdog.sock";
-      (router as any)._brokerAvailable = false;
-      let verifies = 0;
-      (router as any).verifyBrokerHandshake = async () => { verifies++; return true; };
-      await router._watchdogTickForTest();
-      expect(verifies).toBe(0);
+    test("does not reconnect when the socket disappears", async () => {
+      const fixture = createTestRouter({ respond: async () => { throw new Error("wedged"); } });
+      expect(await fixture.router.verifyBrokerHandshake()).toBe(false);
+      fixture.removeSocket();
+      await fixture.tick();
+      expect(fixture.transports).toHaveLength(1);
+      expect(fixture.methods).toEqual(["hello"]);
+    });
+
+    test("retains the 1500ms connect deadline and disposes its scheduler", async () => {
+      const fixture = createTestRouter();
+      fixture.transports[0].connected = false;
+      expect(await fixture.router.verifyBrokerHandshake()).toBe(false);
+      expect(fixture.now()).toBe(1500);
+      expect(fixture.transports[0].closed).toBe(true);
+      await createServerContext({ supervisor: fixture.router }).close();
+      expect(fixture.stopped()).toBe(true);
+      await fixture.tick();
+      expect(fixture.transports).toHaveLength(1);
     });
   });
 });

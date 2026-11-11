@@ -11,15 +11,14 @@ const PRIOR_ENV = {
   WOLFPACK_TEST: process.env.WOLFPACK_TEST,
   WOLFPACK_DEV_DIR: process.env.WOLFPACK_DEV_DIR,
 } as const;
-const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
 process.env.WOLFPACK_TEST = "1";
 const RAW_TEST_DEV_DIR = mkdtempSync(join(tmpdir(), "wolfpack-audit-devdir-"));
 const TEST_DEV_DIR = realpathSync(RAW_TEST_DEV_DIR);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
-const { __setDevDir } = await import("../../src/test-hooks.ts");
+
 const { isUnderDevDir } = await import("../../src/server/dev-dir.js");
-__setDevDir(TEST_DEV_DIR);
+
 
 // ── 1. Path containment boundary (audit finding: prefix check too weak) ──
 
@@ -176,7 +175,7 @@ describe("validateExplicitProjectDir — explicit arbitrary directory boundary",
 
 afterAll(() => {
   rmSync(TEST_DEV_DIR, { recursive: true, force: true });
-  __setDevDir(PRIOR_CACHED_DEV_DIR);
+
   if (PRIOR_ENV.WOLFPACK_DEV_DIR === undefined) delete process.env.WOLFPACK_DEV_DIR;
   else process.env.WOLFPACK_DEV_DIR = PRIOR_ENV.WOLFPACK_DEV_DIR;
   if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;

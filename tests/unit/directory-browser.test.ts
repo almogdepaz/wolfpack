@@ -285,9 +285,7 @@ describe("GET /api/directories", () => {
   beforeAll(async () => {
     process.env.WOLFPACK_TEST = "1";
     process.env.WOLFPACK_DEV_DIR = configuredBase;
-    const { __setDevDir } = await import("../../src/server/dev-dir.js");
-    __setDevDir(configuredBase);
-    const context = createServerContext({ backend: mockBackend });
+    const context = createServerContext({ backend: mockBackend, devDir: configuredBase });
     mkdirSync(join(configuredBase, "project"), { recursive: true });
     const { createServerInstance } = await import("../../src/server/index.ts");
     ({ server } = createServerInstance(context));

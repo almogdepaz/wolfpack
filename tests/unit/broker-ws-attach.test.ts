@@ -16,8 +16,6 @@ import {
   type SessionLifecycleEvent,
 } from "../../src/server/backend";
 import { SESSION_KILL_DISPOSITION, type SessionKillDisposition } from "../../src/server/backend-contract";
-import { __getTestState } from "../../src/test-hooks";
-import { handlePtyWs, teardownPty } from "../../src/server/websocket";
 import { createServerContext } from "../../src/server/context";
 import { classifyDisconnect } from "../../src/take-control-logic";
 
@@ -289,7 +287,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
   }
 }
 const SESSION = "broker-attach-test";
-const { activePtySessions } = __getTestState();
 
 let backend: FakeBrokerBackend;
 let context: ReturnType<typeof createServerContext>;
@@ -298,17 +295,15 @@ beforeEach(() => {
   backend = new FakeBrokerBackend();
   backend.alive.add(SESSION);
   context = createServerContext({ backend });
-  activePtySessions.clear();
 });
 
-afterEach(() => {
-  teardownPty(SESSION);
-  activePtySessions.clear();
+afterEach(async () => {
+  await context.close();
   jest.useRealTimers();
 });
 
 function attachWs(ws: FakeWs, session = SESSION): void {
-  handlePtyWs(ws as unknown as WsWebSocket, session, false, context);
+  context.terminals.handlePtyWs(ws as unknown as WsWebSocket, session);
 }
 
 describe("broker WS attach: snapshot + subscribe path", () => {
@@ -365,6 +360,65 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(backend.resizeCalls).toEqual([{ name: SESSION, cols: 100, rows: 30 }]);
     expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
     expect(attachEvents).toEqual(["subscribe", "subscribe", "pty_ready"]);
+  });
+
+  test("an explicit prefill delay postpones bytes without changing the default attach contract", async () => {
+    context = createServerContext({ backend, terminalPrefillDelayMs: 1000 });
+    backend.prefill.set(SESSION, Buffer.from("delayed snapshot"));
+    const ws = new FakeWs();
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 100, rows: 30 });
+    await wait(350);
+    expect(ws.hasJsonType("attach_ack")).toBe(true);
+    expect(ws.binaryFrames()).toHaveLength(0);
+    await waitFor(() => ws.hasJsonType("pty_ready"), 1500);
+    expect(Buffer.concat(ws.binaryFrames()).toString()).toContain("delayed snapshot");
+  });
+
+  test.each([
+    [undefined, 0], [0, 0], [-1, 0], [NaN, 0], [Infinity, 0],
+    [1.4, 1], [1.5, 2], [20_000, 10_000],
+  ] as const)("prefill delay %s retains production normalization to %s ms", async (delay, expected) => {
+    jest.useFakeTimers({ now: 1_000_000 });
+    context = createServerContext({ backend, terminalPrefillDelayMs: delay });
+    backend.prefill.set(SESSION, Buffer.from("snapshot"));
+    let fetchedAt: number | undefined, sentAt: number | undefined;
+    const getPrefill = backend.getSessionPrefill.bind(backend);
+    backend.getSessionPrefill = (...args) => { fetchedAt = Date.now(); return getPrefill(...args); };
+    const ws = new FakeWs();
+    ws.onSend = data => { if (typeof data !== "string") sentAt ??= Date.now(); };
+    attachWs(ws);
+    ws.pushJson({ type: "attach", cols: 100, rows: 30 });
+    await advanceClock(500 + expected);
+    expect(fetchedAt).toBeDefined();
+    expect(sentAt).toBeDefined();
+    expect(sentAt! - fetchedAt!).toBe(expected);
+  });
+
+  test("separate contexts own same-named terminals and closing one leaves the other usable", async () => {
+    const otherBackend = new FakeBrokerBackend();
+    otherBackend.alive.add(SESSION);
+    const other = createServerContext({ backend: otherBackend });
+    const first = new FakeWs(), second = new FakeWs();
+    attachWs(first);
+    other.terminals.handlePtyWs(second as unknown as WsWebSocket, SESSION);
+    first.pushJson({ type: "attach", cols: 100, rows: 30 });
+    second.pushJson({ type: "attach", cols: 100, rows: 30 });
+    try {
+      await waitFor(() => first.hasJsonType("pty_ready") && second.hasJsonType("pty_ready"));
+      backend.emitData(SESSION, Buffer.from("first-only"));
+      otherBackend.emitData(SESSION, Buffer.from("second-only"));
+      expect(Buffer.concat(first.binaryFrames()).toString()).toContain("first-only");
+      expect(Buffer.concat(first.binaryFrames()).toString()).not.toContain("second-only");
+      expect(Buffer.concat(second.binaryFrames()).toString()).toContain("second-only");
+      expect(Buffer.concat(second.binaryFrames()).toString()).not.toContain("first-only");
+      await other.close();
+      expect(otherBackend.dataListeners.get(SESSION)?.size).toBe(0);
+      backend.emitData(SESSION, Buffer.from("still-live"));
+      await waitFor(() => Buffer.concat(first.binaryFrames()).toString().includes("still-live"));
+      expect(Buffer.concat(first.binaryFrames()).toString()).toContain("still-live");
+      expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
+    } finally { await other.close(); }
   });
 
   test("aborted prefill releases its atomic attach lease before live activation", async () => {
@@ -518,7 +572,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     jest.advanceTimersByTime(25_000);
     expect(ws.terminateCalls).toBe(0);
     expect(ws.readyState).toBe(1);
-    expect(activePtySessions.has(SESSION)).toBe(true);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(true);
   });
 
   test("pending viewer heartbeat counts inbound attach traffic without a pong", async () => {
@@ -541,7 +595,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     jest.advanceTimersByTime(25_000);
     expect(ws.terminateCalls).toBe(1);
     expect(ws.readyState).toBe(3);
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("session exit drains credit-blocked accepted output before the terminal close", async () => {
@@ -566,7 +620,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(Buffer.concat(ws.binaryFrames()).equals(stream)).toBe(true);
     expect(ws.closeCode).toBe(4001);
     expect(ws.closeReason).toBe("session unavailable");
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("session exit bounds a non-acking viewer's drain wait to five seconds", async () => {
@@ -580,7 +634,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.closeCode).toBe(4001);
     expect(ws.closeReason).toBe("session unavailable");
     expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("broker_unavailable closes the viewer with 4004 and tears down the pty", async () => {
@@ -588,7 +642,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     backend.emitLifecycle(SESSION, { kind: "broker_unavailable" });
     expect(ws.closeCode).toBe(4004);
     expect(ws.closeReason).toBe("broker unavailable");
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("broker_unavailable also closes a pending conflict viewer with reconnectable 4004", async () => {
@@ -611,7 +665,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(jest.getTimerCount()).toBe(0);
     jest.advanceTimersByTime(5000);
     expect(ws.closeCode).toBe(1000);
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("final progress ack drains output after normal control bucket exhaustion", async () => {
@@ -628,7 +682,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     jest.advanceTimersByTime(1000);
     expect(Buffer.concat(ws.binaryFrames()).equals(stream)).toBe(true);
     expect(ws.closeCode).toBeNull();
-    expect(activePtySessions.has(SESSION)).toBe(true);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(true);
   });
 
   test("non-progress ack traffic cannot consume resize control admission", async () => {
@@ -685,7 +739,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     ws.pushJson({ type: "ack", bytes: 512 * 1024 });
     jest.advanceTimersByTime(100);
     expect(Buffer.concat(ws.binaryFrames()).length).toBe(512 * 1024);
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("output ack overflow during synchronous subscribe activation releases its listener", async () => {
@@ -1133,7 +1187,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     expect(ws.closeReason).toBe("resize failed");
     expect(ws.hasJsonType("resize_ack")).toBe(false);
     expect(ws.hasJsonType("pty_ready")).toBe(false);
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("legacy viewer ignores stale bufferedAmount and has no output ack window", async () => {
@@ -1143,7 +1197,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     backend.emitData(SESSION, stream);
     expect(Buffer.concat(ws.binaryFrames())).toEqual(stream);
     expect(ws.closeCode).toBeNull();
-    expect(activePtySessions.has(SESSION)).toBe(true);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(true);
   });
 
   test("viewport attach applies initial resize without full desktop settle wait", async () => {
@@ -1340,7 +1394,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     await wait(20);
 
     expect(ws.closeCode).toBe(4001);
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("take-control: pending viewer displaces active viewer; new entry re-attaches via broker", async () => {
@@ -1383,14 +1437,14 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     attachWs(ws);
     ws.pushJson({ type: "attach", cols: 80, rows: 24, prefillMode: "none" });
     await wait(20);
-    expect(activePtySessions.has(SESSION)).toBe(true);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(true);
     expect(backend.lifecycleListeners.get(SESSION)?.size).toBe(1);
 
     backend.emitExit(SESSION, 0);
 
     expect(ws.closeCode).toBe(4001);
     expect(ws.closeReason).toBe("session unavailable");
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
     expect(backend.dataListeners.get(SESSION)?.size ?? 0).toBe(0);
   });
 
@@ -1409,7 +1463,7 @@ describe("broker WS attach: snapshot + subscribe path", () => {
 
     expect(wsA.closeCode).toBe(4001);
     expect(wsB.closeCode).toBe(4001);
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
   });
 
   test("ws close after attach unsubscribes from broker and removes the session entry", async () => {
@@ -1419,12 +1473,12 @@ describe("broker WS attach: snapshot + subscribe path", () => {
     await wait(20);
 
     expect(backend.dataListeners.get(SESSION)?.size).toBe(1);
-    expect(activePtySessions.has(SESSION)).toBe(true);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(true);
 
     ws.close();
     await wait(20);
 
-    expect(activePtySessions.has(SESSION)).toBe(false);
+    expect(context.terminals.activePtySessions.has(SESSION)).toBe(false);
     expect(backend.dataListeners.get(SESSION)?.size ?? 0).toBe(0);
   });
 });

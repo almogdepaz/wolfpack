@@ -1,3 +1,7 @@
+import { createPushService } from "./push.js";
+import { createTerminalSessions, type TerminalSessionOptions } from "./websocket.js";
+import type { ClaudeManagedSettingsDropIn } from "../claude-integration.js";
+import { getCachedJwtAuthConfig, type JwtAuthConfig } from "../auth.js";
 import { createChildEvents } from "./child-events.js";
 import { createSessionDeath } from "./session-death.js";
 import { createViewerInput } from "./viewer-input.js";
@@ -8,6 +12,7 @@ import { createChildEventDeliveryOwner } from "./child-event-delivery.js";
 import { AgentRuntimeStateStore } from "./agent-status.js";
 import { SessionIdentityStore } from "./session-identity.js";
 import { SessionOrganizationService } from "./session-organization.ts";
+import { TaskStore } from "../tasks/store.ts";
 import { TaskGateway } from "../tasks/gateway.ts";
 import { createTaskRelayGateway } from "../task-relay/gateway.ts";
 import { ExtensionRouteService } from "./extension-routes.ts";
@@ -31,6 +36,11 @@ export type ServerBackend = SessionBackend & PtyBackendMethods & SessionPromptBa
  * single-owner guard. Close owned workers before reusing their roots.
  */
 export interface ServerContext {
+  readonly push: ReturnType<typeof createPushService>;
+  readonly terminals: ReturnType<typeof createTerminalSessions>;
+  readonly jwtAuthConfig: JwtAuthConfig;
+  readonly devDir?: string;
+  readonly claudeManagedSettingsDropIn?: ClaudeManagedSettingsDropIn;
   readonly childEvents: ReturnType<typeof createChildEvents>;
   readonly sessionDeath: ReturnType<typeof createSessionDeath>;
   readonly viewerInput: ReturnType<typeof createViewerInput>;
@@ -56,6 +66,8 @@ export interface ServerContext {
 
 // Context-owned lazy instances; closing a context does not replace its services.
 interface ServiceCache {
+  push?: ReturnType<typeof createPushService>;
+  terminals?: ReturnType<typeof createTerminalSessions>;
   childEvents?: ReturnType<typeof createChildEvents>;
   sessionDeath?: ReturnType<typeof createSessionDeath>;
   viewerInput?: ReturnType<typeof createViewerInput>;
@@ -73,6 +85,8 @@ interface ServiceCache {
 
 export interface ServerContextOptions extends Partial<Omit<ServerContext, "close" | "flushRuntimeState">> {
   readonly observationCacheTtlMs?: number;
+  readonly terminalPrefillDelayMs?: number;
+  readonly onTerminalAttachAttempt?: TerminalSessionOptions["onAttachAttempt"];
   readonly taskRoot?: string;
   readonly taskRelayRoot?: string;
 }
@@ -80,6 +94,8 @@ export interface ServerContextOptions extends Partial<Omit<ServerContext, "close
 export function createServerContext(overrides: ServerContextOptions = {}): ServerContext {
   const events = overrides.events ?? defaultEventBus;
   const cache: ServiceCache = {
+    push: overrides.push,
+    terminals: overrides.terminals,
     childEvents: overrides.childEvents,
     sessionDeath: overrides.sessionDeath,
     viewerInput: overrides.viewerInput,
@@ -91,15 +107,21 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     extensionRouteService: overrides.extensionRouteService,
     agentRuntimeStateStore: overrides.agentRuntimeStateStore, sessionIdentityStore: overrides.sessionIdentityStore,
   };
-  const sessionIdentityStore = () => cache.sessionIdentityStore ??= new SessionIdentityStore();
+  const sessionIdentityStore = () => cache.sessionIdentityStore ??= new SessionIdentityStore(overrides.devDir);
   const childEvents = cache.childEvents ??= overrides.backend?.childEvents ?? overrides.supervisor?.childEvents ?? createChildEvents();
   const sessionDeath = cache.sessionDeath ??= overrides.backend?.sessionDeath ?? overrides.supervisor?.sessionDeath ?? createSessionDeath();
   const viewerInput = cache.viewerInput ??= overrides.backend?.viewerInput ?? overrides.supervisor?.viewerInput ?? createViewerInput();
   const supervisor = overrides.supervisor ?? (overrides.backend ? undefined : new BrokerSupervisor({
-    events, sessionIdentityStore, childEvents, sessionDeath, viewerInput, start: !process.env.WOLFPACK_TEST,
+    events, sessionIdentityStore, childEvents, sessionDeath, viewerInput,
+    claudeManagedSettingsDropIn: overrides.claudeManagedSettingsDropIn, start: !process.env.WOLFPACK_TEST,
   }));
   const backend = overrides.backend ?? supervisedBackend(supervisor!);
   const context: ServerContext = {
+    get push() { return cache.push ??= createPushService(); },
+    get terminals() { return cache.terminals ??= createTerminalSessions(context, { prefillDelayMs: overrides.terminalPrefillDelayMs, onAttachAttempt: overrides.onTerminalAttachAttempt }); },
+    devDir: overrides.devDir,
+    claudeManagedSettingsDropIn: overrides.claudeManagedSettingsDropIn,
+    get jwtAuthConfig() { return overrides.jwtAuthConfig ?? getCachedJwtAuthConfig(); },
     childEvents, sessionDeath, viewerInput,
     get webSocketTickets() { return cache.webSocketTickets ??= createWebSocketTickets(); },
     get sessionCascade() { return cache.sessionCascade ??= createSessionCascade(context); },
@@ -110,7 +132,14 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     config: overrides.config === undefined ? loadConfig() : overrides.config,
     supervisor,
     get taskGateway() {
-      return cache.taskGateway ??= new TaskGateway({ root: overrides.taskRoot ?? process.env.WOLFPACK_TASK_ROOT, inspectSession: selector => context.backend.inspectSession(selector) });
+      if (!cache.taskGateway) {
+        const root = overrides.taskRoot ?? process.env.WOLFPACK_TASK_ROOT;
+        cache.taskGateway = new TaskGateway({
+          root, store: new TaskStore({ root, publishEvent: body => context.events.publishEvent(body) }),
+          inspectSession: selector => context.backend.inspectSession(selector),
+        });
+      }
+      return cache.taskGateway;
     },
     get taskRelayGateway() {
       return cache.taskRelayGateway ??= createTaskRelayGateway({ root: overrides.taskRelayRoot ?? process.env.WOLFPACK_TASK_RELAY_ROOT,
@@ -124,11 +153,14 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     get sessionIdentityStore() { return sessionIdentityStore(); },
     async flushRuntimeState() { await cache.agentRuntimeStateStore?.flushForShutdown(); },
     async close() {
+      cache.terminals?.dispose();
       cache.sessionCascade?.dispose();
       cache.childEventDelivery?.dispose();
       await cache.sessionObservation?.dispose();
+      cache.push?.dispose();
       await context.flushRuntimeState();
       await cache.taskRelayGateway?.close();
+      supervisor?.close();
     },
     get extensionRouteService() {
       return cache.extensionRouteService ??= new ExtensionRouteService({ backend: { listSessionFacts: () => context.backend.listSessionFacts() } });
@@ -149,6 +181,11 @@ export function resetDefaultServerContext(): void { current = undefined; }
 
 /** Lazy compatibility view: old route exports follow test overrides without opening a broker on import. */
 export const defaultServerContext: ServerContext = {
+  get push() { return getDefaultServerContext().push; },
+  get terminals() { return getDefaultServerContext().terminals; },
+  get devDir() { return getDefaultServerContext().devDir; },
+  get claudeManagedSettingsDropIn() { return getDefaultServerContext().claudeManagedSettingsDropIn; },
+  get jwtAuthConfig() { return getDefaultServerContext().jwtAuthConfig; },
   get childEvents() { return getDefaultServerContext().childEvents; },
   get sessionDeath() { return getDefaultServerContext().sessionDeath; },
   get viewerInput() { return getDefaultServerContext().viewerInput; },

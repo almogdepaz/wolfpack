@@ -42,16 +42,6 @@ try {
   // Ignore if signals are unavailable in this runtime.
 }
 
-/** Test-only helper to clear cached log level after env mutation. */
-export function __resetLogLevelCache(): void {
-  if (!process.env.WOLFPACK_TEST) throw new Error("__resetLogLevelCache() is only available in test mode");
-  _cachedLevel = null;
-}
-
-function shouldLog(level: LogLevel): boolean {
-  return LEVEL_ORDER[level] >= LEVEL_ORDER[currentLevel()];
-}
-
 interface LogEntry {
   ts: string;
   level: LogLevel;
@@ -78,8 +68,8 @@ function formatRecord(level: LogLevel, component: Component, msg: string, extra?
   return JSON.stringify(entry) + "\n";
 }
 
-function emit(level: LogLevel, component: Component, msg: string, extra?: Record<string, unknown>): void {
-  if (!shouldLog(level)) return;
+function emit(level: LogLevel, component: Component, msg: string, extra: Record<string, unknown> | undefined, threshold: LogLevel): void {
+  if (LEVEL_ORDER[level] < LEVEL_ORDER[threshold]) return;
   const line = formatRecord(level, component, msg, extra);
   if (level === "error") {
     process.stderr.write(line);
@@ -113,12 +103,13 @@ export function writeFatalError(component: Component, msg: string, extra?: Recor
   }
 }
 
-export function createLogger(component: Component) {
+export function createLogger(component: Component, options: { readonly level?: () => LogLevel } = {}) {
+  const level = options.level ?? currentLevel;
   return {
-    debug: (msg: string, extra?: Record<string, unknown>) => emit("debug", component, msg, extra),
-    info: (msg: string, extra?: Record<string, unknown>) => emit("info", component, msg, extra),
-    warn: (msg: string, extra?: Record<string, unknown>) => emit("warn", component, msg, extra),
-    error: (msg: string, extra?: Record<string, unknown>) => emit("error", component, msg, extra),
+    debug: (msg: string, extra?: Record<string, unknown>) => emit("debug", component, msg, extra, level()),
+    info: (msg: string, extra?: Record<string, unknown>) => emit("info", component, msg, extra, level()),
+    warn: (msg: string, extra?: Record<string, unknown>) => emit("warn", component, msg, extra, level()),
+    error: (msg: string, extra?: Record<string, unknown>) => emit("error", component, msg, extra, level()),
   };
 }
 

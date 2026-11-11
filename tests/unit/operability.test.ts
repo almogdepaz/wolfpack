@@ -6,7 +6,8 @@ import {
   operationalHealth,
 } from "../../src/server/operability";
 import { createServerContext } from "../../src/server/context";
-import { __resetJwtAuthConfig } from "../../src/auth";
+import { getJwtAuthConfig } from "../../src/auth";
+import { MockBackend } from "../../src/server/mock-backend";
 
 describe("operability contracts", () => {
   test("tracks explicit broker health transitions", () => {
@@ -42,22 +43,17 @@ describe("operability contracts", () => {
     expect(operationalHealth(context)).toMatchObject({ broker: { state: "ready", version: "1.6.26", protocolVersion: 2 } });
   });
 
-  test("reports whether API authentication is configured, never the secret", () => {
-    process.env.WOLFPACK_TEST = "1";
-    const prior = process.env.WOLFPACK_JWT_SECRET;
+  test("reports whether API authentication is configured, never the secret", async () => {
+    const none = createServerContext({ backend: new MockBackend(), jwtAuthConfig: getJwtAuthConfig({}) });
+    const secret = "s".repeat(40);
+    const jwt = createServerContext({ backend: new MockBackend(), jwtAuthConfig: getJwtAuthConfig({ WOLFPACK_JWT_SECRET: secret }) });
     try {
-      delete process.env.WOLFPACK_JWT_SECRET;
-      __resetJwtAuthConfig();
-      expect(operationalHealth().auth).toEqual({ mode: "none" });
-
-      process.env.WOLFPACK_JWT_SECRET = "s".repeat(40);
-      __resetJwtAuthConfig();
-      expect(operationalHealth().auth).toEqual({ mode: "jwt" });
-      expect(JSON.stringify(operationalHealth())).not.toContain("s".repeat(40));
+      expect(operationalHealth(none).auth).toEqual({ mode: "none" });
+      expect(operationalHealth(jwt).auth).toEqual({ mode: "jwt" });
+      expect(JSON.stringify(operationalHealth(jwt))).not.toContain(secret);
     } finally {
-      if (prior === undefined) delete process.env.WOLFPACK_JWT_SECRET;
-      else process.env.WOLFPACK_JWT_SECRET = prior;
-      __resetJwtAuthConfig();
+      await none.close();
+      await jwt.close();
     }
   });
 

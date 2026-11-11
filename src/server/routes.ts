@@ -28,7 +28,6 @@ import {
   getLocalMachineHandshake,
   validateProjectParam,
 } from "./http.js";
-import { activePtySessions } from "./websocket.js";
 import type { CascadedChild } from "../session-cascade-contract.js";
 import { createTaskRoutes } from "./task-routes.ts";
 import { createVolatileRelayRoutes } from "./volatile-relay-routes.ts";
@@ -192,7 +191,7 @@ return {
     ) return json(res, { error: "missing params" }, 400);
     if (!(await isAllowedSession(session, ctx.backend)))
       return json(res, { error: "session not found" }, 404);
-    if (!activePtySessions.has(session)) {
+    if (!ctx.terminals.activePtySessions.has(session)) {
       try {
         await ctx.backend.resize(session, clampCols(cols), clampRows(rows));
       } catch (e: unknown) {

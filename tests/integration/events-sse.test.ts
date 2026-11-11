@@ -24,17 +24,17 @@ process.env.WOLFPACK_DEV_DIR = TEST_DIR;
 process.env.WOLFPACK_SESSION_IDENTITY_PATH = join(TEST_DIR, "session-identities.json");
 process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH = join(TEST_DIR, "agent-runtime-state.json");
 
-const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
 const { createServerContext, setDefaultServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-__resetJwtAuthConfig();
+
+const { EventBus, eventSubscriberCount, publishEvent, subscribeEvents } = await import("../../src/server/event-bus.ts");
 const mockBackend = new MockBackend({ sessions: [] });
-let context = createServerContext({ observationCacheTtlMs: 0, backend: mockBackend });
+let context = createServerContext({ taskRoot: join(TEST_DIR, "owned-gateway"), events: new EventBus(), jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0, backend: mockBackend });
 // Retain the production event-publisher bridge until the D3a characterization.
 setDefaultServerContext(context);
 
 const { createServerInstance, __globalRateLimiter } = await import("../../src/server/index.ts") as any;
-const { __resetEventBusForTests, eventSubscriberCount, publishEvent } = await import("../../src/server/event-bus.ts");
 const { EVENTS_MAX_STREAMS } = await import("../../src/server/event-routes.ts");
 const { shouldAuthenticateApiPath } = await import("../../src/server/http.ts");
 const { parseSseEvents, WOLFPACK_EVENT_KIND } = await import("../../src/events-contract.ts");
@@ -45,7 +45,7 @@ let { server, wss } = createServerInstance(context);
 let base = "";
 
 async function listenWithContext(): Promise<void> {
-  context = createServerContext({ observationCacheTtlMs: 0, backend: mockBackend });
+  context = createServerContext({ taskRoot: join(TEST_DIR, "owned-gateway"), events: new EventBus(), jwtAuthConfig: getJwtAuthConfig(), observationCacheTtlMs: 0, backend: mockBackend });
   setDefaultServerContext(context);
   ({ server, wss } = createServerInstance(context));
   await new Promise<void>((resolve) => {
@@ -69,7 +69,6 @@ async function closeServerContext(): Promise<void> {
 beforeEach(async () => {
   await closeServerContext();
   __globalRateLimiter._map.clear();
-  __resetEventBusForTests();
   mockBackend.setSessions([]);
   await listenWithContext();
 });
@@ -146,6 +145,70 @@ describe("GET /api/events", () => {
       expect(events.map((event) => [event.id, event.kind])).toEqual([[1, "session.created"], [2, "session.exited"]]);
     } finally {
       stream.close();
+    }
+  });
+
+  test("committed task events reach SSE and global subscribers exactly once", async () => {
+    const { TaskStore, TASK_LEDGER_ROLE } = await import("../../src/tasks/store.ts");
+    const store = new TaskStore({ root: join(TEST_DIR, "task-publication") });
+    const parent = { machine: "machine-a", sessionId: "parent" };
+    const receiver = { machine: "machine-b", sessionId: "receiver" };
+    const taskId = "publication-contract";
+    const occurredAt = "2026-08-03T00:00:00.000Z";
+    const opened = await store.createLedger({
+      role: TASK_LEDGER_ROLE.SENDER,
+      assignment: {
+        taskId, source: parent, target: receiver, task: "verify event publication",
+        createdAt: occurredAt, expiresAt: "2026-08-03T01:00:00.000Z",
+        context: undefined, role: undefined, metadata: undefined, onCompletePrompt: undefined,
+      },
+      participants: { parent, receiver, sender: { machine: "machine-a", sessionId: "gateway" } },
+    });
+    if (opened.kind !== "created" && opened.kind !== "reused") throw new Error("expected sender ledger");
+    const seen: WolfpackEvent[] = [];
+    const unsubscribe = subscribeEvents({ kinds: new Set([WOLFPACK_EVENT_KIND.TASK_UPDATED]) }, event => seen.push(event));
+    const stream = await openStream("?kinds=task.updated");
+    try {
+      await waitFor(() => eventSubscriberCount() === 2);
+      const input = {
+        id: "created-publication-contract", taskId, type: "task.created", actor: "parent",
+        occurredAt, message: undefined, replyToMessageId: undefined, payload: { kind: "none" }, completion: undefined,
+      } as const;
+      expect((await store.acceptCanonicalEvent(opened.ledger.key, input, { actor: "parent", address: parent })).kind).toBe("accepted");
+      const events = await stream.next(1);
+      expect(events).toEqual(seen);
+      expect(events[0]).toMatchObject({
+        kind: "task.updated", taskId, eventId: input.id, eventType: "task.created", sequence: "1",
+      });
+      await store.acceptCanonicalEvent(opened.ledger.key, input, { actor: "parent", address: parent });
+      expect(seen).toHaveLength(1);
+    } finally {
+      stream.close();
+      unsubscribe();
+    }
+  });
+
+  test("the context-owned gateway preserves SSE and global task subscribers", async () => {
+    for (const name of ["parent", "receiver"]) {
+      await mockBackend.createSession(name, TEST_DIR, "pi", () => ({ agentCmd: "pi" }), { agentKind: "pi" });
+    }
+    const seen: WolfpackEvent[] = [];
+    const unsubscribe = subscribeEvents({ kinds: new Set([WOLFPACK_EVENT_KIND.TASK_UPDATED]) }, event => seen.push(event));
+    const stream = await openStream("?kinds=task.updated");
+    try {
+      await waitFor(() => eventSubscriberCount() === 2);
+      const sent = await context.taskGateway.send({
+        callerSession: "parent", to: { machine: "local", sessionId: "receiver" }, task: "verify owned publication",
+        context: undefined, role: undefined, preflight: undefined, metadata: undefined,
+        onCompletePrompt: undefined, timeoutMs: undefined, idempotencyKey: undefined, rawBody: undefined,
+      });
+      expect(sent.ok, JSON.stringify(sent)).toBe(true);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(await stream.next(seen.length)).toEqual(seen);
+      expect(seen[0]).toMatchObject({ kind: "task.updated", eventType: "task.created" });
+    } finally {
+      stream.close();
+      unsubscribe();
     }
   });
 

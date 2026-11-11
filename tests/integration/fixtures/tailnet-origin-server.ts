@@ -7,7 +7,6 @@ process.env.WOLFPACK_TEST = "1";
 
 const { createServerContext } = await import("../../../src/server/context.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
-const { activePtySessions } = await import("../../../src/server/websocket.ts");
 const context = createServerContext({ backend: new MockBackend({ sessions: ["dispatch-session"] }) });
 
 const { createServerInstance } = await import("../../../src/server/index.ts");
@@ -20,7 +19,7 @@ process.on("message", (message: unknown) => {
   process.send?.({
     type: TAILNET_ORIGIN_IPC_MESSAGE_TYPE.DISPATCH_STATE,
     requestId: request.requestId,
-    dispatched: activePtySessions.get(request.session)?.alive === true,
+    dispatched: context.terminals.activePtySessions.get(request.session)?.alive === true,
   });
 });
 

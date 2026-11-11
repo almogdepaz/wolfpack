@@ -12,7 +12,6 @@ import {
 } from "../session-cascade-contract.js";
 import { SESSION_KILL_DISPOSITION, type SessionBackend, type SessionKillDisposition, type SessionListFact } from "./backend-contract.js";
 import type { ServerContext } from "./context.js";
-import { teardownPty } from "./websocket.js";
 
 const log = createLogger("session-cascade");
 
@@ -25,7 +24,7 @@ const HANDLED_MEMORY = 1024;
  * Sessions whose children a kill or a death already handles: the cycle and
  * double-kill guard. A route kill and the parent's exit frame can both fire.
  */
-export function createSessionCascade(context: Pick<ServerContext, "backend" | "sessionDeath" | "sessionObservation">) {
+export function createSessionCascade(context: Pick<ServerContext, "backend" | "sessionDeath" | "sessionObservation" | "terminals">) {
   const handled = new Set<string>();
   const stops = new Set<() => void>();
 
@@ -48,7 +47,7 @@ export function createSessionCascade(context: Pick<ServerContext, "backend" | "s
     session: string,
     sessionId: string,
   ): Promise<SessionKillDisposition> {
-    teardownPty(session);
+    context.terminals.teardownPty(session);
     context.sessionObservation.forgetSessionObservation(sessionId, session);
     return backend.killSessionById(sessionId);
   }

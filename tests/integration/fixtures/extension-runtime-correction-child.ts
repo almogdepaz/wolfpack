@@ -29,8 +29,8 @@ mock.module("../../../src/server/persistence.ts", () => ({
 const { ExtensionRuntime } = await import("../../../src/extensions/runtime.ts");
 const { getInstallationId } = await import("../../../src/tailnet-machine-installation.ts");
 const { ExtensionRouteService } = await import("../../../src/server/extension-routes.ts");
-const { __resetJwtAuthConfig } = await import("../../../src/test-hooks.ts");
-__resetJwtAuthConfig();
+const { getJwtAuthConfig } = await import("../../../src/auth.ts");
+
 const { createServerContext } = await import("../../../src/server/context.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { createServerInstance } = await import("../../../src/server/index.ts");
@@ -68,7 +68,7 @@ function token() {
 }
 const routeRuntime = runtime();
 await install(routeRuntime, fixture());
-const context = createServerContext({ backend: new MockBackend({ sessions: [] }), extensionRouteService: new ExtensionRouteService({ runtime: routeRuntime, backend }) });
+const context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }), extensionRouteService: new ExtensionRouteService({ runtime: routeRuntime, backend }) });
 const { server } = createServerInstance(context);
 let base: string;
 beforeAll(async () => {

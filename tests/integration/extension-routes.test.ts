@@ -11,7 +11,7 @@ function contract(operation: string, value: unknown) { expect(validate((artifact
 
 process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_JWT_SECRET = "extension-routes-test-secret-long-enough";
-const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts"); __resetJwtAuthConfig();
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
 const { ExtensionRuntime } = await import("../../src/extensions/runtime.ts");
 const { ExtensionRouteService } = await import("../../src/server/extension-routes.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
@@ -28,16 +28,16 @@ expect(Bun.spawnSync(["git", "init", "--initial-branch=main", project], { stdout
 writeFileSync(join(project, "new <file>.ts"), "hello\n");
 const backend = { async listSessionFacts() { return [{ name: "live", alive: true, identity: { wolfpackSessionId: scope, projectPath: project } }]; } } as any;
 let safeMode = false;
-let { server, wss } = createServerInstance(createServerContext({ backend: new MockBackend({ sessions: [] }), extensionRouteService: new ExtensionRouteService({ runtime, backend, safeMode: () => safeMode }) })); let base = "";
+let { server, wss } = createServerInstance(createServerContext({ jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }), extensionRouteService: new ExtensionRouteService({ runtime, backend, safeMode: () => safeMode }) })); let base = "";
 async function serveWithService(extensionRouteService: InstanceType<typeof ExtensionRouteService>) {
   await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
   wss.close();
-  ({ server, wss } = createServerInstance(createServerContext({ backend: new MockBackend({ sessions: [] }), extensionRouteService })));
+  ({ server, wss } = createServerInstance(createServerContext({ jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }), extensionRouteService })));
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 beforeAll(async () => { await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => { base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`; resolve(); })); });
-afterAll(async () => { await new Promise<void>((resolve) => server.close(() => resolve())); wss.close(); __resetJwtAuthConfig(); rmSync(temp, { recursive: true, force: true }); delete process.env.WOLFPACK_JWT_SECRET; });
+afterAll(async () => { await new Promise<void>((resolve) => server.close(() => resolve())); wss.close();  rmSync(temp, { recursive: true, force: true }); delete process.env.WOLFPACK_JWT_SECRET; });
 function token() { const crypto = require("node:crypto"); const now = Math.floor(Date.now() / 1000); const h = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url"); const p = Buffer.from(JSON.stringify({ iat: now, exp: now + 60 })).toString("base64url"); return `${h}.${p}.${crypto.createHmac("sha256", process.env.WOLFPACK_JWT_SECRET).update(`${h}.${p}`).digest("base64url")}`; }
 describe("extension HTTP routes", () => {
   test("blob routes authenticate, bound, verify and idempotently store/delete raw bytes", async () => {

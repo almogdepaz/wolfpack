@@ -10,7 +10,7 @@ process.env.WOLFPACK_TEST = "1";
 const { createServerContext } = await import("../../src/server/context.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-const { teardownPty } = await import("../../src/server/websocket.ts");
+let context: ReturnType<typeof createServerContext>;
 
 class TestStdin extends EventEmitter {
   isTTY = true;
@@ -69,7 +69,8 @@ let backend: AttachMockBackend;
 
 beforeEach(async () => {
   backend = new AttachMockBackend({ sessions: ["attach-one"] });
-  ({ server } = createServerInstance(createServerContext({ backend })));
+  context = createServerContext({ backend });
+  ({ server } = createServerInstance(context));
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const port = (server.address() as AddressInfo).port;
@@ -80,7 +81,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  teardownPty("attach-one");
+  context.terminals.teardownPty("attach-one");
   server.close();
 });
 

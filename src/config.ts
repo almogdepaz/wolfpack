@@ -11,6 +11,7 @@ import {
   activeClaudeManagedSettingsDropInDirectory,
   claudeTaskIntegrationGate,
   type ClaudeTaskIntegrationGate,
+  type ClaudeManagedSettingsDropIn,
 } from "./claude-integration.js";
 
 export const IS_MACOS = platform() === "darwin";
@@ -96,8 +97,8 @@ export function childEventTypedNotesEnabled(): boolean {
  * The effective Claude task integration: the flag and the current managed drop-in, read on every
  * call (both are small files) so neither a setup run nor a removed drop-in needs a server restart.
  */
-export function claudeTaskIntegrationState(): ClaudeTaskIntegrationGate {
-  return claudeTaskIntegrationGate(claudeTaskIntegrationEnabled(), activeClaudeManagedSettingsDropInDirectory());
+export function claudeTaskIntegrationState(dropIn?: ClaudeManagedSettingsDropIn): ClaudeTaskIntegrationGate {
+  return claudeTaskIntegrationGate(claudeTaskIntegrationEnabled(), activeClaudeManagedSettingsDropInDirectory(dropIn));
 }
 
 export function saveConfig(c: Config) {

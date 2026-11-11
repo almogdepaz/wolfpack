@@ -8,7 +8,6 @@ const { EventBus } = await import("../../../src/event-bus.ts");
 const { createServerContext } = await import("../../../src/server/context.ts");
 const { createPushNotifyRoutes } = await import("../../../src/server/push-routes.ts");
 const { createSessionControlRoutes } = await import("../../../src/server/session-control-routes.ts");
-const { _testing } = await import("../../../src/server/push.ts");
 const { clearParentInbox, listParentNotifications, PARENT_INBOX_BOOT_ID } = await import("../../../src/server/parent-inbox.ts");
 const { WOLFPACK_EVENT_KIND } = await import("../../../src/events-contract.ts");
 
@@ -57,7 +56,6 @@ beforeEach(async () => {
   ctx = createServerContext({ backend, events: events });
   routes = createSessionControlRoutes(ctx);
   notify = createPushNotifyRoutes(ctx)["POST /api/notify"]!;
-  _testing.resetDebounce();
   clearParentInbox(parent.wolfpackSessionId);
   published.length = 0;
 });

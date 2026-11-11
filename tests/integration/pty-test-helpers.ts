@@ -35,17 +35,17 @@ export async function bootTestServer(opts: {
 }): Promise<PtyTestContext> {
   process.env.WOLFPACK_TEST = "1";
   const { createServerInstance } = await import("../../src/server/index.ts");
-  const { __getTestState } = await import("../../src/test-hooks.ts");
   const { createServerContext } = await import("../../src/server/context.ts");
   const { MockBackend } = await import("../../src/server/mock-backend.ts");
-  const { activePtySessions, ptySpawnAttempts } = __getTestState();
 
   // Inject MockBackend so backend.list() returns the fake sessions
   const mock = new MockBackend({
     sessions: opts.sessions,
     capturePane: opts.capturePane,
   });
-  const context = createServerContext({ backend: mock });
+  const ptySpawnAttempts = new Map<string, number>();
+  const context = createServerContext({ backend: mock, onTerminalAttachAttempt: session => ptySpawnAttempts.set(session, (ptySpawnAttempts.get(session) ?? 0) + 1) });
+  const { activePtySessions } = context.terminals;
   const { server } = createServerInstance(context);
 
   const realConsoleError = console.error;
@@ -71,6 +71,7 @@ export async function bootTestServer(opts: {
     cleanup: () => {
       console.error = realConsoleError;
       server.close();
+      void context.close();
       // This server owns an explicit context; no backend singleton was changed.
     },
   };

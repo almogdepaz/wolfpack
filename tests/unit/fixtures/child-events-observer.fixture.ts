@@ -3,7 +3,6 @@ import { assertNotificationFixtureHome } from "./run-notification-test.ts";
 assertNotificationFixtureHome();
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { createServerContext } = await import("../../../src/server/context.ts");
-const { getSubscriptionCount } = await import("../../../src/server/push.ts");
 const { defaultEventBus } = await import("../../../src/event-bus.ts");
 const { BrokerBackend } = await import("../../../src/server/broker-backend.ts");
 const { listParentNotifications } = await import("../../../src/server/parent-inbox.ts");
@@ -14,7 +13,7 @@ test("a child's program done reaches the parent inbox with no push or event subs
   const backend = new MockBackend();
   const context = createServerContext({ backend, observationCacheTtlMs: 0 });
   try {
-    expect(getSubscriptionCount()).toBe(0);
+    expect(context.push.getSubscriptionCount()).toBe(0);
     expect(defaultEventBus.eventSubscriberCount()).toBe(0);
     const loadSettings = () => ({ agentCmd: "claude" });
     const parent = await backend.createSession("lead", "/tmp", "claude", loadSettings);

@@ -12,12 +12,12 @@ process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
 });
 
 // Reset cached auth config + dynamic import so env vars take effect
-const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-__resetJwtAuthConfig();
 
-const context = createServerContext({ backend: new MockBackend({ sessions: ["auth-session"] }) });
+
+const context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: ["auth-session"] }) });
 
 const {
   __pollRateLimiter,
@@ -148,7 +148,7 @@ afterAll(async () => {
   delete process.env.WOLFPACK_JWT_AUDIENCE;
   delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
   // Reset cached auth config so other test files sharing the module aren't affected
-  __resetJwtAuthConfig();
+
 });
 
 describe("JWT auth middleware", () => {

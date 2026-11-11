@@ -55,7 +55,7 @@ export async function createSelectedHostFixture(options: { readonly timeoutMs?: 
   const previousSecret = process.env.WOLFPACK_JWT_SECRET, previousStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
   const localSecret = "selected-host-local-test-secret-123";
   process.env.WOLFPACK_JWT_SECRET = localSecret;
-  const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts"); __resetJwtAuthConfig();
+  const { getJwtAuthConfig } = await import("../../src/auth.ts");
   const peers: InstalledPeer[] = [];
   const redirectTrace: string[] = [];
   const redirectServer = createServer((req, res) => {
@@ -134,14 +134,14 @@ export async function createSelectedHostFixture(options: { readonly timeoutMs?: 
       return super.handle(req, res, url);
     }
   }
-  const context = createServerContext({ backend: new MockBackend({ sessions: [] }), extensionRouteService: new FixtureLocalRoutes(serviceOptions) });
+  const context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }), extensionRouteService: new FixtureLocalRoutes(serviceOptions) });
   const { createServerInstance } = await import("../../src/server/index.ts");
   const { server } = createServerInstance(context); const base = await listen(server);
   return {
     root, peers, localRuntime, base, localToken: fixtureToken(localSecret), fetchTrace, updateTopology, redirectBase, redirectTrace,
     async close() {
       await close(server); for (const peer of peers) await close(peer.server); await close(redirectServer);
-      await context.close(); __resetJwtAuthConfig();
+      await context.close();
       if (previousSecret === undefined) delete process.env.WOLFPACK_JWT_SECRET; else process.env.WOLFPACK_JWT_SECRET = previousSecret;
       if (previousStatus === undefined) delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON; else process.env.WOLFPACK_TAILSCALE_STATUS_JSON = previousStatus;
       rmSync(root, { recursive: true, force: true });

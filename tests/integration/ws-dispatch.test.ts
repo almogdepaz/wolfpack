@@ -17,14 +17,14 @@ const {
   MAX_WS_CONNECTIONS_PER_IP,
 } = await import("../../src/server/index.ts");
 const { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } = await import("../../src/ws-constants.ts");
-const { __getTestState } = await import("../../src/test-hooks.ts");
 const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-const { activePtySessions: __activePtySessions, ptySpawnAttempts: __ptySpawnAttempts } = __getTestState();
 
 const FAKE_SESSIONS = ["dispatch-session", "reconnect-session"];
 const mockBackend = new MockBackend({ sessions: FAKE_SESSIONS });
-const context = createServerContext({ backend: mockBackend });
+const __ptySpawnAttempts = new Map<string, number>();
+const context = createServerContext({ backend: mockBackend, onTerminalAttachAttempt: session => __ptySpawnAttempts.set(session, (__ptySpawnAttempts.get(session) ?? 0) + 1) });
+const { activePtySessions: __activePtySessions } = context.terminals;
 
 const { server, wss } = createServerInstance(context);
 

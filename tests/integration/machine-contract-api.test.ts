@@ -14,7 +14,6 @@ const PRIOR_ENV = {
   WOLFPACK_MACHINE_ID_PATH: process.env.WOLFPACK_MACHINE_ID_PATH,
   WOLFPACK_TAILSCALE_STATUS_JSON: process.env.WOLFPACK_TAILSCALE_STATUS_JSON,
 } as const;
-const { DEV_DIR: PRIOR_CACHED_DEV_DIR } = await import("../../src/server/dev-dir.ts");
 
 process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
@@ -50,15 +49,12 @@ const defaultTailscaleStatus = JSON.stringify({
 });
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = defaultTailscaleStatus;
 
-const {
-  __resetJwtAuthConfig,
-  __setDevDir,
-  MockBackend,
-} = await import("../../src/test-hooks.ts");
-__resetJwtAuthConfig();
-__setDevDir(testRoot);
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
+const { MockBackend, } = await import("../../src/test-hooks.ts");
+
+
 const { createServerContext } = await import("../../src/server/context.ts");
-const context = createServerContext({ backend: new MockBackend({ sessions: [] }) });
+const context = createServerContext({ devDir: testRoot, jwtAuthConfig: getJwtAuthConfig(), backend: new MockBackend({ sessions: [] }) });
 
 const {
   createServerInstance,
@@ -85,13 +81,13 @@ afterAll(async () => {
   __pollRateLimiter._map.clear();
   __globalRateLimiter._map.clear();
   rmSync(testRoot, { recursive: true, force: true });
-  __setDevDir(PRIOR_CACHED_DEV_DIR);
+
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
     if (key === "WOLFPACK_TEST") continue;
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
-  __resetJwtAuthConfig();
+
   if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
   else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
 });

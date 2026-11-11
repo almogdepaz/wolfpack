@@ -20,7 +20,6 @@ import {
   isAllowedSession,
   createPerIpRateLimiter,
 } from "./http.js";
-import { handlePtyWs } from "./websocket.js";
 import { createLogger, errMsg, writeFatalError } from "../log.js";
 import { isValidSessionName } from "../validation.js";
 import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
@@ -171,7 +170,7 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
       const operationalPath = url.pathname === "/api/health" || url.pathname === "/api/metrics" || url.pathname === "/metrics";
       const localOperationalRequest = operationalPath && client.isDirectLoopback;
       if ((shouldAuthenticateApiPath(url.pathname) || url.pathname === "/metrics") && !localOperationalRequest) {
-        const auth = validateRequestJwt(req.headers, url, false);
+        const auth = validateRequestJwt(req.headers, url, false, ctx.jwtAuthConfig);
         if (!auth.ok) {
           log.debug("jwt auth failed", { path: url.pathname, reason: auth.error });
           writeUnauthorized(res);
@@ -235,7 +234,7 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
 
       const ticket = url.searchParams.get("ticket");
       const ticketOk = ticket ? ctx.webSocketTickets.consumeWebSocketTicket(ticket, client.clientKey) : false;
-      const auth = ticketOk ? { ok: true } : validateRequestJwt(req.headers, url, true);
+      const auth = ticketOk ? { ok: true } : validateRequestJwt(req.headers, url, true, ctx.jwtAuthConfig);
       if (!auth.ok) {
         log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -261,7 +260,7 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
         const activeClientKey = client.clientKey;
         reservedIp = null;
         ws.once("close", () => releaseWsConnection(activeClientKey));
-        handlePtyWs(ws, session, reset, ctx);
+        ctx.terminals.handlePtyWs(ws, session, reset);
       });
     } catch (e: unknown) {
       log.error("ws upgrade error", { error: errMsg(e) });
@@ -312,7 +311,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   // silently disable authentication. A missing secret is surfaced as a
   // warning (not an error: Tailscale is the default remote-access boundary, and
   // doctor treats logged errors as unhealthy).
-  const authCfg = getCachedJwtAuthConfig();
+  const authCfg = overrides.jwtAuthConfig ?? getCachedJwtAuthConfig();
   const authStatus = verifyJwtAuthAtStartup(authCfg);
   if (authStatus === "invalid") {
     log.error("refusing to start: WOLFPACK_JWT_SECRET is set but invalid", {
@@ -329,7 +328,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
 
   // Initialize session backend (broker is the only supported backend; the
   // WOLFPACK_BACKEND env var is accepted for back-compat but ignored).
-  const ctx = createServerContext(overrides);
+  const ctx = createServerContext({ ...overrides, jwtAuthConfig: authCfg });
   setDefaultServerContext(ctx);
   log.info("backend initialized", { type: "broker" });
 

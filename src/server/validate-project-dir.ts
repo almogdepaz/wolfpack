@@ -28,10 +28,10 @@ export type ValidateProjectDirResult =
  * Returns a discriminated result rather than mutating an HTTP response.
  * Callers translate `code` to an HTTP or command-specific error.
  */
-export function validateProjectDir(projectDir: string): ValidateProjectDirResult {
+export function validateProjectDir(projectDir: string, devDir?: string): ValidateProjectDirResult {
   const result = validateDirectory(projectDir);
   if (!result.ok) return result;
-  if (!isUnderDevDir(result.projectDir)) {
+  if (!isUnderDevDir(result.projectDir, devDir)) {
     return { ok: false, code: "not_dir", error: "not a directory" };
   }
   return result;

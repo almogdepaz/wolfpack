@@ -24,7 +24,7 @@ const token = (() => {
 })();
 const { createServerContext } = await import("../../src/server/context.ts");
 const { MockBackend } = await import("../../src/server/mock-backend.ts");
-const { __resetJwtAuthConfig } = await import("../../src/test-hooks.ts");
+const { getJwtAuthConfig } = await import("../../src/auth.ts");
 const { getTaskRelayProfile } = await import("../../src/task-relay/gateway.ts");
 const { WorkerRelayGateway } = await import("../../src/task-relay/worker-client.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");
@@ -38,7 +38,7 @@ class PiBackend extends MockBackend {
   }
 }
 let backend = new PiBackend({ sessions: ["sender", "receiver"] });
-let context = createServerContext({ get backend() { return backend; } });
+let context = createServerContext({ jwtAuthConfig: getJwtAuthConfig(), get backend() { return backend; } });
 let instance: ReturnType<typeof createServerInstance> | undefined;
 async function closeServer() {
   if (instance) {
@@ -60,9 +60,9 @@ const headers = { "content-type": "application/json", authorization: `Bearer ${t
 beforeEach(async () => {
   process.env.WOLFPACK_TASK_RELAY_ROOT = relayRoot; process.env.WOLFPACK_TASK_RELAY_PROFILE = "volatile-v1";
   process.env.WOLFPACK_TASK_RELAY_STORAGE = "memory";
-  process.env.WOLFPACK_JWT_SECRET = secret; process.env.WOLFPACK_JWT_AUDIENCE = "volatile-http"; __resetJwtAuthConfig();
+  process.env.WOLFPACK_JWT_SECRET = secret; process.env.WOLFPACK_JWT_AUDIENCE = "volatile-http";
   backend = new PiBackend({ sessions: ["sender", "receiver"] });
-  await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot }));
+  await listenWithContext(createServerContext({ jwtAuthConfig: getJwtAuthConfig(), get backend() { return backend; }, taskRelayRoot: relayRoot }));
   gateway = context.taskRelayGateway as InstanceType<typeof WorkerRelayGateway>;
   expect(gateway).toBeInstanceOf(WorkerRelayGateway); await gateway.initialize();
 });
@@ -72,7 +72,7 @@ afterAll(async () => {
     await context.close();
     expect(readFileSync(sentinel)).toEqual(original);
     rmSync(root, { recursive: true, force: true });
-    __resetJwtAuthConfig(); // Clear while the test-only guard is still active, even when run alone.
+     // Clear while the test-only guard is still active, even when run alone.
     for (const name of names) { if (saved[name] === undefined) delete process.env[name]; else process.env[name] = saved[name]; }
   }
 });
@@ -94,12 +94,12 @@ function envelope(source: { relay: string; id: string }, target: { relay: string
 
 test("explicit memory startup keeps wire selection frozen and obsolete state untouched", async () => {
   delete process.env.WOLFPACK_TASK_RELAY_PROFILE;
-  await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot }));
+  await listenWithContext(createServerContext({ jwtAuthConfig: getJwtAuthConfig(), get backend() { return backend; }, taskRelayRoot: relayRoot }));
   expect(getTaskRelayProfile()).toBe("volatile-v1");
   const defaultBinding = await connect("sender");
   expect(defaultBinding.epoch).toBeString();
   expect(readFileSync(sentinel)).toEqual(original);
-  await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot })); process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
+  await listenWithContext(createServerContext({ jwtAuthConfig: getJwtAuthConfig(), get backend() { return backend; }, taskRelayRoot: relayRoot })); process.env.WOLFPACK_TASK_RELAY_PROFILE = "durable-v2";
   expect(() => getTaskRelayProfile()).toThrow("unsupported task relay profile");
   expect(() => context.taskRelayGateway).toThrow("unsupported task relay profile");
   process.env.WOLFPACK_TASK_RELAY_PROFILE = "typo"; expect(() => context.taskRelayGateway).toThrow("unsupported task relay profile");
@@ -199,7 +199,7 @@ test("HTTP delivers opaque content, checks full conflicts, and preserves individ
   expect((await post({ ...b, operation: "acknowledge", envelopeId: second.envelopeId })).body.value.duplicate).toBe(true);
   expect((await post({ ...b, operation: "receive", cursor: "0" })).body.value.deliveries.map((item: any) => item.cursor)).toEqual(["1"]);
   const originalBase = base;
-  await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot }), Number(new URL(base).port)); gateway = context.taskRelayGateway as typeof gateway; await gateway.initialize();
+  await listenWithContext(createServerContext({ jwtAuthConfig: getJwtAuthConfig(), get backend() { return backend; }, taskRelayRoot: relayRoot }), Number(new URL(base).port)); gateway = context.taskRelayGateway as typeof gateway; await gateway.initialize();
   expect(base).toBe(originalBase);
   expect((await post({ ...b, operation: "receive", cursor: "0" })).body).toMatchObject({ ok: false, error: { code: "RELAY_RESET", retryable: false, mayHaveBeenDelivered: true } });
   expect(await gateway.volatileEpoch()).not.toBe(b.epoch);
@@ -272,7 +272,7 @@ test.skipIf(!piSource)("actual pinned RAM core traverses production HTTP middlew
     b = open("receiver", bStore); bc = await b.connect(); // Transport replacement inside the same RAM lifetime.
     expect(await bc.receive()).toEqual([]);
     expect(bStore.getReceiveCursor()).toBe("1");
-    await listenWithContext(createServerContext({ get backend() { return backend; }, taskRelayRoot: relayRoot }), Number(new URL(base).port)); gateway = context.taskRelayGateway as typeof gateway; await gateway.initialize();
+    await listenWithContext(createServerContext({ jwtAuthConfig: getJwtAuthConfig(), get backend() { return backend; }, taskRelayRoot: relayRoot }), Number(new URL(base).port)); gateway = context.taskRelayGateway as typeof gateway; await gateway.initialize();
     // Await on the normal JS path before matching: Bun's eager .rejects matcher
     // can starve this same-process HTTP/worker response until the transport deadline.
     const resetError = await bc.receive().then(() => undefined, (error: unknown) => error);

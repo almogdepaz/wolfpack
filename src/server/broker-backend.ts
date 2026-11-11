@@ -22,6 +22,7 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
+import type { ClaudeManagedSettingsDropIn } from "../claude-integration.js";
 import { createViewerInput } from "./viewer-input.js";
 import { DuplicateSessionError, SESSION_KILL_DISPOSITION, UnsupportedTerminalKeyError } from "./backend-contract.js";
 import type {
@@ -54,7 +55,6 @@ import {
   BrokerSubscribeError,
 } from "../broker/client.js";
 import type {
-  BrokerClient,
   BrokerSnapshotSubscription,
   OutputSubscriber,
 } from "../broker/client.js";
@@ -135,6 +135,7 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
 
 export interface BrokerBackendOptions {
+  readonly claudeManagedSettingsDropIn?: ClaudeManagedSettingsDropIn;
   readonly childEvents?: ReturnType<typeof createChildEvents>;
   readonly sessionDeath?: ReturnType<typeof createSessionDeath>;
   readonly viewerInput?: ReturnType<typeof createViewerInput>;
@@ -623,7 +624,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     private readonly emitEvent: typeof publishEvent = publishEvent,
     private readonly options: BrokerBackendOptions = {},
   ) {
-    this.claudeTaskIntegration = options.claudeTaskIntegration ?? (() => claudeTaskIntegrationState().on);
+    this.claudeTaskIntegration = options.claudeTaskIntegration ?? (() => claudeTaskIntegrationState(options.claudeManagedSettingsDropIn).on);
     this.client = client;
     this.childEvents = options.childEvents ?? createChildEvents();
     this.sessionDeath = options.sessionDeath ?? createSessionDeath();
@@ -2142,7 +2143,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   }
 }
 
-/** Construct a BrokerBackend bound to a real BrokerClient. */
-export function createBrokerBackend(client: BrokerClient, emitEvent: typeof publishEvent = publishEvent, options: BrokerBackendOptions = {}): BrokerBackend {
+/** Construct a BrokerBackend bound to its broker transport. */
+export function createBrokerBackend(client: BrokerClientApi, emitEvent: typeof publishEvent = publishEvent, options: BrokerBackendOptions = {}): BrokerBackend {
   return new BrokerBackend(client, emitEvent, options);
 }

@@ -31,9 +31,8 @@ import { SessionIdentityStore, sessionIdentityStorePath } from "../../src/server
 import { SESSION_PROMPT_OUTPUT_BUFFER_MAX_CHARS } from "../../src/session-prompt-contract";
 import { SHELL } from "../../src/server/shell";
 import { claudeChannelDropInContent } from "../../src/claude-integration";
-import { __setClaudeManagedSettingsDropInDirectory } from "../../src/test-hooks";
 import { renderSnapshotToAnsi } from "../../src/broker/snapshot-render";
-import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event-bus";
+import { EventBus } from "../../src/event-bus";
 import type { WolfpackEvent } from "../../src/events-contract";
 import { onProgramStatusChanged } from "../../src/server/program-status-signal";
 import { appendParentNotification, clearParentInbox, listParentNotifications } from "../../src/server/parent-inbox";
@@ -861,18 +860,16 @@ describe("BrokerBackend.createSession", () => {
       let dropInRoot = "";
       beforeEach(() => {
         dropInRoot = mkdtempSync(join(tmpdir(), "wolfpack-claude-dropin-"));
-        __setClaudeManagedSettingsDropInDirectory({ directory: dropInRoot });
         writeFileSync(configPath, JSON.stringify({ devDir: "/tmp", port: 18790, claudeTaskIntegration: true }));
       });
       afterEach(() => {
-        __setClaudeManagedSettingsDropInDirectory(undefined);
         rmSync(configPath, { force: true });
         rmSync(dropInRoot, { recursive: true, force: true });
       });
 
       test("a valid drop-in adds --channels", async () => {
         writeFileSync(join(dropInRoot, "wolfpack.json"), claudeChannelDropInContent());
-        await new BrokerBackend(client).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+        await new BrokerBackend(client, undefined, { claudeManagedSettingsDropIn: { directory: dropInRoot } }).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
         expect(createParams().command.slice(3)).toEqual(["wolfpack-agent", channelSpec]);
         expect(createParams().env).toContainEqual(["WOLFPACK_PORT", "18790"]);
       });
@@ -885,7 +882,7 @@ describe("BrokerBackend.createSession", () => {
       ] as const) {
         test(`a ${name} drop-in launches claude without --channels`, async () => {
           if (content !== undefined) writeFileSync(join(dropInRoot, "wolfpack.json"), content);
-          await new BrokerBackend(client).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
+          await new BrokerBackend(client, undefined, { claudeManagedSettingsDropIn: { directory: dropInRoot } }).createSession("claude-one", "/tmp/proj", "claude", loadSettings);
           const params = createParams();
           expect(params.command).toHaveLength(3);
           expect(params.command[2]).toContain("; claude; exec");
@@ -3478,9 +3475,10 @@ describe("BrokerBackend lifecycle → event bus", () => {
   let unsubscribe: () => void;
 
   beforeEach(() => {
-    __resetEventBusForTests();
+    const events = new EventBus();
+    backend = new BrokerBackend(client, body => events.publishEvent(body));
     seen = [];
-    unsubscribe = subscribeEvents({}, (event) => seen.push(event));
+    unsubscribe = events.subscribeEvents({}, (event) => seen.push(event));
   });
 
   afterEach(() => unsubscribe());

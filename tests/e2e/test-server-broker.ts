@@ -64,7 +64,7 @@ if (!brokerReady) {
 }
 
 const backend = new BrokerBackend(brokerClient);
-const context = createServerContext({ backend });
+const context = createServerContext({ backend, terminalPrefillDelayMs: Number(process.env.WOLFPACK_TEST_PREFILL_DELAY_MS) });
 
 const { createServerInstance } = await import("../../src/server/index.ts");
 const { server } = createServerInstance(context);
