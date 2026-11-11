@@ -1,3 +1,4 @@
+import { AGENT_KIND } from "./agent-kind.js";
 import { focusLastLine } from "./focus-text.js";
 
 // Whole Pi stats rows, with an optional model/reasoning status after the
@@ -11,9 +12,9 @@ const CLAUDE_CHROME = /^(?:(?:Opus|Sonnet|Haiku)\s+[\d.]+\s*\|.*\b(?:tokens|ctx)
 /** Last meaningful visible rows, not authenticated agent text or a transcript.
  * Only Pi and Claude have supported chrome; other harnesses stay untouched. */
 export function focusSummary(rows: readonly string[], harness: string): string[] {
-  if (harness !== "pi" && harness !== "claude") return [];
+  if (harness !== AGENT_KIND.PI.id && harness !== AGENT_KIND.CLAUDE.id) return [];
   let lines = rows.map(focusLastLine).filter(Boolean);
-  if (harness === "pi") {
+  if (harness === AGENT_KIND.PI.id) {
     // Only the bottom input/footer block may contain removable stats. Body
     // tokens and cost-bearing prose must survive, even without any footer.
     const inputIndex = lines.findLastIndex(line => EMPTY_PROMPT.test(line));
@@ -36,7 +37,7 @@ export function focusSummary(rows: readonly string[], harness: string): string[]
   let meaningful: string[] = [];
   for (let line of lines) {
     if (RULE.test(line) || EMPTY_PROMPT.test(line)) continue;
-    if (harness === "pi") {
+    if (harness === AGENT_KIND.PI.id) {
       if (PI_STATUS.test(line)
         || /^Update available: \S+ → \S+$/u.test(line)
         || /^Run .+pi-coding-agent.* to update\.$/u.test(line)) continue;

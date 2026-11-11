@@ -1,3 +1,4 @@
+import { AGENT_KIND } from "../agent-kind.js";
 import { observedSessionLastLine, observedSessionSummary } from "./session-observation.js";
 import { getInstallationId } from "../tailnet-machine-installation.js";
 import { stoppedUnseen } from "../focus-ranking.js";
@@ -388,7 +389,7 @@ return {
         const runtime = getAgentRuntimeStateStore().get(identity.wolfpackSessionId);
         const pinned = ctx.assistantService.pins.some(pin => pin.name === name);
         const summary = observedSessionSummary(identity.wolfpackSessionId);
-        const lastLine = identity.agentKind === "pi" || identity.agentKind === "claude"
+        const lastLine = identity.agentKind === AGENT_KIND.PI.id || identity.agentKind === AGENT_KIND.CLAUDE.id
           ? summary.at(-1) ?? "" : observedSessionLastLine(identity.wolfpackSessionId);
         return { ...sessionStatusPayload(name, identity, relay.registrations.get(identity.wolfpackSessionId), relay.taskRelay),
           machine: getInstallationId(), lastLine, summary, lastLineTrust: "untrusted-data",
