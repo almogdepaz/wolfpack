@@ -71,7 +71,7 @@ test("QA-35: next-card times stay readable in metadata", async ({ page }, info) 
   await openAssistant(page);
   for (const width of info.project.name === "desktop" ? [1280, 1440] : [390]) {
     await page.setViewportSize({ width, height: 900 });
-    const stamp = page.locator("#assistant-content .focus-next > li").filter({ hasText: "broker-leak-worker-3" }).locator(".focus-meta");
+    const stamp = page.locator("#assistant-content .focus-next > li").filter({ hasText: "broker-leak-worker-3" }).locator("span.focus-meta");
     await expect(stamp).toHaveCount(1);
     await expect(stamp).toBeVisible();
     await expect(stamp).toContainText("3h");

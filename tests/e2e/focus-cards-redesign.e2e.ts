@@ -11,7 +11,8 @@ test.afterEach(async ({ page }) => { await page.unrouteAll({ behavior: "wait" })
 
 test("mixed cards, waiting line and grouped done work expose the next decision", async ({ page }, info) => {
   const desktop = info.project.name === "desktop";
-  await page.setViewportSize({ width: desktop ? 1440 : 390, height: desktop ? 1000 : 844 });
+  await page.setViewportSize({ width: desktop ? 1440 : 390, height: desktop ? 1200 : 844 });
+  await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.addInitScript(() => { localStorage.setItem("wolfpack-sidebar-pinned", "1"); localStorage.setItem("wolfpack-focus-mobile-expanded-v1", "1"); });
   const now = new Date(); now.setHours(12, 0, 0, 0);
   await page.clock.setFixedTime(now);
@@ -58,7 +59,18 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
   const replyCard = block.locator(".focus-next > li").filter({ hasText: "Step 2 added beta" });
   await expandFocusCard(replyCard);
   await expect(block.locator(".focus-quiet")).toContainText("api-refactor waiting on 2 sub-sessions (1 working)");
-  await expect(block.locator(".focus-dashboard-body > small").last()).toHaveText("2 need you · 1 done to review · today 2 of 3 done");
+  const counts = "1 needs you · 1 reply ready · 1 done";
+  await expect.soft(block.locator(".focus-dashboard-body > small").last()).toHaveText(`${counts} · today 2 of 3 done`);
+  const unjudged = block.locator(".focus-next > li").filter({ hasText: "me-2" });
+  await expect.soft(unjudged.locator("summary q")).toHaveText("Choose bun add or vendoring?");
+  await expect(unjudged.locator("summary .focus-title")).toHaveText("me-2 asks a question");
+  await expect(unjudged.locator("summary q > *")).toHaveCount(0);
+  const chevron = [-135, 3];
+  await expect.poll(() => replyCard.locator("summary").evaluate(el => {
+    const m = new DOMMatrix(getComputedStyle(el, "::after").transform);
+    return [Math.round(Math.atan2(m.b, m.a) * 180 / Math.PI), m.f];
+  })).toEqual(chevron);
+  await page.emulateMedia({ reducedMotion: "reduce" }); // Capture the settled pose, never a transition midpoint.
   const shots = process.env.WOLFPACK_FOCUS_SHOTS;
   if (shots) {
     mkdirSync(shots, { recursive: true, mode: 0o700 });
@@ -72,6 +84,18 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
   }
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
+  await expect.soft(view.locator(":scope > h2").first()).toHaveText(`next ${counts}`);
+  if (desktop) {
+    await expect.soft(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText(`${counts}:`);
+    expect(await page.locator("#sidebar-assistant .assistant-tile-state").evaluate(el => {
+      const rect = el.getBoundingClientRect(), button = el.closest("button")!.getBoundingClientRect();
+      return rect.right <= button.right && el.scrollWidth <= el.clientWidth;
+    }), "the shared count stays readable inside the existing sidebar tile").toBe(true);
+  }
+  expect(await view.locator(".focus-next > li").filter({ hasText: "Step 2 added beta" }).locator("summary").evaluate(el => {
+    const m = new DOMMatrix(getComputedStyle(el, "::after").transform);
+    return [Math.round(Math.atan2(m.b, m.a) * 180 / Math.PI), m.f];
+  })).toEqual(chevron);
   await expect(view.getByRole("heading", { name: /^done today/ })).toHaveText("done today 2 finished · 1 finished work still open");
   const finished = view.getByRole("list", { name: "Finished intentions", exact: true });
   const open = view.getByRole("list", { name: "Finished work still open", exact: true });
@@ -81,6 +105,16 @@ test("mixed cards, waiting line and grouped done work expose the next decision",
   await expect(open.locator(":scope > li")).toHaveCount(1);
   await expect(open).toContainText("Review the database migration");
   await expect(open.getByRole("button", { name: "Mark done: Review the database migration", exact: true })).toBeEnabled();
+  await expect.soft(finished).toHaveCSS("border-top-width", "1px");
+  await expect.soft(finished).toHaveCSS("padding-left", "12px");
+  await expect.soft(view.locator(".focus-done h3").first()).toHaveCSS("text-transform", "uppercase");
+  if (desktop) expect(await view.locator(".focus-done").evaluate(el => el.getBoundingClientRect().width)).toBe(720);
+  for (const button of await view.locator(".focus-done button").all()) {
+    expect(await button.evaluate(el => {
+      const bounds = el.closest(".focus-done")!.getBoundingClientRect(), rect = el.getBoundingClientRect();
+      return rect.left >= bounds.left && rect.right <= bounds.right;
+    }), "done controls stay inside the 720px/390px container, including element screenshots").toBe(true);
+  }
   await expect(view.locator(".focus-yesterday")).toHaveText("yesterday· 1 question for you · 2 carried over · 3 doneread ›");
   expect((await new AxeBuilder({ page }).include("#assistant-content").analyze()).violations).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

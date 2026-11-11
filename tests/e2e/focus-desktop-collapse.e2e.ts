@@ -62,7 +62,7 @@ for (const width of [1440, 1280]) test(`desktop disclosure shares main/sidebar s
   await toggle.focus(); await page.keyboard.press("Enter");
   await expect(toggle).toBeFocused();
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  await expect(toggle).toContainText("1 need you · 1 reply ready");
+  await expect(toggle).toContainText("1 needs you · 1 reply ready");
   await expect(page.locator("#dashboard-focus-details")).toBeHidden();
   const target = (await toggle.boundingBox())!;
   expect(target.width).toBeGreaterThanOrEqual(44); expect(target.height).toBeGreaterThanOrEqual(44);
@@ -86,7 +86,7 @@ for (const width of [1440, 1280]) test(`desktop disclosure shares main/sidebar s
   await sidebarToggle.focus(); await page.keyboard.press("Enter");
   await expect(sidebarToggle).toBeFocused();
   await expect(sidebarToggle).toHaveAttribute("aria-expanded", "false");
-  await expect(tile).toContainText("1 need you · 1 reply ready");
+  await expect(tile).toContainText("1 needs you · 1 reply ready");
   await expect(page.locator("#sidebar-assistant-details")).toBeHidden();
   await expect(page.locator("#assistant-content .focus-nudge")).toBeVisible();
   expect(await page.locator("#assistant-pane").boundingBox()).toEqual(pane);

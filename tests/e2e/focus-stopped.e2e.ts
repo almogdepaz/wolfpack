@@ -60,7 +60,7 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" });
   await expect(row.locator("summary .focus-title")).toHaveText(`test-project ${state === "done" ? "is done" : "stopped"}`);
-  await expect(row.locator("summary .focus-meta")).toContainText("test-project · 12m");
+  await expect(row.locator("summary span.focus-meta")).toContainText("test-project · 12m");
   await expect(row.locator("summary")).not.toContainText("needs you");
   await expect.poll(async () => {
     const box = await row.boundingBox();
@@ -78,7 +78,7 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   }
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" });
-  await expect(next.locator("summary .focus-meta")).toContainText("12m");
+  await expect(next.locator("summary span.focus-meta")).toContainText("12m");
   await expandFocusCard(next);
   await next.getByRole("button", { name: "Open test-project", exact: true }).focus();
   await page.keyboard.press("Enter");

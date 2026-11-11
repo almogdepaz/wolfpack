@@ -27,7 +27,7 @@ for (const kind of ["question", "permission"] as const) test(`phone row time: ${
     const row = page.locator(`#${surface} .focus-next li`).filter({ hasText: "prompt-project" });
     const title = row.locator("summary .focus-title");
     await expect(title).toHaveText(kind === "question" ? "prompt-project asks a question" : "prompt-project needs approval");
-    await expect(row.locator(".focus-meta")).toContainText("12m");
+    await expect(row.locator("span.focus-meta")).toContainText("12m");
     await expect(title.locator("small")).toHaveCount(0);
     const size = await title.evaluate(el => {
       const range = document.createRange(); range.selectNode(el.firstChild!);
@@ -62,7 +62,7 @@ for (const [state, inputKind, label, verb] of [
   const row = block.locator(".focus-next li").filter({ hasText: "prompt-project" });
   const tag = state === "needs-input" ? inputKind === "permission" ? "approve" : inputKind === "auth" ? "log in" : inputKind === "question" ? "answer" : "needs you" : state === "done" ? "done" : label;
   await expect(row.locator("summary .focus-tag")).toHaveText(tag);
-  await expect(row.locator("summary .focus-meta")).toContainText("prompt-project · 12m");
+  await expect(row.locator("summary span.focus-meta")).toContainText("prompt-project · 12m");
   await expandFocusCard(row);
   await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toHaveText("open ›");
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
@@ -94,7 +94,7 @@ test("row context: next and remote targets stay visible; compact today context y
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary .focus-meta")).toContainText("focus-ui");
+  await expect(block.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary span.focus-meta")).toContainText("focus-ui");
   await expect(block.locator(".focus-next li").filter({ hasText: "fix broker leak" })).toHaveCount(0);
   for (const context of await block.locator("summary .focus-for").all()) await expect(context).toBeVisible();
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
@@ -109,7 +109,7 @@ test("row context: next and remote targets stay visible; compact today context y
   } else await expect(shipToday.locator("summary .focus-for")).toBeVisible();
   await expect(view.locator(".focus-today li").filter({ hasText: "fix broker leak" }).locator("summary .focus-for")).toBeVisible();
   for (const context of await view.locator(".focus-next summary .focus-for").all()) await expect(context).toBeVisible();
-  const linkedContext = view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary .focus-meta");
+  const linkedContext = view.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary span.focus-meta");
   await expect(linkedContext).toContainText("focus-ui");
   expect(await linkedContext.evaluate(el => el.scrollWidth <= el.clientWidth), "intention and project fit without hiding the context").toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -216,7 +216,7 @@ test("counts: validated needs-you population and uncapped next totals agree", as
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="need"] .n')).toHaveAttribute("data-count", "7");
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="fail"] .n')).toHaveAttribute("data-count", "1");
   await expect(page.locator("#assistant-content .focus-next")).not.toContainText("count-6");
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("8 next:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("8 need you:");
   await expect(page.locator("#dashboard-focus > .focus-dashboard-body > small").last()).toContainText("8 need you");
   await expect(page.locator("#dashboard-focus .focus-next > li")).toHaveCount(3);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
@@ -246,7 +246,7 @@ test("counts: sessions claimed only by done intentions fall through to unlinked 
   });
   await page.goto(server.baseUrl);
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="need"] .n')).toHaveAttribute("data-count", "3");
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 next:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 need you:");
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(3);
   await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText("3 need you");
@@ -288,7 +288,7 @@ test("many stops: twelve unseen episodes remain capped without an hours cutoff",
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(3);
   await expect(block.locator(".focus-next .focus-title")).toHaveText(names.slice(0, 3).map((name, i) => `${name} ${i % 2 ? "stopped" : "is done"}`));
-  await expect(block.locator(".focus-next .focus-meta")).toHaveText(names.slice(0, 3).map((name, i) => `${name} · ${i + 2}d · research-${i % 3 + 1}`));
+  await expect(block.locator(".focus-next span.focus-meta")).toHaveText(names.slice(0, 3).map((name, i) => `${name} · ${i + 2}d · research-${i % 3 + 1}`));
   const shots = process.env.WOLFPACK_FOCUS_SHOTS;
   if (shots) {
     mkdirSync(shots, { recursive: true });

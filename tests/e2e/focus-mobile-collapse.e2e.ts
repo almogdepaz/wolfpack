@@ -148,8 +148,8 @@ async function touchToLastCard(page: Page) {
 }
 
 for (const scenario of [
-  { triage: "suggest" as const, needsInput: false, label: "0 need you · 1 reply ready" },
-  { triage: "needs-you" as const, needsInput: false, label: "1 need you" },
+  { triage: "suggest" as const, needsInput: false, label: "1 reply ready" },
+  { triage: "needs-you" as const, needsInput: false, label: "1 needs you" },
   { triage: "needs-you" as const, needsInput: true, label: "6 need you" },
 ]) test(`phone attention includes ${scenario.triage} (${scenario.needsInput ? "session" : "no session input"}) without double-counting`, async ({ page }, info) => {
   test.skip(info.project.name === "desktop", "mobile triage disclosure");

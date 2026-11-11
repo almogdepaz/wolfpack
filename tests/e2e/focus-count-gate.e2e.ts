@@ -47,10 +47,10 @@ for (const [state, inputKind, unseen, label, verb] of [
   await page.goto(server.baseUrl);
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="need"] .n')).toHaveAttribute("data-count", state === "needs-input" ? "1" : "0");
   await expect(page.locator('#sidebar-session-filter [data-session-card-view="fail"] .n')).toHaveAttribute("data-count", state === "failed" ? "1" : "0");
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText(`${count} next${count ? ":" : ""}`);
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText(count ? "1 needs you:" : "0");
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(count);
-  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText(`${count} ${count === 1 ? "needs" : "need"} you`);
+  await expect(block.locator(":scope > .focus-dashboard-body > small").last()).toContainText(count ? "1 needs you" : "0 · today");
   if (label) {
     const row = block.locator(".focus-next > li");
     await expect(row.locator(".focus-tag")).toHaveText(state === "failed" ? "failed" : verb === "open" ? "needs you" : verb!);

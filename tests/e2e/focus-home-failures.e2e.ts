@@ -66,7 +66,8 @@ for (const failure of ["candidate offline", "handshake abort", "home absent", "t
       await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     }
     await expect(page.locator("#assistant-content .focus-header")).toContainText("focus home offline · read-only", { timeout: failure === "timeout" ? 20_000 : 5_000 });
-    await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("offline");
+    const counts = await page.locator("#assistant-content > h2 small").first().innerText();
+    await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText(`offline · ${counts}`);
     await expect(page.locator("#assistant-pane-empty")).toContainText("focus home is offline. the terminal reconnects when it is back.");
     await expect(page.locator("#assistant-content").getByRole("button", { name: "Talk to assistant" })).toBeDisabled();
     await expect(page.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();

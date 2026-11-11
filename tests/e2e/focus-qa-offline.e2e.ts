@@ -257,7 +257,7 @@ test("S2: a retired peer installation leaves the offline snapshot before local r
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next");
   await expect(next).toContainText("retired-worker", { timeout: 10_000 });
-  await expect(next.locator("li").filter({ hasText: "retired-worker" }).locator("summary .focus-meta")).toContainText("peer · focus peer");
+  await expect(next.locator("li").filter({ hasText: "retired-worker" }).locator("summary span.focus-meta")).toContainText("peer · focus peer");
   if (process.env.WOLFPACK_FOCUS_SHOTS) await page.screenshot({ path: join(process.env.WOLFPACK_FOCUS_SHOTS, `row-peer-${width}.png`), fullPage: true });
   localDown = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -354,7 +354,7 @@ for (const failure of ["HTTP 503", "invalid document"] as const) test(`QA-30: ${
     await expect(page.locator(header)).toContainText("focus unavailable · read-only");
     await expect(page.locator(header)).not.toContainText("offline");
   }
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("focus unavailable");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("focus unavailable · 1 needs you");
   await expect(view.getByRole("textbox", { name: "Add an intention" })).toBeDisabled();
   await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeEnabled();
   await expect(page.locator("#focus-status")).toHaveText(""); // cause belongs in settings

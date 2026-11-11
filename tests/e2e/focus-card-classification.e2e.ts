@@ -39,7 +39,7 @@ test("full merge is classified before the cap; delegated stops wait and starts l
   await expect(block.locator(".focus-next")).not.toContainText("child-finish");
   await expect(block.locator(".focus-quiet")).toContainText("api-refactor waiting on 3 sub-sessions (1 working)");
   await expect(block.locator(".focus-quiet")).toContainText("1 working");
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 next:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 needs you · 2 done:");
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
   await expect(view.getByRole("heading", { name: /^next / })).toHaveText("next 1 needs you · 2 done");

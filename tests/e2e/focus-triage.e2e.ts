@@ -80,7 +80,7 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await expect(block.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue(draft);
   await expect(block.locator(".focus-next")).not.toContainText("another-project");
   await expect(block).toContainText(/ordered (now|\d+m) ago/);
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 next:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 reply ready:");
   await expect(page.locator("#sidebar-assistant .assistant-tile-next")).toContainText("The approved plan is ready to continue");
   expect(sends).toEqual([]);
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
@@ -586,7 +586,7 @@ test("expired triage returns quiet stops to rules and names the expiry", async (
   await expect(page.locator("#dashboard-focus")).toContainText("by rules · order expired");
   await expect(page.locator("#dashboard-focus .focus-next")).toContainText("another-project");
   await expect(page.locator("#dashboard-focus .focus-next")).not.toContainText(draft);
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("2 next:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 needs you · 1 done:");
 });
 
 for (const mode of ["send", "done"] as const) test(`R4/L1: an expired visible ${mode} action cannot become another row's action`, async ({ page }) => {

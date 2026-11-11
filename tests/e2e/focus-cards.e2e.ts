@@ -7,6 +7,24 @@ test.beforeAll(async () => { server = await startTestServer({ focusAssistant: tr
 test.afterAll(async () => { await server?.close(); });
 const noHorizontalScroll = () => document.documentElement.scrollWidth <= innerWidth;
 
+test("unjudged cards quote only the last 100 untrusted characters, never as their headline", async ({ page }) => {
+  const line = "Earlier context ".repeat(8) + "🦊".repeat(30) + " <img src=x onerror=alert(1)> choose a plan?";
+  await page.route("**/api/sessions", async route => {
+    const response = await route.fetch(); const body = await response.json();
+    body.sessions.find((s: { name: string }) => s.name === "prompt-project").lastLine = line;
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "prompt-project" });
+  await expect(row.locator("summary .focus-title")).toHaveText("prompt-project asks a question");
+  const quote = row.locator("summary q");
+  await expect(quote).toHaveText("…" + Array.from(line).slice(-100).join(""));
+  await expect(quote.locator("*")).toHaveCount(0);
+  await expect(quote).toHaveCSS("white-space", "nowrap");
+  expect((await quote.boundingBox())!.height).toBeLessThanOrEqual(20);
+  expect(await quote.evaluate(el => getComputedStyle(el).fontFamily)).toMatch(/mono/i);
+});
+
 test("a next row expands to its session details; the action acts without toggling; open survives a re-render", async ({ page }) => {
   // the mock backend reports no project path; give prompt-project one so the card shows it
   await page.route("**/api/sessions", async route => {

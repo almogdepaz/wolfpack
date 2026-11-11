@@ -24,7 +24,7 @@ for (const reading of [false, true]) test(`QA-13: the sidebar name separates ${r
   await page.getByRole("button", { name: "Talk to assistant" }).click();
   const tile = page.locator('#sidebar-assistant [data-focus-action="view"]');
   await expect(tile).toBeVisible();
-  await expect(tile).toHaveAccessibleName(reading ? /^assistant\s*, reading next\s*: prompt-project asks a question$/ : /^assistant\s*, \d+ next\s*: prompt-project asks a question$/);
+  await expect(tile).toHaveAccessibleName(reading ? /^assistant\s*, reading · 1 needs you next\s*: prompt-project asks a question$/ : /^assistant\s*, 1 needs you\s*: prompt-project asks a question$/);
   // S3: punctuation is spoken-only, and the original small visual label remains.
   const visibleText = await tile.evaluate(el => {
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
