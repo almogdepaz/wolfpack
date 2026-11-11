@@ -1483,7 +1483,7 @@ export const controlApiSource: ControlApiSource = {
     },
     "POST /api/focus": {
       operationId: "updateFocus", stable: true, auth: "jwt-when-configured",
-      request: object({ expectedRevision: integer(), ops: arrayOf({ type: "object", description: "Validated by src/focus-contract.ts; add/edit/done/undo/drop/reorder/next/nudge/note/day-summary/seen-day-note" }) }, ["expectedRevision", "ops"]),
+      request: object({ expectedRevision: integer(), ops: arrayOf({ type: "object", description: "Validated by src/focus-contract.ts; add/edit/done/undo/drop/reorder/next/nudge/note/day-summary/seen-day-note/seen-take" }) }, ["expectedRevision", "ops"]),
       response: object({ home: string(), installationId: string(), local: boolean(), document: { type: "object" }, revision: integer() }, ["home", "installationId", "local", "document", "revision"]),
       errors: ["400 ErrorEnvelope", "409 ErrorEnvelope", "503 ErrorEnvelope"],
     },

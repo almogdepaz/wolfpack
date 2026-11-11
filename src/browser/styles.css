@@ -2993,7 +2993,11 @@ details.focus-card > summary:focus-visible { outline: 2px solid var(--accent); o
 /* The agent-context document (extension `agent-context`) inside an open session card. */
 .focus-context { margin: -2px 0 12px; padding-top: 10px; border-top: 1px solid var(--hairline); }
 .focus-context .focus-card-body { margin: 0; padding: 0; border: 0; }
-.focus-context-label { margin: 0 0 6px; color: var(--text-3); font: 600 11px var(--font-ui); text-transform: uppercase; letter-spacing: .07em; }
+.focus-take { display: flex; align-items: end; gap: 12px; margin: 12px 0; color: var(--text-2); font: 13px/1.5 var(--font-ui); overflow-wrap: anywhere; }
+.focus-take > :first-child { flex: 1; min-width: 0; }
+.focus-take-actions { display: flex; flex: none; gap: 8px; }
+.focus-take button { border: 0; background: none; padding: 0 4px; }
+.focus-context-label, .focus-take-label { margin: 0 0 6px; color: var(--text-3); font: 600 11px var(--font-ui); text-transform: uppercase; letter-spacing: .07em; }
 .focus-context-note { margin: 6px 0 0; color: var(--text-3); font-size: 12px; }
 .focus-card-body dd ul, .focus-card-body dd ol { margin: 0; padding-left: 16px; }
 .focus-card-body dd ul { list-style: disc; }
@@ -3109,6 +3113,8 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-block { flex: none; margin: 10px 16px 8px; padding: 14px; }
   .focus-block button, .assistant-column button, .focus-terminal-header button { min-height: 44px; }
   .focus-notes button { min-height: 0; }
+  .focus-take { flex-direction: column; align-items: start; gap: 0; }
+  .focus-take button { min-width: 44px; }
   .focus-header > button:not(:last-child):not(.focus-attn), .focus-done button, .focus-yesterday button, .assistant-column summary { min-height: 44px; }
   .focus-chips button { position: relative; min-height: 26px; min-width: 44px; }
   .focus-chips button::after { content: ""; position: absolute; inset: -9px 0; }

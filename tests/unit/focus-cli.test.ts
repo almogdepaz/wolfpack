@@ -24,6 +24,15 @@ test("focus next parses a JSON input file through the same reducer validation", 
   try {
     writeFileSync(file, JSON.stringify(rows));
     expect(parseFocusCommand(["next", file, "--json"])).toEqual({ json: true, op: { type: "next", rows, author: "assistant" } });
+    const second = { ...rows[0]!, ref: { machine: "peer-id", sessionId: "second" } };
+    writeFileSync(file, JSON.stringify([...rows, second]));
+    expect(parseFocusCommand(["next", file, "--take", "Plan first; release depends on it.", "--about", "2,1", "--json"])).toEqual({ json: true,
+      op: { type: "next", rows: [...rows, second], author: "assistant", take: { text: "Plan first; release depends on it.", about: [second.ref, rows[0]!.ref] } } });
+    expect(parseFocusCommand(["next", file, "--take", "Where does add eggs belong?"]).op).toMatchObject({ take: { text: "Where does add eggs belong?", about: [] } });
+    for (const flags of [["--about", "1"], ["--take"], ["--take", "hi", "--about"], ["--take", "hi", "--about", "0"],
+      ["--take", "hi", "--about", "3"], ["--take", "hi", "--about", "1,1"], ["--take", "hi", "--about", "1.0"],
+      ["--take", "hi", "--about", "1,"], ["--take", "hi", "--about", ""], ["--take", "hi", "--unknown", "1"],
+      ["--take", "hi", "--take", "again"], ["--take", "x".repeat(201)]]) expect(() => parseFocusCommand(["next", file, ...flags])).toThrow();
     writeFileSync(file, JSON.stringify([{ ...rows[0], verdict: "sent" }]));
     expect(() => parseFocusCommand(["next", file])).toThrow();
     writeFileSync(file, "{bad json");

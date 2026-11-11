@@ -181,6 +181,17 @@ export function focusCards(rows: readonly FocusAction[], sessions: readonly Focu
   }
   return { cards, waiting, working: sessions.filter(s => s.state === AGENT_STATUS_STATE.WORKING).length, notReached };
 }
+/** Use the full card merge, never the host's presentation cap. Refs inherit their order's episode. */
+export function takeVisible(doc: FocusDocument, cards: readonly FocusCard[], order: FocusMerge["order"]): boolean {
+  const next = doc.next;
+  if (order !== "assistant" || next?.author !== "assistant" || !next.take || doc.seenTakeAt === next.updatedAt) return false;
+  return next.take.about.every(ref => {
+    const key = focusNextRefKey(ref);
+    const target = next.rows.find(row => focusNextRefKey(row.ref) === key);
+    return !!target && cards.some(({ row }) => row.source === "assistant" && row.triage
+      && focusNextRefKey(row.triage.ref) === key && row.triage.stoppedAt === target.stoppedAt);
+  });
+}
 export type FocusDoneItem = { at: string; kind: "intention"; intention: FocusIntention } | { at: string; kind: "session"; intention: FocusIntention; session: FocusSession };
 export interface FocusDoneGroup {
   intention: FocusIntention;

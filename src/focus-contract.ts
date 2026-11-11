@@ -20,7 +20,8 @@ export interface FocusTriage {
   suggestion?: string;
   doneIntention?: string;
 }
-export interface FocusNext { rows: FocusTriage[]; author: string; updatedAt: string }
+export interface FocusTake { text: string; about: FocusNextRef[] }
+export interface FocusNext { rows: FocusTriage[]; author: string; updatedAt: string; take?: FocusTake }
 export interface FocusDaySummary { date: string; done: number; carried: number; questions: number }
 export interface FocusDocument {
   version: 1;
@@ -32,6 +33,7 @@ export interface FocusDocument {
   notes?: string;
   daySummary?: FocusDaySummary;
   seenDayNoteAt?: string;
+  seenTakeAt?: string;
 }
 export type FocusOp =
   | { type: "add"; intention: Omit<FocusIntention, "createdAt" | "done"> }
@@ -39,10 +41,10 @@ export type FocusOp =
   | { type: "done" | "undo" | "drop"; id: string }
   | { type: "reorder"; ids: readonly string[] }
   | { type: "nudge"; text: string; author: string }
-  | { type: "next"; rows: FocusTriage[]; author: string }
+  | { type: "next"; rows: FocusTriage[]; author: string; take?: FocusTake }
   | { type: "note"; text: string }
   | { type: "day-summary"; summary: FocusDaySummary }
-  | { type: "seen-day-note"; at: string };
+  | { type: "seen-day-note" | "seen-take"; at: string };
 
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const keys = (v: Record<string, unknown>, allowed: string[]) => Object.keys(v).every(k => allowed.includes(k));
@@ -75,22 +77,31 @@ function triageRows(v: unknown): v is FocusTriage[] {
   return Array.isArray(v) && v.length <= 200 && v.every(triage)
     && new Set(v.map(row => focusNextRefKey(row.ref))).size === v.length;
 }
+function take(v: unknown, rows: FocusTriage[]): v is FocusTake {
+  if (!object(v) || !keys(v, ["text", "about"]) || !oneLine(v.text, 200) || !Array.isArray(v.about) || v.about.length > 5) return false;
+  const refs = v.about;
+  return refs.every(ref => object(ref) && rows.some(row => "sessionId" in row.ref
+    ? keys(ref, ["machine", "sessionId"]) && ref.machine === row.ref.machine && ref.sessionId === row.ref.sessionId
+    : keys(ref, ["intentionId"]) && ref.intentionId === row.ref.intentionId))
+    && new Set(refs.map(ref => focusNextRefKey(ref as FocusNextRef))).size === refs.length;
+}
 function daySummary(v: unknown): v is FocusDaySummary {
   return object(v) && keys(v, ["date", "done", "carried", "questions"]) && typeof v.date === "string" && /^\d{4}-\d\d-\d\d$/.test(v.date)
     && [v.done, v.carried, v.questions].every(n => typeof n === "number" && Number.isSafeInteger(n) && n >= 0 && n <= 10000);
 }
 export function emptyFocus(): FocusDocument { return { version: 1, revision: 0, updatedAt: null, intentions: [] }; }
 export function isFocusDocument(v: unknown): v is FocusDocument {
-  if (!object(v) || !keys(v, ["version", "revision", "updatedAt", "intentions", "nudge", "next", "notes", "daySummary", "seenDayNoteAt"])) return false;
+  if (!object(v) || !keys(v, ["version", "revision", "updatedAt", "intentions", "nudge", "next", "notes", "daySummary", "seenDayNoteAt", "seenTakeAt"])) return false;
   return v.version === 1 && Number.isSafeInteger(v.revision) && (v.revision as number) >= 0 && (v.updatedAt === null || timestamp(v.updatedAt))
     && Array.isArray(v.intentions) && v.intentions.length <= 200 && v.intentions.every(i => object(i)
       && keys(i, ["id", "title", "project", "machine", "sessions", "done", "doneAt", "createdAt"]) && id(i.id) && text(i.title, 500) && timestamp(i.createdAt)
       && intentionFields(i) && (i.done === undefined || typeof i.done === "boolean") && (i.doneAt === undefined || timestamp(i.doneAt)))
     && new Set(v.intentions.map(i => i.id)).size === v.intentions.length
     && (v.nudge === undefined || (object(v.nudge) && keys(v.nudge, ["text", "updatedAt", "author"]) && text(v.nudge.text, 1000, true) && timestamp(v.nudge.updatedAt) && text(v.nudge.author, 128)))
-    && (v.next === undefined || (object(v.next) && keys(v.next, ["rows", "author", "updatedAt"]) && triageRows(v.next.rows) && oneLine(v.next.author, 128) && timestamp(v.next.updatedAt)))
+    && (v.next === undefined || (object(v.next) && keys(v.next, ["rows", "author", "updatedAt", "take"]) && triageRows(v.next.rows) && oneLine(v.next.author, 128) && timestamp(v.next.updatedAt) && (v.next.take === undefined || take(v.next.take, v.next.rows))))
     && (v.notes === undefined || text(v.notes, 16000, true)) && (v.daySummary === undefined || daySummary(v.daySummary))
-    && (v.seenDayNoteAt === undefined || timestamp(v.seenDayNoteAt));
+    && (v.seenDayNoteAt === undefined || timestamp(v.seenDayNoteAt))
+    && (v.seenTakeAt === undefined || timestamp(v.seenTakeAt));
 }
 export function isFocusOp(v: unknown): v is FocusOp {
   if (!object(v)) return false;
@@ -102,10 +113,10 @@ export function isFocusOp(v: unknown): v is FocusOp {
     case "done": case "undo": case "drop": return keys(v, ["type", "id"]) && id(v.id);
     case "reorder": return keys(v, ["type", "ids"]) && strings(v.ids, 200);
     case "nudge": return keys(v, ["type", "text", "author"]) && text(v.text, 1000, true) && text(v.author, 128);
-    case "next": return keys(v, ["type", "rows", "author"]) && triageRows(v.rows) && oneLine(v.author, 128);
+    case "next": return keys(v, ["type", "rows", "author", "take"]) && triageRows(v.rows) && oneLine(v.author, 128) && (v.take === undefined || take(v.take, v.rows));
     case "note": return keys(v, ["type", "text"]) && text(v.text, 16000, true);
     case "day-summary": return keys(v, ["type", "summary"]) && daySummary(v.summary);
-    case "seen-day-note": return keys(v, ["type", "at"]) && timestamp(v.at);
+    case "seen-day-note": case "seen-take": return keys(v, ["type", "at"]) && timestamp(v.at);
     default: return false;
   }
 }
@@ -138,10 +149,13 @@ export function reduceFocus(current: FocusDocument, ops: unknown, now: string): 
             if (key && !doc.intentions.some(i => i.id === key)) throw new Error(`intention not found: ${key}`);
           }
         }
-        doc.next = { rows: structuredClone(op.rows), author: op.author, updatedAt: now }; break;
+        doc.next = { rows: structuredClone(op.rows), author: op.author, updatedAt: now, ...(op.take !== undefined && { take: structuredClone(op.take) }) }; break;
       case "note": doc.notes = op.text; break;
       case "day-summary": doc.daySummary = op.summary; break;
       case "seen-day-note": doc.seenDayNoteAt = op.at; break;
+      case "seen-take":
+        if (!doc.next?.take || op.at !== doc.next.updatedAt) throw new Error("take changed; review the current order");
+        doc.seenTakeAt = op.at; break;
     }
   }
   doc.revision++;

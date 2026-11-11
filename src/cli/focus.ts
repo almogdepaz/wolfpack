@@ -14,7 +14,7 @@ export const FOCUS_USAGE = `Usage: wolfpack focus show|add|edit|done|undo|drop|r
   edit <id> [title] [--project /path] [--on machine] [--sessions id,id]
   done|undo|drop <id>
   reorder <id> <id> ... (all intentions, in order)
-  next <json-file>   ordered triage rows (ref, verdict, reason, stoppedAt, suggestion?, doneIntention?)
+  next <json-file> [--take <text>] [--about <1,3>]   ordered triage rows (ref, verdict, reason, stoppedAt, suggestion?, doneIntention?)
   nudge|note <text>
   day-summary <YYYY-MM-DD> <done> <carried> <questions>
   home [<installation-id>|--clear]   show or set this machine's focus home (config.json; restart to apply)`;
@@ -38,7 +38,22 @@ export function parseFocusCommand(args: readonly string[]): { json: boolean; op?
     if (cmd === "add" && positional.length === 1) op = { type: "add", intention: { id: randomUUID(), ...fields, title: positional[0] } };
     if (cmd === "edit" && positional.length >= 1 && positional.length <= 2) op = { type: "edit", id: positional[0], patch: { ...fields, ...(positional[1] !== undefined && { title: positional[1] }) } };
   } else if (["done", "undo", "drop"].includes(cmd ?? "") && rest.length === 1) op = { type: cmd, id: rest[0] };
-  else if (cmd === "next" && rest.length === 1) op = { type: "next", rows: JSON.parse(readFileSync(rest[0]!, "utf8")), author: "assistant" };
+  else if (cmd === "next" && rest.length >= 1) {
+    const fields: Record<string, string> = {};
+    for (let i = 1; i < rest.length; i += 2) {
+      const flag = rest[i]!, value = rest[i + 1];
+      if (!["--take", "--about"].includes(flag) || value === undefined || flag in fields) throw new Error(FOCUS_USAGE);
+      fields[flag] = value;
+    }
+    if ("--about" in fields && !("--take" in fields)) throw new Error(FOCUS_USAGE);
+    const rows: unknown = JSON.parse(readFileSync(rest[0]!, "utf8"));
+    const base = { type: "next", rows, author: "assistant" };
+    if (!isFocusOp(base) || base.type !== "next") throw new Error(FOCUS_USAGE);
+    const about = fields["--about"];
+    const indices = about === undefined ? [] : about.split(",").map(n => /^[1-9]\d*$/.test(n) ? Number(n) - 1 : NaN);
+    if (indices.some(n => !Number.isSafeInteger(n) || n >= base.rows.length)) throw new Error(FOCUS_USAGE);
+    op = { ...base, ...("--take" in fields && { take: { text: fields["--take"], about: indices.map(n => base.rows[n]!.ref) } }) };
+  }
   else if (cmd === "reorder") op = { type: cmd, ids: rest };
   else if ((cmd === "nudge" || cmd === "note") && rest.length === 1) op = { type: cmd, text: rest[0], ...(cmd === "nudge" && { author: "assistant" }) };
   else if (cmd === "day-summary" && rest.length === 4) op = { type: cmd, summary: { date: rest[0], done: Number(rest[1]), carried: Number(rest[2]), questions: Number(rest[3]) } };

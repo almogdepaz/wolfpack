@@ -1,6 +1,6 @@
 import { linkStartedFocusSession, type FocusSessionStart, type StartedFocusSession } from "../src/focus-start";
 import { esc, escAttr, isDesktop } from "./app-state";
-import { focusCards, mergeFocus, stoppedUnseen, linkedFocusSessions, doneToday, groupFocusDone, type FocusDoneGroup, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
+import { focusCards, mergeFocus, takeVisible, stoppedUnseen, linkedFocusSessions, doneToday, groupFocusDone, type FocusDoneGroup, focusSessionLabel, focusActionVerb, type FocusAction, type FocusSession } from "../src/focus-ranking";
 import { emptyFocus, isFocusDocument, focusNextRefKey, type FocusDocument, type FocusIntention, type FocusOp } from "../src/focus-contract";
 import type { AssistantTiming } from "../src/focus-scheduler";
 import { SESSION_SEND_OUTCOME, type SessionSendOutcome } from "../src/session-send-contract";
@@ -413,6 +413,12 @@ export function createAssistantView(deps: {
   const cardHeadline = (row: FocusAction) => row.triage?.reason ?? (row.session ? `${row.session.name} ${row.session.state === "needs-input"
     ? row.session.inputKind === "permission" ? "needs approval" : row.session.inputKind === "auth" ? "needs you to log in" : "asks a question"
     : row.session.state === "failed" ? "failed" : row.session.state === "done" ? "is done" : "stopped"}` : nextTitle(row));
+  function takeHtml() {
+    const current = doc();
+    if (!takeVisible(current, cardOrder().cards, nextOrder(0).order)) return "";
+    const next = current.next!;
+    return `<div class="focus-take"><div><div class="focus-take-label">assistant's take · ${esc(age(next.updatedAt))} ago</div>${esc(next.take!.text)}</div><div class="focus-take-actions"><button type="button" data-focus-action="seen-take" data-focus-at="${escAttr(next.updatedAt)}" data-focus-key="action:seen-take" aria-label="Got it: dismiss the assistant's take"${locked() ? " disabled" : ""}>got it</button>${button("talk", "reply ›", "Reply to assistant", locked() || !terminalTarget(), "take-reply")}</div></div>`;
+  }
   function nextHtml(host: "d" | "p", cap: number, expanded = false) {
     const classified = cardOrder();
     const parts = [...classified.waiting.slice(0, 2).map(s => `${s.name} waiting on ${plural(s.children!.total, "sub-session")} (${s.children!.working} working)`),
@@ -679,9 +685,9 @@ export function createAssistantView(deps: {
       const details = document.getElementById("dashboard-focus-details");
       if (details) details.hidden = !dashboardExpanded;
     }
-    const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${focus?.document ? nextHtml("d", 3) + `<small>${esc(nextSummary)}${current.intentions.length ? ` · today ${summary}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
+    const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${focus?.document ? nextHtml("d", 3) + takeHtml() + `<small>${esc(nextSummary)}${current.intentions.length ? ` · today ${summary}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
     replace("dashboard-focus-details", dashboardBody);
-    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}<h2>next <small>${esc(nextSummary)}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}<h2>next <small>${esc(nextSummary)}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${takeHtml()}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     syncReplyControls();
     for (const field of document.querySelectorAll<HTMLElement>("[data-focus-clamped]")) {
       const headline = field.closest("details")?.querySelector<HTMLElement>("summary .focus-title");
@@ -997,6 +1003,10 @@ export function createAssistantView(deps: {
         if (focus) focus.routines = next;
       });
       if (action === "day-note") void run(readDayNote);
+      if (action === "seen-take" && target.dataset.focusAt) {
+        const at = target.dataset.focusAt;
+        void run(() => write({ type: "seen-take", at }));
+      }
       if (target.dataset.focusUndo) void run(() => write({ type: "undo", id: target.dataset.focusUndo! }));
       if (target.dataset.focusComplete) void run(() => write({ type: "done", id: target.dataset.focusComplete! }));
       if (target.dataset.focusStart) {
