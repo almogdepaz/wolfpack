@@ -169,7 +169,16 @@ test("quiet phones default collapsed; desktop defaults expanded with its own dis
   } else {
     await expect(page.getByRole("button", { name: /Expand assistant/ })).toHaveAttribute("aria-expanded", "false");
     await expect(page.locator("#dashboard-focus-details")).toBeHidden();
+    await page.getByRole("button", { name: /Expand assistant/ }).click();
   }
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const statusDot = page.locator("#assistant-content .focus-header > span:not(.focus-spin) > .dot");
+  await expect(statusDot).toHaveCount(1);
+  const size = info.project.name === "desktop" ? 7 : 10;
+  await expect.poll(() => statusDot.evaluate(el => {
+    const { width, height } = el.getBoundingClientRect();
+    return { width, height };
+  }), { message: "the quiet assistant-page status dot keeps its authored geometry" }).toEqual({ width: size, height: size });
 });
 
 test("phone disclosure works when its storage access throws", async ({ page }, info) => {

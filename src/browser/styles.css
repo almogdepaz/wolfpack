@@ -3007,7 +3007,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-rank { min-width: 14px; color: var(--text-4); font: 12px var(--font-mono); text-align: right; }
 .focus-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); font-weight: 500; }
 .focus-title small, .focus-for, .focus-nudge small { color: var(--text-3); font-size: 12px; font-weight: 400; }
-.focus-next .focus-title small { display: inline-block; }
+.focus-header .dot, .focus-next .focus-title small { display: inline-block; }
 @media (min-width: 769px) and (max-width: 1439px) { .assistant-column .focus-next .focus-title small { display: none; } }
 .focus-note summary { min-height: 44px; }
 .focus-today .focus-for { margin-left: 10px; }
@@ -3083,9 +3083,8 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 .focus-header > button:not(:last-child):not(.focus-attn), .focus-notes button, .focus-done button, .focus-yesterday button, .assistant-column > header button { min-height: 0; padding: 2px 0; border: 0; border-radius: 4px; background: none; color: var(--accent); font-size: 12px; }
 .focus-next .focus-action:hover, .focus-header > button:not(:last-child):not(.focus-attn):hover, .focus-notes button:hover, .focus-done button:hover, .focus-yesterday button:hover, .assistant-column > header button:hover { background: none; color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 .focus-header > button:not(:last-child):not(.focus-attn) { color: var(--text-1); font-size: 13px; font-weight: 600; }
-.focus-header > button:not(:last-child):not(.focus-attn):hover { color: var(--text-1); }
 .assistant-column > header button { color: var(--text-3); font-size: 13px; }
-.assistant-column > header button:hover { color: var(--text-1); }
+.focus-header > button:not(:last-child):not(.focus-attn):hover, .assistant-column > header button:hover { color: var(--text-1); }
 .focus-notes button { display: inline; padding: 0 2px; font-size: inherit; vertical-align: baseline; }
 .app-dialog .app-dialog-scroll { max-height: 60vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 var(--font-mono); }
 .session-pin { width: 12px; height: 12px; color: var(--text-3); flex: none; }
