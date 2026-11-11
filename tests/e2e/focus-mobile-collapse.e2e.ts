@@ -1,3 +1,4 @@
+import { expandFocusCard } from "./focus-card-helpers";
 import { test, expect, type Page } from "@playwright/test";
 import { writeFileSync } from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
@@ -163,11 +164,12 @@ for (const scenario of [
   await toggle.tap();
   if (scenario.triage === "suggest") {
     const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft textarea") });
-    const send = row.locator(".focus-draft").getByRole("button", { name: "Send suggestion to local-project-00", exact: true });
+    await expandFocusCard(row);
+    const send = row.locator(".focus-draft").getByRole("button", { name: "Send to local-project-00", exact: true });
     await expect(row.locator(".focus-draft textarea")).toHaveValue("Continue with the approved rollout.");
-    await expect(row.locator(".focus-draft > div")).toContainText("will be typed into local-project-00");
+    await expect(row.locator(".focus-caption")).toContainText("message to local-project-00");
     await expect(row.locator(".focus-draft > div")).toHaveCSS("font-size", "13px");
-    await expect(row.locator(":scope > .focus-action")).toHaveText("open ›");
+    await expect(row.locator("details button").last()).toHaveText("open ›");
     await expect(send).toBeVisible();
     await expect(send).toHaveAccessibleDescription("Continue with the approved rollout.");
     expect((await send.boundingBox())!.height).toBeGreaterThanOrEqual(44);
@@ -268,7 +270,7 @@ test("expanded dashboard scrolls its last card control while keeping a usable se
   await expect(cards).toHaveCount(3);
   for (let i = 0; i < 3; i++) await cards.nth(i).locator("summary").click();
   await expect(panel.locator(".focus-card[open]")).toHaveCount(3);
-  const send = panel.getByRole("button", { name: "Send suggestion to local-project-02", exact: true });
+  const send = panel.getByRole("button", { name: "Send to local-project-02", exact: true });
   await send.scrollIntoViewIfNeeded();
   await expect(send).toBeInViewport({ ratio: 1 });
   const geometry = await metrics(page);

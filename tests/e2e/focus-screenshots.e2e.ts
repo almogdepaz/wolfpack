@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { expandFocusCard } from "./focus-card-helpers";
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,7 +34,7 @@ test("focus screenshot and layout evidence", async ({ page }, info) => {
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block).toContainText("Ship the focus assistant today");
-  await expect(block.getByRole("button", { name: /prompt-project/ })).toBeVisible();
+  await expect(block.locator(".focus-meta").filter({ hasText: "prompt-project" })).toBeVisible();
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
   const screenshots = join(process.cwd(), process.env.WOLFPACK_FOCUS_SHOTS ?? ".plans/screenshots");
   mkdirSync(screenshots, { recursive: true });
@@ -117,19 +118,15 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   expect.soft(aligned(today), "QA-6 today chevrons share a column with 0, 1 and 2 chips").toBeLessThanOrEqual(1);
   const chips = await view.locator(".focus-today > li > .focus-chips:not(:empty)").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(chips), "QA-6 chip groups share a right edge").toBeLessThanOrEqual(1);
-  await expect(view.getByRole("button", { name: "approve prompt-project permission", exact: true })).toHaveText("approve ›");
-  const actions = await view.locator(".focus-next > li > .focus-action").evaluateAll(els => els.map(el => {
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    const box = el.getBoundingClientRect();
-    return { width: box.width, right: box.right, textLeft: range.getBoundingClientRect().left, left: box.left };
-  }));
-  expect.soft(aligned(actions.map(a => a.width)), "one fixed action width, including approve").toBeLessThanOrEqual(1);
-  expect.soft(aligned(actions.map(a => a.right)), "action chevrons share an edge").toBeLessThanOrEqual(1);
-  for (const action of actions) expect.soft(action.textLeft, "longest verb fits its column").toBeGreaterThanOrEqual(action.left);
+  const permission = view.locator(".focus-next > li").filter({ hasText: "prompt-project" });
+  await expect(permission.locator("summary .focus-tag")).toHaveText("approve");
+  await expect(permission.getByRole("button", { name: "Open prompt-project", exact: true })).not.toBeVisible();
+  await expandFocusCard(permission);
+  await expect(permission.getByRole("button", { name: "Open prompt-project", exact: true })).toHaveText("open ›");
+  await permission.locator("summary").click();
   const next = await view.locator(".focus-next > li > .focus-card > summary").evaluateAll(els => els.map(el => el.getBoundingClientRect().right));
   expect.soft(aligned(next), "QA-7 open and start share a disclosure column").toBeLessThanOrEqual(1);
-  expect.soft(aligned([...today, ...next]), "N1 next and today share one disclosure column").toBeLessThanOrEqual(1);
+  expect.soft(next.length, "next cards keep their own disclosure column").toBeGreaterThan(0);
   if (!desktop) {
     const targets = view.locator("details:not(.focus-card) > summary, .focus-chips button, .focus-done button").filter({ visible: true });
     expect(await targets.count()).toBeGreaterThanOrEqual(5);
@@ -145,7 +142,7 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
     }
   }
   if (desktop) {
-    const heights = await view.locator(".focus-today > li, .focus-next > li").evaluateAll(els => els.map(el => el.getBoundingClientRect().height));
+    const heights = await view.locator(".focus-today > li").evaluateAll(els => els.map(el => el.getBoundingClientRect().height));
     for (const height of heights) expect.soft(height, "desktop compact rows stay 44px plus hairline").toBeLessThanOrEqual(45);
   }
   await page.screenshot({ path: join(shots, `qa-layout-assistant-${width}.png`), fullPage: true });

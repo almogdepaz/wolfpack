@@ -246,7 +246,7 @@ export function createAssistantView(deps: {
     return caption ? `<small class="focus-for"${hidden ? ' hidden=""' : ""}>${caption}</small>` : "";
   }
   // `open=""` is how innerHTML serializes the attribute, so an unchanged render still compares equal in replace().
-  const card = (key: string, summary: string, body: string, extra = "") => `<details class="focus-card" data-focus-card="${escAttr(key)}"${openCards.has(key) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${key}`)}">${summary}</summary><dl class="focus-card-body">${body}</dl>${extra}</details>`;
+  const card = (key: string, summary: string, body: string, extra = "", controls = "") => `<details class="focus-card" data-focus-card="${escAttr(key)}"${openCards.has(key) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${key}`)}">${summary}</summary><dl class="focus-card-body">${body}</dl>${extra}${controls}</details>`;
   // The agent-context extension's document for a session, fetched only for open session cards (local and peer
   // sessions alike, through the session's own machine). Catalogs are cached per machine; documents per session.
   const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -292,18 +292,13 @@ export function createAssistantView(deps: {
     const need = (item: { id: string; text: string }) => `<li data-focus-need="${escAttr(item.id)}">${esc(item.text)}</li>`;
     const moreKey = `more:${session.id}`;
     const more = context.needsYou.length > 5 ? `<details class="focus-context-more" data-focus-card="${escAttr(moreKey)}"${openCards.has(moreKey) ? ' open=""' : ""}><summary data-focus-key="${escAttr(`card:${moreKey}`)}">${context.needsYou.length - 5} more</summary><ul>${context.needsYou.slice(5).map(need).join("")}</ul></details>` : "";
+    const needs = field("needs you", context.needsYou.length ? `<ul class="focus-needs">${context.needsYou.slice(0, 5).map(need).join("")}</ul>${more}` : "");
     const fields = field("goal", esc(context.goal ?? "")) + field("now", esc(context.now ?? ""))
-      + field("needs you", context.needsYou.length ? `<ul class="focus-needs">${context.needsYou.slice(0, 5).map(need).join("")}</ul>${more}` : "")
       + field("next", context.nextSteps.length ? `<ol>${context.nextSteps.map(step => `<li>${esc(step.text)}${step.owner ? ` <span class="focus-owner">${step.owner}</span>` : ""}</li>`).join("")}</ol>` : "")
       + field("need to know", context.needToKnow.length ? `<ul>${context.needToKnow.map(text => `<li>${esc(text)}</li>`).join("")}</ul>` : "");
     const fresh = [context.freshness, context.updatedAt && `updated ${age(context.updatedAt)}`].filter(Boolean).join(" · ");
-    return `<div class="focus-context"><p class="focus-context-label">context</p>${fields ? `<dl class="focus-card-body">${fields}</dl>` : ""}${fresh ? `<p class="focus-context-note">${esc(fresh)}</p>` : ""}</div>`;
-  }
-  function sessionBody(row: FocusAction, session: FocusSession) {
-    const stopped = stoppedUnseen(session);
-    return field("machine", esc(session.machine ?? "")) + field("project", project(session.cwd))
-      + field("state", stopped ? `stopped${session.changedAt ? ` · ${age(session.changedAt)}` : ""}` : `${esc(focusSessionLabel(session))}${session.changedAt ? ` · since ${age(session.changedAt)}` : ""}`)
-      + field("last line", session.lastLine ? `<code>${esc(session.lastLine)}</code>` : "") + field(row.triage ? "reason" : "by rules", esc(row.triage ? row.reason : focusSessionLabel(session))) + field("for", esc(row.intention?.title ?? ""));
+    const detailsKey = `context:${session.id}`;
+    return `<div class="focus-context"><p class="focus-context-label">context</p>${needs ? `<dl class="focus-card-body">${needs}</dl>` : ""}${fields ? `<details class="focus-context-more" data-focus-card="${escAttr(detailsKey)}"${openCards.has(detailsKey) ? ' open=""' : ""}><summary>more</summary><dl class="focus-card-body">${fields}</dl></details>` : ""}${fresh ? `<p class="focus-context-note">${esc(fresh)}</p>` : ""}</div>`;
   }
   function intentionBody(intention: FocusIntention, cardKey: string, reason?: string) {
     const linked = linkedFocusSessions(intention, sessions());
@@ -398,11 +393,18 @@ export function createAssistantView(deps: {
     // it still prevents a duplicate, but cannot authorize replay under the new owner.
     requireOwner(owner, OLD_HOME_DELIVERY);
   }
+  const cardTag = (row: FocusAction) => row.triage?.suggestion ? "reply ready" : row.triage?.verdict === "needs-you" ? "needs you"
+    : doneSuggestion(row) ? "mark done?" : row.session?.state === "failed" ? "failed"
+    : row.session?.state === "needs-input" ? ({ permission: "approve", auth: "log in", question: "answer" }[row.session.inputKind ?? ""] ?? "needs you")
+    : stoppedUnseen(row.session ?? { state: "" }) ? row.session?.state === "done" ? "done" : "stopped" : row.kind === "start" ? "start" : "needs you";
+  const cardHeadline = (row: FocusAction) => row.triage?.reason ?? (row.session ? `${row.session.name} ${row.session.state === "needs-input"
+    ? row.session.inputKind === "permission" ? "needs approval" : row.session.inputKind === "auth" ? "needs you to log in" : "asks a question"
+    : row.session.state === "failed" ? "failed" : row.session.state === "done" ? "is done" : "stopped"}` : nextTitle(row));
   function nextHtml(host: "d" | "p", cap: number, expanded = false) {
     const rows = nextRows(cap);
     if (!rows.length) return `<p class="focus-empty">${doc().intentions.length && doc().intentions.every(i => i.done) ? "all intentions done — tell the assistant what's next" : "nothing waiting"}</p>`;
     return `<ol class="focus-next" aria-label="Next actions">${rows.map((row, index) => {
-      const finished = row.session?.state === "done" && !stoppedUnseen(row.session);
+      const kind = row.triage?.suggestion ? "suggest" : row.session && stoppedUnseen(row.session) && row.triage?.verdict !== "needs-you" && !doneSuggestion(row) ? "done" : "action";
       const title = nextTitle(row);
       const receipt = receiptFor(row);
       const done = doneSuggestion(row);
@@ -413,21 +415,23 @@ export function createAssistantView(deps: {
       const readOnly = sessionLocked() || row.unavailable || delivered || receipt?.state === "sending";
       const name = row.session?.name ?? title;
       const messageId = `fd-${host}-${index}`;
-      const verb = suggest ? receipt?.state === "sending" ? "sending…" : `send suggestion to ${name}` : done ? "done" : row.kind === "intention" ? "review" : focusActionVerb(row);
+      const verb = suggest ? receipt?.state === "sending" ? "sending…" : receipt?.state === "retry" ? `retry send to ${name}` : `send to ${name}` : done ? "done" : row.kind === "intention" ? "review" : focusActionVerb(row);
       // A start row and the same intention's today card are separate cards: `start:` here, `intention:` in today.
       const key = row.session ? `session:${row.session.machineInstallationId ?? ""}:${row.session.id}` : row.intention ? `start:${row.intention.id}` : `unavailable:${JSON.stringify(row.triage?.ref)}`;
       if (row.session) renderedSessions.set(key, row.session);
-      const actionName = suggest ? `Send suggestion to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
+      const actionName = suggest ? `Send to ${row.session?.name ?? title}` : done ? `Mark done: ${done.title}` : row.session ? `${verb} ${title}` : title;
       const action = suggest && (receipt?.state === "sent" || receipt?.state === "check") ? "" : `<button type="button"${suggest ? ` aria-describedby="${messageId}-description"` : ' class="focus-action"'}${sessionLocked() || row.unavailable || (suggest && (!reply.trim() || receipt && receipt.state !== "retry")) ? " disabled" : ""} data-focus-next="${escAttr(actionKey)}" data-focus-key="${escAttr(`act:${key}`)}" aria-label="${escAttr(actionName)}">${esc(verb)}${verb === "sending…" ? "" : '<span aria-hidden="true"> ›</span>'}</button>`;
-      const aside = suggest ? row.session ? `<button type="button" class="focus-action" data-focus-session="${escAttr(row.session.id)}" data-focus-key="${escAttr(`open:${key}`)}" aria-label="${escAttr(`Open ${name}`)}"${sessionLocked() ? " disabled" : ""}>open<span aria-hidden="true"> ›</span></button>` : "" : action;
-      const summary = `<span class="focus-rank">${index + 1}</span>${dot(row.session?.state ?? "idle")}<span class="focus-title">${esc(title)}${row.session?.changedAt ? `<small> · ${finished ? clock(row.session.changedAt) : age(row.session.changedAt)}</small>` : ""}</span>${rowContext(row.intention, row.session, !suggest && (row.session || row.unavailable) ? row.triage?.reason : undefined)}`;
-      const target = row.session ? `${row.session.name}${row.session.machine ? ` · ${row.session.machine}` : ""}` : title;
+      const open = row.session ? `<button type="button" data-focus-session="${escAttr(row.session.id)}" data-focus-key="${escAttr(`open:${key}`)}" aria-label="${escAttr(`Open ${name}`)}"${sessionLocked() ? " disabled" : ""}>open<span aria-hidden="true"> ›</span></button>` : "";
+      const meta = row.session ? [`<b>${esc(name)}</b>`, row.session.changedAt && age(row.session.changedAt), project(row.session.cwd), new Set(sessions().map(s => s.machine)).size > 1 && esc(row.session.machine ?? "")].filter(Boolean).join(" · ") : [project(row.intention?.project), row.intention?.machine && row.intention.machine !== deps.localMachineName() ? esc(row.intention.machine) : ""].filter(Boolean).join(" · ");
+      const summary = `<span class="focus-tag">${esc(cardTag(row))}${suggest && drafts.has(actionKey) && reply !== row.triage?.suggestion && !delivered ? " · edited" : ""}</span><span class="focus-title">${esc(cardHeadline(row))}</span><span class="focus-meta">${meta}</span>`;
       const lineChars = Array.from(row.session?.lastLine ?? "");
       const lastLine = lineChars.length > 160 ? "…" + lineChars.slice(-160).join("") : lineChars.join("");
-      const draft = suggest ? `${lastLine ? `<small>last line from ${esc(name)}: <q>${esc(lastLine)}</q></small>` : ""}<small>assistant: ${esc(row.triage!.reason)}</small><div>${delivered ? `typed into ${esc(target)}:` : `will be typed into ${esc(target)} and submitted:`}</div><textarea id="${messageId}" data-focus-reply="${escAttr(actionKey)}" data-focus-key="${escAttr(`reply:${actionKey}`)}" aria-label="${escAttr(`reply to ${name}`)}" maxlength="${FOCUS_REPLY_MAX_LENGTH}" rows="1"${readOnly ? " readonly" : ""}>${esc(reply)}</textarea><span id="${messageId}-description" class="visually-hidden">${esc(reply)}</span>${receipt && receipt.state !== "sending" ? `<small role="status"${receipt.state === "sent" ? "" : ' class="focus-notes"'}>${receipt.state === "sent" ? `✓ ${esc(receipt.label)} · ${age(receipt.at)} ago` : esc(receipt.label)}</small>` : ""}${action} ${!delivered && reply !== row.triage!.suggestion! ? `<button type="button" data-focus-reset="${escAttr(actionKey)}" data-focus-key="${escAttr(`reset:${actionKey}`)}"${readOnly ? " disabled" : ""}>reset</button>` : ""}${done ? `<button type="button" data-focus-mark-done="${escAttr(bindAction(row, true))}"${sessionLocked() || row.unavailable ? " disabled" : ""}>done ›</button>` : ""}` : "";
-      const marker = row.unavailable ? "not reached" : row.source === "new-rules" ? "new · by rules" : "";
-      const body = row.session ? sessionBody(row, row.session) : row.intention ? intentionBody(row.intention, key, row.triage?.reason ?? "no live session") : field("reason", esc(row.reason));
-      return `<li${index >= 3 && !expanded ? ' class="focus-extra"' : ""}>${card(key, summary, body, row.session ? contextHtml(row.session) : "")}${aside}${draft || marker ? `<div class="focus-draft">${draft}${marker ? `<small>${marker}</small>` : ""}</div>` : ""}</li>`;
+      const draft = suggest ? `<div id="${messageId}-caption" class="focus-caption">message to ${esc(name)} · typed into its terminal and submitted</div><textarea id="${messageId}" data-focus-reply="${escAttr(actionKey)}" data-focus-key="${escAttr(`reply:${actionKey}`)}" aria-label="${escAttr(`reply to ${name}`)}" aria-describedby="${messageId}-caption" maxlength="${FOCUS_REPLY_MAX_LENGTH}" rows="1"${readOnly ? " readonly" : ""}>${esc(reply)}</textarea><span id="${messageId}-description" class="visually-hidden">${esc(reply)}</span>${receipt && receipt.state !== "sending" ? `<small role="status"${receipt.state === "sent" ? "" : ' class="focus-notes"'}>${receipt.state === "sent" ? `✓ ${esc(receipt.label)} · ${age(receipt.at)} ago` : esc(receipt.label)}</small>` : ""}${action} ${!delivered && reply !== row.triage!.suggestion! ? `<button type="button" data-focus-reset="${escAttr(actionKey)}" data-focus-key="${escAttr(`reset:${actionKey}`)}"${readOnly ? " disabled" : ""}>reset</button>` : ""}${done ? `<button type="button" data-focus-mark-done="${escAttr(bindAction(row, true))}"${sessionLocked() || row.unavailable ? " disabled" : ""}>done ›</button>` : ""}` : "";
+      const body = row.session ? field(`last line from ${esc(name)}`, lastLine ? `<q><code>${esc(lastLine)}</code></q>` : "")
+        + (row.triage ? `<div data-focus-clamped hidden><dt>assistant</dt><dd>${esc(row.reason)}</dd></div>` : "") + field("for", esc(row.intention?.title ?? ""))
+        : row.intention ? intentionBody(row.intention, key, row.triage?.reason ?? "no live session") : field("reason", esc(row.reason));
+      const controls = `<div class="focus-draft">${draft}${!suggest && (!row.session || done) ? action : ""}${row.unavailable ? '<p class="focus-notes">not reached</p>' : ""}${open}</div>`;
+      return `<li data-kind="${kind}"${index >= 3 && !expanded ? ' class="focus-extra"' : ""}>${card(key, summary, body, row.session ? contextHtml(row.session) : "", controls)}</li>`;
     }).join("")}</ol>`;
   }
   function syncReplyControls() {
@@ -646,6 +650,10 @@ export function createAssistantView(deps: {
     replace("dashboard-focus-details", dashboardBody);
     replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
     syncReplyControls();
+    for (const field of document.querySelectorAll<HTMLElement>("[data-focus-clamped]")) {
+      const headline = field.closest("details")?.querySelector<HTMLElement>("summary .focus-title");
+      field.hidden = !headline || headline.scrollHeight <= headline.clientHeight;
+    }
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");

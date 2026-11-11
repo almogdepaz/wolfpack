@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { expandFocusCard } from "./focus-card-helpers";
 import { startTestServer, type TestServer } from "./helpers";
 import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -29,6 +30,7 @@ async function open(page: Page) {
   });
   await page.goto(local.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  for (const row of await page.locator("#assistant-content .focus-next > li").all()) await expandFocusCard(row);
   await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   await expect(page.getByRole("combobox", { name: "Home machine", exact: true }).locator(`option[value='${peerId}']`)).toHaveText("Race peer");
 }
@@ -79,7 +81,7 @@ for (const failure of ["aborted during move", "same-owner 503"] as const) test(`
     return route.fulfill({ status: 503, json: { home: identity.home, installationId: identity.installationId, local: true, error: "fixture focus store unreadable" } });
   });
   try {
-    await page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+    await page.locator("#assistant-content").getByRole("button", { name: "Send to prompt-project", exact: true }).click();
     await arrived.promise;
     if (failure === "aborted during move") await moveFromAnotherClient();
     gate.release();
@@ -97,7 +99,7 @@ test("merge: a suggestion tapped after the home moved is refused before send or 
   await seedTriage(page); await open(page); await page.locator("#assistant-setting-open").click();
   const sends: string[] = [];
   await page.route("**/api/session-control/send", async route => { sends.push(route.request().url()); await route.fulfill({ json: { outcome: "submitted" } }); });
-  const send = page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  const send = page.locator("#assistant-content").getByRole("button", { name: "Send to prompt-project", exact: true });
   await expect(send).toBeEnabled();
   await moveFromAnotherClient();
   await send.click();
@@ -121,7 +123,7 @@ test("merge: a held pre-tap poll cannot authorize a suggestion after the home mo
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await arrived.promise;
     await moveFromAnotherClient();
-    await page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+    await page.locator("#assistant-content").getByRole("button", { name: "Send to prompt-project", exact: true }).click();
     gate.release();
     await expect.poll(async () => sends.length > 0 || await page.locator("#app-dialog").isVisible()).toBe(true);
     expect(sends).toEqual([]);
@@ -139,7 +141,7 @@ test("merge: a late suggestion delivery keeps its original receipt without repla
     await gate.promise; await route.fulfill({ json: { outcome: "submitted" } });
   });
   try {
-    await page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+    await page.locator("#assistant-content").getByRole("button", { name: "Send to prompt-project", exact: true }).click();
     await arrived.promise;
     await moveFromAnotherClient();
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));

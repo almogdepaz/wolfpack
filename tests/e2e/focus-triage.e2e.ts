@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { expandFocusCard } from "./focus-card-helpers";
 import AxeBuilder from "@axe-core/playwright";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -48,6 +49,21 @@ async function seed(page: Page, done = false) {
   });
 }
 
+test("two-line reply card discloses its editor and keeps open last", async ({ page }) => {
+  await seed(page);
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").first();
+  await expect(row).toHaveAttribute("data-kind", "suggest");
+  await expect(row.locator("summary .focus-tag")).toHaveText("reply ready");
+  await expect(row.locator("summary .focus-title")).toHaveText("The approved plan is ready to continue");
+  await expect(row.locator("summary .focus-meta")).toContainText("prompt-project");
+  await expect(row.getByRole("textbox", { name: "reply to prompt-project" })).not.toBeVisible();
+  await row.locator("summary").click();
+  await expect(row.getByRole("textbox", { name: "reply to prompt-project" })).toBeVisible();
+  await expect(row.locator("details button").last()).toHaveAccessibleName("Open prompt-project");
+  await expect(row.getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveText("send to prompt-project ›");
+});
+
 for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reason, quiet suppression and consistent surfaces; user tap sends once`, async ({ page }, info) => {
   test.skip(info.project.name === "desktop" ? width === 390 : width !== 390, "viewport belongs to the matching project");
   await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
@@ -60,6 +76,7 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(2);
+  await expandFocusCard(block.locator(".focus-next > li").first());
   await expect(block.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue(draft);
   await expect(block.locator(".focus-next")).not.toContainText("another-project");
   await expect(block).toContainText(/ordered (now|\d+m) ago/);
@@ -70,34 +87,33 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   const view = page.locator("#assistant-content");
   await expect(view.locator(":scope > h2").first()).toHaveText("next 2");
   const row = view.locator(".focus-next > li").first();
-  await expect(row.locator("summary")).not.toContainText("The approved plan is ready to continue");
-  await expect(row.locator(".focus-draft")).toContainText("assistant: The approved plan is ready to continue");
-  await expect(row.locator(".focus-draft small").first()).toHaveText("last line from prompt-project: Step 2 done. Continue with step 3?");
-  const send = row.locator(".focus-draft").getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
-  await expect(send).toHaveText("send suggestion to prompt-project ›");
+  await expandFocusCard(row);
+  await expect(row.locator("summary")).toContainText("The approved plan is ready to continue");
+  await expect(row.locator(".focus-card-body")).toContainText("last line from prompt-projectStep 2 done. Continue with step 3?");
+  const send = row.locator(".focus-draft").getByRole("button", { name: "Send to prompt-project", exact: true });
+  await expect(send).toHaveText("send to prompt-project ›");
   await expect(send).toHaveAttribute("aria-describedby", `${await row.locator(".focus-draft textarea").getAttribute("id")}-description`);
   await expect(send).toHaveAccessibleDescription(draft);
   expect(await block.locator(".focus-draft textarea").first().getAttribute("id")).toMatch(/^fd-d-\d+$/);
   await expect(row.locator(".focus-draft textarea")).toHaveAttribute("id", /^fd-p-\d+$/);
-  await expect(row.locator(":scope > .focus-action")).toHaveText("open ›");
-  await expect(row.locator(":scope > .focus-action")).toHaveAccessibleName("Open prompt-project");
-  await expect(row.locator("summary .focus-for")).toContainText("focus");
-  await expect(row.locator(".focus-draft > div")).toContainText("will be typed into prompt-project");
+  await expect(row.locator("details button").last()).toHaveText("open ›");
+  await expect(row.locator("details button").last()).toHaveAccessibleName("Open prompt-project");
+  await expect(row.locator("summary .focus-meta")).toContainText("focus");
+  await expect(row.locator(".focus-caption")).toContainText("message to prompt-project");
   await expect(row.locator(".focus-draft > div")).toHaveCSS("font-size", "13px");
-  await expect(row.locator(".focus-draft > div")).toContainText("and submitted:");
+  await expect(row.locator(".focus-caption")).toContainText("and submitted");
   await expect(row.locator(".focus-draft textarea")).toHaveValue(draft);
   expect(await row.locator(".focus-draft textarea").inputValue(), "the visible draft preserves exact spacing").toBe(draft);
-  await expect(view.locator(".focus-next")).toContainText("new · by rules");
+  await expect(view.locator(".focus-next")).not.toContainText("new · by rules");
   await expect(page.locator(".view.swiping")).toHaveCount(0);
   await page.locator("#assistant-view").evaluate(el => { el.scrollTop = 0; });
   expect((await new AxeBuilder({ page }).include("#assistant-content").analyze()).violations).toEqual([]);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath(`triage-${width}-suggest-quiet.png`), fullPage: true });
-  await row.locator("summary").click();
   await expect(row.locator(".focus-card-body")).toContainText("Ship the focus assistant");
-  await row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+  await row.getByRole("button", { name: "Send to prompt-project", exact: true }).click();
   await expect(row.locator('[role="status"]')).toContainText("✓ sent to prompt-project");
-  await expect(row.locator(".focus-draft > div")).toContainText("typed into prompt-project");
+  await expect(row.locator(".focus-caption")).toHaveText("message to prompt-project · typed into its terminal and submitted");
   await expect(row.locator(".focus-draft > div")).toHaveCSS("font-size", "13px");
   await expect(row.locator(".focus-draft")).not.toContainText("will be typed");
   await expect(send).toHaveCount(0);
@@ -123,21 +139,20 @@ for (const lastLine of ["", "Earlier output: " + "x".repeat(170) + " <terminal> 
   });
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft textarea") });
-  const send = row.getByRole("button", { name: `Send suggestion to ${name}`, exact: true });
-  await expect(send).toHaveText(`send suggestion to ${name} ›`);
+  await expandFocusCard(row);
+  const send = row.getByRole("button", { name: `Send to ${name}`, exact: true });
+  await expect(send).toHaveText(`send to ${name} ›`);
   await expect(send).toHaveAccessibleDescription(draft);
   const bounds = await row.locator(".focus-draft").boundingBox();
   const buttonBounds = await send.boundingBox();
   expect(buttonBounds!.x + buttonBounds!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
   expect(buttonBounds!.height).toBeGreaterThanOrEqual(44);
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
-  await expect(row.locator(".focus-draft")).toContainText(`will be typed into ${name} ·`);
+  await expect(row.locator(".focus-caption")).toContainText(`message to ${name} ·`);
   if (lastLine) {
-    await expect(row.locator(".focus-draft q")).toHaveText("…" + lastLine.slice(-160));
-    await expect(row.locator(".focus-draft q > *")).toHaveCount(0);
-    await row.locator("summary").click();
-    await expect(row.locator(".focus-card-body code")).toHaveText(lastLine);
-  } else await expect(row.locator(".focus-draft q")).toHaveCount(0);
+    await expect(row.locator(".focus-card-body q")).toHaveText("…" + lastLine.slice(-160));
+    await expect(row.locator(".focus-card-body q code > *")).toHaveCount(0);
+  } else await expect(row.locator(".focus-card-body q")).toHaveCount(0);
   await row.getByRole("button", { name: `Open ${name}`, exact: true }).click();
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
@@ -153,7 +168,8 @@ for (const outcome of ["not_delivered", "pasted_not_submitted"] as const) test(`
   });
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft textarea") });
-  const send = row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  await expandFocusCard(row);
+  const send = row.getByRole("button", { name: "Send to prompt-project", exact: true });
   try {
     await send.click();
     await expect(send).toBeDisabled();
@@ -162,12 +178,12 @@ for (const outcome of ["not_delivered", "pasted_not_submitted"] as const) test(`
     release();
     await expect(row.locator('[role="status"]')).toHaveText(outcome === "not_delivered" ? "not sent · try again" : "pasted, not submitted · check the session");
     await expect(row.locator(".focus-draft textarea")).toHaveValue(draft);
-    await expect(row.locator(".focus-draft > div")).toContainText(outcome === "not_delivered" ? "will be typed into prompt-project" : "typed into prompt-project");
+    await expect(row.locator(".focus-caption")).toHaveText("message to prompt-project · typed into its terminal and submitted");
     if (outcome !== "not_delivered") await expect(row.locator(".focus-draft > div")).not.toContainText("will be typed");
     await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toBeEnabled();
     if (outcome === "not_delivered") {
       await expect(send).toBeEnabled();
-      await expect(send).toHaveText("send suggestion to prompt-project ›");
+      await expect(send).toHaveText("retry send to prompt-project ›");
       await expect(send).toHaveAccessibleDescription(draft);
     } else await expect(send).toHaveCount(0);
     expect(sends).toBe(1);
@@ -181,6 +197,7 @@ test("done suggestion uses the existing done/undo operations, never sends", asyn
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
+  await expandFocusCard(view.locator(".focus-next > li").filter({ hasText: "Looks finished" }));
   await view.getByRole("button", { name: "Mark done: Ship the focus assistant", exact: true }).click();
   await expect(view.locator(".focus-done")).toContainText("Ship the focus assistant");
   await expect(view.locator(".focus-next")).not.toContainText("Looks finished — mark the intention done?");
@@ -206,8 +223,9 @@ test("intention-ref suggestions put the reason on the row and the intention insi
 test("a user-tap suggestion traverses the real session-send route and reports its unverified outcome", async ({ page }) => {
   await seed(page);
   await page.goto(server.baseUrl);
+  await expandFocusCard(page.locator("#dashboard-focus .focus-next > li").first());
   const response = page.waitForResponse(r => new URL(r.url()).pathname === "/api/session-control/send");
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Send to prompt-project", exact: true }).click();
   const sent = await response;
   expect(sent.request().postDataJSON()).toMatchObject({ session: "mock:prompt-project", text: draft });
   expect(sent.status()).toBe(200);
@@ -219,6 +237,7 @@ test("editable reply stays shared across hosts and live renders without replacin
   await seed(page);
   await page.goto(server.baseUrl);
   const field = (host: string) => page.locator(host).locator('textarea[aria-label="reply to prompt-project"]');
+  await expandFocusCard(page.locator("#dashboard-focus .focus-next > li").first());
   const dashboard = field("#dashboard-focus");
   await expect(dashboard).toHaveValue(draft);
   await expect(dashboard).toHaveAccessibleName("reply to prompt-project");
@@ -240,7 +259,7 @@ test("editable reply stays shared across hosts and live renders without replacin
   expect(await reply.evaluate(el => { const field = el as HTMLTextAreaElement; return [field.selectionStart, field.selectionEnd, field.selectionDirection]; })).toEqual([7, 15, "backward"]);
   await expect(reply).toHaveValue(edited);
   await expect(dashboard).toHaveValue(edited);
-  await expect(page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toHaveAccessibleDescription(edited);
+  await expect(page.locator("#assistant-content").getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveAccessibleDescription(edited);
   expect(saved.revision).toBeGreaterThan(0);
   await reply.evaluate(el => (el as HTMLTextAreaElement).blur());
   await expect(page.locator("#assistant-content .focus-nudge")).toHaveText("A live update must not discard your reply.");
@@ -265,8 +284,9 @@ for (const host of ["dashboard-focus", "assistant-content"] as const) for (const
   await page.goto(server.baseUrl);
   if (host === "assistant-content") await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const panel = page.locator(`#${host}`);
+  await expandFocusCard(panel.locator(".focus-next > li").first());
   const reply = panel.getByRole("textbox", { name: "reply to prompt-project", exact: true });
-  const send = panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  const send = panel.getByRole("button", { name: "Send to prompt-project", exact: true });
   const text = "edited before leaving the editor";
   const message = `Deferred ${input} blur ${host}`;
   await reply.fill(text);
@@ -301,6 +321,7 @@ for (const host of ["dashboard-focus", "assistant-content"] as const) test(`nati
   await page.goto(server.baseUrl);
   if (host === "assistant-content") await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const panel = page.locator(`#${host}`);
+  await expandFocusCard(panel.locator(".focus-next > li").first());
   const reply = panel.getByRole("textbox", { name: "reply to prompt-project", exact: true });
   await expect(reply).toHaveValue(draft);
   const cdp = await page.context().newCDPSession(page);
@@ -319,7 +340,7 @@ for (const host of ["dashboard-focus", "assistant-content"] as const) test(`nati
     await expect(control).toHaveValue("你");
     await control.evaluate(el => el.remove());
     await reply.fill("");
-    await expect(panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+    await expect(panel.getByRole("button", { name: "Send to prompt-project", exact: true })).toBeDisabled();
     const editor = await reply.elementHandle();
     await editor!.evaluate(el => {
       el.dataset.imeBlurs = "0"; el.dataset.imeDetaches = "0";
@@ -347,8 +368,8 @@ for (const host of ["dashboard-focus", "assistant-content"] as const) test(`nati
     expect(await editor!.getAttribute("data-ime-detaches")).toBe("0");
     await expect(reply).toBeFocused();
     await expect(panel.getByRole("button", { name: "reset", exact: true })).toBeVisible();
-    await expect(panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeEnabled();
-    await expect(panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toHaveAccessibleDescription("你");
+    await expect(panel.getByRole("button", { name: "Send to prompt-project", exact: true })).toBeEnabled();
+    await expect(panel.getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveAccessibleDescription("你");
     await reply.evaluate(el => (el as HTMLTextAreaElement).blur());
     await expect(panel.locator(".focus-nudge")).toHaveText(`Live IME update for ${host}.`);
     await expect(reply).toHaveValue("你");
@@ -362,7 +383,8 @@ test("editable reply prevents Enter, flattens pasted newlines, caps at 2000 and 
   await page.goto(server.baseUrl);
   const panel = page.locator("#dashboard-focus");
   const reply = panel.getByRole("textbox", { name: "reply to prompt-project", exact: true });
-  const send = panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  await expandFocusCard(panel.locator(".focus-next > li").first());
+  const send = panel.getByRole("button", { name: "Send to prompt-project", exact: true });
   for (const blank of ["", "   "]) { await reply.fill(blank); await expect(send).toBeDisabled(); }
   await reply.fill("go ");
   await reply.press("End");
@@ -397,7 +419,8 @@ for (const outcome of ["submitted", "unverified", "pasted_not_submitted", "not_d
   await page.goto(server.baseUrl);
   const panel = page.locator("#dashboard-focus");
   const reply = panel.getByRole("textbox", { name: "reply to prompt-project", exact: true });
-  const send = panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  await expandFocusCard(panel.locator(".focus-next > li").first());
+  const send = panel.getByRole("button", { name: "Send to prompt-project", exact: true });
   await reply.fill(edited);
   await send.click();
   await expect(panel.locator(".focus-draft [role=status]")).toBeVisible();
@@ -414,7 +437,7 @@ for (const outcome of ["submitted", "unverified", "pasted_not_submitted", "not_d
     return;
   }
   await expect(reply).not.toBeEditable();
-  await expect(panel.locator(".focus-draft > div")).toContainText("typed into prompt-project");
+  await expect(panel.locator(".focus-caption")).toHaveText("message to prompt-project · typed into its terminal and submitted");
   await expect(panel.locator(".focus-draft > div")).not.toContainText("will be typed");
   await expect(send).toHaveCount(0);
   await expect(panel.getByRole("button", { name: "reset", exact: true })).toHaveCount(0);
@@ -423,6 +446,7 @@ for (const outcome of ["submitted", "unverified", "pasted_not_submitted", "not_d
   expect(JSON.parse(receipts[0][0])[2]).toBe(draft);
   expect(receipts[0][1].text).toBe(edited);
   await page.reload();
+  await expandFocusCard(panel.locator(".focus-next > li").first());
   await expect(reply).toHaveValue(edited);
   await expect(reply).not.toBeEditable();
   await expect(send).toHaveCount(0);
@@ -434,12 +458,13 @@ test("a draft is dropped when its original action leaves the next rows", async (
   const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
   const rows = current.document.next.rows;
   await page.goto(server.baseUrl);
+  await expandFocusCard(page.locator("#dashboard-focus .focus-next > li").first());
   const reply = page.locator("#dashboard-focus").getByRole("textbox", { name: "reply to prompt-project", exact: true });
   await reply.fill("an obsolete draft");
   await write(page, [{ type: "next", author: "assistant", rows: [] }]);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(reply).not.toBeEditable();
-  await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+  await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send to prompt-project", exact: true })).toBeDisabled();
   await reply.evaluate(el => (el as HTMLTextAreaElement).blur());
   await expect(reply).toHaveCount(0);
   await write(page, [{ type: "next", author: "assistant", rows }]);
@@ -476,7 +501,8 @@ test("R2: known peer suggestions survive a broker/list outage, but not an author
   await write(page, [{ type: "next", author: "assistant", rows: [{ ref: { machine: peer.id, sessionId: "mock:remote-session" }, stoppedAt: episode, verdict: "suggest", reason: "Remote recommendation", suggestion: draft }] }]);
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "Remote recommendation" });
-  await expect(row.getByRole("button", { name: "Send suggestion to remote-worker", exact: true })).toBeEnabled();
+  await expandFocusCard(row);
+  await expect(row.getByRole("button", { name: "Send to remote-worker", exact: true })).toBeEnabled();
   peer.state.listing = "unavailable";
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(page.locator(`.machine-group.offline[data-machine="n-peer:${peer.id}"]`).first()).toBeVisible();
@@ -504,11 +530,12 @@ test("R1: a newer needs-you episode stays visible and disabled when the local li
   phase = "attention";
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   const row = rows.locator("li").filter({ hasText: "prompt-project" });
-  await expect(row.locator(".focus-action")).toBeEnabled();
+  await expandFocusCard(row);
+  await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toBeEnabled();
   phase = "unavailable";
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(row.locator(".focus-action")).toBeDisabled();
-  await expect(row).toContainText("question");
+  await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toBeDisabled();
+  await expect(row).toContainText("asks a question");
 });
 
 test("L3: unknown installation suggestions do not become permanent placeholders", async ({ page }) => {
@@ -567,7 +594,8 @@ for (const mode of ["send", "done"] as const) test(`R4/L1: an expired visible ${
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
-  const button = view.getByRole("button", { name: mode === "send" ? "Send suggestion to prompt-project" : "Mark done: Ship the focus assistant", exact: true });
+  await expandFocusCard(view.locator(".focus-next > li").first());
+  const button = view.getByRole("button", { name: mode === "send" ? "Send to prompt-project" : "Mark done: Ship the focus assistant", exact: true });
   await expect(button).toBeEnabled();
   // One task advances the merge clock and taps the old DOM before a repaint/poll can run.
   await button.evaluate(el => { const before = Date.now; Date.now = () => before() + 5 * 3600_000; (el as HTMLButtonElement).click(); });
@@ -586,14 +614,15 @@ test("R4: a newly reordered merge still sends only the target and draft on the t
   await page.route("**/api/session-control/send", async route => { sent = route.request().postDataJSON(); await route.fulfill({ json: { outcome: "submitted" } }); });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeEnabled();
+  await expandFocusCard(block.locator(".focus-next > li").first());
+  await expect(block.getByRole("button", { name: "Send to prompt-project", exact: true })).toBeEnabled();
   await write(page, [{ type: "next", author: "assistant", rows: [
     { ref: { intentionId: "later" }, verdict: "needs-you", reason: "Review tomorrow first" },
     { ref: { machine, sessionId: "mock:prompt-project" }, stoppedAt: episode, verdict: "suggest", reason: "Continue second", suggestion: draft },
   ] }]);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(block).toContainText("Continue second");
-  await block.getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+  await block.getByRole("button", { name: "Send to prompt-project", exact: true }).click();
   await expect.poll(() => sent).toMatchObject({ session: "mock:prompt-project", text: draft });
 });
 
@@ -605,7 +634,8 @@ for (const outcome of ["submitted", "unverified"] as const) test(`R3: ${outcome}
     await route.fulfill({ json: { ok: true, outcome, delivery: outcome === "submitted" ? "delivered" : "unverified", observedMs: 1 } });
   });
   await page.goto(server.baseUrl);
-  const button = page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  await expandFocusCard(page.locator("#dashboard-focus .focus-next > li").first());
+  const button = page.locator("#dashboard-focus").getByRole("button", { name: "Send to prompt-project", exact: true });
   await button.click();
   await expect(button).toHaveCount(0);
   await write(page, [{ type: "next", author: "assistant", rows: [{ ref: { sessionId: "mock:prompt-project", machine }, stoppedAt: episode.replace("Z", "+00:00"), verdict: "suggest", reason: "Same draft, new formatting", suggestion: draft }] }]);
@@ -641,7 +671,8 @@ test("an uncertain user send stays visible and cannot be tapped again", async ({
   await seed(page);
   await page.route("**/api/session-control/send", route => route.fulfill({ json: { ok: true, outcome: "unverified", delivery: "unverified", observedMs: 1 } }));
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
+  await expandFocusCard(page.locator("#dashboard-focus .focus-next > li").first());
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Send to prompt-project", exact: true }).click();
   await expect(page.locator("#dashboard-focus")).toContainText("delivery unconfirmed · check the session");
-  await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toHaveCount(0);
+  await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveCount(0);
 });

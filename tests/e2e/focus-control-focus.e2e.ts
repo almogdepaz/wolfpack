@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { expandFocusCard } from "./focus-card-helpers";
 import { startTestServer, type TestServer } from "./helpers";
 
 let server: TestServer;
@@ -7,6 +8,7 @@ test.afterAll(async () => { await server?.close(); });
 async function openFocus(page: Page) {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expandFocusCard(page.locator("#assistant-content .focus-next > li").first());
   await expect(page.locator("#assistant-content .focus-next button").first()).toBeEnabled();
 }
 

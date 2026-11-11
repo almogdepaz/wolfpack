@@ -1,3 +1,4 @@
+import { expandFocusCard } from "./focus-card-helpers";
 import { test, expect, type Page } from "@playwright/test";
 import { FOCUS_MOBILE_EXPANDED_KEY } from "../../public/focus-mobile-disclosure";
 // Row-content checks use an explicitly expanded dashboard; disclosure defaults have their own coverage.
@@ -45,15 +46,17 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   const f = await runtimeFixture(page, state);
   await page.goto(server.baseUrl);
   const row = page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" });
-  await expect(row.locator("summary")).toContainText("test-project stopped · 12m");
+  await expect(row.locator("summary .focus-title")).toHaveText(`test-project ${state === "done" ? "is done" : "stopped"}`);
+  await expect(row.locator("summary .focus-meta")).toContainText("test-project · 12m");
   await expect(row.locator("summary")).not.toContainText("needs you");
   await expect.poll(async () => {
     const box = await row.boundingBox();
-    return !!box && box.height >= 44 && box.height <= 46;
-  }, { message: "stopped row remains 44–46px tall across renders" }).toBe(true);
+    return !!box && box.height >= 60 && box.height <= 160;
+  }, { message: "collapsed two-line card retains readable metadata" }).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await row.locator("summary").click();
-  await expect(row.getByText("state", { exact: true }).locator("..").locator("dd")).toHaveText("stopped · 12m");
+  await expect(row.getByText("state", { exact: true })).toHaveCount(0);
+  await expect(row.locator("summary .focus-tag")).toHaveText(state === "done" ? "done" : "stopped");
   await row.locator("summary").click();
   if (process.env.WOLFPACK_FOCUS_SHOTS) {
     const width = info.project.name === "desktop" ? 1440 : 390;
@@ -62,8 +65,9 @@ for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped r
   }
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const next = page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" });
-  await expect(next.locator("summary")).toContainText("stopped · 12m");
-  await next.getByRole("button", { name: "review test-project stopped" }).focus();
+  await expect(next.locator("summary .focus-meta")).toContainText("12m");
+  await expandFocusCard(next);
+  await next.getByRole("button", { name: "Open test-project", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
   await expect.poll(() => f.acknowledgements).toContainEqual({ sessionId: f.ids.get("test-project"), transitionSequence: 5 });
@@ -83,7 +87,7 @@ test("QA-28: unreviewed done work stays stopped in next, footer and timeline unt
   f.stop(); // A stop newer than the fixture's completed intention must not lead its footer.
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next")).toContainText("prompt-project stopped");
+  await expect(block.locator(".focus-next .focus-title").first()).toHaveText("prompt-project is done");
   await expect(block.locator(":scope > .focus-dashboard-body > small").last()).not.toContainText("prompt-project finished");
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
@@ -115,7 +119,9 @@ test("QA-33: reviewed done leaves next and keeps its original stop time in done 
 test("reviewed work stays out of next when metadata becomes unseen again", async ({ page }) => {
   const f = await runtimeFixture(page, "done");
   await page.goto(server.baseUrl);
-  await page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" }).getByRole("button", { name: "review test-project stopped" }).click();
+  const row = page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" });
+  await expandFocusCard(row);
+  await row.getByRole("button", { name: "Open test-project", exact: true }).click();
   await expect.poll(() => f.acknowledgements).toContainEqual({ sessionId: f.ids.get("test-project"), transitionSequence: 5 });
   f.metadata();
   await page.goto(server.baseUrl);

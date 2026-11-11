@@ -23,10 +23,10 @@ test("a next row expands to its session details; the action acts without togglin
   await row.locator(".focus-card > summary").click();
   await expect(card).toHaveAttribute("open", "");
   const body = card.locator(".focus-card-body");
-  await expect(body.locator("[title='/home/dev/demo-app']")).toHaveText("demo-app");
-  await expect(body).toContainText(/question · since \d+[mhd]|question · since now/);
+  await expect(row.locator("summary [title='/home/dev/demo-app']")).toHaveText("demo-app");
+  await expect(row.locator("summary .focus-tag")).toHaveText("answer");
   await expect(body).toContainText("Do you want to continue? (y/n)");
-  await expect(body).toContainText(/by rules\s*question/);
+  await expect(body).not.toContainText("by rules");
   await expect(body).not.toContainText("why here");
   await expect(body).toContainText("ship the focus assistant");
   expect((await new AxeBuilder({ page }).include("#dashboard-focus").analyze()).violations).toEqual([]);
@@ -43,7 +43,7 @@ test("a next row expands to its session details; the action acts without togglin
   await page.keyboard.press("Space");
   await expect(card).toHaveAttribute("open", "");
   await page.keyboard.press("Tab");
-  await expect(row.getByRole("button", { name: /prompt-project/ })).toBeFocused();
+  await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
 });
@@ -146,7 +146,9 @@ test("a session card shows the agent's context document, fetched only while it i
   const context = row.locator(".focus-context");
   await expect(context).toContainText("context");
   expect(reads[0]).toBe(SESSION_UUID);
-  await expect(context).toContainText("Ship the focus cards round");
+  await expect(context.getByText("Ship the focus cards round", { exact: true })).toBeHidden();
+  await context.locator("summary").filter({ hasText: /^more$/ }).click();
+  await expect(context.getByText("Ship the focus cards round", { exact: true })).toBeVisible();
   await expect(context).toContainText("Wire the context block into session cards");
   // every needs-you item is its own element keyed by its id; five show, the rest sit under "2 more"
   await expect(context.locator("[data-focus-need]")).toHaveCount(7);
