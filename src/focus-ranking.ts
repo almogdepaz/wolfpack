@@ -165,9 +165,9 @@ export function focusCards(rows: readonly FocusAction[], sessions: readonly Focu
   const notReached: FocusAction[] = [];
   for (const row of rows) {
     const s = row.session;
+    if (row.unavailable && !s) { notReached.push(row); continue; }
     if (s && needsYou(s) || row.triage?.verdict === "needs-you") cards.push({ row, kind: "action" });
     else if (row.triage?.verdict === "suggest" && (row.triage.suggestion || row.triage.doneIntention)) cards.push({ row, kind: "suggest" });
-    else if (row.unavailable && !s) notReached.push(row);
     else if (s && stoppedUnseen(s)) {
       if ((s.children?.working ?? 0) > 0) continue;
       if (s.parentId && sessions.some(parent => parent.id === s.parentId && parent.machineInstallationId === s.machineInstallationId && parent.machineUrl === s.machineUrl)) continue;

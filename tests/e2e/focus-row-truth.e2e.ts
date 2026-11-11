@@ -68,7 +68,7 @@ for (const [state, inputKind, label, verb] of [
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   const action = page.locator("#assistant-content").getByRole("button", { name: "Open prompt-project", exact: true });
   await expect(action).toHaveText("open ›");
-  await expect(page.locator("#sidebar-assistant .assistant-tile-next")).toContainText(`prompt-project ${label}`);
+  await expect(page.locator("#sidebar-assistant .assistant-tile-next")).toContainText(await row.locator("summary .focus-title").innerText());
   // All verbs navigate through the existing session opener, including retry (not a restart).
   const socket = page.waitForEvent("websocket", { predicate: ws => new URL(ws.url()).searchParams.get("session") === "prompt-project" });
   await action.click();
@@ -95,7 +95,7 @@ test("row context: next and remote targets stay visible; compact today context y
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next li").filter({ hasText: "prompt-project" }).locator("summary .focus-meta")).toContainText("focus-ui");
-  await expect(block.locator(".focus-next li").filter({ hasText: "fix broker leak" }).locator("summary .focus-meta")).toHaveText("broker · remote-box");
+  await expect(block.locator(".focus-next li").filter({ hasText: "fix broker leak" })).toHaveCount(0);
   for (const context of await block.locator("summary .focus-for").all()) await expect(context).toBeVisible();
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
@@ -147,11 +147,11 @@ test("row context: local starts omit redundant machine names when only the assis
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next li").filter({ hasText: "Local start" }).locator("summary .focus-meta")).toHaveText("broker");
-  await expect(block.locator(".focus-next li").filter({ hasText: "Remote start" }).locator("summary .focus-meta")).toHaveText("remote · remote-box");
+  await expect(block.locator(".focus-next > li")).toHaveCount(0);
+  await expect(block.locator(".focus-quiet")).toHaveText("nothing needs you");
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
-  for (const list of [".focus-next", ".focus-today"]) {
+  for (const list of [".focus-today"]) {
     const meta = list === ".focus-next" ? ".focus-meta" : ".focus-for";
     await expect(view.locator(`${list} li`).filter({ hasText: "Local start" }).locator(`summary ${meta}`)).toHaveText("broker");
     await expect(view.locator(`${list} li`).filter({ hasText: "Remote start" }).locator(`summary ${meta}`)).toHaveText("remote · remote-box");
@@ -167,7 +167,8 @@ test("QA-25: phone next count is reachable with one show-more action, including 
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch();
     const body = await response.json();
-    body.sessions = body.sessions.filter((s: { name: string }) => s.name === "assistant");
+    const template = body.sessions.find((s: { name: string }) => s.name === "prompt-project");
+    body.sessions = [...body.sessions.filter((s: { name: string }) => s.name === "assistant"), ...Array.from({ length: 7 }, (_, i) => ({ ...template, name: `goal-${i + 1}`, identity: { ...template.identity, wolfpackSessionId: `mock:goal-${i + 1}` } }))];
     await route.fulfill({ response, json: body });
   });
   await page.route(url => url.pathname === "/api/focus", async route => {
@@ -180,16 +181,16 @@ test("QA-25: phone next count is reachable with one show-more action, including 
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.getByRole("heading", { name: "next 7", exact: true })).toBeVisible();
+  await expect(view.getByRole("heading", { name: "next 7 need you", exact: true })).toBeVisible();
   await expect(view.locator(".focus-next > li:visible")).toHaveCount(3);
   await page.screenshot({ path: info.outputPath("phone-next-more.png"), animations: "disabled" });
   await view.getByRole("button", { name: "show 4 more", exact: true }).click();
   await expect(view.locator(".focus-next > li:visible")).toHaveCount(7);
-  await expect(view.locator(".focus-next .focus-title")).toHaveText(Array.from({ length: 7 }, (_, i) => `start “Goal ${i + 1}”`));
+  await expect(view.locator(".focus-next .focus-title")).toHaveText(Array.from({ length: 7 }, (_, i) => `goal-${i + 1} asks a question`));
   await expect(view.locator(".focus-next > li").nth(3).locator("summary")).toBeFocused();
   await expandFocusCard(view.locator(".focus-next > li").last());
-  await view.getByRole("button", { name: "start “Goal 7”", exact: true }).click();
-  await expect(page.locator("#projects-view")).toBeVisible();
+  await view.getByRole("button", { name: "Open goal-7", exact: true }).click();
+  await expect(page.locator("#terminal-view")).toBeVisible();
 });
 
 test("counts: validated needs-you population and uncapped next totals agree", async ({ page }) => {
@@ -219,7 +220,7 @@ test("counts: validated needs-you population and uncapped next totals agree", as
   await expect(page.locator("#dashboard-focus > .focus-dashboard-body > small").last()).toContainText("8 next");
   await expect(page.locator("#dashboard-focus .focus-next > li")).toHaveCount(3);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
-  await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 8");
+  await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 8 need you");
   await expect(page.locator("#assistant-content .focus-next > li")).toHaveCount(5);
 });
 
@@ -256,7 +257,7 @@ test("counts: sessions claimed only by done intentions fall through to unlinked 
   }
   await block.getByRole("button", { name: "Open assistant", exact: true }).click();
   await expect(page.locator("#assistant-content .focus-next > li")).toHaveCount(3);
-  await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 3");
+  await expect(page.locator("#assistant-content > h2").first()).toHaveText("next 3 need you");
 });
 
 test("many stops: twelve unseen episodes remain capped without an hours cutoff", async ({ page }, info) => {

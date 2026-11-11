@@ -23,6 +23,7 @@ async function addIntention(page: Page, id: string) {
   expect(saved.ok()).toBe(true);
   await page.route("**/api/settings", route => route.fulfill({ json: { effective: { cmds: ["shell"], agentCmd: "shell" } } }));
   await page.goto(server.baseUrl);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
 }
 async function finishCreation(page: Page, name: string) {
   await page.getByRole("button", { name: "Open project focus-project", exact: true }).click();
@@ -37,7 +38,7 @@ async function finishCreation(page: Page, name: string) {
 
 test("title-only start completes creation and CAS-links its exact identity, chosen project and machine", async ({ page }) => {
   await addIntention(page, "linked-focus");
-  await page.locator("#dashboard-focus").getByRole("button", { name: /start.*linked-focus/ }).click();
+  await page.locator("#assistant-content .focus-today").getByRole("button", { name: /start.*linked-focus/ }).click();
   let conflicted = false;
   let conflictStatus: number | undefined;
   await page.route("**/api/focus", async route => {
@@ -67,9 +68,10 @@ test("title-only start completes creation and CAS-links its exact identity, chos
 
 test("cancelling focus start does not associate an unrelated subsequent creation", async ({ page }, info) => {
   await addIntention(page, "cancelled-focus");
-  await page.locator("#dashboard-focus").getByRole("button", { name: /start.*cancelled-focus/ }).click();
+  await page.locator("#assistant-content .focus-today").getByRole("button", { name: /start.*cancelled-focus/ }).click();
   if (info.project.name === "desktop") await page.locator("#projects-view .picker-cancel-btn").click();
   else await page.getByRole("button", { name: "← Back", exact: true }).click();
+  await page.locator(info.project.name === "desktop" ? "#assistant-back" : "#mobile-sessions").click();
   await page.locator("#session-list .machine-add-btn").first().click();
   await finishCreation(page, "unrelated-created");
   const focus = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
@@ -78,7 +80,7 @@ test("cancelling focus start does not associate an unrelated subsequent creation
 
 test("a focus-link write failure reports a created session separately from failed focus persistence", async ({ page }) => {
   await addIntention(page, "failed-link-focus");
-  await page.locator("#dashboard-focus").getByRole("button", { name: /start.*failed-link-focus/ }).click();
+  await page.locator("#assistant-content .focus-today").getByRole("button", { name: /start.*failed-link-focus/ }).click();
   await page.route("**/api/focus", route => route.request().method() === "POST" ? route.fulfill({ status: 503, json: { error: "focus store unavailable" } }) : route.continue());
   await finishCreation(page, "created-despite-link-failure");
   await expect(page.locator("#app-dialog-title")).toHaveText("Session created; focus not updated");

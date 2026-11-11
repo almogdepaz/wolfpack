@@ -75,17 +75,17 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next > li")).toHaveCount(2);
+  await expect(block.locator(".focus-next > li")).toHaveCount(1);
   await expandFocusCard(block.locator(".focus-next > li").first());
   await expect(block.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue(draft);
   await expect(block.locator(".focus-next")).not.toContainText("another-project");
   await expect(block).toContainText(/ordered (now|\d+m) ago/);
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("2 next:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("1 next:");
   await expect(page.locator("#sidebar-assistant .assistant-tile-next")).toContainText("The approved plan is ready to continue");
   expect(sends).toEqual([]);
   await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
   const view = page.locator("#assistant-content");
-  await expect(view.locator(":scope > h2").first()).toHaveText("next 2");
+  await expect(view.locator(":scope > h2").first()).toHaveText("next 1 reply ready");
   const row = view.locator(".focus-next > li").first();
   await expandFocusCard(row);
   await expect(row.locator("summary")).toContainText("The approved plan is ready to continue");
@@ -506,8 +506,8 @@ test("R2: known peer suggestions survive a broker/list outage, but not an author
   peer.state.listing = "unavailable";
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(page.locator(`.machine-group.offline[data-machine="n-peer:${peer.id}"]`).first()).toBeVisible();
-  await expect(row).toContainText("not reached");
-  await expect(row.locator(".focus-draft [data-focus-next]")).toBeDisabled();
+  await expect(row).toHaveCount(0);
+  await expect(page.locator("#dashboard-focus .focus-quiet")).toContainText("focus peer not reached");
   peer.state.listing = "empty";
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await expect(row).toHaveCount(0);
@@ -526,7 +526,7 @@ test("R1: a newer needs-you episode stays visible and disabled when the local li
   });
   await page.goto(server.baseUrl);
   const rows = page.locator("#dashboard-focus .focus-next");
-  await expect(rows).not.toContainText("prompt-project");
+  await expect(rows.locator("li").filter({ hasText: "prompt-project" })).toHaveCount(0);
   phase = "attention";
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   const row = rows.locator("li").filter({ hasText: "prompt-project" });
@@ -581,7 +581,7 @@ test("expired triage returns quiet stops to rules and names the expiry", async (
   await expect(page.locator("#dashboard-focus")).toContainText("by rules · order expired");
   await expect(page.locator("#dashboard-focus .focus-next")).toContainText("another-project");
   await expect(page.locator("#dashboard-focus .focus-next")).not.toContainText(draft);
-  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("3 next:");
+  await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("2 next:");
 });
 
 for (const mode of ["send", "done"] as const) test(`R4/L1: an expired visible ${mode} action cannot become another row's action`, async ({ page }) => {

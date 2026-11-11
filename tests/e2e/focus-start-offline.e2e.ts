@@ -31,7 +31,7 @@ for (const project of [undefined, "/work/focus-project"]) test(`L5: ${project ? 
     const loaded = page.waitForResponse(response => new URL(response.url()).origin === home.origin && new URL(response.url()).pathname === "/api/focus");
     await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
     await (await loaded).finished();
-    const start = page.locator("#assistant-content").getByRole("button", { name: `start “${title}”`, exact: true });
+    const start = page.locator("#assistant-content .focus-today").getByRole("button", { name: `start “${title}”`, exact: true });
     await expect(start).toBeEnabled();
     // Hold the next focus read so discovery can retire the home before Focus observes it.
     await page.route(url => url.pathname === "/api/focus", async route => { await gate; await route.abort(); });

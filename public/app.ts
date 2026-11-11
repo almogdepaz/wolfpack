@@ -1263,6 +1263,12 @@ const focusUi = createAssistantView({
   sessionsUnavailable: () => state.lastSessionGroups.some(g => !g.machine.url && !g.online && !g.pending),
   sessionMachineKnown: identity => tailnetPeers.entries().some(peer => peer.identity === identity),
   open: (name, machine) => { void openSession(name, machine); },
+  acknowledge: async target => {
+    const session = state.lastSessionGroups.find(g => g.online && (g.machine.url || "") === (target.machineUrl || ""))
+      ?.sessions.find(s => sessionIdentityId(s) === target.id);
+    if (!session) throw new Error("This session changed; review the updated card.");
+    await acknowledgeTerminalRuntimeState(session.name, target.machineUrl ?? "", true);
+  },
   start: intention => {
     const group = intention.machine ? state.lastSessionGroups.find(g => g.machine.name === intention.machine || g.machine.url === intention.machine) : state.lastSessionGroups.find(g => !g.machine.url);
     if (intention.machine && !group?.online) { void showMachineUnavailable(); return; }
@@ -1666,7 +1672,7 @@ function acknowledgeWatchedRuntimeState(): void {
   }
 }
 
-async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdentity: string): Promise<void> {
+async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdentity: string, reportFailure = false): Promise<void> {
   const machineUrl = machineIdentity || "";
   const group = state.lastSessionGroups.find((candidate) => (candidate.machine.url || "") === machineUrl);
   const session = group?.sessions.find((candidate) => candidate.name === sessionName);
@@ -1708,6 +1714,7 @@ async function acknowledgeTerminalRuntimeState(sessionName: string, machineIdent
     focusUi.render();
     if (state.drawerOpen) renderDrawerList();
   } catch (error: unknown) {
+    if (reportFailure) throw error;
     console.warn("[terminal] runtime transition acknowledgement failed", {
       session: sessionName,
       machine: machineUrl || "local",

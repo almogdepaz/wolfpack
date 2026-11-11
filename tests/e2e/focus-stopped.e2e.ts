@@ -41,6 +41,19 @@ async function runtimeFixture(page: Page, initial: string, target = "test-projec
   return { acknowledgements, ids, stopTime: runtime.stoppedAt, review: () => { runtime = { ...runtime, unseen: false, acknowledgedSequence: runtime.transitionSequence }; }, metadata: () => { runtime = { ...runtime, unseen: true, transitionSequence: runtime.transitionSequence + 1 }; }, replace: () => { replacementId = "e762d0b1-6d2b-4e37-9168-f2841234abce"; }, stop: (state = "done") => { runtime = { ...runtime, state, unseen: true, transitionSequence: runtime.transitionSequence + 1, stoppedSequence: runtime.transitionSequence + 1, stoppedAt: new Date().toISOString() }; } };
 }
 
+test("mark seen acknowledges a done card without opening its terminal", async ({ page }) => {
+  const f = await runtimeFixture(page, "done", "prompt-project");
+  await page.goto(server.baseUrl);
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ hasText: "prompt-project" });
+  await expandFocusCard(row);
+  await row.getByRole("button", { name: "mark seen", exact: true }).click();
+  await expect.poll(() => f.acknowledgements).toContainEqual({ sessionId: f.ids.get("prompt-project"), transitionSequence: 5 });
+  await expect(row).toHaveCount(0);
+  await expect(page.locator("#terminal-view")).not.toHaveClass(/visible/);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expect(page.locator("#assistant-content .focus-done")).toContainText("prompt-project");
+});
+
 for (const state of ["done", "idle"]) test(`${state} unseen work has a stopped row; open acknowledges it and removes it`, async ({ page }, info) => {
   if (info.project.name === "desktop") await page.setViewportSize({ width: 1440, height: 900 });
   const f = await runtimeFixture(page, state);
@@ -134,7 +147,7 @@ test("server-owned pinned sessions stay in ordinary lists but never rank as stop
   await runtimeFixture(page, "idle", "test-project", true);
   await page.goto(server.baseUrl);
   await expect(page.locator("#session-list .card-name-text").filter({ hasText: /^test-project$/ })).toBeVisible();
-  await expect(page.locator("#dashboard-focus .focus-next")).toBeVisible();
+  await expect(page.locator("#dashboard-focus .focus-quiet")).toHaveText("nothing needs you · 1 working");
   await expect(page.locator("#dashboard-focus .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   await expect(page.locator("#assistant-content .focus-next li").filter({ hasText: "test-project" })).toHaveCount(0);

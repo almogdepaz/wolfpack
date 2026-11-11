@@ -92,7 +92,7 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
   });
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
-  await expect(block.locator(".focus-next > li")).toHaveCount(3);
+  await expect(block.locator(".focus-next > li")).toHaveCount(2);
   if (!desktop) {
     await expect.poll(async () => {
       const box = await block.getByRole("button", { name: "Open assistant", exact: true }).boundingBox();
