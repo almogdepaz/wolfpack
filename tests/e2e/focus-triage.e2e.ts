@@ -41,16 +41,18 @@ async function seed(page: Page, done = false) {
     await route.fulfill({ response, json: body });
   });
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "1"));
+  const runtime = { state: done ? "done" : "needs-input", changedAt: episode, stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, transitionSequence: 5 };
   await page.route("**/api/sessions", async route => {
     const response = await route.fetch(); const body = await response.json();
     body.sessions = body.sessions.filter((s: { name: string }) => ["assistant", "prompt-project", "another-project"].includes(s.name));
     for (const s of body.sessions) if (s.name !== "assistant") {
       s.identity.projectPath = "/work/focus";
       s.lastLine = "Step 2 done. Continue with step 3?";
-      s.runtimeState = { ...s.runtimeState, state: s.name === "another-project" ? "idle" : done ? "done" : "needs-input", inputKind: done ? undefined : "question", changedAt: episode, stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, stale: false, freshness: "fresh" };
+      s.runtimeState = { ...s.runtimeState, state: s.name === "another-project" ? "idle" : done ? "done" : "needs-input", inputKind: done ? undefined : "question", changedAt: episode, stoppedAt: episode, unseen: true, stoppedSequence: 5, acknowledgedSequence: 0, stale: false, freshness: "fresh", ...(s.name === "prompt-project" ? runtime : {}) };
     }
     await route.fulfill({ response, json: body });
   });
+  return runtime;
 }
 
 async function capture(page: Page, name: string, info: TestInfo) {
@@ -94,6 +96,64 @@ test("multiple suggestions have globally unique ids and retain a focused send th
   await page.keyboard.press("Enter");
   await expect.poll(() => sends).toEqual([{ session: "mock:another-project", text: secondDraft, ensureSubmitted: true }]);
   await expect(view.locator('.focus-next > li').last().locator('[role="status"]')).toContainText("✓ sent to another-project");
+});
+
+for (const state of ["idle", "done"]) test(`opening an acknowledged ${state} stop retains its reply-ready card and edited draft`, async ({ page }, info) => {
+  const runtime = await seed(page);
+  runtime.state = state;
+  await page.route("**/api/agent-runtime-state/ack", async route => {
+    const request = route.request().postDataJSON();
+    if (request.sessionId !== "mock:prompt-project") return route.continue();
+    runtime.unseen = false;
+    runtime.acknowledgedSequence = request.transitionSequence;
+    await route.fulfill({ json: { ok: true, runtimeState: runtime } });
+  });
+  const sends: unknown[] = [];
+  await page.route("**/api/session-control/send", async route => {
+    sends.push(route.request().postDataJSON());
+    await route.fulfill({ json: { outcome: "submitted" } });
+  });
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  const dashboardCard = block.locator('.focus-next > [data-kind="suggest"]');
+  await expandFocusCard(dashboardCard);
+  const edited = `Continue the approved ${state} follow-up; keep this edited draft.`;
+  await dashboardCard.getByRole("textbox", { name: "reply to prompt-project", exact: true }).fill(edited);
+  await dashboardCard.getByRole("button", { name: "Open prompt-project", exact: true }).click();
+  await expect(page.locator("#terminal-view")).toHaveClass(/visible/);
+  await expect.poll(() => runtime.unseen).toBe(false);
+  if (info.project.name === "desktop") await page.locator("#sidebar-assistant-nav").click();
+  else {
+    await page.locator("#back-btn").click();
+    await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
+  }
+  const view = page.locator("#assistant-content");
+  const card = view.locator('.focus-next > li').filter({ hasText: "The approved plan is ready to continue" });
+  await expect(card).toHaveAttribute("data-kind", "suggest");
+  await expandFocusCard(card);
+  await expect(card.locator(".focus-tag")).toHaveText("reply ready · edited");
+  await expect(card.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue(edited);
+  await expect(card.locator(".focus-card-body")).toContainText("Ship the focus assistant");
+  await expect(card.getByRole("button", { name: "mark seen", exact: true })).toHaveCount(0);
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(card.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue(edited);
+  await card.getByRole("button", { name: "Send to prompt-project", exact: true }).click();
+  await expect(card.locator('[role="status"]')).toContainText("✓ sent to prompt-project");
+  await expect(card.getByRole("button", { name: "Send to prompt-project", exact: true })).toHaveCount(0);
+  expect(sends).toEqual([{ session: "mock:prompt-project", text: edited, ensureSubmitted: true }]);
+  runtime.state = "working";
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(card).toHaveCount(0);
+  runtime.state = state;
+  runtime.stoppedAt = "2026-11-09T12:01:00Z";
+  runtime.unseen = true; runtime.stoppedSequence = runtime.transitionSequence = 6;
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  const nextStop = view.locator('.focus-next > li').filter({ hasText: "prompt-project" });
+  await expect(nextStop).toHaveAttribute("data-kind", "done");
+  await expandFocusCard(nextStop);
+  await expect(nextStop.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue("");
+  await nextStop.getByRole("button", { name: "mark seen", exact: true }).click();
+  await expect(nextStop).toHaveCount(0);
 });
 
 test("two-line reply card discloses its editor and keeps open last", async ({ page }) => {

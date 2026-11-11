@@ -141,8 +141,11 @@ export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[]
         const rule = rules.find(r => r.session === session);
         const done = triage.doneIntention && doc.intentions.find(i => i.id === triage.doneIntention && !i.done);
         if (rule) row = rule;
-        // A reviewed finish may continue as a mark-done proposal, never a second generic finished row.
-        else if (done && session.state === AGENT_STATUS_STATE.DONE) row = { kind: "open", session, intention: done, reason: triage.reason };
+        // Acknowledgement clears plain stops, not an existing reply draft or
+        // explicit mark-done proposal. The episode check above still retires both.
+        else if (triage.suggestion && (session.state === AGENT_STATUS_STATE.IDLE || session.state === AGENT_STATUS_STATE.DONE)
+          || done && session.state === AGENT_STATUS_STATE.DONE) row = { kind: "open", session,
+          intention: done || doc.intentions.find(i => !i.done && linkedFocusSessions(i, [session]).length > 0), reason: triage.reason };
       }
     } else {
       const intention = doc.intentions.find(i => i.id === ref.intentionId && !i.done);
