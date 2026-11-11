@@ -29,7 +29,8 @@ export const BUNDLE_BUDGETS: ReadonlyArray<readonly [string, number, number]> = 
   // UI redesign after final control removals: measured 112770/20859; approved caps 113200/21000.
   // USER APPROVED #198 session labels/editor: raw 113200 -> 115000, gzip 21000 -> 21600.
   // USER APPROVED 2026-11-10 focus + main merge: raw 115000 -> 120000 (gzip unchanged).
-  ["public/styles.css", 120_000, 21_600],
+  // USER APPROVED 2026-11-11 editable focus suggestion: gzip 21600 -> 21800 (raw unchanged).
+  ["public/styles.css", 120_000, 21_800],
 ];
 if (import.meta.main) {
   let failed = false;
