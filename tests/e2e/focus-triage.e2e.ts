@@ -60,7 +60,7 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await page.goto(server.baseUrl);
   const block = page.locator("#dashboard-focus");
   await expect(block.locator(".focus-next > li")).toHaveCount(2);
-  await expect(block.locator(".focus-next > li").first()).toContainText(draft);
+  await expect(block.getByRole("textbox", { name: "reply to prompt-project", exact: true })).toHaveValue(draft);
   await expect(block.locator(".focus-next")).not.toContainText("another-project");
   await expect(block).toContainText(/ordered (now|\d+m) ago/);
   await expect(page.locator("#sidebar-assistant .assistant-tile-state")).toHaveText("2 next:");
@@ -75,18 +75,18 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await expect(row.locator(".focus-draft small").first()).toHaveText("last line from prompt-project: Step 2 done. Continue with step 3?");
   const send = row.locator(".focus-draft").getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
   await expect(send).toHaveText("send suggestion to prompt-project ›");
-  await expect(send).toHaveAttribute("aria-describedby", await row.locator(".focus-draft p").getAttribute("id") ?? "missing-id");
+  await expect(send).toHaveAttribute("aria-describedby", `${await row.locator(".focus-draft textarea").getAttribute("id")}-description`);
   await expect(send).toHaveAccessibleDescription(draft);
-  expect(await block.locator(".focus-draft p").first().getAttribute("id")).toMatch(/^fd-d-\d+$/);
-  await expect(row.locator(".focus-draft p")).toHaveAttribute("id", /^fd-p-\d+$/);
+  expect(await block.locator(".focus-draft textarea").first().getAttribute("id")).toMatch(/^fd-d-\d+$/);
+  await expect(row.locator(".focus-draft textarea")).toHaveAttribute("id", /^fd-p-\d+$/);
   await expect(row.locator(":scope > .focus-action")).toHaveText("open ›");
   await expect(row.locator(":scope > .focus-action")).toHaveAccessibleName("Open prompt-project");
   await expect(row.locator("summary .focus-for")).toContainText("focus");
   await expect(row.locator(".focus-draft > div")).toContainText("will be typed into prompt-project");
   await expect(row.locator(".focus-draft > div")).toHaveCSS("font-size", "13px");
   await expect(row.locator(".focus-draft > div")).toContainText("and submitted:");
-  await expect(row.locator(".focus-draft p")).toHaveText(draft);
-  expect(await row.locator(".focus-draft p").innerText(), "the visible draft preserves exact spacing").toBe(draft);
+  await expect(row.locator(".focus-draft textarea")).toHaveValue(draft);
+  expect(await row.locator(".focus-draft textarea").inputValue(), "the visible draft preserves exact spacing").toBe(draft);
   await expect(view.locator(".focus-next")).toContainText("new · by rules");
   await expect(page.locator(".view.swiping")).toHaveCount(0);
   await page.locator("#assistant-view").evaluate(el => { el.scrollTop = 0; });
@@ -122,7 +122,7 @@ for (const lastLine of ["", "Earlier output: " + "x".repeat(170) + " <terminal> 
     await route.fulfill({ response, json: body });
   });
   await page.goto(server.baseUrl);
-  const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft p") });
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft textarea") });
   const send = row.getByRole("button", { name: `Send suggestion to ${name}`, exact: true });
   await expect(send).toHaveText(`send suggestion to ${name} ›`);
   await expect(send).toHaveAccessibleDescription(draft);
@@ -152,7 +152,7 @@ for (const outcome of ["not_delivered", "pasted_not_submitted"] as const) test(`
     await route.fulfill({ json: { outcome } });
   });
   await page.goto(server.baseUrl);
-  const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft p") });
+  const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft textarea") });
   const send = row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
   try {
     await send.click();
@@ -161,8 +161,9 @@ for (const outcome of ["not_delivered", "pasted_not_submitted"] as const) test(`
     await expect(row.locator('[role="status"]')).toHaveCount(0);
     release();
     await expect(row.locator('[role="status"]')).toHaveText(outcome === "not_delivered" ? "not sent · try again" : "pasted, not submitted · check the session");
-    await expect(row.locator(".focus-draft p")).toHaveText(draft);
-    await expect(row.locator(".focus-draft")).toContainText("will be typed into prompt-project");
+    await expect(row.locator(".focus-draft textarea")).toHaveValue(draft);
+    await expect(row.locator(".focus-draft > div")).toContainText(outcome === "not_delivered" ? "will be typed into prompt-project" : "typed into prompt-project");
+    if (outcome !== "not_delivered") await expect(row.locator(".focus-draft > div")).not.toContainText("will be typed");
     await expect(row.getByRole("button", { name: "Open prompt-project", exact: true })).toBeEnabled();
     if (outcome === "not_delivered") {
       await expect(send).toBeEnabled();
@@ -212,6 +213,133 @@ test("a user-tap suggestion traverses the real session-send route and reports it
   expect(sent.status()).toBe(200);
   expect(await sent.json()).toMatchObject({ session: "prompt-project", sessionId: "mock:prompt-project", outcome: "unverified" });
   await expect(page.locator("#dashboard-focus")).toContainText("delivery unconfirmed · check the session");
+});
+
+test("editable reply stays shared across hosts and live renders without replacing the focused field", async ({ page }, info) => {
+  await seed(page);
+  await page.goto(server.baseUrl);
+  const field = (host: string) => page.locator(host).locator('textarea[aria-label="reply to prompt-project"]');
+  const dashboard = field("#dashboard-focus");
+  await expect(dashboard).toHaveValue(draft);
+  await expect(dashboard).toHaveAccessibleName("reply to prompt-project");
+  await expect(dashboard).toHaveAttribute("maxlength", "2000");
+  await expect(page.locator("#dashboard-focus").getByRole("button", { name: "reset", exact: true })).toHaveCount(0);
+  const edited = "Review my edited reply; keep the scope unchanged.";
+  await dashboard.fill(edited);
+  await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const reply = field("#assistant-content");
+  await expect(reply).toHaveValue(edited);
+  await reply.focus();
+  await reply.evaluate(el => (el as HTMLTextAreaElement).setSelectionRange(7, 15, "backward"));
+  const element = await reply.elementHandle();
+  const saved = await write(page, [{ type: "nudge", text: "A live update must not discard your reply.", author: "assistant" }]);
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(page.locator("#assistant-content .focus-nudge")).toHaveText("A live update must not discard your reply.");
+  await expect(reply).toBeFocused();
+  expect(await element!.evaluate(el => el === document.activeElement)).toBe(true);
+  expect(await reply.evaluate(el => { const field = el as HTMLTextAreaElement; return [field.selectionStart, field.selectionEnd, field.selectionDirection]; })).toEqual([7, 15, "backward"]);
+  await expect(reply).toHaveValue(edited);
+  await expect(dashboard).toHaveValue(edited);
+  await expect(page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toHaveAccessibleDescription(edited);
+  expect(saved.revision).toBeGreaterThan(0);
+  const reset = page.locator("#assistant-content").getByRole("button", { name: "reset", exact: true });
+  await expect(reset).toBeVisible();
+  await page.screenshot({ path: join(process.env.HOME!, ".cache/focus-edit-collapse-shots", `suggest-edited-${info.project.name === "desktop" ? "desktop" : "390"}.png`), fullPage: true });
+  expect((await new AxeBuilder({ page }).include("#assistant-content").analyze()).violations).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await reset.click();
+  await expect(reply).toHaveValue(draft);
+  await expect(dashboard).toHaveValue(draft);
+  await expect(reset).toHaveCount(0);
+});
+
+test("editable reply prevents Enter, flattens pasted newlines, caps at 2000 and disables blank sends", async ({ page }) => {
+  await seed(page);
+  const sends: unknown[] = [];
+  page.on("request", request => { if (new URL(request.url()).pathname === "/api/session-control/send") sends.push(request.postDataJSON()); });
+  await page.goto(server.baseUrl);
+  const panel = page.locator("#dashboard-focus");
+  const reply = panel.getByRole("textbox", { name: "reply to prompt-project", exact: true });
+  const send = panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  for (const blank of ["", "   "]) { await reply.fill(blank); await expect(send).toBeDisabled(); }
+  await reply.fill("go ");
+  await reply.press("End");
+  await reply.press("Enter");
+  await expect(reply).toHaveValue("go ");
+  await reply.evaluate(el => {
+    const data = new DataTransfer(); data.setData("text/plain", "one\r\ntwo\nthree");
+    el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(reply).toHaveValue("go one two three");
+  await reply.fill("x".repeat(1999));
+  await reply.press("End");
+  await reply.pressSequentially("abc");
+  await expect(reply).toHaveValue("x".repeat(1999) + "a");
+  await reply.fill("");
+  await reply.evaluate(el => {
+    const data = new DataTransfer(); data.setData("text/plain", "y".repeat(2500));
+    el.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(reply).toHaveValue("y".repeat(2000));
+  expect(sends).toEqual([]);
+});
+
+for (const outcome of ["submitted", "unverified", "pasted_not_submitted", "not_delivered"] as const) test(`edited reply sends the user's text and retains the original duplicate fence: ${outcome}`, async ({ page }) => {
+  await seed(page);
+  const sends: { text: string }[] = [];
+  const edited = outcome === "submitted" ? "/review notes  exactly as typed" : "!review notes  exactly as typed";
+  await page.route("**/api/session-control/send", async route => {
+    sends.push(route.request().postDataJSON());
+    await route.fulfill({ json: { outcome } });
+  });
+  await page.goto(server.baseUrl);
+  const panel = page.locator("#dashboard-focus");
+  const reply = panel.getByRole("textbox", { name: "reply to prompt-project", exact: true });
+  const send = panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true });
+  await reply.fill(edited);
+  await send.click();
+  await expect(panel.locator(".focus-draft [role=status]")).toBeVisible();
+  expect(sends).toHaveLength(1);
+  expect(sends[0].text).toBe(edited);
+  await expect(reply).toHaveValue(edited);
+  if (outcome === "not_delivered") {
+    await expect(send).toBeEnabled();
+    await expect(reply).toBeEditable();
+    await reply.fill("a different retry");
+    await send.click();
+    await expect.poll(() => sends.length).toBe(2);
+    expect(sends[1].text).toBe("a different retry");
+    return;
+  }
+  await expect(reply).not.toBeEditable();
+  await expect(panel.locator(".focus-draft > div")).toContainText("typed into prompt-project");
+  await expect(panel.locator(".focus-draft > div")).not.toContainText("will be typed");
+  await expect(send).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "reset", exact: true })).toHaveCount(0);
+  const receipts = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-send-receipts-v1")!));
+  expect(receipts).toHaveLength(1);
+  expect(JSON.parse(receipts[0][0])[2]).toBe(draft);
+  expect(receipts[0][1].text).toBe(edited);
+  await page.reload();
+  await expect(reply).toHaveValue(edited);
+  await expect(reply).not.toBeEditable();
+  await expect(send).toHaveCount(0);
+  expect(sends).toHaveLength(1);
+});
+
+test("a draft is dropped when its original action leaves the next rows", async ({ page }) => {
+  await seed(page);
+  const current = await (await page.request.get(`${server.baseUrl}/api/focus`)).json();
+  const rows = current.document.next.rows;
+  await page.goto(server.baseUrl);
+  const reply = page.locator("#dashboard-focus").getByRole("textbox", { name: "reply to prompt-project", exact: true });
+  await reply.fill("an obsolete draft");
+  await write(page, [{ type: "next", author: "assistant", rows: [] }]);
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(reply).toHaveCount(0);
+  await write(page, [{ type: "next", author: "assistant", rows }]);
+  await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(reply).toHaveValue(draft);
 });
 
 async function triagePeer(page: Page) {
@@ -380,7 +508,7 @@ for (const outcome of ["submitted", "unverified"] as const) test(`R3: ${outcome}
   await expect(page.locator("#dashboard-focus")).toContainText("Same draft, new formatting");
   await expect(button).toHaveCount(0);
   await page.reload();
-  await expect(page.locator("#dashboard-focus .focus-draft p")).toHaveText(draft);
+  await expect(page.locator("#dashboard-focus .focus-draft textarea")).toHaveValue(draft);
   await expect(button).toHaveCount(0);
   await expect(page.locator("#dashboard-focus")).toContainText(outcome === "submitted" ? "sent to prompt-project" : "delivery unconfirmed");
   expect(sends).toBe(1);

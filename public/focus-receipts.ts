@@ -1,5 +1,7 @@
 import { focusNextRefKey, type FocusTriage } from "../src/focus-contract";
-export interface FocusSendReceipt { label: string; at: string; state: "sending" | "sent" | "check" | "retry" }
+// User-approved one-line suggestion editor limit; session-send itself has only a request-body byte cap.
+export const FOCUS_REPLY_MAX_LENGTH = 2000;
+export interface FocusSendReceipt { label: string; at: string; state: "sending" | "sent" | "check" | "retry"; text?: string }
 const STORAGE_KEY = "wolfpack-focus-send-receipts-v1";
 const RECEIPT_CAP = 200;
 const LABEL_CAP = 1000;
@@ -7,7 +9,8 @@ const SETTLED_RETENTION_MS = 7 * 86400_000;
 function validReceipt(value: unknown): value is FocusSendReceipt {
   if (!value || typeof value !== "object") return false;
   const v = value as Record<string, unknown>;
-  return typeof v.label === "string" && v.label.length <= LABEL_CAP
+  return (v.text === undefined || typeof v.text === "string" && v.text.length <= FOCUS_REPLY_MAX_LENGTH)
+    && typeof v.label === "string" && v.label.length <= LABEL_CAP
     && typeof v.at === "string" && Number.isFinite(Date.parse(v.at))
     && typeof v.state === "string" && ["sending", "sent", "check", "retry"].includes(v.state);
 }

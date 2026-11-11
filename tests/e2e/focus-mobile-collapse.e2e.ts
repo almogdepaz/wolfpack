@@ -162,9 +162,9 @@ for (const scenario of [
   await expect(page.locator("#dashboard-focus-details")).toBeHidden();
   await toggle.tap();
   if (scenario.triage === "suggest") {
-    const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft p") });
+    const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft textarea") });
     const send = row.locator(".focus-draft").getByRole("button", { name: "Send suggestion to local-project-00", exact: true });
-    await expect(row.locator(".focus-draft p")).toHaveText("Continue with the approved rollout.");
+    await expect(row.locator(".focus-draft textarea")).toHaveValue("Continue with the approved rollout.");
     await expect(row.locator(".focus-draft > div")).toContainText("will be typed into local-project-00");
     await expect(row.locator(".focus-draft > div")).toHaveCSS("font-size", "13px");
     await expect(row.locator(":scope > .focus-action")).toHaveText("open ›");

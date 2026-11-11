@@ -2983,10 +2983,10 @@ details.focus-card > summary:focus-visible { outline: 2px solid var(--accent); o
 .focus-card-body dt { color: var(--text-3); }
 .focus-card-body dd { margin: 0; min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
 .focus-draft { grid-column: 1 / -1; margin: 0 0 12px; overflow-wrap: anywhere; line-height: 1.5; }
-.focus-draft p { border: 1px solid var(--accent-border); border-radius: var(--r-control); color: var(--text-1); margin: 4px 0 8px; padding: 8px 10px; }
+.focus-draft textarea { display: block; box-sizing: border-box; width: 100%; field-sizing: content; max-height: 160px; resize: vertical; background: transparent; border: 1px solid var(--accent-border); border-radius: var(--r-control); color: var(--text-1); margin: 4px 0 8px; padding: 8px 10px; }
 .focus-draft small { display: block; }
 .focus-draft button { max-width: 100%; white-space: normal; }
-.focus-card-body code, .focus-draft p, .focus-draft q { font: 12px var(--font-mono); white-space: pre-wrap; }
+.focus-card-body code, .focus-draft textarea, .focus-draft q { font: 12px var(--font-mono); white-space: pre-wrap; }
 /* The agent-context document (extension `agent-context`) inside an open session card. */
 .focus-context { margin: -2px 0 12px; padding-top: 10px; border-top: 1px solid var(--hairline); }
 .focus-context .focus-card-body { margin: 0; padding: 0; border: 0; }
