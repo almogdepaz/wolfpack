@@ -96,6 +96,27 @@ describe("bounded focus summary", () => {
     expect(focusSummary(["● Earlier answer.", "❯ Prepare the local checks.", "● Ready. Shall I proceed?", ...claudeFooter], "claude"))
       .toEqual(["Ready. Shall I proceed?"]);
   });
+  for (const status of ["Doing…", "Warping…", "Pondering… (12s)", "Crunched for 26s", "Crunched for 1m 26s"]) {
+    for (const glyph of ["✻", "✽", "✶", "✳", "✢", "·"]) test(`claude removes ${glyph} ${status} without losing the question`, () => {
+      expect(focusSummary(["● The checks passed.", "Shall I continue?", `${glyph} ${status}`, ...claudeFooter], "claude"))
+        .toEqual(["The checks passed.", "Shall I continue?"]);
+    });
+  }
+  test("claude removes a completed timing status without a spinner", () => {
+    expect(focusSummary(["● The checks passed.", "Shall I continue?", "Crunched for 26s", ...claudeFooter], "claude"))
+      .toEqual(["The checks passed.", "Shall I continue?"]);
+  });
+  for (const tool of ["Bash(bun test)", "Read(src/focus-summary.ts)", "mcp__local__check({})"]) test(`claude keeps its last message when ${tool} follows it`, () => {
+    expect(focusSummary(["● Earlier response.", "● The local changes are ready.", "May I continue with the approved plan?", `● ${tool}`, "  ⎿ Checks passed.", "    Tool output is not the question.", ...claudeFooter], "claude"))
+      .toEqual(["The local changes are ready.", "May I continue with the approved plan?"]);
+    expect(focusSummary([`● ${tool}`, "  ⎿ Checks passed.", "● The latest message.", "Ready to proceed?", ...claudeFooter], "claude"))
+      .toEqual(["The latest message.", "Ready to proceed?"]);
+    expect(focusSummary([`● ${tool}`, "  ⎿ Checks passed.", ...claudeFooter], "claude")).toEqual([]);
+  });
+  test("claude preserves spinner-like prose and spaced parentheses in a message", () => {
+    const body = ["The plan (local only) is ready.", "Doing the checks is approved.", "Crunched for 26s is the timing label, not the result.", "Proceed?"];
+    expect(focusSummary([`● ${body[0]}`, ...body.slice(1), ...claudeFooter], "claude")).toEqual(body);
+  });
   test("keeps the last four rows in reading order", () => {
     expect(focusSummary(["one", "two", "three", "four", "five", ">"], "pi")).toEqual(["two", "three", "four", "five"]);
   });
