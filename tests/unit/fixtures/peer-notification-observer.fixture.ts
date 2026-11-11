@@ -4,17 +4,14 @@ import { assertNotificationFixtureHome } from "./run-notification-test.ts";
 assertNotificationFixtureHome();
 const { CONFIG_PATH, saveConfig } = await import("../../../src/cli/config.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
-// The observation singleton remains on the production composition binding until C4.
-const { createServerContext, getDefaultServerContext, setDefaultServerContext } = await import("../../../src/server/context.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
 const { addSubscription, removeSubscription } = await import("../../../src/server/push.ts");
-const { __runSessionNotificationObservationForTests, stopSessionNotificationObserver } = await import("../../../src/server/session-observation.ts");
 const { buildMachineHandshake } = await import("../../../src/tailnet-machine-contract.ts");
 
 test("a stalled peer cannot hold local observation or the next local pass", async () => {
   const previousConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH) : undefined;
   const previousStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
   const previousFetch = globalThis.fetch;
-  const previousContext = getDefaultServerContext();
   const endpoint = "https://fcm.googleapis.com/observer-isolation";
   let lists = 0, peerRequests = 0;
   class EmptyBackend extends MockBackend {
@@ -27,29 +24,29 @@ test("a stalled peer cannot hold local observation or the next local pass", asyn
   const handshake = buildMachineHandshake({ tailscaleHostname: "peer.test.ts.net", tailscaleNodeId: "n123", installationId: "12345678-1234-4234-8234-123456789abc", displayName: "peer", version: "1.0.0" });
   saveConfig({ devDir: "/tmp", port: 18799, tailscaleHostname: "home.test.ts.net" });
   process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({ BackendState: "Running", Self: { ID: "home", DNSName: "home.test.ts.net", Online: true }, Peer: { peer: { ID: "n123", DNSName: "peer.test.ts.net", Online: true } } });
-  setDefaultServerContext(createServerContext({ backend: new EmptyBackend({ sessions: [] }) }));
+  const context = createServerContext({ backend: new EmptyBackend({ sessions: [] }), observationCacheTtlMs: 0 });
   addSubscription({ endpoint, keys: { p256dh: "x", auth: "x" } });
   globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0]) => {
     peerRequests++;
     if (String(input).endsWith("/api/machine")) { started(); return blocked; }
     return Response.json({ sessions: [] });
   }, { preconnect: previousFetch.preconnect });
-  const local = __runSessionNotificationObservationForTests();
+  const local = context.sessionObservation.runSessionNotificationObservation();
   let completed = false;
   void local.then(() => { completed = true; });
   try {
     await peerStarted;
     await new Promise<void>(resolve => setImmediate(resolve));
     expect(completed).toBe(true);
-    await __runSessionNotificationObservationForTests();
+    await context.sessionObservation.runSessionNotificationObservation();
     expect(lists).toBe(2);
     expect(peerRequests).toBe(1); // A single peer pass remains in flight.
   } finally {
     release(Response.json(handshake));
     await local;
-    await stopSessionNotificationObserver();
+    await context.sessionObservation.stopSessionNotificationObserver();
     globalThis.fetch = previousFetch;
-    setDefaultServerContext(previousContext);
+    await context.close();
     removeSubscription(endpoint);
     if (previousConfig) writeFileSync(CONFIG_PATH, previousConfig); else unlinkSync(CONFIG_PATH);
     if (previousStatus === undefined) delete process.env.WOLFPACK_TAILSCALE_STATUS_JSON; else process.env.WOLFPACK_TAILSCALE_STATUS_JSON = previousStatus;

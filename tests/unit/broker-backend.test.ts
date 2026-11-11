@@ -37,8 +37,6 @@ import { __resetEventBusForTests, subscribeEvents } from "../../src/server/event
 import type { WolfpackEvent } from "../../src/events-contract";
 import { onProgramStatusChanged } from "../../src/server/program-status-signal";
 import { appendParentNotification, clearParentInbox, listParentNotifications } from "../../src/server/parent-inbox";
-import { __resetChildEventsForTests, observeChildSession } from "../../src/server/child-events";
-import { __resetViewerInputForTests, lastViewerInputAt } from "../../src/server/viewer-input";
 
 const SESSION_UUID_1 = "550e8400-e29b-41d4-a716-446655440000";
 const SESSION_UUID_2 = "11111111-1111-1111-1111-111111111111";
@@ -531,7 +529,7 @@ describe("child exits from the lifecycle and the session table", () => {
   let exactBackend: BrokerBackend;
 
   function track(id = SESSION_UUID_1, name = "worker"): void {
-    observeChildSession({
+    exactBackend.childEvents.observeChildSession({
       sessionId: id,
       name,
       parentSession,
@@ -552,8 +550,7 @@ describe("child exits from the lifecycle and the session table", () => {
 
   beforeEach(() => {
     clearParentInbox(parentId);
-    __resetChildEventsForTests();
-    kinds = [];
+      kinds = [];
     childEvents = [];
     exactBackend = new BrokerBackend(client, event => {
       kinds.push(event.kind);
@@ -563,8 +560,7 @@ describe("child exits from the lifecycle and the session table", () => {
 
   afterEach(() => {
     clearParentInbox(parentId);
-    __resetChildEventsForTests();
-  });
+    });
 
   test("lifecycle before the table read: one exited with the exit code, then the dead and absent table add nothing", async () => {
     track();
@@ -646,7 +642,6 @@ describe("child exits from the lifecycle and the session table", () => {
 test("a child created through the backend reports its first event state, but a restored child does not", async () => {
   const parentId = "22222222-2222-4222-8222-222222222222";
   clearParentInbox(parentId);
-  __resetChildEventsForTests();
   const parentSession = { wolfpackSessionId: parentId, wolfpackSessionName: "lead" };
   const blocked = {
     state: "needs-input", authority: "program", freshness: "fresh", source: "program-status", label: "needs input",
@@ -655,14 +650,13 @@ test("a child created through the backend reports its first event state, but a r
   try {
     client.setHandler("create_session", () => okResp({ session: sessionInfo({ name: "fresh-child", id: SESSION_UUID_1 }) }));
     await backend.createSession("fresh-child", "/tmp/proj", "claude", loadSettings, { agentKind: "claude", parentSession });
-    observeChildSession({ sessionId: SESSION_UUID_1, name: "fresh-child", parentSession, alive: true, runtimeState: blocked }, () => {});
+    backend.childEvents.observeChildSession({ sessionId: SESSION_UUID_1, name: "fresh-child", parentSession, alive: true, runtimeState: blocked }, () => {});
     // Not created by this process (restart recovery): the first sight is a baseline.
-    observeChildSession({ sessionId: SESSION_UUID_2, name: "restored-child", parentSession, alive: true, runtimeState: blocked }, () => {});
+    backend.childEvents.observeChildSession({ sessionId: SESSION_UUID_2, name: "restored-child", parentSession, alive: true, runtimeState: blocked }, () => {});
     expect(listParentNotifications(parentId)).toEqual([expect.objectContaining({ from: "fresh-child", message: expect.stringContaining("blocked") })]);
   } finally {
     clearParentInbox(parentId);
-    __resetChildEventsForTests();
-  }
+    }
 });
 
 describe("BrokerBackend.inspectSession", () => {
@@ -1348,16 +1342,14 @@ describe("BrokerBackend send/sendKey/writeToTerminal route through input_binary"
   });
 
   test("writeToTerminal records viewer input for the session id; a failed write records nothing", () => {
-    __resetViewerInputForTests();
     const before = Date.now();
     client.inputError = new Error("input plane down");
     expect(backend.writeToTerminal("live", "x")).toBe(false);
-    expect(lastViewerInputAt(SESSION_UUID_1)).toBeUndefined();
+    expect(backend.viewerInput.lastViewerInputAt(SESSION_UUID_1)).toBeUndefined();
     client.inputError = null;
     expect(backend.writeToTerminal("live", "x")).toBe(true);
-    expect(lastViewerInputAt(SESSION_UUID_1)).toBeGreaterThanOrEqual(before);
+    expect(backend.viewerInput.lastViewerInputAt(SESSION_UUID_1)).toBeGreaterThanOrEqual(before);
     expect(backend.writeToTerminal("ghost", "x")).toBe(false);
-    __resetViewerInputForTests();
   });
 
   test("writeToTerminal reports false for unknown sessions", () => {

@@ -13,10 +13,6 @@ import { resolveLoginShellPath } from "./login-shell-path.js";
 import { createServerContext, defaultServerContext, setDefaultServerContext, type ServerContext } from "./context.js";
 import { createRoutes } from "./routes.js";
 import {
-  startSessionNotificationObserver,
-  stopSessionNotificationObserver,
-} from "./session-observation.js";
-import {
   json,
   serveFile,
   shouldAuthenticateApiPath,
@@ -32,14 +28,10 @@ import { childEventTypedNotesEnabled, loadConfig, WOLFPACK_DIR } from "../config
 import {
   SESSION_SEND_DEFAULT_OBSERVE_MS, SESSION_SEND_DELIVERY, SESSION_SEND_FAILURE_REASON, SESSION_SEND_OUTCOME,
 } from "../session-send-contract.js";
-import { startChildEventDelivery } from "./child-event-delivery.js";
-import { startChildCleanupCascade } from "./session-cascade.js";
-import { lastViewerInputAt } from "./viewer-input.js";
 import { startLogRotationMonitor } from "../log-rotation.js";
 import { createTailnetOriginPolicy } from "./tailnet-origin-policy.js";
 import { createHostPolicy } from "./host-policy.js";
 import { readLocalTailscaleStatus } from "./tailscale-status.js";
-import { consumeWebSocketTicket } from "./ws-ticket.js";
 import { classifyRequestClient, isLoopbackAddress } from "./operability.js";
 import { installShutdownSignalHandlers } from "./shutdown.js";
 
@@ -242,7 +234,7 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
       const url = new URL(req.url ?? "/", "http://localhost");
 
       const ticket = url.searchParams.get("ticket");
-      const ticketOk = ticket ? consumeWebSocketTicket(ticket, client.clientKey) : false;
+      const ticketOk = ticket ? ctx.webSocketTickets.consumeWebSocketTicket(ticket, client.clientKey) : false;
       const auth = ticketOk ? { ok: true } : validateRequestJwt(req.headers, url, true);
       if (!auth.ok) {
         log.debug("jwt auth failed (ws upgrade)", { path: url.pathname, reason: auth.error });
@@ -367,7 +359,7 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
   const taskRelay = ctx.taskRelayGateway;
   await taskRelay.initialize();
   void ctx.backend.cleanupOrphans();
-  const stopChildEventDelivery = startChildEventDelivery({
+  const stopChildEventDelivery = ctx.childEventDelivery.startChildEventDelivery({
     hostEnvelope: input => taskRelay.hostEnvelope(input),
     send: async (sessionId, sessionName, text, writeGuard) => {
       const streaming = ctx.supervisor ? ctx.supervisor.backend() : ctx.backend;
@@ -380,18 +372,18 @@ export async function startServer(port = PORT, host = "127.0.0.1", overrides: Pa
       });
     },
     typedNotesEnabled: childEventTypedNotesEnabled,
-    lastViewerInputAt,
+    lastViewerInputAt: ctx.viewerInput.lastViewerInputAt,
     now: Date.now,
   });
-  startSessionNotificationObserver(ctx);
+  ctx.sessionObservation.startSessionNotificationObserver();
   // Parent death kills cascade children. The first table after this start is a
   // baseline, so sessions that died while the server was down do not cascade.
-  const stopChildCleanupCascade = startChildCleanupCascade(ctx);
+  const stopChildCleanupCascade = ctx.sessionCascade.startChildCleanupCascade();
   server.once("close", () => {
     stopChildCleanupCascade();
     stopChildEventDelivery();
     void taskRelay.close();
-    void stopSessionNotificationObserver();
+    void ctx.sessionObservation.dispose();
   });
 
   server.on("error", (err: NodeJS.ErrnoException) => {

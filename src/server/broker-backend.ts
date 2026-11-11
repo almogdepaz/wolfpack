@@ -22,7 +22,7 @@
  * `BrokerClient.handleConnect`. `getSessionPrefill` fetches a fresh
  * `snapshot` and renders it to ANSI bytes for direct WS prefill.
  */
-import { noteViewerInput } from "./viewer-input.js";
+import { createViewerInput } from "./viewer-input.js";
 import { DuplicateSessionError, SESSION_KILL_DISPOSITION, UnsupportedTerminalKeyError } from "./backend-contract.js";
 import type {
   CapturePaneOptions,
@@ -75,8 +75,8 @@ import { taskWorkerHarness } from "./task-worker-readiness.js";
 import { TASK_WORKER_DEFAULT_EXTENSION_POLICY } from "../task-worker-policy-contract.js";
 import { CMD_REGEX } from "../validation.js";
 import { clearParentInbox, reconcileParentInboxes } from "./parent-inbox.js";
-import { childSessionExited, childTrackingMark, noteChildCreated, reconcileChildEvents } from "./child-events.js";
-import { noteSessionAlive, noteSessionExit, noteSessionTable, sessionTableMark } from "./session-death.js";
+import { createChildEvents } from "./child-events.js";
+import { createSessionDeath } from "./session-death.js";
 import { createLogger, errMsg } from "../log.js";
 import { brokerOutputSequence } from "../broker-output-sequence.js";
 import { PROGRAM_STATUS_STATE, parseBrokerProgramStatusRecord } from "../program-status-contract.js";
@@ -135,6 +135,9 @@ const DEFAULT_COLS = 120;
 const DEFAULT_ROWS = 40;
 
 export interface BrokerBackendOptions {
+  readonly childEvents?: ReturnType<typeof createChildEvents>;
+  readonly sessionDeath?: ReturnType<typeof createSessionDeath>;
+  readonly viewerInput?: ReturnType<typeof createViewerInput>;
   /** Resolve the owning store lazily, including across supervisor reconnects. */
   readonly sessionIdentityStore?: () => SessionIdentityStore;
   /** Read at each session create; defaults to the effective gate (config flag and current managed drop-in). */
@@ -607,6 +610,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   private brokerUnavailableTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly claudeTaskIntegration: () => boolean;
   private identityStore?: SessionIdentityStore;
+  readonly childEvents: ReturnType<typeof createChildEvents>;
+  readonly sessionDeath: ReturnType<typeof createSessionDeath>;
+  readonly viewerInput: ReturnType<typeof createViewerInput>;
 
   private get identities(): SessionIdentityStore {
     return this.options.sessionIdentityStore?.() ?? (this.identityStore ??= new SessionIdentityStore());
@@ -619,6 +625,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   ) {
     this.claudeTaskIntegration = options.claudeTaskIntegration ?? (() => claudeTaskIntegrationState().on);
     this.client = client;
+    this.childEvents = options.childEvents ?? createChildEvents();
+    this.sessionDeath = options.sessionDeath ?? createSessionDeath();
+    this.viewerInput = options.viewerInput ?? createViewerInput();
   }
 
   // ── SessionBackend ──
@@ -633,8 +642,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
   }
 
   async listSessionFacts(): Promise<SessionListFact[]> {
-    const trackedBefore = childTrackingMark();
-    const tableMark = sessionTableMark();
+    const trackedBefore = this.childEvents.childTrackingMark();
+    const tableMark = this.sessionDeath.sessionTableMark();
     const sessions = await this.brokerSessions();
     const identitySessions: Array<{
       wolfpackSessionId: string;
@@ -687,9 +696,9 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     reconcileParentInboxes(liveIds);
     // A known child that is dead or gone in this table has exited, even if
     // its exit frame was lost; the lifecycle path shares the deduplication.
-    reconcileChildEvents(liveIds, { trackedBefore, exitReason: id => this.tableExitReason(id), publish: this.emitEvent });
+    this.childEvents.reconcileChildEvents(liveIds, { trackedBefore, exitReason: id => this.tableExitReason(id), publish: this.emitEvent });
     // Same evidence for the cleanup cascade: a parent dead or gone in this table died.
-    noteSessionTable(liveIds, tableMark);
+    this.sessionDeath.noteSessionTable(liveIds, tableMark);
     return facts;
   }
 
@@ -881,8 +890,8 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     });
     // Same synchronous step as the identity capture: no observer pass can see
     // this child's lineage before it is tracked as created in this boot.
-    if (options?.parentSession) noteChildCreated(session.id, session.name, options.parentSession);
-    noteSessionAlive(session.id);
+    if (options?.parentSession) this.childEvents.noteChildCreated(session.id, session.name, options.parentSession);
+    this.sessionDeath.noteSessionAlive(session.id);
     log.info("session created", { name: session.name, id: session.id, cwd, cmd: agentCmd });
     return toPublicSessionIdentity(identity);
   }
@@ -1557,7 +1566,7 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     try {
       this.client.writeInput(id, toBytes(data));
       // Only interactive viewers use this path; typed child-event notes wait for a quiet viewer.
-      noteViewerInput(id);
+      this.viewerInput.noteViewerInput(id);
       return true;
     } catch (e: unknown) {
       log.warn("writeToTerminal failed", { name, error: errMsg(e) });
@@ -1744,13 +1753,13 @@ export class BrokerBackend implements SessionBackend, PtyBackendMethods, Session
     const name = exit.name ?? killName;
     const reason = killed ? SESSION_EXIT_REASON.KILLED : SESSION_EXIT_REASON.EXIT;
     // The parent learns about the exit through its inbox and the event stream.
-    childSessionExited(id, {
+    this.childEvents.childSessionExited(id, {
       reason,
       ...(exit.exitCode !== undefined && { exitCode: exit.exitCode }),
       ...(exit.signal !== undefined && { signal: exit.signal }),
     }, this.emitEvent);
     // The cleanup cascade treats a lifecycle exit as death evidence.
-    noteSessionExit(id);
+    this.sessionDeath.noteSessionExit(id);
     this.emitEvent({
       kind: WOLFPACK_EVENT_KIND.SESSION_EXITED,
       sessionId: id,

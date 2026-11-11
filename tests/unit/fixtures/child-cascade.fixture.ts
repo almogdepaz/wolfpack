@@ -6,14 +6,18 @@ assertNotificationFixtureHome();
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { BrokerBackend } = await import("../../../src/server/broker-backend.ts");
 const { EventBus } = await import("../../../src/event-bus.ts");
-const { createServerContext } = await import("../../../src/server/context.ts");
+const { createServerContext: makeContext } = await import("../../../src/server/context.ts");
 const { createRoutes } = await import("../../../src/server/routes.ts");
 const { createSessionControlRoutes } = await import("../../../src/server/session-control-routes.ts");
-const { __resetChildEventsForTests } = await import("../../../src/server/child-events.ts");
-const { __resetSessionDeathForTests } = await import("../../../src/server/session-death.ts");
-const { __resetSessionCascadeForTests, startChildCleanupCascade } = await import("../../../src/server/session-cascade.ts");
 const { CHILD_CLEANUP, CASCADE_OUTCOME } = await import("../../../src/session-cascade-contract.ts");
 const { identityEnvVars, extractParentSessionFromEnv } = await import("../../../src/server/session-identity.ts");
+
+const contexts: ReturnType<typeof makeContext>[] = [];
+function createServerContext(options: Parameters<typeof makeContext>[0]) {
+  const context = makeContext(options);
+  contexts.push(context);
+  return context;
+}
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => unknown;
 type Backend = InstanceType<typeof MockBackend>;
@@ -50,9 +54,6 @@ const realFetch = globalThis.fetch;
 let stopCascade: (() => void) | undefined;
 
 beforeEach(() => {
-  __resetChildEventsForTests();
-  __resetSessionDeathForTests();
-  __resetSessionCascadeForTests();
   peerCalls.length = 0;
   // The cascade is same-machine only: any network call is a failure.
   globalThis.fetch = (async (input: unknown) => {
@@ -61,7 +62,8 @@ beforeEach(() => {
   }) as unknown as typeof fetch;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const context of contexts.splice(0)) await context.close();
   stopCascade?.();
   stopCascade = undefined;
   globalThis.fetch = realFetch;
@@ -208,8 +210,9 @@ function brokerFixture(options: {
     },
   };
   backend = new BrokerBackend(client as never, () => {});
-  stopCascade = startChildCleanupCascade({ backend });
-  return { backend, sessions, kills, state };
+  const context = createServerContext({ backend, events: new EventBus() });
+  stopCascade = context.sessionCascade.startChildCleanupCascade();
+  return { backend, sessions, kills, state, context };
 }
 
 test("a parent's lifecycle exit cascades to its cascade children and grandchildren", async () => {
@@ -258,11 +261,11 @@ test("a parent already dead in the first table after a restart does not cascade"
 });
 
 test("an explicit kill whose exit frame arrives during the kill cascades once", async () => {
-  const { backend, kills } = brokerFixture({
+  const { backend, kills, context } = brokerFixture({
     onKill: (id, broker) => broker.ingestEvent({ event: "session_exited", session_id: id, signal: 1 }),
   });
   await backend.listSessionFacts();
-  const kill = createRoutes(createServerContext({ backend, events: new EventBus() }))["POST /api/kill"] as Handler;
+  const kill = createRoutes(context)["POST /api/kill"] as Handler;
   const response = await call(kill, { session: "lead" });
   expect(response.status).toBe(200);
   await settle();
@@ -277,9 +280,9 @@ test("an explicit kill whose exit frame arrives during the kill cascades once", 
 
 for (const code of ["session_not_alive", "unknown_session"]) {
   test(`a child the broker reports ${code} during the kill cascade is already_gone and its children still cascade`, async () => {
-    const { backend, kills } = brokerFixture({ killError: id => id === KID ? code : undefined });
+    const { backend, kills, context } = brokerFixture({ killError: id => id === KID ? code : undefined });
     await backend.listSessionFacts();
-    const kill = createRoutes(createServerContext({ backend, events: new EventBus() }))["POST /api/kill"] as Handler;
+    const kill = createRoutes(context)["POST /api/kill"] as Handler;
     const response = await call(kill, { session: "lead" });
     expect(response.status).toBe(200);
     const cascaded = response.body.cascaded as Array<Record<string, unknown>>;

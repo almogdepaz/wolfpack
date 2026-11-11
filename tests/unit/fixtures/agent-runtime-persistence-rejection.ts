@@ -19,7 +19,6 @@ mock.module("node:crypto", () => ({
 const { AgentRuntimeStateStore } = await import("../../../src/server/agent-status.ts");
 const { createServerContext } = await import("../../../src/server/context.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
-const { stopSessionNotificationObserver } = await import("../../../src/server/session-observation.ts");
 
 const path = process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH;
 assert.ok(path);
@@ -43,7 +42,7 @@ try {
   store.flush();
   // Deliberately reproduce the entry's floating shutdown call, without a
   // process-level handler that would conceal an escaping rejection.
-  if (mode === "shutdown") stopSessionNotificationObserver(context);
+  if (mode === "shutdown") context.sessionObservation.stopSessionNotificationObserver();
   await persisted;
   await store.flushForShutdown();
   assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { schemaVersion: 1, sessions: {} });

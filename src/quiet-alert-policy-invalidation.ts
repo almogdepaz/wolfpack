@@ -18,6 +18,7 @@ export function invalidateQuietAlertPolicy(kind?: typeof QUIET_ALERT_KIND.QUIET)
   for (const listener of listeners) listener(kind);
 }
 
-export function onQuietAlertPolicyInvalidation(listener: QuietAlertPolicyInvalidationListener): void {
+export function onQuietAlertPolicyInvalidation(listener: QuietAlertPolicyInvalidationListener): () => void {
   listeners.add(listener);
+  return () => { listeners.delete(listener); };
 }

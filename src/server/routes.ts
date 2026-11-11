@@ -10,7 +10,6 @@ import { clampCols, clampRows } from "../validation.js";
 
 import { assets } from "../public-assets.js";
 import pkg from "../../package.json";
-import { issueWebSocketTicket } from "./ws-ticket.js";
 import {
   boundedMetrics,
   classifyRequestClient,
@@ -30,23 +29,12 @@ import {
   validateProjectParam,
 } from "./http.js";
 import { activePtySessions } from "./websocket.js";
-import { observeDashboardSessions } from "./session-observation.js";
-import {
-  cascadeChildCleanup,
-  claimSessionCleanup,
-  killSessionWithTeardown,
-  releaseSessionCleanup,
-} from "./session-cascade.js";
 import type { CascadedChild } from "../session-cascade-contract.js";
-export {
-  __resetSessionObservationForTests,
-  __runSessionNotificationObservationForTests,
-} from "./session-observation.js";
 import { createTaskRoutes } from "./task-routes.ts";
 import { createVolatileRelayRoutes } from "./volatile-relay-routes.ts";
 import { createProjectSettingsRoutes } from "./project-settings-routes.js";
 import { resolveActiveSession, createSessionControlRoutes } from "./session-control-routes.js";
-import { createPushNotifyRoutes, pushSubscriptionRoutes } from "./push-routes.js";
+import { createPushNotifyRoutes, createPushSubscriptionRoutes } from "./push-routes.js";
 import { createEventRoutes } from "./event-routes.js";
 import { createRemoteOpsRoutes } from "./remote-ops-routes.js";
 
@@ -109,7 +97,7 @@ return {
   },
 
   "GET /api/sessions": async (_req, res) => {
-    const sessions = await observeDashboardSessions(ctx);
+    const sessions = await ctx.sessionObservation.observeDashboardSessions();
     json(res, { sessions: sessions.map(session => ({ ...session,
       organization: session.identity ? ctx.sessionOrganization.project(session.identity.wolfpackSessionId) : { status: "unavailable" },
     })) });
@@ -160,22 +148,22 @@ return {
     if (!resolved) return;
     const sessionId = resolved.identity.wolfpackSessionId;
     // Claim before the kill: the parent's exit frame can arrive during it.
-    const claimed = claimSessionCleanup(sessionId);
+    const claimed = ctx.sessionCascade.claimSessionCleanup(sessionId);
     try {
       // Cleans up any associated desktop PTY session (wp_*) before killing.
-      await killSessionWithTeardown(ctx.backend, resolved.name, sessionId);
+      await ctx.sessionCascade.killSessionWithTeardown(ctx.backend, resolved.name, sessionId);
     } catch (error: unknown) {
-      if (claimed) releaseSessionCleanup(sessionId);
+      if (claimed) ctx.sessionCascade.releaseSessionCleanup(sessionId);
       throw error;
     }
     let cascaded: CascadedChild[] = [];
     let cascadeError: string | undefined;
     if (claimed) {
       try {
-        cascaded = await cascadeChildCleanup(ctx.backend, sessionId);
+        cascaded = await ctx.sessionCascade.cascadeChildCleanup(ctx.backend, sessionId);
       } catch (error: unknown) {
         // A later death notification can still cascade this parent.
-        releaseSessionCleanup(sessionId);
+        ctx.sessionCascade.releaseSessionCleanup(sessionId);
         cascadeError = errMsg(error);
         log.warn("kill cascade failed: session table unavailable", { sessionId, error: cascadeError });
       }
@@ -299,12 +287,12 @@ return {
       remoteAddress: req.socket.remoteAddress,
       tailscaleUserLogin: req.headers["tailscale-user-login"],
     });
-    json(res, issueWebSocketTicket(client.clientKey));
+    json(res, ctx.webSocketTickets.issueWebSocketTicket(client.clientKey));
   },
 
   // ── Push notifications ──
 
-  ...pushSubscriptionRoutes,
+  ...createPushSubscriptionRoutes(ctx),
 
   // ── Agent-triggered notifications ──
 

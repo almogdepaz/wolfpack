@@ -103,10 +103,10 @@ const mockBackend = new MockBackend({
   capturePane: async (s: string) => `captured output for ${s}\n`,
 });
 let selectedBackend: import("../../src/server/context.ts").ServerBackend = mockBackend;
-let testContext = createServerContext({
+let testContext = createServerContext({ observationCacheTtlMs: 0,
   get backend() { return selectedBackend; }, events: new EventBus(), config: null,
 });
-// Observation composition remains shared until the C4 ownership migration.
+// Retain the production event-publisher bridge until the D3a characterization.
 setDefaultServerContext(testContext);
 function useBackend(backend: import("../../src/server/context.ts").ServerBackend): void { selectedBackend = backend; }
 
@@ -123,12 +123,7 @@ const {
 } = await import("../../src/server/push.ts");
 const { activePtySessions } = await import("../../src/server/websocket.ts");
 const { AgentRuntimeStateStore } = await import("../../src/server/agent-status.ts");
-const { forgetSessionObservation, stopSessionNotificationObserver } = await import("../../src/server/session-observation.ts");
 
-const {
-  __resetSessionObservationForTests,
-  __runSessionNotificationObservationForTests,
-} = await import("../../src/server/routes.ts");
 
 let { server, wss } = createServerInstance(testContext);
 
@@ -161,7 +156,7 @@ function ensureTestProjectDirs(): void {
 beforeAll(() => { ensureTestProjectDirs(); });
 
 async function closeServerContext(): Promise<void> {
-  await stopSessionNotificationObserver(testContext);
+  await testContext.sessionObservation.stopSessionNotificationObserver();
   if (server.listening) await new Promise<void>((resolve, reject) => {
     server.close((error?: Error) => error ? reject(error) : resolve());
     server.closeAllConnections();
@@ -171,7 +166,7 @@ async function closeServerContext(): Promise<void> {
 }
 
 async function listenWithContext(): Promise<void> {
-  testContext = createServerContext({
+  testContext = createServerContext({ observationCacheTtlMs: 0,
     get backend() { return selectedBackend; }, events: new EventBus(), config: null,
   });
   setDefaultServerContext(testContext);
@@ -200,7 +195,6 @@ beforeEach(async () => {
   pushTesting.resetDebounce();
   activePtySessions.clear();
   rmSync(process.env.WOLFPACK_AGENT_RUNTIME_STATE_PATH!, { force: true });
-  __resetSessionObservationForTests();
   await listenWithContext();
 });
 
@@ -409,7 +403,7 @@ async function withQuietTree(
     expect((await post("/api/settings", {
       quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
     })).status).toBe(200);
-    await __runSessionNotificationObservationForTests();
+    await testContext.sessionObservation.runSessionNotificationObservation();
     await body({
       backend,
       deliveries,
@@ -420,13 +414,13 @@ async function withQuietTree(
         for (const name of names) backend.setPane(name, `activity ${sequence}\n`);
         current = current.map((fact) => names.includes(fact.name) ? { ...fact, outputSequence: String(sequence) } : fact);
         backend.setFacts(current);
-        await __runSessionNotificationObservationForTests();
+        await testContext.sessionObservation.runSessionNotificationObservation();
       },
       async tick(ms, status) {
         now += ms;
         applyStatus(status);
         backend.setFacts(current);
-        return await __runSessionNotificationObservationForTests() as readonly ObservedTreeSession[];
+        return await testContext.sessionObservation.runSessionNotificationObservation() as readonly ObservedTreeSession[];
       },
     });
   } finally {
@@ -520,7 +514,7 @@ describe("GET /api/sessions", () => {
       expect(writes()).toBe(1); // Observation timestamps advance only in memory.
       mockBackend.setSessions([]);
       await get("/api/sessions");
-      await stopSessionNotificationObserver(); // Existing server-close hook drains removals.
+      await testContext.sessionObservation.stopSessionNotificationObserver(); // Existing server-close hook drains removals.
       expect(writes()).toBe(2);
       await get("/api/sessions");
       await testContext.agentRuntimeStateStore.flushForShutdown();
@@ -686,12 +680,12 @@ describe("GET /api/sessions", () => {
     };
     try {
       mockBackend.setCapturePane(async () => "baseline\n");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       mockBackend.setCapturePane(async () => "changed\n");
       mockBackend.setOutputSequence("wolf-1", "1");
       mockBackend.setOutputSequence("wolf-2", "1");
-      await __runSessionNotificationObservationForTests();
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       expect(pushes).toEqual([]);
     } finally {
@@ -716,14 +710,14 @@ describe("GET /api/sessions", () => {
       return { sent: 1, failed: 0, pruned: 0 };
     };
     try {
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       factBackend.setPane(sessionName, "changed\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "62", identity: testIdentity(sessionName, sessionId) },
       ]);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       expect(pushes).toEqual([]);
     } finally {
@@ -743,15 +737,15 @@ describe("GET /api/sessions", () => {
     };
     try {
       mockBackend.setCapturePane(async () => "baseline\n");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       mockBackend.setCapturePane(async () => "changed\n");
       mockBackend.setOutputSequence("wolf-1", "1");
       mockBackend.setOutputSequence("wolf-2", "1");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       mockBackend.setCapturePane(async () => { throw new Error("snapshot unavailable"); });
       mockBackend.setOutputSequence("wolf-1", "2");
       mockBackend.setOutputSequence("wolf-2", "2");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       expect(pushes).toEqual([]);
     } finally {
@@ -782,14 +776,14 @@ describe("GET /api/sessions", () => {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "armed activity\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "302", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       const originalCapturePane = factBackend.capturePane.bind(factBackend);
       now += 1_000;
@@ -797,7 +791,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "303", identity: testIdentity(sessionName, sessionId) },
       ]);
-      const failed = await __runSessionNotificationObservationForTests();
+      const failed = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(failed[0]).toMatchObject({ activity: { freshness: "unknown" } });
       expect(failed[0]?.quietAlert).toBeUndefined();
 
@@ -806,7 +800,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "304", identity: testIdentity(sessionName, sessionId) },
       ]);
-      const recovered = await __runSessionNotificationObservationForTests();
+      const recovered = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(recovered[0]?.quietAlert).toBeUndefined();
       expect(deliveries).toEqual([]);
 
@@ -815,9 +809,9 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "305", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       now += 5_000;
-      const matured = await __runSessionNotificationObservationForTests();
+      const matured = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(matured[0]?.quietAlert).toMatchObject({
         sessionId,
         eligibleAtMs: 19_011_002,
@@ -1206,11 +1200,11 @@ describe("GET /api/sessions", () => {
       expect(changed.sessions[0].quietAlert).toBeUndefined();
 
       now += 4_999;
-      const beforeThreshold = await __runSessionNotificationObservationForTests();
+      const beforeThreshold = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(beforeThreshold[0].quietAlert).toBeUndefined();
 
       now += 1;
-      const matured = await __runSessionNotificationObservationForTests();
+      const matured = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(matured[0].quietAlert).toEqual({
         kind: "quiet",
         sessionId,
@@ -1250,7 +1244,7 @@ describe("GET /api/sessions", () => {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "changed\n");
@@ -1260,10 +1254,10 @@ describe("GET /api/sessions", () => {
       expect((await (await get("/api/sessions")).json()).sessions[0].quietAlert).toBeUndefined();
 
       now += 4_999;
-      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toBeUndefined();
+      expect((await testContext.sessionObservation.runSessionNotificationObservation())[0].quietAlert).toBeUndefined();
 
       now += 1;
-      const observerAtThreshold = await __runSessionNotificationObservationForTests();
+      const observerAtThreshold = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(observerAtThreshold[0].quietAlert).toMatchObject({
         sessionId,
         eligibleAtMs: 5_005_001,
@@ -1301,7 +1295,7 @@ describe("GET /api/sessions", () => {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "armed activity\n");
@@ -1318,7 +1312,7 @@ describe("GET /api/sessions", () => {
       })).status).toBe(200);
 
       now += 5_000;
-      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toBeUndefined();
+      expect((await testContext.sessionObservation.runSessionNotificationObservation())[0].quietAlert).toBeUndefined();
 
       now += 1;
       factBackend.setPane(sessionName, "new activity after reenable\n");
@@ -1327,7 +1321,7 @@ describe("GET /api/sessions", () => {
       ]);
       await get("/api/sessions");
       now += 5_000;
-      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toMatchObject({
+      expect((await testContext.sessionObservation.runSessionNotificationObservation())[0].quietAlert).toMatchObject({
         sessionId,
         eligibleAtMs: 7_010_002,
         observedAtMs: 7_010_002,
@@ -1362,7 +1356,7 @@ describe("GET /api/sessions", () => {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       let releaseCapture: (() => void) | undefined;
       const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
@@ -1393,7 +1387,7 @@ describe("GET /api/sessions", () => {
       await oldCapture;
 
       now += 5_000;
-      expect((await __runSessionNotificationObservationForTests())[0].quietAlert).toBeUndefined();
+      expect((await testContext.sessionObservation.runSessionNotificationObservation())[0].quietAlert).toBeUndefined();
     } finally {
       Date.now = originalNow;
       pushTesting.sessionPushSender = null;
@@ -1520,7 +1514,7 @@ describe("GET /api/sessions", () => {
       expect((await (await get("/api/sessions")).json()).sessions[0].quietAlert).toMatchObject({ sessionId });
 
       addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(delivered).toEqual([]);
 
       now += 1;
@@ -1528,14 +1522,14 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "143", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       now += 5_000;
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(delivered).toEqual(["Wolfpack: enrollment-quiet"]);
 
       removeSubscription(endpoint);
       addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(delivered).toEqual(["Wolfpack: enrollment-quiet"]);
     } finally {
       Date.now = originalNow;
@@ -1582,7 +1576,7 @@ describe("GET /api/sessions", () => {
       expect((await (await get("/api/sessions")).json()).sessions[0].quietAlert).toMatchObject({ sessionId });
 
       addSubscription({ endpoint: secondEndpoint, keys: { p256dh: "key", auth: "auth" } });
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(deliveries).toEqual([[firstEndpoint]]);
 
       now += 1;
@@ -1590,11 +1584,11 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "153", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       // The first A-only delivery starts the per-session 30-second transport debounce.
       // This is a later episode, so wait past that invariant before asserting A+B.
       now += 30_000;
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(deliveries).toEqual([[firstEndpoint], [firstEndpoint, secondEndpoint].sort()]);
     } finally {
       Date.now = originalNow;
@@ -1642,7 +1636,7 @@ describe("GET /api/sessions", () => {
       expect((await post("/api/settings", {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(deliveries).toEqual([[endpoint]]);
     } finally {
       Date.now = originalNow;
@@ -1695,7 +1689,7 @@ describe("GET /api/sessions", () => {
       expect(pushTesting.quietAlertRecipientSnapshots.has(departedId)).toBe(false);
       expect(pushTesting.quietAlertRecipientSnapshots.has(activeId)).toBe(true);
 
-      forgetSessionObservation(activeId, active);
+      testContext.sessionObservation.forgetSessionObservation(activeId, active);
       expect(pushTesting.quietAlertRecipientSnapshots.has(activeId)).toBe(false);
     } finally {
       Date.now = originalNow;
@@ -1772,7 +1766,7 @@ describe("GET /api/sessions", () => {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(first, "first activity\n");
@@ -1782,7 +1776,7 @@ describe("GET /api/sessions", () => {
         { name: held, alive: true, outputSequence: "202", identity: testIdentity(held, heldId) },
       ]);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       now += 5_000;
       const armed = await (await get("/api/sessions")).json();
       expect(armed.sessions.find((session: { name: string }) => session.name === first)?.quietAlert).toMatchObject({ sessionId: firstId });
@@ -1804,7 +1798,7 @@ describe("GET /api/sessions", () => {
         { name: first, alive: true, outputSequence: "202", identity: testIdentity(first, firstId) },
         { name: held, alive: true, outputSequence: "203", identity: testIdentity(held, heldId) },
       ]);
-      const staleNotification = __runSessionNotificationObservationForTests();
+      const staleNotification = testContext.sessionObservation.runSessionNotificationObservation();
       await heldCaptureStartedPromise;
 
       factBackend.setFacts([
@@ -1851,7 +1845,7 @@ describe("GET /api/sessions", () => {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(first, "first activity\n");
@@ -1861,7 +1855,7 @@ describe("GET /api/sessions", () => {
         { name: held, alive: true, outputSequence: "212", identity: testIdentity(held, heldId) },
       ]);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       now += 5_000;
       await get("/api/sessions");
 
@@ -1888,7 +1882,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: first, alive: false, outputSequence: "212", identity: testIdentity(first, firstId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       releaseHeldCapture?.();
       const retired = await (await staleDashboard).json();
@@ -1923,7 +1917,7 @@ describe("GET /api/sessions", () => {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "older successful output\n");
@@ -1953,7 +1947,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "223", identity: testIdentity(sessionName, sessionId) },
       ]);
-      const newer = await __runSessionNotificationObservationForTests();
+      const newer = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(newer[0]?.lastLine).toBe("newer authoritative output");
 
       releaseOlderCapture?.();
@@ -2030,7 +2024,7 @@ describe("GET /api/sessions", () => {
           const staleDashboard = get("/api/sessions");
           await olderListStartedPromise;
 
-          await __runSessionNotificationObservationForTests();
+          await testContext.sessionObservation.runSessionNotificationObservation();
           expect(attempts).toEqual([[endpoint]]);
           expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(true);
 
@@ -2039,7 +2033,7 @@ describe("GET /api/sessions", () => {
           expect(pushTesting.quietAlertRecipientSnapshots.has(sessionId)).toBe(true);
 
           now += pushTesting.PUSH_DEBOUNCE_MS;
-          await __runSessionNotificationObservationForTests();
+          await testContext.sessionObservation.runSessionNotificationObservation();
           expect(attempts).toEqual([[endpoint], [endpoint]]);
         } finally {
           pushTesting.sessionPushSender = null;
@@ -2047,7 +2041,7 @@ describe("GET /api/sessions", () => {
           await post("/api/settings", {
             quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 },
           });
-          __resetSessionObservationForTests();
+          await restartServer();
           pushTesting.resetDebounce();
           now += 100_000;
         }
@@ -2076,14 +2070,14 @@ describe("GET /api/sessions", () => {
     try {
       const initial = await (await get("/api/sessions")).json();
       expect(initial.sessions[0].activity).toMatchObject({ freshness: "fresh", display: "activity unobserved" });
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       factBackend.setPane(sessionName, "content\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "72", identity: testIdentity(sessionName, sessionId) },
       ]);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       factBackend.setPane(sessionName, "\n");
       factBackend.setFacts([
@@ -2091,8 +2085,8 @@ describe("GET /api/sessions", () => {
       ]);
       const blank = await (await get("/api/sessions")).json();
       expect(blank.sessions[0]).toMatchObject({ triage: "running", activity: { display: "" } });
-      await __runSessionNotificationObservationForTests();
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       expect(pushes).toEqual([]);
 
       const quiet = await (await get("/api/sessions")).json();
@@ -2142,13 +2136,13 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: false, outputSequence: "46", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       factBackend.setPane(sessionName, "after loss\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "46", identity: testIdentity(sessionName, sessionId) },
       ]);
-      const recovered = __runSessionNotificationObservationForTests();
+      const recovered = testContext.sessionObservation.runSessionNotificationObservation();
       await secondStartedPromise;
 
       releaseFirst?.();
@@ -2161,7 +2155,7 @@ describe("GET /api/sessions", () => {
       expect(fresh[0].activity).not.toHaveProperty("lastRenderedActivityAt");
       expect(fresh[0].activity).not.toHaveProperty("quietSince");
 
-      const quiet = await __runSessionNotificationObservationForTests();
+      const quiet = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(captureCount).toBe(2);
       expect(quiet[0].activity).toMatchObject({ freshness: "fresh", display: "" });
     } finally {
@@ -2189,7 +2183,7 @@ describe("GET /api/sessions", () => {
         quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 5 },
       })).status).toBe(200);
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       let releaseOldCapture: (() => void) | undefined;
       const oldCaptureReleased = new Promise<void>((resolve) => { releaseOldCapture = resolve; });
@@ -2216,26 +2210,26 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: false, outputSequence: "102", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       holdOldCapture = false;
       factBackend.setPane(sessionName, "recovered baseline\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "102", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       now += 1;
       factBackend.setPane(sessionName, "recovered activity\n");
       factBackend.setFacts([
         { name: sessionName, alive: true, outputSequence: "103", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
 
       releaseOldCapture?.();
       await retiredDashboard;
       now += 5_000;
-      const matured = await __runSessionNotificationObservationForTests();
+      const matured = await testContext.sessionObservation.runSessionNotificationObservation();
       expect(matured[0].quietAlert).toMatchObject({
         sessionId,
         eligibleAtMs: 6_005_002,
@@ -2279,7 +2273,7 @@ describe("GET /api/sessions", () => {
       factBackend.setFacts([
         { name: sessionName, alive: false, outputSequence: "45", identity: testIdentity(sessionName, sessionId) },
       ]);
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       releaseCapture?.();
       const retired = await (await beforeLoss).json();
       expect(retired.sessions[0].activity.freshness).toBe("unknown");
@@ -2311,7 +2305,7 @@ describe("GET /api/sessions", () => {
     addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
     try {
       await get("/api/sessions");
-      await __runSessionNotificationObservationForTests();
+      await testContext.sessionObservation.runSessionNotificationObservation();
       let releaseCapture: (() => void) | undefined;
       const captureReleased = new Promise<void>((resolve) => { releaseCapture = resolve; });
       let captureStarted: (() => void) | undefined;
@@ -2327,7 +2321,7 @@ describe("GET /api/sessions", () => {
         { name: sessionName, alive: true, outputSequence: "52", identity: testIdentity(sessionName, sessionId) },
       ]);
 
-      const notification = __runSessionNotificationObservationForTests();
+      const notification = testContext.sessionObservation.runSessionNotificationObservation();
       await captureStartedPromise;
       const dashboard = get("/api/sessions");
       releaseCapture?.();
@@ -2453,7 +2447,6 @@ describe("GET /api/sessions", () => {
       },
     }));
     await restartServer();
-    __resetSessionObservationForTests();
     const originalList = mockBackend.list.bind(mockBackend);
     (mockBackend as any).list = async () => { throw new Error("broker unavailable after restart"); };
     try {
@@ -2648,7 +2641,7 @@ describe("session-control relay lookup batching", () => {
     const backend = new MockBackend({ sessions: names });
     const identities = await backend.listIdentities();
     const gateway = new WorkerRelayGateway({ root: relayRoot, inspectSession: selector => backend.inspectSession(selector) });
-    const context = createServerContext({ backend, taskRelayGateway: gateway });
+    const context = createServerContext({ observationCacheTtlMs: 0, backend, taskRelayGateway: gateway });
     const instance = createServerInstance(context);
     await new Promise<void>(resolve => instance.server.listen(0, "127.0.0.1", resolve));
     const base = `http://127.0.0.1:${(instance.server.address() as AddressInfo).port}`;

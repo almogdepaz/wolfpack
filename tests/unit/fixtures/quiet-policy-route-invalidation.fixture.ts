@@ -3,7 +3,11 @@ import { createServer } from "node:http";
 import { writeFileSync } from "node:fs";
 import { assertNotificationFixtureHome } from "./run-notification-test.ts";
 assertNotificationFixtureHome();
-const { projectSettingsRoutes } = await import("../../../src/server/project-settings-routes.ts");
+const { createProjectSettingsRoutes } = await import("../../../src/server/project-settings-routes.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
+const { MockBackend } = await import("../../../src/server/mock-backend.ts");
+const context = createServerContext({ backend: new MockBackend() });
+const projectSettingsRoutes = createProjectSettingsRoutes(context);
 const { quietAlertPolicyEpoch } = await import("../../../src/quiet-alert-policy-invalidation.ts");
 const { addSubscription, removeSubscription, recordQuietAlertEmission, checkSessionTransitions, _testing } = await import("../../../src/server/push.ts");
 const endpoint = "https://fcm.googleapis.com/restrictive-settings-boundary";
@@ -20,7 +24,7 @@ beforeAll(async () => {
   if (!address || typeof address === "string") throw new Error("missing private settings server address");
   url = `http://127.0.0.1:${address.port}/api/settings`;
 });
-afterAll(async () => { await new Promise<void>(resolve => server.close(() => resolve())); });
+afterAll(async () => { await new Promise<void>(resolve => server.close(() => resolve())); await context.close(); });
 beforeEach(() => {
   writeFileSync(process.env.WOLFPACK_SETTINGS_PATH!, JSON.stringify({ agentCmd: "shell", cmds: [], quietAlerts: { mode: "quiet-after-activity", quietAfterSeconds: 30 } }));
   _testing.resetDebounce();

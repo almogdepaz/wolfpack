@@ -67,7 +67,7 @@ mockBackend.listIdentities = async () => {
 };
 let selectedBackend = mockBackend;
 const { createServerContext } = await import("../../src/server/context.ts");
-const context = createServerContext({
+const context = createServerContext({ observationCacheTtlMs: 0,
   get backend() { return selectedBackend; },
   taskRoot: join(TEST_DEV_DIR, "tasks"), taskRelayRoot: join(TEST_DEV_DIR, "relay"),
 });
@@ -137,7 +137,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   (server as Server).close();
-  await context.taskRelayGateway.close();
+  await context.close();
   __globalRateLimiter._map.clear();
   __pollRateLimiter._map.clear();
   rmSync(rawTmpDir, { recursive: true, force: true });
@@ -183,9 +183,8 @@ describe("control api generated schema against runtime responses", () => {
   });
 
   test("validates real pi footer metadata as optional listSessions fields", async () => {
-    const { __resetSessionObservationForTests } = await import("../../src/server/session-observation.ts");
-    __resetSessionObservationForTests();
     mockBackend.setCapturePane(async () => `Agent answer\n~/dev/wolfpack (ui/last-line-meta)\n${PI_FOOTER}`);
+    mockBackend.setOutputSequence("wolf-1", "1");
     try {
       const response = await getJson("/api/sessions");
       expect(validate(httpResponse("listSessions"), response, artifact)).toEqual([]);
@@ -199,8 +198,8 @@ describe("control api generated schema against runtime responses", () => {
       expect(validate(httpResponse("listSessions"), { sessions: [{ name: "bad-meta", lastLine: "", triage: "idle", meta: { contextPct: "85" } }] }, artifact)).not.toEqual([]);
     } finally {
       mockBackend.setCapturePane(async () => "ready\n");
-      __resetSessionObservationForTests();
-    }
+      mockBackend.setOutputSequence("wolf-1", "2");
+      }
   });
 
   test("validates a notified parent's inbox and the live event against generated contracts", async () => {

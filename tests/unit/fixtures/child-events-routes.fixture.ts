@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { assertNotificationFixtureHome } from "./run-notification-test.ts";
@@ -9,7 +9,6 @@ const { createServerContext } = await import("../../../src/server/context.ts");
 const { createPushNotifyRoutes } = await import("../../../src/server/push-routes.ts");
 const { createSessionControlRoutes } = await import("../../../src/server/session-control-routes.ts");
 const { _testing } = await import("../../../src/server/push.ts");
-const { __resetChildEventsForTests, observeChildSession } = await import("../../../src/server/child-events.ts");
 const { clearParentInbox, listParentNotifications, PARENT_INBOX_BOOT_ID } = await import("../../../src/server/parent-inbox.ts");
 const { WOLFPACK_EVENT_KIND } = await import("../../../src/events-contract.ts");
 
@@ -36,9 +35,11 @@ const backend = new MockBackend();
 const events = new EventBus();
 const published: unknown[] = [];
 events.subscribeEvents({}, event => { published.push(event); });
-const ctx = createServerContext({ backend, events });
-const notify = createPushNotifyRoutes(ctx)["POST /api/notify"]!;
-const routes = createSessionControlRoutes(ctx);
+let ctx = createServerContext({ backend, events });
+let notify = createPushNotifyRoutes(ctx)["POST /api/notify"]!;
+let routes = createSessionControlRoutes(ctx);
+afterEach(async () => { await ctx.close(); });
+
 const loadSettings = () => ({ agentCmd: "claude" });
 const parent = await backend.createSession("lead", "/tmp", "claude", loadSettings);
 const parentSession = { wolfpackSessionId: parent.wolfpackSessionId, wolfpackSessionName: "lead" };
@@ -48,12 +49,15 @@ function runtime(state: "working" | "idle") {
   return { state, authority: "fallback", freshness: "fresh", source: "screen-fallback", label: state, stale: false, observedAt: "t", changedAt: "t", transitionSequence: 1, unseen: false } as const;
 }
 function observe(state: "working" | "idle") {
-  observeChildSession({ sessionId: child.wolfpackSessionId, name: "worker", parentSession, alive: true, runtimeState: runtime(state) }, body => events.publishEvent(body));
+  ctx.childEvents.observeChildSession({ sessionId: child.wolfpackSessionId, name: "worker", parentSession, alive: true, runtimeState: runtime(state) }, body => events.publishEvent(body));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await ctx.close();
+  ctx = createServerContext({ backend, events: events });
+  routes = createSessionControlRoutes(ctx);
+  notify = createPushNotifyRoutes(ctx)["POST /api/notify"]!;
   _testing.resetDebounce();
-  __resetChildEventsForTests();
   clearParentInbox(parent.wolfpackSessionId);
   published.length = 0;
 });

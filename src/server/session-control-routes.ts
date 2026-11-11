@@ -41,7 +41,6 @@ import {
   parseObjectBody,
 } from "./http.js";
 import { listParentNotifications, PARENT_INBOX_BOOT_ID } from "./parent-inbox.js";
-import { isChildSettled, noteChildInputDelivered } from "./child-events.js";
 import { ChildWaitBusyError, waitForChildren, type ChildWaitChild } from "./child-wait.js";
 import { CHILD_WAIT_LIMITS, CHILD_WAIT_MODES, type ChildEventPayload, type ChildWaitMode } from "../child-event-contract.js";
 import { AGENT_STATUS_STATE } from "../agent-status-contract.js";
@@ -364,7 +363,7 @@ async function liveChildren(parentSessionId: string): Promise<Array<ChildWaitChi
     return [{
       session: name,
       sessionId: identity.wolfpackSessionId,
-      settled: isChildSettled(identity.wolfpackSessionId),
+      settled: ctx.childEvents.isChildSettled(identity.wolfpackSessionId),
       cleanup: identity.parentSession.cleanup ?? CHILD_CLEANUP.NONE,
     }];
   }).sort((left, right) => left.session.localeCompare(right.session));
@@ -504,7 +503,7 @@ return {
         ...query,
         listChildren: () => liveChildren(parent.sessionId),
         signal: closed.signal,
-      });
+      }, ctx.childEvents);
       if (!result) return;
       return json(res, { ok: true, session: parent.session, sessionId: parent.sessionId, children: query.mode, ...result });
     } catch (error: unknown) {
@@ -583,7 +582,7 @@ return {
     const sessionId = resolved.identity.wolfpackSessionId;
     const noEnter = body.noEnter === true;
     // A task written with Enter arms the child's heuristic `busy → idle` done event.
-    const armChild = () => noteChildInputDelivered(sessionId, session, resolved.identity.parentSession);
+    const armChild = () => ctx.childEvents.noteChildInputDelivered(sessionId, session, resolved.identity.parentSession);
     try {
       const streaming = streamingBackend();
       if (!streaming) {

@@ -16,11 +16,9 @@ import {
   json,
   parseObjectBody,
 } from "./http.js";
-import { resetNotificationObservation } from "./session-observation.js";
 import { notifyDelivery } from "../notify-contract.js";
 import { defaultServerContext, type ServerContext } from "./context.js";
 import { appendParentNotification } from "./parent-inbox.js";
-import { childMessageEvent } from "./child-events.js";
 import { childEventSummary } from "../child-event-contract.js";
 import { WOLFPACK_EVENT_KIND } from "../events-contract.js";
 import { createLogger, errMsg } from "../log.js";
@@ -29,7 +27,8 @@ const log = createLogger("push");
 
 type RouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
 
-export const pushSubscriptionRoutes: Record<string, RouteHandler> = {
+export function createPushSubscriptionRoutes(ctx: Pick<ServerContext, "sessionObservation">): Record<string, RouteHandler> {
+return {
   "GET /api/push/vapid-key": (_req, res) => {
     json(res, { publicKey: getVapidPublicKey() });
   },
@@ -52,7 +51,7 @@ export const pushSubscriptionRoutes: Record<string, RouteHandler> = {
     const hadSubscriptions = getSubscriptionCount() > 0;
     const result = addSubscription(sub);
     if (!result.ok) return json(res, { error: result.error }, 429);
-    if (!hadSubscriptions) resetNotificationObservation();
+    if (!hadSubscriptions) ctx.sessionObservation.resetNotificationObservation();
     json(res, { ok: true });
   },
 
@@ -72,12 +71,15 @@ export const pushSubscriptionRoutes: Record<string, RouteHandler> = {
     if (!body) return;
     if (!body.endpoint || typeof body.endpoint !== "string") return json(res, { error: "missing endpoint" }, 400);
     removeSubscription(body.endpoint);
-    if (getSubscriptionCount() === 0) resetNotificationObservation();
+    if (getSubscriptionCount() === 0) ctx.sessionObservation.resetNotificationObservation();
     json(res, { ok: true });
   },
 };
+}
 
-export function createPushNotifyRoutes(ctx: Pick<ServerContext, "backend" | "events">): Record<string, RouteHandler> {
+export const pushSubscriptionRoutes = createPushSubscriptionRoutes(defaultServerContext);
+
+export function createPushNotifyRoutes(ctx: Pick<ServerContext, "backend" | "events" | "childEvents">): Record<string, RouteHandler> {
 return {
   "POST /api/notify": async (req, res) => {
     const body = await parseObjectBody(req, res);
@@ -120,7 +122,7 @@ return {
         // Selectors can also be names; require this exact live incarnation.
         if (!exited && inspection.ok && inspection.alive && inspection.sessionId === sessionId && inspection.session === sessionName) {
           // A message from a known child also becomes a structured child event.
-          const childEvent = childMessageEvent(sessionId, from, message, body => ctx.events.publishEvent(body));
+          const childEvent = ctx.childEvents.childMessageEvent(sessionId, from, message, body => ctx.events.publishEvent(body));
           const notification = childEvent
             ? { message: childEventSummary(childEvent), from: childEvent.childName }
             : { message, ...(from !== undefined && { from }) };

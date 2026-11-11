@@ -41,7 +41,7 @@ import type { DirectoryBrowseResult } from "./directory-browser.js";
 import {
   DuplicateSessionError,
 } from "./backend.js";
-import { defaultServerContext, type ServerContext } from "./context.js";
+import type { ServerContext } from "./context.js";
 import {
   hasOnlyKeys,
   hasOptionalType,
@@ -1079,5 +1079,3 @@ export function createProjectSettingsRoutes(ctx: ServerContext): Record<string, 
   },
   };
 }
-
-export const projectSettingsRoutes = createProjectSettingsRoutes(defaultServerContext);

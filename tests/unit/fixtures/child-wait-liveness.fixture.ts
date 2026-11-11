@@ -3,8 +3,10 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 // Runs in an owned process: a starved event loop never reaches bun's own test
 // timeout, so the parent's lifecycle deadline is the watchdog (review A8-1).
 process.env.WOLFPACK_TEST = "1";
-const { __resetChildEventsForTests, childMessageEvent, noteChildCreated } = await import("../../../src/server/child-events.ts");
-const { waitForChildren } = await import("../../../src/server/child-wait.ts");
+const { createChildEvents } = await import("../../../src/server/child-events.ts");
+let service = createChildEvents();
+const { waitForChildren: waitWithEvents } = await import("../../../src/server/child-wait.ts");
+const waitForChildren = (request: Parameters<typeof waitWithEvents>[0]) => waitWithEvents(request, service);
 const { clearParentInbox } = await import("../../../src/server/parent-inbox.ts");
 
 const PARENT = { wolfpackSessionId: "parent-id", wolfpackSessionName: "lead" };
@@ -17,20 +19,20 @@ function emittingReader(settled: boolean): { reads: () => number; listChildren: 
     reads: () => reads,
     listChildren: async () => {
       reads += 1;
-      childMessageEvent(PARENT.wolfpackSessionId, "worker", `read ${reads}`, () => {});
+      service.childMessageEvent(PARENT.wolfpackSessionId, "worker", `read ${reads}`, () => {});
       return [{ ...WORKER, settled }];
     },
   };
 }
 
 beforeEach(() => {
-  __resetChildEventsForTests();
+  service = createChildEvents();
   clearParentInbox(PARENT.wolfpackSessionId);
-  noteChildCreated(WORKER.sessionId, WORKER.session, PARENT);
+  service.noteChildCreated(WORKER.sessionId, WORKER.session, PARENT);
 });
 
 afterEach(() => {
-  __resetChildEventsForTests();
+  service = createChildEvents();
   clearParentInbox(PARENT.wolfpackSessionId);
 });
 

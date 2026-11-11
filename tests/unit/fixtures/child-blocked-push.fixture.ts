@@ -5,15 +5,8 @@ import { join } from "node:path";
 import { assertNotificationFixtureHome } from "./run-notification-test.ts";
 assertNotificationFixtureHome();
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
-// The observation singleton remains on the production composition binding until C4.
-const { createServerContext, getDefaultServerContext, setDefaultServerContext } = await import("../../../src/server/context.ts");
+const { createServerContext } = await import("../../../src/server/context.ts");
 const { addSubscription, removeSubscription, _testing } = await import("../../../src/server/push.ts");
-const {
-  __resetSessionObservationForTests,
-  __runSessionNotificationObservationForTests,
-  stopSessionNotificationObserver,
-} = await import("../../../src/server/session-observation.ts");
-const { __resetChildEventsForTests } = await import("../../../src/server/child-events.ts");
 const { clearParentInbox, listParentNotifications } = await import("../../../src/server/parent-inbox.ts");
 const { PROGRAM_STATUS_STATE } = await import("../../../src/program-status-contract.ts");
 const { QUIET_ALERT_KIND, QUIET_ALERT_MODE } = await import("../../../src/quiet-alert-policy.ts");
@@ -24,7 +17,7 @@ const { invalidateQuietAlertPolicy } = await import("../../../src/quiet-alert-po
 const realNow = Date.now;
 let offsetMs = 0;
 let backend: InstanceType<typeof MockBackend>;
-let previousContext: ReturnType<typeof getDefaultServerContext>;
+let context: ReturnType<typeof createServerContext>;
 let endpoint: string;
 let payloads: string[];
 let projectDir: string;
@@ -34,9 +27,9 @@ function writeQuietAlertMode(mode: string): void {
   writeFileSync(process.env.WOLFPACK_SETTINGS_PATH!, JSON.stringify({ agentCmd: "shell", cmds: [], quietAlerts: { mode, quietAfterSeconds: 30 } }));
 }
 
-async function observeAfter(seconds: number): Promise<Awaited<ReturnType<typeof __runSessionNotificationObservationForTests>>> {
+async function observeAfter(seconds: number): Promise<Awaited<ReturnType<typeof context.sessionObservation.runSessionNotificationObservation>>> {
   offsetMs += seconds * 1_000;
-  return __runSessionNotificationObservationForTests();
+  return context.sessionObservation.runSessionNotificationObservation();
 }
 
 async function spawnChild(): Promise<{ parentId: string; childId: string }> {
@@ -56,12 +49,9 @@ beforeEach(() => {
   Date.now = () => realNow() + offsetMs;
   writeQuietAlertMode(QUIET_ALERT_MODE.NEEDS_INPUT_ONLY);
   projectDir = mkdtempSync(join(tmpdir(), "wolfpack-blocked-push-"));
-  previousContext = getDefaultServerContext();
   backend = new MockBackend();
   backend.setCapturePane(async () => "$ same screen");
-  setDefaultServerContext(createServerContext({ backend }));
-  __resetSessionObservationForTests();
-  __resetChildEventsForTests();
+  context = createServerContext({ backend, observationCacheTtlMs: 0 });
   endpoint = `https://fcm.googleapis.com/blocked-push-${realNow()}-${Math.random()}`;
   addSubscription({ endpoint, keys: { p256dh: "key", auth: "auth" } });
   payloads = [];
@@ -69,10 +59,10 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await stopSessionNotificationObserver();
+  await context.sessionObservation.stopSessionNotificationObserver();
   _testing.sessionPushSender = null;
   removeSubscription(endpoint);
-  setDefaultServerContext(previousContext);
+  await context.close();
   Date.now = realNow;
   rmSync(projectDir, { recursive: true, force: true });
 });

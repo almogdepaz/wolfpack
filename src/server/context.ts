@@ -1,3 +1,10 @@
+import { createChildEvents } from "./child-events.js";
+import { createSessionDeath } from "./session-death.js";
+import { createViewerInput } from "./viewer-input.js";
+import { createWebSocketTickets } from "./ws-ticket.js";
+import { createSessionCascade } from "./session-cascade.js";
+import { createSessionObservation } from "./session-observation.js";
+import { createChildEventDeliveryOwner } from "./child-event-delivery.js";
 import { AgentRuntimeStateStore } from "./agent-status.js";
 import { SessionIdentityStore } from "./session-identity.js";
 import { SessionOrganizationService } from "./session-organization.ts";
@@ -11,7 +18,11 @@ import { BrokerSupervisor } from "./broker-supervisor.js";
 import { supervisedBackend } from "./broker-session-backend.js";
 import type { SessionBackend, PtyBackendMethods, SessionPromptBackendMethods } from "./backend-contract.js";
 
-export type ServerBackend = SessionBackend & PtyBackendMethods & SessionPromptBackendMethods;
+export type ServerBackend = SessionBackend & PtyBackendMethods & SessionPromptBackendMethods & Partial<{
+  readonly childEvents: ReturnType<typeof createChildEvents>;
+  readonly sessionDeath: ReturnType<typeof createSessionDeath>;
+  readonly viewerInput: ReturnType<typeof createViewerInput>;
+}>;
 
 /**
  * Non-default contexts must use distinct taskRoot and taskRelayRoot values and
@@ -20,6 +31,13 @@ export type ServerBackend = SessionBackend & PtyBackendMethods & SessionPromptBa
  * single-owner guard. Close owned workers before reusing their roots.
  */
 export interface ServerContext {
+  readonly childEvents: ReturnType<typeof createChildEvents>;
+  readonly sessionDeath: ReturnType<typeof createSessionDeath>;
+  readonly viewerInput: ReturnType<typeof createViewerInput>;
+  readonly webSocketTickets: ReturnType<typeof createWebSocketTickets>;
+  readonly sessionCascade: ReturnType<typeof createSessionCascade>;
+  readonly sessionObservation: ReturnType<typeof createSessionObservation>;
+  readonly childEventDelivery: ReturnType<typeof createChildEventDeliveryOwner>;
   readonly backend: ServerBackend;
   readonly events: EventBus;
   readonly config: Config | null;
@@ -38,6 +56,13 @@ export interface ServerContext {
 
 // Context-owned lazy instances; closing a context does not replace its services.
 interface ServiceCache {
+  childEvents?: ReturnType<typeof createChildEvents>;
+  sessionDeath?: ReturnType<typeof createSessionDeath>;
+  viewerInput?: ReturnType<typeof createViewerInput>;
+  webSocketTickets?: ReturnType<typeof createWebSocketTickets>;
+  sessionCascade?: ReturnType<typeof createSessionCascade>;
+  sessionObservation?: ReturnType<typeof createSessionObservation>;
+  childEventDelivery?: ReturnType<typeof createChildEventDeliveryOwner>;
   taskGateway?: TaskGateway;
   taskRelayGateway?: RelayGateway;
   extensionRouteService?: ExtensionRouteService;
@@ -47,25 +72,39 @@ interface ServiceCache {
 }
 
 export interface ServerContextOptions extends Partial<Omit<ServerContext, "close" | "flushRuntimeState">> {
+  readonly observationCacheTtlMs?: number;
   readonly taskRoot?: string;
   readonly taskRelayRoot?: string;
-}
-
-function defaultSupervisor(events: EventBus, sessionIdentityStore: () => SessionIdentityStore): BrokerSupervisor {
-  return new BrokerSupervisor({ events, sessionIdentityStore, start: !process.env.WOLFPACK_TEST });
 }
 
 export function createServerContext(overrides: ServerContextOptions = {}): ServerContext {
   const events = overrides.events ?? defaultEventBus;
   const cache: ServiceCache = {
+    childEvents: overrides.childEvents,
+    sessionDeath: overrides.sessionDeath,
+    viewerInput: overrides.viewerInput,
+    webSocketTickets: overrides.webSocketTickets,
+    sessionCascade: overrides.sessionCascade,
+    sessionObservation: overrides.sessionObservation,
+    childEventDelivery: overrides.childEventDelivery,
     taskGateway: overrides.taskGateway, taskRelayGateway: overrides.taskRelayGateway,
     extensionRouteService: overrides.extensionRouteService,
     agentRuntimeStateStore: overrides.agentRuntimeStateStore, sessionIdentityStore: overrides.sessionIdentityStore,
   };
   const sessionIdentityStore = () => cache.sessionIdentityStore ??= new SessionIdentityStore();
-  const supervisor = overrides.supervisor ?? (overrides.backend ? undefined : defaultSupervisor(events, sessionIdentityStore));
+  const childEvents = cache.childEvents ??= overrides.backend?.childEvents ?? overrides.supervisor?.childEvents ?? createChildEvents();
+  const sessionDeath = cache.sessionDeath ??= overrides.backend?.sessionDeath ?? overrides.supervisor?.sessionDeath ?? createSessionDeath();
+  const viewerInput = cache.viewerInput ??= overrides.backend?.viewerInput ?? overrides.supervisor?.viewerInput ?? createViewerInput();
+  const supervisor = overrides.supervisor ?? (overrides.backend ? undefined : new BrokerSupervisor({
+    events, sessionIdentityStore, childEvents, sessionDeath, viewerInput, start: !process.env.WOLFPACK_TEST,
+  }));
   const backend = overrides.backend ?? supervisedBackend(supervisor!);
   const context: ServerContext = {
+    childEvents, sessionDeath, viewerInput,
+    get webSocketTickets() { return cache.webSocketTickets ??= createWebSocketTickets(); },
+    get sessionCascade() { return cache.sessionCascade ??= createSessionCascade(context); },
+    get sessionObservation() { return cache.sessionObservation ??= createSessionObservation(context, overrides.observationCacheTtlMs); },
+    get childEventDelivery() { return cache.childEventDelivery ??= createChildEventDeliveryOwner(childEvents.onChildEvent); },
     get backend() { return overrides.backend ?? backend; },
     events,
     config: overrides.config === undefined ? loadConfig() : overrides.config,
@@ -85,6 +124,9 @@ export function createServerContext(overrides: ServerContextOptions = {}): Serve
     get sessionIdentityStore() { return sessionIdentityStore(); },
     async flushRuntimeState() { await cache.agentRuntimeStateStore?.flushForShutdown(); },
     async close() {
+      cache.sessionCascade?.dispose();
+      cache.childEventDelivery?.dispose();
+      await cache.sessionObservation?.dispose();
       await context.flushRuntimeState();
       await cache.taskRelayGateway?.close();
     },
@@ -107,6 +149,13 @@ export function resetDefaultServerContext(): void { current = undefined; }
 
 /** Lazy compatibility view: old route exports follow test overrides without opening a broker on import. */
 export const defaultServerContext: ServerContext = {
+  get childEvents() { return getDefaultServerContext().childEvents; },
+  get sessionDeath() { return getDefaultServerContext().sessionDeath; },
+  get viewerInput() { return getDefaultServerContext().viewerInput; },
+  get webSocketTickets() { return getDefaultServerContext().webSocketTickets; },
+  get sessionCascade() { return getDefaultServerContext().sessionCascade; },
+  get sessionObservation() { return getDefaultServerContext().sessionObservation; },
+  get childEventDelivery() { return getDefaultServerContext().childEventDelivery; },
   get backend() { return getDefaultServerContext().backend; },
   get events() { return getDefaultServerContext().events; },
   get config() { return getDefaultServerContext().config; },

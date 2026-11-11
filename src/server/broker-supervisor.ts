@@ -10,8 +10,11 @@ import {
   classifyBrokerHello,
   type BrokerVersionInfo,
 } from "../broker/hello.js";
-import { createBrokerBackend, type BrokerBackend, type BrokerClientApi } from "./broker-backend.js";
+import { createBrokerBackend, type BrokerBackend, type BrokerBackendOptions, type BrokerClientApi } from "./broker-backend.js";
 import { SessionIdentityStore } from "./session-identity.js";
+import { createChildEvents } from "./child-events.js";
+import { createSessionDeath } from "./session-death.js";
+import { createViewerInput } from "./viewer-input.js";
 import type { SessionBackend } from "./backend-contract.js";
 
 const log = createLogger("backend");
@@ -48,8 +51,14 @@ export class BrokerSupervisor {
   private connectionGeneration = 0;
 
   private identityStore?: SessionIdentityStore;
+  readonly childEvents: ReturnType<typeof createChildEvents>;
+  readonly sessionDeath: ReturnType<typeof createSessionDeath>;
+  readonly viewerInput: ReturnType<typeof createViewerInput>;
 
-  constructor(private readonly options: { start?: boolean; events?: EventBus; sessionIdentityStore?: () => SessionIdentityStore } = {}) {
+  constructor(private readonly options: { start?: boolean; events?: EventBus; sessionIdentityStore?: () => SessionIdentityStore } & Pick<BrokerBackendOptions, "childEvents" | "sessionDeath" | "viewerInput"> = {}) {
+    this.childEvents = options.childEvents ?? createChildEvents();
+    this.sessionDeath = options.sessionDeath ?? createSessionDeath();
+    this.viewerInput = options.viewerInput ?? createViewerInput();
     this.brokerSocketPath = defaultBrokerSocketPath();
     this.broker = null;
     this.brokerClient = null;
@@ -126,6 +135,9 @@ export class BrokerSupervisor {
     });
     const events = this.options.events ?? defaultEventBus;
     backend = createBrokerBackend(client, events.publishEvent.bind(events), {
+      childEvents: this.childEvents,
+      sessionDeath: this.sessionDeath,
+      viewerInput: this.viewerInput,
       sessionIdentityStore: this.options.sessionIdentityStore ?? (() => this.identityStore ??= new SessionIdentityStore()),
     });
     client.start();

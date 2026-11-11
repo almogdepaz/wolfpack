@@ -12,11 +12,12 @@ const { CONTROL_API_SCHEMA_ARTIFACT } = await import("../../../src/control-api/s
 const { addSubscription, removeSubscription, _testing } = await import("../../../src/server/push.ts");
 const { createPushNotifyRoutes } = await import("../../../src/server/push-routes.ts");
 const { EventBus } = await import("../../../src/event-bus.ts");
+const { createChildEvents } = await import("../../../src/server/child-events.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");
 const { listParentNotifications, clearParentInbox } = await import("../../../src/server/parent-inbox.ts");
 const backend = new MockBackend({ sessions: ["parent"] });
 const events = new EventBus();
-const pushNotifyRoutes = createPushNotifyRoutes({ backend, events });
+const pushNotifyRoutes = createPushNotifyRoutes({ backend, events, childEvents: createChildEvents() });
 const fetcher = globalThis.fetch;
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf8")) as JsonObject;
 function validateResponse(body: unknown): void {
@@ -114,7 +115,7 @@ test.each([false, true])("coalesced live broker response then exit cannot resurr
   const ready = new Promise<void>(resolve => { connected = resolve; });
   const client = new BrokerClient({ socketPath, onConnect: () => connected(), onEvent: event => raceBackend.ingestEvent(event) });
   const raceBackend = new BrokerBackend(client, raceEvents.publishEvent.bind(raceEvents));
-  const route = createPushNotifyRoutes({ backend: raceBackend, events: raceEvents })["POST /api/notify"]!;
+  const route = createPushNotifyRoutes({ backend: raceBackend, events: raceEvents, childEvents: raceBackend.childEvents })["POST /api/notify"]!;
   const http = createServer((req, res) => {
     void Promise.resolve(route(req, res)).catch(error => { res.writeHead(500); res.end(String(error)); });
   });
