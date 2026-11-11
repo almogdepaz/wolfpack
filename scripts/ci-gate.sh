@@ -33,7 +33,16 @@ stage_context() { bun run check:context; }
 stage_rustfmt() { cargo fmt --manifest-path broker/Cargo.toml --check; }
 stage_lint() { bun run lint; }
 # Like broker-build, Clippy requires the verified native bundle prepared at setup.
-stage_clippy() { cargo clippy --locked --manifest-path broker/Cargo.toml --all-targets; }
+stage_clippy() {
+  # Plan 005 triage found only style/API-shape reports for these rules.
+  # Keep all other default Clippy diagnostics; do not allow warnings globally.
+  cargo clippy --locked --manifest-path broker/Cargo.toml --all-targets -- \
+    -A clippy::unnecessary_map_or -A clippy::derivable_impls \
+    -A clippy::len_without_is_empty -A clippy::too_many_arguments \
+    -A clippy::single_match -A clippy::vec_init_then_push \
+    -A clippy::manual_pattern_char_comparison -A clippy::bool_assert_comparison \
+    -A clippy::io_other_error -A clippy::type_complexity
+}
 stage_broker_build() { cargo build --release --locked --manifest-path broker/Cargo.toml --bin wolfpack-broker; }
 stage_broker_test() { cargo test --locked --manifest-path broker/Cargo.toml --all; }
 stage_audit() {

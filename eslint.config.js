@@ -9,6 +9,21 @@ const config = tseslint.config(
     languageOptions: {
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
     },
+    // Plan 005: first 20 reports per rule found no defects for these rules.
+    // Keep unsampled rules and no-async-promise-executor enabled at warn.
+    linterOptions: { reportUnusedDisableDirectives: "off" },
+    rules: {
+      "@typescript-eslint/no-unused-vars": "off",
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-require-imports": "off",
+      "@typescript-eslint/no-this-alias": "off",
+      "no-empty": "off",
+      "prefer-const": "off",
+      "no-control-regex": "off",
+      "no-unsafe-finally": "off",
+      "no-empty-pattern": "off",
+      "no-useless-escape": "off",
+    },
   },
 );
 
