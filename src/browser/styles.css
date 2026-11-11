@@ -2927,6 +2927,8 @@ body > header { height: 52px; min-height: 52px; }
 .focus-block button:hover, .assistant-column button:hover, .focus-terminal-header button:hover { background: var(--surface-3); color: var(--text-1); }
 .focus-block button:disabled, .assistant-column button:disabled { opacity: .5; cursor: default; }
 .focus-block[data-mobile-collapsed=true] { padding-block: 0; }
+.focus-block[data-mobile-collapsed=false] { flex-shrink: 1; max-height: 60vh; max-height: 60dvh; overflow: auto; }
+.focus-block[data-mobile-collapsed=false] ~ #session-list { flex: 1; min-height: 30%; overflow: auto; }
 .focus-block .focus-mobile-toggle { display: flex; width: 100%; min-height: 44px; gap: 8px; padding: 0; border: 0; background: none; text-align: left; }
 .focus-mobile-toggle .focus-title { color: var(--text-3); font: inherit; }
 .focus-mobile-toggle svg { flex: none; }
@@ -2938,15 +2940,13 @@ body > header { height: 52px; min-height: 52px; }
 .focus-dashboard-body[hidden] { display: none; }
 .focus-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 34px; font-size: 12.5px; color: var(--text-3); }
 .focus-header > button:last-child { margin-left: auto; color: var(--accent); }
-.focus-header .dot { display: inline-block; }
 .focus-header > .dot + button { margin-left: -3px; }
 .focus-header > small { font-size: 12.5px; }
 /* The assistant page: talk (the way to reach the assistant) and settings share the header's right edge. */
 .focus-header-actions { display: flex; gap: 8px; margin-left: auto; }
 .focus-header-actions .focus-talk, .focus-draft [data-focus-next] { border-color: var(--accent-border); color: var(--accent); }
 .focus-header-actions .focus-talk:hover { color: var(--accent); }
-.focus-header .focus-attn { border-color: var(--attn-line); background: var(--attn-tint); color: var(--attn); font-weight: 600; }
-.focus-header .focus-attn:hover { background: var(--attn-tint); color: var(--attn); }
+.focus-header .focus-attn, .focus-header .focus-attn:hover { border-color: var(--attn-line); background: var(--attn-tint); color: var(--attn); font-weight: 600; }
 .focus-notes { display: block; margin: 10px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--attn); }
 .focus-notes > span { display: inline-block; max-width: 100%; margin-right: 14px; }
 .focus-nudge { margin: 12px 0 10px; font-size: 17px; line-height: 1.45; letter-spacing: -.01em; color: var(--text-1); overflow-wrap: anywhere; text-wrap: pretty; }
@@ -2959,13 +2959,13 @@ body > header { height: 52px; min-height: 52px; }
 /* Cards: the summary is the 44px row (text only); the action, checkbox and chips sit beside it in the row grid; the body opens under the title. */
 /* Both lists end their disclosure in the same column before the action edge. */
 /* Short focus-owned variables retain the unchanged stylesheet byte cap. */
-.focus-next, .focus-today { --aside: 74px; --gap: 10px; }
-.focus-next > li, .focus-today > li { display: grid; grid-template-columns: minmax(0, 1fr) var(--aside); align-items: start; column-gap: var(--gap); padding: 0 12px; font-size: 13px; color: var(--text-2); }
-.focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--f-chips) 12px var(--aside); }
+.focus-next, .focus-today { --a: 74px; --g: 10px; }
+.focus-next > li, .focus-today > li { display: grid; grid-template-columns: minmax(0, 1fr) var(--a); align-items: start; column-gap: var(--g); padding: 0 12px; font-size: 13px; color: var(--text-2); }
+.focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--f-chips) 12px var(--a); }
 .focus-next > li:has(> .focus-card:not([open]) > summary:hover), .focus-today > li:has(> .focus-card:not([open]) > summary:hover) { background: var(--surface-3); }
 .focus-next .focus-card, .focus-today .focus-card { min-width: 0; margin: 0; color: inherit; font-size: inherit; grid-row: 1; }
 .focus-next .focus-card[open] { grid-column: 1 / -1; }
-.focus-next .focus-card[open] > summary, .focus-today .focus-card > summary { width: calc(100% - var(--aside) - var(--gap)); }
+.focus-next .focus-card[open] > summary, .focus-today .focus-card > summary { width: calc(100% - var(--a) - var(--g)); }
 .focus-today .focus-card { grid-column: 2 / -1; }
 .focus-today .focus-card > summary { display: grid; grid-template-columns: minmax(0, 1fr) var(--f-chips) 12px; }
 .focus-today .focus-card > summary::after { grid-column: 3; }
@@ -3120,7 +3120,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
   .focus-today .focus-title { white-space: normal; overflow-wrap: anywhere; }
   .focus-today .focus-for { display: block; margin: 0; }
   .focus-next .focus-action { min-height: 44px; margin-top: 0; padding-inline: 6px; }
-  .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--aside); }
+  .focus-today > li { grid-template-columns: auto minmax(0, 1fr) var(--a); }
   .focus-today .focus-check { min-width: 44px; padding: 0; justify-content: center; }
   .focus-today .focus-card > summary { grid-template-columns: minmax(0, 1fr) 12px; }
   .focus-today .focus-card > summary::after { grid-column: 2; }

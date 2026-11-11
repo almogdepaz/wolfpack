@@ -10,15 +10,15 @@ type SessionFixture = { name: string; identity: Record<string, unknown>; runtime
 type TouchSample = { moves: number; cancelled: number; trusted: number };
 declare global { interface Window { focusMobileCollapseTouch?: TouchSample } }
 
-async function realisticFocus(page: Page, needsInput = true, triage: "none" | "suggest" | "needs-you" = "none") {
+async function realisticFocus(page: Page, needsInput = true, triage: "none" | "suggest" | "needs-you" | "scroll" = "none") {
   const episode = new Date().toISOString();
   await page.route("https://**", route => route.abort());
   const sessions = (template: SessionFixture, machine: string) => Array.from({ length: 16 }, (_, i) => ({ ...template,
     name: `${machine}-project-${String(i).padStart(2, "0")}`,
     identity: { ...template.identity, wolfpackSessionId: `mock:${machine}-${i}`, projectPath: `/work/${machine}-project-${i}` },
-    runtimeState: { ...template.runtimeState, state: triage === "suggest" && machine === "local" && i === 0 ? "done" : needsInput && i < 3 ? "needs-input" : i < 8 ? "working" : "idle", inputKind: needsInput && i < 3 ? "question" : undefined,
+    runtimeState: { ...template.runtimeState, state: (triage === "suggest" && i === 0 || triage === "scroll" && i < 3) && machine === "local" ? "done" : needsInput && i < 3 ? "needs-input" : i < 8 ? "working" : "idle", inputKind: needsInput && i < 3 ? "question" : undefined,
       authority: "program", stale: false, unseen: true, changedAt: episode,
-      ...(triage === "suggest" && machine === "local" && i === 0 ? { stoppedAt: episode, stoppedSequence: 5, acknowledgedSequence: 0 } : {}) },
+      ...((triage === "suggest" && i === 0 || triage === "scroll" && i < 3) && machine === "local" ? { stoppedAt: episode, stoppedSequence: 5, acknowledgedSequence: 0 } : {}) },
   }));
   await page.route(url => url.origin === server.baseUrl && url.pathname === "/api/sessions", async route => {
     const response = await route.fetch(); const body = await response.json();
@@ -41,7 +41,10 @@ async function realisticFocus(page: Page, needsInput = true, triage: "none" | "s
     body.document.intentions = Array.from({ length: 6 }, (_, i) => ({ id: `today-${i}`, title: ["Ship the release safely", "Review the database migration", "Resolve the broker leak", "Finish the mobile dashboard", "Document the rollout", "Follow up on the incident"][i], done: false,
       createdAt: new Date().toISOString(), sessions: [`mock:local-${i}`, `mock:studio-${i}`] }));
     body.document.nudge = { text: "Several agents are waiting for a decision. Review the migration, confirm release access, then continue the rollout.", updatedAt: new Date().toISOString(), author: "assistant" };
-    if (triage !== "none") body.document.next = { updatedAt: episode, author: "assistant", rows: [
+    if (triage === "scroll") body.document.next = { updatedAt: episode, author: "assistant", rows: Array.from({ length: 3 }, (_, i) => ({
+      ref: { machine: body.installationId, sessionId: `mock:local-${i}` }, stoppedAt: episode, verdict: "suggest", reason: "The rollout is ready to continue", suggestion: `Continue rollout step ${i + 1}.`,
+    })) };
+    else if (triage !== "none") body.document.next = { updatedAt: episode, author: "assistant", rows: [
       triage === "suggest" ? { ref: { machine: body.installationId, sessionId: "mock:local-0" }, stoppedAt: episode, verdict: "suggest", reason: "The rollout is ready to continue", suggestion: "Continue with the approved rollout." }
         : { ref: needsInput ? { machine: body.installationId, sessionId: "mock:local-0" } : { intentionId: "today-0" }, ...(needsInput ? { stoppedAt: episode } : {}), verdict: "needs-you", reason: "Choose the rollout window" },
     ] };
@@ -190,6 +193,40 @@ test("collapsed phones can touch-scroll to the last session", async ({ page }, i
   await touchToLastCard(page);
 });
 
+test("expanded dashboard scrolls its last card control while keeping a usable session list", async ({ page }, info) => {
+  if (info.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 600 });
+  await realisticFocus(page, false, "scroll");
+  let sent: unknown;
+  await page.route("**/api/session-control/send", async route => {
+    sent = route.request().postDataJSON();
+    await route.fulfill({ json: { ok: true, outcome: "submitted" } });
+  });
+  await ready(page);
+  const panel = page.locator("#dashboard-focus");
+  const cards = panel.locator(".focus-next .focus-card");
+  await expect(cards).toHaveCount(3);
+  for (let i = 0; i < 3; i++) await cards.nth(i).locator("summary").click();
+  await expect(panel.locator(".focus-card[open]")).toHaveCount(3);
+  const send = panel.getByRole("button", { name: "Send suggestion to local-project-02", exact: true });
+  await send.scrollIntoViewIfNeeded();
+  await expect(send).toBeInViewport({ ratio: 1 });
+  const geometry = await metrics(page);
+  writeFileSync(info.outputPath("panel-scroll-geometry.json"), JSON.stringify(geometry, null, 2));
+  expect(geometry.banner.scrollTop, "the expanded panel must scroll internally").toBeGreaterThan(0);
+  expect(geometry.banner.height).toBeLessThanOrEqual(geometry.viewport * .6 + 1);
+  expect(geometry.list.height, "sessions retain at least 30% of the view").toBeGreaterThanOrEqual(geometry.page.height * .3 - 1);
+  expect(geometry.list.bottom).toBeLessThanOrEqual(geometry.page.bottom + 1);
+  await send.click();
+  await expect.poll(() => sent).toMatchObject({ session: "mock:local-2", text: "Continue rollout step 3." });
+  await expect(panel.locator(".focus-next > li").last()).toContainText("✓ sent to local-project-02");
+  await panel.evaluate(el => { el.scrollTop = el.scrollHeight; });
+  await page.screenshot({ path: info.outputPath("panel-scroll-bottom.png") });
+  const lastSession = page.locator("#session-list .card").last();
+  await lastSession.scrollIntoViewIfNeeded();
+  await expect(lastSession).toBeInViewport({ ratio: .9 });
+  expect((await metrics(page)).list.scrollTop, "the session list remains independently scrollable").toBeGreaterThan(0);
+});
+
 test("Sessions touch scroll from the expanded assistant reaches the last session", async ({ page }, info) => {
   test.skip(info.project.name === "desktop", "phone reproduction / touch regression");
   await realisticFocus(page); await ready(page);
@@ -203,6 +240,6 @@ test("Sessions touch scroll from the expanded assistant reaches the last session
   expect(after.canvases).toBe(0);
   expect(after.touch.trusted).toBeGreaterThan(0);
   expect(after.touch.cancelled).toBe(0);
-  expect(after.page.scrollTop + after.list.scrollTop, "a vertical gesture over the banner must scroll the Sessions content").toBeGreaterThan(before.page.scrollTop + before.list.scrollTop);
+  expect(after.banner.scrollTop + after.page.scrollTop + after.list.scrollTop, "a vertical gesture over the banner must scroll the assistant or Sessions content").toBeGreaterThan(before.banner.scrollTop + before.page.scrollTop + before.list.scrollTop);
   await touchToLastCard(page);
 });
