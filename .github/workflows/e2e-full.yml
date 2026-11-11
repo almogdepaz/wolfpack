@@ -1,0 +1,100 @@
+name: Full E2E tier
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  full:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install Rust toolchain (for wolfpack-broker)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable 2026-07-12
+        with:
+          toolchain: 1.89.0
+
+      - name: Cache cargo registry and broker target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            broker/target
+          key: cargo-test-${{ runner.os }}-rust-1.89.0-${{ hashFiles('broker/Cargo.lock') }}
+          restore-keys: |
+            cargo-test-${{ runner.os }}-rust-1.89.0-
+
+      - name: Cache bun install cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Setup pinned Zig
+        run: scripts/setup-zig-0.16.0.sh
+
+      - name: Build verified libghostty-vt archive (linux-x64)
+        run: bun run scripts/build-ghostty-vt.ts --target x86_64-unknown-linux-gnu
+
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: echo "version=$(bun -e 'console.log(require("@playwright/test/package.json").version)')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium-webkit
+          restore-keys: |
+            playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-
+
+      - name: Install critical Playwright browsers
+        run: bunx playwright install --with-deps chromium webkit
+
+      - name: Build broker and embedded assets
+        run: scripts/ci-gate.sh broker-build assets
+
+      - name: Run full tier by project
+        env:
+          WOLFPACK_BROKER_BIN: ${{ github.workspace }}/broker/target/release/wolfpack-broker
+          WOLFPACK_TEST_PORT: "18899"
+        run: |
+          export PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright"
+          export BUN_INSTALL_CACHE_DIR="$HOME/.bun/install/cache"
+          export HOME="$(mktemp -d "$RUNNER_TEMP/wolfpack-e2e-home.XXXXXX")"
+          export ZDOTDIR="$(mktemp -d "$RUNNER_TEMP/wolfpack-e2e-zdotdir.XXXXXX")"
+          unset ENV BASH_ENV
+          report_dir="$PWD/artifacts/e2e-full"
+          mkdir -p "$report_dir"
+          project_names=$(bun -e 'import config from "./playwright.config"; for (const project of config.projects ?? []) console.log(project.name);')
+          status=0
+          while IFS= read -r project; do
+            paths=$(bun run scripts/e2e-tiers.ts full --project "$project")
+            [[ -n "$paths" ]] || continue
+            mapfile -t files <<< "$paths"
+            PLAYWRIGHT_JSON_OUTPUT_NAME="$report_dir/$project.json" \
+              bunx --no-install playwright test "${files[@]}" --project="$project" --reporter=json,list --output="$report_dir/$project-results" || status=$?
+          done <<< "$project_names"
+          exit "$status"
+
+      - name: Upload full-tier reports and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-full-diagnostics
+          path: artifacts/e2e-full
+          if-no-files-found: warn
