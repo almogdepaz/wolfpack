@@ -1,22 +1,27 @@
 import { expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-function runChild(mode: string, serviceLog = false, value: "error" | "null" = "error") {
+function childFixture() {
   const root = mkdtempSync(join(tmpdir(), "wolfpack-unhandled-"));
+  const home = join(root, "home"), zdotdir = join(root, "zdotdir");
+  mkdirSync(home); mkdirSync(zdotdir);
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, ZDOTDIR: zdotdir, WOLFPACK_TEST: "1",
+    WOLFPACK_JWT_SECRET: "", WOLFPACK_SERVICE: "0", WOLFPACK_LOG_LEVEL: "info",
+    WOLFPACK_DIR: join(root, "state"), WOLFPACK_TASK_ROOT: join(root, "tasks"),
+    WOLFPACK_TASK_RELAY_ROOT: join(root, "relay"), WOLFPACK_TASK_RELAY_PROFILE: "volatile-v1",
+    WOLFPACK_AGENT_RUNTIME_STATE_PATH: join(root, "runtime.json"),
+  };
+  delete env.ENV; delete env.BASH_ENV;
+  return { root, env };
+}
+
+function runChild(mode: string, serviceLog = false, value: "error" | "null" | "closed-stderr" = "error") {
+  const { root, env } = childFixture();
   let fd: number | undefined;
   try {
-    const home = join(root, "home"), zdotdir = join(root, "zdotdir");
-    mkdirSync(home); mkdirSync(zdotdir);
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, ZDOTDIR: zdotdir, WOLFPACK_TEST: "1",
-      WOLFPACK_JWT_SECRET: "", WOLFPACK_SERVICE: "0", WOLFPACK_LOG_LEVEL: "info",
-      WOLFPACK_DIR: join(root, "state"), WOLFPACK_TASK_ROOT: join(root, "tasks"),
-      WOLFPACK_TASK_RELAY_ROOT: join(root, "relay"), WOLFPACK_TASK_RELAY_PROFILE: "volatile-v1",
-      WOLFPACK_AGENT_RUNTIME_STATE_PATH: join(root, "runtime.json"),
-    };
-    delete env.ENV; delete env.BASH_ENV;
     const logPath = join(root, "wolfpack.log");
     if (serviceLog) fd = openSync(logPath, "w", 0o600);
     const result = spawnSync(process.execPath, [join(import.meta.dirname, "fixtures", "server-unhandled-error.ts"), mode, value], {
@@ -26,6 +31,37 @@ function runChild(mode: string, serviceLog = false, value: "error" | "null" = "e
     return { ...result, log: serviceLog ? readFileSync(logPath, "utf8") : "" };
   } finally {
     if (fd !== undefined) closeSync(fd);
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+async function runChildWithSlowPipe(mode: string) {
+  const { root, env } = childFixture();
+  const child = spawn(process.execPath, [join(import.meta.dirname, "fixtures", "server-unhandled-error.ts"), mode, "large"], {
+    cwd: join(import.meta.dirname, "..", ".."), env, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  const chunks: Buffer[] = [];
+  let resume: ReturnType<typeof setTimeout> | undefined;
+  child.stderr.on("data", chunk => chunks.push(Buffer.from(chunk)));
+  child.stderr.pause();
+  child.stdout.on("data", chunk => {
+    stdout += chunk.toString();
+    if (resume === undefined && stdout.includes("SERVER_FATAL_PROBE_READY\n")) {
+      // Hold a real pipe closed to reads while the child emits >2 MiB.
+      resume = setTimeout(() => child.stderr.resume(), 150);
+    }
+  });
+  const timeout = setTimeout(() => { child.kill("SIGKILL"); child.stderr.resume(); }, 10000);
+  try {
+    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    });
+    return { ...result, stdout, stderr: Buffer.concat(chunks).toString("utf8") };
+  } finally {
+    clearTimeout(timeout);
+    clearTimeout(resume);
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -49,6 +85,23 @@ for (const [mode, message] of [
   ["unhandledRejection", "unhandled rejection"],
   ["uncaughtException", "uncaught exception"],
 ] as const) {
+  test(`${mode} completes a large record through a slow stderr pipe before exit`, async () => {
+    const result = await runChildWithSlowPipe(mode);
+    expect(result.stdout.split("\n")).toContain("SERVER_FATAL_PROBE_READY");
+    expect(result.code).toBe(1);
+    expect(result.signal).toBeNull();
+    expect(Buffer.byteLength(result.stderr)).toBeGreaterThan(2 * 1024 * 1024);
+    const errors = records(result.stderr).filter(row => row.level === "error" && row.component === "server");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ msg: message, error: "server-fatal-probe-" + mode });
+    expect(errors[0]!.stack).toBe("large-stack-start\n" + "é".repeat(1024 * 1024) + "\nlarge-stack-end");
+  }, 15000);
+  test(`${mode} exits 1 even if stderr is closed`, () => {
+    const result = runChild(mode, false, "closed-stderr");
+    expect(result.error).toBeUndefined();
+    expect(result.stdout.split("\n")).toContain("SERVER_FATAL_PROBE_READY");
+    expect(result.status).toBe(1);
+  });
   test(`${mode} logs non-Error values and exits 1`, () => {
     const result = runChild(mode, false, "null");
     expect(result.error).toBeUndefined();

@@ -6,6 +6,8 @@
  * Controlled by WOLFPACK_LOG_LEVEL env var (default: info).
  */
 
+import { writeSync } from "node:fs";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 export type Component = "pty" | "pty-backend" | "ws" | "http" | "auth" | "service" | "config" | "setup" | "broker-backend" | "backend" | "server" | "routes" | "doctor" | "push" | "session-observation" | "peer-notifications" | "task-relay" | "session-cascade" | "remote-ops";
 
@@ -61,8 +63,7 @@ interface LogEntry {
 
 const RESERVED_KEYS = new Set(["ts", "level", "component", "msg"]);
 
-function emit(level: LogLevel, component: Component, msg: string, extra?: Record<string, unknown>): void {
-  if (!shouldLog(level)) return;
+function formatRecord(level: LogLevel, component: Component, msg: string, extra?: Record<string, unknown>): string {
   const ts = new Date().toISOString();
   // Spread extra first, then override with reserved fields so callers
   // can't accidentally corrupt structured log entries (ISS-13).
@@ -74,11 +75,37 @@ function emit(level: LogLevel, component: Component, msg: string, extra?: Record
     component,
     msg,
   };
-  const line = JSON.stringify(entry);
+  return JSON.stringify(entry) + "\n";
+}
+
+function emit(level: LogLevel, component: Component, msg: string, extra?: Record<string, unknown>): void {
+  if (!shouldLog(level)) return;
+  const line = formatRecord(level, component, msg, extra);
   if (level === "error") {
-    process.stderr.write(line + "\n");
+    process.stderr.write(line);
   } else {
-    process.stdout.write(line + "\n");
+    process.stdout.write(line);
+  }
+}
+
+/** Complete the fatal record before the caller forces process exit. */
+export function writeFatalError(component: Component, msg: string, extra?: Record<string, unknown>): void {
+  const bytes = Buffer.from(formatRecord("error", component, msg, extra));
+  let offset = 0;
+  while (offset < bytes.length) {
+    try {
+      const written = writeSync(2, bytes, offset, bytes.length - offset);
+      if (written === 0) throw new Error("fatal log write made no progress");
+      offset += written;
+    } catch (error) {
+      // Bun can leave stderr nonblocking after server startup. Wait for the
+      // reader rather than abandoning a partially written fatal record.
+      if (error instanceof Error && "code" in error && error.code === "EAGAIN") {
+        Bun.sleepSync(10);
+        continue;
+      }
+      throw error;
+    }
   }
 }
 

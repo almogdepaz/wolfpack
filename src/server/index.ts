@@ -25,7 +25,7 @@ import {
   createPerIpRateLimiter,
 } from "./http.js";
 import { handlePtyWs } from "./websocket.js";
-import { createLogger, errMsg } from "../log.js";
+import { createLogger, errMsg, writeFatalError } from "../log.js";
 import { isValidSessionName } from "../validation.js";
 import { PTY_WEBSOCKET_MAX_PAYLOAD_BYTES } from "../ws-constants.js";
 import { childEventTypedNotesEnabled, loadConfig, WOLFPACK_DIR } from "../config.js";
@@ -290,13 +290,19 @@ export function createServerInstance(ctx: ServerContext = defaultServerContext):
 const { server, wss } = createServerInstance(defaultServerContext);
 
 function onUnhandledRejection(reason: unknown): void {
-  log.error("unhandled rejection", { error: errMsg(reason), stack: reason instanceof Error ? reason.stack : undefined });
-  process.exit(1);
+  try {
+    writeFatalError("server", "unhandled rejection", { error: errMsg(reason), stack: reason instanceof Error ? reason.stack : undefined });
+  } finally {
+    process.exit(1);
+  }
 }
 
 function onUncaughtException(error: unknown): void {
-  log.error("uncaught exception", { error: errMsg(error), stack: error instanceof Error ? error.stack : undefined });
-  process.exit(1);
+  try {
+    writeFatalError("server", "uncaught exception", { error: errMsg(error), stack: error instanceof Error ? error.stack : undefined });
+  } finally {
+    process.exit(1);
+  }
 }
 
 export async function startServer(port = PORT, host = "127.0.0.1", overrides: Partial<ServerContext> = {}): Promise<void> {

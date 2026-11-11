@@ -1,4 +1,4 @@
-export {};
+import { closeSync } from "node:fs";
 
 const mode = process.argv[2];
 const marker = "server-fatal-probe-" + mode;
@@ -16,6 +16,10 @@ if (!server.listening) await new Promise<void>(resolve => server.once("listening
 console.log("SERVER_FATAL_PROBE_READY");
 setImmediate(function triggerUnhandledFailure() {
   const error = process.argv[3] === "null" ? null : new Error(marker);
+  if (error && process.argv[3] === "large") {
+    error.stack = "large-stack-start\n" + "é".repeat(1024 * 1024) + "\nlarge-stack-end";
+  }
+  if (process.argv[3] === "closed-stderr") closeSync(2);
   if (mode === "unhandledRejection") void Promise.reject(error);
   else throw error;
 });
