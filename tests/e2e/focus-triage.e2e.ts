@@ -82,8 +82,9 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await expect(row.locator(":scope > .focus-action")).toHaveText("open ›");
   await expect(row.locator(":scope > .focus-action")).toHaveAccessibleName("Open prompt-project");
   await expect(row.locator("summary .focus-for")).toContainText("focus");
-  await expect(row.locator(".focus-draft")).toContainText("will be typed into prompt-project");
-  await expect(row.locator(".focus-draft")).toContainText("and submitted:");
+  await expect(row.locator(".focus-draft > div")).toContainText("will be typed into prompt-project");
+  await expect(row.locator(".focus-draft > div")).toHaveCSS("font-size", "13px");
+  await expect(row.locator(".focus-draft > div")).toContainText("and submitted:");
   await expect(row.locator(".focus-draft p")).toHaveText(draft);
   expect(await row.locator(".focus-draft p").innerText(), "the visible draft preserves exact spacing").toBe(draft);
   await expect(view.locator(".focus-next")).toContainText("new · by rules");
@@ -96,7 +97,8 @@ for (const width of [1440, 1280, 390]) test(`triage ${width}: exact draft, reaso
   await expect(row.locator(".focus-card-body")).toContainText("Ship the focus assistant");
   await row.getByRole("button", { name: "Send suggestion to prompt-project", exact: true }).click();
   await expect(row.locator('[role="status"]')).toContainText("✓ sent to prompt-project");
-  await expect(row.locator(".focus-draft")).toContainText("typed into prompt-project");
+  await expect(row.locator(".focus-draft > div")).toContainText("typed into prompt-project");
+  await expect(row.locator(".focus-draft > div")).toHaveCSS("font-size", "13px");
   await expect(row.locator(".focus-draft")).not.toContainText("will be typed");
   await expect(send).toHaveCount(0);
   expect(sends).toHaveLength(1);

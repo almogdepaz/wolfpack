@@ -110,7 +110,8 @@ for (const scenario of [
     const row = page.locator("#dashboard-focus .focus-next > li").filter({ has: page.locator(".focus-draft p") });
     const send = row.locator(".focus-draft").getByRole("button", { name: "Send suggestion to local-project-00", exact: true });
     await expect(row.locator(".focus-draft p")).toHaveText("Continue with the approved rollout.");
-    await expect(row.locator(".focus-draft")).toContainText("will be typed into local-project-00");
+    await expect(row.locator(".focus-draft > div")).toContainText("will be typed into local-project-00");
+    await expect(row.locator(".focus-draft > div")).toHaveCSS("font-size", "13px");
     await expect(row.locator(":scope > .focus-action")).toHaveText("open ›");
     await expect(send).toBeVisible();
     await expect(send).toHaveAccessibleDescription("Continue with the approved rollout.");
