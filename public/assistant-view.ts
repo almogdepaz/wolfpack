@@ -179,6 +179,7 @@ export function createAssistantView(deps: {
   // The sidebar tile's mark: a four-point spark (decorative; the tile's label names it).
   const TILE_MARK = '<svg class="assistant-tile-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.5l1.8 5.7 5.7 1.8-5.7 1.8L12 17.5l-1.8-5.7L4.5 10l5.7-1.8z"/><path d="M18.5 14.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" opacity=".65"/></svg>';
   const dot = (state: string) => `<span class="dot ${state === "needs-input" || state === "needs you" ? "yellow" : state === "working" ? "green" : state === "failed" ? "red" : "gray"}" aria-hidden="true"></span>`;
+  let composingReply: HTMLTextAreaElement | null = null;
   function replace(id: string, html: string) {
     const host = document.getElementById(id);
     if (!host) return;
@@ -192,29 +193,21 @@ export function createAssistantView(deps: {
     return document.activeElement === target;
   }
   function swap(host: HTMLElement, html: string) {
-    const active = host.contains(document.activeElement) ? document.activeElement as HTMLInputElement | HTMLTextAreaElement : null;
+    const focused = document.activeElement;
+    // Detaching even the same node ends native IME composition. Defer this host's
+    // replacement until editing leaves it; reply controls still update in place.
+    if (focused instanceof HTMLTextAreaElement && focused.dataset.focusReply && host.contains(focused)
+      || composingReply && host.contains(composingReply)) return;
+    const active = host.contains(focused) ? focused as HTMLInputElement : null;
     const key = active?.dataset.focusKey;
     const value = active?.value;
     const selection = active?.selectionStart;
-    const selectionEnd = active?.selectionEnd;
-    const direction = active?.selectionDirection;
     host.innerHTML = html;
     if (active) {
-      let next = key ? host.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(key)}"]`) : null;
-      // Keep the user's actual editor, not a new field with its caret reset by a poll.
-      if (active instanceof HTMLTextAreaElement && next instanceof HTMLTextAreaElement) {
-        active.readOnly = next.readOnly;
-        active.id = next.id;
-        active.defaultValue = next.defaultValue;
-        next.replaceWith(active);
-        next = active;
-      }
+      const next = key ? host.querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(key)}"]`) : null;
       if (next instanceof HTMLInputElement && next.type !== "checkbox" && value !== undefined) next.value = value;
       if (restoreFocus(next)) {
-        if (selection !== null && selection !== undefined) {
-          if (next instanceof HTMLTextAreaElement) next.setSelectionRange(selection, selectionEnd ?? selection, direction ?? undefined);
-          else if (next instanceof HTMLInputElement && next.type === "text") next.setSelectionRange(selection, selection);
-        }
+        if (next instanceof HTMLInputElement && next.type === "text" && selection !== null && selection !== undefined) next.setSelectionRange(selection, selection);
       } else {
         // A missing or unusable replacement leaves focus in the visible list.
         // Inactive views must not reclaim focus from a newly opened terminal.
@@ -437,6 +430,34 @@ export function createAssistantView(deps: {
       return `<li${index >= 3 && !expanded ? ' class="focus-extra"' : ""}>${card(key, summary, body, row.session ? contextHtml(row.session) : "")}${aside}${draft || marker ? `<div class="focus-draft">${draft}${marker ? `<small>${marker}</small>` : ""}</div>` : ""}</li>`;
     }).join("")}</ol>`;
   }
+  function syncReplyControls() {
+    for (const field of document.querySelectorAll<HTMLTextAreaElement>("textarea[data-focus-reply]")) {
+      const key = field.dataset.focusReply!;
+      const action = renderedActions.get(key);
+      const row = action?.row;
+      const receipt = row && receiptFor(row);
+      const delivered = receipt?.state === "sent" || receipt?.state === "check";
+      const readOnly = !row || sessionLocked() || !!row.unavailable || delivered || receipt?.state === "sending";
+      const text = ((delivered || receipt?.state === "sending") ? receipt?.text : undefined) ?? drafts.get(key) ?? row?.triage?.suggestion ?? field.value;
+      field.readOnly = readOnly;
+      if (field !== document.activeElement && field !== composingReply && field.value !== text) field.value = text;
+      const description = document.getElementById(`${field.id}-description`);
+      if (description) description.textContent = text;
+      const block = field.closest<HTMLElement>(".focus-draft")!;
+      const send = block.querySelector<HTMLButtonElement>("[data-focus-next]");
+      if (send) send.disabled = readOnly || !text.trim();
+      let reset = block.querySelector<HTMLButtonElement>("[data-focus-reset]");
+      if (row && !delivered && text !== row.triage?.suggestion) {
+        if (!reset) {
+          reset = document.createElement("button");
+          reset.type = "button"; reset.textContent = "reset";
+          reset.dataset.focusReset = key; reset.dataset.focusKey = `reset:${key}`;
+          block.insertBefore(reset, block.querySelector("[data-focus-mark-done]"));
+        }
+        reset.disabled = readOnly;
+      } else reset?.remove();
+    }
+  }
   function sessionChip(session: FocusSession, key: string, hidden = false) {
     return `<button type="button"${hidden ? ' class="focus-chip-extra"' : ""}${sessionLocked() ? " disabled" : ""} data-focus-key="${escAttr(`${key}:${session.id}`)}" data-focus-session="${escAttr(session.id)}" title="${escAttr(session.name)}">${dot(session.state)}<span class="focus-chip-name">${esc(session.name)}</span></button>`;
   }
@@ -624,6 +645,7 @@ export function createAssistantView(deps: {
     const dashboardBody = !enabled ? "" : `<div class="focus-header">${attn || `${tone}${button("view", "assistant", "Open assistant", false, "view-title")}<small${catching ? ' class="focus-spin"' : ""}>${esc(info)}</small>`}${sessionNotice}<small>${esc(orderLabel())}</small>${button("view", "open assistant ›", "Open assistant page")}</div>${notes}${nudge}${focus?.document ? nextHtml("d", 3) + `<small>${nextCount} next${current.intentions.length ? ` · today · ${summary}${latest ?? ""}` : ""}</small>` : `<p>Set your focus</p>${addForm(true)}`}${error && !focusUnavailable ? `<p role="status">${esc(error)}</p>` : ""}`;
     replace("dashboard-focus-details", dashboardBody);
     replace("assistant-content", !enabled ? "" : `<div class="focus-header">${attn || `<span title="${escAttr(info)}"${catching ? ' class="focus-spin"' : ""}>${tone} ${esc(info)}</span>`}${sessionNotice}<small>${esc(orderLabel())}</small><span class="focus-header-actions"><button type="button" class="focus-talk" data-focus-action="talk" data-focus-key="action:talk" aria-label="Talk to assistant"${terminalUnavailable() ? ` title="${escAttr(terminalUnavailable()!)}"` : ""}${!terminalTarget() ? " disabled" : ""}>talk<span aria-hidden="true"> ›</span></button>${button("settings", "settings", "Assistant settings")}</span></div>${notes}${nudge}<h2>next <small>${nextCount}</small></h2>${nextHtml("p", pageNextCap(), showAllNext)}${moreNext}${current.intentions.length && next.length ? `<details><summary>why this order</summary><ol>${next.map(r => `<li>${esc(r.reason)}</li>`).join("")}</ol></details>` : ""}${current.intentions.length ? `<h2>today <small>${summary}</small></h2>${todayHtml(open)}` : ""}${addForm(!focus?.document)}<small>reorder, reword or drop: tell the assistant</small>${doneHtml}${yesterday}`);
+    syncReplyControls();
     const live = document.getElementById("focus-status");
     if (live) live.textContent = focusUnavailable ? "" : error || assistantError || (focus?.assistant?.queued ? `${focus.assistant.queued} queued${terminalUnavailable() ? " · sends when the broker is back" : ""}` : notice);
     const setting = document.getElementById("assistant-setting-status");
@@ -850,13 +872,27 @@ export function createAssistantView(deps: {
       const field = event.target;
       if (!(field instanceof HTMLTextAreaElement) || !field.dataset.focusReply || field.readOnly) return;
       const key = field.dataset.focusReply;
-      const action = currentAction(key);
+      const action = renderedActions.get(key);
       if (!action || action.kind !== "send") return;
       drafts.set(key, field.value);
-      render();
+      syncReplyControls();
+    });
+    host.addEventListener("compositionstart", event => {
+      if (event.target instanceof HTMLTextAreaElement && event.target.dataset.focusReply) composingReply = event.target;
+    });
+    host.addEventListener("compositionend", event => {
+      if (event.target !== composingReply) return;
+      composingReply = null;
+    });
+    host.addEventListener("focusout", event => {
+      if (!(event.target instanceof HTMLTextAreaElement) || !event.target.dataset.focusReply) return;
+      // Let a new focus target receive its click/key activation. Those actions
+      // (or the next refresh) render; a blur to the page can flush immediately.
+      if (event.relatedTarget) return;
+      queueMicrotask(() => { if (!host.contains(document.activeElement)) render(); });
     });
     host.addEventListener("keydown", event => {
-      if (event.target instanceof HTMLTextAreaElement && event.target.dataset.focusReply && event.key === "Enter") event.preventDefault();
+      if (event.target instanceof HTMLTextAreaElement && event.target.dataset.focusReply && event.key === "Enter" && !event.isComposing) event.preventDefault();
     });
     host.addEventListener("paste", event => {
       const field = event.target;

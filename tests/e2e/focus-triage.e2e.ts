@@ -234,7 +234,7 @@ test("editable reply stays shared across hosts and live renders without replacin
   const element = await reply.elementHandle();
   const saved = await write(page, [{ type: "nudge", text: "A live update must not discard your reply.", author: "assistant" }]);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
-  await expect(page.locator("#assistant-content .focus-nudge")).toHaveText("A live update must not discard your reply.");
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!).revision)).toBe(saved.revision);
   await expect(reply).toBeFocused();
   expect(await element!.evaluate(el => el === document.activeElement)).toBe(true);
   expect(await reply.evaluate(el => { const field = el as HTMLTextAreaElement; return [field.selectionStart, field.selectionEnd, field.selectionDirection]; })).toEqual([7, 15, "backward"]);
@@ -242,6 +242,8 @@ test("editable reply stays shared across hosts and live renders without replacin
   await expect(dashboard).toHaveValue(edited);
   await expect(page.locator("#assistant-content").getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toHaveAccessibleDescription(edited);
   expect(saved.revision).toBeGreaterThan(0);
+  await reply.evaluate(el => (el as HTMLTextAreaElement).blur());
+  await expect(page.locator("#assistant-content .focus-nudge")).toHaveText("A live update must not discard your reply.");
   const reset = page.locator("#assistant-content").getByRole("button", { name: "reset", exact: true });
   await expect(reset).toBeVisible();
   await page.screenshot({ path: join(process.env.HOME!, ".cache/focus-edit-collapse-shots", `suggest-edited-${info.project.name === "desktop" ? "desktop" : "390"}.png`), fullPage: true });
@@ -251,6 +253,65 @@ test("editable reply stays shared across hosts and live renders without replacin
   await expect(reply).toHaveValue(draft);
   await expect(dashboard).toHaveValue(draft);
   await expect(reset).toHaveCount(0);
+});
+
+for (const host of ["dashboard-focus", "assistant-content"] as const) test(`native IME replacement stays attached in ${host} through input and live refresh`, async ({ page }, info) => {
+  await seed(page);
+  await page.goto(server.baseUrl);
+  if (host === "assistant-content") await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const panel = page.locator(`#${host}`);
+  const reply = panel.getByRole("textbox", { name: "reply to prompt-project", exact: true });
+  await expect(reply).toHaveValue(draft);
+  const cdp = await page.context().newCDPSession(page);
+  const stages: { host: string; text: string; value: string }[] = [];
+  try {
+    // Same native replacement sequence as the reviewer's standalone control probe.
+    await page.evaluate(() => {
+      const control = document.createElement("textarea"); control.id = "ime-control";
+      control.style.cssText = "position:fixed;top:0;left:0;z-index:9999";
+      document.body.append(control);
+    });
+    const control = page.locator("#ime-control");
+    await control.focus();
+    for (const text of ["n", "ni", "你"]) await cdp.send("Input.imeSetComposition", { text, selectionStart: text.length, selectionEnd: text.length });
+    await cdp.send("Input.insertText", { text: "你" });
+    await expect(control).toHaveValue("你");
+    await control.evaluate(el => el.remove());
+    await reply.fill("");
+    await expect(panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+    const editor = await reply.elementHandle();
+    await editor!.evaluate(el => {
+      el.dataset.imeBlurs = "0"; el.dataset.imeDetaches = "0";
+      el.addEventListener("blur", () => { el.dataset.imeBlurs = String(Number(el.dataset.imeBlurs) + 1); });
+      const observer = new MutationObserver(records => {
+        for (const record of records) for (const removed of record.removedNodes) if (removed === el || removed.contains(el)) el.dataset.imeDetaches = String(Number(el.dataset.imeDetaches) + 1);
+      });
+      observer.observe(el.closest("#dashboard-focus, #assistant-content")!, { childList: true, subtree: true });
+      el.addEventListener("blur", () => observer.disconnect(), { once: true });
+    });
+    for (const text of ["n", "ni", "你"]) {
+      await cdp.send("Input.imeSetComposition", { text, selectionStart: text.length, selectionEnd: text.length });
+      stages.push({ host, text, value: await reply.inputValue() });
+      if (text === "ni") {
+        const saved = await write(page, [{ type: "nudge", text: `Live IME update for ${host}.`, author: "assistant" }]);
+        await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+        await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!).revision)).toBe(saved.revision);
+      }
+    }
+    await cdp.send("Input.insertText", { text: "你" });
+    writeFileSync(info.outputPath(`ime-${host}.json`), JSON.stringify({ stages, final: await reply.inputValue(), blurs: await editor!.getAttribute("data-ime-blurs"), detaches: await editor!.getAttribute("data-ime-detaches") }, null, 2));
+    await expect(reply).toHaveValue("你");
+    expect(stages.map(stage => stage.value)).toEqual(["n", "ni", "你"]);
+    expect(await editor!.getAttribute("data-ime-blurs")).toBe("0");
+    expect(await editor!.getAttribute("data-ime-detaches")).toBe("0");
+    await expect(reply).toBeFocused();
+    await expect(panel.getByRole("button", { name: "reset", exact: true })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeEnabled();
+    await expect(panel.getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toHaveAccessibleDescription("你");
+    await reply.evaluate(el => (el as HTMLTextAreaElement).blur());
+    await expect(panel.locator(".focus-nudge")).toHaveText(`Live IME update for ${host}.`);
+    await expect(reply).toHaveValue("你");
+  } finally { await cdp.detach(); }
 });
 
 test("editable reply prevents Enter, flattens pasted newlines, caps at 2000 and disables blank sends", async ({ page }) => {
@@ -336,6 +397,9 @@ test("a draft is dropped when its original action leaves the next rows", async (
   await reply.fill("an obsolete draft");
   await write(page, [{ type: "next", author: "assistant", rows: [] }]);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+  await expect(reply).not.toBeEditable();
+  await expect(page.locator("#dashboard-focus").getByRole("button", { name: "Send suggestion to prompt-project", exact: true })).toBeDisabled();
+  await reply.evaluate(el => (el as HTMLTextAreaElement).blur());
   await expect(reply).toHaveCount(0);
   await write(page, [{ type: "next", author: "assistant", rows }]);
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
