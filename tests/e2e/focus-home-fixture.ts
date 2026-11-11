@@ -58,6 +58,8 @@ export async function remoteFocusHome(page: Page, server: TestServer) {
       await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
       await (await opened).finished();
       await expect(page.locator("#assistant-content .focus-nudge")).toHaveText(`remote focus read ${reads}`);
+      await expect(page.locator("#assistant-pane")).toBeHidden();
+      await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
       await expect.poll(() => sockets.length).toBe(1);
     },
   };

@@ -60,6 +60,7 @@ for (const width of [1440, 1280]) for (const entry of ["dashboard", "cached firs
     await expect(page.locator("#dashboard-focus .focus-next li").first()).toBeVisible();
     await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
   }
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
   await expect.poll(() => page.evaluate(() => (window as unknown as { paneFit: { done: boolean } }).paneFit.done), { timeout: 12_000 }).toBe(true);
   const evidence = await page.evaluate(() => ({ fit: (window as unknown as { paneFit: unknown }).paneFit, trace: window.__wf_dumpTrace?.("assistant") }));
@@ -93,6 +94,7 @@ for (const width of [1440, 1280]) for (const motion of ["normal", "fallback race
   });
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
   // Sample beyond the normal resize settlement window, rather than accepting
   // one transiently fitting frame or missing a delayed duplicate resize.

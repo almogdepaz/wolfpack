@@ -35,6 +35,7 @@ export function createAssistantView(deps: {
   /** Verify a cached assistant incarnation against the current owning session list. */
   terminalSessionAvailable: (target: AssistantTerminalTarget) => boolean;
   terminalTarget: (target: AssistantTerminalTarget | null, unavailableMessage?: string) => void;
+  expandTerminal: () => boolean;
   /** False means the local session projection is unavailable, not that every session stopped. */
   sessionsAvailable: () => boolean;
   /** A completed local session fetch failed; the initial pending fetch is not an outage. */
@@ -808,7 +809,7 @@ export function createAssistantView(deps: {
       await loadTiming();
     }).finally(() => { homeChanging = false; render(); });
   });
-  function talk() { const target = terminalTarget(); if (target) deps.open(target.session, target.machine); }
+  function talk() { const target = terminalTarget(); if (target && !deps.expandTerminal()) deps.open(target.session, target.machine); }
   async function showHomeChanged(message: string) {
     try { await showAppDialog({ title: "Home changed", message, confirmLabel: "Close", cancelLabel: null }); }
     catch (dialogError) { console.warn("Could not show the home-change notice", dialogError); }

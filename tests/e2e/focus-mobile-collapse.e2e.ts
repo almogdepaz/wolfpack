@@ -64,6 +64,58 @@ async function ready(page: Page) {
   await expect.poll(() => page.locator("#session-list .card").count()).toBeGreaterThanOrEqual(32);
   await expect(page.locator("#dashboard-focus")).toBeVisible();
 }
+test("assistant terminal starts collapsed on every entry and only talk attaches a viewer", async ({ page }, info) => {
+  const sockets = { opened: 0, live: 0 };
+  page.on("websocket", socket => {
+    if (!socket.url().includes("/ws/pty")) return;
+    sockets.opened++; sockets.live++;
+    socket.on("close", () => { sockets.live--; });
+  });
+  await realisticFocus(page, false); await ready(page);
+  const dashboard = page.locator("#dashboard-focus");
+  if (info.project.name !== "desktop") await dashboard.getByRole("button", { name: /Expand assistant/ }).click();
+  const open = () => dashboard.getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await open();
+  await expect(page.locator("#assistant-pane")).toBeHidden();
+  await expect(page.locator("#assistant-pane canvas")).toHaveCount(0);
+  expect(sockets.opened).toBe(0);
+  const column = await page.locator(".assistant-column").boundingBox();
+  expect(column!.width).toBeLessThanOrEqual(760);
+  if (info.project.name === "desktop") {
+    expect(column!.width).toBeGreaterThan(640);
+    await page.screenshot({ path: `${process.env.HOME}/.cache/focus-edit-collapse-shots/assistant-collapsed-desktop.png` });
+  }
+  const talk = page.getByRole("button", { name: "Talk to assistant", exact: true });
+  await talk.click();
+  if (info.project.name === "desktop") {
+    await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+    await expect.poll(() => page.locator("#assistant-pty-input").evaluate(el => el.contains(document.activeElement))).toBe(true);
+    await expect.poll(() => sockets.live).toBe(1);
+    await page.screenshot({ path: `${process.env.HOME}/.cache/focus-edit-collapse-shots/assistant-expanded-desktop.png` });
+    await page.getByRole("button", { name: "Hide assistant terminal", exact: true }).click();
+    await expect(page.locator("#assistant-pane")).toBeHidden();
+    await expect.poll(() => sockets.live).toBe(0);
+    await expect(page.locator(".assistant-column")).toBeFocused();
+    await talk.click();
+    await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
+    await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
+    await expect.poll(() => sockets.live).toBe(0);
+    await page.locator("#assistant-setting-open").click();
+    await expect(page.locator("#assistant-pane")).toBeHidden();
+    expect(sockets.opened).toBe(2);
+  } else {
+    await expect(page.locator("#assistant-terminal-header")).toBeVisible();
+    await expect.poll(() => sockets.live).toBe(1);
+    await page.locator("#assistant-terminal-focus").click();
+    await expect(page.locator("#assistant-view")).toBeVisible();
+    await expect(page.locator("#assistant-pane")).toBeHidden();
+    await expect.poll(() => sockets.live).toBe(0);
+  }
+  await page.reload();
+  await expect(page.locator("#assistant-pane")).toBeHidden();
+  await expect.poll(() => sockets.live).toBe(0);
+});
+
 async function touchScroll(page: Page, startY?: number) {
   const viewport = page.viewportSize()!;
   const cdp = await page.context().newCDPSession(page);

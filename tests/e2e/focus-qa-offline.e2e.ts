@@ -147,6 +147,7 @@ for (const state of ["idle", "needs-input"]) test(`SF1: focus writes and ${state
   await expect(checkbox).toBeEnabled();
   await checkbox.click();
   await expect(view.locator(".focus-done")).toContainText(title);
+  await page.setViewportSize({ width: Math.min(page.viewportSize()!.width, 1279), height: 900 });
   if (state === "idle") await view.getByRole("button", { name: "Talk to assistant" }).click();
   else await view.getByRole("button", { name: /needs you · answer/ }).click();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible({ timeout: 2_000 });
@@ -201,6 +202,7 @@ test("R3: broker outage overrides a pending catch-up on every surface and recove
   const view = page.locator("#assistant-content");
   const tile = page.locator("#sidebar-assistant");
   await expect(view.locator(".focus-header")).toContainText("reading activity");
+  await page.setViewportSize({ width: Math.min(page.viewportSize()!.width, 1279), height: 900 });
   await view.getByRole("button", { name: "Talk to assistant" }).click();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible();
   down = true;
@@ -338,7 +340,10 @@ for (const failure of ["HTTP 503", "invalid document"] as const) test(`QA-30: ${
   await (await opened).finished();
   const view = page.locator("#assistant-content");
   const terminal = page.locator("#assistant-pty");
-  if (desktop) await expect(terminal).toHaveClass(/hydrated/);
+  if (desktop) {
+    await view.getByRole("button", { name: "Talk to assistant" }).click();
+    await expect(terminal).toHaveClass(/hydrated/);
+  }
   const canvas = desktop ? await terminal.locator("canvas").elementHandle() : null;
   failed = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
@@ -364,8 +369,11 @@ for (const failure of ["HTTP 503", "invalid document"] as const) test(`QA-30: ${
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(view.locator(".focus-header")).toContainText("focus unavailable");
   await expect(view.getByRole("button", { name: "Talk to assistant" })).toBeEnabled();
-  if (desktop) await expect(terminal).toHaveClass(/hydrated/);
-  else {
+  if (desktop) {
+    await expect(page.locator("#assistant-pane")).toBeHidden();
+    await view.getByRole("button", { name: "Talk to assistant" }).click();
+    await expect(terminal).toHaveClass(/hydrated/);
+  } else {
     await expect(page.locator(".view.swiping")).toHaveCount(0);
     await view.getByRole("button", { name: "Talk to assistant" }).click();
     await expect(page.locator("#assistant-terminal-header")).toBeVisible();
@@ -428,6 +436,7 @@ test("QA-30: a remote focus home keeps its terminal on the owning machine after 
   // The socket may mount from the previous projection before the open-refresh
   // finishes. Observe that refresh's rendered document before failing the store.
   await expect(page.locator("#assistant-content .focus-nudge")).toHaveText(`remote focus read ${remoteReads}`);
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await expect.poll(() => sockets.length).toBeGreaterThan(0);
   expect(new URL(sockets[0]!).origin).toBe(origin.replace("https:", "wss:"));
   failed = true;
@@ -437,6 +446,7 @@ test("QA-30: a remote focus home keeps its terminal on the owning machine after 
   expect(sockets).toHaveLength(1);
   await page.reload();
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await expect.poll(() => sockets.length).toBe(2);
   expect(new URL(sockets[1]!).origin).toBe(origin.replace("https:", "wss:"));
   await expect(page.locator("#assistant-content .focus-header")).toContainText("focus unavailable");
@@ -458,6 +468,7 @@ for (const change of ["removed", "replaced", "broker unavailable"] as const) tes
   const opened = page.waitForResponse(response => new URL(response.url()).pathname === "/api/focus");
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await (await opened).finished();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
   failed = true;
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));

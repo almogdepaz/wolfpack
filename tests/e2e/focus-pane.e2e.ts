@@ -12,6 +12,16 @@ async function openFocus(page: Page) {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
   await expect(page.locator("#assistant-view")).toBeVisible();
+  if (page.viewportSize()!.width >= 1280) {
+    await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
+    await page.locator(".assistant-column").focus();
+  }
+}
+async function fullScreenTalk(page: Page) {
+  const viewport = page.viewportSize()!;
+  await page.setViewportSize({ ...viewport, width: 1279 });
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
+  await page.setViewportSize(viewport);
 }
 function transport(page: Page) {
   const stats = { opened: 0, live: 0, max: 0, binary: 0, takeovers: 0, acks: [] as string[] };
@@ -219,7 +229,7 @@ test("pane: one-column opening preserves the existing focus behavior", async ({ 
   expect(await page.evaluate(() => (window as unknown as { listFocuses: number }).listFocuses)).toBe(0);
 });
 
-test("pane: attach on open, disconnect on leave/hidden, reattach on return without duplicate viewers", async ({ page }, info) => {
+test("pane: attach on talk, disconnect on leave/hidden, require talk on page return without duplicate viewers", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop pane only");
   const stats = transport(page);
   await openFocus(page);
@@ -233,6 +243,8 @@ test("pane: attach on open, disconnect on leave/hidden, reattach on return witho
   await page.getByRole("button", { name: "Assistant settings", exact: true }).click();
   await expect.poll(() => stats.live).toBe(0);
   await page.locator("#assistant-setting-open").click();
+  await expect(pane(page)).toBeHidden();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await hydrated(page);
   await expect.poll(() => stats.live).toBe(1);
   expect(stats.max).toBe(1);
@@ -275,7 +287,7 @@ test("pane: full-screen handover and tile return release the old controller befo
   await page.keyboard.type("before handover");
   await expect.poll(() => stats.binary).toBeGreaterThan(0);
   const before = stats.binary;
-  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
+  await fullScreenTalk(page);
   await expect(page.locator("#assistant-terminal-header")).toBeVisible();
   await expect(page.locator("#desktop-terminal-container")).toHaveClass(/hydrated/);
   await expect(page.locator(".viewer-conflict-overlay")).toHaveCount(0);
@@ -283,6 +295,8 @@ test("pane: full-screen handover and tile return release the old controller befo
   await page.keyboard.type("after handover");
   await expect.poll(() => stats.binary).toBeGreaterThan(before);
   await page.locator("#sidebar-assistant").click();
+  await expect(pane(page)).toBeHidden();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await hydrated(page);
   await expect(page.locator("#desktop-terminal-container canvas")).toHaveCount(0);
   await expect(page.locator(".viewer-conflict-overlay")).toHaveCount(0);
@@ -297,7 +311,7 @@ test("pane: existing viewer conflict waits for explicit Take Control and recover
   const ownerStats = transport(owner);
   try {
     await openFocus(owner);
-    await owner.getByRole("button", { name: "Talk to assistant", exact: true }).click();
+    await fullScreenTalk(owner);
     await expect(owner.locator("#desktop-terminal-container")).toHaveClass(/hydrated/);
     const stats = transport(page);
     await openFocus(page);
@@ -344,6 +358,8 @@ test("pane: leaving during the asynchronous WASM mount never opens a late viewer
   expect(stats.opened).toBe(0);
   release();
   await page.locator("#assistant-setting-open").click();
+  await expect(pane(page)).toBeHidden();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await hydrated(page);
   await expect.poll(() => stats.live).toBe(1);
   expect(stats.opened).toBe(1);

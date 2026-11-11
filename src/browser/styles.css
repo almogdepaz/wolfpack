@@ -3049,7 +3049,7 @@ details.focus-context-more[open] > summary::before { transform: rotate(90deg); }
 #assistant-pane-empty { padding: 0 14px; }
 @media (min-width: 1280px) {
   #assistant-view { flex-direction: row; }
-  #assistant-view .assistant-column { flex: 0 0 clamp(520px, 55%, 640px); min-width: 0; overflow: auto; }
+  #assistant-view.assistant-terminal-expanded .assistant-column { flex: 0 0 clamp(520px, 55%, 640px); min-width: 0; overflow: auto; }
   #assistant-pane:not([hidden]) { display: flex; flex: 1; min-width: 0; flex-direction: column; margin: 24px 20px 24px 0; }
   #assistant-pane .focus-terminal-header { flex-wrap: nowrap; }
   #assistant-pty { position: relative; flex: 1; min-height: 0; overflow: hidden; }

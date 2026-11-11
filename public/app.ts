@@ -1246,6 +1246,7 @@ const assistantPane = createAssistantTerminal({ createController: createPtyTermi
 const focusUi = createAssistantView({
   request: api,
   terminalTarget: (target, reason) => assistantPane.setTarget(target, reason),
+  expandTerminal: () => assistantPane.expand(),
   terminalSessionAvailable: target => !!target.sessionId && state.lastSessionGroups.some(g => g.online && (g.machine.url || "") === target.machine
     && g.sessions.some(s => isFocusAssistantSession(s) && s.name === target.session && s.identity?.wolfpackSessionId === target.sessionId)),
   homeMachine: id => { const peer = tailnetPeers.entries().find(p => installationIdFromMachineIdentity(p.identity) === id); return peer?.identity ? { key: peer.identity, name: peer.displayName } : undefined; },

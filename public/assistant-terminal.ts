@@ -31,17 +31,19 @@ export function createAssistantTerminal(deps: {
   let unavailableMessage = "the assistant terminal is not running yet.";
   const wide = matchMedia(`(min-width: ${ASSISTANT_PANE_MIN_WIDTH}px)`);
   let active = false;
+  let expanded = false;
   let target: AssistantTerminalTarget | null = null;
   let mounted: AssistantTerminalTarget | null = null;
   let controller: PtyTerminalController | null = null;
   let overlay: HTMLElement | null = null;
   let takeoverTimer: number | undefined;
-  const visible = () => active && wide.matches && document.visibilityState === "visible";
+  const visible = () => active && expanded && wide.matches && document.visibilityState === "visible";
   const sameTarget = (a: AssistantTerminalTarget | null, b: AssistantTerminalTarget | null) =>
     a?.session === b?.session && a?.machine === b?.machine && a?.sessionId === b?.sessionId;
   let inputRequested = false;
   const backToList = () => { inputRequested = false; list.focus({ preventScroll: true }); };
   listButton.onclick = backToList;
+  document.getElementById("assistant-pane-hide")!.onclick = () => { expanded = false; sync(); backToList(); };
   focusButton.onclick = () => { inputRequested = true; controller?.focus(); };
   skipButton.onclick = () => {
     (overlay?.querySelector<HTMLButtonElement>("button") ?? (focusButton.disabled ? listButton : focusButton)).focus();
@@ -154,7 +156,12 @@ export function createAssistantTerminal(deps: {
       shouldFocus: () => false,
       shouldReconnect: () => controller === owner && visible(),
       onOpen: () => { if (controller === owner) { clearOverlay(); status.textContent = "connecting"; } },
-      onHydrated: () => { if (controller === owner) { if (!overlay) status.textContent = "click to talk"; updateControls(); } },
+      onHydrated: () => {
+        if (controller !== owner) return;
+        if (!overlay) status.textContent = "click to talk";
+        updateControls();
+        if (inputRequested && !overlay && visible()) owner.focus();
+      },
       onViewerConflict: () => { if (controller === owner) showConflict(owner); },
       onControlGranted: () => { if (controller === owner) { clearOverlay(); status.textContent = "connecting"; } },
       onReconnecting: () => { if (controller === owner) status.textContent = "reconnecting"; },
@@ -186,6 +193,7 @@ export function createAssistantTerminal(deps: {
   function sync() {
     const show = visible();
     pane.hidden = !show;
+    list.parentElement!.classList.toggle("assistant-terminal-expanded", show);
     if (!show || !target) {
       if (controller) release();
       status.textContent = "assistant unavailable";
@@ -201,9 +209,18 @@ export function createAssistantTerminal(deps: {
   return {
     get layoutController(): Pick<PtyTerminalController, "resize" | "supportsOrderedResize"> | null { return visible() ? controller : null; },
     setTarget(next: AssistantTerminalTarget | null, reason = "the assistant terminal is not running yet.") { target = next; unavailableMessage = reason; sync(); },
+    expand(): boolean {
+      if (!active || !wide.matches) return false;
+      expanded = true;
+      sync();
+      inputRequested = true;
+      if (container.classList.contains("hydrated")) controller?.focus();
+      return true;
+    },
     setActive(next: boolean) {
       const opening = next && !active;
       active = next;
+      if (!active) expanded = false;
       if (opening && wide.matches) backToList();
       sync();
     },

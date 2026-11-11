@@ -19,7 +19,7 @@ for (const failure of ["identity", "not-owner"] as const) test(`C1: cached reloa
     await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
     await expect(page.locator("#assistant-content .focus-header")).toContainText("focus unavailable");
     await expect(page.locator("#assistant-content").getByRole("button", { name: "Talk to assistant" })).toBeDisabled();
-    await expect(page.locator("#assistant-pane-empty")).toBeVisible();
+    await expect(page.locator("#assistant-pane")).toBeHidden();
     expect(home.sockets, "explicit rejection cannot start a new name-addressed socket").toHaveLength(1);
     await page.screenshot({ path: info.outputPath(`c1-${failure}.png`), fullPage: true });
     // A later store-only fault cannot revive the rejected owner either.
@@ -38,6 +38,7 @@ for (const failure of ["identity", "not-owner"] as const) test(`C1: cached reloa
     await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
     await expect(page.locator("#assistant-content .focus-nudge")).toHaveText(/^remote focus read /);
     await expect(page.locator("#assistant-content").getByRole("button", { name: "Talk to assistant" })).toBeEnabled();
+    await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
     await expect.poll(() => home.sockets.length).toBe(2);
   } finally { home.release(); }
 });

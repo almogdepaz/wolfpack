@@ -35,6 +35,8 @@ async function focus(page: Page) {
   } }));
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await expect(page.locator("#assistant-pane")).toBeHidden();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
 }
 async function screen(page: Page) {
   const response = await page.request.get(`${server.baseUrl}/api/session-control/snapshot?sessionId=${sessionId}`);
@@ -61,13 +63,17 @@ test("real broker pane handover preserves input and never conflicts with its own
   await pane(page).locator("canvas").click();
   await page.keyboard.type("printf 'pane-before-%s\\n' handover\n");
   await expect.poll(() => screen(page)).toContain("pane-before-handover");
+  await page.setViewportSize({ width: 1279, height: 720 });
   await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
+  await page.setViewportSize({ width: 1280, height: 720 });
   await expect(page.locator("#desktop-terminal-container")).toHaveClass(/hydrated/);
   await expect(page.locator(".viewer-conflict-overlay")).toHaveCount(0);
   await page.locator("#desktop-terminal-container canvas").click();
   await page.keyboard.type("printf 'pane-after-%s\\n' handover\n");
   await expect.poll(() => screen(page)).toContain("pane-after-handover");
   await page.locator("#sidebar-assistant").click();
+  await expect(page.locator("#assistant-pane")).toBeHidden();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   await expect(page.locator("#assistant-pty")).toHaveClass(/hydrated/);
   await expect(page.locator(".viewer-conflict-overlay")).toHaveCount(0);
   await expect(page.locator("#desktop-terminal-container canvas")).toHaveCount(0);

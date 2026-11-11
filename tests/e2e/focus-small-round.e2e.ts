@@ -87,6 +87,7 @@ test("QA-34: hover sidebar overlays without shrinking the hydrated pane", async 
   await page.addInitScript(() => localStorage.setItem("wolfpack-sidebar-pinned", "0"));
   await page.setViewportSize({ width: 1440, height: 900 });
   await openAssistant(page);
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
   const pane = page.locator("#assistant-pty");
   await expect(pane).toHaveClass(/hydrated/);
   await expect.poll(() => pane.evaluate(el => el.querySelector("canvas")!.getBoundingClientRect().width <= el.clientWidth)).toBe(true);

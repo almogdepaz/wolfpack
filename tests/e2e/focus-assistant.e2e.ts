@@ -151,6 +151,7 @@ test("the assistant's own session is not a card and not counted; its terminal is
   await expect(page.locator("#session-list .machine-session-count").first()).toHaveText("4 sessions");
   await expect(page.locator("#dashboard-session-filter [data-session-card-view=idle] .n")).toHaveAttribute("data-count", "4");
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.setViewportSize({ width: Math.min(page.viewportSize()!.width, 1279), height: 900 });
   await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible();
   await expect(page.locator("#assistant-terminal-stop")).toHaveText(/disable/i);
@@ -183,6 +184,7 @@ test("disabling the assistant elsewhere while its page is open returns to sessio
 test("a failed disable from the terminal header is worded as the assistant's, not unpin & stop", async ({ page }) => {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.setViewportSize({ width: Math.min(page.viewportSize()!.width, 1279), height: 900 });
   await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
   await expect(page.locator("#assistant-terminal-stop")).toBeVisible();
   await page.route("**/api/kill", route => route.fulfill({ status: 503, json: { error: "broker unavailable" } }));
@@ -202,6 +204,7 @@ test("talk opens the assistant terminal, Focus returns, there is no ask box, and
   // the terminal is how the user talks to the assistant: the page has no ask box and no reply area
   await expect(page.locator("#assistant-view").getByRole("textbox", { name: "Ask the assistant" })).toHaveCount(0);
   await expect(page.locator("#assistant-view .focus-reply")).toHaveCount(0);
+  await page.setViewportSize({ width: Math.min(page.viewportSize()!.width, 1279), height: 900 });
   await page.locator("#assistant-view").getByRole("button", { name: "Talk to assistant" }).click();
   await expect(page.locator("#terminal-view")).toBeVisible();
   await expect(page.locator("#assistant-terminal-focus")).toBeVisible();

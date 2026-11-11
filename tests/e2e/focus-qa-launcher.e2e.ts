@@ -79,6 +79,7 @@ test("QA-5: the sidebar assistant remains reachable with no other sessions", asy
   });
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant", exact: true }).click();
+  await page.setViewportSize({ width: 1279, height: 900 });
   await page.getByRole("button", { name: "Talk to assistant" }).click();
   await expect(page.locator("#assistant-terminal-header")).toBeVisible();
   await expect(page.locator("#sidebar-session-list .card")).toHaveCount(0);

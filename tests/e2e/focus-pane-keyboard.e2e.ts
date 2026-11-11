@@ -10,6 +10,8 @@ const pane = (page: Page) => page.getByRole("region", { name: "Assistant termina
 async function openFocus(page: Page) {
   await page.goto(server.baseUrl);
   await page.locator("#dashboard-focus").getByRole("button", { name: "Open assistant page", exact: true }).click();
+  await page.getByRole("button", { name: "Talk to assistant", exact: true }).click();
+  await page.locator(".assistant-column").focus();
 }
 async function tabToOverlay(page: Page, action: string) {
   // The header precedes both terminal input and its overlay in document order.
@@ -23,8 +25,7 @@ test("QA-24: the pane has a short keyboard path before all focus cards", async (
   const owner = await context.newPage();
   try {
     await openFocus(owner);
-    await owner.getByRole("button", { name: "Talk to assistant", exact: true }).click();
-    await expect(owner.locator("#desktop-terminal-container")).toHaveClass(/hydrated/);
+    await expect(owner.locator("#assistant-pty")).toHaveClass(/hydrated/);
     await openFocus(page);
     await expect(pane(page).getByRole("button", { name: "Take Control", exact: true })).toBeVisible();
     await expect(page.locator(".assistant-column")).toBeFocused();
@@ -137,8 +138,7 @@ for (const key of ["Enter", "Space"]) {
     });
     try {
       await openFocus(owner);
-      await owner.getByRole("button", { name: "Talk to assistant", exact: true }).click();
-      await expect(owner.locator("#desktop-terminal-container")).toHaveClass(/hydrated/);
+      await expect(owner.locator("#assistant-pty")).toHaveClass(/hydrated/);
       await openFocus(page);
       const overlay = pane(page).getByRole("dialog", { name: "Session active on another device", exact: true });
       await expect(overlay).toBeVisible();
@@ -150,7 +150,7 @@ for (const key of ["Enter", "Space"]) {
       await expect.poll(() => granted).toBe(1);
       await expect(page.locator(".assistant-column")).toBeFocused();
       expect(takeovers).toBe(1);
-      await expect(owner.locator("#desktop-conflict-overlay")).toBeVisible();
+      await expect(pane(owner).locator(".viewer-conflict-overlay")).toBeVisible();
     } finally { await owner.close(); }
   });
 

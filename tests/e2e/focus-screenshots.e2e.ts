@@ -8,6 +8,7 @@ let server: TestServer;
 test.beforeAll(async () => { server = await startTestServer({ focusAssistant: true }); });
 test.afterAll(async () => { await server?.close(); });
 test("needs-you state header opens the assistant terminal while the tile opens the view", async ({ page }) => {
+  await page.setViewportSize({ width: Math.min(page.viewportSize()!.width, 1279), height: 900 });
   await page.route(url => url.pathname === "/api/focus", async route => {
     const response = await route.fetch();
     const body = await response.json();
@@ -44,8 +45,8 @@ test("focus screenshot and layout evidence", async ({ page }, info) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: join(screenshots, `focus-assistant-${desktop ? 1440 : 390}.png`), fullPage: true });
   await page.getByRole("button", { name: "Talk to assistant" }).click();
-  await expect(page.locator("#assistant-terminal-header")).toBeVisible();
-  await expect(page.locator("#desktop-terminal-container canvas").first()).toBeVisible();
+  await expect(page.locator(desktop ? "#assistant-pane" : "#assistant-terminal-header")).toBeVisible();
+  await expect(page.locator(desktop ? "#assistant-pane canvas" : "#desktop-terminal-container canvas").first()).toBeVisible();
   if (desktop) {
     await expect(page.locator("#sidebar-assistant")).toBeVisible();
     const measures = await page.evaluate(() => {
@@ -61,7 +62,7 @@ test("focus screenshot and layout evidence", async ({ page }, info) => {
     expect(measures.filter.y).toBeGreaterThanOrEqual(measures.tile.y + measures.tile.height);
     expect(Math.round(measures.tile.width)).toBe(Math.round(measures.filter.width));
     expect(measures.tile.height).toBeGreaterThanOrEqual(44);
-    expect((await new AxeBuilder({ page }).include("#sidebar-session-controls").include("#assistant-terminal-header").analyze()).violations).toEqual([]);
+    expect((await new AxeBuilder({ page }).include("#sidebar-session-controls").include("#assistant-pane").analyze()).violations).toEqual([]);
   }
   await page.screenshot({ path: join(screenshots, `focus-terminal-${desktop ? 1440 : 390}.png`), fullPage: true });
 });
@@ -171,7 +172,8 @@ test("QA layout: fixed disclosure/action columns, full-width bodies, shared cont
     expect.soft(Math.abs(insets.label - insets.next), "N2 card label inset matches filter").toBeLessThanOrEqual(1);
     expect.soft(insets.outer, "N2 concentric filter shell").toBe(insets.inner + insets.padding);
   }
-  await page.locator("#assistant-terminal-header").getByRole("button", { name: "Focus", exact: true }).click();
+  if (desktop) await page.getByRole("button", { name: "Hide assistant terminal", exact: true }).click();
+  else await page.locator("#assistant-terminal-header").getByRole("button", { name: "Focus", exact: true }).click();
   await view.getByRole("button", { name: "Assistant settings" }).click();
   const form = page.locator("#assistant-timing");
   const save = (await form.getByRole("button", { name: "Save timing", exact: true }).boundingBox())!;
