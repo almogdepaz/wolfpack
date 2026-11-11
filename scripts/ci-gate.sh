@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-stages=(context broker-build broker-test audit assets typecheck unit integration bundle e2e-pr perf)
+stages=(context rustfmt lint broker-build clippy broker-test audit assets typecheck unit integration bundle e2e-pr perf)
 selected=()
 with_audit=false
 list=false
@@ -30,6 +30,10 @@ require_broker() {
 }
 
 stage_context() { bun run check:context; }
+stage_rustfmt() { cargo fmt --manifest-path broker/Cargo.toml --check; }
+stage_lint() { bun run lint; }
+# Like broker-build, Clippy requires the verified native bundle prepared at setup.
+stage_clippy() { cargo clippy --locked --manifest-path broker/Cargo.toml --all-targets; }
 stage_broker_build() { cargo build --release --locked --manifest-path broker/Cargo.toml --bin wolfpack-broker; }
 stage_broker_test() { cargo test --locked --manifest-path broker/Cargo.toml --all; }
 stage_audit() {
