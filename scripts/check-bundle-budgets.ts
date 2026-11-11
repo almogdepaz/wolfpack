@@ -30,7 +30,8 @@ export const BUNDLE_BUDGETS: ReadonlyArray<readonly [string, number, number]> = 
   // USER APPROVED #198 session labels/editor: raw 113200 -> 115000, gzip 21000 -> 21600.
   // USER APPROVED 2026-11-10 focus + main merge: raw 115000 -> 120000 (gzip unchanged).
   // USER APPROVED 2026-11-11 editable focus suggestion: gzip 21600 -> 21800 (raw unchanged).
-  ["public/styles.css", 120_000, 21_800],
+  // USER APPROVED 2026-11-11 focus cards redesign: gzip 21800 -> 22000 (raw unchanged).
+  ["public/styles.css", 120_000, 22_000],
 ];
 if (import.meta.main) {
   let failed = false;
