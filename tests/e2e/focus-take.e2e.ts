@@ -27,12 +27,13 @@ async function setup(page: Page) {
     ...current.document.intentions.map((i: { id: string }) => ({ type: "drop", id: i.id })),
     { type: "add", intention: { id: "release", title: "Ship the release" } }, op,
   ]);
-  const state = { answered: false, offline: false };
+  const state = { answered: false, offline: false, stale: false };
   await page.route(url => url.pathname === "/api/focus", async route => {
     if (state.offline) return route.abort();
     if (route.request().method() !== "GET") return route.continue();
     const response = await route.fetch(); const body = await response.json();
-    delete body.routines;
+    if (state.stale) body.routines = { catchingUp: null, stale: { since: new Date().toISOString() }, unreachable: [], surfaced: null };
+    else delete body.routines;
     await route.fulfill({ response, json: body });
   });
   await page.route("**/api/sessions", async route => {
@@ -107,6 +108,33 @@ test("take sits below cards on both hosts; dismissal persists and a newer order 
   await refresh(page);
   await expect(view.locator(".focus-next > li")).toHaveCount(1);
   await expect(pageTake).toHaveCount(0);
+});
+
+for (const host of ["dashboard", "page"] as const) test(`${host}: a known-stale take stays hidden when focus goes offline`, async ({ page }) => {
+  const { state } = await setup(page);
+  // The reviewer's no-target probe isolates stale authority from about-card retirement.
+  await write(page, [{ type: "next", author: "assistant", rows: [], take: { text, about: [] } }]);
+  await page.goto(server.baseUrl);
+  const block = page.locator("#dashboard-focus");
+  if (host === "page") await block.getByRole("button", { name: "Open assistant page", exact: true }).click();
+  const surface = host === "page" ? page.locator("#assistant-content") : block;
+  const take = surface.locator(".focus-take");
+  await expect(take).toContainText(text);
+  state.stale = true;
+  await refresh(page);
+  await expect(take).toHaveCount(0);
+  const cached = await page.evaluate(() => JSON.parse(localStorage.getItem("wolfpack-focus-cache")!));
+  expect(cached.routines.stale).toBeTruthy();
+  expect(cached.document.next.take).toEqual({ text, about: [] });
+  state.offline = true;
+  await refresh(page);
+  await expect(surface).toContainText("offline");
+  await expect(take).toHaveCount(0);
+  // A successful non-stale read, not a failed fetch, can clear that authority.
+  state.offline = false;
+  state.stale = false;
+  await refresh(page);
+  await expect(take).toContainText(text);
 });
 
 test("cached offline take cannot be dismissed or sent, and a new order without a take removes it", async ({ page }) => {

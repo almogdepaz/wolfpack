@@ -415,7 +415,8 @@ export function createAssistantView(deps: {
     : row.session.state === "failed" ? "failed" : row.session.state === "done" ? "is done" : "stopped"}` : nextTitle(row));
   function takeHtml() {
     const current = doc();
-    if (!takeVisible(current, cardOrder().cards, nextOrder(0).order)) return "";
+    // Unavailable routine UI must not erase the last known stale authority.
+    if (focus?.routines?.stale || !takeVisible(current, cardOrder().cards, nextOrder(0).order)) return "";
     const next = current.next!;
     return `<div class="focus-take"><div><div class="focus-take-label">assistant's take · ${esc(age(next.updatedAt))} ago</div>${esc(next.take!.text)}</div><div class="focus-take-actions"><button type="button" data-focus-action="seen-take" data-focus-at="${escAttr(next.updatedAt)}" data-focus-key="action:seen-take" aria-label="Got it: dismiss the assistant's take"${locked() ? " disabled" : ""}>got it</button>${button("talk", "reply ›", "Reply to assistant", locked() || !terminalTarget(), "take-reply")}</div></div>`;
   }
