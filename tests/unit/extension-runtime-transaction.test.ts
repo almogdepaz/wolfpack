@@ -243,11 +243,17 @@ describe("registry lock ownership", () => {
   }
   function locked(owner?: unknown) {
     const base = root();
-    const runtime = new ExtensionRuntime({ root: join(base, "runtime"), installationId: hostId });
+    const runtime = new ExtensionRuntime({
+      root: join(base, "runtime"),
+      installationId: hostId,
+    });
     const source = fixture(base);
     const lock = join(runtime.root, ".registry-lock");
     mkdirSync(lock, { recursive: true, mode: 0o700 });
-    if (owner !== undefined) writeFileSync(join(lock, "owner.json"), JSON.stringify(owner), { mode: 0o600 });
+    if (owner !== undefined)
+      writeFileSync(join(lock, "owner.json"), JSON.stringify(owner), {
+        mode: 0o600,
+      });
     return { runtime, source, lock };
   }
   test("live owner remains BUSY with pid and lock diagnosis", async () => {
@@ -257,12 +263,18 @@ describe("registry lock ownership", () => {
     await expect(attempt).rejects.toMatchObject({ code: "BUSY" });
     await expect(attempt).rejects.toThrow(`pid ${process.pid}`);
     await expect(attempt).rejects.toThrow(lock);
-    expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"))).toEqual(owner);
+    expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"))).toEqual(
+      owner,
+    );
   });
   test("a competing recovery cannot expose a live writer's lock to a third writer", () => {
     const dead = Bun.spawnSync(["true"]);
-    const { runtime, lock } = locked({ pid: dead.pid, startTime: "exited fixture" });
-    const transaction = (fn: () => void) => (runtime as unknown as { withLock(fn: () => void): void }).withLock(fn);
+    const { runtime, lock } = locked({
+      pid: dead.pid,
+      startTime: "exited fixture",
+    });
+    const transaction = (fn: () => void) =>
+      (runtime as unknown as { withLock(fn: () => void): void }).withLock(fn);
     const rename = fs.renameSync;
     let interleaved = false;
     let thirdEntered = false;
@@ -276,14 +288,24 @@ describe("registry lock ownership", () => {
         try {
           transaction(() => {
             rename(from, to);
-            try { transaction(() => { thirdEntered = true; }); }
-            catch (error) { thirdError = error; }
+            try {
+              transaction(() => {
+                thirdEntered = true;
+              });
+            } catch (error) {
+              thirdError = error;
+            }
           });
         } catch (error) {
           competingError = error;
           rename(from, to);
-          try { transaction(() => { thirdEntered = true; }); }
-          catch (error) { thirdError = error; }
+          try {
+            transaction(() => {
+              thirdEntered = true;
+            });
+          } catch (error) {
+            thirdError = error;
+          }
         }
         return;
       }
@@ -292,7 +314,11 @@ describe("registry lock ownership", () => {
     syncBuiltinESMExports();
     try {
       let recoveryError: unknown;
-      try { transaction(() => {}); } catch (error) { recoveryError = error; }
+      try {
+        transaction(() => {});
+      } catch (error) {
+        recoveryError = error;
+      }
       expect(interleaved).toBe(true);
       expect(thirdEntered).toBe(false);
       expect(thirdError).toMatchObject({ code: "BUSY" });
@@ -303,35 +329,57 @@ describe("registry lock ownership", () => {
       syncBuiltinESMExports();
     }
   });
-  test.each(["missing", "partial", "dead", "live"])("%s recovery owner always fails closed", async kind => {
-    const child = Bun.spawnSync(["true"]);
-    for (const canonicalExists of [true, false]) {
-      const { runtime, source, lock } = locked({ pid: child.pid, startTime: "exited fixture" });
-      if (!canonicalExists) rmSync(lock, { recursive: true });
-      const recovery = `${lock}.recovery`;
-      mkdirSync(recovery, { mode: 0o700 });
-      if (kind !== "missing") writeFileSync(join(recovery, "owner.json"), kind === "partial" ? "{partial" : JSON.stringify({
-        pid: kind === "live" ? process.pid : child.pid,
-        startTime: kind === "live" ? selfStartTime() : "exited fixture",
-      }), { mode: 0o600 });
-      const attempt = runtime.install({ source, trustBrowserCode: true });
-      await expect(attempt).rejects.toMatchObject({ code: "BUSY" });
-      await expect(attempt).rejects.toThrow(lock);
-      await expect(attempt).rejects.toThrow(recovery);
-      await expect(attempt).rejects.toThrow("remove it manually");
-      expect(existsSync(recovery)).toBe(true);
-      expect(existsSync(lock)).toBe(canonicalExists);
-    }
-  });
+  test.each(["missing", "partial", "dead", "live"])(
+    "%s recovery owner always fails closed",
+    async (kind) => {
+      const child = Bun.spawnSync(["true"]);
+      for (const canonicalExists of [true, false]) {
+        const { runtime, source, lock } = locked({
+          pid: child.pid,
+          startTime: "exited fixture",
+        });
+        if (!canonicalExists) rmSync(lock, { recursive: true });
+        const recovery = `${lock}.recovery`;
+        mkdirSync(recovery, { mode: 0o700 });
+        if (kind !== "missing")
+          writeFileSync(
+            join(recovery, "owner.json"),
+            kind === "partial"
+              ? "{partial"
+              : JSON.stringify({
+                  pid: kind === "live" ? process.pid : child.pid,
+                  startTime:
+                    kind === "live" ? selfStartTime() : "exited fixture",
+                }),
+            { mode: 0o600 },
+          );
+        const attempt = runtime.install({ source, trustBrowserCode: true });
+        await expect(attempt).rejects.toMatchObject({ code: "BUSY" });
+        await expect(attempt).rejects.toThrow(lock);
+        await expect(attempt).rejects.toThrow(recovery);
+        await expect(attempt).rejects.toThrow("remove it manually");
+        expect(existsSync(recovery)).toBe(true);
+        expect(existsSync(lock)).toBe(canonicalExists);
+      }
+    },
+  );
   test("canonical ownership is rechecked after recovery guard acquisition", () => {
     const dead = Bun.spawnSync(["true"]);
-    const { runtime, lock } = locked({ pid: dead.pid, startTime: "exited fixture" });
+    const { runtime, lock } = locked({
+      pid: dead.pid,
+      startTime: "exited fixture",
+    });
     const live = { pid: process.pid, startTime: selfStartTime() };
-    const mkdir = fs.mkdirSync, rename = fs.renameSync;
+    const mkdir = fs.mkdirSync,
+      rename = fs.renameSync;
     let retirements = 0;
-    const mkdirSpy = spyOn(fs, "mkdirSync").mockImplementation(((path: fs.PathLike, options: fs.MakeDirectoryOptions) => {
+    const mkdirSpy = spyOn(fs, "mkdirSync").mockImplementation(((
+      path: fs.PathLike,
+      options: fs.MakeDirectoryOptions,
+    ) => {
       const result = mkdir(path, options);
-      if (path === `${lock}.recovery`) writeFileSync(join(lock, "owner.json"), JSON.stringify(live));
+      if (path === `${lock}.recovery`)
+        writeFileSync(join(lock, "owner.json"), JSON.stringify(live));
       return result;
     }) as typeof fs.mkdirSync);
     const renameSpy = spyOn(fs, "renameSync").mockImplementation((from, to) => {
@@ -342,10 +390,14 @@ describe("registry lock ownership", () => {
     try {
       expect(() => runtime.remove("fixture")).toThrow(`pid ${process.pid}`);
       expect(retirements).toBe(0);
-      expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"))).toEqual(live);
+      expect(
+        JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")),
+      ).toEqual(live);
       expect(existsSync(`${lock}.recovery`)).toBe(false);
     } finally {
-      mkdirSpy.mockRestore(); renameSpy.mockRestore(); syncBuiltinESMExports();
+      mkdirSpy.mockRestore();
+      renameSpy.mockRestore();
+      syncBuiltinESMExports();
     }
   });
   test("an alive but unverifiable owner remains BUSY", async () => {
@@ -353,92 +405,178 @@ describe("registry lock ownership", () => {
     const { runtime, source, lock } = locked({ pid, startTime: "unavailable" });
     const kill = process.kill;
     const spy = spyOn(process, "kill").mockImplementation((value, signal) => {
-      if (value === pid) throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+      if (value === pid)
+        throw Object.assign(new Error("permission denied"), { code: "EPERM" });
       return kill(value, signal);
     });
     try {
-      await expect(runtime.install({ source, trustBrowserCode: true })).rejects.toMatchObject({ code: "BUSY" });
+      await expect(
+        runtime.install({ source, trustBrowserCode: true }),
+      ).rejects.toMatchObject({ code: "BUSY" });
       expect(existsSync(lock)).toBe(true);
       expect(existsSync(`${lock}.recovery`)).toBe(false);
-    } finally { spy.mockRestore(); }
+    } finally {
+      spy.mockRestore();
+    }
   });
   test("release preserves a replaced owner record", () => {
-    const base = root(), lock = join(base, "runtime", ".registry-lock");
-    const runtime = new ExtensionRuntime({ root: join(base, "runtime"), installationId: hostId });
+    const base = root(),
+      lock = join(base, "runtime", ".registry-lock");
+    const runtime = new ExtensionRuntime({
+      root: join(base, "runtime"),
+      installationId: hostId,
+    });
     const replacement = { pid: process.pid, startTime: "replacement identity" };
     (runtime as unknown as { withLock(fn: () => void): void }).withLock(() => {
       writeFileSync(join(lock, "owner.json"), JSON.stringify(replacement));
     });
-    expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"))).toEqual(replacement);
+    expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8"))).toEqual(
+      replacement,
+    );
   });
-  test.each(["ownerless", "published", "retired"])("crash with %s recovery guard requires manual recovery", async state => {
-    const base = root();
-    const runtime = new ExtensionRuntime({ root: join(base, "runtime"), installationId: hostId });
-    const source = fixture(base);
-    await runtime.install({ source, trustBrowserCode: true });
-    const lock = join(runtime.root, ".registry-lock"), recovery = `${lock}.recovery`;
-    const dead = Bun.spawnSync(["true"]);
-    mkdirSync(lock);
-    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: dead.pid, startTime: "exited fixture" }));
-    for (const name of ["home", "zdotdir", "state"]) mkdirSync(join(base, name));
-    const child = spawnSync(process.execPath, [
-      "--preload", join(import.meta.dirname, "fixtures/fs-crash-preload.ts"),
-      join(import.meta.dirname, "fixtures/extension-registry-crash-child.ts"),
-    ], {
-      encoding: "utf8", timeout: 10000,
-      env: { ...process.env, HOME: join(base, "home"), ZDOTDIR: join(base, "zdotdir"),
-        WOLFPACK_DIR: join(base, "state"), WOLFPACK_TEST: "1", ENV: undefined, BASH_ENV: undefined,
-        WP_CRASH_ROOT: runtime.root, WP_CRASH_SOURCE: source, WP_CRASH_OP: "remove", WP_CRASH_AT: "500", WP_CRASH_RECOVERY_STATE: state },
-    });
-    expect(child.error).toBeUndefined();
-    expect(child.signal).toBe("SIGKILL");
-    expect(existsSync(recovery)).toBe(true);
-    expect(existsSync(join(recovery, "owner.json"))).toBe(state !== "ownerless");
-    const attempt = runtime.install({ source, trustBrowserCode: true });
-    await expect(attempt).rejects.toMatchObject({ code: "BUSY" });
-    await expect(attempt).rejects.toThrow(recovery);
-    await expect(attempt).rejects.toThrow("remove it manually");
-    expect(existsSync(lock)).toBe(state !== "retired");
-    expect(existsSync(recovery)).toBe(true);
-  });
+  test.each(["ownerless", "published", "retired"])(
+    "crash with %s recovery guard requires manual recovery",
+    async (state) => {
+      const base = root();
+      const runtime = new ExtensionRuntime({
+        root: join(base, "runtime"),
+        installationId: hostId,
+      });
+      const source = fixture(base);
+      await runtime.install({ source, trustBrowserCode: true });
+      const lock = join(runtime.root, ".registry-lock"),
+        recovery = `${lock}.recovery`;
+      const dead = Bun.spawnSync(["true"]);
+      mkdirSync(lock);
+      writeFileSync(
+        join(lock, "owner.json"),
+        JSON.stringify({ pid: dead.pid, startTime: "exited fixture" }),
+      );
+      for (const name of ["home", "zdotdir", "state"])
+        mkdirSync(join(base, name));
+      const child = spawnSync(
+        process.execPath,
+        [
+          "--preload",
+          join(import.meta.dirname, "fixtures/fs-crash-preload.ts"),
+          join(
+            import.meta.dirname,
+            "fixtures/extension-registry-crash-child.ts",
+          ),
+        ],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+          env: {
+            ...process.env,
+            HOME: join(base, "home"),
+            ZDOTDIR: join(base, "zdotdir"),
+            WOLFPACK_DIR: join(base, "state"),
+            WOLFPACK_TEST: "1",
+            ENV: undefined,
+            BASH_ENV: undefined,
+            WP_CRASH_ROOT: runtime.root,
+            WP_CRASH_SOURCE: source,
+            WP_CRASH_OP: "remove",
+            WP_CRASH_AT: "500",
+            WP_CRASH_RECOVERY_STATE: state,
+          },
+        },
+      );
+      expect(child.error).toBeUndefined();
+      expect(child.signal).toBe("SIGKILL");
+      expect(existsSync(recovery)).toBe(true);
+      expect(existsSync(join(recovery, "owner.json"))).toBe(
+        state !== "ownerless",
+      );
+      const attempt = runtime.install({ source, trustBrowserCode: true });
+      await expect(attempt).rejects.toMatchObject({ code: "BUSY" });
+      await expect(attempt).rejects.toThrow(recovery);
+      await expect(attempt).rejects.toThrow("remove it manually");
+      expect(existsSync(lock)).toBe(state !== "retired");
+      expect(existsSync(recovery)).toBe(true);
+    },
+  );
   test("published dead owner is cleared without leaving a stale directory", async () => {
     const child = Bun.spawnSync(["true"]);
     expect(child.exitCode).toBe(0);
-    const { runtime, source, lock } = locked({ pid: child.pid, startTime: "exited fixture" });
-    await expect(runtime.install({ source, trustBrowserCode: true })).resolves.toHaveProperty("installation");
+    const { runtime, source, lock } = locked({
+      pid: child.pid,
+      startTime: "exited fixture",
+    });
+    await expect(
+      runtime.install({ source, trustBrowserCode: true }),
+    ).resolves.toHaveProperty("installation");
     expect(existsSync(lock)).toBe(false);
-    expect(readdirSync(runtime.root).filter(name => name.startsWith(".registry-lock"))).toEqual([]);
+    expect(
+      readdirSync(runtime.root).filter((name) =>
+        name.startsWith(".registry-lock"),
+      ),
+    ).toEqual([]);
   });
   test("reused pid with a different published start time is cleared", async () => {
-    const { runtime, source, lock } = locked({ pid: process.pid, startTime: `${selfStartTime()}-different` });
-    await expect(runtime.install({ source, trustBrowserCode: true })).resolves.toHaveProperty("installation");
+    const { runtime, source, lock } = locked({
+      pid: process.pid,
+      startTime: `${selfStartTime()}-different`,
+    });
+    await expect(
+      runtime.install({ source, trustBrowserCode: true }),
+    ).resolves.toHaveProperty("installation");
     expect(existsSync(lock)).toBe(false);
-    expect(readdirSync(runtime.root).filter(name => name.startsWith(".registry-lock"))).toEqual([]);
+    expect(
+      readdirSync(runtime.root).filter((name) =>
+        name.startsWith(".registry-lock"),
+      ),
+    ).toEqual([]);
   });
-  test.each(["missing", "partial"])("%s owner record stays BUSY with manual guidance", async kind => {
-    const { runtime, source, lock } = locked();
-    if (kind === "partial") writeFileSync(join(lock, "owner.json"), "{partial", { mode: 0o600 });
-    const attempt = runtime.install({ source, trustBrowserCode: true });
-    await expect(attempt).rejects.toMatchObject({ code: "BUSY" });
-    await expect(attempt).rejects.toThrow(lock);
-    await expect(attempt).rejects.toThrow("remove it manually");
-    expect(existsSync(lock)).toBe(true);
-  });
+  test.each(["missing", "partial"])(
+    "%s owner record stays BUSY with manual guidance",
+    async (kind) => {
+      const { runtime, source, lock } = locked();
+      if (kind === "partial")
+        writeFileSync(join(lock, "owner.json"), "{partial", { mode: 0o600 });
+      const attempt = runtime.install({ source, trustBrowserCode: true });
+      await expect(attempt).rejects.toMatchObject({ code: "BUSY" });
+      await expect(attempt).rejects.toThrow(lock);
+      await expect(attempt).rejects.toThrow("remove it manually");
+      expect(existsSync(lock)).toBe(true);
+    },
+  );
   test("a killed transaction retains the published child owner record", async () => {
     const base = root();
-    const runtime = new ExtensionRuntime({ root: join(base, "runtime"), installationId: hostId });
+    const runtime = new ExtensionRuntime({
+      root: join(base, "runtime"),
+      installationId: hostId,
+    });
     const source = fixture(base);
     await runtime.install({ source, trustBrowserCode: true });
-    for (const name of ["home", "zdotdir", "state"]) mkdirSync(join(base, name));
-    const child = spawnSync(process.execPath, [
-      "--preload", join(import.meta.dirname, "fixtures/fs-crash-preload.ts"),
-      join(import.meta.dirname, "fixtures/extension-registry-crash-child.ts"),
-    ], {
-      encoding: "utf8", timeout: 10000,
-      env: { ...process.env, HOME: join(base, "home"), ZDOTDIR: join(base, "zdotdir"),
-        WOLFPACK_DIR: join(base, "state"), WOLFPACK_TEST: "1", ENV: undefined, BASH_ENV: undefined,
-        WP_CRASH_ROOT: runtime.root, WP_CRASH_SOURCE: source, WP_CRASH_OP: "remove", WP_CRASH_AT: "7" },
-    });
+    for (const name of ["home", "zdotdir", "state"])
+      mkdirSync(join(base, name));
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--preload",
+        join(import.meta.dirname, "fixtures/fs-crash-preload.ts"),
+        join(import.meta.dirname, "fixtures/extension-registry-crash-child.ts"),
+      ],
+      {
+        encoding: "utf8",
+        timeout: 10000,
+        env: {
+          ...process.env,
+          HOME: join(base, "home"),
+          ZDOTDIR: join(base, "zdotdir"),
+          WOLFPACK_DIR: join(base, "state"),
+          WOLFPACK_TEST: "1",
+          ENV: undefined,
+          BASH_ENV: undefined,
+          WP_CRASH_ROOT: runtime.root,
+          WP_CRASH_SOURCE: source,
+          WP_CRASH_OP: "remove",
+          WP_CRASH_AT: "7",
+        },
+      },
+    );
     expect(child.error).toBeUndefined();
     expect(child.signal).toBe("SIGKILL");
     const ownerPath = join(runtime.root, ".registry-lock", "owner.json");
