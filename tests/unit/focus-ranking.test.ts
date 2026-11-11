@@ -5,7 +5,7 @@ const now = "2026-11-06T12:00:00.000Z";
 test("card classifier follows precedence, retains assistant actions, and counts non-cards before caps", () => {
   const stop = (id: string, state = "done", extra = {}) => ({ ...session(id, state, now), unseen: true, stoppedSequence: 2, ...extra });
   const parent = stop("parent", "idle", { children: { total: 2, working: 1, status: "work" } });
-  const child = stop("child", "done", { parentId: "parent" });
+  const child = stop("child", "done", { parentId: "parent", parentLive: true });
   const busy = session("busy", "working", now);
   const quiet = { ref: { machine: "home", sessionId: "quiet" }, verdict: "quiet" as const, reason: "finished", stoppedAt: now };
   const row = (s: FocusSession, triage?: FocusAction["triage"]): FocusAction => ({ kind: "open", session: s, reason: "rules", triage });
@@ -28,7 +28,7 @@ test("card classifier follows precedence, retains assistant actions, and counts 
   expect(result.working).toBe(1);
   expect(result.notReached).toHaveLength(1);
   // Same id on another installation is not a live parent.
-  expect(focusCards([row({ ...child, machineInstallationId: "peer" })], [{ ...parent, machineInstallationId: "home" }]).cards).toHaveLength(1);
+  expect(focusCards([row({ ...child, machineInstallationId: "peer", parentLive: false })], [{ ...parent, machineInstallationId: "home" }]).cards).toHaveLength(1);
 });
 const doc = () => reduceFocus(emptyFocus(), [
   { type: "add", intention: { id: "a", title: "first", project: "/a", sessions: ["linked", "busy"] } },
@@ -36,6 +36,12 @@ const doc = () => reduceFocus(emptyFocus(), [
   { type: "add", intention: { id: "c", title: "done" } }, { type: "done", id: "c" },
 ], now);
 const session = (id: string, state: string, changedAt: string, cwd = "/a"): FocusSession => ({ id, name: id, state, changedAt, cwd, machine: "home" });
+test("decision B uses the complete-inventory parent fact even when the parent is not focus-eligible", () => {
+  const child: FocusSession = { ...session("child", "done", now), unseen: true, stoppedSequence: 2, parentId: "pinned", parentLive: true };
+  const row: FocusAction = { kind: "open", session: child, reason: "stop" };
+  expect(focusCards([row], [child]).cards).toHaveLength(0);
+  expect(focusCards([{ ...row, session: { ...child, parentLive: false } }], [child]).cards).toHaveLength(1);
+});
 test("next labels and verbs describe the session state, not stale input metadata", () => {
   for (const [inputKind, label, verb] of [["permission", "permission", "approve"], ["question", "question", "answer"], ["auth", "auth", "log in"], [undefined, "needs you", "open"]] as const) {
     const s = { ...session("broker-leak", "needs-input", now), inputKind };

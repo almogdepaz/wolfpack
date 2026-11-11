@@ -81,6 +81,12 @@ test("L4: equivalent episode timestamps match in reachable and cached paths", ()
   }
 });
 
+for (const state of ["needs-input", "failed"]) test(`cached ${state} remains an unavailable attention card under an exact triage verdict`, () => {
+  const a = session("a", state);
+  const result = mergeFocus(doc([triage("a")]), [a], { ...options, machineReachable: () => false });
+  expect(result.rows).toHaveLength(1);
+  expect(result.rows[0]).toMatchObject({ session: a, unavailable: true, triage: { verdict: "needs-you" }, reason: "Reason for a" });
+});
 test("L3: unknown installation ids cannot consume a placeholder slot", () => {
   const result = mergeFocus(doc([triage("remote", "suggest", "fabricated")]), [], options);
   expect(result.rows.every(row => !row.triage)).toBe(true);

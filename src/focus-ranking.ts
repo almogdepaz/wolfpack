@@ -17,6 +17,8 @@ export interface FocusSession {
   machineUrl?: string;
   machineInstallationId?: string;
   parentId?: string;
+  /** Parent presence in the owning machine's full inventory, before focus/pinned filtering. */
+  parentLive?: boolean;
   children?: { total: number; working: number; status: string };
   /** Shown in the card body only; ranking ignores it. */
   lastLine?: string;
@@ -130,8 +132,11 @@ export function mergeFocus(doc: FocusDocument, sessions: readonly FocusSession[]
       // Quiet is never authority to hide attention, even when the assistant judged this exact episode.
       if (triage.verdict === "quiet" && (!session || needsYou(session))) continue;
       if (!options.machineReachable(ref.machine)) {
-        // Keep the assistant's place and reason; no session action can use this placeholder.
-        row = { kind: "open", reason: triage.reason, unavailable: true };
+        // Cached attention is still attention, not a history-free placeholder. Preserve
+        // its physical target for a disabled card; unavailable actions cannot authorize sends.
+        row = session && needsYou(session)
+          ? { ...rules.find(r => r.session === session), kind: "open", session, reason: triage.reason, unavailable: true }
+          : { kind: "open", reason: triage.reason, unavailable: true };
       } else if (session) {
         const rule = rules.find(r => r.session === session);
         const done = triage.doneIntention && doc.intentions.find(i => i.id === triage.doneIntention && !i.done);
@@ -165,12 +170,12 @@ export function focusCards(rows: readonly FocusAction[], sessions: readonly Focu
   const notReached: FocusAction[] = [];
   for (const row of rows) {
     const s = row.session;
-    if (row.unavailable && !s) { notReached.push(row); continue; }
+    if (row.unavailable) { notReached.push(row); if (!s) continue; }
     if (s && needsYou(s) || row.triage?.verdict === "needs-you") cards.push({ row, kind: "action" });
     else if (row.triage?.verdict === "suggest" && (row.triage.suggestion || row.triage.doneIntention)) cards.push({ row, kind: "suggest" });
     else if (s && stoppedUnseen(s)) {
       if ((s.children?.working ?? 0) > 0) continue;
-      if (s.parentId && sessions.some(parent => parent.id === s.parentId && parent.machineInstallationId === s.machineInstallationId && parent.machineUrl === s.machineUrl)) continue;
+      if (s.parentLive) continue;
       if (s.state === AGENT_STATUS_STATE.DONE || !row.triage) cards.push({ row, kind: "done" });
     }
   }
