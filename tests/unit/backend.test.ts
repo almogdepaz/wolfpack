@@ -1,12 +1,8 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { createServerContext } from "../../src/server/context";
 import { MockBackend } from "../../src/server/mock-backend";
 
 describe("context-owned backend", () => {
-  beforeEach(() => {
-    process.env.WOLFPACK_TEST = "1";
-  });
-
   test("default construction provides the backend contract", () => {
     const { backend } = createServerContext({ startSupervisor: false });
     expect(backend).toBeDefined();
@@ -38,6 +34,7 @@ describe("context-owned backend", () => {
   });
 
   test("an injected backend does not start a broker outside test mode", () => {
+    const priorTestMode = process.env.WOLFPACK_TEST;
     delete process.env.WOLFPACK_TEST;
     try {
       const backend = new MockBackend();
@@ -45,11 +42,13 @@ describe("context-owned backend", () => {
       expect(context.backend).toBe(backend);
       expect(context.supervisor).toBeUndefined();
     } finally {
-      process.env.WOLFPACK_TEST = "1";
+      if (priorTestMode === undefined) delete process.env.WOLFPACK_TEST;
+      else process.env.WOLFPACK_TEST = priorTestMode;
     }
   });
 
   test("backend injection is local even without a test-mode guard", async () => {
+    const priorTestMode = process.env.WOLFPACK_TEST;
     delete process.env.WOLFPACK_TEST;
     try {
       const first = createServerContext({ backend: new MockBackend({ sessions: ["first"] }) });
@@ -57,7 +56,8 @@ describe("context-owned backend", () => {
       expect(await first.backend.list()).toEqual(["first"]);
       expect(await second.backend.list()).toEqual(["second"]);
     } finally {
-      process.env.WOLFPACK_TEST = "1";
+      if (priorTestMode === undefined) delete process.env.WOLFPACK_TEST;
+      else process.env.WOLFPACK_TEST = priorTestMode;
     }
   });
 });

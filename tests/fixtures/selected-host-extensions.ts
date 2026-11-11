@@ -51,7 +51,6 @@ async function close(server: Server): Promise<void> { server.closeAllConnections
 
 /** Actual installed runtimes/routes/git with controlled exact session facts and isolated Tailnet DNS/TLS. */
 export async function createSelectedHostFixture(options: { readonly timeoutMs?: number; readonly maxActive?: number; readonly handleLocalRequest?: (req: IncomingMessage, res: ServerResponse, url: URL) => boolean | Promise<boolean> } = {}) {
-  process.env.WOLFPACK_TEST = "1";
   const root = mkdtempSync(join(tmpdir(), "wolfpack-selected-hosts-"));
   const previousSecret = process.env.WOLFPACK_JWT_SECRET, previousStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;
   const localSecret = "selected-host-local-test-secret-123";

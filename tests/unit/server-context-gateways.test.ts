@@ -11,7 +11,6 @@ import { createServerContext } from "../../src/server/context.ts";
 import { createTaskRoutes } from "../../src/server/task-routes.ts";
 import { ExtensionRouteService } from "../../src/server/extension-routes.ts";
 
-process.env.WOLFPACK_TEST = "1";
 
 class InspectableBackend extends MockBackend {
   readonly inspected: string[] = [];

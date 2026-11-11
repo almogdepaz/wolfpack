@@ -11,7 +11,6 @@ import * as pushCrypto from "../../src/server/push.ts";
 const pushFixture = createPushFixture();
 beforeEach(() => pushFixture.reset());
 afterAll(() => pushFixture.close());
-process.env.WOLFPACK_TEST = "1";
 
 
 

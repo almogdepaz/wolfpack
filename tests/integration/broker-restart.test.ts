@@ -11,7 +11,6 @@
  * pair against the same broker socket — equivalent to bouncing the wolfpack
  * process while the broker keeps running.
  */
-process.env.WOLFPACK_TEST = "1";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";

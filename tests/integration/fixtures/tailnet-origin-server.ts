@@ -3,7 +3,6 @@ import {
 } from "../tailnet-origin-fixture.ts";
 import type { TailnetOriginReadyMessage } from "../tailnet-origin-fixture.ts";
 
-process.env.WOLFPACK_TEST = "1";
 
 const { createServerContext } = await import("../../../src/server/context.ts");
 const { MockBackend } = await import("../../../src/server/mock-backend.ts");

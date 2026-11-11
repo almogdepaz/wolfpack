@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,10 +67,6 @@ function createTestRouter(opts: { brokerMock?: MockBackend; backends?: MockBacke
 const loadSettings = () => ({ agentCmd: "shell" });
 
 describe("BrokerSupervisor", () => {
-  beforeEach(() => {
-    process.env.WOLFPACK_TEST = "1";
-  });
-
   describe("list()", () => {
     test("returns broker sessions sorted", async () => {
       const { router, brokerMock } = createTestRouter();

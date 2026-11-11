@@ -8,11 +8,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 const PRIOR_ENV = {
-  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
   WOLFPACK_DEV_DIR: process.env.WOLFPACK_DEV_DIR,
 } as const;
 
-process.env.WOLFPACK_TEST = "1";
 const RAW_TEST_DEV_DIR = mkdtempSync(join(tmpdir(), "wolfpack-audit-devdir-"));
 const TEST_DEV_DIR = realpathSync(RAW_TEST_DEV_DIR);
 process.env.WOLFPACK_DEV_DIR = TEST_DEV_DIR;
@@ -178,8 +176,6 @@ afterAll(() => {
 
   if (PRIOR_ENV.WOLFPACK_DEV_DIR === undefined) delete process.env.WOLFPACK_DEV_DIR;
   else process.env.WOLFPACK_DEV_DIR = PRIOR_ENV.WOLFPACK_DEV_DIR;
-  if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
-  else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
 });
 
 // ── 2. killPortHolder process verification ──

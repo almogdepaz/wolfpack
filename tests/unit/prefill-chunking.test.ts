@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 
-process.env.WOLFPACK_TEST = "1";
 
 const { sendPrefillChunked, PREFILL_CHUNK_SIZE } = await import("../../src/server/websocket.ts");
 

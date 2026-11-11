@@ -8,9 +8,8 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { validateControlApiSchemaValue as validate, type JsonObject } from "../control-api-schema-validator.ts";
 
-const names = ["WOLFPACK_TEST", "WOLFPACK_TASK_RELAY_ROOT", "WOLFPACK_TASK_RELAY_PROFILE", "WOLFPACK_TASK_RELAY_STORAGE", "WOLFPACK_JWT_SECRET", "WOLFPACK_JWT_AUDIENCE"];
+const names = ["WOLFPACK_TASK_RELAY_ROOT", "WOLFPACK_TASK_RELAY_PROFILE", "WOLFPACK_TASK_RELAY_STORAGE", "WOLFPACK_JWT_SECRET", "WOLFPACK_JWT_AUDIENCE"];
 const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
-process.env.WOLFPACK_TEST = "1";
 const root = mkdtempSync(join(tmpdir(), "wolfpack-volatile-http-"));
 const relayRoot = join(root, "relay"); mkdirSync(relayRoot); mkdirSync(join(root, "project"));
 const sentinel = join(relayRoot, "relay-state.json");

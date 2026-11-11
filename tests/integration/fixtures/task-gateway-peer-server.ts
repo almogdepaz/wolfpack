@@ -37,7 +37,6 @@ if ((role !== "sender" && role !== "receiver") || !taskRoot || !projectRoot || !
 }
 const fixtureProjectRoot = projectRoot;
 
-process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_TAILNET_SUFFIX = "example.ts.net";
 mkdirSync(projectRoot, { recursive: true });
 mkdirSync(join(process.env.HOME ?? "", ".wolfpack"), { recursive: true });

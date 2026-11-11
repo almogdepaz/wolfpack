@@ -5,11 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const priorEnv = {
-  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
   WOLFPACK_JWT_SECRET: process.env.WOLFPACK_JWT_SECRET,
   WOLFPACK_TAILSCALE_STATUS_JSON: process.env.WOLFPACK_TAILSCALE_STATUS_JSON,
 };
-process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({
   Self: {
@@ -57,13 +55,10 @@ afterAll(async () => {
   globalRateLimiter._map.clear();
   rmSync(root, { recursive: true, force: true });
   for (const [key, value] of Object.entries(priorEnv)) {
-    if (key === "WOLFPACK_TEST") continue;
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
 
-  if (priorEnv.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
-  else process.env.WOLFPACK_TEST = priorEnv.WOLFPACK_TEST;
 });
 
 function rawRequest(request: string): Promise<string> {

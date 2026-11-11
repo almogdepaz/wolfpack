@@ -279,7 +279,6 @@ describe("GET /api/directories", () => {
   const mockBackend = new MockBackend();
 
   beforeAll(async () => {
-    process.env.WOLFPACK_TEST = "1";
     process.env.WOLFPACK_DEV_DIR = configuredBase;
     const context = createServerContext({ backend: mockBackend, devDir: configuredBase });
     mkdirSync(join(configuredBase, "project"), { recursive: true });

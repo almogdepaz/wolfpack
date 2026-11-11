@@ -315,7 +315,6 @@ let client: FakeBrokerClient;
 let backend: BrokerBackend;
 
 beforeEach(() => {
-  process.env.WOLFPACK_TEST = "1";
   process.env.WOLFPACK_SESSION_IDENTITY_PATH = TEST_SESSION_IDENTITY_PATH;
   rmSync(sessionIdentityStorePath(), { force: true });
   client = new FakeBrokerClient();

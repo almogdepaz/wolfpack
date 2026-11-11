@@ -8,7 +8,6 @@ import { createRecoveryStore } from "../../src/task-relay/recovery-store.ts";
 import { createTaskRelayGateway } from "../../src/task-relay/gateway.ts";
 
 test("production HTTP preserves permanent storage-owner failures without blanket retryability", async () => {
-  const prior = process.env.WOLFPACK_TEST; process.env.WOLFPACK_TEST = "1";
   const { createServerContext } = await import("../../src/server/context.ts");
   const { createVolatileRelayRoutes } = await import("../../src/server/volatile-relay-routes.ts");
   const root = mkdtempSync("/tmp/relay-storage-http-");
@@ -28,6 +27,5 @@ test("production HTTP preserves permanent storage-owner failures without blanket
   } finally {
     await new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); });
     await gateway.close(); rmSync(root, { recursive: true, force: true });
-    if (prior === undefined) delete process.env.WOLFPACK_TEST; else process.env.WOLFPACK_TEST = prior;
   }
 });

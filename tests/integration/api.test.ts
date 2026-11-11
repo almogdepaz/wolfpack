@@ -44,7 +44,6 @@ import {
 import type { JsonObject } from "../control-api-schema-validator.ts";
 
 // ─── Environment setup (must precede imports that read env) ──────────────────
-process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 
 /** The public error text for a Claude task worker while `claudeTaskIntegration` is off. */

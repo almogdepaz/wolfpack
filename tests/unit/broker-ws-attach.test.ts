@@ -6,7 +6,6 @@
  * data-emit hook so we can assert that the snapshot+subscribe attach path
  * (replacing the old broker bail-out) wires the WS to the broker correctly.
  */
-process.env.WOLFPACK_TEST = "1";
 
 import { describe, expect, test, beforeEach, afterEach, jest } from "bun:test";
 import type { WebSocket as WsWebSocket } from "ws";

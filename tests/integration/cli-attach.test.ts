@@ -5,7 +5,6 @@ import type { Server } from "node:http";
 import { directAttach } from "../../src/cli/attach.ts";
 import { CLOSE_CODE_SERVER_ERROR, WS_CLOSE_REASONS } from "../../src/ws-constants.ts";
 
-process.env.WOLFPACK_TEST = "1";
 
 const { createServerContext } = await import("../../src/server/context.ts");
 const { createServerInstance } = await import("../../src/server/index.ts");

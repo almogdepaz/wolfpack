@@ -3,7 +3,6 @@ import { createHmac, randomBytes } from "node:crypto";
 import { connect } from "node:net";
 import type { AddressInfo } from "node:net";
 
-process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_JWT_SECRET = randomBytes(32).toString("hex");
 process.env.WOLFPACK_JWT_AUDIENCE = "wolfpack-client";
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = JSON.stringify({

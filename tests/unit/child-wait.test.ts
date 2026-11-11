@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-process.env.WOLFPACK_TEST = "1";
 
 import { CHILD_WAIT_LIMITS } from "../../src/child-event-contract.ts";
 import { SESSION_EXIT_REASON } from "../../src/events-contract.ts";

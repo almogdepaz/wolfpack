@@ -9,7 +9,6 @@ const scratch = mkdtempSync(join(tmpdir(), "wp-runtime-review-"));
 const hostId = "11111111-1111-4111-8111-111111111111";
 const scope = "22222222-2222-4222-8222-222222222222";
 process.env.HOME = scratch;
-process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_MACHINE_ID_PATH = join(scratch, "machine-id");
 process.env.WOLFPACK_BROKER_SOCKET = join(scratch, "unused.sock");
 process.env.WOLFPACK_TASK_ROOT = join(scratch, "tasks");

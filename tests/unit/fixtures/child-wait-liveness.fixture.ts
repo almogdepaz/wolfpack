@@ -2,7 +2,6 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 
 // Runs in an owned process: a starved event loop never reaches bun's own test
 // timeout, so the parent's lifecycle deadline is the watchdog (review A8-1).
-process.env.WOLFPACK_TEST = "1";
 const { createChildEvents } = await import("../../../src/server/child-events.ts");
 let service = createChildEvents();
 const { waitForChildren: waitWithEvents } = await import("../../../src/server/child-wait.ts");

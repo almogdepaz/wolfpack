@@ -11,13 +11,11 @@ import { basename, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 const PRIOR_ENV = {
-  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
   WOLFPACK_TAILNET_SUFFIX: process.env.WOLFPACK_TAILNET_SUFFIX,
   WOLFPACK_JWT_SECRET: process.env.WOLFPACK_JWT_SECRET,
   WOLFPACK_TASK_ROOT: process.env.WOLFPACK_TASK_ROOT,
 } as const;
 
-process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_TAILNET_SUFFIX = "example.ts.net";
 delete process.env.WOLFPACK_JWT_SECRET;
 const root = join(tmpdir(), `wolfpack-task-gateway-${process.pid}`);
@@ -28,7 +26,7 @@ mkdirSync(parentProject, { recursive: true });
 mkdirSync(receiverProject, { recursive: true });
 
 const { getJwtAuthConfig } = await import("../../src/auth.ts");
-const { MockBackend, } = await import("../../src/test-hooks.ts");
+const { MockBackend, } = await import("../../src/server/mock-backend.ts");
 
 const { createServerContext } = await import("../../src/server/context.ts");
 const {
@@ -69,13 +67,10 @@ afterAll(() => {
   globalRateLimiter._map.clear();
   rmSync(root, { recursive: true, force: true });
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
-    if (key === "WOLFPACK_TEST") continue;
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
 
-  if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
-  else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
 });
 
 async function request(path: string, method: "GET" | "POST", body?: unknown, headers: Record<string, string> = {}) {

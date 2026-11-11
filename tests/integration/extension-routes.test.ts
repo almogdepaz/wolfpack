@@ -9,7 +9,6 @@ import { validateControlApiSchemaValue as validate, type JsonObject } from "../c
 const artifact = JSON.parse(readFileSync(CONTROL_API_SCHEMA_ARTIFACT, "utf8")) as JsonObject;
 function contract(operation: string, value: unknown) { expect(validate((artifact.http as Record<string, { response: unknown }>)[operation]!.response, value, artifact)).toEqual([]); }
 
-process.env.WOLFPACK_TEST = "1";
 process.env.WOLFPACK_JWT_SECRET = "extension-routes-test-secret-long-enough";
 const { getJwtAuthConfig } = await import("../../src/auth.ts");
 const { ExtensionRuntime } = await import("../../src/extensions/runtime.ts");

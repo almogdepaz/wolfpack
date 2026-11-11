@@ -1,4 +1,3 @@
-process.env.WOLFPACK_TEST = "1";
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { EventBus } from "../../src/event-bus";

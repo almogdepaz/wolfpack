@@ -9,7 +9,6 @@
  * Skips cleanly when the broker binary is not built. CI must run
  * `cargo build --manifest-path broker/Cargo.toml --bin wolfpack-broker` first.
  */
-process.env.WOLFPACK_TEST = "1";
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn, type ChildProcess } from "node:child_process";

@@ -6,7 +6,6 @@
  */
 import type { AddressInfo } from "node:net";
 
-process.env.WOLFPACK_TEST = "1";
 
 const socketPath = process.env.WOLFPACK_BROKER_SOCKET;
 if (!socketPath) throw new Error("WOLFPACK_BROKER_SOCKET is required");

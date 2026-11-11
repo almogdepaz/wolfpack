@@ -2,7 +2,6 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 
-process.env.WOLFPACK_TEST = "1";
 // Disable JWT so we can hit API endpoints without auth tokens
 delete process.env.WOLFPACK_JWT_SECRET;
 const priorTailscaleStatus = process.env.WOLFPACK_TAILSCALE_STATUS_JSON;

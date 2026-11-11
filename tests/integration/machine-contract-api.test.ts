@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { getMachineDisplayName } from "../../src/machine-display-name.ts";
 
 const PRIOR_ENV = {
-  WOLFPACK_TEST: process.env.WOLFPACK_TEST,
   WOLFPACK_JWT_SECRET: process.env.WOLFPACK_JWT_SECRET,
   WOLFPACK_DEV_DIR: process.env.WOLFPACK_DEV_DIR,
   WOLFPACK_SETTINGS_PATH: process.env.WOLFPACK_SETTINGS_PATH,
@@ -15,7 +14,6 @@ const PRIOR_ENV = {
   WOLFPACK_TAILSCALE_STATUS_JSON: process.env.WOLFPACK_TAILSCALE_STATUS_JSON,
 } as const;
 
-process.env.WOLFPACK_TEST = "1";
 delete process.env.WOLFPACK_JWT_SECRET;
 
 const rawTestRoot = mkdtempSync(join(tmpdir(), "wolfpack-machine-contract-"));
@@ -50,7 +48,7 @@ const defaultTailscaleStatus = JSON.stringify({
 process.env.WOLFPACK_TAILSCALE_STATUS_JSON = defaultTailscaleStatus;
 
 const { getJwtAuthConfig } = await import("../../src/auth.ts");
-const { MockBackend, } = await import("../../src/test-hooks.ts");
+const { MockBackend, } = await import("../../src/server/mock-backend.ts");
 
 
 const { createServerContext } = await import("../../src/server/context.ts");
@@ -81,13 +79,10 @@ afterAll(async () => {
   rmSync(testRoot, { recursive: true, force: true });
 
   for (const [key, value] of Object.entries(PRIOR_ENV)) {
-    if (key === "WOLFPACK_TEST") continue;
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
 
-  if (PRIOR_ENV.WOLFPACK_TEST === undefined) delete process.env.WOLFPACK_TEST;
-  else process.env.WOLFPACK_TEST = PRIOR_ENV.WOLFPACK_TEST;
 });
 
 describe("direct machine contract routes", () => {

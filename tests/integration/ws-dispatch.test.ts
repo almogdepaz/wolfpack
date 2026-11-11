@@ -7,8 +7,6 @@ import {
 } from "./tailnet-origin-fixture.ts";
 import type { TailnetOriginServerFixture } from "./tailnet-origin-fixture.ts";
 
-// Use dynamic import so WOLFPACK_TEST is set before server module evaluation.
-process.env.WOLFPACK_TEST = "1";
 
 const {
   createServerInstance,

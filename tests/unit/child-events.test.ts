@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-process.env.WOLFPACK_TEST = "1";
 
 import {
   AGENT_STATUS_AUTHORITY,
