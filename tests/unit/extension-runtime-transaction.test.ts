@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as tar from "tar";
 import { ExtensionRuntime } from "../../src/extensions/runtime.ts";
+import { fixture } from "./fixtures/extension-transaction-package.ts";
 
 const hostId = "11111111-1111-4111-8111-111111111111";
 const roots: string[] = [];
@@ -25,32 +26,6 @@ afterEach(() => {
     rmSync(value, { recursive: true, force: true });
 });
 
-function fixture(
-  parent: string,
-  version = "1.0.0",
-  id = "fixture",
-  name = "fixture-extension",
-) {
-  const source = mkdtempSync(join(parent, "source-"));
-  mkdirSync(join(source, "dist"));
-  writeFileSync(
-    join(source, "package.json"),
-    JSON.stringify({
-      name,
-      version,
-      wolfpack: {
-        manifestVersion: 1,
-        apiVersion: 1,
-        id,
-        ui: "dist/ui.js",
-        skills: [],
-        documents: [],
-      },
-    }),
-  );
-  writeFileSync(join(source, "dist", "ui.js"), "export default () => {};\n");
-  return source;
-}
 function stages(runtime: ExtensionRuntime) {
   return readdirSync(join(runtime.root, "snapshots")).filter((name) =>
     name.startsWith(".stage-"),
